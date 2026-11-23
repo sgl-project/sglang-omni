@@ -268,6 +268,14 @@ DraftStatistics DFlashDraft::Decode(
             prompt_hidden, {0, prompt_count - 1, 0},
             {1, prompt_count + guessed_count, prompt_hidden.shape(2)})),
         -1);
+    // The frontend was scheduled before Decode, so observing it here — with
+    // the prefill and the prediction already queued — keeps the GPU fed and
+    // still separates the encoder from the prefill figure.
+    mx::eval(embeddings);
+    statistics.frontend_eval_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started)
+            .count();
     mx::eval(predicted);
     const uint32_t *predicted_ids = predicted.data<uint32_t>();
     int accepted_count = 0;

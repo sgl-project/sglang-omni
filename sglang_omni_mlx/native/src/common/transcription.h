@@ -37,7 +37,9 @@ struct TranscriptionResult {
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
   // Timed where waiting keeps main's async pipeline fed; no extra MLX
-  // evaluation is added. Prefill includes the first-token forward.
+  // evaluation is added. The frontend and prefill spans overlap by design:
+  // the host submits the prefill while the GPU runs the encoder. Prefill
+  // includes the first-token forward.
   double native_split_ms = 0.0;
   double frontend_build_ms = 0.0;
   double frontend_eval_ms = 0.0;

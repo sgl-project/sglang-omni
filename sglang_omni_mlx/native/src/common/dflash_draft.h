@@ -29,6 +29,9 @@ struct DraftStatistics {
   int verify_round_count = 0;
   int proposed_token_count = 0;
   int accepted_token_count = 0;
+  // The prefill span overlaps the frontend span by design: the host submits
+  // the prefill while the GPU runs the encoder.
+  double frontend_eval_ms = 0.0;
   double prefill_ms = 0.0;
   double decode_ms = 0.0;
 };

@@ -486,27 +486,29 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   double decoder_prefill_ms = 0.0;
   double autoregressive_decode_ms = 0.0;
   if (draft_.has_value()) {
-    // The draft's clocks start inside Decode; materializing the frontend
-    // first keeps the encoder out of its prefill figure. The encoder still
-    // evaluates asynchronously and this wait overlaps only the draft's first
-    // graph construction.
-    mx::eval(embeddings);
-    frontend_eval_ms =
-        Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
+    // Decode queues the prefill and the prediction before it observes the
+    // frontend, so the encoder is never serialized ahead of them. The stage
+    // clocks start here; the prefill span overlaps the frontend span while
+    // the host submits graphs, and the draft's cache construction between
+    // the two clocks is in neither figure.
+    const auto prefill_started = std::chrono::steady_clock::now();
     draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
+    frontend_eval_ms = draft_statistics.frontend_eval_ms +
+                       Milliseconds(prefill_started - frontend_eval_started);
     decoder_prefill_ms = draft_statistics.prefill_ms;
     autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
-    // Prefill queues its forwards asynchronously first, so the encoder keeps
-    // the GPU busy through this wait and the pipeline stays the one main
-    // built; eval here only observes the scheduled array.
+    // prefill_started is before the call so the stage covers the submission;
+    // the frontend wait runs after Prefill has queued its forwards, so the
+    // GPU stays fed. The two spans overlap by design: the host submits the
+    // prefill while the GPU runs the encoder.
+    const auto prefill_started = std::chrono::steady_clock::now();
     PrefilledSequence sequence = Prefill(embeddings, cancel);
     mx::eval(embeddings);
     frontend_eval_ms =
         Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
-    const auto prefill_started = std::chrono::steady_clock::now();
     auto decode_started = prefill_started;
     mx::array next_token = sequence.first_token;
     bool first = true;
