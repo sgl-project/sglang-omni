@@ -328,7 +328,7 @@ func TestLiveFinalFailsWhenTheSocketStalls(t *testing.T) {
 // reads — kernel buffer sizes differ per platform, the gate does not),
 // the drain gives up after previewDrain (the log says so) and closes
 // the socket, the wrap-up is skipped, and the error ends the stream
-// within the bound.
+// when its timer expires, without waiting on the wall clock.
 func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 	old := loopback
 	loopback = &http.Client{Transport: &http.Transport{
@@ -343,8 +343,18 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 			return c, err
 		},
 	}}
-	defer func() { loopback = old }()
-	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1, Delay: 5 * time.Second}, nil)
+	t.Cleanup(func() { loopback = old })
+	f := newFake(t, omnitest.Opts{Text: "p{n}", LiveStall: true, FailFrom: 1}, nil)
+	clock := new(fakeClock).install(f.rt)
+	scheduled := make(chan struct{})
+	after := f.rt.afterFunc
+	f.rt.afterFunc = func(d time.Duration, fn func()) func() {
+		stop := after(d, fn)
+		if d == previewDrain {
+			close(scheduled)
+		}
+		return stop
+	}
 	a := f.asr(t, ASRFast)
 	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
 	if err != nil {
@@ -361,15 +371,24 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
-	// The Final may take as long as the drain. Wait for it first so the
-	// log wait and the bound cannot expire between the two timeouts.
 	f.waitLogged(t, "failed after")
-	failed := time.Now()
-	f.waitLogged(t, "did not drain") // the drain really timed out
-	evs := drain(t, st)
-	if took := time.Since(failed); took > previewDrain+5*time.Second {
-		t.Errorf("the error came %v after the Final failed, over the %v drain bound", took, previewDrain)
+	select {
+	case <-scheduled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drain timer was not scheduled")
 	}
+	clock.advance(previewDrain - time.Nanosecond)
+	select {
+	case ev := <-st.Events():
+		t.Fatalf("event before the drain deadline: %+v", ev)
+	default:
+	}
+	if f.logged("did not drain") {
+		t.Fatal("the drain timed out before its deadline")
+	}
+	clock.advance(time.Nanosecond)
+	f.waitLogged(t, "did not drain")
+	evs := drain(t, st)
 	if last := evs[len(evs)-1]; last.Kind != asr.EventError {
 		t.Fatalf("last %+v", last)
 	}
