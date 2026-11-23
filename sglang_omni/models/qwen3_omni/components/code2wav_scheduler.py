@@ -6,13 +6,16 @@ it decodes, then decodes the ready windows of one length in one replay.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import logging
 import queue
 import time
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import TypedDict
 
 import numpy as np
@@ -37,6 +40,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto import StagePayload
+from sglang_omni.proto.session import SessionIdentity, find_session_operation
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
@@ -223,6 +227,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     """Streaming vocoder scheduler. Same inbox/outbox interface as OmniScheduler."""
 
     MAX_PINNED_SLOTS = 32
+    AUDIO_READY_BUDGET_SECONDS = 0.080
+    OPEN_WAIT_BUDGET_SECONDS = 0.100
+    INBOX_ITERATIONS_PER_AUDIO_STEP = 16
+    OPEN_BATCH_BUDGET = 2
 
     def __init__(
         self,
@@ -272,6 +280,15 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.pinned_quarantined: list[PinnedTransferSlot] = []
         self.retired_chunks: list[RetiredChunks] = []
         self.max_pinned_slots = self.MAX_PINNED_SLOTS + self.max_replay_rows
+        self.open_inbox: deque[
+            tuple[IncomingMessage, SessionIdentity | None, float]
+        ] = deque()
+        self.open_inbox_lock = Lock()
+        self.queued_opens: dict[SessionIdentity, int] = {}
+        self.pending_finalizations: dict[str, float] = {}
+        self.inbox_iterations = 0
+        self.prefer_finalization = True
+        self.prefer_open = True
 
     def on_serving_start(self) -> None:
         """Every device op of the serving thread runs on the decode stream."""
@@ -411,6 +428,12 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 pass
         else:
             state.chunks.append(codes)
+        if state.ready_since is None and self.ready(state) >= self.window_new_frames(
+            state
+        ):
+            state.ready_since = time.monotonic()
+        else:
+            pass
         if profile is not None:
             self.finish_ingest_profile(request_id, state, profile)
         else:
@@ -978,6 +1001,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
             return self.pending_messages.popleft()
         else:
             pass
+        if self.inbox.empty() and self.open_inbox:
+            return None
+        else:
+            pass
         if earliest_window is not None and self.inbox.empty():
             # note (ratish): with nothing queued, sleep on the launched window rather
             # than hold its audio until the stream's next codes; the next pass sends it.
@@ -1022,27 +1049,33 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     pass
                 streams.append((request_id, state))
             else:
-                pass
+                state.ready_since = None
         return streams
 
     def has_ready_work(self) -> bool:
         with self.state_lock:
-            return bool(self.ready_streams())
+            return bool(self.pending_finalizations or self.ready_streams())
 
-    def ready_window_group(self) -> list[tuple[str, Code2WavStreamState]]:
-        """The ready windows the next replay decodes: first windows before later ones, then the
-        longest waiting window's length, oldest first."""
-        streams = self.ready_streams()
+    def ready_window_group(
+        self, streams: list[tuple[str, Code2WavStreamState]] | None = None
+    ) -> list[tuple[str, Code2WavStreamState]]:
+        """Group compatible windows around the oldest overdue window or the oldest first window."""
+        if streams is None:
+            streams = self.ready_streams()
+        else:
+            pass
         if not streams:
             return []
         else:
             pass
-        # note (ratish): a first window carries its request's time to first audio, so it goes
-        # ahead of every later window whatever their wait. It replays only with first windows:
-        # those reach the host at once, while a later window leaves after its request's pending
-        # one, and without left context both have one length.
+        deadline_seconds = time.monotonic() - self.AUDIO_READY_BUDGET_SECONDS
         anchor = min(
-            streams, key=lambda stream: (stream[1].emitted > 0, stream[1].ready_since)
+            streams,
+            key=lambda stream: (
+                stream[1].ready_since >= deadline_seconds,
+                stream[1].ready_since >= deadline_seconds and stream[1].emitted > 0,
+                stream[1].ready_since,
+            ),
         )
         window_frames = self.window_length(anchor[1])
         follows_a_window = anchor[1].emitted > 0
@@ -1079,12 +1112,32 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         return group[:rows]
 
     def run_ready_step(self) -> None:
-        """One replay over the ready windows of one length, once the inbox holds nothing more."""
+        """Decode one compatible batch or finish one drained stream."""
         failed: list[str] = []
         with self.state_lock:
+            self.inbox_iterations = 0
+            self.prefer_open = True
             self.reap_retired()
             failed.extend(self.emit_completed_windows())
-            participants = self.ready_window_group()
+            streams = self.ready_streams()
+            ready_request_ids = {request_id for request_id, _ in streams}
+            final_request_id = next(
+                (
+                    request_id
+                    for request_id in self.pending_finalizations
+                    if request_id not in ready_request_ids
+                ),
+                None,
+            )
+            if final_request_id is not None and (
+                self.prefer_finalization or not streams
+            ):
+                self.prefer_finalization = False
+                participants = []
+            else:
+                self.prefer_finalization = True
+                final_request_id = None
+                participants = self.ready_window_group(streams)
             if participants:
                 try:
                     messages = self.decode_windows(participants)
@@ -1100,6 +1153,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                 pass
         for request_id in failed:
             self.cleanup_aborted_request(request_id)
+        if final_request_id is not None:
+            self.finish_deferred_stream(final_request_id)
+        else:
+            pass
 
     def streaming_pending_windows(self) -> list[tuple[str, PendingWindow]]:
         """Launched windows of streaming requests that no abort has claimed, in
@@ -1154,22 +1211,157 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self.mark_stream_emitted(request_id)
         return [self.stream_chunk_message(request_id, waveform)]
 
-    def finish_windows(self, request_id: str) -> list[OutgoingMessage]:
-        """A finished stream's ready threshold windows decoded alone, then its pending window, in order."""
-        messages: list[OutgoingMessage] = []
-        state = self.stream_states.get(request_id)
-        while state is not None and self.window_ready(state):
-            messages.extend(self.decode_windows([(request_id, state)]))
-        messages.extend(self.drain_pending_window(request_id))
-        return messages
+    def enqueue(self, message: IncomingMessage) -> None:
+        if message.type == "new_request":
+            operation = find_session_operation(message.data.request.metadata)
+            if operation is not None and operation.operation in ("open", "close"):
+                identity = operation.session_identity
+                with self.open_inbox_lock:
+                    if operation.operation == "open":
+                        self.queued_opens[identity] = (
+                            self.queued_opens.get(identity, 0) + 1
+                        )
+                        self.open_inbox.append((message, identity, time.monotonic()))
+                        return
+                    elif identity in self.queued_opens:
+                        # READ and media require an OPEN ack. An early CLOSE
+                        # follows its queued OPEN, including a timed-out OPEN.
+                        self.open_inbox.append((message, None, time.monotonic()))
+                        return
+                    else:
+                        pass
+            else:
+                pass
+        else:
+            pass
+        self.inbox.put(message)
 
-    def on_stream_done(self, request_id: str) -> list[OutgoingMessage]:
-        messages = self.finish_windows(request_id)
-        messages.extend(super().on_stream_done(request_id))
+    def service_deferred_work(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """Give overdue audio and session operations turns between inbox iterations."""
+        now_seconds = time.monotonic()
+        with self.state_lock:
+            streams = self.ready_streams()
+            ready_times = [
+                state.ready_since
+                for _, state in streams
+                if state.ready_since is not None
+            ]
+            ready_request_ids = {request_id for request_id, _ in streams}
+            ready_times.extend(
+                pending_seconds
+                for request_id, pending_seconds in self.pending_finalizations.items()
+                if request_id not in ready_request_ids
+            )
+            oldest_audio_seconds = min(ready_times, default=None)
+            if oldest_audio_seconds is None:
+                self.inbox_iterations = 0
+            else:
+                self.inbox_iterations += 1
+        with self.open_inbox_lock:
+            oldest_open_seconds = self.open_inbox[0][2] if self.open_inbox else None
+
+        audio_due = oldest_audio_seconds is not None and (
+            now_seconds - oldest_audio_seconds >= self.AUDIO_READY_BUDGET_SECONDS
+            or self.inbox_iterations >= self.INBOX_ITERATIONS_PER_AUDIO_STEP
+        )
+        open_due = oldest_open_seconds is not None and (
+            now_seconds - oldest_open_seconds >= self.OPEN_WAIT_BUDGET_SECONDS
+        )
+        if audio_due and (not open_due or not self.prefer_open):
+            self.run_ready_step()
+            return True
+        elif oldest_open_seconds is None or (
+            not open_due and oldest_audio_seconds is not None
+        ):
+            return False
+        else:
+            self.prefer_open = False
+
+        for _ in range(self.OPEN_BATCH_BUDGET):
+            with self.open_inbox_lock:
+                if not self.open_inbox:
+                    break
+                else:
+                    message, identity, _ = self.open_inbox.popleft()
+                if identity is not None:
+                    remaining = self.queued_opens[identity] - 1
+                    if remaining:
+                        self.queued_opens[identity] = remaining
+                    else:
+                        del self.queued_opens[identity]
+                else:
+                    pass
+            if self.is_aborted(message.request_id):
+                continue
+            else:
+                pass
+            try:
+                self.handle_new_request_batch([message], loop)
+            except Exception as exc:
+                self.emit_error(message.request_id, exc)
+                self.abort(message.request_id)
+        return False
+
+    def finish_deferred_stream(self, request_id: str) -> None:
+        """Send residual audio and the stream result in order."""
+        failed = False
+        with self.state_lock:
+            if self.pending_finalizations.pop(request_id, None) is None:
+                return
+            elif self.is_aborted(request_id):
+                return
+            else:
+                pass
+            try:
+                if request_id in self.stream_payloads:
+                    messages = self.on_stream_done(request_id)
+                    if messages is not None:
+                        self.complete_stream_request(request_id, messages)
+                    else:
+                        pass
+                    return
+                else:
+                    messages = self.on_stream_done_before_payload(request_id)
+                for message in messages:
+                    if not self.is_aborted(request_id):
+                        self.outbox.put(message)
+                    else:
+                        pass
+            except Exception as exc:
+                self.emit_error(request_id, exc)
+                self.abort_state(request_id)
+                failed = True
+        if failed:
+            self.cleanup_aborted_request(request_id)
+        else:
+            pass
+
+    def defer_tail_windows(self, request_id: str) -> bool:
+        state = self.stream_states.get(request_id)
+        if request_id in self.pending_finalizations or (
+            state is not None and self.window_ready(state)
+        ):
+            self.pending_finalizations.setdefault(request_id, time.monotonic())
+            return True
+        else:
+            pass
+        return False
+
+    def on_stream_done(self, request_id: str) -> list[OutgoingMessage] | None:
+        if self.defer_tail_windows(request_id):
+            return None
+        else:
+            pass
+        messages = self.drain_pending_window(request_id)
+        messages.extend(self.finish_stream(request_id))
         return messages
 
     def on_stream_done_before_payload(self, request_id: str) -> list[OutgoingMessage]:
-        messages = self.finish_windows(request_id)
+        if self.defer_tail_windows(request_id):
+            return []
+        else:
+            pass
+        messages = self.drain_pending_window(request_id)
         state = self.stream_states.get(request_id)
         if state is not None:
             waveform = self.decode_delta(request_id, state, is_final=True)
@@ -1181,6 +1373,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         else:
             pass
         return messages
+
+    def clear_stream_state(self, request_id: str) -> None:
+        self.pending_finalizations.pop(request_id, None)
+        super().clear_stream_state(request_id)
 
     def release_stream_resources(
         self, request_id: str, state: Code2WavStreamState

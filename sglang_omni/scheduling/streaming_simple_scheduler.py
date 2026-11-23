@@ -155,6 +155,11 @@ class StreamingSimpleScheduler:
     def run_ready_step(self) -> None:
         """One compute step on already-ingested state; runs off the inbox."""
 
+    def service_deferred_work(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """Return whether a ready step ran before the next inbox iteration."""
+        del loop
+        return False
+
     def warm_up_serving_thread(self) -> None:
         pass
 
@@ -163,13 +168,17 @@ class StreamingSimpleScheduler:
         loop = asyncio.new_event_loop()
         try:
             while self.running:
+                ran_ready_step = self.service_deferred_work(loop)
                 if self.has_ready_work():
                     # note (ratish): drain queued messages into state before a
                     # step, so ranking never sees a stale inbox
                     try:
                         msg = self.get_batch_message()
                     except queue_mod.Empty:
-                        self.run_ready_step()
+                        if not ran_ready_step:
+                            self.run_ready_step()
+                        else:
+                            pass
                         continue
                 else:
                     msg = self.next_message()
