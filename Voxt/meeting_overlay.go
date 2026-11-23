@@ -10,6 +10,10 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// meetingTimeW is the least room the meeting's elapsed time keeps ("0:00"
+// at 12 pt), so the controls do not move as it ticks.
+const meetingTimeW = 30
+
 type meetingOverlayLocalUI struct {
 	collapsed bool
 	list      ui.ListState
@@ -91,59 +95,75 @@ func meetingOverlayBar(c *ui.Context, state meetingOverlayViewState, model meeti
 		rowHeight, gap = layout.CardHeadH, layout.CardHeadGap
 	}
 	ui.Row(c).Height(rowHeight).Shrink(0).Gap(gap).AlignItems(ui.Center).Children(func() {
-		color := mtRecDot
+		color := ovIcon
 		if state.Paused {
 			color = ovText2
 		}
 		ui.Box(c).Size(layout.IconSlot, rowHeight).Shrink(0).Center().Children(func() {
-			ui.Icon(c, meetingIcon.Bold).Size(layout.IconSize, layout.IconSize).TextColor(color).Shrink(0).Label(state.StatusText)
+			ui.Icon(c, meetingIcon.Linear).Size(layout.IconSize, layout.IconSize).TextColor(color).Shrink(0).Label(state.StatusText)
 		})
 		if model.ShowExpanded && state.Live {
 			meetingModeCapsule(c, state, actions, local)
 		} else {
-			ui.Text(c, state.ModeTitle).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0)
+			// Align the text's visible strokes with the waveform and SVG centers.
+			ui.Text(c, state.ModeTitle).FontSize(12).FontWeight(500).FixedLineHeight(layout.LineH).TextColor(ovText).SingleLine().Shrink(0).Translate(0, -1.5)
 		}
 		if state.Paused {
-			ui.Text(c, i18n.T("Paused")).FontSize(12).TextColor(ovText2).SingleLine().Shrink(0)
+			ui.Text(c, i18n.T("Paused")).FontSize(12).FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -1.5)
 		} else {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 				if state.ShowMicrophone {
-					meetingWave(c.Key("mt-wave-mic"), icons.MicrophoneLarge, i18n.T("Microphone"), state.MicrophoneLevels)
+					meetingWave(c.Key("mt-wave-mic"), icons.VoxtMicrophone, i18n.T("Microphone"), state.MicrophoneLevels)
 				}
 				if state.ShowSystem {
 					meetingWave(c.Key("mt-wave-system"), icons.VolumeLoud, i18n.T("System audio"), state.SystemLevels)
 				}
 			})
 		}
-		ui.Text(c, state.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
-		ui.Box(c).Grow(1)
-		if state.Live {
-			label, icon := i18n.T("Pause meeting"), icons.Pause
-			if state.Paused {
-				label, icon = i18n.T("Resume meeting"), icons.Play
+		ui.Box(c).Grow(1).MinWidth(meetingTimeW).Height(rowHeight).Center().Children(func() {
+			ui.Text(c, state.ElapsedText).FontSize(12).FontFeatures("tnum").FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -0.75)
+		})
+		ui.Row(c.Key("mt-actions")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
+			if state.Live {
+				label, icon := i18n.T("Pause meeting"), icons.Pause.Bold
+				if state.Paused {
+					label, icon = i18n.T("Resume meeting"), icons.Play.Bold
+				}
+				if meetingOverlayButton(c.Key("mt-pause"), label, icon, 14) {
+					local.menu = meetingMenuNone
+					actions.meetingPauseResume()
+				}
 			}
-			if cardIconButton(c.Key("mt-pause"), label, label, icon, true) {
-				local.menu = meetingMenuNone
-				actions.meetingPauseResume()
+			if state.Live || state.Starting { // a start that hangs can be ended
+				if meetingOverlayButton(c.Key("mt-end"), i18n.T("End meeting"), icons.Stop.Bold, 14) {
+					local.menu = meetingMenuNone
+					actions.meetingFinish()
+				}
 			}
-		}
-		if state.Live || state.Starting {
-			if cardIconButton(c.Key("mt-end"), i18n.T("End meeting"), i18n.T("End meeting"), icons.Stop, true) {
-				local.menu = meetingMenuNone
-				actions.meetingFinish()
+			if model.ShowExpanded && state.Live && meetingOverlayButton(c.Key("mt-more"), i18n.T("More"), icons.MenuDots.Linear, 14) {
+				actions.toggleMeetingMenu(meetingMenuMore)
 			}
-		}
-		if model.ShowExpanded && state.Live && cardIconButton(c.Key("mt-more"), i18n.T("More"), i18n.T("More"), icons.MenuDots, true) {
-			actions.toggleMeetingMenu(meetingMenuMore)
-		}
-		label, icon := i18n.T("Collapse"), icons.MinimizeSquareMinimalistic
-		if model.Layout.Collapsed {
-			label, icon = i18n.T("Expand"), icons.MaximizeSquareMinimalistic
-		}
-		if cardIconButton(c.Key("mt-ov-collapse"), label, label, icon, true) {
-			actions.setMeetingOverlayCollapsed(!model.Layout.Collapsed)
-		}
+			label, icon := i18n.T("Collapse"), icons.Minimize.Linear
+			if model.Layout.Collapsed {
+				label, icon = i18n.T("Expand"), icons.Maximize.Linear
+			}
+			if meetingOverlayButton(c.Key("mt-ov-collapse"), label, icon, 12) {
+				actions.setMeetingOverlayCollapsed(!model.Layout.Collapsed)
+			}
+		})
 	})
+}
+
+func meetingOverlayButton(c *ui.Context, label string, icon *ui.SVG, iconSize float32) bool {
+	b := ui.ButtonBase(c).Size(layout.CardBtn, layout.CardBtn).Radius(6).Center().Shrink(0).Label(label).Tooltip(label)
+	background := ui.Transparent
+	if b.Hovered() {
+		background = ui.RGBA(255, 255, 255, 0.1)
+	}
+	b.Background(background)
+	return b.Children(func() {
+		ui.Icon(c, icon).Size(iconSize, iconSize).TextColor(ovText)
+	}).Clicked()
 }
 
 func meetingModeCapsule(c *ui.Context, state meetingOverlayViewState, actions meetingOverlayActions, local *meetingOverlayLocalUI) {
