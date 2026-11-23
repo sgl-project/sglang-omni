@@ -66,6 +66,7 @@ add_library(common STATIC
   src/common/dflash_draft.cpp
   src/common/fastconformer.cpp
   src/common/form.cpp
+  src/common/kaldi_fbank.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/nemo_features.cpp
@@ -73,6 +74,7 @@ add_library(common STATIC
   src/common/qwen3_decoder.cpp
   src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
+  src/common/sanm_encoder.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp
   src/common/transcription.cpp
@@ -88,6 +90,10 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # Note (XXXXRT666): campplus keeps the rounding it was built with as part of
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (wilsonzheng0327): the Kaldi fbank pieces and the SAN-M encoder keep the
+# rounding they had in campplus and sensevoice_asr.
+set_source_files_properties(src/common/kaldi_fbank.cpp src/common/sanm_encoder.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 # Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
 # operations.

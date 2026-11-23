@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: Apache-2.0
+// Kaldi-style fbank pieces CAM++, SenseVoice and Fun-ASR-Nano share: Kaldi's
+// mel filters, the symmetric Hamming window, and a log fbank on MLX.
+#pragma once
+
+#include <vector>
+
+#include "mlx/mlx.h"
+
+namespace omni_common {
+
+// Kaldi's 80 triangular mel filters on its 1127 ln(1 + f / 700) scale from
+// 20 Hz, for 16 kHz audio and a 512-point FFT: [mel_bins, 257] with the
+// Nyquist bin zero.
+std::vector<double> KaldiMelBanks();
+
+// The FFT size KaldiFbank pads a window of window_length samples to.
+int PaddedFftSize(int window_length);
+
+// The symmetric Hamming window of size samples, built in float.
+std::vector<float> SymmetricHammingWindow(int size);
+
+// Log mel energies [frames, mel_bins] of samples scaled to the 16-bit range:
+// frames of window.size() samples every hop_length samples (none for shorter
+// audio), each with its mean removed, preemphasized (the first sample taking
+// itself as its predecessor) and windowed, zero padded to a power of two, and
+// the power spectrum through mel_filters [fft_size / 2 + 1, mel_bins], floored
+// at log_floor.
+mlx::core::array KaldiFbank(const std::vector<float> &samples,
+                            const std::vector<float> &window, int hop_length,
+                            const mlx::core::array &mel_filters,
+                            float log_floor);
+
+} // namespace omni_common
