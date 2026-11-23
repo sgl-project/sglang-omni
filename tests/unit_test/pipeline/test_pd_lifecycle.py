@@ -446,20 +446,10 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
 
 
 def test_off_thread_decode_abort_keeps_kv_until_the_scheduler_thread_applies_it(
-    monkeypatch,
+    real_pd_scheduler,
 ):
     """A queued decode abort must not free the KV of a request still waiting."""
-    scheduler = decode_scheduler()
-    released = []
-    scheduler.release_request_kv_cache = lambda req: released.append(req.rid)
-    monkeypatch.setattr(
-        _Upstream,
-        "get_next_disagg_decode_batch_to_run",
-        lambda self, running_batch: SimpleNamespace(
-            running_batch=None, batch_to_run=None
-        ),
-        raising=False,
-    )
+    scheduler = real_pd_scheduler
     message = make_message()
     scheduler.pd_receiver.commit(message, scheduler.pd_receiver.reserve(message))
     scheduler.drain_decode_admissions()
@@ -469,29 +459,39 @@ def test_off_thread_decode_abort_keeps_kv_until_the_scheduler_thread_applies_it(
     scheduler.is_entry_rank = True
     scheduler.session_bridge = None
     scheduler.inbox = queue.Queue()
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.mark_running_request_aborted = lambda request_id: False
+    scheduler.mark_request_finished_immediately = lambda request_id: []
+    scheduler.pending_request_builds = {}
+    scheduler.early_request_builds = False
+    scheduler.pending_request_admissions = {}
+    scheduler.backlogged_request_build_payloads = []
+    scheduler.run_abort_callback = lambda request_id: None
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.emit_model_path_end_once = lambda request_id, status: None
+    scheduler.drain_inbox_for_request = lambda request_id: None
 
     with ThreadPoolExecutor(1) as threads:
         threads.submit(scheduler.abort, "request-1").result(timeout=5)
 
     # The real base abort only queued it, so batch selection must keep its KV.
     assert scheduler.inbox.get_nowait().type == "abort"
-    scheduler.running_batch = None
-    scheduler.get_next_batch_to_run()
-    assert released == []
+    scheduler.drain_due_releases()
+    assert scheduler.token_to_kv_pool_allocator.available_size() == 13
     assert [req.rid for req in scheduler.waiting_queue] == ["request-1"]
-
-    def apply_abort(self, request_id, **kwargs):
-        self.aborted_request_ids.add(request_id)
-        self.waiting_queue = [
-            req for req in self.waiting_queue if req.rid != request_id
-        ]
-
-    # The scheduler thread then applies the queued abort through the override.
-    monkeypatch.setattr(OmniScheduler, "abort", apply_abort)
+    request = next(iter(scheduler.waiting_queue))
+    scheduler.invariant_checker.cancel_output(request)
     scheduler.abort("request-1")
-    assert scheduler.waiting_queue == []
-    scheduler.get_next_batch_to_run()
-    assert released == ["request-1"]
+    assert list(scheduler.waiting_queue) == []
+    assert scheduler.token_to_kv_pool_allocator.available_size() == 16
+    assert scheduler.req_to_token_pool.available_size() == 2
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
 
 
 def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
