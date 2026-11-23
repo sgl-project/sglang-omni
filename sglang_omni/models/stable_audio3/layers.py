@@ -10,6 +10,15 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from sglang_omni.platforms import current_platform
+
+if current_platform.is_cuda():
+    from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+    from sglang.srt.utils.custom_op import register_custom_op
+else:
+    pass
+
+AttentionBackend = Literal["flash", "sdpa"]
 ROTARY_BASE = 10000.0
 QK_RMS_NORM_EPS = 1e-6
 FOURIER_MIN_FREQUENCY = 0.5
@@ -54,7 +63,7 @@ class DynamicTanh(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary angles for the first dim channels of each head."""
+    """Rotary angles for the first dim channels of each head, shaped [tokens, dim]."""
 
     def __init__(self, dim: int) -> None:
         super().__init__()
@@ -70,8 +79,9 @@ class RotaryEmbedding(nn.Module):
 
 
 def apply_rotary(x: torch.Tensor, angles: torch.Tensor) -> torch.Tensor:
-    """Rotate the leading channels of x in fp32, leaving the rest unchanged."""
+    """Rotate the leading channels of x [batch, tokens, heads, head_dim] in fp32, leaving the rest unchanged."""
     rotary_dim = angles.shape[-1]
+    angles = angles[:, None]
     rotated, unrotated = x[..., :rotary_dim].float(), x[..., rotary_dim:]
     first_half, second_half = rotated.chunk(2, dim=-1)
     rotated = rotated * angles.cos() + torch.cat((-second_half, first_half), -1) * (
@@ -80,8 +90,78 @@ def apply_rotary(x: torch.Tensor, angles: torch.Tensor) -> torch.Tensor:
     return torch.cat((rotated.to(x.dtype), unrotated), dim=-1)
 
 
+def flash_attention(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    key_lengths: torch.Tensor | None,
+    window: int,
+) -> torch.Tensor:
+    """FA3 over [batch, tokens, heads, head_dim]; a window of -1 is unbounded."""
+    # note (ruilin): one split keeps a row's reduction order independent of the rows batched with it.
+    output = flash_attn_varlen_func(
+        queries,
+        keys,
+        values,
+        None,
+        None,
+        max_seqlen_q=queries.shape[1],
+        max_seqlen_k=keys.shape[1],
+        seqused_k=key_lengths,
+        window_size=(window, window),
+        num_splits=1,
+    )
+    return output[0] if isinstance(output, tuple) else output
+
+
+if current_platform.is_cuda():
+    # note (ruilin): the compiled blocks reach FA3 through this op, so each block traces as one graph.
+    flash_attention_op = register_custom_op(
+        flash_attention,
+        op_name="stable_audio3_flash_attention",
+        mutates_args=[],
+        out_shape="queries",
+    )
+else:
+    pass
+
+
+def attend(
+    queries: torch.Tensor,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    *,
+    backend: AttentionBackend,
+    key_lengths: torch.Tensor | None,
+    window: int | None,
+) -> torch.Tensor:
+    """Attention over [batch, tokens, heads, head_dim] tensors; each row sees its first key_lengths keys, and each query the keys within window positions."""
+    if backend == "flash":
+        return flash_attention_op(
+            queries, keys, values, key_lengths, -1 if window is None else window
+        )
+    else:
+        positions = torch.arange(keys.shape[1], device=keys.device)
+        mask = None
+        if key_lengths is not None:
+            mask = (positions < key_lengths[:, None])[:, None, None, :]
+        else:
+            pass
+        if window is not None:
+            band = (positions[None, :] - positions[:, None]).abs() <= window
+            mask = band if mask is None else mask & band
+        else:
+            pass
+        return F.scaled_dot_product_attention(
+            queries.transpose(1, 2),
+            keys.transpose(1, 2),
+            values.transpose(1, 2),
+            attn_mask=mask,
+        ).transpose(1, 2)
+
+
 class DifferentialAttention(nn.Module):
-    """Attention whose output is the difference of two softmax maps over the same values."""
+    """Attention whose output is the difference of two softmax maps over the same values; both maps run as one call over twice the heads."""
 
     def __init__(
         self,
@@ -90,9 +170,11 @@ class DifferentialAttention(nn.Module):
         head_dim: int,
         context_dim: int | None,
         qk_norm: Literal["rms", "dyt"],
+        backend: AttentionBackend,
     ) -> None:
         super().__init__()
         self.num_heads = dim // head_dim
+        self.backend = backend
         if context_dim is None:
             self.to_qkv = nn.Linear(dim, dim * 5, bias=False)
         else:
@@ -106,37 +188,53 @@ class DifferentialAttention(nn.Module):
             self.q_norm = DynamicTanh(head_dim)
             self.k_norm = DynamicTanh(head_dim)
 
-    def split_heads(self, x: torch.Tensor) -> torch.Tensor:
+    def split_heads(self, x: torch.Tensor, parts: int) -> torch.Tensor:
         batch_size, sequence_length, _ = x.shape
-        return x.view(batch_size, sequence_length, self.num_heads, -1).transpose(1, 2)
+        return x.view(batch_size, sequence_length, parts * self.num_heads, -1)
+
+    def context_keys_values(
+        self, context: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Keys of both maps and the values for cross-attention, fixed across sampling steps."""
+        keys, values = self.split_heads(self.to_kv(context), 3).split(
+            [2 * self.num_heads, self.num_heads], dim=2
+        )
+        return self.k_norm(keys), torch.cat([values, values], dim=2)
 
     def forward(
         self,
         x: torch.Tensor,
         *,
-        context: torch.Tensor | None = None,
+        context_keys_values: tuple[torch.Tensor, torch.Tensor] | None = None,
         rotary_angles: torch.Tensor | None = None,
-        attention_mask: torch.Tensor | None = None,
+        key_lengths: torch.Tensor | None = None,
+        window: int | None = None,
     ) -> torch.Tensor:
-        if context is None:
-            q, k, v, q_diff, k_diff = self.to_qkv(x).chunk(5, dim=-1)
+        if context_keys_values is None:
+            queries, keys, values, query_diffs, key_diffs = self.split_heads(
+                self.to_qkv(x), 5
+            ).chunk(5, dim=2)
+            queries = self.q_norm(torch.cat([queries, query_diffs], dim=2))
+            keys = self.k_norm(torch.cat([keys, key_diffs], dim=2))
+            values = torch.cat([values, values], dim=2)
         else:
-            q, q_diff = self.to_q(x).chunk(2, dim=-1)
-            k, k_diff, v = self.to_kv(context).chunk(3, dim=-1)
-        q = self.q_norm(torch.stack([self.split_heads(q), self.split_heads(q_diff)]))
-        k = self.k_norm(torch.stack([self.split_heads(k), self.split_heads(k_diff)]))
+            queries = self.q_norm(self.split_heads(self.to_q(x), 2))
+            keys, values = context_keys_values
         if rotary_angles is not None:
-            q, k = apply_rotary(q, rotary_angles), apply_rotary(k, rotary_angles)
+            queries = apply_rotary(queries, rotary_angles)
+            keys = apply_rotary(keys, rotary_angles)
         else:
             pass
-        v = self.split_heads(v)
-        maps = [
-            F.scaled_dot_product_attention(
-                q[index], k[index], v, attn_mask=attention_mask
-            )
-            for index in range(2)
-        ]
-        return self.to_out((maps[0] - maps[1]).transpose(1, 2).flatten(2))
+        maps = attend(
+            queries,
+            keys,
+            values,
+            backend=self.backend,
+            key_lengths=key_lengths,
+            window=window,
+        )
+        difference = maps[:, :, : self.num_heads] - maps[:, :, self.num_heads :]
+        return self.to_out(difference.flatten(2))
 
 
 class GatedLinearUnit(nn.Module):

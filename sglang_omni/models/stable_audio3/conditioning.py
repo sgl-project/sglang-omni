@@ -3,6 +3,7 @@
 # Copyright (c) 2026 Stability AI. The MIT license notice is retained in licenses/.
 """Prompt and duration conditioning: T5Gemma text tokens and a Fourier duration embedding."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -58,9 +59,9 @@ class Conditioner(nn.Module):
         self,
         prompts: list[str],
         tokenizer: PreTrainedTokenizerBase,
-        text_encoder: T5GemmaEncoderModel,
+        encode: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     ) -> torch.Tensor:
-        """Text tokens padded to max_length, with the learned embedding at padding positions."""
+        """Text tokens padded to max_length, with the learned embedding at padding positions; encode maps token ids and mask to hidden states."""
         padding_embedding = self.conditioners["prompt"].padding_embedding
         encoded = tokenizer(
             prompts,
@@ -70,9 +71,7 @@ class Conditioner(nn.Module):
             return_tensors="pt",
         ).to(padding_embedding.device)
         attention_mask = encoded["attention_mask"].bool()
-        hidden_states = text_encoder(
-            input_ids=encoded["input_ids"], attention_mask=attention_mask
-        ).last_hidden_state
+        hidden_states = encode(encoded["input_ids"], attention_mask)
         return torch.where(
             attention_mask[..., None],
             hidden_states.to(padding_embedding.dtype),

@@ -41,7 +41,12 @@ class StableAudio3PipelineConfig(PipelineConfig):
                 name=GENERATION_STAGE,
                 process="stable_audio3",
                 factory_path=f"{PACKAGE}.stages.create_generation_executor",
-                factory=FactoryArgs(max_batch_size=8, max_batch_wait_ms=5),
+                factory=FactoryArgs(
+                    max_batch_size=8,
+                    max_batch_wait_ms=5,
+                    enable_cuda_graph=True,
+                    enable_torch_compile=True,
+                ),
                 gpu=0,
                 terminal=True,
             ),

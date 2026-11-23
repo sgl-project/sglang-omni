@@ -6,15 +6,23 @@
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from types import MethodType
 
 import torch
 from safetensors import safe_open
 from torch import nn
+from torch._dynamo import mark_dynamic
+from torch._dynamo.decorators import mark_unbacked
 from transformers import PreTrainedTokenizerBase, T5GemmaEncoderModel
 
 from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner, load_text_encoder
+from sglang_omni.models.stable_audio3.cuda_graphs import (
+    DiTCudaGraphRunner,
+    PromptEncoderCudaGraphRunner,
+)
 from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
+from sglang_omni.models.stable_audio3.layers import AttentionBackend
 from sglang_omni.models.stable_audio3.model_config import (
     MAX_DURATION_SECONDS,
     StableAudio3Config,
@@ -92,16 +100,27 @@ class StableAudio3Runtime:
         encoder = config.model.pretransform.config.encoder.config
         self.latent_alignment = encoder.chunk_size // encoder.strides[0]
         self.latent_channels = config.model.diffusion.config.io_channels
+        self.dit_graphs: DiTCudaGraphRunner | None = None
+        self.prompt_graphs: PromptEncoderCudaGraphRunner | None = None
 
     @classmethod
     def from_pretrained(
-        cls, checkpoint_dir: Path, device: torch.device, dtype: torch.dtype
+        cls,
+        checkpoint_dir: Path,
+        device: torch.device,
+        dtype: torch.dtype,
+        *,
+        attention_backend: AttentionBackend,
     ) -> "StableAudio3Runtime":
         config = StableAudio3Config.from_checkpoint(checkpoint_dir)
         with torch.device("meta"):
-            dit = DiffusionTransformer(config.model.diffusion.config)
+            dit = DiffusionTransformer(
+                config.model.diffusion.config, backend=attention_backend
+            )
             conditioner = Conditioner(config.model.conditioning)
-            decoder = AudioDecoder(config.model.pretransform.config)
+            decoder = AudioDecoder(
+                config.model.pretransform.config, backend=attention_backend
+            )
         modules = {"dit": dit, "conditioner": conditioner, "decoder": decoder}
         for name, module in modules.items():
             load_component(
@@ -121,6 +140,49 @@ class StableAudio3Runtime:
             text_encoder=text_encoder,
             device=device,
         )
+
+    def compile_blocks(self) -> None:
+        """Compiles the DiT and decoder blocks, one compiled forward per stack, folding their norms, modulation and rotary into fewer kernels."""
+        compiled_dit_block = torch.compile(type(self.dit.transformer.layers[0]).forward)
+        compiled_decoder_block = torch.compile(
+            type(self.decoder.decoder.layers[3].transformers[0]).forward
+        )
+
+        def dit_block(block: nn.Module, x: torch.Tensor, **inputs) -> torch.Tensor:
+            keys, values = inputs["context_keys_values"]
+            # note (ruilin): an unbacked batch size never specializes to one, so a row's bits do not depend on the rows batched with it.
+            for batched in (
+                x,
+                inputs["global_condition"],
+                inputs["key_lengths"],
+                keys,
+                values,
+            ):
+                mark_unbacked(batched, 0)
+            mark_dynamic(x, 1)
+            mark_dynamic(inputs["rotary_angles"], 0)
+            return compiled_dit_block(block, x, **inputs)
+
+        def decoder_block(
+            block: nn.Module, x: torch.Tensor, window: int
+        ) -> torch.Tensor:
+            mark_dynamic(x, [0, 1])
+            return compiled_decoder_block(block, x, window)
+
+        for block in self.dit.transformer.layers:
+            block.forward = MethodType(dit_block, block)
+        for block in self.decoder.decoder.layers[3].transformers:
+            block.forward = MethodType(decoder_block, block)
+
+    def encode_text(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        if self.prompt_graphs is None:
+            return self.text_encoder(
+                input_ids=input_ids, attention_mask=attention_mask
+            ).last_hidden_state
+        else:
+            return self.prompt_graphs.encode(input_ids, attention_mask)
 
     def latent_length(self, seconds: float) -> int:
         """Latents for the request plus headroom, aligned to the autoencoder and capped at the model's sample size."""
@@ -157,7 +219,7 @@ class StableAudio3Runtime:
                 self.conditioner.embed_prompts(
                     [request.prompt for request in requests],
                     self.tokenizer,
-                    self.text_encoder,
+                    self.encode_text,
                 ),
                 seconds_embedding[:, None],
             ],
@@ -186,16 +248,24 @@ class StableAudio3Runtime:
             zip(generators, latent_lengths, strict=True)
         ):
             latents[row, :, :length] = self.noise(generator, length, torch.float32)
+        conditions = self.dit.prepare(
+            condition_tokens,
+            seconds_embedding,
+            valid_lengths=valid_lengths,
+            latent_length=latents.shape[-1],
+        )
+        graphed_step = (
+            None
+            if self.dit_graphs is None
+            else self.dit_graphs.bind(conditions, len(requests), latents.shape[-1])
+        )
         for step in range(SAMPLING_STEPS):
             timestep = self.schedule[step].to(self.dtype)
             next_timestep = self.schedule[step + 1].to(self.dtype)
-            velocity = self.dit(
-                latents,
-                timestep.expand(len(requests)),
-                condition_tokens=condition_tokens,
-                seconds_embedding=seconds_embedding,
-                valid_lengths=valid_lengths,
-            )
+            if graphed_step is None:
+                velocity = self.dit(latents, timestep.expand(len(requests)), conditions)
+            else:
+                velocity = graphed_step(latents, timestep)
             denoised = latents - timestep * velocity
             noise = torch.zeros_like(latents)
             for row, (generator, length) in enumerate(

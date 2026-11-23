@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn.utils import weight_norm
 
 from sglang_omni.models.stable_audio3.layers import (
+    AttentionBackend,
     DifferentialAttention,
     DynamicTanh,
     GatedFeedForward,
@@ -22,11 +23,13 @@ CHUNK_OVERLAP_LATENTS = 32
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, dim: int, *, head_dim: int, sinusoidal: bool) -> None:
+    def __init__(
+        self, dim: int, *, head_dim: int, sinusoidal: bool, backend: AttentionBackend
+    ) -> None:
         super().__init__()
         self.pre_norm = DynamicTanh(dim)
         self.self_attn = DifferentialAttention(
-            dim, head_dim=head_dim, context_dim=None, qk_norm="dyt"
+            dim, head_dim=head_dim, context_dim=None, qk_norm="dyt", backend=backend
         )
         self.ff_norm = DynamicTanh(dim)
         self.ff = GatedFeedForward(
@@ -34,11 +37,9 @@ class DecoderBlock(nn.Module):
         )
         self.rope = RotaryEmbedding(head_dim // 2)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, window: int) -> torch.Tensor:
         x = x + self.self_attn(
-            self.pre_norm(x),
-            rotary_angles=self.rope(x.shape[1]),
-            attention_mask=attention_mask,
+            self.pre_norm(x), rotary_angles=self.rope(x.shape[1]), window=window
         )
         return x + self.ff(self.ff_norm(x))
 
@@ -46,7 +47,9 @@ class DecoderBlock(nn.Module):
 class TransformerResamplingBlock(nn.Module):
     """Each latent is followed by stride noised query tokens that become its audio patches."""
 
-    def __init__(self, options: AutoencoderOptions) -> None:
+    def __init__(
+        self, options: AutoencoderOptions, *, backend: AttentionBackend
+    ) -> None:
         super().__init__()
         decoder = options.decoder.config
         self.dim = decoder.channels * decoder.c_mults[0]
@@ -62,6 +65,7 @@ class TransformerResamplingBlock(nn.Module):
                 self.dim,
                 head_dim=decoder.dim_heads,
                 sinusoidal=depth - index < decoder.sinusoidal_blocks[0],
+                backend=backend,
             )
             for index in range(depth)
         )
@@ -80,10 +84,8 @@ class TransformerResamplingBlock(nn.Module):
             ],
             dim=1,
         ).reshape(batch_size, latent_length * (self.stride + 1), dim)
-        positions = torch.arange(tokens.shape[1], device=tokens.device)
-        attention_mask = (positions[None, :] - positions[:, None]).abs() <= self.window
         for block in self.transformers:
-            tokens = block(tokens, attention_mask)
+            tokens = block(tokens, self.window)
         patches = tokens.reshape(batch_size * latent_length, self.stride + 1, dim)[
             :, 1:
         ]
@@ -105,7 +107,9 @@ class SoftNormBottleneck(nn.Module):
 
 
 class SameDecoder(nn.Module):
-    def __init__(self, options: AutoencoderOptions) -> None:
+    def __init__(
+        self, options: AutoencoderOptions, *, backend: AttentionBackend
+    ) -> None:
         super().__init__()
         decoder = options.decoder.config
         # note (ruilin): the identities stand for the checkpoint's transposes, keeping the layers.1 / layers.3 names.
@@ -114,7 +118,7 @@ class SameDecoder(nn.Module):
                 nn.Identity(),
                 nn.Linear(decoder.latent_dim, decoder.channels * decoder.c_mults[0]),
                 nn.Identity(),
-                TransformerResamplingBlock(options),
+                TransformerResamplingBlock(options, backend=backend),
             ]
         )
 
@@ -125,10 +129,12 @@ class SameDecoder(nn.Module):
 class AudioDecoder(nn.Module):
     """Checkpoint tensors under pretransform.model, without the encoder."""
 
-    def __init__(self, options: AutoencoderOptions) -> None:
+    def __init__(
+        self, options: AutoencoderOptions, *, backend: AttentionBackend
+    ) -> None:
         super().__init__()
         self.bottleneck = SoftNormBottleneck()
-        self.decoder = SameDecoder(options)
+        self.decoder = SameDecoder(options, backend=backend)
         self.patch_size = options.pretransform.config.patch_size
         self.downsampling_ratio = options.downsampling_ratio
 

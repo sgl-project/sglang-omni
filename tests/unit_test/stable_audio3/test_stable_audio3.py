@@ -11,6 +11,11 @@ from transformers import BatchEncoding
 
 from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner
+from sglang_omni.models.stable_audio3.cuda_graphs import (
+    MAX_GRAPH_TOKENS,
+    bucket_batch,
+    bucket_latents,
+)
 from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
 from sglang_omni.models.stable_audio3.model_config import StableAudio3Config
 from sglang_omni.models.stable_audio3.request_builders import (
@@ -216,9 +221,9 @@ def runtime() -> StableAudio3Runtime:
     torch.manual_seed(0)
     config = tiny_config()
     modules = [
-        DiffusionTransformer(config.model.diffusion.config),
+        DiffusionTransformer(config.model.diffusion.config, backend="sdpa"),
         Conditioner(config.model.conditioning),
-        AudioDecoder(config.model.pretransform.config),
+        AudioDecoder(config.model.pretransform.config, backend="sdpa"),
     ]
     for module in modules:
         module.eval()
@@ -272,6 +277,23 @@ def test_batching_does_not_change_any_request(runtime: StableAudio3Runtime) -> N
         assert batched_audio.shape == (2, int(request.seconds * 44100))
         assert batched_audio.abs().max() > 0
         assert torch.allclose(batched_audio, single_audio, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "max_batch_size", "bucket"),
+    [(1, 8, 1), (3, 8, 4), (8, 8, 8), (3, 3, 3), (12, 16, 16), (5, 4, None)],
+)
+def test_batch_buckets_stay_within_the_stage_batch(
+    batch_size: int, max_batch_size: int, bucket: int | None
+) -> None:
+    assert bucket_batch(batch_size, max_batch_size) == bucket
+
+
+def test_latent_buckets_cover_every_length_within_the_graph_budget() -> None:
+    for latent_length in range(1, MAX_GRAPH_TOKENS):
+        bucket = bucket_latents(latent_length)
+        assert latent_length <= bucket < latent_length + 32
+        assert bucket % 32 == 0
 
 
 @pytest.mark.parametrize(
