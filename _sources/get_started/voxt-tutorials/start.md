@@ -2,31 +2,31 @@
 
 [English](en/start.md)
 
-使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.1.2 正式版**。需要验证最新改动时，选下方的 Beta 路线。
+使用 Apple 芯片的 Mac 需要 macOS 15 或更新版本。第一次安装，选 **Voxt 2.1.3 正式版**。需要验证最新改动时，选下方的 Beta 路线。
 
-## 下载 2.1.2 正式版
+## 下载 2.1.3 正式版
 
-[一键下载 Voxt 2.1.2（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg)
+[一键下载 Voxt 2.1.3（Apple 芯片）](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg)
 
 也可以从以下入口找到同一个版本号的安装包。
 
 - 仓库首页往下到 **News**，找到 **Voxt 2.0**，点 **Download**。 [SGLang Omni News](https://github.com/sgl-project/sglang-omni#news)
-- 在 **Voxt v2.1.2** 发布页展开 **Assets**，点 `Voxt-2.1.2-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.2)
-- 在 **v2.1.2** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.1.2-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
+- 在 **Voxt v2.1.3** 发布页展开 **Assets**，点 `Voxt-2.1.3-arm64.dmg`。 [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.3)
+- 在 **v2.1.3** 条目点 **Download**。Changelog 可能给这条加上 **Beta** 标签，选择文件名为 `Voxt-2.1.3-arm64.dmg` 的包。 [Voxt Changelog](https://voxt.actnow.dev/changelog)
 
 ## 下载 Beta
 
 `main` 每合入一次 Voxt 的改动，就会自动构建一个 Beta，版本号形如 `2.1.3-beta.YYYYMMDD.N`（日期加构建序号）。Beta 比正式版新，也可能不稳定。
 
-当前最新的是 **Voxt Beta #40**：[下载 `Voxt-2.0.3-beta.20261112.40-arm64`](https://github.com/sgl-project/sglang-omni/actions/runs/43128787320/artifacts/13904657773)（约 33 MB，需要登录 GitHub，2026 年 11 月 26 日过期）。过期后，或者想找更新的构建：
+Beta 会自己更新：在 Voxt 菜单里点**检查更新…**，就能从 GitHub 发布页找到并安装最新的 Beta。也可以手动下载 `.dmg` 安装某个 Beta；装回正式版的 `.dmg` 即可回到正式版。
 
-1. 打开 [Voxt Beta 构建列表](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml)。最上面一条带绿色对勾、分支是 `main` 的就是最新的成功构建。黄色圆点表示还在构建，红叉表示失败，都跳过。
-2. 点进这次构建，往下翻到 **Artifacts**，点 `Voxt-…-beta.…-arm64` 下载 ZIP。构建产物只保留 14 天。
-3. 双击 ZIP 解压，打开里面的 `.dmg`。文件名里带 `-beta.`，可以用它区分每次构建和正式版。
+找最新的 Beta（截至 2026 年 11 月 23 日，最新的是 `2.1.3-beta.20261123.105`，第 105 号构建）：
+
+1. 打开 [Voxt 发布页](https://github.com/sgl-project/sglang-omni/releases)：最新的预发布（Pre-release）就是最新的 Beta。展开 **Assets**，点 `Voxt-…-beta.…-arm64.dmg`。
+2. 或者打开 [Voxt Beta 构建列表](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml)：最上面一条带绿色对勾、分支是 `main` 的就是最新的成功构建。黄色圆点表示还在构建，红叉表示失败，都跳过。点进这次构建，往下翻到 **Artifacts**，点 `Voxt-…-beta.…-arm64` 下载 ZIP；这条路需要登录 GitHub，构建产物只保留 14 天。
+3. 走 Actions 下载的 ZIP 先解压，再打开 `.dmg`。文件名里带 `-beta.`，可以用它区分每次构建和正式版。
 
 <div class="vx-anim" data-scene="beta-artifact" data-lang="zh"></div>
-
-Beta 不会自己更新：想换更新的 Beta，或者回到正式版，重新下载对应的 `.dmg` 安装即可。
 
 ## 安装并允许权限
 
@@ -56,4 +56,4 @@ Beta 不会自己更新：想换更新的 Beta，或者回到正式版，重新�
 
 ## 交给 Agent
 
-> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.1.2 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。
+> 按本页在 Apple 芯片 Mac 上安装 Voxt 2.1.3 正式版。只有我明确要求 Beta 时才下载 Actions 的 Beta 包。遇到替换旧版、导入历史或 macOS 权限授权时让我确认。下载推荐的本地语音识别模型，等到显示可用。用空白文本框和一句测试内容确认转录能输出，告诉我安装的版本和结果。
