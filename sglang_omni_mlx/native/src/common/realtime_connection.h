@@ -32,7 +32,7 @@ public:
   void SendError(const std::string &type, const std::string &code,
                  const std::string &message);
   // The client left: stop any decode in flight and send nothing more.
-  void Close();
+  virtual void Close();
 
 protected:
   void Send(nlohmann::ordered_json event);

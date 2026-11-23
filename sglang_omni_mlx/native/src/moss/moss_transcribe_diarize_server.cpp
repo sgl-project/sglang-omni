@@ -60,8 +60,14 @@ public:
                    omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](moss::MossRealtimeSession::Sender sender) {
-      return std::make_shared<moss::MossRealtimeSession>(worker, transcriber_,
-                                                         std::move(sender));
+      return std::make_shared<moss::MossRealtimeSession>(
+          worker,
+          [&transcriber = transcriber_](const std::vector<float> &samples,
+                                        const moss::MossOptions &options,
+                                        const std::atomic<bool> &cancel) {
+            return transcriber.Transcribe(samples, options, cancel);
+          },
+          std::move(sender));
     };
     asr_service::AddRealtimeHandler(context, realtime_sessions_);
   }

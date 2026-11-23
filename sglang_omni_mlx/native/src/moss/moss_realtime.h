@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -21,10 +22,17 @@ namespace moss {
 
 class MossRealtimeSession : public omni_server::RealtimeConnection {
 public:
+  // One window's decode, as MossTranscriber::Transcribe runs it; a seam so
+  // tests can drive scheduling without a checkpoint.
+  using TranscribeFn = std::function<omni_common::TranscriptionResult(
+      const std::vector<float> &, const MossOptions &,
+      const std::atomic<bool> &)>;
+
   MossRealtimeSession(omni_server::TranscriptionWorker &worker,
-                      const MossTranscriber &transcriber, Sender sender);
+                      TranscribeFn transcribe, Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
+  void Close() override;
 
 private:
   enum class DecodeKind { kPreview, kFinal };
@@ -54,9 +62,12 @@ private:
   // Note (Dayuxiaoshui): waits out a decode in flight first, since it reads
   // the pending audio this finalizes.
   void Flush();
+  // Stops the preview in flight, if any: a final decode of the same audio is
+  // due, so the preview's result is already replaced. Caller holds mutex_.
+  void CancelPreviewLocked();
 
   omni_server::TranscriptionWorker &worker_;
-  const MossTranscriber &transcriber_;
+  TranscribeFn transcribe_;
 
   // Session state; decodes finish on the worker thread.
   std::mutex mutex_;
@@ -66,6 +77,10 @@ private:
   long pending_start_sample_ = 0;
   int next_window_id_ = 0;
   bool decoding_ = false;
+  // decoding_ is a preview, and that preview's flag; a final decode keeps the
+  // session flag so only previews are ever preempted.
+  bool preview_in_flight_ = false;
+  omni_server::CancelFlag preview_cancel_ = omni_server::NewCancelFlag();
   std::optional<std::chrono::steady_clock::time_point> last_decode_time_;
   std::vector<std::string> committed_texts_;
   std::vector<omni_common::SpeakerSegment> committed_segments_;
