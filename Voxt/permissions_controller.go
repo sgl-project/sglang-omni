@@ -93,13 +93,23 @@ func (a *app) permissionsModel() permissionsViewState {
 // recheckPermissions shows the permissions as the helper reads them, else
 // as this process reads them. The two can disagree (#4365), so a recheck
 // keeps what is shown until the helper answers.
-func (a *app) recheckPermissions() {
+func (a *app) recheckPermissions() { a.recheckPermissionsThen(nil) }
+
+// recheckPermissionsThen is recheckPermissions; then (nil: nothing) runs
+// once the read is in a.perms, the helper's when it answers.
+func (a *app) recheckPermissionsThen(then func()) {
+	done := func() {
+		if then != nil {
+			then()
+		}
+	}
 	own := func() {
 		a.perms.mic, a.perms.access, a.perms.checked = a.permSys.Microphone(), a.permSys.AccessibilityTrusted(), true
 		a.perms.speech = a.permSys.SpeechRecognition()
 	}
 	if !a.hstatus.Has(proto.MethodPermissionsStatus) {
 		own()
+		done()
 		return
 	}
 	if !a.perms.checked {
@@ -108,9 +118,10 @@ func (a *app) recheckPermissions() {
 	helperCall(a, proto.MethodPermissionsStatus, nil, 5*time.Second, func(r proto.PermissionsResult, err error) {
 		if err != nil {
 			own()
-			return
+		} else {
+			a.helperPerms(r, nil)
 		}
-		a.helperPerms(r, nil)
+		done()
 	})
 }
 
@@ -134,12 +145,11 @@ func (a *app) askPermission(which string, then func()) {
 		return
 	}
 	sys := a.permSys
-	recheck := func(bool) { a.post(func() { a.recheckPermissions(); answered() }) }
+	recheck := func(bool) { a.post(func() { a.recheckPermissionsThen(answered) }) }
 	switch which {
 	case proto.PermissionAccessibility:
 		sys.PromptAccessibility()
-		a.recheckPermissions()
-		answered()
+		a.recheckPermissionsThen(answered)
 	case proto.PermissionSpeechRecognition:
 		a.async(func() { sys.RequestSpeechRecognition(recheck) })
 	case proto.PermissionSystemAudio:
