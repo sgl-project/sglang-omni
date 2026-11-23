@@ -413,6 +413,10 @@ type Config struct {
 	// Now is the clock (nil: time.Now); NewID makes session ids.
 	Now   func() time.Time
 	NewID func() string
+	// AfterFunc schedules a callback; the returned function stops it.
+	AfterFunc func(time.Duration, func()) func() bool
+	// CleanupLatency is opt-in; its zero value preserves the current wait.
+	CleanupLatency CleanupLatencyPolicy
 
 	// Limits (0: the defaults).
 	MinRecording time.Duration // DefaultMinRecording

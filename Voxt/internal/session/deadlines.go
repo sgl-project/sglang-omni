@@ -10,6 +10,15 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 )
 
+// CleanupLatencyPolicy optionally allows ordinary Transcribe to fall back to raw text after Stop.
+type CleanupLatencyPolicy struct {
+	SoftDeadline time.Duration
+	AutoFallback bool
+}
+
+// CandidateCleanupSoftDeadline is a test candidate, not a default.
+const CandidateCleanupSoftDeadline = 1500 * time.Millisecond
+
 // llmPrefillPerChar is a request's extra time per character of the input
 // before its answer starts: a long selection's prompt takes seconds to
 // read.

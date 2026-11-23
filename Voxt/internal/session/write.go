@@ -293,7 +293,9 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 	if !r.useFallback(err) {
 		return res, profile, truncated, err
 	}
-	r.swapFallback(err)
+	if !r.swapFallback(err) {
+		return res, profile, truncated, err
+	}
 	return r.ask(in)
 }
 
@@ -309,10 +311,21 @@ func (r *run) useFallback(err error) bool {
 // swapFallback makes the fallback the session's model: later requests,
 // the snapshot and the history entry use it. The answer starts over, as
 // when asked again: nothing of the failed model's draft or title stays.
-func (r *run) swapFallback(err error) {
-	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
-	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
-	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft, s.Title = r.svc.LLMInfo, "", "" })
+func (r *run) swapFallback(err error) bool {
+	var failed, fallback Model
+	swapped := r.m.updateIf(r, func(s *Snapshot) bool {
+		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || r.svc.Fallback == nil {
+			return false
+		}
+		failed, fallback = r.svc.LLMInfo, r.svc.FallbackInfo
+		r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, fallback, nil
+		s.LLM, s.Draft, s.Title = fallback, "", ""
+		return true
+	})
+	if swapped {
+		r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", failed.ID, failed.Model, err, fallback.ID, fallback.Model)
+	}
+	return swapped
 }
 
 // ask sends one request and streams its answer into the snapshot. It

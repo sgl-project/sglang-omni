@@ -11,7 +11,15 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+type cleanupOutput struct {
+	text        string
+	profile     string
+	err         error
+	completedAt time.Time
+}
 
 // spoken is the recognised text with the dictionary's aliases replaced
 // by their terms (dict.Replace), when the dictionary is on: before the
@@ -39,34 +47,99 @@ func (r *run) transcribe(text string) {
 		card := r.settings.Features.Transcribe.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
-		cleaned, profile, err := r.cleanUpFirst(text)
-		for {
-			if r.askAgain() {
-				cleaned, profile, err = r.cleanUp(text, r.thinking())
-				continue
+		output := cleanupOutput{}
+		softFallbackSelected := false
+		policy := r.m.cfg.CleanupLatency
+		softDeadline := policy.SoftDeadline > 0 && policy.AutoFallback && r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+		if softDeadline {
+			stopAt := r.stoppedAt()
+			deadlineAt := stopAt.Add(policy.SoftDeadline)
+			if stopAt.IsZero() {
+				deadlineAt = r.now().Add(policy.SoftDeadline)
 			}
-			if !r.useFallback(err) {
-				break
+			deadlineReached := make(chan struct{}, 1)
+			stopTimer := r.m.cfg.AfterFunc(max(time.Duration(0), deadlineAt.Sub(r.now())), func() {
+				select {
+				case deadlineReached <- struct{}{}:
+				default:
+				}
+			})
+			defer stopTimer()
+			cleaned := make(chan cleanupOutput, 1)
+			go func() { cleaned <- r.cleanTranscribe(text) }()
+			for {
+				select {
+				case output = <-cleaned:
+					if r.cancelled.Load() {
+						r.endCancelled(nil)
+						return
+					}
+					if r.skipped.Load() || !output.completedAt.Before(deadlineAt) {
+						if !r.skipped.Load() {
+							r.m.SkipLLM(r.id)
+							softFallbackSelected = true
+						}
+						output = cleanupOutput{text: text}
+					}
+					goto cleaned
+				case <-deadlineReached:
+					if r.cancelled.Load() {
+						r.endCancelled(nil)
+						return
+					}
+					if r.skipped.Load() {
+						output = cleanupOutput{text: text}
+						goto cleaned
+					}
+					select {
+					case candidate := <-cleaned:
+						if candidate.completedAt.Before(deadlineAt) {
+							output = candidate
+							goto cleaned
+						}
+					default:
+					}
+					r.m.SkipLLM(r.id)
+					softFallbackSelected = true
+					output = cleanupOutput{text: text}
+					goto cleaned
+				case <-r.skipWake:
+					if r.cancelled.Load() {
+						r.endCancelled(nil)
+						return
+					}
+					if r.skipped.Load() {
+						output = cleanupOutput{text: text}
+						goto cleaned
+					}
+				case <-r.ctx.Done():
+					r.endCancelled(nil)
+					return
+				}
 			}
-			// The fallback joins the re-ask loop: it keeps the level
-			// chosen, and a Rethink while it streams asks it again.
-			r.swapFallback(err)
-			cleaned, profile, err = r.cleanUp(text, r.thinking())
+		} else {
+			output = r.cleanTranscribe(text)
 		}
+	cleaned:
 		llmTime := r.now().Sub(llmStart)
 		if r.cancelled.Load() {
 			r.endCancelled(nil)
 			return
 		}
-		r.m.update(r, func(s *Snapshot) { s.Profile, s.Timings.LLM = profile, llmTime })
-		result = cleaned
+		r.m.update(r, func(s *Snapshot) {
+			s.Profile, s.Timings.LLM = output.profile, llmTime
+			if softFallbackSelected || r.skipped.Load() {
+				s.Draft = ""
+			}
+		})
+		result = output.text
 		switch {
 		case r.skipped.Load():
 			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
 			result = text
-		case err != nil:
-			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
-			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
+		case output.err != nil:
+			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), output.err)
+			problem = &Problem{Code: ProblemLLM, Err: output.err, Degraded: true}
 		case result == "":
 			r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
 			return
@@ -86,31 +159,53 @@ func (r *run) transcribeOpts() finishOpts {
 	return o
 }
 
+func (r *run) cleanTranscribe(text string) cleanupOutput {
+	output := r.cleanUpFirst(text)
+	for {
+		if r.askAgain() {
+			output = r.cleanUpOutput(text, r.thinking())
+			continue
+		}
+		if !r.useFallback(output.err) {
+			return output
+		}
+		// The fallback joins the re-ask loop: it keeps the level chosen,
+		// and a Rethink while it streams asks it again.
+		if !r.swapFallback(output.err) {
+			if r.askAgain() {
+				continue
+			}
+			return output
+		}
+		output = r.cleanUpOutput(text, r.thinking())
+	}
+}
+
 // cleanUpFirst is a dictation's first clean-up: what the early clean-up
 // finished while the recording went on is not asked again, only the
 // tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
 // whole text instead.
-func (r *run) cleanUpFirst(text string) (string, string, error) {
+func (r *run) cleanUpFirst(text string) cleanupOutput {
 	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
-	parts, answers, tail, failed, ok := r.early.drain(text)
+	parts, answers, tail, failed, completedAt, ok := r.early.drain(text)
 	if !ok {
-		return r.cleanUp(text, nil)
+		return r.cleanUpOutput(text, nil)
 	}
 	if len(answers) > 0 {
 		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
 	}
 	if strings.TrimSpace(tail) == "" {
-		return compose.JoinParts(parts, answers), parts[0].Profile(), failed
+		return cleanupOutput{text: compose.JoinParts(parts, answers), profile: parts[0].Profile(), err: failed, completedAt: completedAt}
 	}
 	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
 	if err != nil {
-		return text, "", err
+		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
 	result, profile, err := r.cleanParts(text, append(parts, tailParts...), answers, nil)
 	if err == nil {
 		err = failed
 	}
-	return result, profile, err
+	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
 }
 
 // cleanUp runs the language model over text, a request per part, each
@@ -119,14 +214,20 @@ func (r *run) cleanUpFirst(text string) (string, string, error) {
 // failure (the text itself when the request could not be composed).
 // think overrides the service's thinking (nil: its setting).
 func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) {
+	output := r.cleanUpOutput(text, think)
+	return output.text, output.profile, output.err
+}
+
+func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
 	parts, err := compose.BuildParts(r.transcribeInput(text))
 	if err != nil {
-		return text, "", err
+		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
 	}
-	return r.cleanParts(text, parts, nil, think)
+	result, profile, err := r.cleanParts(text, parts, nil, think)
+	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
 }
 
 // cleanParts runs the requests of the parts after len(answers) (those
@@ -175,6 +276,7 @@ func llmMessages(out compose.Output) []llm.Message {
 // after the answers of the parts before it, every draftEvery at most.
 type drafter struct {
 	r       *run
+	ctx     context.Context
 	parts   []compose.Part
 	answers []string
 	buf     strings.Builder
@@ -182,10 +284,13 @@ type drafter struct {
 }
 
 func newDrafter(r *run, parts []compose.Part, answers []string) *drafter {
-	return &drafter{r: r, parts: parts, answers: answers[:len(answers):len(answers)]}
+	return &drafter{r: r, ctx: r.llmCtx, parts: parts, answers: answers[:len(answers):len(answers)]}
 }
 
 func (d *drafter) add(delta string) {
+	if d.ctx.Err() != nil || d.r.ctx.Err() != nil || d.r.skipped.Load() {
+		return
+	}
 	d.buf.WriteString(delta)
 	if now := time.Now(); now.Sub(d.last) >= draftEvery {
 		d.last = now
@@ -197,6 +302,9 @@ func (d *drafter) add(delta string) {
 // <output> tags (PartialOutput, with the part's own text as CleanOutput
 // gets it).
 func (d *drafter) publish() {
+	if d.ctx.Err() != nil || d.r.ctx.Err() != nil || d.r.skipped.Load() {
+		return
+	}
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	draft = d.r.draftSnippets(draft, d.parts)
@@ -205,6 +313,9 @@ func (d *drafter) publish() {
 
 // done puts the answers of the parts so far in the snapshot.
 func (d *drafter) done(answers []string) {
+	if d.ctx.Err() != nil || d.r.ctx.Err() != nil || d.r.skipped.Load() {
+		return
+	}
 	draft := compose.JoinParts(d.parts, answers)
 	draft = d.r.draftSnippets(draft, d.parts)
 	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
@@ -218,6 +329,10 @@ func (r *run) askAgain() bool {
 		return false
 	}
 	r.m.mu.Lock()
+	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() || r.ended {
+		r.m.mu.Unlock()
+		return false
+	}
 	r.rethink.Store(false)
 	think := r.think
 	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)

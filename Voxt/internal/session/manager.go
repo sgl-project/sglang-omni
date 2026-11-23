@@ -99,6 +99,12 @@ func New(cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.AfterFunc == nil {
+		cfg.AfterFunc = func(delay time.Duration, callback func()) func() bool {
+			timer := time.AfterFunc(delay, callback)
+			return timer.Stop
+		}
+	}
 	if cfg.Settings == nil {
 		cfg.Settings = settings.Defaults
 	}
@@ -208,7 +214,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
-		svcResolved: make(chan struct{}),
+		svcResolved: make(chan struct{}), skipWake: make(chan struct{}, 1),
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.think = req.Thinking
@@ -273,7 +279,7 @@ func (m *Manager) Stop(id string) {
 	ok := r != nil && snap.State == Recording
 	m.mu.Unlock()
 	if ok {
-		r.stopOnce.Do(func() { close(r.stop) })
+		r.stopRecording()
 	}
 }
 
@@ -298,6 +304,10 @@ func (m *Manager) SkipLLM(id string) {
 	if r != nil && snap.State == Composing && snap.CanSkip {
 		r.skipped.Store(true)
 		r.llmStop()
+		select {
+		case r.skipWake <- struct{}{}:
+		default:
+		}
 	}
 	m.mu.Unlock()
 }
@@ -373,6 +383,54 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
 	return true
+}
+
+func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
+	m.mu.Lock()
+	if m.bg == r && !r.ended {
+		if !snapshotUpdate(&r.own) {
+			m.mu.Unlock()
+			return false
+		}
+		m.rev++
+		r.own.Rev = m.rev
+		s := r.own.clone()
+		m.backgroundPub.enqueue(publication{snapshot: s})
+		m.mu.Unlock()
+		return true
+	}
+	if m.cur == r && !r.ended {
+		if !snapshotUpdate(&m.snap) {
+			m.mu.Unlock()
+			return false
+		}
+		m.rev++
+		m.snap.Rev = m.rev
+		s := m.snap.clone()
+		m.foregroundPub.enqueue(publication{snapshot: s})
+		m.mu.Unlock()
+		return true
+	}
+	if r.onDraft != nil && !r.ended {
+		was := r.own.Draft
+		if !snapshotUpdate(&r.own) {
+			m.mu.Unlock()
+			return false
+		}
+		draft := r.own.Draft
+		m.mu.Unlock()
+		if draft != was {
+			r.onDraft(draft)
+		}
+		return true
+	}
+	if !r.ended {
+		changed := snapshotUpdate(&r.own)
+		m.mu.Unlock()
+		return changed
+	}
+	m.mu.Unlock()
+	return false
 }
 
 // end makes r's session end in state st (once). Before the end is

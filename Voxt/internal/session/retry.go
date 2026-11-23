@@ -208,8 +208,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	var llmErr error
 	if e.Kind == store.KindTranscribe {
 		e.Result, _, llmErr = r.cleanUp(text, nil)
-		if r.useFallback(llmErr) {
-			r.swapFallback(llmErr)
+		if r.useFallback(llmErr) && r.swapFallback(llmErr) {
 			e.Result, _, llmErr = r.cleanUp(text, nil)
 		}
 		e.Result = r.expandSnippets(text, e.Result)

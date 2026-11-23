@@ -285,9 +285,9 @@ func TestEarlyCleanShortInputThinking(t *testing.T) {
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
 	}}
 	r.hearPiece(full[:100])
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 4 {
@@ -307,9 +307,9 @@ func TestEarlyCleanThinkingCountsReplacedText(t *testing.T) {
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 20},
 	}}
 	r.hearPiece("aaaaaaaaaaaaaaaaaaaa")
-	_, _, err := r.cleanUpFirst("X")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("X")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 1 || reqs[0].InputChars != 1 || reqs[0].OnDelta == nil {
@@ -327,9 +327,9 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, terms)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 2 {
@@ -349,9 +349,9 @@ func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 3 {
@@ -423,12 +423,12 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	r.hearPiece("one two")
 	r.hearPiece("one two three")
 	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one changed three")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("one changed three")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "fallback" {
-		t.Errorf("result %q, want the whole-text fallback", result)
+	if output.text != "fallback" {
+		t.Errorf("result %q, want the whole-text fallback", output.text)
 	}
 	waitEarlyWorker(t, r)
 	model.mu.Lock()
@@ -449,12 +449,12 @@ func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
 	r.hearPiece("one two")
 	r.hearPiece("one two three")
 	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one two three tail")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("one two three tail")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "early one fallback" {
-		t.Errorf("result %q, want the completed early answer and the fallback tail", result)
+	if output.text != "early one fallback" {
+		t.Errorf("result %q, want the completed early answer and the fallback tail", output.text)
 	}
 	model.mu.Lock()
 	calls := model.calls
@@ -477,7 +477,7 @@ func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	r.early.mu.Unlock()
 	close(model.secondRelease)
 	waitEarlyWorker(t, r)
-	parts, answers, tail, _, ok := r.early.drain(full)
+	parts, answers, tail, _, _, ok := r.early.drain(full)
 	if !ok || len(parts) != 1 || len(answers) != 1 || answers[0] != "early one" {
 		t.Fatalf("early parts = %d, answers = %q, ok = %v; want only the completed first job", len(parts), answers, ok)
 	}

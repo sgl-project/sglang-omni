@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -46,11 +47,12 @@ type segJob struct {
 // clean-up does). A stretch that would not compose has no parts: it
 // stops the covered prefix, and Stop cleans it with the tail.
 type segResult struct {
-	sep      string
-	replaced string // the stretch with the dictionary's aliases replaced
-	parts    []compose.Part
-	answers  []string
-	done     bool
+	sep         string
+	replaced    string // the stretch with the dictionary's aliases replaced
+	parts       []compose.Part
+	answers     []string
+	done        bool
+	completedAt time.Time
 }
 
 func newEarlyClean(r *run) *earlyClean {
@@ -211,7 +213,7 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 		}
 		res.answers = append(res.answers, compose.CleanOutput(resp.Text, p.Text))
 	}
-	res.done = true
+	res.done, res.completedAt = true, r.now()
 	e.mu.Lock()
 	if !e.finalized {
 		e.segs = append(e.segs, res)
@@ -227,15 +229,14 @@ func (e *earlyClean) fail(err error) {
 	e.mu.Unlock()
 }
 
-// drain gives the completed prefix and the text after it. An incompatible
-// prefix is abandoned immediately; matching work keeps the normal wait.
-// Only the session goroutine calls it, after the stream's reader returned.
-func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, ok bool) {
+// drain abandons a mismatching prefix without waiting. Matching work keeps
+// its existing drain behavior; finalized workers cannot publish late results.
+func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, completedAt time.Time, ok bool) {
 	defer e.cancel()
 	e.mu.Lock()
 	if len(e.jobs) == 0 {
 		e.mu.Unlock()
-		return nil, nil, "", nil, false
+		return nil, nil, "", nil, time.Time{}, false
 	}
 	fallback := e.broken || e.covered == "" || !strings.HasPrefix(text, e.covered)
 	e.closed = true
@@ -244,7 +245,7 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 		e.mu.Unlock()
 		e.cancel()
 		e.cond.Broadcast()
-		return nil, nil, "", nil, false
+		return nil, nil, "", nil, time.Time{}, false
 	}
 	cancelWorker := len(e.segs) < len(e.jobs)-1
 	if cancelWorker {
@@ -259,8 +260,8 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalized = true
-	if fallback || e.broken {
-		return nil, nil, "", nil, false
+	if e.broken {
+		return nil, nil, "", nil, time.Time{}, false
 	}
 	covered := ""
 	for _, segment := range e.segs {
@@ -270,13 +271,16 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 		covered += segment.sep + segment.replaced
 		parts = append(parts, segment.parts...)
 		answers = append(answers, segment.answers...)
+		if segment.completedAt.After(completedAt) {
+			completedAt = segment.completedAt
+		}
 	}
 	if !strings.HasPrefix(text, covered) {
 		e.r.logf("debug", "early clean-up does not apply: %d stretches, %d covered characters, text %d characters", len(e.segs), len([]rune(covered)), len([]rune(text)))
-		return nil, nil, "", nil, false
+		return nil, nil, "", nil, time.Time{}, false
 	}
 	if covered == "" {
-		return nil, nil, "", nil, false
+		return nil, nil, "", nil, time.Time{}, false
 	}
-	return parts, answers, text[len(covered):], e.failed, true
+	return parts, answers, text[len(covered):], e.failed, completedAt, true
 }

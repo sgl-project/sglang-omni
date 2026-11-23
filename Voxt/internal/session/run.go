@@ -38,15 +38,18 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx  context.Context
-	llmStop context.CancelFunc
-	skipped atomic.Bool
-	stopped atomic.Bool
-	rethink atomic.Bool
+	llmCtx   context.Context
+	llmStop  context.CancelFunc
+	skipped  atomic.Bool
+	stopped  atomic.Bool
+	rethink  atomic.Bool
+	skipWake chan struct{}
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
-	think *llm.Thinking
-	stop  chan struct{}
+	think    *llm.Thinking
+	stop     chan struct{}
+	stopAt   time.Time // captured by Stop before recognition or clean-up can begin
+	stopAtMu sync.Mutex
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -147,6 +150,28 @@ func (r *run) logText(s string) string {
 }
 
 func (r *run) now() time.Time { return r.m.cfg.Now() }
+
+func (r *run) recordStopAt(at time.Time) time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	if r.stopAt.IsZero() {
+		r.stopAt = at
+	}
+	return r.stopAt
+}
+
+func (r *run) stoppedAt() time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	return r.stopAt
+}
+
+func (r *run) stopRecording() {
+	r.stopOnce.Do(func() {
+		r.recordStopAt(r.now())
+		close(r.stop)
+	})
+}
 
 // firstState is where a session starts: composing with its text,
 // reading the selection (Translate), else recording.
