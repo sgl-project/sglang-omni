@@ -129,7 +129,8 @@
         "custom_label": "自定义…",
         "custom": false,
         "text": "Return"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {
@@ -249,7 +250,8 @@
         "custom_label": "自定义…",
         "custom": false,
         "text": "Return"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     {
       "id": "g-code",
@@ -342,7 +344,8 @@
         "custom_label": "自定义…",
         "custom": false,
         "text": ""
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     {
       "id": "g-work",
@@ -435,7 +438,8 @@
         "custom_label": "自定义…",
         "custom": false,
         "text": ""
-      }
+      },
+      "transcribe_cleanup": "default"
     }
   ]
 }
