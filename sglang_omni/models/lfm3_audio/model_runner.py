@@ -10,7 +10,12 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.lfm3_audio.depth import sample_frames
+from sglang_omni.models.lfm3_audio.depth import (
+    FrameSampling,
+    SpeechSampler,
+    sample_frames,
+    seeded_frame_codes,
+)
 from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
 from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
@@ -23,11 +28,16 @@ class Lfm3AudioModelRunner(ModelRunner):
     model: Lfm3AudioSGLangModel
 
     def __init__(
-        self, tp_worker: ModelWorker, output_processor: SGLangOutputProcessor
+        self,
+        tp_worker: ModelWorker,
+        output_processor: SGLangOutputProcessor,
+        *,
+        speech_sampler: SpeechSampler,
     ) -> None:
         super().__init__(tp_worker, output_processor)
         self.tokens = self.model.tokens
         self.stop_token_id = self.tokens.eos_token_ids[0]
+        self.speech_sampler = speech_sampler
 
     # note (ruilin): the speech step reads the sampled text token, so sampling runs before the post hooks.
     def sample_before_post_prefill(
@@ -228,6 +238,76 @@ class Lfm3AudioModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         self.speech_step(result, requests)
 
+    def sample_speaking_frames(
+        self, hidden_states: torch.Tensor, samplings: list[FrameSampling]
+    ) -> torch.Tensor:
+        """One frame per speaking row, from the depth graphs when they were captured."""
+        graphs = self.model.depth_graphs
+        schedule = self.tokens.maskgit_schedule
+        if self.speech_sampler is SpeechSampler.EXACT:
+            depth_logits = (
+                self.model.depth_decoder if graphs is None else graphs.depth_logits
+            )
+            codes = sample_frames(depth_logits, hidden_states, samplings, schedule)
+            for sampling in samplings:
+                sampling.frames_sampled += 1
+            return codes
+        else:
+            pass
+        device = hidden_states.device
+        window = samplings[0].repetition_window
+        histories = []
+        penalties = []
+        for sampling in samplings:
+            history = sampling.history
+            if history is None:
+                histories.append(
+                    torch.zeros(
+                        window,
+                        self.tokens.num_codebooks,
+                        dtype=torch.long,
+                        device=device,
+                    )
+                )
+                penalties.append(1.0)
+            else:
+                # Repeating the oldest frame fills the window without adding a code.
+                padding = history[:1].expand(window - history.shape[0], -1)
+                histories.append(torch.cat([padding, history]))
+                penalties.append(sampling.repetition_penalty)
+        seeded_inputs = dict(
+            seeds=torch.tensor(
+                [sampling.seed for sampling in samplings], device=device
+            ),
+            frame_positions=torch.tensor(
+                [sampling.frames_sampled for sampling in samplings], device=device
+            ),
+            temperature=torch.tensor(
+                [sampling.temperature for sampling in samplings],
+                dtype=torch.float32,
+                device=device,
+            ),
+            top_k=torch.tensor(
+                [sampling.top_k or 0 for sampling in samplings], device=device
+            ),
+            repetition_penalty=torch.tensor(
+                penalties, dtype=torch.float32, device=device
+            ),
+            history=torch.stack(histories),
+        )
+        if graphs is None:
+            codes = seeded_frame_codes(
+                self.model.depth_decoder,
+                hidden_states,
+                schedule=schedule,
+                **seeded_inputs,
+            )
+        else:
+            codes = graphs.seeded_frames(hidden_states, **seeded_inputs)
+        for sampling in samplings:
+            sampling.frames_sampled += 1
+        return codes
+
     @torch.no_grad()
     def speech_step(
         self, result: GenerationBatchResult, requests: list[SchedulerRequest]
@@ -242,13 +322,11 @@ class Lfm3AudioModelRunner(ModelRunner):
         ]
         frames = None
         if speaking_rows:
-            frames = sample_frames(
-                self.model.depth_decoder,
+            frames = self.sample_speaking_frames(
                 hidden_states.index_select(
                     0, torch.tensor(speaking_rows, device=hidden_states.device)
                 ),
                 [speeches[row].sampling for row in speaking_rows],
-                self.tokens.maskgit_schedule,
             )
         else:
             pass

@@ -19,6 +19,7 @@ from sglang_omni.models.lfm3_audio.hf_config import (
 from sglang_omni.models.lfm3_audio.io import Lfm3AudioState
 from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
 from sglang_omni.proto import StagePayload
+from sglang_omni.sampling.seed import resolve_row_seed
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
 
 
@@ -59,6 +60,7 @@ def speech_sampling(
         ),
         repetition_window=defaults.repetition_window,
         generator=generator,
+        seed=resolve_row_seed(state.seed),
     )
 
 

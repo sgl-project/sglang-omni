@@ -82,8 +82,27 @@ messages = [{
 
 Videos are sampled at the checkpoint's frame rate (2 fps, 4 to 384 frames) and read without their soundtrack; send the audio as its own part. Media URLs and local paths follow the server's media policy (allowed domains and local media path).
 
+## Speech sampling and speed
+
+Speech frames are drawn by one of two samplers, set with `speech_sampler` under `stages.generation.factory` in the server config:
+
+- `seeded` (default): draws are hashed from the request seed and frame position, so one CUDA graph covers the whole frame. The same seed gives the same speech at any batch size, but not the checkpoint's own `generate` output.
+- `exact`: each request's generator draws in the checkpoint's order, so a seed reproduces the checkpoint's `generate`. Only the depth passes run in CUDA graphs.
+
+SeedTTS EN (1088 samples), LFM3-Omni-2B, one H200:
+
+| Concurrency | Sampler | WER | Latency p50 | RTF | Throughput |
+|---|---|---|---|---|---|
+| 8 | eager | 0.92% | 2.58 s | 0.59 | 3.1 req/s |
+| 8 | exact | 0.94% | 1.14 s | 0.26 | 7.0 req/s |
+| 8 | seeded | 1.03% | 0.66 s | 0.15 | 12.0 req/s |
+| 32 | exact | 0.96% | 3.66 s | 0.84 | 8.6 req/s |
+| 32 | seeded | 0.98% | 1.36 s | 0.32 | 22.9 req/s |
+
+Raise `--generation.engine.max_running_requests` (default 8) for higher concurrency.
+
 ## Limitations
 
-- No CUDA graphs, streaming audio output or voice cloning yet.
+- Decode runs in CUDA graphs; prefill runs eagerly. No streaming audio output or voice cloning yet.
 - Chunked prefill and the radix cache are off, so each prompt is prefilled in one pass; the engine refuses settings it does not support at startup.
 - Audio, image and video encoders run inside the generation stage's prefill.

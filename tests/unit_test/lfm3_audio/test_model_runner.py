@@ -9,8 +9,7 @@ import pytest
 import torch
 from torch import nn
 
-from sglang_omni.models.lfm3_audio import model_runner
-from sglang_omni.models.lfm3_audio.depth import FrameSampling
+from sglang_omni.models.lfm3_audio.depth import FrameSampling, SpeechSampler
 from sglang_omni.models.lfm3_audio.engine_builder import Lfm3AudioEngineBuilder
 from sglang_omni.models.lfm3_audio.generation import SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
@@ -35,9 +34,11 @@ def make_runner() -> Lfm3AudioModelRunner:
         decode_input_embed_buffer=torch.zeros(2, HIDDEN_SIZE),
         text_only_buffer=torch.zeros(2, dtype=torch.bool),
         depth_decoder=None,
+        depth_graphs=None,
     )
     runner.tokens = TOKENS
     runner.stop_token_id = TOKENS.eos_token_ids[0]
+    runner.speech_sampler = SpeechSampler.EXACT
     return runner
 
 
@@ -70,7 +71,7 @@ def run_speech_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[int]:
     """One step: the speaking rows get frames, then the scheduler appends the (overridden) token ids."""
-    monkeypatch.setattr(model_runner, "sample_frames", lambda *args: frames)
+    monkeypatch.setattr(runner, "sample_speaking_frames", lambda *args: frames)
     result = types.SimpleNamespace(
         logits_output=types.SimpleNamespace(
             hidden_states=torch.zeros(len(requests), HIDDEN_SIZE)
@@ -158,7 +159,7 @@ SUPPORTED_SETTINGS = dict(
     chunked_prefill_size=-1,
     enable_mixed_chunk=False,
     disable_overlap_schedule=True,
-    disable_cuda_graph=True,
+    disable_cuda_graph=False,
     enable_torch_compile=False,
     tp_size=1,
     pp_size=1,
@@ -174,7 +175,6 @@ SUPPORTED_SETTINGS = dict(
         {"chunked_prefill_size": 4096},
         {"enable_mixed_chunk": True},
         {"disable_overlap_schedule": False},
-        {"disable_cuda_graph": False},
         {"enable_torch_compile": True},
         {"tp_size": 2},
         {"speculative_algorithm": "EAGLE"},
@@ -185,7 +185,7 @@ SUPPORTED_SETTINGS = dict(
 def test_engine_refuses_unsupported_server_settings(
     override: dict[str, object],
 ) -> None:
-    builder = Lfm3AudioEngineBuilder()
+    builder = Lfm3AudioEngineBuilder(speech_sampler=SpeechSampler.EXACT)
     builder.validate_before_infrastructure(types.SimpleNamespace(**SUPPORTED_SETTINGS))
     with pytest.raises(ValueError, match="LFM3"):
         builder.validate_before_infrastructure(

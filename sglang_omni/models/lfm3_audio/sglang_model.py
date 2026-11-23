@@ -26,6 +26,7 @@ from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from sglang_omni.models.lfm3_audio.backbone import CHECKPOINT_PREFIX, Lfm3TextModel
 from sglang_omni.models.lfm3_audio.depth import DEPTH_PREFIXES, Lfm3DepthDecoder
+from sglang_omni.models.lfm3_audio.depth_cuda_graph import Lfm3DepthCudaGraphs
 from sglang_omni.models.lfm3_audio.hf_config import (
     Lfm3SGLangConfig,
     is_export_format,
@@ -121,6 +122,8 @@ class Lfm3AudioSGLangModel(nn.Module):
                 self.multi_modal_projector = checkpoint_class(
                     "modeling_lfm3_omni.Lfm3OmniMultiModalProjector"
                 )(transformers_config)
+        # Set by the engine builder after the decode graphs are captured.
+        self.depth_graphs: Lfm3DepthCudaGraphs | None = None
         max_batch_size = get_schedule().max_running_requests
         self.register_buffer(
             "decode_input_embed_buffer",
