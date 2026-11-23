@@ -136,12 +136,17 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
       return;
     }
   }
-  omni_server::Transcription job = DecodeJob(*decode, std::move(options));
+  SubmitDecode(std::move(*decode), std::move(options), std::move(flag));
+}
+
+void MossRealtimeSession::SubmitDecode(Decode decode, MossOptions options,
+                                       omni_server::CancelFlag flag) {
+  omni_server::Transcription job = DecodeJob(decode, std::move(options));
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
       std::move(job), std::move(flag),
-      [weak_self, decode = std::move(*decode)](
+      [weak_self, decode = std::move(decode)](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
@@ -151,16 +156,33 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
         } else {
           self->Publish(decode, *result);
         }
-        {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          self->decoding_ = false;
-          if (decode.kind == DecodeKind::kPreview) {
-            self->preview_in_flight_ = false;
-          } else {
-          }
-        }
-        self->decode_done_.notify_all();
+        self->OnDecodeDone(decode.kind);
       });
+}
+
+void MossRealtimeSession::OnDecodeDone(DecodeKind kind) {
+  std::optional<Decode> next;
+  MossOptions options;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    decoding_ = false;
+    if (kind == DecodeKind::kPreview) {
+      preview_in_flight_ = false;
+    } else {
+    }
+    // Note: a window that filled while this decode ran is due now, not at the
+    // next append or stop; a cancelled preview's completion starts it.
+    if (static_cast<int>(pending_samples_.size()) >= kWindowSamples) {
+      next = NextDecode();
+      options = DecodeOptions(*next);
+    } else {
+    }
+  }
+  decode_done_.notify_all();
+  if (next.has_value()) {
+    SubmitDecode(std::move(*next), std::move(options), cancel_);
+  } else {
+  }
 }
 
 MossRealtimeSession::Decode
@@ -184,8 +206,8 @@ std::optional<MossRealtimeSession::Decode> MossRealtimeSession::NextDecode() {
   Decode decode;
   if (decoding_) {
     // Note: a full window outranks the preview in flight; cancelling lets the
-    // window's final decode start with the next append instead of waiting out
-    // work its result replaces.
+    // window's final decode start at the preview's completion instead of
+    // waiting out work its result replaces.
     if (pending_count >= kWindowSamples) {
       CancelPreviewLocked();
     } else {

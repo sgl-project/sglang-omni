@@ -51,6 +51,13 @@ private:
   // Note (Dayuxiaoshui): takes its samples off the pending buffer, so the next
   // window starts where this one ended.
   Decode TakeFinalWindow(int sample_count);
+  // Queues decode on the worker with its kind's flag; the completion publishes
+  // and runs OnDecodeDone.
+  void SubmitDecode(Decode decode, MossOptions options,
+                    omni_server::CancelFlag flag);
+  // Clears the in-flight flags and starts the final of a window that filled
+  // while the decode ran; runs on the worker thread.
+  void OnDecodeDone(DecodeKind kind);
   MossOptions DecodeOptions(const Decode &decode) const;
   // The worker's job for decode.
   omni_server::Transcription DecodeJob(const Decode &decode,

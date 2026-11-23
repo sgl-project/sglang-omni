@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // MossRealtimeSession scheduling without a checkpoint: the 0.75 s
-// first-preview gate, and a stop or a full window preempting the preview in
-// flight so stop-to-final is not postponed. The transcriber is a scripted
-// 400 ms decode that ends early once its cancel flag is set.
+// first-preview gate; a stop or a full window preempting the preview in
+// flight so stop-to-final is not postponed; and a full window's final
+// scheduled by the cancelled preview's completion, without a stop. The
+// transcriber is a scripted 400 ms decode that ends early once its cancel
+// flag is set.
 #include "moss/moss_realtime.h"
 
 #include <atomic>
@@ -187,6 +189,28 @@ void TestShortStopPreemptsPreview() {
   std::cout << "TestShortStopPreemptsPreview ok\n";
 }
 
+// A preview in flight as the 4 s window fills, and no further event at all:
+// the cancelled preview's completion must schedule the window's final itself,
+// not leave it to the next append or stop.
+void TestFullWindowSchedulesFinal() {
+  omni_server::TranscriptionWorker worker([] {}, [] {});
+  FakeTranscriber fake;
+  Events events;
+  const auto session = std::make_shared<moss::MossRealtimeSession>(
+      worker, fake.Fn(), events.Sender());
+  session->Handle(AppendMessage(kGateSamples));
+  Require(fake.WaitForStarts(1, 2s), "the gate preview must start");
+  session->Handle(AppendMessage(kWindowSamples - kGateSamples));
+  Require(events.WaitForSegments(true, 1, 2s),
+          "the full window must schedule its final after cancelling the "
+          "preview");
+  Require(events.Segments(false) == 0,
+          "a preview cancelled by the full window must not be published");
+  Require(fake.cancels_.load() >= 1,
+          "the full window must cancel the preview in flight");
+  std::cout << "TestFullWindowSchedulesFinal ok\n";
+}
+
 // A preview in flight as the 4 s window fills, then a stop: the window's
 // final is not postponed by the extra preview.
 void TestFullWindowPreemptsPreview() {
@@ -215,6 +239,7 @@ int main() {
   try {
     TestFirstPreviewGate();
     TestShortStopPreemptsPreview();
+    TestFullWindowSchedulesFinal();
     TestFullWindowPreemptsPreview();
   } catch (const std::exception &error) {
     std::cerr << "moss_realtime_test failed: " << error.what() << "\n";
