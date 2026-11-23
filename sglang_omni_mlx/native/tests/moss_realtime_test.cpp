@@ -204,7 +204,11 @@ private:
 // completion time of the latest finished decode.
 class ScriptedTranscriber {
 public:
-  explicit ScriptedTranscriber(VirtualClock &clock) : clock_(clock) {}
+  // return_on_cancel plays a transcriber that passes its last cancellation
+  // check and returns a normal result after the cancel lands.
+  explicit ScriptedTranscriber(VirtualClock &clock,
+                               bool return_on_cancel = false)
+      : clock_(clock), return_on_cancel_(return_on_cancel) {}
 
   moss::MossRealtimeSession::TranscribeFn Fn() {
     return [this](const std::vector<float> &, const moss::MossOptions &,
@@ -215,6 +219,12 @@ public:
         clock_.WaitUntil(start + step * kDecodeTime / 8, cancel);
         if (cancel.load()) {
           cancels_.fetch_add(1);
+          if (return_on_cancel_) {
+            omni_common::TranscriptionResult result;
+            result.text = "stale";
+            return result;
+          } else {
+          }
           throw omni_common::GenerationCancelled();
         } else {
         }
@@ -233,6 +243,7 @@ public:
 
 private:
   VirtualClock &clock_;
+  bool return_on_cancel_;
   std::atomic<std::chrono::steady_clock::time_point> ends_{};
 };
 
@@ -246,11 +257,17 @@ void DriveToDone(VirtualClock &clock, const std::atomic<bool> &done) {
   Require(done.load(), "the scenario must complete within the virtual drive");
 }
 
-// Waits until the worker has run every queued job and callback, so the next
-// append meets a drained session.
+// Runs a no-op through the worker; the worker runs jobs in queue order and
+// a job's session callback finishes before the next job starts, so the
+// no-op completes only after every earlier decode's callback. RequestStates
+// cannot be this barrier: the worker clears its running count before
+// invoking the callback.
 void WaitForDrain(omni_server::TranscriptionWorker &worker) {
-  WaitFor([&] { return worker.RequestStates().empty(); },
-          "the worker to drain");
+  worker.Transcribe(
+      [](const std::atomic<bool> &) {
+        return omni_common::TranscriptionResult{};
+      },
+      omni_server::NewCancelFlag());
 }
 
 // The pre-PR scheduling, frozen as the old-gate control arm: the 1.25 s
@@ -653,6 +670,77 @@ void TestFullWindowNotLaterThanOldGate() {
             << ")\n";
 }
 
+// A stop 100 ms into an in-flight preview whose transcriber returns a
+// normal result after the cancel lands (the real transcriber can return
+// after its last cancellation check): the stale result must be dropped, not
+// published.
+void TestShortStopDropsCancelledPreviewResult() {
+  VirtualClock clock;
+  omni_server::TranscriptionWorker worker([] {}, [] {});
+  ScriptedTranscriber fake(clock, /*return_on_cancel=*/true);
+  Events events;
+  const auto session = std::make_shared<moss::MossRealtimeSession>(
+      worker, fake.Fn(), events.Sender(), [&clock] { return clock.Now(); });
+  session->Handle(AppendMessage(kGateSamples));
+  WaitFor([&] { return fake.starts_.load() == 1; }, "the gate preview");
+  clock.Advance(100ms);
+  std::atomic<bool> done{false};
+  std::thread stop_thread([&] {
+    session->Handle({{"type", "transcription.done"}});
+    done.store(true);
+  });
+  const bool cancelled = TryWaitFor([&] { return fake.cancels_.load() == 1; });
+  TryWaitFor([&] { return fake.starts_.load() == 2; });
+  DriveToDone(clock, done);
+  stop_thread.join();
+  const auto stop_to_final = fake.LastEnd() - (kT0 + 100ms);
+  Checks checks;
+  checks(cancelled, "the stop must cancel the preview in flight");
+  checks(events.Segments(false) == 0,
+         "a cancelled preview's successful result must be dropped, not "
+         "published");
+  checks(events.Segments(true) == 1, "the stop must flush one final window");
+  checks(events.FinalText() == "text",
+         "the final must publish its own result, not the stale preview");
+  checks(stop_to_final <= kStopToFinalLimit,
+         "stop-to-final must not wait out the preview it replaces");
+  checks.ThrowIfAny();
+  std::cout << "TestShortStopDropsCancelledPreviewResult ok\n";
+}
+
+// A preview in flight as the 4 s window fills whose transcriber returns a
+// normal result after the cancel lands: the stale result must be dropped,
+// and the completion still schedules the window's final.
+void TestFullWindowDropsCancelledPreviewResult() {
+  VirtualClock clock;
+  omni_server::TranscriptionWorker worker([] {}, [] {});
+  ScriptedTranscriber fake(clock, /*return_on_cancel=*/true);
+  Events events;
+  const auto session = std::make_shared<moss::MossRealtimeSession>(
+      worker, fake.Fn(), events.Sender(), [&clock] { return clock.Now(); });
+  session->Handle(AppendMessage(kGateSamples));
+  WaitFor([&] { return fake.starts_.load() == 1; }, "the gate preview");
+  session->Handle(AppendMessage(kWindowSamples - kGateSamples));
+  const bool cancelled = TryWaitFor([&] { return fake.cancels_.load() == 1; });
+  TryWaitFor([&] { return fake.starts_.load() == 2; });
+  for (int step = 0; step < 200 && events.Segments(true) == 0; ++step) {
+    clock.Advance(10ms);
+    std::this_thread::sleep_for(50us);
+  }
+  Checks checks;
+  checks(cancelled, "the full window must cancel the preview in flight");
+  checks(events.Segments(false) == 0,
+         "a cancelled preview's successful result must be dropped, not "
+         "published");
+  checks(events.Segments(true) == 1,
+         "the full window must schedule its final after cancelling the "
+         "preview");
+  checks(events.FinalText() == "text",
+         "the final must publish its own result, not the stale preview");
+  checks.ThrowIfAny();
+  std::cout << "TestFullWindowDropsCancelledPreviewResult ok\n";
+}
+
 } // namespace
 
 int main() {
@@ -661,6 +749,8 @@ int main() {
     TestShortStopPreemptsPreview();
     TestFullWindowSchedulesFinal();
     TestFullWindowPreemptsPreview();
+    TestShortStopDropsCancelledPreviewResult();
+    TestFullWindowDropsCancelledPreviewResult();
     TestShortStopNotLaterThanOldGate();
     TestFullWindowNotLaterThanOldGate();
   } catch (const std::exception &error) {

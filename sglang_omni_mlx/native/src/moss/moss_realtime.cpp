@@ -144,15 +144,20 @@ void MossRealtimeSession::SubmitDecode(Decode decode, MossOptions options,
   omni_server::Transcription job = DecodeJob(decode, std::move(options));
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
+  const omni_server::CancelFlag callback_flag = flag;
   worker_.Submit(
       std::move(job), std::move(flag),
-      [weak_self, decode = std::move(decode)](
+      [weak_self, decode = std::move(decode), flag = callback_flag](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
         } else if (error) {
           self->ReportDecodeFailure(error);
+        } else if (decode.kind == DecodeKind::kPreview && flag->load()) {
+          // Note: the transcriber can return after its last cancellation
+          // check; a cancelled preview's result is already replaced, so it
+          // is dropped, not published.
         } else {
           self->Publish(decode, *result);
         }
