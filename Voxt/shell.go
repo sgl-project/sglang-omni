@@ -164,15 +164,8 @@ func toastsView(c *ui.Context, state *shellViewState, local *shellLocalUI) {
 			p := ui.ToastBase(c, ts)
 			box := p.Root.Row().AlignItems(ui.Center).Gap(px(t, sp3)).Padding(px(t, 9), px(t, 14)).Radius(px(t, radiusControl)).
 				MaxWidth(min(px(t, 480), page-px(t, sp8))).Background(k.Ink).TextColor(k.OnInk).Shadow(0, 6, 20, 0, ui.RGBA(0, 0, 0, 0.22))
-			// It fades out at the end.
-			const fade = 200 * time.Millisecond
-			switch left := p.Left(); {
-			case left > 0 && left < fade:
-				box.Opacity(float32(left) / float32(fade))
-				c.AnimationFrame()
-			case left > 0:
-				c.After(left - fade)
-			}
+			// The exit transition starts only after MyGo's paused lifetime ends.
+			box.Transition(ui.ElementTransition{Duration: 200 * time.Millisecond, Exit: &ui.Motion{}})
 			box.Children(func() {
 				ui.Text(c, ts.Title).MinWidth(0).Shrink(1)
 				if ts.Action == "" {

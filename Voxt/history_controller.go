@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -11,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -60,6 +62,7 @@ type historyViewCacheKey struct {
 	minute          int64
 	asrModel        string
 	llmModel        string
+	detailWidth     float64
 }
 
 var revealInFinder = func(path string) { mygo.Shell.ShowItemInFolder(path) }
@@ -151,7 +154,7 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 		tab: a.histUI.tab, query: a.histUI.query, selectedID: a.histUI.sel, retryID: a.hist.retry.id, retryStage: string(a.hist.retry.stage), retryDraft: a.hist.retry.draft,
 		keepHistory: a.prefs.Privacy.KeepHistory, audioMissing: a.histSet.audioMissing, defaultAudioDir: a.defaultAudioDir,
 		homeDir: a.homeDir, locale: i18n.Locale(), location: now.Location().String(), zoneOffset: zoneOffset,
-		minute: now.Unix() / 60, asrModel: asrModel, llmModel: llmModel,
+		minute: now.Unix() / 60, asrModel: asrModel, llmModel: llmModel, detailWidth: a.prefs.Appearance.HistoryDetailWidth,
 	}
 	if key != a.hist.viewKey {
 		a.hist.view = buildHistoryViewState(i18n.CurrentTranslator(), historyViewStateInput{
@@ -159,6 +162,7 @@ func (a *app) historyPageModel(now time.Time) historyViewState {
 			Error: a.hist.err, Query: a.histUI.query, SelectedID: a.histUI.sel, Retry: a.hist.retry,
 			KeepHistory: a.prefs.Privacy.KeepHistory, SettingsAvailable: true, AudioMissing: a.histSet.audioMissing,
 			DefaultAudioDir: a.defaultAudioDir, HomeDir: a.homeDir, Now: now, Detail: detail,
+			DetailWidth: a.prefs.Appearance.HistoryDetailWidth,
 		})
 		a.hist.viewKey = key
 	}
@@ -183,6 +187,22 @@ func (a *app) openHistoryFeature(feature string) {
 }
 
 func (a *app) openHistoryPrivacy() { a.navigate("/settings/privacy") }
+
+// saveHistoryDetailWidth keeps the detail width in DIPs at 100 %, 0 for the default.
+func (a *app) saveHistoryDetailWidth(width float64) {
+	revision := a.historyWidthRevision.Add(1)
+	a.updateSettings(historyWidthUpdate(width, revision, &a.historyWidthRevision))
+}
+
+// historyWidthUpdate writes the detail width, unless a reset stamped a
+// newer generation after the save started.
+func historyWidthUpdate(width float64, revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+	return func(s *settings.Settings) {
+		if current.Load() == revision {
+			s.Appearance.HistoryDetailWidth = width
+		}
+	}
+}
 
 func (a *app) copyHistoryText(text string) {
 	if text == "" {

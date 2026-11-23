@@ -47,6 +47,9 @@ type sceneState struct {
 	match    appctx.Match
 	deadline time.Time
 	fallback appctx.Match // without the address: the browser as an app
+	// cleanupPending is set before the run starts. Only a possible override
+	// makes model resolution wait for the address.
+	cleanupPending bool
 }
 
 // startScene starts deciding the session's group (Manager.Start, before
@@ -73,6 +76,7 @@ func (r *run) startScene() {
 		return
 	}
 	in.Browser = true
+	sc.cleanupPending = cleanupCanVary(rules, target.BundleID, r.settings.Features.Transcribe.Enhance)
 	timeout := cfg.URLTimeout
 	if timeout <= 0 {
 		timeout = DefaultURLTimeout

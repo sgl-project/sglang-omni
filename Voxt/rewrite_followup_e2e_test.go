@@ -10,6 +10,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // Continue takes the text selected now (#3816): a follow-up reads the
@@ -60,8 +62,8 @@ func TestRewriteFollowUpNewSelection(t *testing.T) {
 	selectNow(t, path, chatB)
 	a.recordFollowUp(t, tr, "add the new messages")
 	msgs := chatMessages(chat.requests()[1])
-	if len(msgs) != 4 || msgs[1][1] != "<instruction>\nsummarize\n</instruction>\n\n<selected_text>\n"+chatA+"\n</selected_text>" ||
-		msgs[3][1] != "<instruction>\nadd the new messages\n</instruction>\n\n<selected_text>\n"+chatB+"\n</selected_text>" {
+	if len(msgs) != 4 || msgs[1][1] != "<selected_text>\n"+chatA+"\n</selected_text>\n\n<instruction>\nsummarize\n</instruction>" ||
+		msgs[3][1] != "<selected_text>\n"+chatB+"\n</selected_text>\n\n<instruction>\nadd the new messages\n</instruction>" {
 		t.Errorf("follow-up messages %q", msgs)
 	}
 	if !strings.Contains(msgs[0][1], "the user selected it since") {
@@ -100,7 +102,7 @@ func TestRewriteFollowUpSelectionKinds(t *testing.T) {
 			a.recordFollowUp(t, tr, "shorter")
 			want := "<instruction>\nshorter\n</instruction>"
 			if tc.want != "" {
-				want += "\n\n<selected_text>\n" + tc.want + "\n</selected_text>"
+				want = "<selected_text>\n" + tc.want + "\n</selected_text>\n\n" + want
 			}
 			if got := lastUser(chat, 1); got != want {
 				t.Errorf("follow-up %q, want %q", got, want)
@@ -122,7 +124,7 @@ func TestRewriteThreeFollowUpsSelecting(t *testing.T) {
 	for i, sel := range []string{"s1", "s2", "s3"} {
 		selectNow(t, path, sel)
 		a.recordFollowUp(t, tr, "more "+sel)
-		if got := lastUser(chat, i+1); got != "<instruction>\nmore "+sel+"\n</instruction>\n\n<selected_text>\n"+sel+"\n</selected_text>" {
+		if got := lastUser(chat, i+1); got != "<selected_text>\n"+sel+"\n</selected_text>\n\n<instruction>\nmore "+sel+"\n</instruction>" {
 			t.Errorf("follow-up %d: %q", i+1, got)
 		}
 	}
@@ -130,7 +132,8 @@ func TestRewriteThreeFollowUpsSelecting(t *testing.T) {
 	var sels []string
 	for _, m := range msgs {
 		if _, rest, ok := strings.Cut(m[1], "<selected_text>\n"); ok {
-			sels = append(sels, strings.TrimSuffix(rest, "\n</selected_text>"))
+			sel, _, _ := strings.Cut(rest, "\n</selected_text>")
+			sels = append(sels, sel)
 		}
 	}
 	if strings.Join(sels, " ") != "s0 s1 s2 s3" {
@@ -156,8 +159,8 @@ func TestRewriteFollowUpSelectionEscape(t *testing.T) {
 	a.pump("the follow-up's selection", func() bool {
 		return a.sess.ID != before && a.sess.State == session.Recording && a.sess.Selection == chatB
 	})
-	if v := a.cachedCard(); len(cardBubblesForTest(v)) != 3 || !cardBubblesForTest(v)[2].live || cardBubblesForTest(v)[2].quote != chatB {
-		t.Errorf("while it records %+v", cardBubblesForTest(v))
+	if v := a.boxViewState(); !a.box.shown || v.Selection != chatB || !v.Conversation {
+		t.Errorf("while it records: box shown %v, %q", a.box.shown, v.Selection)
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State == session.Cancelled })
@@ -190,32 +193,63 @@ func TestRewriteShortcutFollowUpSelection(t *testing.T) {
 	a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() && a.answer.text == "two" })
-	if got := lastUser(chat, 1); got != "<instruction>\nadd these\n</instruction>\n\n<selected_text>\n"+chatB+"\n</selected_text>" {
+	if got := lastUser(chat, 1); got != "<selected_text>\n"+chatB+"\n</selected_text>\n\n<instruction>\nadd these\n</instruction>" {
 		t.Errorf("follow-up %q", got)
 	}
 }
 
 // TestRewriteFollowUpSelectionRetry: the model fails on a follow-up with
-// text selected: Try again asks it again in the conversation, with that
-// text, and the card keeps the earlier turns.
+// text selected: the input card keeps the error, Enter asks it again in
+// the conversation, with that text, and the card keeps the earlier turns.
 func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 	chat := &fakeChat{text: "one"}
 	a, tr, path := rewriteSelecting(t, chat, chatA, "summarize")
 	selectNow(t, path, chatB)
 	chat.set("", 503)
 	a.recordFollowUp(t, tr, "add the new messages")
-	if a.answer.problem == nil || len(a.answer.turns) != 1 || a.answer.input.Selection != chatB {
-		t.Fatalf("after the failure %+v", a.answer)
+	if !a.box.shown || a.box.err == "" || !a.boxHoldsCard(a.overlayModeNow()) || len(a.answer.turns) != 1 || a.box.selection != chatB {
+		t.Fatalf("after the failure: box %v %q, overlay %s, card %+v", a.box.shown, a.box.err, a.overlayModeNow(), a.answer)
 	}
 	chat.set("two", 0)
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
 	failed := a.sess.ID
-	a.retryAnswer("")
+	a.boxSend()
 	a.pump("the retry", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
 	msgs := chatMessages(chat.requests()[2])
-	if len(msgs) != 4 || !strings.Contains(msgs[1][1], chatA) || msgs[3][1] != "<instruction>\nadd the new messages\n</instruction>\n\n<selected_text>\n"+chatB+"\n</selected_text>" {
+	if len(msgs) != 4 || !strings.Contains(msgs[1][1], chatA) || msgs[3][1] != "<selected_text>\n"+chatB+"\n</selected_text>\n\n<instruction>\nadd the new messages\n</instruction>" {
 		t.Errorf("the retry's messages %q", msgs)
 	}
 	if a.answer.text != "two" || len(a.answer.turns) != 2 || a.answer.turns[1].Selection != chatB || !a.answer.conversation {
 		t.Errorf("card %+v", a.answer)
+	}
+	if frame := a.ov.frame; frame.X != moved.X || frame.Y+frame.Height != moved.Y+moved.Height || frame.Width != moved.Width {
+		t.Errorf("retry moved the card: %+v, want the position and width of %+v", frame, moved)
+	}
+}
+
+func TestRewriteInitialFailureRetryKeepsCardPosition(t *testing.T) {
+	chat := &fakeChat{status: 503}
+	set, keys, _ := fileSetup(t, "summarize", chat)
+	a := newSessionApp(t, "", func(s *settings.Settings) { set(s); s.Features.Rewrite.ShowCard = true }, keys)
+	input := session.TextInput{Raw: "summarize", Selection: chatA}
+	a.startSession(session.StartRequest{Kind: store.KindRewrite, Target: helpertest.Apps["com.tinyspeck.slackmacgap"], Text: &input, Card: true})
+	a.pump("the initial failure", func() bool { return a.sess.State.Ended() })
+	if a.answer.problem == nil || len(a.answer.turns) != 0 {
+		t.Fatalf("initial failure has previous turns: %+v", a.answer)
+	}
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
+	failed := a.sess.ID
+	chat.set("recovered", 0)
+	a.retryAnswer("")
+	a.pump("the retry", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
+	if a.answer.text != "recovered" {
+		t.Fatalf("retry answer %+v", a.answer)
+	}
+	if frame := a.ov.frame; frame.X != moved.X || frame.Y+frame.Height != moved.Y+moved.Height || frame.Width != moved.Width {
+		t.Errorf("initial retry moved the card: %+v, want the position and width of %+v", frame, moved)
 	}
 }

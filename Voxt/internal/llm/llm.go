@@ -32,7 +32,7 @@ const (
 	Assistant Role = "assistant"
 )
 
-// Message is one chat turn: text (Request.Image adds a picture).
+// Message is one chat turn: text (Request.Images adds pictures).
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -51,10 +51,14 @@ type Request struct {
 	// Model is the backend's model id. Empty: the backend's default.
 	Model    string
 	Messages []Message
-	// Image, a JPEG, goes with the last user message, for a model that
-	// takes images (the window the user speaks into). A server that
-	// refuses the request (400) gets it again without the image.
-	Image []byte
+	// Images, JPEGs, go with the last user message, for a model that
+	// takes images (the window the user speaks into, a copied picture,
+	// the Rewrite box's). A server that refuses the request (400) gets
+	// it again without the images, unless ImagesRequired: then the
+	// refusal is the request's error (the box's images are the user's
+	// own: dropping them silently would answer about nothing).
+	Images         [][]byte
+	ImagesRequired bool
 
 	Temperature *float64 // nil: the backend's default
 	TopP        *float64
@@ -133,6 +137,9 @@ type Response struct {
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
 	Repairs      int           // JSON repair turns (Client.JSON)
+	// ImagesDropped: the model refused the images and the answer came
+	// from the text alone (only the session may claim an image went).
+	ImagesDropped bool
 	// JSON is the validated value for FormatJSON requests made through
 	// Client.JSON (the extracted JSON text otherwise empty).
 	JSON json.RawMessage

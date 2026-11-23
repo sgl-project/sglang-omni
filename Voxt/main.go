@@ -48,6 +48,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "transcribe" {
 		os.Exit(runTranscribeCLI(os.Args[2:]))
 	}
+	// `Voxt dictionary import FILE` (dictionary_cli.go) too: the running
+	// app merges the terms it sends.
+	if len(os.Args) > 1 && os.Args[1] == "dictionary" {
+		os.Exit(runDictionaryCLI(os.Args[2:]))
+	}
 	// The languages VoxtNew is written in, of which MyGo shows one
 	// (showLanguage, settings_locale.go).
 	mygo.App.SetLanguages(i18n.Supported()...)
@@ -150,6 +155,7 @@ func main() {
 		a.expireMeetingAudio()   // meeting_audio.go: a failed meeting's recording, past its 7 days
 		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
 		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
+		a.openDictionarySocket() // dictionary_socket.go: `Voxt dictionary import`
 		a.announceURL = announce.URL
 		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })

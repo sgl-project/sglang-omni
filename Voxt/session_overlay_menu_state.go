@@ -274,7 +274,11 @@ func (a *app) chooseThinking(value sessionThinkingValue) {
 		return
 	}
 	input := card.input
-	a.redoAnswer(session.StartRequest{Kind: card.kind, Target: card.target, Text: &input, TargetLanguage: card.lang, Thinking: level})
+	request := session.StartRequest{Kind: card.kind, Target: card.target, Text: &input, TargetLanguage: card.lang, Thinking: level}
+	if card.attach == "box" {
+		request.Images = card.images
+	}
+	a.redoAnswer(request)
 }
 
 type sessionMenuProjectionKey struct {

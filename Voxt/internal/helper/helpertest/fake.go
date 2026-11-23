@@ -60,7 +60,8 @@ package helpertest
 //	                 (a TEXT of only whitespace is not read, as in the helper)
 //	copy-selection=TEXT  textio.selection reads TEXT only with allowCopy (via copy)
 //	selection-file=PATH  textio.selection reads PATH's text at each call ("" or no
-//	                 file: nothing selected): the user selects something else
+//	                 file: nothing selected; only whitespace or U+FFFC: on to the
+//	                 copy, as selection=): the user selects something else
 //	readonly[=BUNDLE]  textio.focus: the focused element is not editable (of BUNDLE only)
 //	focus=none       textio.focus: nothing is focused (Finder's desktop)
 //	focus=secure     textio.focus: a password field (AXSecureTextField)
@@ -96,6 +97,8 @@ package helpertest
 //	                 screen.window fails with permission_denied (else it answers
 //	                 Shot(pid) for any pid but 0)
 //	clipboard-image  clipboard.image answers ClipImage (else no picture)
+//	clipboard-too-large  clipboard.image rejects the source as too large
+//	clipboard-error  clipboard.image fails
 //
 // A capture.start whose first device is "crash" exits 3 after its first
 // frame; one whose first device is "gone" fails with device_unavailable;
@@ -512,10 +515,15 @@ func (f *fake) serve(m proto.Message) {
 			f.result(m.ID, proto.ScreenWindowResult{JPEG: Shot(p.PID)})
 		}
 	case proto.MethodClipboardImage:
+		if f.has("clipboard-error") {
+			f.fail(m.ID, proto.CodeInternal, "clipboard.image failed")
+			return
+		}
 		var r proto.ClipboardImageResult
 		if f.has("clipboard-image") {
 			r.JPEG = ClipImage
 		}
+		r.TooLarge = f.has("clipboard-too-large")
 		f.result(m.ID, r)
 	case proto.MethodAppIcons:
 		var p proto.AppIconsParams

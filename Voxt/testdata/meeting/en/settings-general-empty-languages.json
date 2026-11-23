@@ -224,6 +224,16 @@
           "id": "app-enhancement",
           "title": "App enhancement",
           "shown": true
+        },
+        {
+          "id": "notes",
+          "title": "Notes",
+          "shown": true
+        },
+        {
+          "id": "meetings",
+          "title": "Meetings",
+          "shown": true
         }
       ]
     }

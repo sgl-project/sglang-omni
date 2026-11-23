@@ -41,13 +41,17 @@ else
 fi
 
 section="$(awk -v v="## [$version] - " 'index($0, v) == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md)"
+# Capture before grepping: in a pipeline grep -q exits at the first match and
+# sed dies with SIGPIPE, which pipefail reads as a failure.
+english="$(sed '/^### 中文$/,$d' <<<"$section")"
+chinese="$(sed -n '/^### 中文$/,$p' <<<"$section")"
 if [[ -z "$section" ]]; then
   row changelog FAIL "CHANGELOG.md has no \"## [$version] - DATE\" section"
 elif ! grep -q '^### 中文$' <<<"$section"; then
   row changelog FAIL "the $version section has no \"### 中文\" part"
-elif ! sed '/^### 中文$/,$d' <<<"$section" | grep -q '^- '; then
+elif ! grep -q '^- ' <<<"$english"; then
   row changelog FAIL "the $version section has no English entry before \"### 中文\""
-elif ! sed -n '/^### 中文$/,$p' <<<"$section" | grep -q '^- '; then
+elif ! grep -q '^- ' <<<"$chinese"; then
   row changelog FAIL "the $version section has no Chinese entry after \"### 中文\""
 else
   row changelog ok "English and 中文"

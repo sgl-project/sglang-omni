@@ -39,6 +39,12 @@ func TestMigrate(t *testing.T) {
 			t.Errorf("%s: cancel %+v %v", tc.doc, s.Features.Cancel, err)
 		}
 	}
+	// The dropped inputBox switch (never released: the input box is the
+	// only Rewrite now) loads without a word.
+	s, err = Migrate([]byte(`{"version":4,"features":{"rewrite":{"inputBox":true,"cleanup":false}}}`))
+	if err != nil || s.Features.Rewrite.Cleanup {
+		t.Errorf("inputBox: %+v %v", s.Features.Rewrite, err)
+	}
 	data, _ := json.Marshal(s)
 	again, err := Migrate(data)
 	if err != nil || !reflect.DeepEqual(again, s) {
@@ -46,6 +52,22 @@ func TestMigrate(t *testing.T) {
 	}
 	if _, err := Migrate([]byte(`{`)); err == nil {
 		t.Error("bad JSON accepted")
+	}
+}
+
+func TestMeetingCorrectionStyleDocument(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":4,"features":{"meeting":{"prompt":"Summary style"}}}`))
+	if err != nil || s.Features.Meeting.CorrectionStyle != "" || s.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("older document: %+v %v", s.Features.Meeting, err)
+	}
+	s.Features.Meeting.CorrectionStyle = "保持原语气。Keep English product names. " + strings.Repeat("Be concise. ", 100)
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || back.Features.Meeting.CorrectionStyle != s.Features.Meeting.CorrectionStyle || back.Features.Meeting.Prompt != "Summary style" {
+		t.Fatalf("round trip: %+v %v", back.Features.Meeting, err)
 	}
 }
 
@@ -77,6 +99,7 @@ func TestStore(t *testing.T) {
 		s.Appearance.Palette = " #B25280 "
 		s.Appearance.WindowTransparency = 25
 		s.Appearance.SidebarWidth = 900
+		s.Appearance.HistoryDetailWidth = 900
 		s.General.OtherLanguages = []string{" en ", "en", ""}
 		s.Features.Translate.Hotkeys = append(s.Features.Translate.Hotkeys, Hotkey{Keys: " "}, Hotkey{Keys: "Option+T", Trigger: "weird"})
 		s.Overlay.Opacity = 0.1
@@ -85,7 +108,7 @@ func TestStore(t *testing.T) {
 	}
 	got := s.Get()
 	if got.General.Language != "zh-Hans" || got.Appearance.Scale != 1.1 || got.Appearance.Theme != ThemeSystem || got.Appearance.Palette != "#b25280" || got.Appearance.WindowTransparency != MaxWindowTransparency ||
-		got.Appearance.SidebarWidth != MaxSidebarWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
+		got.Appearance.SidebarWidth != MaxSidebarWidth || got.Appearance.HistoryDetailWidth != MaxHistoryDetailWidth || !reflect.DeepEqual(got.General.OtherLanguages, []string{"en"}) ||
 		len(got.Features.Translate.Hotkeys) != 2 || got.Features.Translate.Hotkeys[1].Trigger != TriggerTap || got.Overlay.Opacity != 0.5 {
 		t.Fatalf("normalized: %+v", got)
 	}
@@ -674,24 +697,34 @@ func TestDictionaryNotesUpgrade(t *testing.T) {
 	}
 }
 
-// TestReturnFinishesDefault: Return finishes dictation by default and for
-// a document saved before the setting existed; an explicit choice survives.
+// TestReturnFinishesDefault: Return finishes a recording by default and
+// for a document saved before the setting existed; an explicit choice
+// survives. The switch was Transcribe's until it covered every feature:
+// its choice carries over, and the new field wins once it is written.
 func TestReturnFinishesDefault(t *testing.T) {
-	if !Defaults().Features.Transcribe.ReturnFinishes {
-		t.Fatal("Return does not finish dictation by default")
+	if !Defaults().Features.ReturnFinishes {
+		t.Fatal("Return does not finish a recording by default")
 	}
 	old, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
-	if err != nil || !old.Features.Transcribe.ReturnFinishes {
-		t.Fatalf("old document: %v %v", old.Features.Transcribe.ReturnFinishes, err)
+	if err != nil || !old.Features.ReturnFinishes {
+		t.Fatalf("old document: %v %v", old.Features.ReturnFinishes, err)
 	}
 	for _, on := range []bool{false, true} {
 		s := Defaults()
-		s.Features.Transcribe.ReturnFinishes = on
+		s.Features.ReturnFinishes = on
 		data, _ := json.Marshal(s)
 		back, err := Migrate(data)
-		if err != nil || back.Features.Transcribe.ReturnFinishes != on {
-			t.Errorf("%v round trip: %v %v", on, back.Features.Transcribe.ReturnFinishes, err)
+		if err != nil || back.Features.ReturnFinishes != on {
+			t.Errorf("%v round trip: %v %v", on, back.Features.ReturnFinishes, err)
 		}
+	}
+	off, err := Migrate([]byte(`{"version":5,"features":{"transcribe":{"returnFinishes":false}}}`))
+	if err != nil || off.Features.ReturnFinishes {
+		t.Errorf("Transcribe's switch turned off: %v %v", off.Features.ReturnFinishes, err)
+	}
+	both, err := Migrate([]byte(`{"version":5,"features":{"returnFinishes":true,"transcribe":{"returnFinishes":false}}}`))
+	if err != nil || !both.Features.ReturnFinishes {
+		t.Errorf("the shortcuts' switch on over Transcribe's old one: %v %v", both.Features.ReturnFinishes, err)
 	}
 }
 

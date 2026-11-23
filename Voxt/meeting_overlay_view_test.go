@@ -117,6 +117,23 @@ func TestMeetingOverlayGrowsWithText(t *testing.T) {
 	}
 }
 
+func TestMeetingOverlaySizeButtonClampsSavedStep(t *testing.T) {
+	for _, step := range []int{3, 9} {
+		var next int
+		tester := ui.NewTester(func(context *ui.Context) {
+			next, _ = meetingOverlaySizeButton(context, step)
+		}, 800, 200)
+		frames(tester)
+		if err := tester.ClickControl("Make the card smaller"); err != nil {
+			t.Errorf("step %d: %v (controls %q)", step, err, tester.AccessLabels())
+			continue
+		}
+		if next != 0 {
+			t.Errorf("step %d: next %d, want 0", step, next)
+		}
+	}
+}
+
 // Rows: the speaker's name on the first of their lines only; a sentence
 // the recogniser split is one row; the sentence still heard follows.
 func TestMeetingOverlayRows(t *testing.T) {

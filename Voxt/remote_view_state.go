@@ -53,6 +53,7 @@ type remoteWaitStateInput struct {
 type remoteViewState struct {
 	BackBar *remoteBackBarViewState `json:"back_bar,omitempty"`
 	Wait    remoteWaitViewState     `json:"wait"`
+	Switch  bool                    `json:"switch,omitempty"`
 	Cards   remoteCardsViewState    `json:"cards"`
 	Dialog  *remoteDialogViewState  `json:"dialog,omitempty"`
 }
@@ -60,6 +61,7 @@ type remoteViewState struct {
 type remotePageStateInput struct {
 	BackBarText string
 	Wait        remoteWaitStateInput
+	Switch      bool
 	Cards       remoteCardsStateInput
 	Dialog      *remoteDialogStateInput
 }
@@ -124,8 +126,9 @@ type remoteServiceStateInput struct {
 
 func buildRemotePageViewState(translator *i18n.Translator, input remotePageStateInput) remoteViewState {
 	state := remoteViewState{
-		Wait:  buildRemoteWaitViewState(translator, input.Wait),
-		Cards: buildRemoteCardsViewState(translator, input.Cards),
+		Wait:   buildRemoteWaitViewState(translator, input.Wait),
+		Switch: input.Switch,
+		Cards:  buildRemoteCardsViewState(translator, input.Cards),
 	}
 	if input.BackBarText != "" {
 		state.BackBar = &remoteBackBarViewState{Text: input.BackBarText}
@@ -180,6 +183,13 @@ func buildRemoteCardsViewState(translator *i18n.Translator, input remoteCardsSta
 			state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-asr-online", Title: translator.T("Online services"), Caption: translator.T("A service gets your recordings only for the features you choose it for."), Cards: rest})
 		}
 		return state
+	}
+	// Under "On this Mac" and "Online services" the heading already says where a service runs.
+	for i := range here {
+		here[i].Where = ""
+	}
+	for i := range online {
+		online[i].Where = ""
 	}
 	if len(mine) > 0 {
 		state.Groups = append(state.Groups, remoteServiceGroupState{Key: "remote-mine", Title: translator.T("Set up"), Cards: mine})

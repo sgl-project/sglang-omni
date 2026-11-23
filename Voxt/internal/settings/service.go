@@ -45,6 +45,9 @@ var Themes = []string{ThemeSystem, ThemeDark, ThemeLight, ThemeTransparent}
 const (
 	MinSidebarWidth = 170
 	MaxSidebarWidth = 320
+
+	MinHistoryDetailWidth = 290
+	MaxHistoryDetailWidth = 350
 )
 
 // Store implements Service over Documents.
@@ -172,6 +175,9 @@ func normalize(s Settings) Settings {
 	ap.Scale = best
 	if ap.SidebarWidth != 0 {
 		ap.SidebarWidth = min(max(ap.SidebarWidth, MinSidebarWidth), MaxSidebarWidth)
+	}
+	if ap.HistoryDetailWidth != 0 {
+		ap.HistoryDetailWidth = min(max(ap.HistoryDetailWidth, MinHistoryDetailWidth), MaxHistoryDetailWidth)
 	}
 	ap.ClosedSections = uniq(ap.ClosedSections)
 	s.General.MainLanguage = strings.TrimSpace(s.General.MainLanguage)

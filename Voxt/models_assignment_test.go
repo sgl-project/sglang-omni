@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -176,6 +177,28 @@ func TestModelAssignmentDialogShowsSavedModel(t *testing.T) {
 	frames(tt)
 	if !has(tt, "Current: Unavailable: temporarily-unavailable") {
 		t.Fatalf("a binding to a gone model shows as automatic: %v", tt.Texts())
+	}
+}
+
+func TestModelAssignmentBehaviorDoc(t *testing.T) {
+	doc, err := os.ReadFile("docs/behavior.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := ""
+	for _, line := range strings.Split(string(doc), "\n") {
+		if strings.HasPrefix(line, "| 3.50 |") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatal("docs/behavior.md does not record model assignment")
+	}
+	for _, want := range []string{"models_assignment.go", "转录、翻译、改写和会议", "其他提示词、开关、翻译备用模型和未选功能不变", "“用于”包含会议", "不能隐藏", "TestModelAssignmentPreservesOtherSettings"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("model assignment behavior row lacks %q", want)
+		}
 	}
 }
 

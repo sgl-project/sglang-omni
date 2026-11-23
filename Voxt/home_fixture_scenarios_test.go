@@ -114,8 +114,11 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 			input.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: shortcut.keys, Trigger: settings.TriggerTap}}
 		})
 	}
+	// Accessibility allowed, the tap not in yet; with Accessibility missing, its step says the shortcut waits.
+	// The microphone keeps the steps showing, the shortcut under them.
 	add("home-shortcut-waiting", func(_ *homeViewStateInput, readiness *homeReadinessInput) {
-		readiness.HotkeysInstalled, readiness.Accessibility = false, false
+		readiness.HotkeysInstalled, readiness.Accessibility = false, true
+		readiness.Microphone = permission.NotDetermined
 	})
 	add("home-shortcut-carbon", func(input *homeViewStateInput, readiness *homeReadinessInput) {
 		input.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Control+Option+A", Trigger: settings.TriggerTap}}
@@ -168,7 +171,7 @@ func homeFixtureEntries() []store.Entry {
 	translate.Audio = ""
 	rewrite := first
 	rewrite.ID, rewrite.Kind, rewrite.Result = "home-rewrite", store.KindRewrite, "A formal answer"
-	rewrite.RawText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
+	rewrite.TypedText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
 	second := first
 	second.ID, second.CreatedAt, second.Result = "home-second", meetingFixtureNow.Add(-2*time.Hour), "Second result"
 	second.RawText, second.Audio = second.Result, ""

@@ -40,6 +40,8 @@ type settingsMeetingActions interface {
 	setMeetingASR(speechModelID string)
 	setMeetingLanguage(languageCode string)
 	setMeetingLLM(languageModelID string)
+	autosaveMeetingCorrectionStyle(changed, focused bool)
+	resetMeetingCorrectionStyle()
 }
 
 type settingsStorageActions interface {
@@ -71,6 +73,7 @@ type settingsShortcutsActions interface {
 	openShortcutPermissions()
 	openShortcutFeature(path string)
 	setStrictShortcuts(on bool)
+	setReturnFinishes(on bool)
 }
 
 type keyRecorderActions interface {

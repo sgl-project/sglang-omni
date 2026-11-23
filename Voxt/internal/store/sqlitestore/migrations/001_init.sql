@@ -54,7 +54,7 @@ CREATE TABLE history (
 );
 CREATE INDEX history_created ON history(created_at DESC);
 CREATE INDEX history_kind ON history(kind, created_at DESC);
-CREATE VIRTUAL TABLE history_fts USING fts5(raw_text, source_text, prompt_text, result, content='history', content_rowid='seq', tokenize='trigram');
+CREATE VIRTUAL TABLE history_fts USING fts5(raw_text, source_text, prompt_text, result, typed_text, content='history', content_rowid='seq', tokenize='trigram');
 CREATE TRIGGER history_fts_insert AFTER INSERT ON history BEGIN
   INSERT INTO history_fts(rowid, raw_text, source_text, prompt_text, result) VALUES (new.seq, new.raw_text, new.source_text, new.prompt_text, new.result);
 END;

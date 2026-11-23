@@ -410,6 +410,12 @@ func (f *fakeTimers) install(a *app) *fakeTimers {
 	return f
 }
 
+// clock is f's now as a time.Time, for a.now: only advance moves it, so
+// wall-clock time a test takes changes nothing.
+func (f *fakeTimers) clock() time.Time { return fakeClockBase.Add(f.now) }
+
+var fakeClockBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // advance moves the clock on by d, running the timers due (and those
 // they set that are due too).
 func (f *fakeTimers) advance(d time.Duration) {
@@ -454,7 +460,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 }
 
 func (a *app) cardBodyHeight(card *sessionCardViewState) (int, bool) {
-	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h)
+	body, streamHeight, exact := sessionOverlayCardBodyHeight(a.ov.projection.view.SessionID, card, a.ovTextHeight, a.sessionOverlayPreviewHeights(&a.ov.projection.view), a.cardBodyMax(card), a.ov.stream.h, layout.CardSizes[card.SizeStep].Width(a.ov.area, a.prefs.Overlay.Margin))
 	a.ov.stream.h = streamHeight
 	return body, exact
 }

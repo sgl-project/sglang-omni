@@ -204,7 +204,7 @@ func historyFixtureEntries() []store.Entry {
 	translated.TargetLang, translated.RuleSource, translated.DSP, translated.GainDB = "zh-Hans", "url", "highpass", 0
 	rewritten := inserted
 	rewritten.ID, rewritten.Kind, rewritten.Delivery = "history-rewritten", store.KindRewrite, "copy"
-	rewritten.Result, rewritten.RawText = "A formal answer", "make this formal"
+	rewritten.Result, rewritten.TypedText = "A formal answer", "make this formal"
 	rewritten.SourceText, rewritten.PromptText = "an informal source", "Rewrite formally"
 	rewritten.RuleSource, rewritten.DSP, rewritten.GainDB = "browserApp", "level", 2
 	failed := inserted

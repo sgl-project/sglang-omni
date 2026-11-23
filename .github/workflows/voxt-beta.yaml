@@ -1,7 +1,9 @@
 name: Voxt Beta
 
-# Builds a beta of main each time it takes a change to Voxt (Voxt/, or the
-# native runtime the app ships, sglang_omni_mlx/native/; not its Markdown):
+# Builds a beta of main each time it takes a change to Voxt, to MLX or to
+# their CI (Voxt/, sglang_omni_mlx/, the voxt*.yaml workflows and
+# mac-ci.yaml; not their Markdown), so that every merge that can change the
+# app or its release path is tried as a signed beta:
 # the release workflow with beta: true, signed with the Developer ID of the
 # voxt-release environment and notarized, version X.Y.Z-beta.YYYYMMDD.N (N
 # this workflow's run number), its disk image an artifact of the run. Unlike
@@ -19,10 +21,10 @@ on:
     paths:
       - "Voxt/**"
       - "!Voxt/**/*.md"
-      - "sglang_omni_mlx/native/**"
-      - "!sglang_omni_mlx/native/**/*.md"
-      - ".github/workflows/voxt-beta.yaml"
-      - ".github/workflows/voxt-release.yaml"
+      - "sglang_omni_mlx/**"
+      - "!sglang_omni_mlx/**/*.md"
+      - ".github/workflows/voxt*.yaml"
+      - ".github/workflows/mac-ci.yaml"
   pull_request:
     paths:
       - ".github/workflows/voxt-beta.yaml"

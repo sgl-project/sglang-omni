@@ -297,8 +297,9 @@ func TestOverlayCheckSteps(t *testing.T) {
 					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
 				}
 			case "card-long": // note (luojiaxuan): grown past a short screen's card, within the work area
-				if a.ov.h <= layout.CardChrome+layout.CardBodyMax || a.ov.h > layout.CardChrome+a.cardBodyMax(a.cachedCardRef()) {
-					t.Errorf("%s/%s: %d×%d", lang, st.name, a.ov.w, a.ov.h)
+				body, _ := a.cardBodyHeight(a.cachedCardRef())
+				if want := layout.CardChrome + body + sessionCardAttachmentHeight(a.cachedCardRef()); a.ov.h != want {
+					t.Errorf("%s/%s: %d×%d, want height %d", lang, st.name, a.ov.w, a.ov.h, want)
 				}
 			}
 		}

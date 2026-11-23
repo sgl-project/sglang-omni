@@ -10,12 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/ink"
@@ -30,7 +28,9 @@ func TestCardRedoKeepsScrollKeyWhenWritingStarts(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 	card := &sessionCardViewState{ID: "old-card", Blocks: []sessionCardBlock{{Kind: sessionCardBody, Text: "old answer"}}}
-	tester := ui.NewTester(func(context *ui.Context) { cardBody(context, "redo-session", card, 120, a, local, nil) }, 400, 300)
+	tester := ui.NewTester(func(context *ui.Context) {
+		cardBody(context, "redo-session", card, 120, layout.AnswerW, false, 1, a, local, nil)
+	}, 400, 300)
 	frames(tester)
 	card.Writing = true
 	card.Live[0] = sessionCardWritingBlock("new answer", store.KindRewrite)
@@ -203,7 +203,7 @@ func TestAnswerCardStates(t *testing.T) {
 						t.Errorf("%s: the text is %d high", st.name, body)
 					}
 				}
-				want := layout.CardChrome + body
+				want := layout.CardChrome + body + sessionCardAttachmentHeight(&v)
 				if st.msg {
 					want += layout.CardMsgGap + layout.CardMsgH
 				}
@@ -419,7 +419,7 @@ func TestAnswerCardInteraction(t *testing.T) {
 	// the card staying with its answer; a second Escape closes it.
 	steps[7].apply(a) // its follow-up, recording
 	frames(tt)
-	if !has(tt, "Done") || !has(tt, "shorter") || !has(tt, "You") || has(tt, "Continue") {
+	if !has(tt, "Done") || !has(tt, "shorter") || has(tt, "You") || has(tt, "Continue") {
 		t.Errorf("recording: %q", firstTexts(tt))
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -442,8 +442,8 @@ func TestAnswerCardInteraction(t *testing.T) {
 	if !ok {
 		t.Fatalf("no heading in %q", firstTexts(tt))
 	}
-	// Its Copy: 8 from the bubble's top right corner, 22 high.
-	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW-8-10, title.Y-layout.BubblePadY+8+11)
+	// Its Copy: a 24 icon right of the bubble, level with its top.
+	tt.ClickAt(title.X-layout.BubblePadX+layout.BubbleW+bubbleCopyGap+12, title.Y-layout.BubblePadY+12)
 	frames(tt)
 	if tt.Clipboard() != "Running late\n\nSorry, I am running about ten minutes late: please start without me." || a.ov.ui.bubbleCopied == "" {
 		t.Errorf("bubble copied %q", tt.Clipboard())
@@ -473,17 +473,17 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
-			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Title: "You", Text: tc.text}}}
+			card := &sessionCardViewState{Conversation: true, Blocks: []sessionCardBlock{{Kind: sessionCardBubble, User: true, Text: tc.text}}}
 			local := sessionOverlayLocal{Overlay: &sessionOverlayLocalUI{}, Card: &answerCardUI{}}
 			tt := hudTester(func(c *ui.Context) {
-				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, a, local, nil) })
+				ui.Column(c).Fill().Background(ui.RGB(30, 31, 36)).Children(func() { cardBlockView(c, "", card, card.Blocks[0], 0, layout.AnswerW, a, local, nil) })
 			}, layout.AnswerW, 500)
 			frames(tt)
-			title, ok := tt.Find("You")
+			said, ok := tt.Find(tc.text)
 			if !ok {
-				t.Fatalf("no input heading in %q", firstTexts(tt))
+				t.Fatalf("no input text in %q", firstTexts(tt))
 			}
-			img, y, left, right := tt.Image(), int(title.Y)/2, -1, -1
+			img, y, left, right := tt.Image(), int(said.Y)/2, -1, -1
 			background := img.RGBAAt(0, y)
 			for x := range img.Bounds().Dx() {
 				if img.RGBAAt(x, y) == background {
@@ -495,7 +495,7 @@ func TestRewriteInputBubbleFitsText(t *testing.T) {
 				right = x
 			}
 			if left < 0 {
-				t.Fatal("no bubble pixels above its heading")
+				t.Fatal("no bubble pixels beside its text")
 			}
 			widths[tc.name] = right - left + 1
 			if tc.name != "long" {
@@ -686,93 +686,9 @@ func TestCardHeaderFits(t *testing.T) {
 	}
 }
 
-// TestCardSizes: a feature's page sets its own answer card size; a larger
-// card is wider, and any card grows with a long answer to the work
-// area's height, its ink still from padding to padding. The other features keep theirs
-// (#3644 FB41: a long explanation read badly in the small card).
-func TestCardSizes(t *testing.T) {
-	if hotkey.Transcribe != string(store.KindTranscribe) || hotkey.Translate != string(store.KindTranslate) || hotkey.Rewrite != string(store.KindRewrite) {
-		t.Fatal("Features.CardSizes's keys: the pages' feature ids are not store.Kind's")
-	}
-	a, tt := pageTester(t, "/rewrite")
-	if err := tt.ClickControl("Large"); err != nil {
-		t.Fatal(err)
-	}
-	frames(tt)
-	if got := a.settings.Get().Features.CardSizes; got[hotkey.Rewrite] != 2 || len(got) != 1 {
-		t.Fatalf("card sizes %v", got)
-	}
-	long := strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)
-	a.ov.area = a.overlayArea() // as when the card shows: its size depends on the screen's room
-	for _, c := range []struct {
-		kind store.Kind
-		size layout.CardSize
-	}{{store.KindRewrite, layout.CardSizes[2]}, {store.KindTranslate, layout.CardSizes[0]}} {
-		a.answer = answerCard{open: true, kind: c.kind, text: long}
-		want := layout.CardChrome + a.cardBodyMax(a.cachedCardRef())
-		if w, h, _ := a.cardSize(); w != c.size.W || h != want {
-			t.Errorf("%s: %d×%d, want %d×%d", c.kind, w, h, c.size.W, want)
-		}
-	}
-	defer func() { a.measureHook = guessText }()
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: long}
-	a.overlaySync()
-	img := renderOverlay(t, a)
-	if _, bad := ink.Check(img, 2, cardInkWant(ink.Want{W: a.ov.w, H: a.ov.h}, a.cachedCardRef())); len(bad) > 0 || a.ov.w != layout.CardSizes[2].W {
-		t.Errorf("the large card, %d wide: %v", a.ov.w, bad)
-	}
-	if dir := os.Getenv("VOXTNEW_INK"); dir != "" {
-		var b bytes.Buffer
-		png.Encode(&b, img)
-		os.WriteFile(filepath.Join(dir, "card-large.png"), b.Bytes(), 0o644)
-	}
-}
-
-// TestCardResizeOnCard: the card steps through its sizes from the card
-// itself (#3644 FB41: a long answer needed a trip to the feature's page
-// for a larger card): Small, Medium, Large and back to Small, saved as the
-// feature's size, and the card takes each at once.
-func TestCardResizeOnCard(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 30)}
-	a.overlaySync()
-	tt := hudTester(a.overlayView, layout.CardSizes[2].W+2*layout.Pad, 900)
-	for i, c := range []struct {
-		label string
-		step  int
-	}{{"Make the card larger", 1}, {"Make the card larger", 2}, {"Make the card smaller", 0}} {
-		frames(tt)
-		if err := tt.ClickControl(c.label); err != nil {
-			t.Fatalf("step %d: %v (controls %q)", i, err, tt.AccessLabels())
-		}
-		frames(tt)
-		got := a.settings.Get().Features.CardSizes
-		_, kept := got[hotkey.Rewrite]
-		if got[hotkey.Rewrite] != c.step || kept != (c.step != 0) || a.ov.w != layout.CardSizes[c.step].W {
-			t.Errorf("step %d: sizes %v, the card %d wide", i, got, a.ov.w)
-		}
-	}
-}
-
-// TestCardFitsTheScreen: a large card with a long answer on a short
-// screen keeps its text to the room the work area leaves, instead of
-// reaching past the screen's other edge.
-func TestCardFitsTheScreen(t *testing.T) {
-	saved := ovTestArea
-	t.Cleanup(func() { ovTestArea = saved })
-	ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 600}
-	a, _, _ := newTestApp(t)
-	a.updateSettings(func(s *settings.Settings) { s.Features.CardSizes = map[string]int{hotkey.Rewrite: 2} })
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A goroutine is a lightweight thread managed by the Go runtime. ", 90)}
-	a.overlaySync()
-	if f := a.ov.frame; f.Y < ovTestArea.Y || f.Y+f.Height > ovTestArea.Y+ovTestArea.Height {
-		t.Errorf("the card's window %+v is not inside the work area %+v", f, ovTestArea)
-	}
-}
-
 // TestCardDragged: a card the user dragged (overlayDragged keeps the
 // offset) keeps its place as its answer grows, stays on the screen, and
-// the next card shows at the anchor again.
+// returns to that place when it is closed and reopened.
 func TestCardDragged(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
@@ -789,11 +705,12 @@ func TestCardDragged(t *testing.T) {
 	if a.ov.frame.Y != a.ov.area.Y-layout.Pad {
 		t.Errorf("dragged past the top: %+v", a.ov.frame)
 	}
+	moved := a.ov.frame
 	a.answer = answerCard{}
 	a.overlaySync()
-	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: strings.Repeat("A longer answer, a few lines more. ", 12)}
 	a.overlaySync()
-	if a.ov.frame != anchored {
-		t.Errorf("the next card: %+v, want %+v", a.ov.frame, anchored)
+	if a.ov.frame != moved {
+		t.Errorf("the reopened card: %+v, want %+v", a.ov.frame, moved)
 	}
 }

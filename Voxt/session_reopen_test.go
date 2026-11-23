@@ -12,6 +12,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -84,7 +86,45 @@ func TestCardFromHistoryRedo(t *testing.T) {
 	}
 }
 
+// Typed text returns with its original role after a restart: typed-only
+// text is the first turn's source, while selected and typed text stay apart.
+func TestCardFromHistoryTyped(t *testing.T) {
+	for _, tc := range []struct{ name, selected, typed string }{
+		{"typed only", "", "a rough draft"},
+		{"selected and typed", "the selected text", "and the tickets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := reopenEntry("typed", "make it shorter", "A shorter text.", time.Now())
+			entry.SourceText, entry.TypedText = tc.selected, tc.typed
+			card, ok := cardFromHistory([]store.Entry{entry}, "typed")
+			if !ok || card.input.Typed != tc.typed || len(card.turns) != 1 {
+				t.Fatalf("restored %+v", card)
+			}
+			turn := card.turns[0]
+			if tc.selected == "" {
+				if turn.Selection != tc.typed || turn.Typed != "" {
+					t.Errorf("typed-only turn %+v", turn)
+				}
+			} else if turn.Selection != tc.selected || turn.Typed != tc.typed {
+				t.Errorf("selected and typed turn %+v", turn)
+			}
+		})
+	}
+}
+
 // A translation that became a Rewrite conversation is restored as its first turn.
+func TestCardFromHistoryRestoresTextInputPreviews(t *testing.T) {
+	entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
+	entry.SourceText, entry.TypedText = "selected source", "typed context"
+	card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
+	if !ok || len(card.previews) != 2 {
+		t.Fatalf("restored previews %+v", card.previews)
+	}
+	if card.previews[0].Text != "selected source" || card.previews[1].Text != "typed context" {
+		t.Fatalf("restored previews %+v", card.previews)
+	}
+}
+
 func TestCardFromHistoryTranslation(t *testing.T) {
 	now := time.Now()
 	translation := reopenEntry("translate", "", "你好", now.Add(-2*time.Minute))
@@ -93,8 +133,96 @@ func TestCardFromHistoryTranslation(t *testing.T) {
 	rewrite.Conversation = "translate"
 	card, ok := cardFromHistory([]store.Entry{rewrite, translation}, "translate")
 	wantInstruction := i18n.T("Translate into %s", uitext.TargetLanguageLabel("zh-Hans"))
-	if !ok || card.kind != store.KindRewrite || len(card.turns) != 2 || card.turns[0].Instruction != wantInstruction || card.turns[0].Selection != "hello" || card.turns[0].Answer.Content != "你好" || card.turns[1].Instruction != "shorter" {
+	if !ok || card.kind != store.KindRewrite || len(card.turns) != 2 || card.turns[0].Instruction != wantInstruction || card.turns[0].Selection != "hello" || card.turns[0].Typed != "" || card.turns[0].Answer.Content != "你好" || card.turns[1].Instruction != "shorter" {
 		t.Fatalf("restored %+v", card)
+	}
+}
+
+func TestCardFromHistoryTypedText(t *testing.T) {
+	for _, tc := range []struct {
+		name, selection, typed, turnSelection, turnTyped string
+	}{
+		{name: "selection and typed", selection: "draft", typed: "typed context", turnSelection: "draft", turnTyped: "typed context"},
+		{name: "typed only", typed: "typed context", turnSelection: "typed context"},
+		{name: "older entry without typed text", selection: "draft", turnSelection: "draft"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := reopenEntry("rewrite", "polish", "Polished", time.Now())
+			entry.SourceText, entry.TypedText = tc.selection, tc.typed
+			card, ok := cardFromHistory([]store.Entry{entry}, "rewrite")
+			if !ok || len(card.turns) != 1 {
+				t.Fatalf("restored %+v", card)
+			}
+			if card.input.Raw != "polish" || card.input.Selection != tc.selection || card.input.Typed != tc.typed {
+				t.Errorf("redo input %+v", card.input)
+			}
+			turn := card.turns[0]
+			if turn.Instruction != "polish" || turn.Selection != tc.turnSelection || turn.Typed != tc.turnTyped || turn.Answer.Content != "Polished" {
+				t.Errorf("restored turn %+v", turn)
+			}
+		})
+	}
+}
+
+func TestReopenCardAfterRestartTypedInput(t *testing.T) {
+	for _, tc := range []struct {
+		name, selection, typed string
+		followUp               bool
+	}{
+		{name: "typed only redo", typed: "typed context"},
+		{name: "typed only follow-up", typed: "typed context", followUp: true},
+		{name: "selection and typed redo", selection: "draft", typed: "typed context"},
+		{name: "selection and typed follow-up", selection: "draft", typed: "typed context", followUp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var conversation, firstUser string
+			t.Run("before restart", func(t *testing.T) {
+				chat := &fakeChat{text: `{"title":"Polished","content":"Polished"}`}
+				set, models, _ := fileSetup(t, "make it shorter", chat)
+				a := newSessionAppIn(t, dir, helpertest.Opt("selection", tc.selection)+","+boxScript(t), func(s *settings.Settings) {
+					set(s)
+					s.Features.Rewrite.ShowCard = true
+				}, models)
+				a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+				a.postQueue(func() { a.box.text = tc.typed; a.boxSync() })
+				a.pump("the answer", func() bool { return a.answer.open })
+				reqs := chat.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("%d chats", len(reqs))
+				}
+				firstUser = lastUserOf(reqs[0])
+				conversation = a.answer.conv
+				a.pump("the history entry", func() bool { return len(a.history()) == 1 })
+				entry := a.history()[0]
+				if entry.TypedText != tc.typed || entry.SourceText != tc.selection {
+					t.Fatalf("saved typed input %q and selection %q, want %q and %q", entry.TypedText, entry.SourceText, tc.typed, tc.selection)
+				}
+			})
+
+			chat := &fakeChat{text: `{"title":"Polished again","content":"Polished again"}`}
+			set, models, tr := fileSetup(t, "more formal", chat)
+			a := newSessionAppIn(t, dir, "", func(s *settings.Settings) {
+				set(s)
+				s.Features.Rewrite.ShowCard = true
+			}, models)
+			a.restoreAnswer(conversation)
+			a.pump("the restored card", func() bool { return a.answer.open })
+			if tc.followUp {
+				a.recordFollowUp(t, tr, "more formal")
+				messages := chatMessages(chat.requests()[0])
+				if len(messages) != 4 || messages[1][1] != firstUser {
+					t.Fatalf("follow-up changed the restored turn: %q\nwant first user:\n%s", messages, firstUser)
+				}
+			} else {
+				input := a.answer.input
+				a.redoAnswer(session.StartRequest{Kind: store.KindRewrite, Target: a.answer.target, Text: &input})
+				a.pump("the restored redo", func() bool { return len(chat.requests()) == 1 && a.answer.redo == "" })
+				if got := lastUserOf(chat.requests()[0]); got != firstUser {
+					t.Fatalf("redo changed the input:\n%s\nwant:\n%s", got, firstUser)
+				}
+			}
+		})
 	}
 }
 
@@ -106,6 +234,10 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	slack := a.answer.target
 	rewriteSaid(t, a, tr, slack, "shorter", "two")
 	conversation := a.answer.conv
+	boxAnchor := a.boxFrame()
+	a.boxDraggedTo(mygo.Rectangle{X: boxAnchor.X - 300, Y: boxAnchor.Y - 200, Width: boxAnchor.Width, Height: boxAnchor.Height})
+	a.overlaySync()
+	moved := a.ov.frame
 	a.closeAnswer()
 	waitReopenItems(a, "Slack · decline politely")
 	a.restoreAnswer(conversation)
@@ -113,6 +245,9 @@ func TestReopenCardAndFollowUp(t *testing.T) {
 	card := a.answer
 	if len(card.turns) != 2 || !card.conversation || card.text != "two" || card.target != slack || card.turns[0].Selection != chatA {
 		t.Fatalf("restored %+v; target want %+v", card, slack)
+	}
+	if a.ov.frame != moved {
+		t.Fatalf("restored frame %+v, want the card's moved frame %+v", a.ov.frame, moved)
 	}
 	waitReopenItems(a)
 	rewriteSaid(t, a, tr, slack, "warmer", "three")
@@ -164,6 +299,46 @@ func TestReopenCardAfterRestart(t *testing.T) {
 	messages := chatMessages(chat.requests()[0])
 	if len(messages) != 6 || !strings.Contains(messages[1][1], "decline politely") || !strings.Contains(messages[3][1], "shorter") || !strings.Contains(messages[5][1], "warmer") {
 		t.Fatalf("follow-up messages %q", messages)
+	}
+}
+
+// A new native window can report a different content size from the new card.
+// Its actual center and pinned edge determine the user's position; the size
+// difference itself is not a drag offset.
+func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{name: "same size", width: 476, height: 130},
+		{name: "longer saved answer", width: 476, height: 345},
+		{name: "saved recording pill", width: 520, height: 96},
+		{name: "saved large card", width: 796, height: 130},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+			a.overlaySync()
+			saved := mygo.Rectangle{Width: test.width, Height: test.height}
+			x, y := layout.Place(a.ov.area, a.prefs.Overlay, saved.Width, saved.Height)
+			saved.X, saved.Y = x-300, y-200
+			a.overlayDraggedAt(saved)
+			a.overlaySync()
+			frame := a.ov.frame
+			if frame.X+frame.Width/2 != saved.X+saved.Width/2 || frame.Y+frame.Height != saved.Y+saved.Height {
+				t.Errorf("restored %+v, want the center and bottom of saved window %+v", frame, saved)
+			}
+		})
+	}
+}
+
+// The recording pill and answer card share one window, so restoring its
+// bounds after a restart can put the next overlay where the last one was.
+func TestSessionOverlayDoesNotRestoreSharedWindowBounds(t *testing.T) {
+	opts := sessionOverlayWindowOptions(mygo.Rectangle{X: 100, Y: 200, Width: 476, Height: 130}, nil)
+	if opts.StateKey != "" {
+		t.Fatalf("the shared session overlay restores window bounds under %q", opts.StateKey)
 	}
 }
 
