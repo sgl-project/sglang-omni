@@ -474,14 +474,10 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                                  const std::atomic<bool> &cancel) const {
   const auto frontend_started = std::chrono::steady_clock::now();
   const mx::array embeddings = PromptEmbeddings(samples, options.prompt);
-  // PromptEmbeddings schedules the evaluation; eval only waits for it, so no
-  // extra MLX evaluation is added.
   const auto frontend_eval_started = std::chrono::steady_clock::now();
-  mx::eval(embeddings);
   const double frontend_build_ms =
       Milliseconds(frontend_eval_started - frontend_started);
-  const double frontend_eval_ms =
-      Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
+  double frontend_eval_ms = 0.0;
   ChunkOutput output;
   const auto commit = [&](int token_id) {
     return Commit(output, token_id, options, max_new_tokens);
@@ -490,19 +486,30 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
   double decoder_prefill_ms = 0.0;
   double autoregressive_decode_ms = 0.0;
   if (draft_.has_value()) {
+    // The draft's clocks start inside Decode; materializing the frontend
+    // first keeps the encoder out of its prefill figure. The encoder still
+    // evaluates asynchronously and this wait overlaps only the draft's first
+    // graph construction.
+    mx::eval(embeddings);
+    frontend_eval_ms =
+        Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
     draft_statistics =
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
     decoder_prefill_ms = draft_statistics.prefill_ms;
     autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
-    const auto prefill_started = std::chrono::steady_clock::now();
+    // Prefill queues its forwards asynchronously first, so the encoder keeps
+    // the GPU busy through this wait and the pipeline stays the one main
+    // built; eval here only observes the scheduled array.
     PrefilledSequence sequence = Prefill(embeddings, cancel);
-    mx::eval(sequence.first_token);
-    decoder_prefill_ms =
-        Milliseconds(std::chrono::steady_clock::now() - prefill_started);
-    const auto decode_started = std::chrono::steady_clock::now();
+    mx::eval(embeddings);
+    frontend_eval_ms =
+        Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
+    const auto prefill_started = std::chrono::steady_clock::now();
+    auto decode_started = prefill_started;
     mx::array next_token = sequence.first_token;
+    bool first = true;
     bool finished = false;
     while (!finished) {
       if (cancel.load()) {
@@ -516,6 +523,14 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
               sequence.caches)));
       mx::async_eval({next_token});
       finished = commit(static_cast<int>(token.item<uint32_t>()));
+      if (first) {
+        // Main's own first wait of the loop: once the first token lands, the
+        // prefill that produced it has run.
+        first = false;
+        decode_started = std::chrono::steady_clock::now();
+        decoder_prefill_ms = Milliseconds(decode_started - prefill_started);
+      } else {
+      }
     }
     autoregressive_decode_ms =
         Milliseconds(std::chrono::steady_clock::now() - decode_started);

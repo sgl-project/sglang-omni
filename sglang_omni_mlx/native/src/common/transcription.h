@@ -36,7 +36,8 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
-  // Existing synchronization boundaries only; no extra MLX evaluation is added.
+  // Timed where waiting keeps main's async pipeline fed; no extra MLX
+  // evaluation is added. Prefill includes the first-token forward.
   double native_split_ms = 0.0;
   double frontend_build_ms = 0.0;
   double frontend_eval_ms = 0.0;
