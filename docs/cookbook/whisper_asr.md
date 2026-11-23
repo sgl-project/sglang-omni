@@ -22,13 +22,15 @@ distilled without it.
 
 ## Server Configuration
 
-Whisper ASR runs a single ASR stage on one GPU/Ascend NPU.
+Whisper runs one ASR stage on a single GPU or Ascend NPU.
 
 ```bash
 sgl-omni serve \
   --model-path openai/whisper-large-v3 \
   --port 8000
 ```
+
+When the [NVIDIA B200 MPS profile](../basic_usage/mps_dp.md#default-replica-counts-on-a-b200) applies, this command starts six replicas of the ASR stage on the same GPU. Add `--mps off` to run one replica.
 
 The first startup can take several minutes while the graphs are captured. Check
 readiness in another terminal:
@@ -104,7 +106,7 @@ export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
 sgl-omni serve --model-path openai/whisper-large-v3 --port 8000
 ```
 
-Pipeline startup defaults to `mem_fraction_static=0.50` on NPU and `0.85` elsewhere. Set `stages.asr.engine.mem_fraction_static` in a pipeline YAML to override this budget; explicit values take precedence, including `0.85` on NPU. Direct Python calls to `create_sglang_whisper_asr_executor` bypass pipeline configuration and retain the original `mem_fraction_static: float = 0.85` default; pass `0.50` explicitly when needed.
+The base pipeline uses `mem_fraction_static=0.50` on NPU and `0.85` elsewhere. To override it, set `stages.asr.engine.mem_fraction_static` in the pipeline YAML, for example to `0.85` on NPU. On B200, the automatic MPS profile sets `0.9733` per ASR replica and is skipped if you set this field explicitly. Direct calls to `create_sglang_whisper_asr_executor` default to `0.85`. Pass `0.50` explicitly to match the NPU pipeline.
 
 NPU decode graphs are disabled by default so Whisper can use the existing attention backend with ordinary decode. Prefill graph and compilation settings are preserved. Explicit graph overrides retain their precedence, but re-enabling NPU decode graphs is outside the validated scope. Ordinary decode can reduce throughput.
 
@@ -194,7 +196,7 @@ stages:
 
 ## Async Decode
 
-Whisper enables the shared one-step-lookahead decode path at every batch size, including a single request. It overlaps the current decode step's GPU work with the previous step's host-side result processing. The default running-request limit is 64. Disable async decode on the stage to compare against synchronous decode or diagnose a request lifecycle issue:
+Whisper enables the shared one-step-lookahead decode path at every batch size, including a single request. It overlaps the current decode step's GPU work with the previous step's host-side result processing. The base configuration allows 64 running requests. The B200 MPS profile allows 16 per replica. To compare with synchronous decode or diagnose a request lifecycle issue, disable async decode on the stage.
 
 ```bash
 sgl-omni serve \
