@@ -7,14 +7,18 @@ import json
 import threading
 from pathlib import Path
 
+import huggingface_hub
 import numpy as np
+import pytest
 import torch
+from huggingface_hub.errors import OfflineModeIsEnabled
 from transformers import (
     Nemotron3_5AsrConfig,
     Nemotron3_5AsrForRNNT,
     ParakeetFeatureExtractor,
 )
 
+import sglang_omni.utils.hf
 from sglang_omni.config.manager import resolve_config_cls_for_model_path
 from sglang_omni.models.nemotron3_5_asr.batch_engine import NemotronBatchEngine
 from sglang_omni.models.nemotron3_5_asr.config import Nemotron3_5ASRPipelineConfig
@@ -24,6 +28,10 @@ from sglang_omni.models.nemotron3_5_asr.unified import (
 )
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.utils.hf import (
+    NEMOTRON_UNIFIED_ASR_ARCHIVE,
+    try_resolve_arch_from_nemotron_unified_asr_layout,
+)
 
 
 class TinyProcessor:
@@ -70,6 +78,27 @@ def test_unified_checkpoints_route_to_the_nemotron3_5_stage(tmp_path: Path) -> N
             is Nemotron3_5ASRPipelineConfig
         )
     assert not is_unified_checkpoint(str(tmp_path))
+
+
+def test_cached_hub_archive_routes_without_the_hub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_id, revision = "nvidia/nemotron-labs-unified-asr-0.6b", "0" * 40
+    repo = tmp_path / "models--nvidia--nemotron-labs-unified-asr-0.6b"
+    repo.joinpath("refs").mkdir(parents=True)
+    repo.joinpath("refs", "main").write_text(revision)
+    snapshot = repo / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    snapshot.joinpath(NEMOTRON_UNIFIED_ASR_ARCHIVE).touch()
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path))
+
+    def offline(*args, **kwargs):
+        raise OfflineModeIsEnabled("offline")
+
+    monkeypatch.setattr(sglang_omni.utils.hf, "file_exists", offline)
+    resolve = try_resolve_arch_from_nemotron_unified_asr_layout
+    assert resolve(repo_id) == "Nemotron3_5AsrForRNNT"
+    assert resolve("nvidia/other-asr") is None
 
 
 def test_engine_sessions_match_whole_file_hops(tmp_path: Path) -> None:
