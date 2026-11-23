@@ -40,6 +40,11 @@ func (a *app) setOpening(on bool) {
 	a.updateSettings(func(current *settings.Settings) { current.Appearance.Opening = on })
 }
 
+// setOpeningLength sets how long the opening plays, in milliseconds.
+func (a *app) setOpeningLength(ms int) {
+	a.updateSettings(func(current *settings.Settings) { current.Appearance.OpeningMillis = ms })
+}
+
 // syncSavedAppearancePreview puts the saved palette and transparency in
 // appearance, except those of a preview still being saved.
 func (a *app) syncSavedAppearancePreview(appearance *settings.Appearance) {

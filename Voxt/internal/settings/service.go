@@ -25,6 +25,14 @@ type Documents interface {
 // Scales are the UI scales Appearance offers (90, 100, 110 and 125 %).
 var Scales = []float64{0.9, 1, 1.1, 1.25}
 
+// OpeningLengths are the opening's lengths Appearance offers, in
+// milliseconds, from slow to fast: the speed slider runs from the turtle
+// (3 seconds) to the rabbit (1 second).
+var OpeningLengths = []int{3000, 2000, 1000}
+
+// DefaultOpeningMillis is the opening's length unless chosen.
+const DefaultOpeningMillis = 2000
+
 const (
 	ThemeSystem      = "system"
 	ThemeLight       = "light"
@@ -173,6 +181,9 @@ func normalize(s Settings) Settings {
 		}
 	}
 	ap.Scale = best
+	if !slices.Contains(OpeningLengths, ap.OpeningMillis) {
+		ap.OpeningMillis = DefaultOpeningMillis
+	}
 	if ap.SidebarWidth != 0 {
 		ap.SidebarWidth = min(max(ap.SidebarWidth, MinSidebarWidth), MaxSidebarWidth)
 	}

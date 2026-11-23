@@ -74,6 +74,13 @@ Tabler Icons
   Copyright (c) 2020-2024 Paweł Kuna, MIT (LICENSES/Tabler-Icons.txt),
   some redrawn slightly.
 
+Lucide
+  The rabbit and the turtle at the ends of Settings → Appearance's
+  opening speed (internal/icons/opening.go) are Lucide's icons
+  (https://lucide.dev), Copyright (c) Lucide Contributors 2022, portions
+  Copyright (c) Cole Bemis 2013-2022 as part of Feather, ISC
+  (LICENSES/Lucide.txt).
+
 Language data
   internal/lang/languages.tsv and aliases.tsv are built by
   internal/lang/gen from:

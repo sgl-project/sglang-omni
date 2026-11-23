@@ -30,7 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
-- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it. To turn it off, switch off Play the opening at start in Settings → Appearance.
+- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it. It plays in 2 seconds; in Settings → Appearance, Play the opening at start turns it off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second).
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
@@ -86,7 +86,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
-- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减弱动态效果”时不播放。不想看可以在设置 → 外观里关掉“启动时播放开场动画”。
+- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减弱动态效果”时不播放。开场默认 2 秒播完。在设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒）。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。

@@ -24,7 +24,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if appearance := state.Appearance; appearance != nil {
 			host.settingsForm.settingsAppearanceLocalUI = settingsAppearanceLocalUI{
 				theme: appearance.Theme, scale: appearance.Scale, sidebar: appearance.Sidebar, reduceMotion: appearance.ReduceMotion,
-				opening: appearance.Opening,
+				opening: appearance.Opening, openingSpeed: float64(appearance.OpeningLength),
 			}
 		}
 		if privacy := state.Privacy; privacy != nil {
@@ -97,6 +97,7 @@ func (host *meetingDemoHost) setSidebarChoice(choice string) {
 }
 func (host *meetingDemoHost) setReduceMotion(on bool) { host.record("setReduceMotion %t", on) }
 func (host *meetingDemoHost) setOpening(on bool)      { host.record("setOpening %t", on) }
+func (host *meetingDemoHost) setOpeningLength(ms int) { host.record("setOpeningLength %d", ms) }
 func (host *meetingDemoHost) setPaletteColor(color string) {
 	host.record("setPaletteColor %s", color)
 }
