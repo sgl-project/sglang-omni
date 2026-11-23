@@ -130,7 +130,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 
 ## 0. 两个通道
 
-**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。更新源就是这些 GitHub Release，不经过更新服务，发版后不用再推清单：app 里的 MyGo 更新器通过 GitHub API 找到最新的 `voxt-v` Release，读它的清单，再下载、校验、安装并重新启动（MyGo 补丁 0020 加了 beta 通道）。没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
+**Voxt 2 有独立的 MyGo 更新通道**：Voxt Release 工作流在构建 tag 正式版和 beta 时把 `updates`（公钥、`url`、`prereleases`）写进 `release/mygo.release.json`，用 `MYGO_UPDATER_PRIVATE_KEY` 签 tar.gz 和 delta，把它们和 `update-darwin-arm64.json` 附到 GitHub Release。清单里当前版本的文件地址改成这个 Release 的下载地址；`previous` 里旧版本的地址不变。更新源就是这些 GitHub Release，不经过更新服务，发版后不用再推清单：app 里的 MyGo 更新器通过 GitHub API 找到最新的 `voxt-v` Release，读它的清单，再下载、校验、安装并重新启动（MyGo 补丁 0021 加了 beta 通道）。没有更新源的构建仍走 `updates_github.go` 的 GitHub 检查回退，开发构建没有更新器。
 
 | | 正式版 | beta 版 |
 |---|---|---|

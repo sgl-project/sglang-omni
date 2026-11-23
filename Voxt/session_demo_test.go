@@ -299,7 +299,8 @@ func clickSessionDemoBubbleCopy(t *testing.T, host *meetingDemoHost, tester *ui.
 	tester.Move(textBounds.X+textBounds.W/2, textBounds.Y+textBounds.H/2)
 	frames(tester)
 	text, _, _ := sessionCardBlockText(block, layout.CardSizes[card.SizeStep].Width(ovTestArea, host.sessionSeed.Overlay.Margin))
-	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX-35, titleBounds.Y-layout.BubblePadY+19)
+	// The Copy icon (24) right of the bubble, level with its top.
+	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX+bubbleCopyGap+12, titleBounds.Y-layout.BubblePadY+12)
 	frames(tester)
 }
 
