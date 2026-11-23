@@ -5,6 +5,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/activity"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -49,7 +50,13 @@ type homeViewState struct {
 	ShowTry      bool                     `json:"show_try"`
 	TryRecording bool                     `json:"try_recording"`
 	Today        homeTodayViewState       `json:"today"`
-	Recent       []homeRecentViewState    `json:"recent"`
+	// Activity is the activity calendar once its log was read.
+	Activity *homeActivityViewState `json:"activity,omitempty"`
+	// Insights is the log's totals above the calendar (insights_view.go).
+	Insights *insightsViewState    `json:"insights,omitempty"`
+	Recent   []homeRecentViewState `json:"recent"`
+	// Outfit is what the mascot wears today (mascotOutfitOn), "" none.
+	Outfit string `json:"outfit,omitempty"`
 }
 
 type homeViewStateInput struct {
@@ -65,6 +72,9 @@ type homeViewStateInput struct {
 	TryRecording bool
 	Retry        entryRetry
 	Now          time.Time
+	Activity     activity.Log
+	ActivityRead bool
+	ActivityPage int
 }
 
 // dayStats are a day's finished results: how many, and their characters
@@ -82,6 +92,13 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 		ShowTry: input.ShowTry, TryRecording: input.TryRecording,
 		Today:  buildHomeTodayViewState(translator, input.Today, input.Features),
 		Recent: make([]homeRecentViewState, len(input.Recent)),
+		Outfit: mascotOutfitOn(input.Now),
+	}
+	if input.ActivityRead {
+		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now)
+		state.Activity = &activity
+		insights := buildInsightsViewState(translator, input.Activity, input.Now)
+		state.Insights = &insights
 	}
 	for index, entry := range input.Recent {
 		state.Recent[index] = homeRecentViewState{

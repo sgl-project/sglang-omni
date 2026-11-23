@@ -79,7 +79,7 @@ func (e *earlyClean) stop() {
 // last event goes to the early clean-up (Transcribe with the clean-up
 // on only; the final text repeats these stretches as its prefix).
 func (r *run) hearPiece(stable string) {
-	if r.req.Kind != store.KindTranscribe || !r.settings.Features.Transcribe.Enhance {
+	if r.req.Kind != store.KindTranscribe || !r.transcribeCleanup() {
 		return
 	}
 	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
@@ -247,7 +247,7 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Unlock()
 	e.cond.Broadcast()
 	if fallback || done < jobs-1 {
-		e.cancel() // abandon queued work; an active last request may still finish
+		e.cancel() // abandon queued work and abort any in-flight request
 	}
 	<-e.workerDone
 	e.mu.Lock()

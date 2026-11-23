@@ -89,5 +89,6 @@
   "Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy & Security → Screen & System Audio Recording, or record the microphone only.": "没能录制系统音频。请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Voxt 录制系统音频，或者只录制麦克风。",
   "Could not record system audio. Try again, or record the microphone only.": "没能录制系统音频。请重试，或只录制麦克风。",
   "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
-  "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。"
+  "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。",
+  "You": "你"
 }

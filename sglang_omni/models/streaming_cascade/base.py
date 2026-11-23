@@ -43,6 +43,10 @@ SENTENCE_END = re.compile(r"[.!?;。！？；…]+[\"')\]”’」』）]*$")
 CJK_SENTENCE_END = re.compile(r"[。！？；…]+[\"')\]”’」』）]*(?=\S)")
 # note (luojiaxuan): A word ending in a comma, colon or dash ends a clause, where a sentence too long for one speech request is cut when the cut may fall there.
 CLAUSE_END = re.compile(r"[,:，、：—–]+[\"')\]”’」』）]*$")
+# note (Haoling Pu): a reply puts what the user should read, not hear, between <screen> and </screen>; a block still being written runs to the end of the text.
+SCREEN_BLOCK = re.compile(
+    r"<screen>.*?(?:</screen>|\Z)|</screen>", re.DOTALL | re.IGNORECASE
+)
 
 
 class StreamComponent:
@@ -76,11 +80,26 @@ class StreamComponent:
         return 0
 
 
-class ChatMessage(BaseModel):
-    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, is_cut an assistant reply the listener cut before its end, and style_starts the offsets in an assistant reply where a style the model named begins. None of these fields goes into the request; is_cut and style_starts change how the prompt shows the reply."""
+class FunctionCall(BaseModel):
+    """The function of an assistant tool call as the chat API carries it: the arguments are the JSON text the model wrote."""
 
-    role: Literal["system", "user", "assistant"]
+    name: str
+    arguments: str
+
+
+class AssistantToolCall(BaseModel):
+    id: str
+    type: Literal["function"] = "function"
+    function: FunctionCall
+
+
+class ChatMessage(BaseModel):
+    """One history entry; uncertain marks an assistant reply cut where the listener may have heard part of the next sentence, is_cut an assistant reply the listener cut before its end, and style_starts the offsets in an assistant reply where a style the model named begins. None of these fields goes into the request; is_cut and style_starts change how the prompt shows the reply. An assistant entry that called tools carries them in tool_calls, and a tool entry answers the call named by tool_call_id."""
+
+    role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
+    tool_calls: list[AssistantToolCall] | None = None
+    tool_call_id: str | None = None
     uncertain: bool = False
     is_cut: bool = False
     style_starts: list[tuple[int, str]] = Field(default_factory=list)
@@ -139,16 +158,24 @@ def text_chunk(
 
 
 def messages_chunk(
-    messages: list[ChatMessage], turn: int, language: str | None = None
+    messages: list[ChatMessage],
+    turn: int,
+    language: str | None = None,
+    tool_choice: str | None = None,
 ) -> TimedChunk:
+    payload = with_language(
+        {"messages": [message_dict(message) for message in messages]}, language
+    )
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    else:
+        pass
     return TimedChunk(
         TEXT,
         0,
         0,
         0,
-        with_language(
-            {"messages": [message_dict(message) for message in messages]}, language
-        ),
+        payload,
         format=MESSAGES,
         turn=turn,
     )
@@ -433,6 +460,11 @@ async def sentences(
         end = sentence_end(pending, max_words, is_complete=True)
         yield pending[:end]
         pending = pending[end:]
+
+
+def blank_screen_blocks(text: str) -> str:
+    """The text with every screen block, its tags included, and every stray closing tag turned into spaces, so the rest keeps its character offsets."""
+    return SCREEN_BLOCK.sub(lambda block: " " * len(block.group()), text)
 
 
 class ComponentConfig(BaseModel):

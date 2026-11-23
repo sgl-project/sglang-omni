@@ -25,6 +25,7 @@ const (
 	placeHome                       // Home's Try area
 	placeFeature                    // the feature page's Try area
 	placeOnboarding                 // the setup guide's step
+	placeShare                      // the share card (share_card.go): any feature's result fills it
 )
 
 // tryPlace decides where a shortcut of kind, pressed with target in
@@ -45,6 +46,10 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	}
 	if a.settingsOpen || a.textFocused() {
 		return placeNone
+	}
+	// The card shows only on Home: off it, a card left open takes nothing.
+	if a.share.open && a.share.studio == nil && a.router.Path() == "/home" {
+		return placeShare
 	}
 	switch a.router.Path() {
 	case "/home":
@@ -68,6 +73,8 @@ func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionN
 		a.fui(string(kind)).block = n
 	case placeOnboarding:
 		a.obTryStarted(id, n) // onboarding.go
+	case placeShare:
+		a.shareTryStarted(id, n) // share_controller.go
 	}
 }
 

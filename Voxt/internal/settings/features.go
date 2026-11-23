@@ -1,6 +1,9 @@
 package settings
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // Features: the three features and the shared paste-last and cancel
 // shortcuts.
@@ -19,6 +22,12 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	// ReturnFinishes stops a Transcribe, Translate or Rewrite recording
+	// when Return is pressed (Settings → Shortcuts); the key is consumed,
+	// not sent after the text is inserted. Not a note's. Off: Return goes
+	// to the app as usual. Until 2.1.3 it was Transcribe's alone
+	// (features.transcribe.returnFinishes, migrateReturnFinishes).
+	ReturnFinishes bool `json:"returnFinishes"`
 	// StrictShortcuts: while recording, only the shortcuts of the feature
 	// that started the session stop it; another feature's do nothing.
 	// Off: any feature's shortcut stops (Voxt 1.x's common stop, #3823).
@@ -98,9 +107,6 @@ type Transcribe struct {
 	Structure bool `json:"structure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
-	// ReturnFinishes stops a Transcribe recording when Return is pressed.
-	// The key is consumed, not sent after the text is inserted.
-	ReturnFinishes bool `json:"returnFinishes"`
 }
 
 // Translate: speech or selected text → a translation.
@@ -147,4 +153,21 @@ type AppEnhancement struct {
 type Browser struct {
 	BundleID string `json:"bundleID"`
 	Name     string `json:"name,omitempty"`
+}
+
+// migrateReturnFinishes keeps the Return switch Transcribe had before it
+// covered every feature (features.transcribe.returnFinishes): a document
+// without features.returnFinishes takes it.
+func migrateReturnFinishes(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			ReturnFinishes *bool `json:"returnFinishes"`
+			Transcribe     struct {
+				ReturnFinishes *bool `json:"returnFinishes"`
+			} `json:"transcribe"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) == nil && doc.Features.ReturnFinishes == nil && doc.Features.Transcribe.ReturnFinishes != nil {
+		f.ReturnFinishes = *doc.Features.Transcribe.ReturnFinishes
+	}
 }

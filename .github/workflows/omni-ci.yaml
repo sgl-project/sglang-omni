@@ -201,11 +201,12 @@ jobs:
           HF_ENDPOINT: https://huggingface.co
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MODEL: ${{ needs.preflight.outputs.omni_ci_model }}
+          ASR_CI_MODEL: ${{ needs.preflight.outputs.asr_seedtts_ci_model }}
           RUN_FULL_DUPLEX: ${{ needs.preflight.outputs.run_full_duplex }}
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
-          # Qwen3-ASR-1.7B and MOSS-TD serve their DFlash drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
+          # Qwen3-ASR-1.7B, MOSS-TD and Fun-ASR-Nano serve their DFlash drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
@@ -219,7 +220,14 @@ jobs:
             "${COSYVOICE3_MODEL_PATH}" \
             "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
+            wilsonzheng0327/Fun-ASR-Nano-dflash@b3cb091f554c88274378d549d7e7d3c5a13052e6 \
             "${WHISPER_ASR_MODEL_PATH}"
+
+          if [[ "${ASR_CI_MODEL}" == "ark" ]]; then
+            bash .github/scripts/ensure_hf_models.sh omni \
+              AutoArk-AI/ARK-ASR-3B@1e28271b79edc97635783bea65abc89195a09ed3 \
+              wilsonzheng0327/ARK-ASR-3B-dflash@b0789bb314fab990e0f2377054c4b1947d204273
+          fi
 
           if [[ "${OMNI_CI_MODEL}" == "minicpmo" || "${RUN_FULL_DUPLEX}" == "true" ]]; then
             bash .github/scripts/ensure_hf_models.sh omni openbmb/MiniCPM-o-4_5

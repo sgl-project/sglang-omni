@@ -19,4 +19,9 @@ type homeActions interface {
 	copyHomeRecent(id string)
 	addHomeShortcut()
 	fixHomeReadiness(fix string)
+	activityBack()
+	activityForward()
+	// openShare opens the share card (share_card.go).
+	openShare()
+	insightsActions
 }

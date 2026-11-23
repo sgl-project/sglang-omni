@@ -276,8 +276,8 @@ func overlayNotice(c *ui.Context, notice *sessionNoticeViewState, radius, alpha 
 	}
 }
 
-// The preview's background: a desktop picture (Voxt's, Apache-2.0: see
-// NOTICE), decoded once.
+// The preview's background: a desktop picture of our own (a soft gradient,
+// blue-violet to peach), decoded once.
 //
 //go:embed assets/overlay-preview-background.png
 var ovPreviewPNG []byte

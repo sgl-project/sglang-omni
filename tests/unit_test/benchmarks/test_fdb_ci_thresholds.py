@@ -104,7 +104,12 @@ def v15_sample_ids() -> list[str]:
 
 
 def passing_variant() -> dict[str, JsonValue]:
-    return {"status": "pass", "protocol_verdict": "pass", "errors": []}
+    return {
+        "status": "pass",
+        "protocol_verdict": "pass",
+        "errors": [],
+        "directory": "samples/unreported",
+    }
 
 
 @pytest.fixture
@@ -557,6 +562,23 @@ def test_a_not_exercised_session_is_counted_apart_from_client_pacing(
     write_json(path, document)
     with pytest.raises(AssertionError, match="protocol failures"):
         gate(run_root)
+
+
+def test_failed_speeches_are_counted_from_both_recordings(run_root: Path) -> None:
+    """A session whose oracle accepted a failed/speech_error reply passed, so the gate holds, and its count is read from the session's report."""
+    for recording, variant_name, failures in (
+        ("recording", "overlap", 2),
+        ("v10/recording", "input", 1),
+    ):
+        shard = run_root / "repeat-1" / recording / "shard-0"
+        document = read_json(shard / "run.json")
+        variant = document["samples"][0]["variants"][variant_name]
+        variant["directory"] = f"samples/0/{variant_name}"
+        report = {"cases": [{"metrics": {"responses_speech_failed": failures}}]}
+        write_json(shard / variant["directory"] / "report.json", report)
+        write_json(shard / "run.json", document)
+    assert fdb_ci.count_speech_failures(run_root) == 3
+    gate(run_root)
 
 
 def test_a_rate_without_scored_samples_fails(run_root: Path) -> None:
