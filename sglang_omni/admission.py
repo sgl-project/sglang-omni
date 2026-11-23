@@ -54,3 +54,16 @@ class ContextExhaustedError(ValueError):
     @classmethod
     def matches(cls, exc: BaseException) -> bool:
         return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")
+
+
+class SessionCapacityExhaustedError(ValueError):
+    """A session unit the server has no room for: the server is overloaded, the session is not at fault.
+
+    Raised for both session capacity refusals, KV tokens and request-to-token slots; the message names which.
+    """
+
+    CODE = "session_capacity_exhausted"
+
+    @classmethod
+    def matches(cls, exc: BaseException) -> bool:
+        return isinstance(exc, cls) or str(exc).startswith(f"{cls.CODE}:")

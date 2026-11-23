@@ -65,15 +65,9 @@ func TestBackgroundToastDoesNotRearm(t *testing.T) {
 	}
 }
 
-func TestNoticeModelsChangeWithTimeZone(t *testing.T) {
+func TestAnnouncementModelChangesWithTimeZone(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
-	a.notices = []core.Notification{{ID: "zone", Time: instant.Add(-time.Hour)}}
-	first := a.noticesModel(instant)
-	second := a.noticesModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
-	if len(first) != 1 || len(second) != 1 || first[0].TimeHint == second[0].TimeHint {
-		t.Fatalf("notice cache kept stale timezone %q and %q", first[0].TimeHint, second[0].TimeHint)
-	}
 	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
 	a.announceShownOpen = true
 	firstAnnouncement := a.announcementModel(instant)
@@ -305,6 +299,12 @@ func TestProblemCards(t *testing.T) {
 	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
+	cardTitle, _ := tt.Find("No models")
+	tt.Move(cardTitle.X+cardTitle.W/2, cardTitle.Y+cardTitle.H/2)
+	tt.Advance(time.Second)
+	if hasExact(tt, i18n.DateTime(a.notices[0].Time)) {
+		t.Fatal("hovering the problem card shows its timestamp over the sidebar navigation")
+	}
 	click(t, tt, "Open Speech models")
 	if a.shownPath() != modelsPath {
 		t.Errorf("its action: %s", a.shownPath())
@@ -383,6 +383,34 @@ func TestPermissionsSettings(t *testing.T) {
 	// asked yet there.
 	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access || a.perms.speech != permission.NotDetermined {
 		t.Errorf("permissions %+v after %v", a.perms, fs.methods())
+	}
+	// A recheck keeps what is shown until the helper answers: this
+	// process's read (the microphone allowed) never shows in between
+	// (#4365).
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermDenied, SpeechRecognition: proto.PermNotDetermined}, nil
+	}
+	var held []func()
+	a.postQueue = func(fn func()) { held = append(held, fn) }
+	a.recheckPermissions()
+	if a.perms.mic != permission.NotDetermined || a.perms.speech != permission.NotDetermined {
+		t.Errorf("before the helper answered: %+v", a.perms)
+	}
+	a.postQueue = nil
+	for _, fn := range held {
+		fn()
+	}
+	if len(held) == 0 || a.perms.mic != permission.Denied {
+		t.Errorf("after the helper answered (%d posts): %+v", len(held), a.perms)
+	}
+	// An older helper does not read Speech Recognition: this process does.
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermNotDetermined}, nil
+	}
+	a.permSys.(*permission.Fake).Speech = permission.Granted
+	a.recheckPermissions()
+	if a.perms.speech != permission.Granted {
+		t.Errorf("speech with an older helper: %+v", a.perms)
 	}
 	if slices.ContainsFunc(fs.methods(), func(m string) bool { return strings.HasPrefix(m, "automation.") }) {
 		t.Errorf("asked for Automation: %v", fs.methods())
@@ -534,8 +562,12 @@ func TestPrivacyGoesOnline(t *testing.T) {
 func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	// Everything else allowed, so the row's Ask is the only one.
-	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
-		return proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}, nil
+	allowed := proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) { return allowed, nil }
+	request := fs.handlers[proto.MethodPermissionsRequest]
+	fs.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
+		_, err := request(raw)
+		return allowed, err
 	}
 	a.navigate("/settings/permissions")
 	frames(tt)
@@ -553,6 +585,15 @@ func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	click(t, tt, "Ask")
 	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
 		t.Errorf("asked %v", fs.asked)
+	}
+	// Once asked, the row says so instead of offering Ask again (#4364).
+	frames(tt)
+	if unknown, asked, ask := has(tt, "Unknown"), has(tt, "Asked: check System Settings"), hasExact(tt, "Ask"); unknown || !asked || ask {
+		t.Errorf("after asking: Unknown shown %v, Asked shown %v, Ask shown %v", unknown, asked, ask)
+	}
+	a.ob.step = obPermissions // the setup guide's row says the same
+	if p := a.onboardingViewStateForTranslator(i18n.CurrentTranslator()).Permissions; p == nil || p.SystemAudio.CanAsk || p.SystemAudio.Text != "Asked: check System Settings" {
+		t.Errorf("setup guide after asking: %+v", p)
 	}
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
 	f := a.permSys.(*permission.Fake)

@@ -44,6 +44,13 @@ function codeUnitOffset(text, codePoints) {
   return offset;
 }
 
+// A screen tag still arriving at the end of the text, such as "<scr" or "</scre".
+const SCREEN_TAG_ARRIVING = String.raw`<\/?(?:s(?:c(?:r(?:e(?:e(?:n)?)?)?)?)?)?$`;
+// note (Haoling Pu): a reply shows what it writes between <screen> and </screen> and never speaks it; a block still streaming runs to the end, and so does a tag still arriving.
+const SCREEN_BLOCK = new RegExp(String.raw`<screen>[\s\S]*?(?:<\/screen>|$)|<\/screen>|${SCREEN_TAG_ARRIVING}`, "gi");
+// The text of each screen block, without a tag still arriving at its end, and its closing tag when it has one.
+const SCREEN_TEXT = new RegExp(String.raw`<screen>([\s\S]*?)(?:(<\/screen>)|${SCREEN_TAG_ARRIVING}|$)`, "gi");
+
 const WORDS = new Intl.Segmenter(undefined, { granularity: "word" });
 
 // note (luojiaxuan): How far into a playing reply's text the caption has reached, in UTF-16 code
@@ -115,10 +122,11 @@ export class DuplexSession {
     return reply ? Math.min(heardTextEnd(reply.progress, reply.playedMs), reply.text.length) : 0;
   }
 
-  // What the caption shows of a reply: the heard part and the part still to play. A reply that ended
-  // other than completed, or that the player stopped, keeps only what was heard: the prefix the
-  // server's history kept once it reports one, else where its caption was when it stopped, and nothing
-  // when none of its audio played. A reply without progress from the server is shown whole until it is cut.
+  // What the caption shows of a reply: the heard part and the part still to play, without its screen
+  // blocks. A reply that ended other than completed, or that the player stopped, keeps only what was
+  // heard: the prefix the server's history kept once it reports one, else where its caption was when it
+  // stopped, and nothing when none of its audio played. A reply without progress from the server is
+  // shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
@@ -135,7 +143,35 @@ export class DuplexSession {
     } else {
       end = reply.text.length;
     }
-    return { heard: reply.text.slice(0, end), pending: cut ? "" : reply.text.slice(end) };
+    // Screen blocks turn into spaces of the same length, so the offsets into the reply still fit.
+    const spoken = reply.text.replace(SCREEN_BLOCK, (block) => " ".repeat(block.length));
+    return { heard: spoken.slice(0, end), pending: cut ? "" : spoken.slice(end) };
+  }
+
+  // What the screen shows: the played screen blocks of the latest reply that has any. A block has played once a
+  // progress point past its closing tag has played, or, after a cut, once its closing tag lies in the prefix the
+  // server's history kept, which is when that history keeps it whole, so a reply cut before or inside its block
+  // never shows it. A block the reply left open ends with the reply once it has completed.
+  get screen() {
+    for (const reply of [...this.replies.values()].reverse()) {
+      const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
+      let reachedEnd;
+      if (cut && reply.keptEnd !== null) {
+        reachedEnd = reply.keptEnd;
+      } else {
+        // note (Haoling Pu): the caption runs ahead of the audio, over the whole reply before the first progress event and word by word between two points, so the card waits for a point that has played.
+        // note (Haoling Pu): the server sums audio_ms chunk by chunk and the player divides its sample count once, so a reply's last point can sit a rounding error, about 1e-11 ms, past the played ms; 0.01 ms is under one 24 kHz sample.
+        reachedEnd = heardTextEnd(reply.progress, reply.playedMs + 0.01);
+      }
+      const reached = codeUnitOffset(reply.text, reachedEnd);
+      // note (Haoling Pu): the server reports a progress point at each line of a block, so a block is matched in the whole text, not in the played prefix, where a block cut short would match as one ending there.
+      const blocks = [...reply.text.matchAll(SCREEN_TEXT)]
+        .filter((match) => (match[2] !== undefined || reply.status === "completed") && match.index + match[0].length <= reached)
+        .map((match) => match[1].trim())
+        .filter(Boolean);
+      if (blocks.length) return blocks.join("\n\n");
+    }
+    return "";
   }
 
   // The player's count of a reply's audio; a cut reply tells the server how much was heard.

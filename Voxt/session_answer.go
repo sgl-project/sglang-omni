@@ -242,6 +242,8 @@ func (a *app) closeAnswer() {
 	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
+	target := a.answer.target.PID
+	defer a.giveFrontBack(target) // after the card's window went: VoxtNew in front with no window
 	a.answer, a.followUp = answerCard{}, ""
 	if a.box.open { // the card that showed it
 		a.dropBox()

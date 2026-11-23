@@ -228,7 +228,7 @@ func (a *app) closeOnboarding() {
 	a.shortcutPrompt() // settings_shortcuts_family.go: it waited for the guide
 }
 
-// obGo moves to a step (Back, Continue, Skip).
+// obGo moves to a step (a previous breadcrumb, Back, Continue, Skip).
 func (a *app) obGo(step int) {
 	if a.obBusy() {
 		return
