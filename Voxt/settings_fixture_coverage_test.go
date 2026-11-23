@@ -130,6 +130,11 @@ func checkSettingsFixtureValues(t *testing.T, locale string, fixtures map[string
 		accessibilityStates[permissions.Accessibility.Allowed] = true
 	}
 	assertSettingsFixtureSet(t, locale+" accessibility states", map[bool]bool{false: true, true: true}, accessibilityStates)
+	for name, asked := range map[string]bool{"settings-permissions-state-granted": false, "settings-permissions-system-audio-asked": true} {
+		if audio := requireSettingsDialogFixture(t, locale, fixtures, name).Permissions.SystemAudio; audio != systemAudioPermission(translator, asked) {
+			t.Errorf("%s/%s: system audio %+v, want asked=%t", locale, name, audio, asked)
+		}
+	}
 
 	checkSettingsAudioFixtures(t, locale, fixtures)
 	checkSettingsAppearanceFixtures(t, locale, fixtures)
@@ -218,6 +223,9 @@ func checkSettingsAppearanceFixtures(t *testing.T, locale string, fixtures map[s
 	}
 	if !variant.ReduceMotion {
 		t.Errorf("%s: appearance variant does not reduce motion", locale)
+	}
+	if variant.Opening {
+		t.Errorf("%s: the opening's switch shows on while Reduce motion is on", locale)
 	}
 	overlay := requireSettingsDialogFixture(t, locale, fixtures, "settings-overlay-top-live-lines").Overlay
 	if overlay.Position != 1 || overlay.LiveLayout != 1 {

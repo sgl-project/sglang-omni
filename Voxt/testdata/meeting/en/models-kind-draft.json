@@ -4,16 +4,16 @@
   "models": {
     "asr": [
       {
-        "key": "model-asr.accurate",
+        "key": "model-asr.qwen3-6bit",
         "rows": [
           {
-            "id": "asr.accurate",
+            "id": "asr.qwen3-6bit",
             "kind": "asr",
-            "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "name": "Qwen3-ASR 1.7B (6bit)",
+            "default": false,
             "installed": true,
-            "size_text": "2.5 GB on disk",
-            "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
+            "size_text": "2.0 GB on disk",
+            "about": "Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.",
             "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
             "tags": [
               "Local",
@@ -24,35 +24,35 @@
             "actions": [
               {
                 "kind": "hide",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "label": "Hide",
-                "accessibility_label": "Hide Qwen3-ASR 1.7B (8bit)",
+                "accessibility_label": "Hide Qwen3-ASR 1.7B (6bit)",
                 "tooltip": "Hide it from the features' menus"
               },
               {
                 "kind": "delete",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "label": "Delete",
-                "accessibility_label": "Delete Qwen3-ASR 1.7B (8bit)…"
+                "accessibility_label": "Delete Qwen3-ASR 1.7B (6bit)…"
               },
               {
                 "kind": "assign",
-                "model_id": "asr.accurate",
+                "model_id": "asr.qwen3-6bit",
                 "model_kind": "asr",
                 "label": "Apply to",
-                "accessibility_label": "Apply Qwen3-ASR 1.7B (8bit) to features",
+                "accessibility_label": "Apply Qwen3-ASR 1.7B (6bit) to features",
                 "tooltip": "Choose the features that use this model"
               }
             ],
             "draft": {
               "model_id": "asr.accurate.draft",
-              "parent_id": "asr.accurate",
+              "parent_id": "asr.qwen3-6bit",
               "help": "Uses speculative decoding: a small draft model (725.7 MB) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.",
               "installed": false,
               "needs_download": false,
               "size_text": "725.7 MB on disk",
               "on": false,
-              "switch_label": "Faster transcription for Qwen3-ASR 1.7B (8bit)",
+              "switch_label": "Faster transcription for Qwen3-ASR 1.7B (6bit)",
               "actions": [
                 {
                   "kind": "use",
