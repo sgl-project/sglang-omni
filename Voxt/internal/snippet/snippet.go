@@ -4,8 +4,13 @@
 // model's text; a trigger inside a dictation is replaced in the final
 // text.
 // Triggers match ignoring case, spaces and punctuation, so "my LinkedIn"
-// matches "My linked in." as recognised; a trigger in Latin letters or
-// digits matches whole words only. The snippets live in a document of
+// matches "My linked in." as recognised. As the dictionary's aliases
+// (dict.Replace), a trigger in a script that puts spaces between words
+// (Latin, Cyrillic…) matches whole words only, and one in Chinese,
+// Japanese or Korean anywhere, so it needs at least MinWordless
+// characters. Only a trigger
+// the user said is replaced: one the language model wrote is its own
+// wording. The snippets live in a document of
 // their own (Key).
 //
 // Imports: nothing internal.
@@ -22,10 +27,14 @@ import (
 // Key is the document the snippets are stored under (store.Documents).
 const Key = "snippets:list"
 
-// Limits of a snippet.
+// Limits of a snippet. MinWordless is the fewest characters of a
+// trigger only in Chinese, Japanese or Korean: it matches inside longer
+// words too, so a shorter one ("地址") would go off in everyday
+// speech ("收货地址").
 const (
-	MaxTrigger = 80
-	MaxText    = 10000
+	MaxTrigger  = 80
+	MaxText     = 10000
+	MinWordless = 3
 )
 
 // Snippet is a trigger and the text it stands for.
@@ -54,7 +63,8 @@ const (
 	ProblemNoTrigger = "no-trigger"
 	ProblemNoText    = "no-text"
 	ProblemLong      = "too-long"
-	ProblemTaken     = "taken" // another snippet has the same trigger
+	ProblemShort     = "too-short" // a Chinese trigger under MinWordless characters
+	ProblemTaken     = "taken"     // another snippet has the same trigger
 )
 
 // Check says what keeps s from being saved in l ("" for nothing): s may
@@ -64,6 +74,8 @@ func Check(l List, s Snippet) string {
 	switch {
 	case len(key) == 0:
 		return ProblemNoTrigger
+	case tooShort(key):
+		return ProblemShort
 	case strings.TrimSpace(s.Text) == "":
 		return ProblemNoText
 	case len([]rune(s.Trigger)) > MaxTrigger || len([]rune(s.Text)) > MaxText:
@@ -75,6 +87,20 @@ func Check(l List, s Snippet) string {
 		}
 	}
 	return ""
+}
+
+// tooShort says whether a trigger (normalized) is fewer than MinWordless
+// characters, none of them of a script that spaces its words.
+func tooShort(key []rune) bool {
+	if len(key) >= MinWordless {
+		return false
+	}
+	for _, r := range key {
+		if wordRune(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // Whole is the snippet whose trigger is all of text, ignoring case,
@@ -151,8 +177,10 @@ func Mark(text string, snippets []Snippet) (string, []Snippet) {
 // Restore is a cleaned-up text with its snippets in place: a marked
 // trigger is its snippet (by what the marks hold, or else by its place
 // when the model kept as many marks as Mark made: marked), and triggers
-// the model unmarked are found as Expand finds them. A mark that names
-// no snippet is left as its text; stray marks are dropped.
+// the model unmarked are found as Expand finds them. snippets are the
+// ones the user said (Mark's): a trigger of another one that the model
+// wrote stays as written. A mark that names none of them is left as its
+// text; stray marks are dropped.
 func Restore(text string, marked, snippets []Snippet) string {
 	var b strings.Builder
 	n := strings.Count(text, Open)
@@ -186,6 +214,9 @@ func unmark(s string) string {
 	return strings.NewReplacer(Open, "", Close, "").Replace(s)
 }
 
+// Unmark is text without Mark's marks.
+func Unmark(text string) string { return unmark(text) }
+
 // match is a trigger in a text: runes[start:end].
 type match struct {
 	start, end int
@@ -193,12 +224,12 @@ type match struct {
 }
 
 // find is text's triggers: the longest at each place, from left to
-// right, not overlapping; a trigger in Latin letters or digits does not
-// cut a word.
+// right, not overlapping; a trigger in a script that spaces its words
+// does not cut a word.
 func find(text string, snippets []Snippet) ([]rune, []match) {
 	type pattern struct {
 		key  []rune
-		word bool // starts or ends with a letter or digit of a Latin word
+		word bool // starts or ends with a letter or digit of a spaced script
 		s    Snippet
 	}
 	var patterns []pattern
@@ -207,7 +238,7 @@ func find(text string, snippets []Snippet) ([]rune, []match) {
 		if len(key) == 0 || strings.TrimSpace(s.Text) == "" {
 			continue
 		}
-		patterns = append(patterns, pattern{key, latin(key[0]) || latin(key[len(key)-1]), s})
+		patterns = append(patterns, pattern{key, wordRune(key[0]) || wordRune(key[len(key)-1]), s})
 	}
 	if len(patterns) == 0 {
 		return nil, nil
@@ -230,7 +261,7 @@ func find(text string, snippets []Snippet) ([]rune, []match) {
 				continue
 			}
 			start, end := at[k], at[k+len(p.key)-1]+1
-			if p.word && (start > 0 && latin(runes[start-1]) || end < len(runes) && latin(runes[end])) {
+			if p.word && (start > 0 && wordRune(runes[start-1]) || end < len(runes) && wordRune(runes[end])) {
 				continue // inside a longer word
 			}
 			found = append(found, match{start, end, p.s})
@@ -274,10 +305,14 @@ func normalize(s string) []rune {
 
 func keep(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
-// latin reports whether r is part of a word written with spaces between
-// words: a Latin letter or a digit, where a match must not cut a word.
-func latin(r rune) bool {
-	return unicode.IsDigit(r) || unicode.Is(unicode.Latin, r)
+// wordRune: a letter or digit of a script that separates its words with
+// spaces, where a match must not cut a word; not Chinese, Japanese or
+// Korean, which match anywhere (dict's wordRune).
+func wordRune(r rune) bool {
+	if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+		return false
+	}
+	return !unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
 }
 
 func equal(a, b []rune) bool {

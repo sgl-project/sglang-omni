@@ -32,6 +32,9 @@ func TestSnippets(t *testing.T) {
 		{"none", "hello there", "Hello there.", "Hello there.", true},
 		// The model kept the marks but changed the words inside them.
 		{"changed inside", "send it to my email address please", "Send it to ⟦my e-mail⟧, please.", "Send it to ruiling@example.com, please.", true},
+		// No trigger was said: one the model wrote is its own wording.
+		{"written by the model", "send it to my mail please", "Send it to my email address, please.", "Send it to my email address, please.", true},
+		{"said one, wrote another", "send the intro email please", "Send ⟦intro email⟧ to my email address, please.", "Send Hey, would love to find some time to chat. to my email address, please.", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			model := &fakeLLM{text: c.cleaned}

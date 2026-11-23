@@ -86,6 +86,8 @@ func snippetProblemText(translator *i18n.Translator, problem string) string {
 		return translator.T("Type what you will say.")
 	case snippet.ProblemNoText:
 		return translator.T("Type the text it stands for.")
+	case snippet.ProblemShort:
+		return translator.T("Use at least %d characters, so everyday speech doesn't set it off.", snippet.MinWordless)
 	case snippet.ProblemLong:
 		return translator.T("Too long: a trigger takes %d characters, a snippet %d.", snippet.MaxTrigger, snippet.MaxText)
 	case snippet.ProblemTaken:

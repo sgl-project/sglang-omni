@@ -53,6 +53,15 @@ func TestExpand(t *testing.T) {
 	if got := Expand("my email", nil); got != "my email" {
 		t.Errorf("no snippets: %q", got)
 	}
+	// As the dictionary: every script that spaces its words matches whole
+	// words (Cyrillic too), Chinese anywhere.
+	ru := []Snippet{{ID: "r", Trigger: "мой адрес", Text: "ADDRESS"}}
+	if got := Expand("вот мой адресат", ru); got != "вот мой адресат" {
+		t.Errorf("a Cyrillic trigger cut a word: %q", got)
+	}
+	if got := Expand("вот мой адрес.", ru); got != "вот ADDRESS." {
+		t.Errorf("a Cyrillic trigger as words: %q", got)
+	}
 }
 
 func TestCheck(t *testing.T) {
@@ -66,6 +75,13 @@ func TestCheck(t *testing.T) {
 		{Snippet{Trigger: "my phone", Text: "  "}, ProblemNoText},
 		{Snippet{Trigger: "My Email Address!", Text: "x"}, ProblemTaken},
 		{Snippet{ID: "1", Trigger: "my email address", Text: "new@example.com"}, ""}, // itself
+		// A Chinese trigger matches inside words: two characters would go
+		// off in everyday speech ("收货地址").
+		{Snippet{Trigger: "地址", Text: "x"}, ProblemShort},
+		{Snippet{Trigger: "邮 箱。", Text: "x"}, ProblemShort},
+		{Snippet{Trigger: "我的地址", Text: "x"}, ""},
+		{Snippet{Trigger: "QQ号", Text: "x"}, ""}, // whole words on its Latin side
+		{Snippet{Trigger: "да", Text: "x"}, ""},  // Cyrillic: whole words
 	} {
 		if got := Check(l, tc.s); got != tc.want {
 			t.Errorf("Check(%+v) = %q; want %q", tc.s, got, tc.want)
@@ -116,6 +132,11 @@ func TestRestore(t *testing.T) {
 		if got := Restore(tc.cleaned, marked, list); got != tc.want {
 			t.Errorf("%s: Restore(%q) = %q, want %q", tc.name, tc.cleaned, got, tc.want)
 		}
+	}
+	// Only the snippets said are restored: a trigger the model wrote
+	// itself stays as written.
+	if got := Restore("请发到⟦我的邮箱⟧，my email address 也行", marked, marked); got != "请发到ruiling@example.com，my email address 也行" {
+		t.Errorf("Restore of a trigger not said = %q", got)
 	}
 	// A snippet's text is not searched for triggers again.
 	own := []Snippet{{ID: "a", Trigger: "my sign off", Text: "Thanks, sig"}, {ID: "b", Trigger: "sig", Text: "— R"}}
