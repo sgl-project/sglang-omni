@@ -1501,6 +1501,56 @@ async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, skip_screen_blocks, expected_spoken, expected_ms",
+    [
+        pytest.param(
+            "Dr. Smith is here. Welcome!",
+            False,
+            ["Dr.", "Smith is here.", "Welcome!"],
+            [0.125, 0.25, 0.5],
+            id="title_before_a_name",
+        ),
+        pytest.param(
+            "Use <screen>Step 1. Step 2</screen> this option. "
+            "<screen>Done.</screen> Next one.",
+            True,
+            ["Use", "this option.", "Next one."],
+            [0.125, 0.25, 0.5],
+            id="sentence_end_inside_a_screen_block",
+        ),
+    ],
+)
+async def test_openai_speech_pauses_only_where_the_heard_words_end_a_sentence(
+    backends, reply, skip_screen_blocks, expected_spoken, expected_ms
+):
+    """No pause goes after a title such as "Dr." or after a sentence end the reply audio leaves out inside a screen block, but a screen block after a spoken sentence end keeps its pause, and reply.progress keeps the offsets of the whole text."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build(
+            {
+                **tts,
+                "max_sentence_words": 24,
+                "sentence_pause_ms": 0.125,
+                "skip_screen_blocks": skip_screen_blocks,
+            }
+        ),
+        [text_chunk(reply, 1), control_chunk(TURN_DONE, turn=1)],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == expected_spoken
+    assert played.tolist() == speech + speech + pause + speech
+    progress = spoken_progress(outputs)
+    assert [audio_ms for _, audio_ms in progress] == expected_ms
+    assert progress[-1][0] == len(reply)
+
+
+@pytest.mark.asyncio
 async def test_openai_speech_pauses_once_across_a_sentence_that_plays_nothing():
     """drop_quiet_start can drop a whole sentence, which then sends no pause, so the sentences around it get one pause between them and reply.progress does not move for it."""
     sample_rate_hz = 24000

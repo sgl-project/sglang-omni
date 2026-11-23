@@ -12,6 +12,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from sglang_omni.models.streaming_cascade.base import (
+    SENTENCE_END,
     SPEECH_SAMPLE_RATE_HZ,
     ComponentConfig,
     Replier,
@@ -63,6 +64,10 @@ SPEECH_PREROLL_S = 0.05
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
 TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+# note (Haoling Pu): sentences() cuts after a title such as "Dr.", but the name after it belongs to the same sentence.
+TITLE_BEFORE_NAME = re.compile(
+    r"(?:^|\s)(?:Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Capt|Col|Gen|Lt|Sgt)\.$"
+)
 BARE_URL = re.compile(
     r"(?<![A-Za-z0-9])(?:https?://|www\.)(?:www\.)?([A-Za-z0-9.-]+)(?::[0-9]+)?(?:[/?#][!-{}~]*?)??(?=[.,!?;:)\]]*(?:[^!-~]|[|]|$))"
 )
@@ -100,8 +105,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     script like `English`. A sentence tagged English reaches the service with
     its numbers read out as words. sentence_pause_ms of silence goes before
     the audio of each sentence after the reply's first audio, but not inside a
-    sentence cut by max_sentence_words, and a sentence that plays nothing
-    sends none.
+    sentence cut by max_sentence_words, after a title such as Dr., or after
+    a sentence end inside a screen block that skip_screen_blocks leaves out,
+    and a sentence that plays nothing sends none.
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
@@ -490,11 +496,19 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
             else:
                 pass
+            heard = spoken.rstrip()
+            if TITLE_BEFORE_NAME.search(heard):
+                ends_heard_sentence = False
+            elif len(heard) < len(span.rstrip()):
+                # note (Haoling Pu): a span that ends inside a screen block ends a sentence for the pause only where the words heard before the block do, so a period on the screen adds no silence.
+                ends_heard_sentence = bool(SENTENCE_END.search(heard))
+            else:
+                ends_heard_sentence = ends_sentence
             if plays_audio:
-                follows_sentence_end = ends_sentence
+                follows_sentence_end = ends_heard_sentence
             else:
                 # note (Haoling Pu): a span that plays nothing, with no word in it or dropped whole by drop_quiet_start, sends no pause, so a sentence end before it or at its end still puts one pause before the next audio.
-                follows_sentence_end = follows_sentence_end or ends_sentence
+                follows_sentence_end = follows_sentence_end or ends_heard_sentence
             text_end += len(span)
             self.progress(emit, turn, text_end, audio_ms)
 
