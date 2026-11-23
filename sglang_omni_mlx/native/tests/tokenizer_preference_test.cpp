@@ -200,6 +200,56 @@ void TestPartialJsonStateIsReset() {
             "added tokens from a failed tokenizer.json must not leak");
   }
   {
+    const std::filesystem::path directory = FreshDirectory("poison-merges");
+    std::ofstream(directory / "vocab.json")
+        << R"({"a": 0, "b": 1, "c": 2, "ab": 3, "bc": 4})";
+    std::ofstream(directory / "merges.txt") << "#version: 0.2\na b\nb c\n";
+    std::ofstream(directory / "tokenizer_config.json")
+        << R"({"added_tokens_decoder": {}})";
+    nlohmann::json poisoned;
+    nlohmann::json merges = nlohmann::json::array();
+    // Two valid merges in the reverse of the legacy rank order, then a
+    // malformed one: any leaked rank would reorder the legacy BPE.
+    merges.push_back({"b", "c"});
+    merges.push_back({"a", "b"});
+    merges.push_back({"a"});
+    poisoned["model"] = {
+        {"type", "BPE"},
+        {"vocab", {{"a", 0}, {"b", 1}, {"c", 2}, {"ab", 3}, {"bc", 4}}},
+        {"merges", merges}};
+    poisoned["normalizer"] = {{"type", "NFC"}};
+    poisoned["pre_tokenizer"] =
+        SplitPreTokenizer(omni_common::kQwen2SplitPattern);
+    poisoned["added_tokens"] = nlohmann::json::array();
+    std::ofstream(directory / "tokenizer.json") << poisoned.dump(2);
+
+    const omni_common::Tokenizer fallback(directory);
+    Require(fallback.Encode("abc") == std::vector<int>{3, 2},
+            "merge ranks from a failed tokenizer.json must not leak");
+  }
+  {
+    const std::filesystem::path directory =
+        FreshDirectory("poison-added-index");
+    WriteLegacyFiles(directory);
+    nlohmann::json poisoned;
+    poisoned["model"] = {{"type", "BPE"},
+                         {"vocab", {{"h", 0}}},
+                         {"merges", nlohmann::json::array()}};
+    poisoned["normalizer"] = {{"type", "NFC"}};
+    poisoned["pre_tokenizer"] =
+        SplitPreTokenizer(omni_common::kQwen2SplitPattern);
+    // A valid added token whose id the legacy files never use, then a
+    // malformed one: a leaked id index would alias the legacy added token.
+    nlohmann::json bad = AddedToken(43, "<|y|>", false);
+    bad["normalized"] = true;
+    poisoned["added_tokens"] = {AddedToken(42, "<|poison|>", false), bad};
+    std::ofstream(directory / "tokenizer.json") << poisoned.dump(2);
+
+    const omni_common::Tokenizer fallback(directory);
+    Require(fallback.Decode({42}, false).empty(),
+            "added-token ids from a failed tokenizer.json must not leak");
+  }
+  {
     const std::filesystem::path directory = FreshDirectory("poison-pattern");
     WriteLegacyFiles(directory);
     nlohmann::json poisoned;
