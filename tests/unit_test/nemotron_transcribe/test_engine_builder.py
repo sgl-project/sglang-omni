@@ -138,8 +138,8 @@ def test_mtp_draft_stays_unregistered_without_speculative_decoding(
 @pytest.mark.parametrize(
     ("requested", "num_steps", "num_draft_tokens"),
     [
-        ({"speculative_algorithm": "NEXTN"}, 7, 8),
-        ({"speculative_algorithm": "EAGLE", "speculative_num_steps": 3}, 3, 4),
+        ({"speculative_algorithm": "NEXTN"}, 3, 4),
+        ({"speculative_algorithm": "EAGLE", "speculative_num_steps": 7}, 7, 8),
         (
             {
                 "speculative_algorithm": "nextn",
@@ -222,8 +222,8 @@ def test_supported_mtp_configurations_serve_the_bundled_draft(
             "must be 4 for speculative_num_steps 3, got 8",
         ),
         (
-            {"speculative_algorithm": "NEXTN", "speculative_num_draft_tokens": 4},
-            "must be 8 for speculative_num_steps 7, got 4",
+            {"speculative_algorithm": "NEXTN", "speculative_num_draft_tokens": 8},
+            "must be 4 for speculative_num_steps 3, got 8",
         ),
         (
             {"speculative_algorithm": "NEXTN", "enable_multi_layer_eagle": True},

@@ -66,12 +66,18 @@ Set `stream=true` to receive text deltas as Server-Sent Events. The server encod
 The checkpoint includes a multi-token prediction (MTP) layer that the decoder can use as a NEXTN draft, so decoding needs no separate draft model. MTP is off by default, and the launch above does not load it. Enable it with:
 
 ```bash
-sgl-omni serve   --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B   --model-name nemotron-transcribe   --mem-fraction-static 0.85   --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634   --asr.engine.speculative_algorithm NEXTN   --port 8000
+sgl-omni serve \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --model-name nemotron-transcribe \
+  --mem-fraction-static 0.85 \
+  --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634 \
+  --asr.engine.speculative_algorithm NEXTN \
+  --port 8000
 ```
 
-The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave `speculative_draft_model_path` and `speculative_draft_model_revision` unset. The draft proposes 7 tokens per step by default (`speculative_num_steps 7`, `speculative_num_draft_tokens 8`).
+The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave `speculative_draft_model_path` and `speculative_draft_model_revision` unset. The draft proposes 3 tokens per step by default (`speculative_num_steps 3`, `speculative_num_draft_tokens 4`).
 
-<!-- TODO(coordinator): state the recommended H100 80 GB setting here (speculative_num_steps, and any memory or concurrency change), measured from the H100 sweep. If it differs from 7 steps, also change the builder default MTP_DEFAULT_NUM_STEPS or the registry entry's engine_settings so this command keeps matching sglang_omni/speculative/draft_registry.py. -->
+This launch fits one H200 with the default 64 decoder slots. On one H100 80 GB it runs out of memory at startup; add `--asr.engine.max_running_requests 8` there. SGLang keeps an fp32 SSM state for every draft token of every decoder slot so it can roll back the Mamba layers after verify. On one H200 at `--mem-fraction-static 0.85`, that state takes 11.8 GB and the draft takes 9.4 GB, so the KV pool shrinks from 9.59 M to 5.87 M tokens. That still covers 64 requests at the full 73,728-token context. On one H100 at 8 slots, each request keeps 8,996 KV tokens, close to the 9,199 tokens per request that 64 slots get without the draft.
 
 Usage notes:
 
@@ -81,7 +87,19 @@ Usage notes:
 - To disable MTP in a config that enables it, add `--asr.engine.disable_speculative_decoding true`.
 - Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` with the acceptance statistics on `json` and `verbose_json` responses.
 
-<!-- TODO(coordinator): add the H100 80 GB baseline versus MTP results here: GPU, SGLang version, corpus, client concurrency, the MTP setting, RTFx or QPS, latency, WER for both modes, and the mean acceptance length. -->
+- `--asr.engine.speculative_num_steps 7` raised the H200 speedup at concurrency 16 to 1.30x, but its rollback state takes 23.5 GB, and an H100 then starts with at most 4 slots.
+
+Speed against the same server without a draft, on one H200 with BF16, SGLang 0.5.23 and greedy decoding. The corpus is the full SeedTTS English set (666 clips) with `--unique-audio`:
+
+| Client concurrency | No draft RTFx | MTP RTFx | Speedup |
+| --- | ---: | ---: | ---: |
+| 1 | 30.2 | 37.5 | 1.24x |
+| 8 | 74.4 | 95.7 | 1.29x |
+| 16 | 115.3 | 137.5 | 1.19x |
+
+Each verify step accepts 3.82 tokens on average, out of a possible 4, and 95.4% of drafts are accepted. Averaged over the three concurrencies, corpus WER is 0.977% without the draft and 0.952% with it. Verify and plain decode run different kernels, so a near-tie token can flip and a few transcripts differ. The mean absolute WER change between the two modes is at most 0.043 percentage points, close to the 0.023 to 0.030 points between two runs without the draft.
+
+On one H100 80 GB with 8 slots, on the first 50 SeedTTS English clips, MTP raised RTFx at concurrency 1 from 39.4 to 55.5 (1.41x). At 8 concurrent requests it reached 141.7 RTFx, while the server without a draft reached 247.1 at 64. On an H100, use the draft for latency at low load and leave it off for peak throughput.
 
 ## Compile the encoder
 

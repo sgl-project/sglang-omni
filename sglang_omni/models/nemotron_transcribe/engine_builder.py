@@ -68,7 +68,7 @@ from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputP
 
 logger = logging.getLogger(__name__)
 
-MTP_DEFAULT_NUM_STEPS = 7
+MTP_DEFAULT_NUM_STEPS = 3
 # note (scatyf3): SGLang resolves NEXTN to EAGLE, so both names select the same chain drafter.
 MTP_ALGORITHMS = ("EAGLE", "NEXTN")
 
