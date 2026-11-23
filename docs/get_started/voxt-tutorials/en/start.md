@@ -16,17 +16,17 @@ The same package is also linked from:
 
 ## Download a Beta
 
-Every change to Voxt merged into `main` builds a Beta, versioned `2.1.4-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
+Every change to Voxt merged into `main` builds a Beta, versioned `2.1.3-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
 
-The newest is **Voxt Beta #40**: [download `Voxt-2.0.3-beta.20261112.40-arm64`](https://github.com/sgl-project/sglang-omni/actions/runs/43128787320/artifacts/13904657773) (about 33 MB; needs a GitHub sign-in; expires on November 26, 2026). Once it expires, or to find a newer build:
+A Beta updates itself: **Check for Updates…** in the Voxt menu finds the newest Beta on GitHub releases and installs it in the app. You can still install a Beta by hand from its `.dmg`, and installing the release's `.dmg` takes you back.
 
-1. Open the [Voxt Beta runs](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml). The top run with a green check on `main` is the newest successful build. Skip runs with a yellow dot (still building) or a red cross (failed).
-2. Open that run, scroll to **Artifacts** and click `Voxt-…-beta.…-arm64` to download a ZIP. Artifacts are kept for 14 days.
-3. Double-click the ZIP to unzip it and open the `.dmg` inside. Its name contains `-beta.`, which tells builds and releases apart.
+To find the newest Beta (as of November 23, 2026 it is `2.1.3-beta.20261123.105`, build #105):
+
+1. Open the [Voxt releases](https://github.com/sgl-project/sglang-omni/releases): the newest pre-release is the newest Beta. Expand **Assets** and click `Voxt-…-beta.…-arm64.dmg`.
+2. Or open the [Voxt Beta runs](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml): the top run with a green check on `main` is the newest successful build. Skip runs with a yellow dot (still building) or a red cross (failed). Open that run, scroll to **Artifacts** and click `Voxt-…-beta.…-arm64` to download a ZIP; this route needs a GitHub sign-in, and artifacts are kept for 14 days.
+3. Unzip the ZIP if you used the Actions route, then open the `.dmg`. Its name contains `-beta.`, which tells builds and releases apart.
 
 <div class="vx-anim" data-scene="beta-artifact" data-lang="en"></div>
-
-A Beta does not update itself: to move to a newer Beta, or back to the release, download and install that `.dmg`.
 
 ## Install and allow permissions
 
