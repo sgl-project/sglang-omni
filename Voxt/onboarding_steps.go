@@ -174,7 +174,7 @@ func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingAc
 		ui.Text(c, state.Shortcut.Text).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
 		caption(c, state.Shortcut.How)
 		if state.Shortcut.AccessibilityWarning {
-			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access. Start works now."))
+			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access."))
 		}
 	})
 	obKeyboard(c, state.Shortcut.Keyboard)
@@ -238,7 +238,7 @@ func obMoreStep(c *ui.Context, state onboardingMoreViewState, actions onboarding
 	feature("ob-dict", dictionaryIcon, i18n.T("Dictionary"),
 		i18n.T("Names and jargon the speech model should expect and the language model should keep as written."),
 		i18n.T("Open Dictionary"), "/dictionary")
-	sectionTitle(c, i18n.T("Your shortcuts"))
+	sectionTitle(c, i18n.T("Shortcuts"))
 	onboardingShortcutPresetPicker(c, state, actions)
 	ui.Column(c.Key("ob-keys")).Gap(px(t, sp1)).Children(func() {
 		for _, row := range state.Shortcuts {
