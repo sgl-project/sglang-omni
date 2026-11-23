@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -410,7 +411,7 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "going on with the text the live session had: %v", err)
 		res = asr.Result{Text: salvaged}
 	}
-	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text)), word)
+	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text, res.Lang)), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
 	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" && r.typedOnly() {
@@ -519,9 +520,18 @@ func (r *run) typedOnly() bool {
 	return err == nil && strings.TrimSpace(typed) != ""
 }
 
-// inScript writes recognised text in the Chinese script of dictation
-// (SpeechScript); other text stays as it is.
-func (r *run) inScript(text string) string {
+// inScript writes recognised Chinese text in the script of dictation
+// (SpeechScript). Text in another language stays as it is, or its kanji
+// would be rewritten: said is the language the speech model reported (""
+// when it did not, as for a stream's partials and pieces), and kana marks
+// Japanese either way.
+func (r *run) inScript(text, said string) string {
+	if c := lang.Canonical(said); c != "" && c != "zh" && c != "yue" {
+		return text
+	}
+	if strings.ContainsFunc(text, func(c rune) bool { return unicode.In(c, unicode.Hiragana, unicode.Katakana) }) {
+		return text
+	}
 	var reads []string
 	if r.m.cfg.Languages != nil {
 		reads = r.m.cfg.Languages()

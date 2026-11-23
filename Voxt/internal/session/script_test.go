@@ -9,7 +9,8 @@ import (
 // TestDictationScript: Whisper mixes Traditional characters into
 // Simplified dictation; the recognised text, the stream's partials and
 // the history follow the script the user reads (SpeechScript), and stay
-// as the model wrote them when nothing says.
+// as the model wrote them when nothing says. Text in another language is
+// not Chinese to convert.
 func TestDictationScript(t *testing.T) {
 	const heard = "幫我用請假模板发给王老师"
 	for _, c := range []struct {
@@ -38,6 +39,48 @@ func TestDictationScript(t *testing.T) {
 			}
 		})
 	}
+	// Japanese said by a user whose main language is Chinese keeps its
+	// kanji: the speech model names the language, or the text has kana.
+	for _, c := range []struct {
+		name, heard, said string
+	}{
+		{"Japanese by its kana", "東京駅で会いましょう", ""},
+		{"Japanese the model named", "東京駅", "ja"},
+		{"Japanese by name and kana", "資料を確認してください", "Japanese"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: c.heard, said: c.said}, nil, func(cfg *Config, s *settings.Settings) {
+				s.General.MainLanguage = "zh"
+				cfg.Languages = func() []string { return []string{"zh-Hans-CN"} }
+			})
+			h.speak(h.start(), 5)
+			if end := h.rec.wait(t); end.Raw != c.heard || end.Result != c.heard {
+				t.Errorf("raw %q, result %q, want %q", end.Raw, end.Result, c.heard)
+			}
+		})
+	}
+	t.Run("Chinese the model named", func(t *testing.T) {
+		h := newHarness(t, &fakeFile{text: heard, said: "chinese"}, nil, func(cfg *Config, s *settings.Settings) {
+			s.General.MainLanguage = "zh"
+			cfg.Languages = func() []string { return []string{"zh-Hans-CN"} }
+		})
+		h.speak(h.start(), 5)
+		if end := h.rec.wait(t); end.Raw != "帮我用请假模板发给王老师" {
+			t.Errorf("raw %q", end.Raw)
+		}
+	})
+	t.Run("Japanese stream partial", func(t *testing.T) {
+		const said = "東京駅で会いましょう"
+		h := newHarness(t, &fakeStreamer{partials: []string{"東京駅で"}, final: said}, nil, func(cfg *Config, s *settings.Settings) {
+			s.General.MainLanguage = "zh"
+			cfg.Languages = func() []string { return []string{"zh-Hans-CN"} }
+		})
+		h.speak(h.start(), 5)
+		h.rec.waitFor(t, "the partial as heard", func(s Snapshot) bool { return s.Partial == "東京駅で" })
+		if end := h.rec.wait(t); end.Raw != said {
+			t.Errorf("raw %q", end.Raw)
+		}
+	})
 	t.Run("stream partial", func(t *testing.T) {
 		h := newHarness(t, &fakeStreamer{partials: []string{"請假"}, final: heard}, nil, func(cfg *Config, s *settings.Settings) {
 			s.General.MainLanguage = "zh"
