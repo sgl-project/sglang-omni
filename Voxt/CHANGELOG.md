@@ -27,7 +27,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
-- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 
@@ -39,6 +39,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Resetting the look or all settings also restores the History detail width** (#4421): after widening the History details from their 290 DIP default, "Reset the look" and "Reset all settings" left the page showing the old width until a restart; both now bring back the default at once.
 - **Meeting and file transcripts honour the Chinese script preference**: Simplified and Traditional Chinese main languages now render chunked, live file-based, post-meeting and imported-file transcription in the selected script. Prompt and dictionary echo suppression compares Chinese text across scripts, as does microphone-versus-system echo detection.
 - **Check for Updates finds new versions again**: Voxt 2.1.1 and 2.1.2 looked for updates at an address that never served them, so Check for Updates always said Voxt was up to date. Voxt now reads its updates from its GitHub releases and installs them in the app. If you run 2.1.2 or earlier, download this version once from the release page; later versions update in the app.
+- **Fewer one-frame flashes, and Run check reads the permissions now**: Run check in Settings → About waits for the permission read instead of reporting the previous one. Opening a meeting no longer flashes "Loading…" when it opens at once, and Refresh microphones in Settings → Audio no longer greys out for a moment each time the section opens.
+- **Shorter guide text**: the shortcut warning on the try steps no longer adds that Start works now, the last step's section is called Shortcuts, and its subtitle invites you to try Voxt.
 - **A shortcut pressed while recording is no longer ignored now and then**: about one press in twenty-five did nothing while Voxt recorded, so the recording went on until the next press. Voxt sent the helper its shortcuts again at every update of the recording pill, and dropped a press the helper reported in between as one from an old configuration. It now sends them only when they change.
 - **Meeting audio meters keep updating during system silence** (#4198): when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
 - **Meetings explain how to enable speaker labels** (#4394): the spoken-language setting now says that Speaker 1–4 labels need MOSS-Transcribe-Diarize and an explicit Chinese or English choice, covering meetings whose automatic language hint is empty or unsupported.
@@ -77,7 +79,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
-- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减少动态效果”时不播放。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
@@ -90,6 +92,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **重置外观或全部设置时，历史详情宽度也一起恢复**（#4421）：把历史详情从默认的 290 DIP 调宽之后，“重置外观”和“重置所有设置”原来要重启才恢复默认宽度，现在立即回到默认。
 - **会议和文件转录稿遵循中文简繁偏好**：主语言选简体中文或繁体中文时，分段转写、无流式实时转写、会后重转和导入文件转写都按所选简繁输出。提示词和词典回显抑制、麦克风与系统声音回声比较也能识别跨简繁的同一文本。
 - **“检查更新”又能找到新版本了**：Voxt 2.1.1 和 2.1.2 去读更新的地址上一直没有内容，所以“检查更新”总是显示已是最新。现在 Voxt 从它的 GitHub Release 读更新，并在 app 里安装。还在用 2.1.2 或更早版本的话，请从 Release 页面手动下载一次这个版本，之后的版本就能在 app 里更新。
+- **少了几处一闪而过的画面，“运行检查”读的是当前权限**：“设置 → 诊断与关于”里的“运行检查”会等权限读完再出结果，不再用上一次读到的。打开会议时如果很快读完，不再闪出“加载中…”；“设置 → 音频”里的“刷新麦克风列表”也不再在每次打开时变灰一下。
+- **引导文案更短**：试用步骤里的快捷键提示不再说“开始”按钮现在就能用；最后一步的分区改叫“快捷键”，副标题改成邀请你去试试 Voxt。
 - **录音时按快捷键不再偶尔没反应**：录音过程中大约每二十五次按键有一次不起作用，录音会一直持续到下一次按键。原因是录音浮窗每次刷新时 Voxt 都把快捷键重新发给辅助进程，辅助进程在这期间报来的按键被当成旧配置的按键丢掉了。现在只在快捷键有变化时才发送。
 - **系统静音时会议音量表继续更新**（#4198）：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
 - **会议说明怎样启用说话人标签**（#4394）：说话语言设置现在写明，按说话人 1–4 分开需要安装 MOSS-Transcribe-Diarize 并明确选择中文或英文，覆盖自动语言提示为空或不受支持的会议。
