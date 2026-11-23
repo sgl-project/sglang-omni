@@ -154,6 +154,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 **验证应用内更新**：
 
 - 每次发布自动跑：`scripts/release-appcast.sh feed-check <stable|beta> <版本> sgl-project/sglang-omni`（beta 在 Voxt Release 里发完 prerelease 后跑，正式版由 Voxt Update Feed Check 跑）。也可以在本地对任何已发布的版本跑。
+- 真的装一次：[scripts/mac-update-feed-e2e.sh](../scripts/mac-update-feed-e2e.sh) 构建一个比所有发布都旧的 2.0.0（发布用的公钥和 GitHub 更新源，自己的 bundle ID，不开窗口，不需要任何 secret），让它的更新器从真实的 GitHub Release 检查、下载、验签、安装，正式版通道和 beta 通道各一次，然后确认磁盘上的 app 是该通道应得的版本、代码签名有效。Voxt Update Feed Check 在每次发布后也跑它，也可以手动运行这个工作流。
 - 真机上：装上一个带 GitHub 更新源的版本，打开 Voxt → 检查更新，应当提示新版本，点安装后自动重启，“关于”里是新版本号。beta 通道可以用相邻的两个 beta 测，不用等正式版。
 
 ## 1. 一次性准备

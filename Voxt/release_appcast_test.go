@@ -159,7 +159,8 @@ func TestVoxt2FeedOffers(t *testing.T) {
 
 // TestPublishingChecksTheFeed: both ways a Voxt 2 update reaches installed
 // apps run feed-check right after: a beta in Voxt Release, once its
-// prerelease exists, and a release when it is published.
+// prerelease exists, and a release when it is published, where an older
+// build also installs the update (scripts/mac-update-feed-e2e.sh).
 func TestPublishingChecksTheFeed(t *testing.T) {
 	read := func(name string) string {
 		data, err := os.ReadFile("../.github/workflows/" + name)
@@ -179,6 +180,7 @@ func TestPublishingChecksTheFeed(t *testing.T) {
 		"release:\n    types: [published]",
 		"startsWith(github.event.release.tag_name, 'voxt-v')",
 		`scripts/release-appcast.sh feed-check "$channel" "$version" "$GITHUB_REPOSITORY"`,
+		`scripts/mac-update-feed-e2e.sh "$GITHUB_REPOSITORY"`,
 	} {
 		if !strings.Contains(published, want) {
 			t.Errorf("Voxt Update Feed Check lacks %q", want)

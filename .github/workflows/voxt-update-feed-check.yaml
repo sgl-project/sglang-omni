@@ -43,3 +43,22 @@ jobs:
             channel=stable
           fi
           scripts/release-appcast.sh feed-check "$channel" "$version" "$GITHUB_REPOSITORY"
+
+  install:
+    name: Voxt 2 installs the published update
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'voxt-v')
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+      # An older build with the release's feed and key updates itself from the published releases, on
+      # the stable and the beta channel, and the installed bundle is checked (no secret, no window).
+      - name: Update an older build from the published releases
+        run: scripts/mac-update-feed-e2e.sh "$GITHUB_REPOSITORY"
