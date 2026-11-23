@@ -500,8 +500,13 @@ func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
 }
 
-func (host *meetingDemoHost) activityBack()    { host.record("activityBack") }
-func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
+func (host *meetingDemoHost) activityBack()         { host.record("activityBack") }
+func (host *meetingDemoHost) openShare()            { host.record("openShare") }
+func (host *meetingDemoHost) openInsightsShare()    { host.record("openInsightsShare") }
+func (host *meetingDemoHost) closeInsightsShare()   { host.record("closeInsightsShare") }
+func (host *meetingDemoHost) shuffleInsightsShare() { host.record("shuffleInsightsShare") }
+func (host *meetingDemoHost) copyInsightsShare()    { host.record("copyInsightsShare") }
+func (host *meetingDemoHost) activityForward()      { host.record("activityForward") }
 
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
