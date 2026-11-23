@@ -8,6 +8,7 @@ changes the waveform instead of cancelling out.
 
 from __future__ import annotations
 
+import gc
 import threading
 from types import SimpleNamespace
 
@@ -207,14 +208,17 @@ def make_streaming_vocoder(
     return DotsTTSStreamingVocoder(codec, **{"optimize": True, **kwargs})
 
 
-def test_step_graphs_can_be_disabled() -> None:
+def test_step_graphs_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     vocoder = make_streaming_vocoder(
         torch.device("cpu"), enable_streaming_audio_vae_cuda_graph=False
+    )
+    monkeypatch.setattr(
+        DotsVocoderSlotPool, "device", property(lambda self: torch.device("cuda"))
     )
     assert vocoder.ensure_slot_pool().graph_runner is None
 
 
-@pytest.mark.parametrize("device_type", ["cpu", "xpu"])
+@pytest.mark.parametrize("device_type", ["xpu"])
 def test_default_step_graphs_preserve_non_cuda_eager_path(
     device_type: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -272,3 +276,41 @@ def test_capture_failure_aborts_pool_setup(
     with pytest.raises(RuntimeError, match="injected AudioVAE failure"):
         vocoder.ensure_slot_pool()
     assert vocoder.slot_pool is None
+
+
+@pytest.mark.accelerator
+def test_capture_completes_when_a_collection_runs_while_an_earlier_pool_is_dead(
+    cuda_device: torch.device, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A collection during capture destroys no graph that a dead earlier pool still holds, so the capture completes."""
+    forward = DotsVocoderSlotPool.forward
+    collections_during_capture: list[int] = []
+
+    def collect_during_capture(
+        self: DotsVocoderSlotPool,
+        packed: torch.Tensor,
+        hidden_h: torch.Tensor,
+        hidden_c: torch.Tensor,
+        window: torch.Tensor,
+        valid: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not collections_during_capture and torch.cuda.is_current_stream_capturing():
+            collections_during_capture.append(gc.collect())
+        else:
+            pass
+        return forward(self, packed, hidden_h, hidden_c, window, valid)
+
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        make_pool(cuda_device, graph_keys=[(1, PATCH)])
+        monkeypatch.setattr(DotsVocoderSlotPool, "forward", collect_during_capture)
+        pool = make_streaming_vocoder(cuda_device).ensure_slot_pool()
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            pass
+
+    assert len(collections_during_capture) == 1
+    assert pool.graph_runner.captured_keys == ALL_KEYS

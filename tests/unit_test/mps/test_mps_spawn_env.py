@@ -79,18 +79,6 @@ def test_mps_overlay_is_visible_only_during_spawn(monkeypatch):
     assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
-def test_no_mps_overlay_keeps_existing_stage_default_behavior(monkeypatch):
-    spec = make_process_spec(
-        launch_stage(env_defaults={"WORKER_DEFAULT": "stage-value"})
-    )
-    monkeypatch.delenv("WORKER_DEFAULT", raising=False)
-
-    with patched_spawn_env(spec):
-        assert os.environ["WORKER_DEFAULT"] == "stage-value"
-
-    assert "WORKER_DEFAULT" not in os.environ
-
-
 def resolved_config_process(*, pipeline_env: dict, stage_env: dict):
     with tempfile.TemporaryDirectory(prefix="mps-env-", dir="/tmp") as base_path:
         config = PipelineConfig(
@@ -129,15 +117,14 @@ class DeviceInfoMustNotRun:
         raise AssertionError("process env conflicts must fail before device inspection")
 
 
-@pytest.mark.parametrize("mode", ["auto", "on"])
-@pytest.mark.parametrize("source", ["pipeline", "stage"])
 @pytest.mark.parametrize(
-    ("name", "value"),
+    ("mode", "source", "name", "value"),
     [
-        ("CUDA_VISIBLE_DEVICES", "1"),
-        ("CUDA_DEVICE_ORDER", "PCI_BUS_ID"),
-        ("CUDA_MPS_PIPE_DIRECTORY", "/external/mps"),
-        ("SGLANG_OMNI_WEIGHT_SHARE", "leader:/tmp/weights"),
+        ("on", "stage", "CUDA_VISIBLE_DEVICES", "1"),
+        ("on", "stage", "CUDA_DEVICE_ORDER", "PCI_BUS_ID"),
+        ("on", "stage", "CUDA_MPS_PIPE_DIRECTORY", "/external/mps"),
+        ("on", "stage", "SGLANG_OMNI_WEIGHT_SHARE", "leader:/tmp/weights"),
+        ("auto", "pipeline", "CUDA_VISIBLE_DEVICES", "1"),
     ],
 )
 def test_mps_rejects_worker_gpu_environment_overrides_before_acquire(

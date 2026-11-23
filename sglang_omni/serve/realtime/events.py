@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+MIN_DECODE_INTERVAL_MS = 200
+
 
 # Forward compatibility for future event types.
 class EventBase(BaseModel):
@@ -62,6 +64,7 @@ class TranscriptionSessionConfig(EventBase):
     model_config = ConfigDict(extra="forbid")
 
     language: str | None = None
+    decode_interval_ms: int | None = Field(default=None, ge=MIN_DECODE_INTERVAL_MS)
     turn_detection: TurnDetection | None = None
     input_audio_format: Literal["pcm16"] | None = None
 
@@ -94,13 +97,17 @@ class TranscriptionServerEvent(EventBase):
 class TranscriptionSegment(TranscriptionServerEvent):
     type: Literal["transcription.segment"] = "transcription.segment"
     segment_id: int
+    audio_start_ms: int
+    audio_end_ms: int
     text: str
     is_final: bool
+    language: str | None = None
 
 
 class TranscriptionCompleted(TranscriptionServerEvent):
     type: Literal["transcription.completed"] = "transcription.completed"
     text: str
+    language: str | None = None
 
 
 class TranscriptionSpeechStarted(TranscriptionServerEvent):

@@ -14,6 +14,7 @@ from safetensors import safe_open
 from transformers import Qwen3Config, Qwen3ForCausalLM
 
 from sglang_omni.model_runner.audio_torch_mps import AudioTorchMpsModelRunner
+from sglang_omni.utils.hf import drop_mrope_keys
 
 if TYPE_CHECKING:
     from sglang_omni.models.qwen3_asr.sglang_model import (
@@ -23,8 +24,6 @@ else:
     pass
 
 logger = logging.getLogger(__name__)
-
-_MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
 
 
 def resolve_model_path(model_path: str) -> Path:
@@ -45,11 +44,7 @@ def text_config(model_path: Path) -> Qwen3Config:
     for field in ("rope_parameters", "rope_scaling"):
         rope_config = text_config.get(field)
         if isinstance(rope_config, dict):
-            text_config[field] = {
-                key: value
-                for key, value in rope_config.items()
-                if key not in _MROPE_ONLY_KEYS
-            }
+            text_config[field] = drop_mrope_keys(rope_config)
         else:
             pass
     return Qwen3Config(**text_config)

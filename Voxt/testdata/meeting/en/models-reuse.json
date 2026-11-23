@@ -1,0 +1,63 @@
+{
+  "name": "models-reuse",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 2,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Models",
+    "subtitle": "Voxt recognises speech with a model on this Mac and cleans up, translates and rewrites with a language model you set up. The model below is the best start, with others in Settings → Speech models.",
+    "recording": false,
+    "models": {
+      "reuse_shown": true,
+      "reuse_ids": [
+        "asr.accurate",
+        "vad.silero"
+      ],
+      "reuse_subtitle": "Installed by AudioSmith · 2.5 GB · no download needed",
+      "reuse_names": "Qwen3-ASR 1.7B (8bit) · Silero VAD v6",
+      "speech": {
+        "id": "asr.accurate",
+        "name": "Qwen3-ASR 1.7B (8bit)",
+        "ready": false,
+        "on_disk": true,
+        "installed_by": "Installed · from AudioSmith",
+        "size_label": "2.5 GB still to download",
+        "show_download": false,
+        "download_label": "Download (2.5 GB)",
+        "downloading": false,
+        "download_fraction": 0,
+        "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak."
+      },
+      "language_ready": false,
+      "language_name": "",
+      "needs_download": false,
+      "download_left": "2.5 GB"
+    },
+    "footer": {
+      "mode": "reuse",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

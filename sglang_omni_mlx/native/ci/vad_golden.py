@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Silero VAD golden check for check_golden.py, against the original Voxt's outputs
-(Swift on MLX 0.31.1). The runtime's MLX 0.32.3 kernels differ in the last bits, so
+(Swift on MLX 0.31.1). The runtime's pinned MLX kernels differ in the last bits, so
 the checks allow for kernel differences and nothing more."""
 
 from __future__ import annotations

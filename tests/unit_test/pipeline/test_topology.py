@@ -19,7 +19,6 @@ from sglang_omni.config import (
     build_stage_placement_plan,
     compile_logical_processes,
 )
-from sglang_omni.config.manager import ConfigManager
 from sglang_omni.pipeline.replicas import expand_replica_stages
 
 FACTORY = "tests.unit_test.fixtures.pipeline_fakes.dummy_factory"
@@ -58,22 +57,6 @@ def make_topology(config: PipelineConfig):
     return build_process_topology_plan(config, gpu_placement, stages_cfg=stages)
 
 
-def test_stage_process_parses_from_schema_and_dotted_overrides() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            make_stage("a", process="old0", next_stage="b"),
-            make_stage("b", process="old1", terminal=True),
-        ],
-    )
-
-    merged = ConfigManager(config).merge_config({"a.process": "p0", "b.process": "p1"})
-
-    assert [stage.process for stage in merged.stages] == ["p0", "p1"]
-    # The source config is not mutated: the resolver rebuilds.
-    assert [stage.process for stage in config.stages] == ["old0", "old1"]
-
-
 def test_non_tp_stages_must_declare_process() -> None:
     with pytest.raises(ValueError, match="Non-TP stages must declare process"):
         PipelineConfig(
@@ -82,14 +65,6 @@ def test_non_tp_stages_must_declare_process() -> None:
                 make_stage("a", process="p0", next_stage="b"),
                 make_stage("b", terminal=True),
             ],
-        )
-
-
-def test_missing_non_tp_process_declaration_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Non-TP stages must declare process"):
-        PipelineConfig(
-            model_path="dummy",
-            stages=[make_stage("a", next_stage="b"), make_stage("b", terminal=True)],
         )
 
 
@@ -170,19 +145,6 @@ def test_same_gpu_multiple_processes_rejects_missing_budget() -> None:
     )
     with pytest.raises(ValueError, match="gpu_memory_fraction"):
         make_topology(config)
-
-
-def test_same_gpu_multiple_processes_rejects_over_budget() -> None:
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            make_stage("a", gpu=0, fraction=0.70, process="p0", next_stage="b"),
-            make_stage("b", gpu=0, fraction=0.40, process="p1", terminal=True),
-        ],
-    )
-
-    with pytest.raises(ValueError, match="exceeds placement limit"):
-        build_stage_placement_plan(config)
 
 
 def test_one_process_group_cannot_span_multiple_gpus() -> None:

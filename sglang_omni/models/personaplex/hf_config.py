@@ -18,7 +18,7 @@ DEFAULT_CONTEXT_LENGTH = 8192
 
 def build_backbone_config(
     *, context_length: int = DEFAULT_CONTEXT_LENGTH
-) -> dict[str, str | int | float | bool | list[str]]:
+) -> dict[str, str | int | float | bool | list[str] | list[int]]:
     spec = TEMPORAL_TRANSFORMER
     return {
         "architectures": [PERSONAPLEX_ARCH],
@@ -26,6 +26,8 @@ def build_backbone_config(
         "hidden_size": spec.dim,
         "intermediate_size": spec.ffn_hidden,
         "num_hidden_layers": spec.num_layers,
+        "is_hybrid_swa": True,
+        "hybrid_layer_pattern": [1] * spec.num_layers,
         "num_attention_heads": spec.num_heads,
         "num_key_value_heads": spec.num_heads,
         "head_dim": spec.head_dim,

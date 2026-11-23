@@ -1,0 +1,8 @@
+{
+  "source": "Constructed: the service acknowledges, sends one partial, then closes the WebSocket normally before the last packet.",
+  "frames": [
+    {"after": 1, "seq": 1, "payload": {"audio_info": {"duration": 0}, "result": {"text": ""}}},
+    {"after": 3, "seq": 2, "payload": {"audio_info": {"duration": 400}, "result": {"text": "这是"}}},
+    {"after": 4, "kind": "close"}
+  ]
+}

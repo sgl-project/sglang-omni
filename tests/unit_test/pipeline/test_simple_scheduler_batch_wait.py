@@ -98,11 +98,11 @@ def test_late_arrival_joins_batch_once_a_backlog_exists() -> None:
         max_batch_wait_ms=WINDOW_MS,
         batch_wait_when_idle=False,
     )
+    scheduler.inbox.put(msg("r1"))
+    scheduler.inbox.put(msg("r2"))
     thread = threading.Thread(target=scheduler.start, daemon=True)
     thread.start()
     try:
-        scheduler.inbox.put(msg("r1"))
-        scheduler.inbox.put(msg("r2"))
         time.sleep(WINDOW_MS / 4 / 1000)
         scheduler.inbox.put(msg("r3"))
         results = [scheduler.outbox.get(timeout=5.0) for _ in range(3)]

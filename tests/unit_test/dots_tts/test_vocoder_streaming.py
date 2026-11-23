@@ -115,17 +115,6 @@ def patch(value: float = 0.0, *, frames: int = 3, dim: int = 5) -> torch.Tensor:
     return torch.full((1, frames, dim), value)
 
 
-def test_append_decoder_input_per_row_matches_scalar_when_ages_equal() -> None:
-    window = torch.zeros(2, 2, 6)
-    window[0, :, :2] = 1
-    window[1, :, :2] = 1
-    decoder_input = torch.full((2, 2, 2), 3.0)
-    valid = torch.tensor([2, 2], dtype=torch.int64)
-    out = append_decoder_input_per_row(decoder_input, window, valid)
-    assert out.shape == window.shape
-    assert torch.equal(out[0], out[1])
-
-
 def test_append_decoder_input_keeps_independent_row_ages() -> None:
     window = torch.zeros(2, 1, 6)
     window[0, :, :1] = 1
@@ -302,7 +291,7 @@ def test_release_stream_resources_returns_slot() -> None:
 
 
 def test_slot_exhaustion_raises_clear_admission_error() -> None:
-    pool = RecordingSlotPool(num_slots=1)
+    pool = DotsVocoderSlotPool(FakeInference(), num_slots=1, chunk_size=6, latent_dim=5)
     vocoder = DotsTTSStreamingVocoder(
         make_codec(),
         optimize=True,

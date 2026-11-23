@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import copy
-import logging
-from collections import Counter
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
+from sglang_omni.platforms import current_platform
 
 import_dots_tts()
 
@@ -26,6 +25,38 @@ FM_HIDDEN = 32
 LATENT_DIM = 6
 PATCH_SIZE = 2
 NFE = 2
+
+
+@pytest.mark.parametrize(
+    "platform_type,device_type",
+    [
+        ("cpu", "cpu"),
+        ("cuda", "cuda"),
+        ("rocm", "cuda"),
+        ("xpu", "xpu"),
+        ("npu", "npu"),
+        ("npu", "xpu"),
+    ],
+)
+def test_attention_context_preserves_policy_outside_npu(
+    monkeypatch: pytest.MonkeyPatch, platform_type: str, device_type: str
+) -> None:
+    monkeypatch.setattr(
+        tail,
+        "current_platform",
+        SimpleNamespace(
+            is_npu=lambda: platform_type == "npu", device_type=platform_type
+        ),
+    )
+    npu_context = platform_type == "npu" and device_type == "npu"
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        with tail.attention_context(SimpleNamespace(type=device_type)):
+            assert torch.backends.cuda.flash_sdp_enabled() == npu_context
+            assert torch.backends.cuda.mem_efficient_sdp_enabled() != npu_context
+            assert torch.backends.cuda.math_sdp_enabled() != npu_context
+        assert torch.backends.cuda.flash_sdp_enabled()
+        assert not torch.backends.cuda.mem_efficient_sdp_enabled()
+        assert not torch.backends.cuda.math_sdp_enabled()
 
 
 def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
@@ -51,6 +82,57 @@ def test_batched_tail_mask_hides_padding_and_preserves_causality() -> None:
         [True, True, True, False, True, True, True, True],
         [True, True, True, False, True, True, True, True],
     ]
+
+
+@pytest.mark.parametrize(
+    "device_type",
+    [
+        "cpu",
+        pytest.param(
+            "npu",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not current_platform.is_npu(), reason="requires NPU"
+                ),
+            ],
+        ),
+    ],
+)
+def test_tail_rotary_preserves_float32_without_changing_other_instances(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    unrelated_rotary = tail.RotaryEmbedding(8)
+    original_forward = type(unrelated_rotary).forward
+    device = torch.device(device_type)
+    acoustic_tail = build_tail(TailModel().to(device), slots=1, device=device)
+    if device_type == "cpu":
+        assert acoustic_tail.dit_rotary.forward.__func__ is original_forward
+        return
+    else:
+        pass
+    assert acoustic_tail.dit_rotary.forward.__func__ is tail.rotary_forward
+    positions = torch.tensor(
+        [0, 255, 256, 257, 4095, 4096, 4097], dtype=torch.float32, device=device
+    )
+    expected = original_forward(acoustic_tail.dit_rotary, positions)
+    original_einsum = torch.einsum
+    autocast_states: list[bool] = []
+
+    def observed_einsum(
+        equation: str, position_values: torch.Tensor, frequencies: torch.Tensor
+    ) -> torch.Tensor:
+        autocast_states.append(torch.is_autocast_enabled(position_values.device.type))
+        return original_einsum(equation, position_values, frequencies)
+
+    monkeypatch.setattr(torch, "einsum", observed_einsum)
+    with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+        actual = acoustic_tail.dit_rotary(positions)
+    assert autocast_states == [False]
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, rtol=0.0, atol=0.0)
+    assert type(unrelated_rotary).forward is original_forward
+    assert unrelated_rotary.forward.__func__ is original_forward
 
 
 class TailModel(torch.nn.Module):
@@ -266,12 +348,15 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
         dtype=torch.bfloat16,
     )
     device = torch.device("cuda:0")
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
-    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    device_module = SimpleNamespace(
+        device=lambda _device: nullcontext(),
+        empty_cache=lambda: None,
+        mem_get_info=lambda _device=None: (4 << 30, 80 << 30),
+    )
     monkeypatch.setattr(
-        torch.cuda,
-        "mem_get_info",
-        lambda _device=None: (4 << 30, 80 << 30),
+        torch,
+        "get_device_module",
+        lambda _device: device_module,
     )
     with pytest.raises(ValueError, match="admission failed at startup") as caught:
         tail.validate_acoustic_pool_memory(estimate, device=device)
@@ -282,13 +367,13 @@ def test_validate_acoustic_pool_memory_rejects_when_vram_is_tight(
 
     # Enough free memory passes.
     monkeypatch.setattr(
-        torch.cuda,
+        device_module,
         "mem_get_info",
         lambda _device=None: (40 << 30, 80 << 30),
     )
     tail.validate_acoustic_pool_memory(estimate, device=device)
 
-    # Non-CUDA devices skip the gate.
+    # CPU devices skip the accelerator memory gate.
     tail.validate_acoustic_pool_memory(estimate, device=torch.device("cpu"))
 
 
@@ -307,16 +392,15 @@ def test_validate_acoustic_pool_memory_releases_cached_blocks_before_sampling_fr
         dtype=torch.uint8,
     )
     memory = {"free": 10}
-    monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
-    monkeypatch.setattr(
-        torch.cuda,
-        "empty_cache",
-        lambda: memory.update(free=12),
+    device_module = SimpleNamespace(
+        device=lambda _device: nullcontext(),
+        empty_cache=lambda: memory.update(free=12),
+        mem_get_info=lambda _device=None: (memory["free"], 20),
     )
     monkeypatch.setattr(
-        torch.cuda,
-        "mem_get_info",
-        lambda _device=None: (memory["free"], 20),
+        torch,
+        "get_device_module",
+        lambda _device: device_module,
     )
 
     tail.validate_acoustic_pool_memory(
@@ -386,6 +470,32 @@ def test_fused_dit_builds_modulations_with_bfloat16_weights() -> None:
 
 
 @pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
+def test_npu_eager_feedback_matches_full_encoder() -> None:
+    device_module = torch.get_device_module(current_platform.device_type)
+    if not device_module.is_available():
+        pytest.skip("NPU is unavailable")
+    else:
+        pass
+    device = torch.device(current_platform.device_type, device_module.current_device())
+    torch.manual_seed(1234)
+    model = TailModel().eval().to(device=device, dtype=torch.bfloat16)
+    acoustic_tail = build_tail(model, slots=2, device=device, dtype=torch.bfloat16)
+    reference_encoder = copy.deepcopy(acoustic_tail.encoder)
+    slot = acoustic_tail.acquire_slot()
+    latent_history: list[torch.Tensor] = []
+    with torch.no_grad():
+        for _ in range(3):
+            latent_patch = torch.randn(
+                1, PATCH_SIZE, LATENT_DIM, device=device, dtype=torch.bfloat16
+            )
+            latent_history.append(latent_patch)
+            expected = reference_encoder(torch.cat(latent_history, dim=1))[:, -1]
+            actual = acoustic_tail.encode_feedback([slot], latent_patch)
+            torch.testing.assert_close(actual, expected, rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.accelerator
 def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
@@ -445,83 +555,6 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph.graph_misses
     assert graph.dit_contiguous_view_steps == NFE
-
-
-def seed_single_slot_tail(patch_capacity: int) -> tuple[Any, int]:
-    torch.manual_seed(7)
-    model = TailModel().eval()
-    acoustic_tail = build_tail(model, slots=1, patch_capacity=patch_capacity)
-    unit = acoustic_tail.spec.unit_len
-    g_cond = torch.randn(1, FM_HIDDEN)
-    grid = torch.linspace(0.0, 1.0, NFE + 1)
-    mods = acoustic_tail.dit.build_mods(
-        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=g_cond
-    )
-    slot = acoustic_tail.acquire_slot()
-    acoustic_tail.seed_fm_history(
-        slot, fm_rows=torch.randn(3 * unit, FM_HIDDEN), all_mods=mods
-    )
-    return acoustic_tail, slot
-
-
-def counter_records(caplog) -> list[logging.LogRecord]:
-    return [r for r in caplog.records if "tail graph counters" in r.getMessage()]
-
-
-def test_tail_logs_graph_counters_every_50_steps(caplog) -> None:
-    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
-    # A captured batch-8 bucket that batch-1 decode can never select: every
-    # cycle is a real miss, which is exactly what the counters report.
-    acoustic_tail.meanflow_graphs[(8, 16)] = object()
-    acoustic_tail.encoder_graphs[(8, 16)] = object()
-
-    with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
-        for step in range(50):
-            latent = acoustic_tail.sample_patches(
-                [slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN)
-            )
-            acoustic_tail.encode_feedback([slot], latent)
-            acoustic_tail.note_decode_cycle()
-            if step == 48:
-                assert not counter_records(caplog)
-        [periodic] = counter_records(caplog)
-        caplog.clear()
-        acoustic_tail.log_graph_counters()
-        [shutdown] = counter_records(caplog)
-
-    assert periodic.levelno == logging.DEBUG
-    assert shutdown.levelno == logging.INFO
-    record = periodic
-    message = record.getMessage()
-    assert "steps=50" in message
-    assert "meanflow_replays=0" in message
-    assert "meanflow_misses=50" in message
-    assert "semantic_encoder_replays=0" in message
-    assert "semantic_encoder_misses=50" in message
-    assert acoustic_tail.graph_misses == Counter(
-        {"meanflow": 50, "semantic_encoder": 50}
-    )
-    assert acoustic_tail.graph_replays == Counter()
-
-
-def test_tail_without_captured_graphs_logs_no_counters(caplog) -> None:
-    acoustic_tail, slot = seed_single_slot_tail(patch_capacity=60)
-    assert not acoustic_tail.has_captured_graphs
-
-    with caplog.at_level(logging.DEBUG, logger=tail.logger.name):
-        for _ in range(50):
-            latent = acoustic_tail.sample_patches(
-                [slot], fm_hidden_rows=torch.randn(1, FM_HIDDEN)
-            )
-            acoustic_tail.encode_feedback([slot], latent)
-            acoustic_tail.note_decode_cycle()
-        acoustic_tail.log_graph_counters()
-
-    assert acoustic_tail.tail_steps == 50
-    assert acoustic_tail.graph_misses == Counter(
-        {"meanflow": 50, "semantic_encoder": 50}
-    )
-    assert not counter_records(caplog)
 
 
 def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(

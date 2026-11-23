@@ -1,0 +1,199 @@
+{
+  "name": "detail-correcting",
+  "kind": "page",
+  "page": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "",
+    "page": 0,
+    "has_more": false,
+    "active": true,
+    "settings_available": true,
+    "meeting_count": 7,
+    "items": [
+      {
+        "key": "head/今天",
+        "heading": "今天"
+      },
+      {
+        "key": "meeting-recording",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-recording",
+          "title": "Fixture recording",
+          "snippet": "麦克风与系统音频",
+          "status_code": "recording",
+          "status_label": "进行中",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "1 分钟",
+          "selected": false
+        }
+      },
+      {
+        "key": "detail-1",
+        "heading": "",
+        "meeting": {
+          "id": "detail-1",
+          "title": "Detailed meeting",
+          "snippet": "A generated summary.",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "meeting",
+          "clock_text": "14:04",
+          "duration_text": "1 小时 5 分钟",
+          "selected": true
+        }
+      },
+      {
+        "key": "head/昨天",
+        "heading": "昨天"
+      },
+      {
+        "key": "meeting-interrupted",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-interrupted",
+          "title": "未命名会议",
+          "snippet": "仅系统音频",
+          "status_code": "interrupted",
+          "status_label": "已中断",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "2 分钟",
+          "selected": false
+        }
+      },
+      {
+        "key": "head/过去 7 天",
+        "heading": "过去 7 天"
+      },
+      {
+        "key": "meeting-asking",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-asking",
+          "title": "Fixture asking",
+          "snippet": "仅麦克风",
+          "status_code": "asking",
+          "status_label": "进行中",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "3 分钟",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-finishing",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-finishing",
+          "title": "未命名会议",
+          "snippet": "麦克风与系统音频",
+          "status_code": "finishing",
+          "status_label": "正在收尾",
+          "mode_code": "meeting",
+          "clock_text": "15:04",
+          "duration_text": "4 分钟",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-done",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-done",
+          "title": "Fixture done",
+          "snippet": "仅系统音频",
+          "status_code": "done",
+          "status_label": "",
+          "mode_code": "subtitles",
+          "clock_text": "15:04",
+          "duration_text": "5 分钟",
+          "selected": false
+        }
+      },
+      {
+        "key": "meeting-failed",
+        "heading": "",
+        "meeting": {
+          "id": "meeting-failed",
+          "title": "未命名会议",
+          "snippet": "仅麦克风",
+          "status_code": "failed",
+          "status_label": "失败",
+          "mode_code": "recording",
+          "clock_text": "15:04",
+          "duration_text": "6 分钟",
+          "selected": false
+        }
+      }
+    ],
+    "detail": {
+      "id": "detail-1",
+      "title": "Detailed meeting",
+      "meta": "2026-01-02 14:04 · 1 小时 5 分钟 · 麦克风与系统音频",
+      "loading": false,
+      "error": "",
+      "correcting": true,
+      "answering": false,
+      "can_use_llm": true,
+      "show_more": true,
+      "can_reprocess": true,
+      "can_correct": false,
+      "can_reveal_audio": true,
+      "can_continue": false,
+      "delete_disabled": false,
+      "has_transcript": true,
+      "summary": {
+        "present": true,
+        "title": "Fixture summary",
+        "body": "A generated summary.\nSecond line.",
+        "todos": [
+          "Follow up"
+        ]
+      },
+      "chat": [
+        {
+          "user": true,
+          "text": "What happened?"
+        },
+        {
+          "user": false,
+          "text": "A generated answer."
+        }
+      ],
+      "segments": [
+        {
+          "key": "seg/0",
+          "index": 0,
+          "start_ms": 1000,
+          "time_text": "00:01",
+          "speaker": "你",
+          "me": true,
+          "text": "Microphone text",
+          "translation": "麦克风文本",
+          "source": "mic"
+        },
+        {
+          "key": "seg/1",
+          "index": 1,
+          "start_ms": 3000,
+          "time_text": "00:03",
+          "speaker": "Alice",
+          "me": false,
+          "text": "System text",
+          "translation": "",
+          "source": "system"
+        }
+      ],
+      "playback": {
+        "available": true,
+        "playing": false,
+        "position_text": "",
+        "highlight": -1
+      }
+    }
+  }
+}

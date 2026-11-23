@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// Whisper transcription as Voxt's Swift port runs it: fixed 30 s windows,
+// greedy decoding without timestamps, and the checkpoint's suppressed tokens.
+#pragma once
+
+#include <atomic>
+#include <filesystem>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "common/tokenizer.h"
+#include "common/transcription.h"
+#include "whisper/whisper_model.h"
+
+namespace whisper {
+
+// Draft proposals per round unless a flag sets them; the M5 Pro corpus runs
+// used 7.
+inline constexpr int kDefaultDraftSteps = 7;
+
+struct WhisperOptions {
+  // An ISO code or an English language name; blank or unknown leaves the
+  // language token out.
+  std::string language;
+  // Zero is the Swift port's default budget; each window keeps within the
+  // text context.
+  int max_new_tokens = 0;
+  // Zero decodes greedily.
+  float temperature = 0.0f;
+};
+
+class WhisperTranscriber {
+public:
+  // Reads the checkpoint and the tokenizer files Voxt places beside it:
+  // vocab.json, merges.txt, tokenizer_config.json and generation_config.json.
+  // With a draft directory, greedy decoding verifies draft_steps proposals of
+  // that distil decoder per round.
+  WhisperTranscriber(const std::filesystem::path &model_directory,
+                     const std::filesystem::path &draft_directory,
+                     int draft_steps);
+
+  omni_common::TranscriptionResult
+  Transcribe(const std::vector<float> &samples, const WhisperOptions &options,
+             const std::atomic<bool> &cancel) const;
+
+private:
+  struct WindowResult {
+    std::string text;
+    int generated_token_count = 0;
+    bool reached_token_limit = false;
+    int verify_round_count = 0;
+    int proposed_draft_token_count = 0;
+    int accepted_draft_token_count = 0;
+  };
+
+  // The code of the language token a language names, when there is one.
+  std::optional<std::string> LanguageCode(const std::string &language) const;
+  // Text of generated ids: special and timestamp ids dropped, byte-level
+  // decoded, tokenization spaces cleaned up.
+  std::string DecodeText(const std::vector<int> &token_ids) const;
+  // Logits [length, vocabulary] to the next token ids [length], from the
+  // suppressed logits: sampled at a positive temperature, else the most likely.
+  mlx::core::array NextToken(mlx::core::array logits, bool first_step,
+                             float temperature) const;
+  // Windows' encoder states [windows, 1500, width] decoded together, one step
+  // for all unfinished ones at a time, or one window alone with the draft.
+  std::vector<WindowResult>
+  TranscribeWindows(const mlx::core::array &encoder_states,
+                    const std::vector<int> &prompt_ids, int max_new_tokens,
+                    float temperature, const std::atomic<bool> &cancel) const;
+  // Greedy decoding with the draft after the prompt the caches hold and the
+  // first token after it: each round the target verifies the draft's
+  // proposals and keeps the agreeing ones plus its own next token.
+  WindowResult DecodeWithDraft(const mlx::core::array &encoder_states,
+                               const mlx::core::array &prompt,
+                               const mlx::core::array &first_token,
+                               std::vector<DecoderLayerCache> &caches,
+                               int max_new_tokens,
+                               const std::atomic<bool> &cancel) const;
+
+  WhisperModel model_;
+  std::optional<WhisperModel> draft_;
+  int draft_steps_;
+  omni_common::Tokenizer tokenizer_;
+  bool clean_up_tokenization_spaces_ = true;
+  bool is_multilingual_ = false;
+  int start_of_transcript_id_ = 0;
+  int end_of_text_id_ = 0;
+  int no_timestamps_id_ = 0;
+  int timestamp_begin_id_ = 0;
+  std::optional<int> transcribe_id_;
+  std::map<std::string, int> language_ids_;
+  std::set<int> special_token_ids_;
+  // Additive logit masks, each absent when it suppresses nothing: the first
+  // step's, every step's, and the timestamps'.
+  std::optional<mlx::core::array> begin_suppression_;
+  std::optional<mlx::core::array> step_suppression_;
+  std::optional<mlx::core::array> timestamp_suppression_;
+};
+
+} // namespace whisper

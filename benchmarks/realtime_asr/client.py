@@ -7,7 +7,7 @@ benchmarks.realtime_asr.metrics for datails.
 The event flow:
 
     session.created  <-
-    session.update   ->  (language, turn_detection)
+    session.update   ->  (language, decode_interval_ms, turn_detection)
     session.updated  <-
     input_audio_buffer.append x N  ->   paced to wall-clock when “paced”
     input_audio_buffer.commit      ->   manual mode only
@@ -200,6 +200,7 @@ async def run_session(
     turn_detection: dict[str, Any] | None = DEFAULT_TURN_DETECTION,
     manual_commit: bool = False,
     language: str | None = None,
+    decode_interval_ms: int | None = None,
     trailing_silence_ms: int = 0,
     timeout_s: float = 120.0,
 ) -> SessionTrace:
@@ -212,6 +213,7 @@ async def run_session(
             meaningless).
         turn_detection: the session.update value; defaults to server VAD.
             None disables VAD, and the caller then usually wants manual_commit=True.
+        decode_interval_ms: audio between partial decodes; None keeps the server default.
         trailing_silence_ms: zero samples appended after pcm so server VAD
             can close the last turn on its own instead of at transcription.done.
         timeout_s: bound on the whole session, from connect to the terminal event.
@@ -230,6 +232,12 @@ async def run_session(
     session_update: dict[str, Any] = {"turn_detection": turn_detection}
     if language is not None:
         session_update["language"] = language
+    else:
+        pass
+    if decode_interval_ms is not None:
+        session_update["decode_interval_ms"] = decode_interval_ms
+    else:
+        pass
 
     async def _drive() -> None:
         async with websockets.connect(url, max_size=None) as websocket:

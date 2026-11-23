@@ -1,0 +1,87 @@
+MyGo patch 0013 (VoxtNew): a tooltip takes Escape only when no other
+overlay does.
+
+A tooltip is an overlay built inside the overlay that shows its anchor,
+so it is on top of a dialog or popover and took the Escape meant to
+close it: with the keyboard focus on a button with a tip (a dialog's ×,
+an ⓘ), the first Escape hid the tip and only the second closed the
+dialog. routeKey now gives a key to a tooltip's OverlayShortcut only
+when no other overlay registered it; the tip goes with the dialog. A tip
+over the window alone still hides on Escape (TestTooltipLetsDialogClose,
+TestTooltipFocus).
+
+diff --git a/ui/input.go b/ui/input.go
+index 55e418e..a76f495 100644
+--- a/ui/input.go
++++ b/ui/input.go
+@@ -838,11 +838,13 @@ func routeKey(regs []shortcutReg, chain []uint64, k keyEvent) (target uint64, fo
+ 			}
+ 		}
+ 	}
+-	// The overlay on top: the one made last, as it paints last.
++	// The overlay on top: the one made last, as it paints last; a
++	// tooltip only when no other overlay takes the key.
+ 	var top int32 = -1
++	tip := true
+ 	for _, r := range regs {
+-		if r.overlay && r.mods == k.mods && r.key == k.key && r.serial >= top {
+-			target, found, top = r.id, true, r.serial
++		if r.overlay && r.mods == k.mods && r.key == k.key && (tip && !r.tip || r.tip == tip && r.serial >= top) {
++			target, found, top, tip = r.id, true, r.serial, r.tip
+ 		}
+ 	}
+ 	if found {
+diff --git a/ui/runtime.go b/ui/runtime.go
+index dd606c2..1c3742b 100644
+--- a/ui/runtime.go
++++ b/ui/runtime.go
+@@ -388,6 +388,9 @@ type shortcutReg struct {
+ 	// made serial-th in its pass: the overlay made last is on top.
+ 	overlay bool
+ 	serial  int32
++	// tip marks a tooltip's: it takes a key only when no other overlay
++	// does, so that Escape closes the dialog or popover the tip shows in.
++	tip bool
+ 	// retried marks a key delivered, or left unrouted, in the frame after
+ 	// the one it came to (settleKeys): it is not retried again.
+ 	retried bool
+diff --git a/ui/scope.go b/ui/scope.go
+index 83bb193..adc6ba1 100644
+--- a/ui/scope.go
++++ b/ui/scope.go
+@@ -113,7 +113,7 @@ func (rt *engine) scopeOf(id uint64) uint64 {
+ // top) first, and reports whether such a key was delivered to it.
+ func (rt *engine) overlayShortcut(e *node, mods Modifiers, key Key) bool {
+ 	id := e.id
+-	rt.nextRegs = append(rt.nextRegs, shortcutReg{id: id, mods: mods, key: key, overlay: true, serial: e.serial})
++	rt.nextRegs = append(rt.nextRegs, shortcutReg{id: id, mods: mods, key: key, overlay: true, serial: e.serial, tip: e.role == RoleTooltip})
+ 	for i, d := range rt.delivered {
+ 		if d.id == id && d.mods == mods && d.key == key {
+ 			rt.delivered = append(rt.delivered[:i], rt.delivered[i+1:]...)
+diff --git a/ui/tooltip_test.go b/ui/tooltip_test.go
+index 33fedf6..e36f320 100644
+--- a/ui/tooltip_test.go
++++ b/ui/tooltip_test.go
+@@ -189,3 +189,22 @@ func TestTooltipInnermost(t *testing.T) {
+ 		t.Errorf("over the toolbar: texts %q", tt.Texts())
+ 	}
+ }
++
++// TestTooltipLetsDialogClose checks that one Escape closes a dialog whose
++// focused button shows its tip, rather than only hiding the tip.
++func TestTooltipLetsDialogClose(t *testing.T) {
++	open := true
++	tt, _ := clockTester(func(c *context) {
++		coreDialogBase(c, &open, func(_, panel *node) {
++			coreButton(c, "Close").Tooltip("Closes the dialog")
++		})
++	}, 400, 300)
++	tt.Key(0, KeyTab)
++	if !tt.HasText("Closes the dialog") {
++		t.Fatalf("no tip for the focus; texts %q", tt.Texts())
++	}
++	tt.Key(0, KeyEscape)
++	if open {
++		t.Error("the first Escape left the dialog open")
++	}
++}

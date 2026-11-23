@@ -16,12 +16,7 @@ from starlette.types import Message
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, ClientError
-from sglang_omni.client.audio import (
-    DEFAULT_SAMPLE_RATE,
-    apply_speed,
-    encode_pcm,
-    select_audio_delta,
-)
+from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE
 from sglang_omni.serve.protocol import CreateSpeechRequest, SpeechStreamSessionConfig
 from sglang_omni.serve.speech_errors import (
     SpeechAPIError,
@@ -39,6 +34,7 @@ from sglang_omni.serve.speech_service import (
     SpeechReferenceDescriptor,
     SpeechRequestValidator,
 )
+from sglang_omni.serve.speech_streaming import SpeechAudioStream
 from sglang_omni.serve.speech_voices import UploadedVoiceReference
 from sglang_omni.utils.json import JsonValue
 
@@ -56,6 +52,7 @@ MAX_BUFFERED_RECEIVE_BYTES_DURING_GENERATION = (
 SENTENCE_BOUNDARIES = frozenset(".!?。！？")
 CLAUSE_BOUNDARIES = frozenset(".!?。！？,，;；")
 SUPPORTED_SPLIT_GRANULARITIES = frozenset({"sentence", "clause"})
+SESSION_CONFIG_ENVELOPE_KEYS = frozenset({"type", "session"})
 
 
 def new_speech_ws_id(prefix: str) -> str:
@@ -250,8 +247,18 @@ class SpeechWebSocketSession:
         payload: Mapping[str, object],
     ) -> SpeechStreamSessionConfig:
         raw_config: object = payload.get("session")
+        outer_fields = {
+            key: value
+            for key, value in payload.items()
+            if key not in SESSION_CONFIG_ENVELOPE_KEYS
+        }
         if raw_config is None:
-            raw_config = {key: value for key, value in payload.items() if key != "type"}
+            raw_config = outer_fields
+        elif outer_fields and self.speech_service.supported_speech_fields is not None:
+            outer_key = next(iter(outer_fields))
+            raise bad_request(
+                f"unknown session.config field: {outer_key}", param=outer_key
+            )
         else:
             pass
         if not isinstance(raw_config, dict):
@@ -263,6 +270,9 @@ class SpeechWebSocketSession:
             pass
         self.speech_service.validate_raw_speech_fields(raw_config)
         validate_raw_session_fields(raw_config)
+        self.speech_service.validate_supported_fields(
+            raw_config, SpeechStreamSessionConfig
+        )
         config = SpeechStreamSessionConfig.model_validate(raw_config)
         if config.split_granularity not in SUPPORTED_SPLIT_GRANULARITIES:
             supported = ", ".join(sorted(SUPPORTED_SPLIT_GRANULARITIES))
@@ -280,8 +290,8 @@ class SpeechWebSocketSession:
         else:
             pass
         prepared = await asyncio.to_thread(
-            self.speech_service.parse_generation_request,
-            self.speech_payload_from_config(config, "probe"),
+            self.speech_service.prepare_generation_request,
+            self.speech_request_from_config(config, "probe"),
         )
         config_fields = set(SpeechStreamSessionConfig.model_fields)
         prepared_updates = {
@@ -363,48 +373,28 @@ class SpeechWebSocketSession:
     ) -> int:
         assert self.config is not None
         request = self.speech_request_from_config(sentence=sentence, stream=True)
+        encode_speed = self.speech_service.resolve_encode_speed(request)
         gen_req = self.speech_service.build_generate_request(
             request,
             validate=False,
             reference_descriptors=self.config_reference_descriptors(),
             uploaded_voice=self.config_uploaded_voice(),
         )
-        emitted_samples = 0
+        audio_stream = SpeechAudioStream(
+            output_sample_rate=self.config.sample_rate, speed=encode_speed
+        )
         total_bytes = 0
         chunk_count = 0
         started = False
-        async for chunk in self.client.generate(gen_req, request_id=request_id):
-            if chunk.audio_data is None:
-                continue
-            else:
-                pass
-            sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-            audio_data, emitted_samples = select_audio_delta(
-                chunk.audio_data,
-                emitted_samples=emitted_samples,
-                is_terminal=chunk.finish_reason is not None,
-            )
-            if audio_data is None:
-                continue
-            else:
-                pass
-            if self.config.speed != 1.0:
-                audio_data, sample_rate = apply_speed(
-                    audio_data, self.config.speed, sample_rate
-                )
-            else:
-                pass
-            audio_bytes = encode_pcm(audio_data, sample_rate)
-            if not audio_bytes:
-                continue
-            else:
-                pass
+
+        async def send_audio_bytes(audio_bytes: bytes) -> None:
+            nonlocal started, total_bytes, chunk_count
             if not started:
                 await self.send_audio_start(
                     request_id=request_id,
                     sentence_index=sentence_index,
                     sentence=sentence,
-                    sample_rate=sample_rate,
+                    sample_rate=audio_stream.sample_rate,
                 )
                 started = True
             else:
@@ -412,6 +402,22 @@ class SpeechWebSocketSession:
             await self.send_audio_frame(audio_bytes, active_request_id=request_id)
             total_bytes += len(audio_bytes)
             chunk_count += 1
+
+        async for chunk in self.client.generate(gen_req, request_id=request_id):
+            if chunk.audio_data is None:
+                continue
+            else:
+                pass
+            audio_bytes = audio_stream.push(chunk)
+            if audio_bytes:
+                await send_audio_bytes(audio_bytes)
+            else:
+                pass
+        final_audio_bytes = audio_stream.finish()
+        if final_audio_bytes:
+            await send_audio_bytes(final_audio_bytes)
+        else:
+            pass
         if chunk_count == 0:
             raise ClientError("No audio output generated from the pipeline.")
         else:
@@ -437,8 +443,9 @@ class SpeechWebSocketSession:
             gen_req,
             request_id=request_id,
             response_format=request.response_format,
-            speed=request.speed,
+            speed=self.speech_service.resolve_encode_speed(request),
             allow_format_fallback=False,
+            output_sample_rate=request.sample_rate,
         )
         if self.active_request_id == request_id:
             self.active_request_id = None

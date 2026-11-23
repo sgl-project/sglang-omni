@@ -242,6 +242,30 @@ def test_fun_asr_result_adapter_decodes_transcript_directly() -> None:
     }
 
 
+def test_fun_asr_result_adapter_returns_the_speculative_acceptance_details() -> None:
+    _, result_adapter = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=FakeTokenizer(),
+        max_new_tokens=32,
+        feature_extractor=object(),
+    )
+    data = request_builders.FunASRRequestData(
+        output_ids=[20, 30],
+        stage_payload=StagePayload(
+            request_id="req-fun-asr", request=OmniRequest(inputs={}), data={}
+        ),
+    )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
+
+    assert result_adapter(data).data["spec_tokens_details"] == data.spec_tokens_details
+
+
 def test_fun_asr_load_audio_uses_shared_audio_utility(monkeypatch) -> None:
     calls = []
     expected = np.zeros(1600, dtype=np.float32)

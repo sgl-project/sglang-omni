@@ -128,7 +128,7 @@ def build_visual(
     model_path: str,
     *,
     thinker_cfg: Qwen3OmniMoeThinkerConfig,
-    torch_dtype: torch.dtype | None,
+    torch_dtype: torch.dtype,
     device: str,
 ) -> nn.Module:
     # note (yzxiao): Stage imports must not initialize the platform layer.
@@ -139,6 +139,7 @@ def build_visual(
     visual = instantiate_visual(
         thinker_cfg.vision_config,
         device=device,
+        dtype=torch_dtype,
         native_visual_class=VISUAL_CLASS,
     )
     visual = load_module(
@@ -148,6 +149,12 @@ def build_visual(
         dtype=torch_dtype,
         device=device,
         strict=True,
+    )
+    # note (ratish): load_module casts every floating buffer to the weight dtype, and the
+    # rotary's inverse frequencies rounded to bf16 move the angles by up to 0.3 % per position;
+    # transformers keeps that table in float32, so it is rebuilt from the config after the cast.
+    visual.rotary_pos_emb = type(visual.rotary_pos_emb)(thinker_cfg.vision_config).to(
+        visual.rotary_pos_emb.inv_freq.device
     )
     optimize_patch_embed(visual)
     return visual
@@ -196,7 +203,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         if isinstance(pixel_values, torch.Tensor) and isinstance(
             image_grid_thw, torch.Tensor
         ):
-            image_grid_thw = image_grid_thw.to(self.device, dtype=torch.long)
+            image_grid_thw = image_grid_thw.to(dtype=torch.long)
             pixel_values = pixel_values.to(device=self.device, dtype=self.visual.dtype)
             image_embeds, image_embeds_multiscale = unpack_visual_output(
                 self.visual(pixel_values, grid_thw=image_grid_thw)
@@ -216,7 +223,7 @@ class Qwen3OmniImageEncoder(nn.Module):
         if isinstance(pixel_values_videos, torch.Tensor) and isinstance(
             video_grid_thw, torch.Tensor
         ):
-            video_grid_thw = video_grid_thw.to(self.device, dtype=torch.long)
+            video_grid_thw = video_grid_thw.to(dtype=torch.long)
             pixel_values_videos = pixel_values_videos.to(
                 device=self.device, dtype=self.visual.dtype
             )

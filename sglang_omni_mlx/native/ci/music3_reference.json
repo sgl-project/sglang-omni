@@ -1,0 +1,16 @@
+{
+  "repository": "sgl-project/sglang-omni",
+  "revision": "195e4e9058e13af605f13f5c55a26efe651805a6",
+  "files": {
+    "sglang_omni/models/minimax_music3/mlx/ar.py": "c9cc3640928a3ad98d091448dec4223c293728dcf7e71e1cfafbdbe4a73e904d",
+    "sglang_omni/models/minimax_music3/mlx/config.py": "1fce31ab74083514a96978c05e30c9b099bf8b4898ef0ab7fa20f402ad8b9b23",
+    "sglang_omni/models/minimax_music3/mlx/depth.py": "edfec3eac0ff81d1cfbbfeff3ce27a4e814b0abb678af5535badade606b22ada",
+    "sglang_omni/models/minimax_music3/mlx/dit.py": "5bae30658f92613ad23b83326530b568e15e94c4a0af68d958d8939f5ba211b9",
+    "sglang_omni/models/minimax_music3/mlx/euler.py": "0b2199bda34a06f5999e891365a0a7a2901572838f4ab52a7b96e50142e72ba3",
+    "sglang_omni/models/minimax_music3/mlx/fusion.py": "5af2b9ee34cba7840bb874108e9f2893cf94f4a1f34237bf3a14a4c542c73521",
+    "sglang_omni/models/minimax_music3/mlx/loader.py": "56d46ffdc0b835118a97c3620d2f22190e95f39d6e4f6a80a1680625b4d55d68",
+    "sglang_omni/models/minimax_music3/mlx/sampling.py": "26aab78c9e693e0ac5d469b5772fb222ff143efb353d72a9b841e11925171279",
+    "sglang_omni/models/minimax_music3/mlx/vocoder.py": "557642afca66a0d122877fbff74b89afa542d51d9e5e99af5dc2c88f610f241d",
+    "sglang_omni/models/minimax_music3/prompt.py": "96f4699bad12b05bebfd700f58c658c4a3b2aabbdbd797a3d5a77a9ad4ab14a5"
+  }
+}

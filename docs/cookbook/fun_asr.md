@@ -20,7 +20,7 @@ hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 ## Apple Silicon
 
 Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../get_started/installation.md#-option-b-macos-apple-silicon-installer)
+with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
 and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
 needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
 
@@ -32,22 +32,39 @@ SSE transcription are supported; quantized checkpoints are not.
 
 ### Torch/MPS
 
-Native MLX support is added separately; until then, set `SGLANG_USE_MLX=0`:
-
 ```bash
-SGLANG_USE_MLX=0 sgl-omni serve \
+sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
 
 ## Server Configuration
 
-Fun-ASR-Nano runs a single ASR stage on one GPU.
+Fun-ASR-Nano runs a single ASR stage on one accelerator.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
   --port 8000
 ```
+
+### Ascend NPU
+
+Prepare the runtime using the [NPU installation guide](../get_started/installation_npu.md). The NPU example uses a pipeline configuration to collect the recommended NPU settings in one reusable launch command.
+
+```bash
+# Recommended: use the model path from the config file
+sgl-omni serve \
+  --config examples/configs/fun_asr_npu.yaml \
+  --port 8000
+
+# Optional: override the config model_path with a local checkpoint
+sgl-omni serve \
+  --config examples/configs/fun_asr_npu.yaml \
+  --model-path /path/to/Fun-ASR-Nano-2512-hf \
+  --port 8000
+```
+
+The stage's `gpu` value selects a logical device among the visible NPUs; for example, add `--asr.gpu 1` to select the second visible NPU.
 
 ## Transcribe Audio
 
@@ -106,8 +123,39 @@ text; it does not change the final transcript.
 | `language` | string | unset | Language hint. `en`/`english`/`英文` transcribe to English; `zh`/`cn`/`chinese`/`中文` (or unset) transcribes to Chinese; other values pass through as the target language |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
-| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default |
+| `temperature` | float | `0.0` | Sampling temperature; `0.0` (greedy) is the correct decoding mode for Fun-ASR-Nano and the default. A negative value returns HTTP 422 |
 | `max_new_tokens` | integer | duration-based | Generation budget scaled to the audio duration. Explicit values must be between 1 and 200 |
+
+## Speculative Decoding
+
+On one CUDA GPU, Fun-ASR-Nano serves with its DFlash draft, [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `FunAudioLLM/Fun-ASR-Nano-2512-hf`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Apple Silicon, Ascend NPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
+```
+
+- **Accuracy.** The decoder verifies every proposed token. On SeedTTS, corpus WER is 1.86% in both modes for EN, and 1.44% without the draft against 1.42% with it for ZH.
+- **Sampling.** `temperature` and `repetition_penalty` work. Verify applies the penalty exactly to every token it checks, so realtime transcription, which sets it once a session carries a transcript prefix, also serves with the draft.
+- **Latency.** Fun-ASR holds a ready prefill until 16 requests are ready or 24 ms have passed. With the draft it stops holding while decode runs, since each decode round is a whole verify round; `--asr.factory.prefill_coalesce_after_builds_during_decode true` keeps the hold. Streamed first text p95 on one H200 is within 2 ms of no draft at concurrency 1, 35–39% lower at 4, and 4–7% higher at 16 on SeedTTS EN and ZH.
+- **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes the draft half as fast as no draft at concurrency 1. Without a draft it stays on, since it speeds up concurrency 1 by about 17%. A server with the draft therefore starts in about 30 s, against about 3 minutes without it.
+- **Cost.** The draft's KV takes about 15% of the pool, and async decode is off.
+- **Acceptance.** Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` (`spec_accept_length`, `spec_accept_rate`, the draft counts and the per-verify histogram) on `json` and `verbose_json` responses and on the streamed `transcript.text.done` event. Audio long enough to be transcribed in chunks returns none.
+
+The 70-layer audio encoder takes a large share of each request, so the gain is well below the draft's accept length of about 5.3 tokens per verify. Speedup over the same config without the draft, on one H200 with SGLang 0.5.23, two fresh servers per side in A B B A order, and 600 SeedTTS clips per language with the prefix cache off:
+
+| Concurrency | SeedTTS EN | SeedTTS ZH |
+|---:|---:|---:|
+| 1 | 1.34x | 1.28x |
+| 4 | 1.61x | 1.42x |
+| 8 | 1.29x | 1.20x |
+| 16 | 1.08x | 1.06x |
+| 32 | 1.13x | 1.10x |
+| 64 | 1.11x | 1.07x |
+
+SeedTTS clips average 4.7 s. SeedTTS EN at concurrency 1 goes from 32.4 to 43.2 samples per second, and p95 latency is 2 to 39% lower at every concurrency in both languages.
 
 ## Benchmarking
 

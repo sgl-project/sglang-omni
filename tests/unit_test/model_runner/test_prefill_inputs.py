@@ -11,7 +11,6 @@ import torch
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
     attach_omni_prefill_inputs,
-    get_omni_prefill_inputs,
 )
 
 
@@ -31,18 +30,6 @@ def make_forward_batch(
 
 def make_payload(*, rows: int = 4) -> OmniPrefillInputs:
     return OmniPrefillInputs(input_embeds=torch.zeros(rows, 8))
-
-
-def test_attach_uses_private_sidecar_without_mutating_upstream_fields() -> None:
-    forward_batch = make_forward_batch()
-    mm_inputs = forward_batch.mm_inputs
-    payload = make_payload()
-
-    attach_omni_prefill_inputs(forward_batch, payload)
-
-    assert forward_batch.input_embeds is None
-    assert forward_batch.mm_inputs is mm_inputs
-    assert get_omni_prefill_inputs(forward_batch) is payload
 
 
 def test_attach_rejects_replace_embeds() -> None:

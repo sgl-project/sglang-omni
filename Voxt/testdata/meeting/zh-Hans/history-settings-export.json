@@ -1,0 +1,88 @@
+{
+  "name": "history-settings-export",
+  "kind": "history-settings",
+  "history_settings": {
+    "open": true,
+    "directory": "~/Custom Recordings",
+    "missing_notice": "",
+    "can_use_default": true,
+    "usage_text": "2 段录音 · 2 KB",
+    "can_delete": false,
+    "can_export": false,
+    "recording_scopes": [
+      "全部录音",
+      "仅转录"
+    ],
+    "recording_scope": "全部录音",
+    "text_scopes": [
+      "全部记录",
+      "仅转录"
+    ],
+    "text_scope": "全部记录",
+    "text_formats": [
+      "Markdown",
+      "JSONL"
+    ],
+    "text_format": "Markdown",
+    "text_busy": false,
+    "busy": true,
+    "busy_label": "正在导出录音… 2 / 3",
+    "progress": 0.6666666666666666,
+    "can_cancel": true,
+    "clean_on": true,
+    "day_options": [
+      {
+        "label": "1 年",
+        "value": 365
+      },
+      {
+        "label": "6 个月",
+        "value": 180
+      },
+      {
+        "label": "3 个月",
+        "value": 90
+      },
+      {
+        "label": "30 天",
+        "value": 30
+      },
+      {
+        "label": "1 周",
+        "value": 7
+      }
+    ],
+    "days_selection": "30 天",
+    "count_options": [
+      {
+        "label": "不限",
+        "value": 0
+      },
+      {
+        "label": "50",
+        "value": 50
+      },
+      {
+        "label": "100",
+        "value": 100
+      },
+      {
+        "label": "300",
+        "value": 300
+      },
+      {
+        "label": "500",
+        "value": 500
+      },
+      {
+        "label": "1000",
+        "value": 1000
+      }
+    ],
+    "count_selection": "不限",
+    "prune_ask": false,
+    "prune_prompt": "",
+    "prune_detail": "",
+    "delete_audio_ask": false
+  }
+}

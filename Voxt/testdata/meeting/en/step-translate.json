@@ -1,0 +1,88 @@
+{
+  "name": "step-translate",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 4,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Try Translate",
+    "subtitle": "Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.",
+    "recording": false,
+    "try": {
+      "prefix": "ob-tl",
+      "shortcut": {
+        "present": true,
+        "feature_title": "Translate",
+        "text": "Right ⌥ ⇧",
+        "how": "Press to start, press again to stop.",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "option-right": true,
+            "shift-left": true,
+            "shift-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "Sample text · into Simplified Chinese",
+      "sample_text": "Let's go camping in the mountains this weekend; remember to bring a warm jacket and a torch.",
+      "sample_action": true,
+      "hint": "",
+      "card": {
+        "mine": false,
+        "state": "",
+        "session_kind": "",
+        "live": false,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": null,
+        "heard": false,
+        "elapsed_text": "",
+        "partial": "",
+        "draft": "",
+        "working_text": "",
+        "busy_text": "",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": ""
+      }
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "Continue is available once a test gives a result",
+      "continue_disabled": true
+    }
+  }
+}

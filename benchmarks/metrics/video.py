@@ -70,7 +70,7 @@ def compute_videomme_metrics(
         "correct": correct,
         "accuracy": round(correct / total, 4) if total > 0 else 0.0,
         "failed": failed,
-        "mc_fallback": sum(record["is_mc_fallback"] for record in per_sample),
+        "unparseable": sum(record["is_unparseable"] for record in per_sample),
         "per_duration": _finalize_breakdown(per_duration),
         "per_domain": _finalize_breakdown(per_domain),
         "per_task_type": _finalize_breakdown(per_task_type),
@@ -97,7 +97,7 @@ def print_videomme_accuracy_summary(
         f"({metrics['accuracy'] * 100:.1f}%)"
     )
     print(f"  {'Failed requests:':<{lw}} {metrics['failed']}")
-    print(f"  {'MC parse fallback:':<{lw}} {metrics['mc_fallback']}")
+    print(f"  {'Unparseable:':<{lw}} {metrics['unparseable']}")
     print_accuracy_breakdown("By duration", metrics.get("per_duration", {}))
     print_accuracy_breakdown("By domain", metrics.get("per_domain", {}))
     print_accuracy_breakdown("By task type", metrics.get("per_task_type", {}))

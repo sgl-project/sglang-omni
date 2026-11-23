@@ -1,0 +1,20 @@
+config_cls: NemotronVoiceChatToolPipelineConfig
+model_path: nvidia/NVIDIA-NemotronLabs-VoiceChat-11B
+tools:
+  generate_random_number:
+    function:
+      name: generate_random_number
+      description: Generate a random integer between min and max (inclusive).
+      parameters:
+        type: object
+        properties:
+          min:
+            type: integer
+            description: Minimum value (inclusive)
+          max:
+            type: integer
+            description: Maximum value (inclusive)
+        required:
+        - min
+        - max
+    implementation: examples.nemotron_voicechat.tools.generate_random_number

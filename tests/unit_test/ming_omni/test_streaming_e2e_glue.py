@@ -57,22 +57,6 @@ def make_req_output(token_id):
     return SimpleNamespace(data=token_id)
 
 
-def test_thinker_stream_builder_emits_to_segmenter():
-    builder = make_thinker_stream_output_builder(
-        tokenizer=FakeTokenizer(),
-        eos_token_id=None,
-    )
-    req = make_req()
-    req_data = make_req_data(req)
-
-    msgs = builder("req-1", req_data, make_req_output(5))
-    # Thinker is not terminal, so only inter-stage stream to segmenter.
-    assert len(msgs) == 1
-    assert msgs[0].target == "segmenter"
-    assert msgs[0].data.dtype.is_floating_point is False  # uint8 tensor
-    assert bytes(msgs[0].data.tolist()).decode("utf-8") == "Hello"
-
-
 def test_streaming_tts_combined_builder_sends_token_to_decode_and_text_to_segmenter():
     builder = make_combined_stream_output_builder(
         make_text_stream_output_builder(),

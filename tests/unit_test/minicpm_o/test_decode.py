@@ -3,18 +3,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sglang_omni.models.minicpm_o.merge import build_decode_result
 from sglang_omni.proto import OmniRequest, StagePayload
-
-STAGES_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "sglang_omni"
-    / "models"
-    / "minicpm_o"
-    / "stages.py"
-)
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 class FakeTokenizer:
@@ -22,11 +13,29 @@ class FakeTokenizer:
         return "hello"
 
 
+SPEC_TOKENS_DETAILS: SpecTokensDetailsDict = {
+    "spec_accept_rate": 0.5,
+    "spec_accept_length": 2.0,
+    "spec_num_correct_drafts": 1,
+    "spec_num_proposed_drafts": 2,
+    "spec_verify_ct": 1,
+    "spec_correct_drafts_histogram": [0, 1],
+}
+
+
 def test_build_decode_result_returns_text_and_usage() -> None:
     payload = StagePayload(
         request_id="req-1",
         request=OmniRequest(inputs=[], params={"stream": False}),
-        data={"engine_outputs": {"thinker": {"output_ids": [1, 2], "is_final": True}}},
+        data={
+            "engine_outputs": {
+                "thinker": {
+                    "output_ids": [1, 2],
+                    "is_final": True,
+                    "spec_tokens_details": SPEC_TOKENS_DETAILS,
+                }
+            }
+        },
     )
     result = build_decode_result(
         payload,
@@ -37,7 +46,4 @@ def test_build_decode_result_returns_text_and_usage() -> None:
     assert result["text"] == "hello"
     assert result["events"][0]["type"] == "text_final"
     assert result["usage"]["completion_tokens"] == 2
-
-
-def test_minicpm_stages_do_not_import_qwen3_omni() -> None:
-    assert "qwen3_omni" not in STAGES_PATH.read_text()
+    assert result["spec_tokens_details"] == SPEC_TOKENS_DETAILS

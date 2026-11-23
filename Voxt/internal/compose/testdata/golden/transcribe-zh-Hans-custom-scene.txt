@@ -1,0 +1,13 @@
+# profile: custom:scene
+# layers: custom scene
+
+Write 中文 with full-width punctuation. Keep {{UNKNOWN}} as is.
+
+场景：文字会插入到 Slack。用户为这个场景写的规则：
+Casual chat in Slack: no trailing period.
+场景只用来选择措辞和格式，不要补充没有说过的事实。
+
+---- user ----
+<input>
+嗯那个 aura link 的发布大概完成了百分之七十，不对，百分之八十
+</input>

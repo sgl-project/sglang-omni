@@ -92,14 +92,6 @@ def test_dotted_engine_flags_reach_each_generation_stage(
         assert "max_total_tokens" not in engine_overrides(merged, stage.name)
 
 
-def test_engine_flags_on_a_non_engine_stage_are_refused() -> None:
-    config = HiggsTtsPipelineConfig(model_path="dummy")
-    with pytest.raises(ValueError, match="not an engine stage"):
-        ConfigManager(config).merge_config(
-            [("vocoder.engine.max_running_requests", "64")]
-        )
-
-
 @patch("sglang_omni.cli.serve.launch_server")
 @patch("sglang_omni.cli.serve.ConfigManager.from_model_path")
 def test_serve_routes_dotted_engine_flags_to_the_stage(

@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from pydantic import Field
-
 from sglang_omni.config import (
     EngineStageConfig,
     FactoryArgs,
@@ -14,6 +12,7 @@ from sglang_omni.config import (
     StageConfig,
 )
 from sglang_omni.config.schema import stage_process_name
+from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
 
@@ -92,32 +91,6 @@ def reject_conflicting_dit_accelerators(
         pass
 
 
-class FunCosyVoice3EngineFactoryArgs(FactoryArgs):
-    """Engine-only knobs, including the optional native MLX checkpoint."""
-
-    mlx_model_path: str | None = Field(default=None)
-    mlx_model_revision: str | None = Field(default=None)
-
-
-class FunCosyVoice3EngineStageConfig(EngineStageConfig):
-    factory: FunCosyVoice3EngineFactoryArgs = Field(
-        default_factory=FunCosyVoice3EngineFactoryArgs
-    )
-
-
-class FunCosyVoice3VocoderFactoryArgs(FactoryArgs):
-    """Vocoder knobs, including the converted native MLX artifact."""
-
-    mlx_model_path: str | None = Field(default=None)
-    mlx_model_revision: str | None = Field(default=None)
-
-
-class FunCosyVoice3VocoderStageConfig(StageConfig):
-    factory: FunCosyVoice3VocoderFactoryArgs = Field(
-        default_factory=FunCosyVoice3VocoderFactoryArgs
-    )
-
-
 class FunCosyVoice3PipelineConfig(PipelineConfig):
     """3-stage Fun-CosyVoice3 pipeline: preprocessing -> tts_engine -> vocoder."""
 
@@ -128,8 +101,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     speech_reference_text_excludes_instructions: ClassVar[bool] = True
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "tts_engine": FunCosyVoice3EngineStageConfig,
-        "vocoder": FunCosyVoice3VocoderStageConfig,
+        "tts_engine": EngineStageConfig,
     }
 
     @classmethod
@@ -144,14 +116,27 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
-        # note(ratish): stages in one process are built in list order; the
-        # vocoder comes before the engine so Flow, HiFT and their graphs are
-        # resident when sglang sizes the KV pool from free memory.
-        FunCosyVoice3VocoderStageConfig(
+        # note (ratish): stages in one process are built in list order. The engine's KV
+        # pool is max_running_requests x context_length tokens, not free memory, so it
+        # comes first and the vocoder sizes its Flow prefix pool from what is left.
+        EngineStageConfig(
+            name="tts_engine",
+            process="pipeline",
+            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
+            factory=FactoryArgs(
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+                token_hop_len=25,
+            ),
+            gpu=0,
+            next="vocoder",
+            stream_to=["vocoder"],
+        ),
+        StageConfig(
             name="vocoder",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FunCosyVoice3VocoderFactoryArgs(
+            factory=FactoryArgs(
                 dtype="bfloat16",
                 flow_batch_admission_frames=8000,
                 flow_merge_max_gap_frames=384,
@@ -163,6 +148,7 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 enable_flow_cuda_graph=True,
                 enable_flow_prefix_cuda_graph=True,
                 enable_flow_whole_history_cuda_graph=True,
+                enable_hift_cuda_graph=True,
                 flow_cuda_graph_capture_shapes=FUN_COSYVOICE3_DEFAULT_FLOW_CUDA_GRAPH_CAPTURE_SHAPES,
                 # note (guozhihao-224, chenyang):
                 # CUDA Graph and DiT torch.compile are on by default. TensorRT stays opt-in;
@@ -171,29 +157,39 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
-                flow_prefix_cache_gb=24.0,
+                flow_prefix_cache_gb=None,
             ),
             gpu=0,
             terminal=True,
             can_accept_stream_before_payload=True,
         ),
-        FunCosyVoice3EngineStageConfig(
-            name="tts_engine",
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FunCosyVoice3EngineFactoryArgs(
-                dtype="bfloat16",
-                onnx_intra_op_threads=16,
-                token_hop_len=25,
-            ),
-            gpu=0,
-            next="vocoder",
-            stream_to=["vocoder"],
-        ),
     ]
 
     def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
         env_defaults = super().resolved_stage_env_defaults(stage_name)
+        if (
+            current_platform.is_npu()
+            and type(self).stage_config_cls(stage_name).engine_stage
+            and "PER_STREAM_QUEUE" not in env_defaults
+        ):
+            # torch_npu reads its host task-queue mode once when the stage
+            # process starts. Under the shared queue, an AR decode graph
+            # replay overlaps the graph update that rebinds the sequence
+            # lengths, and a multi-row bucket stalls after its first step.
+            process_name = stage_process_name(self.stage_named(stage_name))
+            # A value written on any stage of the process wins, so a user who
+            # disables the decode graph can turn the per-stream queue off
+            # without the colocated stages disagreeing at spawn.
+            if not any(
+                "PER_STREAM_QUEUE" in stage.env
+                for stage in self.stages
+                if stage_process_name(stage) == process_name
+            ):
+                env_defaults["PER_STREAM_QUEUE"] = "1"
+            else:
+                pass
+        else:
+            pass
         if (
             type(self).stage_config_cls(stage_name).engine_stage
             and "OMP_NUM_THREADS" not in env_defaults
@@ -240,23 +236,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 vocoder_factory.model_extra.get("enable_flow_estimator_trt")
             )
         }
-        if vocoder_factory.mlx_model_path is not None:
-            # Note (yexiaodong): A separate vocoder artifact must keep its own
-            # revision; both explicit fields therefore stay in typed config.
-            return kwargs
-        else:
-            pass
-        # Note (yexiaodong): The converted artifact contains the speech-token
-        # LLM, Flow, and HiFT weights, so reuse it unless the vocoder overrides it.
-        engine_factory = self.stage_named("tts_engine").factory
-        if engine_factory.mlx_model_path is not None:
-            kwargs["mlx_model_path"] = engine_factory.mlx_model_path
-        else:
-            pass
-        if engine_factory.mlx_model_revision is not None:
-            kwargs["mlx_model_revision"] = engine_factory.mlx_model_revision
-        else:
-            pass
         return kwargs
 
 

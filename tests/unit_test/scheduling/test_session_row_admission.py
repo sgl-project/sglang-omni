@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from array import array
 from types import SimpleNamespace
 
 import pytest
@@ -9,10 +10,12 @@ from sglang.srt.managers.schedule_batch import Req, ReqKvInfo, ScheduleBatch
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
-from sglang.srt.mem_cache.radix_cache import RadixCache, RadixKey
+from sglang.srt.mem_cache.radix_cache import RadixKey
+from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
-from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
+from sglang.srt.session.streaming_session import SessionSlot
 
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -35,9 +38,13 @@ class KVAllocator:
 
 
 class AdmissionScheduler:
+    enable_plain_fallback = False
     get_num_allocatable_reqs = OmniScheduler.get_num_allocatable_reqs
 
-    def __init__(self, *, request_rows: int) -> None:
+    def __init__(
+        self, *, request_rows: int, continuation_aware_admission: bool = True
+    ) -> None:
+        self.continuation_aware_admission = continuation_aware_admission
         self.req_to_token_pool = ReqToTokenPool(
             size=request_rows,
             max_context_len=CONTEXT_LENGTH,
@@ -45,16 +52,15 @@ class AdmissionScheduler:
             enable_memory_saver=False,
         )
         self.token_to_kv_pool_allocator = KVAllocator()
-        self.tree_cache = StreamingSession(
-            RadixCache(
-                CacheInitParams(
-                    disable=False,
-                    req_to_token_pool=self.req_to_token_pool,
-                    token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                    page_size=1,
-                    enable_kv_cache_events=False,
-                    eviction_policy="lru",
-                )
+        self.tree_cache = UnifiedRadixCache(
+            CacheInitParams(
+                disable=False,
+                req_to_token_pool=self.req_to_token_pool,
+                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
+                page_size=1,
+                enable_kv_cache_events=False,
+                eviction_policy="lru",
+                tree_components=(ComponentType.FULL,),
             )
         )
         self.session_controller = SessionController(self.tree_cache)
@@ -68,7 +74,7 @@ class AdmissionScheduler:
         assert self.session_bridge.open_streaming_session(session_id)
         if holds_row:
             (row,) = self.req_to_token_pool.alloc_rows(1)
-            self.tree_cache.slots[session_id] = SessionSlot(
+            self.tree_cache.session.slots[session_id] = SessionSlot(
                 kv=ReqKvInfo(
                     req_pool_idx=row,
                     kv_committed_len=RETAINED_TOKEN_COUNT,
@@ -96,13 +102,19 @@ class AdmissionScheduler:
         admitted_requests: list[Req] = []
         for request in self.waiting_queue:
             if len(admitted_requests) >= self.get_num_allocatable_reqs(
-                0, None, running_batch=self.running_batch
+                0,
+                None,
+                running_batch=self.running_batch,
+                num_held_rows=sum(
+                    admitted.kv.holds_kv for admitted in admitted_requests
+                ),
             ):
                 break
             else:
                 self.tree_cache.match_prefix(
                     MatchPrefixParams(
-                        key=RadixKey(request.origin_input_ids[:-1]), req=request
+                        key=RadixKey(array("q", request.origin_input_ids[:-1])),
+                        req=request,
                     )
                 )
                 admitted_requests.append(request)
@@ -121,13 +133,19 @@ def per_batch_limit(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return parallel
 
 
-def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() -> None:
+@pytest.mark.parametrize("continuation_aware_admission", [True, False])
+def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row(
+    continuation_aware_admission: bool,
+) -> None:
     session_count = 6
-    scheduler = AdmissionScheduler(request_rows=session_count + 1)
+    scheduler = AdmissionScheduler(
+        request_rows=session_count + 1,
+        continuation_aware_admission=continuation_aware_admission,
+    )
     held_rows: dict[str, int] = {}
     for index in range(session_count):
         scheduler.open_session(f"session-{index}", holds_row=True)
-        held_rows[f"unit-{index}"] = scheduler.tree_cache.slots[
+        held_rows[f"unit-{index}"] = scheduler.tree_cache.session.slots[
             f"session-{index}"
         ].kv.req_pool_idx
     units = [
@@ -139,6 +157,44 @@ def test_every_open_session_unit_is_admitted_in_one_batch_with_one_free_row() ->
     assert scheduler.admit_prefill_batch() == [unit.rid for unit in units]
     assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
     assert scheduler.free_rows() == 1
+
+
+def test_continuation_aware_admission_admits_every_unit_with_no_free_row() -> None:
+    session_count = 6
+    scheduler = AdmissionScheduler(request_rows=session_count)
+    held_rows: dict[str, int] = {}
+    for index in range(session_count):
+        scheduler.open_session(f"session-{index}", holds_row=True)
+        held_rows[f"unit-{index}"] = scheduler.tree_cache.session.slots[
+            f"session-{index}"
+        ].kv.req_pool_idx
+    units = [
+        scheduler.queue_request(f"unit-{index}", f"session-{index}")
+        for index in range(session_count)
+    ]
+    assert scheduler.free_rows() == 0
+
+    assert scheduler.admit_prefill_batch() == [unit.rid for unit in units]
+    assert {unit.rid: unit.kv.req_pool_idx for unit in units} == held_rows
+    assert scheduler.free_rows() == 0
+
+
+def test_without_continuation_aware_admission_no_free_row_admits_nothing() -> None:
+    session_count = 6
+    scheduler = AdmissionScheduler(
+        request_rows=session_count, continuation_aware_admission=False
+    )
+    for index in range(session_count):
+        scheduler.open_session(f"session-{index}", holds_row=True)
+    units = [
+        scheduler.queue_request(f"unit-{index}", f"session-{index}")
+        for index in range(session_count)
+    ]
+    assert scheduler.free_rows() == 0
+
+    assert scheduler.admit_prefill_batch() == []
+    assert scheduler.waiting_queue == units
+    assert scheduler.free_rows() == 0
 
 
 def test_first_units_and_plain_requests_are_limited_by_free_rows() -> None:

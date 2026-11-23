@@ -221,11 +221,24 @@ def test_read_buffer_returns_minimum_across_registered_buffers():
     assert "cg_codes_BN.shape[0]" in source
 
 
-def test_read_buffer_qwen3_tts_feedback():
-    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
-    cap, source = read_model_buffer_capacity(model)
+def qwen3_tts_talker(rows: int) -> object:
+    text_model = as_named(
+        None,
+        "Qwen3TTSTalkerTextModel",
+        decode_feedback_embedding=SimpleNamespace(weight=FakeTensor(rows)),
+    )
+    return as_named(
+        None,
+        "Qwen3TTSTalker",
+        model=text_model,
+        decode_feedback_embedding=text_model.decode_feedback_embedding,
+    )
+
+
+def test_read_buffer_qwen3_tts_decode_feedback_table():
+    cap, source = read_model_buffer_capacity(qwen3_tts_talker(64))
     assert cap == 64
-    assert "feedback_buffer.shape[0]" in source
+    assert source == "model.decode_feedback_embedding.weight.shape[0]"
 
 
 def test_read_buffer_inner_submodule_fallback():
@@ -270,8 +283,9 @@ def test_read_buffer_none_model():
 
 
 def test_validate_stage_auto_reads_buffer_and_passes():
-    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
-    runner = fake_runner(model=model, capture_bs=[1, 2, 4, 8, 16, 32, 64])
+    runner = fake_runner(
+        model=qwen3_tts_talker(64), capture_bs=[1, 2, 4, 8, 16, 32, 64]
+    )
     report = validate_stage("tts_engine", runner)
     assert report.buffer_capacity == 64
     assert report.stage == "tts_engine (Qwen3TTSTalker)"
@@ -304,9 +318,8 @@ def test_validate_stage_caller_override_buffer():
 
 
 def test_validate_stage_disabled_cuda_graph_is_valid_no_op():
-    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
     runner = fake_runner(
-        model=model,
+        model=qwen3_tts_talker(64),
         disable_cuda_graph=True,
         capture_bs=None,
         has_decode_cuda_graph_runner=False,
@@ -328,8 +341,7 @@ def test_validate_stage_unregistered_model_partial_report():
 
 
 def test_validate_stage_names_the_stage():
-    model = as_named(None, "Qwen3TTSTalker", feedback_buffer=FakeTensor(64))
-    runner = fake_runner(model=model, capture_bs=[1, 16, 64])
+    runner = fake_runner(model=qwen3_tts_talker(64), capture_bs=[1, 16, 64])
     out = validate_stage("talker_ar", runner).format()
     assert "Stage: talker_ar (Qwen3TTSTalker)" in out
     assert "VERDICT:" in out

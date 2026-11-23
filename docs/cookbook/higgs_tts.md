@@ -61,6 +61,15 @@ sgl-omni serve \
 The voice-cloning examples below use local reference clips from
 `docs/_static/audio`.
 
+CUDA reference encoding temporarily disables cuDNN convolutions and cuDNN
+attention. These settings affect the whole process, so `audio_encoder` must
+run in a separate process from CUDA stages such as `tts_engine` and `vocoder`,
+even when they use different GPUs. The default layout already does this:
+CPU preprocessing and the audio encoder share `tts_frontend`, while the
+engine and vocoder share `pipeline` on the same GPU. Custom layouts that
+combine the CUDA encoder with another CUDA stage are rejected at configuration
+validation; CPU encoding does not have this restriction.
+
 ## Synthesizing Speech
 
 ### Zero-shot
@@ -204,7 +213,9 @@ actual stream sample rate, channel count, and bit depth. Higgs defaults
 flushes the corresponding delayed-code rows at row 27. Clients can still set
 another value, including `0` to use the steady chunk size from the start. The
 producer and vocoder share the effective value, and it controls only the first
-chunk. Follow-up chunks return to the normal Higgs streaming window.
+chunk.
+
+After the first flush, both the producer and vocoder advance by `stream_followup_stride` delayed-code rows (75 by default). The default non-final flush positions are rows 27, 102, and 177. With four holdback frames, the corresponding audio chunks contain 20, 71, and 75 new codec frames; the second audio chunk is shorter because holdback starts after the first chunk. A final flush emits the remaining audio.
 
 2. Use Python
 
@@ -489,7 +500,7 @@ Reference output:
   <source src="../_static/audio/gaokao-listening.wav" type="audio/wav">
 </audio>
 
-#### Emotion
+**Emotion**
 
 | Token | Description |
 |---|---|
@@ -515,7 +526,7 @@ Reference output:
 | `<\|emotion:shame\|>` | Shame |
 | `<\|emotion:helplessness\|>` | Helplessness |
 
-#### Style
+**Style**
 
 | Token | Description |
 |---|---|
@@ -523,7 +534,7 @@ Reference output:
 | `<\|style:shouting\|>` | Shouting / projected voice |
 | `<\|style:whispering\|>` | Whisper |
 
-#### Sound Effects
+**Sound Effects**
 
 Pair each token with the matching onomatopoeia immediately after it.
 
@@ -539,7 +550,7 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `<\|sfx:sniff\|>` | Sniff | Sff |
 | `<\|sfx:sneeze\|>` | Sneeze | Achoo |
 
-#### Prosody
+**Prosody**
 
 | Token | Effect |
 |---|---|
@@ -568,9 +579,9 @@ Pair each token with the matching onomatopoeia immediately after it.
 | `reference_codes` | list[list[int]] | `null` | Pre-encoded discrete codes, shape `[T, 8]` — alternative to `references[0].audio_path` |
 | `reference_text` | string | `null` | Transcript of reference audio when supplying `reference_codes` |
 | `max_new_tokens` | int | `2048` | Maximum number of generated multi-codebook steps |
-| `temperature` | float | `1.0` | Sampling temperature |
-| `top_p` | float | `null` | Top-p sampling |
-| `top_k` | int | `null` | Top-k sampling |
+| `temperature` | float | `0.8` | Sampling temperature |
+| `top_p` | float | `0.8` | Top-p sampling |
+| `top_k` | int | `30` | Top-k sampling |
 | `seed` | int | `null` | Random seed for reproducibility |
 
 

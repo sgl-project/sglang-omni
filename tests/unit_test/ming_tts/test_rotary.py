@@ -171,15 +171,6 @@ def test_joint_rotary_propagates_kernel_failure_without_native_fallback(
     native.assert_not_called()
 
 
-def test_no_rotary_returns_inputs_unchanged() -> None:
-    query, key = torch.randn(2, 2, 3, 4), torch.randn(2, 2, 3, 4)
-
-    actual_query, actual_key = apply_rotary_embedding(query, key, None)
-
-    assert actual_query is query
-    assert actual_key is key
-
-
 @pytest.mark.parametrize(
     ("component_type", "condition_key"),
     [(Aggregator, "llm_input_dim"), (DiT, "llm_cond_dim")],

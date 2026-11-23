@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements of voxtnew-helper inside VoxtNew.app
+     (mygo.json macos.helperEntitlements). Under the hardened runtime
+     (Developer ID builds) the helper records from the microphone; it reads
+     browser addresses through Accessibility, which needs no entitlement
+     (no Apple Events). Ad hoc builds run without the hardened runtime and
+     do not check them. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

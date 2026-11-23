@@ -213,6 +213,12 @@ def allocate_endpoints(
     }
     for stage in stages:
         endpoints[f"stage_{stage.name}"] = f"ipc://{base_dir}/stage_{stage.name}.sock"
+        if stage.http_routes:
+            # A plain socket path, shorter than the stage endpoint, so the
+            # path budget above covers it.
+            endpoints[f"http_{stage.name}"] = f"{base_dir}/http_{stage.name}.sock"
+        else:
+            pass
         for tp_rank in range(stage.tp_size):
             endpoint_name = f"comm_{stage.name}_rank{tp_rank}"
             endpoints[endpoint_name] = f"ipc://{base_dir}/{endpoint_name}.sock"

@@ -15,6 +15,8 @@ class Nemotron3_5ASRFactoryArgs(FactoryArgs):
     """Deployment knobs for the model-owned RNN-T stage."""
 
     num_lookahead_tokens: int | None = None
+    enable_encoder_cuda_graph: bool | None = None
+    encoder_graph_max_batch_size: int | None = Field(default=None, ge=1)
     session_max_concurrency: int | None = Field(default=None, ge=1)
     max_open_sessions: int | None = Field(default=None, ge=1)
     max_state_bytes: int | None = Field(default=None, ge=1)

@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Transcription and diarization benchmark: presets, CER and DER, reports."""
 
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ def load_benchmark_module():
 
 
 def test_parse_args_defaults_to_movies800times_preset() -> None:
+    """The CLI sent a 65536-token budget on movies800times where CI sends none, so short clips looped for over a minute."""
     module = load_benchmark_module()
 
     args = module.parse_args([])
@@ -47,7 +49,7 @@ def test_parse_args_defaults_to_movies800times_preset() -> None:
     assert args.dataset == "movies800times"
     assert args.repo_id == module.MOVIES800_REPO_ID
     assert args.max_samples is None
-    assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
+    assert args.max_new_tokens is None
     assert args.output_dir == module.MOVIES800TIMES_OUTPUT_DIR
 
 
@@ -59,7 +61,7 @@ def test_parse_args_uses_aishell4_long_preset() -> None:
     assert args.dataset == "aishell4_long"
     assert args.repo_id == module.AISHELL4_REPO_ID
     assert args.max_samples is None
-    assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
+    assert args.max_new_tokens == module.LONG_AUDIO_MAX_NEW_TOKENS
     assert args.output_dir == module.AISHELL4_LONG_OUTPUT_DIR
 
 
@@ -71,7 +73,7 @@ def test_parse_args_uses_googletime_preset() -> None:
     assert args.dataset == "googletime"
     assert args.repo_id == module.GOOGLETIME_REPO_ID
     assert args.max_samples is None
-    assert args.max_new_tokens == module.DEFAULT_MAX_NEW_TOKENS
+    assert args.max_new_tokens == module.LONG_AUDIO_MAX_NEW_TOKENS
     assert args.output_dir == module.GOOGLETIME_OUTPUT_DIR
 
 

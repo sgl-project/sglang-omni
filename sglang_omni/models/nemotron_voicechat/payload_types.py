@@ -12,6 +12,8 @@ else:
 
 INPUT_SAMPLE_RATE = 16_000
 OUTPUT_SAMPLE_RATE = 22_050
+VOICECHAT_FORMAT = "voicechat"
+TOOL_CALLS = "tool_calls"
 
 
 @dataclass

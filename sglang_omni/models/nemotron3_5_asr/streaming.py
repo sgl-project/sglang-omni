@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass, field
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 
 from sglang_omni.models.nemotron3_5_asr.decoder import Nemotron3_5ASRDecodeState
@@ -205,26 +204,17 @@ class Nemotron3_5ASRStreamState:
                 pass
 
     def usage(self, reservation: int) -> ResourceUsage:
-        tensors: list[torch.Tensor | None] = []
-        for layer in self.decode.attention_cache.layers:
-            if layer.is_initialized:
-                tensors.extend([layer.keys, layer.values])
-            else:
-                pass
-        tensors.extend(
-            layer.cache for layer in self.decode.padding_cache.layers.values()
-        )
+        slot = self.decode.encoder_slot
         decoder = self.decode.decoder_cache
-        tensors.extend([decoder.cache, decoder.hidden_state, decoder.cell_state])
-        cache_bytes = sum(
+        cache_bytes = slot.nbytes + sum(
             tensor.numel() * tensor.element_size()
-            for tensor in tensors
+            for tensor in (decoder.cache, decoder.hidden_state, decoder.cell_state)
             if tensor is not None
         )
         history_bytes = (len(self.decode.tokens) + len(self.decode.durations)) * 48
         text_bytes = (len(self.raw_text) + len(self.clean_text)) * 4
         return ResourceUsage(
-            kv_tokens=self.decode.attention_cache.get_seq_length(),
+            kv_tokens=0 if slot.is_released else slot.seen_frames,
             bytes=cache_bytes + history_bytes + text_bytes + len(self.pcm_bytes),
             slots={
                 "pcm_bytes": len(self.pcm_bytes),

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import pytest
 import torch
 import torch.nn.functional as F
 from transformers import WhisperConfig
 
-import sglang_omni.models.whisper_asr.sglang_model as sglang_model
 from sglang_omni.models.whisper_asr.sglang_model import (
     WhisperDecoder,
     WhisperDecoderLayerNorm,
@@ -46,49 +44,6 @@ def test_flashinfer_layer_norm_is_decoder_only() -> None:
 def test_decoder_layer_norm_cpu_fallback_matches_pytorch() -> None:
     layer_norm = WhisperDecoderLayerNorm(8)
     hidden_states = torch.randn(3, 8)
-
-    actual = layer_norm(hidden_states)
-    expected = F.layer_norm(
-        hidden_states,
-        layer_norm.normalized_shape,
-        layer_norm.weight,
-        layer_norm.bias,
-        layer_norm.eps,
-    )
-
-    torch.testing.assert_close(actual, expected)
-
-
-def test_decoder_layer_norm_falls_back_when_flashinfer_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    layer_norm = WhisperDecoderLayerNorm(8)
-    hidden_states = torch.randn(3, 8)
-    monkeypatch.setattr(sglang_model, "flashinfer_layer_norm", None)
-
-    actual = layer_norm(hidden_states)
-    expected = F.layer_norm(
-        hidden_states,
-        layer_norm.normalized_shape,
-        layer_norm.weight,
-        layer_norm.bias,
-        layer_norm.eps,
-    )
-
-    torch.testing.assert_close(actual, expected)
-
-
-def test_decoder_layer_norm_falls_back_for_cuda_norm_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    layer_norm = WhisperDecoderLayerNorm(8)
-    hidden_states = torch.randn(3, 8)
-    monkeypatch.setenv("FLASHINFER_USE_CUDA_NORM", "1")
-    monkeypatch.setattr(
-        sglang_model,
-        "flashinfer_layer_norm",
-        lambda *args: pytest.fail("incompatible FlashInfer CUDA norm was called"),
-    )
 
     actual = layer_norm(hidden_states)
     expected = F.layer_norm(

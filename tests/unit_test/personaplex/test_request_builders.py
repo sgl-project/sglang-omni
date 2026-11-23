@@ -22,8 +22,8 @@ from sglang_omni.models.personaplex.request_builders import (
     lm_stream_output_builder,
     resolve_sampling,
 )
-from sglang_omni.proto import EXPLICIT_GENERATION_PARAMS_KEY, StagePayload
-from sglang_omni.proto.request import EXPLICIT_STAGE_SAMPLING_PARAMS_KEY, OmniRequest
+from sglang_omni.proto import StagePayload
+from sglang_omni.proto.request import OmniRequest
 from sglang_omni.serve.openai_api import (
     build_chat_generate_request,
     build_rollout_generate_request,
@@ -40,19 +40,7 @@ def make_payload(
         user_codes=torch.zeros(num_frames, 8, dtype=torch.long),
         num_samples=num_samples,
     )
-    params = params or {}
-    metadata = dict(metadata or {})
-    if (
-        "stage_sampling" in params
-        and EXPLICIT_STAGE_SAMPLING_PARAMS_KEY not in metadata
-    ):
-        metadata[EXPLICIT_STAGE_SAMPLING_PARAMS_KEY] = {
-            stage: list(sampling)
-            for stage, sampling in params["stage_sampling"].items()
-        }
-    else:
-        pass
-    request = OmniRequest(inputs={}, params=params, metadata=metadata)
+    request = OmniRequest(inputs={}, params=params or {}, metadata=metadata or {})
     return StagePayload("r", request=request, data=state.to_dict())
 
 
@@ -93,7 +81,9 @@ def test_sampling_defaults_and_overrides():
 
 
 def test_stream_builder_ships_pending_frames_to_the_codec():
-    data = build_lm_request(make_payload(2, num_samples=3000), vocab_size=32000)
+    data = build_lm_request(
+        make_payload(2, {"stream": True}, num_samples=3000), vocab_size=32000
+    )
     assert lm_stream_output_builder("r", data, None) == []
     data.talker_model_inputs["pending_frames"].append(torch.arange(8))
     messages = lm_stream_output_builder("r", data, None)
@@ -101,6 +91,7 @@ def test_stream_builder_ships_pending_frames_to_the_codec():
     assert messages[0].target == "code2wav"
     assert messages[0].data.shape == (1, 8)
     assert messages[0].metadata["num_samples"] == 3000
+    assert messages[0].metadata["stream"] is True
     assert data.talker_model_inputs["pending_frames"] == []
 
 
@@ -117,21 +108,9 @@ def test_request_boundary_rejects_unusable_inputs():
         build_lm_request(no_audio, vocab_size=32000)
 
 
-def test_client_filler_sampling_values_keep_the_reference_defaults():
-    filler = {"temperature": 1.0, "top_k": -1, "seed": None}
-    sampling = resolve_sampling(filler, stage_sampling={})
-    assert sampling.text_temperature == DEFAULT_TEXT_TEMPERATURE
-    assert sampling.text_top_k == DEFAULT_TEXT_TOP_K
-
-    chosen = resolve_sampling(
-        filler, explicit_fields=["temperature", "top_k"], stage_sampling={}
-    )
-    assert chosen.text_temperature == 1.0 and chosen.text_top_k == -1
-
-    data = build_lm_request(
-        make_payload(2, filler, {EXPLICIT_GENERATION_PARAMS_KEY: ["temperature"]}),
-        vocab_size=32000,
-    )
+def test_a_set_text_value_wins_even_when_it_equals_a_neutral_value():
+    """A set temperature 1.0 reaches the sampler instead of being taken for a client placeholder."""
+    data = build_lm_request(make_payload(2, {"temperature": 1.0}), vocab_size=32000)
     assert data.req.sampling_params.temperature == 1.0
     assert data.req.sampling_params.top_k == DEFAULT_TEXT_TOP_K
 
@@ -163,7 +142,7 @@ def test_request_longer_than_the_context_is_rejected_with_the_limit():
     assert is_bad_request_error(error.value)
 
 
-@pytest.mark.parametrize("stage_seed,expected", [(None, 9), (0, 0), (42, 42)])
+@pytest.mark.parametrize("stage_seed,expected", [(None, 9), (0, 0)])
 def test_stage_seed_precedence(stage_seed: int | None, expected: int) -> None:
     sampling = resolve_sampling(
         {"seed": 7, "stage_params": {"lm": {"seed": 9}}},
@@ -247,25 +226,16 @@ def test_sampling_presence_contract_across_entry_points(
         make_payload(2, lowered.params, lowered.metadata), vocab_size=32000
     )
     sampling = data.talker_model_inputs["sampling"]
-    expected = (
-        (1.0, -1)
-        if source == "client-stage"
-        else (DEFAULT_TEXT_TEMPERATURE, DEFAULT_TEXT_TOP_K)
+    assert (sampling.text_temperature, sampling.text_top_k) == (
+        DEFAULT_TEXT_TEMPERATURE,
+        DEFAULT_TEXT_TOP_K,
     )
-    assert (sampling.text_temperature, sampling.text_top_k) == expected
     assert sampling.seed == seed
     assert (sampling.top_p, sampling.min_p, sampling.repetition_penalty) == (
         1.0,
         0.0,
         1.0,
     )
-
-
-def test_internal_stage_sampling_requires_presence_metadata() -> None:
-    payload = make_payload(2, {"stage_sampling": {"lm": {"seed": 7}}})
-    payload.request.metadata.clear()
-    with pytest.raises(KeyError, match=EXPLICIT_STAGE_SAMPLING_PARAMS_KEY):
-        build_lm_request(payload, vocab_size=32000)
 
 
 @pytest.mark.parametrize("source", ["chat", "rollout"])
@@ -332,7 +302,6 @@ def test_rollout_stage_token_limit_alias_preserves_frame_budget() -> None:
         ("seed", 1.9, "top_level"),
         ("seed", 1.9, "stage_params"),
         ("seed", 1.9, "stage_sampling"),
-        ("seed", "abc", "top_level"),
         ("seed", True, "stage_sampling"),
         ("stop", ["hello"], "stage_params"),
         ("stop_token_ids", [3], "stage_sampling"),

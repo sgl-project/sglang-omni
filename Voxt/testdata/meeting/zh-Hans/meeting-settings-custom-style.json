@@ -1,0 +1,123 @@
+{
+  "name": "meeting-settings-custom-style",
+  "kind": "meeting-settings",
+  "meeting_settings": {
+    "capture_mode_options": [
+      {
+        "code": "",
+        "label": "完整会议（麦克风与系统音频）"
+      },
+      {
+        "code": "subtitles",
+        "label": "字幕（仅系统音频）"
+      },
+      {
+        "code": "recording",
+        "label": "录音（仅麦克风）"
+      }
+    ],
+    "capture_mode_selected": "完整会议（麦克风与系统音频）",
+    "hide_from_sharing": true,
+    "asr_options": [
+      {
+        "code": "",
+        "label": "自动（现在用：Fixture Speech One）"
+      },
+      {
+        "code": "fixture-speech-one",
+        "label": "Fixture Speech One"
+      },
+      {
+        "code": "fixture-speech-two",
+        "label": "Fixture Speech Two"
+      }
+    ],
+    "asr_selected": "Fixture Speech Two",
+    "asr_disabled": false,
+    "spoken_language_options": [
+      {
+        "code": "",
+        "label": "与主要语言相同"
+      },
+      {
+        "code": "zh",
+        "label": "中文"
+      },
+      {
+        "code": "en",
+        "label": "英语 · English"
+      },
+      {
+        "code": "ja",
+        "label": "日语 · 日本語"
+      },
+      {
+        "code": "ko",
+        "label": "韩语 · 한국어"
+      },
+      {
+        "code": "yue",
+        "label": "粤语 · 粵語"
+      },
+      {
+        "code": "fr",
+        "label": "法语 · Français"
+      },
+      {
+        "code": "de",
+        "label": "德语 · Deutsch"
+      },
+      {
+        "code": "es",
+        "label": "西班牙语 · Español"
+      },
+      {
+        "code": "pt",
+        "label": "葡萄牙语 · Português"
+      },
+      {
+        "code": "ru",
+        "label": "俄语 · Русский"
+      },
+      {
+        "code": "it",
+        "label": "意大利语 · Italiano"
+      },
+      {
+        "code": "vi",
+        "label": "越南语 · Tiếng Việt"
+      },
+      {
+        "code": "th",
+        "label": "泰语 · ไทย"
+      },
+      {
+        "code": "id",
+        "label": "印度尼西亚语 · Indonesia"
+      },
+      {
+        "code": "ar",
+        "label": "阿拉伯语 · العربية"
+      }
+    ],
+    "spoken_language_selected": "英语 · English",
+    "llm_options": [
+      {
+        "code": "",
+        "label": "自动"
+      },
+      {
+        "code": "fixture-language-one",
+        "label": "Fixture Language One"
+      },
+      {
+        "code": "fixture-language-two",
+        "label": "Fixture Language Two"
+      }
+    ],
+    "llm_selected": "Fixture Language Two",
+    "no_llm": false,
+    "correction_style": "Keep the conversation's tone. 保留英文产品名。",
+    "correction_style_reset_disabled": false
+  }
+}

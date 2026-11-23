@@ -4,18 +4,25 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
+
+from sglang_omni.models.whisper_asr.config import WhisperASRFactoryArgs
 
 
 def create_sglang_whisper_asr_executor(
     model_path: str,
     *,
+    encoder_attention_backend: Literal["auto", "sdpa", "fa4"] | None = None,
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "float16",
     max_running_requests: int = 64,
     max_new_tokens: int = 256,
+    stream_emit_interval_s: float = 0.05,
     mem_fraction_static: float = 0.85,
     enable_encoder_cuda_graph: bool = False,
+    enable_dense_prefill_cuda_graph: bool = False,
+    cpu_intra_op_threads: int | None = None,
     encoder_graph_batch_buckets: list[int] | None = None,
     request_build_max_workers: int = 8,
     enable_async_decode: bool = True,
@@ -26,6 +33,7 @@ def create_sglang_whisper_asr_executor(
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
     prefill_coalesce_after_builds_during_decode: bool = False,
+    pre_lm_pipeline_batches: bool = False,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 1024,
     pre_lm_cache_size_bytes: int | None = None,
@@ -36,11 +44,19 @@ def create_sglang_whisper_asr_executor(
 ):
     from sglang_omni.models.whisper_asr.engine_builder import WhisperASREngineBuilder
 
+    if encoder_attention_backend is None:
+        encoder_attention_backend = WhisperASRFactoryArgs().encoder_attention_backend
+    else:
+        pass
     return WhisperASREngineBuilder(
+        encoder_attention_backend=encoder_attention_backend,
         max_running_requests=max_running_requests,
         mem_fraction_static=mem_fraction_static,
         max_new_tokens=max_new_tokens,
+        stream_emit_interval_s=stream_emit_interval_s,
         enable_encoder_cuda_graph=enable_encoder_cuda_graph,
+        enable_dense_prefill_cuda_graph=enable_dense_prefill_cuda_graph,
+        cpu_intra_op_threads=cpu_intra_op_threads,
         encoder_graph_batch_buckets=encoder_graph_batch_buckets,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
@@ -55,6 +71,7 @@ def create_sglang_whisper_asr_executor(
         prefill_coalesce_after_builds_during_decode=(
             prefill_coalesce_after_builds_during_decode
         ),
+        pre_lm_pipeline_batches=pre_lm_pipeline_batches,
         enable_pre_lm_encoder=enable_pre_lm_encoder,
         pre_lm_cache_max_entries=pre_lm_cache_max_entries,
         pre_lm_cache_size_bytes=pre_lm_cache_size_bytes,

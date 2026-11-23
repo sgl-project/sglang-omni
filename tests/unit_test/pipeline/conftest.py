@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 import pytest
 import pytest_asyncio
 
+from tests.unit_test.fixtures.cascade_backends import backends  # noqa: F401
 from tests.unit_test.fixtures.session_pipeline import (
     PipelineResources,
     event_log,
@@ -69,3 +70,6 @@ async def linear_triple(
 ) -> AsyncIterator[PipelineResources]:
     async with reuse_pipeline(shared_linear_triple) as resources:
         yield resources
+
+
+from tests.unit_test.fixtures.cascade_backends import backend_requests  # noqa: F401

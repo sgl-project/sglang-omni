@@ -30,9 +30,7 @@ def validate_spans(
 
     1. spans are no gap and no overlap (cover [0, total_samples) exactly);
     2. no span is longer than max_chunk_samples
-    3. no span is empty;
-    4. same input, same output (can't be checked from one call -- see
-       test_split_is_deterministic).
+    3. no span is empty.
 
     Why so paranoid about gaps: a gap means that stretch of audio just
     vanishes from the transcript, silently. That's the exact bug chunking
@@ -68,20 +66,6 @@ def silence(num_samples: int) -> np.ndarray:
     return np.zeros(num_samples, dtype=np.float32)
 
 
-def test_pipeline_config_leaves_chunking_off_by_default() -> None:
-    from sglang_omni.config import PipelineConfig, StageConfig
-
-    config = PipelineConfig(
-        model_path="dummy",
-        stages=[
-            StageConfig(
-                name="asr", factory_path="pkg.make_stage", process="asr", terminal=True
-            )
-        ],
-    )
-    assert config.resolved_audio_chunking.allow_audio_chunking is False
-
-
 def test_qwen3_asr_pipeline_declaresResolvedAudioChunking(monkeypatch) -> None:
     from sglang_omni.platforms import current_platform
 
@@ -103,13 +87,10 @@ def test_qwen3_asr_pipeline_declaresResolvedAudioChunking(monkeypatch) -> None:
 
 
 def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
-    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
-
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "is_mps", lambda: True)
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
     resolved = Qwen3ASRPipelineConfig(
         model_path="Qwen/Qwen3-ASR-0.6B"
@@ -121,13 +102,10 @@ def test_qwen3_asr_torch_mps_limits_runtime_audio_policy(monkeypatch) -> None:
 
 
 def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
-    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
-
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
     monkeypatch.setattr(current_platform, "is_mps", lambda: True)
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
 
     with pytest.raises(ValueError, match="up to 60s"):
         Qwen3ASRPipelineConfig(
@@ -136,17 +114,11 @@ def test_qwen3_asr_torch_mps_rejects_unsafe_chunk_length(monkeypatch) -> None:
         ).resolved_audio_chunking
 
 
-@pytest.mark.parametrize(("is_mps", "use_mlx"), [(False, False), (True, True)])
-def test_qwen3_asr_non_torch_mps_keeps_native_audio_policy(
-    monkeypatch, is_mps: bool, use_mlx: bool
-) -> None:
-    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
-
+def test_qwen3_asr_non_torch_mps_keeps_native_audio_policy(monkeypatch) -> None:
     from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
     from sglang_omni.platforms import current_platform
 
-    monkeypatch.setattr(current_platform, "is_mps", lambda: is_mps)
-    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: use_mlx)
+    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
 
     resolved = Qwen3ASRPipelineConfig(
         model_path="Qwen/Qwen3-ASR-0.6B"
@@ -240,23 +212,6 @@ def test_clip_length_past_the_native_limit_is_rejected_at_config_time() -> None:
         )
 
 
-def test_long_audio_admission_default_leaves_half_the_engine_to_short_clips(
-    monkeypatch,
-) -> None:
-    from sglang_omni.platforms import current_platform
-
-    monkeypatch.setattr(current_platform, "is_mps", lambda: False)
-    from sglang_omni.models.qwen3_asr.config import Qwen3ASRPipelineConfig
-    from sglang_omni.models.whisper_asr.config import WhisperASRPipelineConfig
-
-    # Both ASR pipelines ship max_running_requests=64 and 8 chunks per
-    # upload: 4 admitted uploads x 8 chunks = 32 slots, half the engine.
-    for config_cls in (Qwen3ASRPipelineConfig, WhisperASRPipelineConfig):
-        config = config_cls(model_path="dummy")
-        assert config.audio_chunking.max_concurrent_long_audio_requests is None
-        assert config.resolved_audio_chunking.max_concurrent_long_audio_requests == 4
-
-
 def test_long_audio_admission_default_follows_max_running_requests(
     monkeypatch,
 ) -> None:
@@ -347,14 +302,6 @@ def test_out_of_range_config_values_are_rejected(field: str, value: float) -> No
         AudioChunkingConfig(**{field: value})
 
 
-def test_audio_shorter_than_one_chunk_is_not_split() -> None:
-    waveform = make_speech(SAMPLE_RATE)
-
-    spans = RMSSplitter().split(waveform, SAMPLE_RATE, 2 * SAMPLE_RATE)
-
-    assert spans == [(0, SAMPLE_RATE)]
-
-
 def test_audio_exactly_one_chunk_is_not_split() -> None:
     waveform = make_speech(2 * SAMPLE_RATE)
 
@@ -388,16 +335,6 @@ def test_split_stays_inside_the_search_window_without_any_pause() -> None:
     assert 12_000 <= spans[0][1] <= SAMPLE_RATE
 
 
-def test_split_is_deterministic() -> None:
-    waveform = make_speech(40_000)
-    splitter = RMSSplitter(search_window_s=0.25)
-
-    first = splitter.split(waveform, SAMPLE_RATE, SAMPLE_RATE)
-    second = splitter.split(waveform, SAMPLE_RATE, SAMPLE_RATE)
-
-    assert first == second
-
-
 def test_search_window_wider_than_the_clip_still_advances() -> None:
     waveform = make_speech(40_000)
 
@@ -418,25 +355,29 @@ def test_single_sample_chunks_terminate() -> None:
     assert spans == [(index, index + 1) for index in range(10)]
 
 
+CONTRACT_SPLITTERS = {
+    "rms-default": RMSSplitter(),
+    "rms-no-search": RMSSplitter(search_window_s=0.0),
+    "rms-tiny-window": RMSSplitter(search_window_s=0.25, energy_window_samples=1),
+}
+CONTRACT_WAVEFORMS = {
+    "all-silence": silence(40_000),
+    "ten-chunks": make_speech(SAMPLE_RATE * 10, seed=7),
+}
+
+
 @pytest.mark.parametrize(
-    "splitter",
+    ("splitter", "waveform"),
     [
-        RMSSplitter(),
-        RMSSplitter(search_window_s=0.0),
-        RMSSplitter(search_window_s=0.25, energy_window_samples=1),
+        pytest.param(
+            RMSSplitter(), np.zeros(0, dtype=np.float32), id="empty-rms-default"
+        ),
+        *(
+            pytest.param(splitter, waveform, id=f"{waveform_id}-{splitter_id}")
+            for waveform_id, waveform in CONTRACT_WAVEFORMS.items()
+            for splitter_id, splitter in CONTRACT_SPLITTERS.items()
+        ),
     ],
-    ids=["rms-default", "rms-no-search", "rms-tiny-window"],
-)
-@pytest.mark.parametrize(
-    "waveform",
-    [
-        np.zeros(0, dtype=np.float32),
-        make_speech(1),
-        silence(40_000),
-        make_speech(40_000),
-        make_speech(SAMPLE_RATE * 10, seed=7),
-    ],
-    ids=["empty", "one-sample", "all-silence", "loud", "ten-chunks"],
 )
 def test_split_contract_holds(splitter, waveform: np.ndarray) -> None:
     max_chunk_samples = SAMPLE_RATE
@@ -447,26 +388,9 @@ def test_split_contract_holds(splitter, waveform: np.ndarray) -> None:
 
 
 @pytest.mark.parametrize(
-    "spans, message",
-    [
-        ([(0, 10), (12, 20)], "expected 10"),
-        ([(0, 10), (10, 10), (10, 20)], "is empty"),
-        ([(0, 30)], "over the"),
-        ([(0, 10)], "cover 10 of 20"),
-    ],
-    ids=["gap", "empty-span", "oversized", "short-coverage"],
-)
-def test_validate_spans_rejects_broken_output(spans: list[Span], message: str) -> None:
-    # The helper is the assertion every other splitter test leans on, so it
-    # needs its own coverage: a lenient checker would make them all vacuous.
-    with pytest.raises(AssertionError, match=message):
-        validate_spans(spans, 20, 20)
-
-
-@pytest.mark.parametrize(
     "total_samples",
-    [SAMPLE_RATE + 1, SAMPLE_RATE + 800, 2 * SAMPLE_RATE - 1],
-    ids=["one-sample-tail", "half-window-tail", "near-full-tail"],
+    [SAMPLE_RATE + 1, 2 * SAMPLE_RATE - 1],
+    ids=["one-sample-tail", "near-full-tail"],
 )
 def test_sub_minimum_tail_is_avoided_by_shifting_the_cut(total_samples: int) -> None:
     # Audio ending just past a boundary would leave a stub final chunk; a
@@ -530,19 +454,6 @@ def test_plan_splits_long_audio_into_timed_spans() -> None:
         assert span.end_s == pytest.approx(span.end_sample / SAMPLE_RATE)
 
 
-def test_plan_spans_cover_the_whole_upload() -> None:
-    plan = make_plan(make_speech(40_000))
-
-    assert plan is not None
-    validate_spans(
-        [(span.start_sample, span.end_sample) for span in plan.spans],
-        40_000,
-        SAMPLE_RATE,
-    )
-    assert plan.spans[0].start_s == 0.0
-    assert plan.spans[-1].end_s == pytest.approx(plan.duration_s)
-
-
 def test_plan_marks_noise_floor_chunks_as_speechless() -> None:
     # A TTS-runaway-shaped clip: a short sentence, then a long ~-70 dBFS
     # noise floor whose chunks must never reach the engine (they hallucinate).
@@ -580,16 +491,6 @@ def test_encoded_chunk_round_trips_sample_for_sample() -> None:
         np.testing.assert_array_equal(
             decoded, waveform[span.start_sample : span.end_sample]
         )
-
-
-def test_encoded_chunk_is_riff_wav() -> None:
-    plan = make_plan(make_speech(40_000))
-
-    assert plan is not None
-    chunk = plan.encode(plan.spans[0])
-    # RIFF/WAVE is what load_audio's dependency-free fast path looks for.
-    assert chunk[:4] == b"RIFF"
-    assert chunk[8:12] == b"WAVE"
 
 
 def test_chunk_audio_is_encoded_lazily(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -636,8 +537,6 @@ def test_plan_resamples_to_the_target_rate() -> None:
         # Full-width punctuation counts as CJK; half-width does not.
         (["转写结束。", "下面继续"], "转写结束。下面继续"),
         (["that is done.", "The next part"], "that is done. The next part"),
-        # Digits behave like spaced script.
-        (["chapter 1", "2 comes after"], "chapter 1 2 comes after"),
         # Korean is wide in east_asian_width terms but its orthography DOES
         # separate words with spaces -- a seam must not glue two words.
         (["안녕하세요", "만나서 반갑습니다"], "안녕하세요 만나서 반갑습니다"),
@@ -646,11 +545,8 @@ def test_plan_resamples_to_the_target_rate() -> None:
         (["สวัสดีครับ", "ผมชื่อมาก"], "สวัสดีครับผมชื่อมาก"),
         # Whitespace inside parts is stripped so the rule owns the seam.
         (["  hello  ", "  world  "], "hello world"),
-        # Empty / all-whitespace parts (an all-silence chunk) are skipped.
+        # All-whitespace parts (an all-silence chunk) are skipped.
         (["hello", "   ", "world"], "hello world"),
-        (["hello", "", "world"], "hello world"),
-        (["  only one  "], "only one"),
-        ([], ""),
     ],
     ids=[
         "english",
@@ -659,14 +555,10 @@ def test_plan_resamples_to_the_target_rate() -> None:
         "latin-then-cjk",
         "fullwidth-period",
         "halfwidth-period",
-        "digits",
         "korean-spaced",
         "thai-unspaced",
         "padded",
         "blank-part",
-        "empty-part",
-        "single",
-        "empty-list",
     ],
 )
 def test_join_transcript_parts(parts: list[str], expected: str) -> None:

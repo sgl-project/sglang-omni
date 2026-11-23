@@ -10,7 +10,10 @@ import logging
 import os
 import socket
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, TypeVar
 from urllib.parse import ParseResult, urlparse
@@ -19,6 +22,8 @@ from urllib.request import url2pathname
 import httpx
 import numpy as np
 import numpy.typing as npt
+
+from sglang_omni.utils.process import name_native_thread
 
 from .base import MediaIO
 
@@ -32,7 +37,11 @@ _M = TypeVar("_M")
 _MAX_HTTP_REDIRECTS = 5
 
 # Global thread pool for CPU-bound tasks (decoding/resampling)
-global_thread_pool = ThreadPoolExecutor(max_workers=8)
+global_thread_pool = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="media-decode",
+    initializer=name_native_thread,
+)
 atexit.register(global_thread_pool.shutdown)
 
 
@@ -702,6 +711,7 @@ class MultiModalResourceConnector:
         timeout: float = 30.0,
         extract_audio: bool = False,
         audio_target_sr: int = 16000,
+        decode_threads: int,
     ) -> tuple[torch.Tensor, float, npt.NDArray[np.float32] | None]:
         """Asynchronously load video from a URL.
 
@@ -716,6 +726,7 @@ class MultiModalResourceConnector:
             timeout: Timeout for HTTP requests in seconds.
             extract_audio: If True, extract audio from video and return as third element.
             audio_target_sr: Target sample rate for audio extraction (default: 16000).
+            decode_threads: FFmpeg threads this video's torchcodec decoders may use together.
 
         Returns:
             Tuple of (video_tensor, sample_fps, audio_or_None).
@@ -731,6 +742,7 @@ class MultiModalResourceConnector:
             image_mode=image_mode,
             extract_audio=extract_audio,
             audio_target_sr=audio_target_sr,
+            decode_threads=decode_threads,
             **self.media_io_kwargs.get("video", {}),
         )
 
@@ -738,10 +750,30 @@ class MultiModalResourceConnector:
 
 
 _global_connector: MultiModalResourceConnector | None = None
+_request_connector: ContextVar[MultiModalResourceConnector | None] = ContextVar(
+    "resource_connector", default=None
+)
+
+
+@contextmanager
+def resource_connector_scope(
+    connector: MultiModalResourceConnector,
+) -> Iterator[None]:
+    """Use one media connector for the current async request."""
+    token = _request_connector.set(connector)
+    try:
+        yield
+    finally:
+        _request_connector.reset(token)
 
 
 def get_global_resource_connector() -> MultiModalResourceConnector:
     """Get or create the global resource connector."""
+    request_connector = _request_connector.get()
+    if request_connector is not None:
+        return request_connector
+    else:
+        pass
     global _global_connector
     if _global_connector is None:
         _global_connector = MultiModalResourceConnector()

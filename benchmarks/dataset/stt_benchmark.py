@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 STT_BENCHMARK_SPLIT = "train"
 STT_BENCHMARK_LANG = "en"
 
+FLEURS_DATASET_ID = "google/fleurs"
+# note (wilsonzheng0327): the refs/convert/parquet commit, because main holds a loading script that datasets no longer runs.
+FLEURS_PARQUET_REVISION = "168de341b3db6859a9bac1c50a2ef5e3b47647e0"
+# note (wilsonzheng0327): these repos store each config as a parquet folder named after it.
+PARQUET_FOLDER_DATASET_IDS = frozenset({"openslr/librispeech_asr", FLEURS_DATASET_ID})
+
 _REQUIRED_COLUMNS = {"sample_id", "audio", "transcription"}
 COLUMN_ALIASES = {"id": "sample_id", "text": "transcription"}
 
@@ -57,6 +63,10 @@ def load_stt_benchmark_samples(
     """Load STT benchmark samples from a HuggingFace Parquet repo."""
     if revision is None and repo_id == STT_BENCHMARK_DATASET_ID:
         revision = STT_BENCHMARK_DATASET_REVISION
+    elif revision is None and repo_id == FLEURS_DATASET_ID:
+        revision = FLEURS_PARQUET_REVISION
+    else:
+        pass
 
     full_cache_key = (repo_id, config_name, split, revision, None)
     if full_cache_key in _STAGED_CACHE:
@@ -74,7 +84,7 @@ def load_stt_benchmark_samples(
         f"split={split} revision={revision or 'default'} from HuggingFace ..."
     )
     load_kwargs = {"revision": revision} if revision else {}
-    if repo_id == "openslr/librispeech_asr" and config_name:
+    if repo_id in PARQUET_FOLDER_DATASET_IDS and config_name:
         # note (MayDomine): selecting files avoids downloading unused train splits.
         ds = load_dataset(
             repo_id,
@@ -87,6 +97,13 @@ def load_stt_benchmark_samples(
         if config_name:
             load_kwargs["name"] = config_name
         ds = load_dataset(repo_id, split=split, **load_kwargs)
+    if repo_id == FLEURS_DATASET_ID:
+        # note (wilsonzheng0327): FLEURS repeats a sentence id once per speaker, and each recording's file name is unique.
+        ds = ds.map(
+            lambda row: {"sample_id": Path(row["path"]).stem}, remove_columns=["id"]
+        )
+    else:
+        pass
     aliases = {
         old: new
         for old, new in COLUMN_ALIASES.items()

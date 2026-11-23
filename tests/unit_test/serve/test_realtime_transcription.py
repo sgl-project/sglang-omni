@@ -5,24 +5,21 @@ import asyncio
 import base64
 import json
 import logging
+import sys
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pytest
 from starlette.websockets import WebSocketState
 
+from sglang_omni.audio import vad as vad_module
+from sglang_omni.audio.vad import StatelessVAD, StreamingVAD, VADConfig, VADEvent
 from sglang_omni.client import CompletionResult, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
-from sglang_omni.serve.realtime import vad as vad_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
-)
-from sglang_omni.serve.realtime.vad import (
-    StatelessVAD,
-    StreamingVAD,
-    VADConfig,
-    VADEvent,
 )
 
 
@@ -138,6 +135,24 @@ class BlockingSecondClient(FakeClient):
         )
 
 
+class LanguageClient(FakeClient):
+    """Reports the given language for each decode in call order."""
+
+    def __init__(self, languages: list[str | None]) -> None:
+        super().__init__([])
+        self.languages = languages
+
+    async def completion(
+        self, _request: GenerateRequest, *, request_id: str
+    ) -> CompletionResult:
+        self.calls.append(request_id)
+        return CompletionResult(
+            request_id=request_id,
+            text=f"text-{len(self.calls)}",
+            language=self.languages.pop(0),
+        )
+
+
 def make_pcm(seconds: float, amplitude: int = 1000) -> bytes:
     samples = int(16000 * seconds)
     return amplitude.to_bytes(2, "little", signed=True) * samples
@@ -215,7 +230,7 @@ async def test_partial_is_replaced_by_one_final_segment(
 async def test_audio_during_decode_coalesces_to_one_followup_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, _websocket, _client = await make_session(monkeypatch)
+    session, websocket, _client = await make_session(monkeypatch)
     client = BlockingClient()
     session.client = client  # type: ignore[assignment]
 
@@ -225,10 +240,20 @@ async def test_audio_during_decode_coalesces_to_one_followup_refresh(
     client.release.set()
     for _ in range(20):
         await asyncio.sleep(0)
-        if len(client.calls) == 2:
+        partials = [
+            event
+            for event in websocket.events
+            if event["type"] == "transcription.segment"
+        ]
+        if len(partials) == 2:
             break
 
     assert len(client.calls) == 2
+    # The first partial covers the audio its decode saw, not what arrived meanwhile.
+    assert [(event["audio_start_ms"], event["audio_end_ms"]) for event in partials] == [
+        (0, 2000),
+        (0, 4000),
+    ]
     await session.teardown()
 
 
@@ -370,6 +395,11 @@ async def test_hard_limit_finalizes_in_audio_order(
         if event["type"] == "transcription.segment" and event["is_final"]
     ]
     assert [event["segment_id"] for event in finals] == [0, 1, 2]
+    assert [(event["audio_start_ms"], event["audio_end_ms"]) for event in finals] == [
+        (0, 1000),
+        (1000, 2000),
+        (2000, 2250),
+    ]
     assert websocket.events[-1]["type"] == "transcription.completed"
     assert websocket.events[-1]["text"] == "text-1 text-2 text-3"
 
@@ -625,7 +655,9 @@ class ContentStreamingVAD(StreamingVAD):
 async def test_frame_vad_reports_the_same_boundaries_as_streaming_vad(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(vad_module, "load_silero_vad", lambda onnx: None)
+    monkeypatch.setitem(
+        sys.modules, "silero_vad", SimpleNamespace(load_silero_vad=lambda onnx: None)
+    )
     reference = ContentStreamingVAD(VADConfig())
     session, websocket = vad_session(monkeypatch)
     audio = (
@@ -689,3 +721,111 @@ async def test_hard_cut_inside_trailing_silence_leaves_no_empty_segment(
         if event["type"] == "transcription.segment" and event["is_final"]
     ]
     assert committed == finals == [0]
+
+
+@pytest.mark.asyncio
+async def test_segment_opened_by_hard_cut_reports_the_cut_as_its_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket = vad_session(monkeypatch, max_segment_s=1.0)
+
+    # One utterance outlasts max_segment_s, so its second segment opens at
+    # the cut with no speech_started of its own.
+    audio = make_pcm(0.4, amplitude=0) + make_pcm(1.5) + make_pcm(0.8, amplitude=0)
+    packet_bytes = 1600 * 2
+    for start in range(0, len(audio), packet_bytes):
+        await session.dispatch(audio_event(audio[start : start + packet_bytes]))
+    await session.dispatch({"type": "transcription.done"})
+
+    starts = [
+        event
+        for event in websocket.events
+        if event["type"] == "input_audio_buffer.speech_started"
+    ]
+    assert [event["segment_id"] for event in starts] == [0]
+    speech_start_ms = starts[0]["audio_start_ms"]
+    finals = [
+        event
+        for event in websocket.events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert [(event["segment_id"], event["audio_start_ms"]) for event in finals] == [
+        (0, speech_start_ms),
+        (1, speech_start_ms + 1000),
+    ]
+    assert finals[0]["audio_end_ms"] == finals[1]["audio_start_ms"]
+    assert finals[1]["audio_end_ms"] > finals[1]["audio_start_ms"]
+
+
+@pytest.mark.asyncio
+async def test_segments_and_completed_report_the_spoken_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await make_session(monkeypatch)
+    session.client = LanguageClient([None, "English"])  # type: ignore[assignment]
+    await session.dispatch(
+        {"type": "session.update", "session": {"language": "Chinese"}}
+    )
+
+    # A decode that reports no language keeps the session hint, and a silent
+    # trailing segment does not override the language of the last speech.
+    for pcm in (make_pcm(0.5), make_pcm(0.5), make_pcm(0.5, amplitude=0)):
+        await session.dispatch(audio_event(pcm))
+        await session.dispatch({"type": "input_audio_buffer.commit"})
+    await session.dispatch({"type": "transcription.done"})
+
+    finals = [
+        event
+        for event in websocket.events
+        if event["type"] == "transcription.segment" and event["is_final"]
+    ]
+    assert [(event["text"], event["language"]) for event in finals] == [
+        ("text-1", "Chinese"),
+        ("text-2", "English"),
+        ("", "Chinese"),
+    ]
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    assert websocket.events[-1]["language"] == "English"
+
+
+@pytest.mark.asyncio
+async def test_session_update_sets_the_decode_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, client = await make_session(monkeypatch)
+
+    await session.dispatch(
+        {"type": "session.update", "session": {"decode_interval_ms": 100}}
+    )
+    assert websocket.events[-1]["error"]["code"] == "invalid_event"
+    await session.dispatch(
+        {"type": "session.update", "session": {"decode_interval_ms": 500}}
+    )
+    assert websocket.events[-1]["session"]["decode_interval_ms"] == 500
+    await session.dispatch(
+        {"type": "session.update", "session": {"decode_interval_ms": None}}
+    )
+    assert websocket.events[-1]["session"]["decode_interval_ms"] == 2000
+    await session.dispatch(
+        {"type": "session.update", "session": {"decode_interval_ms": 500}}
+    )
+
+    # Half a second of audio is a full refresh at 500 ms, never at 2000 ms.
+    await session.dispatch(audio_event(make_pcm(0.5)))
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if client.calls:
+            break
+    partials = [
+        event for event in websocket.events if event["type"] == "transcription.segment"
+    ]
+    assert [(event["audio_end_ms"], event["is_final"]) for event in partials] == [
+        (500, False)
+    ]
+
+    await session.dispatch(
+        {"type": "session.update", "session": {"decode_interval_ms": 1000}}
+    )
+    assert websocket.events[-1]["error"]["code"] == "session_active"
+    assert session.settings.decode_interval_ms == 500
+    await session.teardown()

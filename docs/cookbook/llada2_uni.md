@@ -1,6 +1,6 @@
 # LLaDA2.0-Uni
 
-[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) is a multimodal model that accepts text and image input. This SGLang-Omni cookbook covers the experimental text-output serving path.
+[LLaDA2.0-Uni](https://huggingface.co/inclusionAI/LLaDA2.0-Uni) accepts text and image input and supports text output, text-to-image generation, and image editing.
 
 ## Highlights
 
@@ -20,9 +20,15 @@ Install `sglang-omni` by following [Installation](../get_started/installation.md
 
 ## Server Configuration
 
-LLaDA2.0-Uni runs a 4-stage pipeline
-(`preprocessing → image_encoder → thinker → decode`) on a single GPU. The
-thinker disables CUDA graph by default for this experimental DLLM path.
+The default `omni` pipeline runs preprocessing, image encoding, and the
+DLLM thinker, then routes to text and image decoders. The image decoder
+uses diffusers' ZImage backbone, SigVQ conditioning, and a VAE. This is
+LLaDA2-Uni's semantic decoder, not the LLaDA-Image text-conditioned model.
+The `text` variant retains the four-stage text-output pipeline.
+
+The CFG thinker uses synchronous execution and defaults to eager mode.
+CUDA Graph replay is available for fixed-width DLLM blocks, including
+multi-way CFG and tensor parallel execution.
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
@@ -31,6 +37,238 @@ sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
 
 The cookbook explicitly disables `torch.compile` to match the validated
 generation settings. CUDA Graph execution is controlled separately.
+
+### Thinker Tensor Parallelism
+
+The Thinker defaults to eager execution with Torch expert routing. Enable TP2 and optional CUDA Graph replay with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' \
+  --thinker.engine.disable_cuda_graph false \
+  --thinker.engine.enable_torch_compile false \
+  --thinker.engine.cuda_graph_bs '[1, 2, 3, 4]'
+```
+
+Graph batch sizes count CFG branches: two for T2I and three for editing. Prefill and blocks whose current query contains left padding stay eager. Set `disable_cuda_graph` to `true` to disable replay.
+
+To select SGLang's fused expert routing, add `--thinker.engine.json_model_override_args '{"llada2_uni_topk_backend":"sglang"}'`. The default is `"torch"`; the implementations can differ numerically, so validate accuracy when changing this option.
+
+Thinker TP workers share the same visible GPU list and select distinct local devices, allowing SGLang's custom all-reduce to initialize.
+
+## Image Generation and Editing
+
+### Optional CUDA stage offload
+
+The single-image `omni` pipeline supports an opt-in serial GPU residency mode:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
+  --stage-offload-components thinker,decoder,vae
+```
+
+This mode colocates the image encoder, thinker, and image decoder in one process on one GPU. The image encoder and decoder components load onto CPU; the thinker loads alone on GPU, then releases its weights before serving begins. During requests, an exclusive residency lock covers each complete encoder, thinker CFG group, SigVQ, diffusion sampling, or VAE phase. Each phase releases its weights before another phase can restore them. Concurrent submissions queue for GPU access; no request owns the lock while its payload is in transit between stages. The normal resident path is unchanged when the flag is absent.
+
+The thinker uses `torch_memory_saver==0.0.10` with CPU weight backup to preserve tensor addresses. The launcher supplies its CUDA allocator preload library to the worker. The decoder uses whole-module CPU transfers and requires the `diffusers` backend. Both normal and turbo decoding are supported. CUDA graphs, `torch.compile`, and overlap scheduling are disabled for the offloaded thinker. Tensor parallelism, multiple process replicas, the `text` variant, and interleaved generation are outside this mode's scope.
+
+KV cache, runtime workspaces, and intermediate tensors remain on GPU. Host memory must accommodate the thinker weight backup and CPU decoder components; this mode does not make a thinker that cannot fit by itself load successfully. Transfers add latency, and logs report `restore_seconds` and `release_seconds` for each component. Cancellation waits for the active compute phase to retire before releasing its weights; it never moves weights from a concurrent abort callback. A failed residency transfer stops further compute in this mode and requires a worker restart.
+
+Full-checkpoint HTTP validation on one NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB) passed generation and editing with both normal and turbo decoding. Each server completed 15 requests: three repetitions of each task/decoder combination, two concurrent submissions, and a fresh request after disconnecting an active request. All 15 resident/offload image pairs were pixel-identical (MAE 0). Both servers logged the cancelled request's abort and successfully completed the next request. The offload log contained 68 matched restore/release pairs with no overlapping component ownership. These are correctness checks on one workload, not a dataset-wide image-quality evaluation.
+
+The comparison used BF16, TP=1, 1024×1024 outputs, seed 42, 32 dLLM steps, T2I guidance 4.0, and editing guidance 4.0/1.5. Turbo used eight decoder iterations; normal used 50 time points (49 Euler intervals). Both servers used a fixed 16,384-token KV capacity, synchronous eager execution, and eight CPU threads per worker. The runtime was PyTorch 2.14.1+cu130, SGLang 0.5.23, sglang-kernel 0.4.10, FlashInfer 0.7.2, Diffusers 0.37.0, and torch_memory_saver 0.0.10. FlashInfer kernels were compiled before the measured runs.
+
+| Measurement | Resident | Serial offload |
+|---|---:|---:|
+| Active peak GPU memory | 54.43 GiB | 33.49 GiB |
+| Startup peak GPU memory | 35.67 GiB | 32.89 GiB |
+| GPU memory after final request, server still running | 53.80 GiB | 2.88 GiB |
+| Peak server process-tree RSS sum | 35.31 GiB | 56.89 GiB |
+| Startup to HTTP readiness, without request warmup | 49.17 s | 58.19 s |
+
+| Workload | Resident warm latency | Offload warm latency | Resident / offload throughput |
+|---|---:|---:|---:|
+| Turbo generation | 31.89 s | 59.27 s | 1.882 / 1.012 images/min |
+| Turbo editing | 19.64 s | 45.60 s | 3.055 / 1.316 images/min |
+| Normal generation | 97.22 s | 122.91 s | 0.617 / 0.488 images/min |
+| Normal editing | 84.28 s | 110.92 s | 0.712 / 0.541 images/min |
+
+Offload reduced the active sampled GPU peak by 38.5%, with higher host memory and latency. Warm latency is the median of the last two of three sequential requests; throughput uses those same requests. Two simultaneous generation/editing submissions completed in 49.46 s resident and 101.80 s offloaded. The fresh request sent immediately after cancellation took 33.31 s and 69.47 s, respectively, including any wait for the cancelled compute phase to retire. These small samples do not establish production tail latency. Median thinker restore/release times were 2.81/11.18 s; semantic decoder restore/release times were 4.69/5.50 s.
+
+GPU figures are device-used memory sampled through NVML every 50 ms on an otherwise idle GPU, including contexts and allocator reservations; brief spikes can be missed. Host memory is the server process-tree RSS sum sampled every 200 ms, which can count shared mappings more than once. The fixed KV capacity is essential to the comparison: these measurements do not describe the default automatically sized KV cache. Use the following settings on both servers, adding the offload flag only for the offloaded run:
+
+```bash
+OMP_NUM_THREADS=8 sgl-omni serve --model-path "$MODEL_PATH" --port 8000 \
+  --skip-server-warmup \
+  --thinker.engine.enable_torch_compile false \
+  --thinker.engine.disable_cuda_graph true \
+  --thinker.engine.disable_overlap_schedule true \
+  --thinker.engine.mem_fraction_static 0.60 \
+  --thinker.engine.max_total_tokens 16384 \
+  --thinker.engine.max_running_requests 8
+```
+
+### Requests
+
+Use `POST /v1/images/generations` for T2I and `POST /v1/images/edits` for
+editing. These routes use SGLang Diffusion's image request and response
+schemas while executing Omni's Thinker and selected image decoder backend.
+`dllm_steps` controls VQ token generation; `num_inference_steps` controls
+decoder diffusion sampling. `guidance_scale` sets Thinker CFG, not an
+additional CFG pass in the image decoder.
+
+```python
+import base64
+from pathlib import Path
+
+import requests
+
+request = {
+    "model": "inclusionAI/LLaDA2.0-Uni",
+    "prompt": "A sailboat on a calm lake.",
+    "size": "1024x1024",
+    "response_format": "b64_json",
+    "decode_mode": "decoder-turbo",
+    "num_inference_steps": 8,
+    "dllm_steps": 32,
+    "guidance_scale": 4.0,
+    "seed": 42,
+}
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+image = response.json()["data"][0]
+Path("generated.png").write_bytes(base64.b64decode(image["b64_json"]))
+```
+
+Edits accept multipart form data with exactly one `image`/`image[]` upload or
+`url`/`url[]` reference. Dimensions follow the processed source grid; omit
+`size`, `width`, and `height`. Set `cfg_text_scale` and `cfg_image_scale` for
+editing guidance. Omitting them retains the model's task-specific defaults.
+
+```bash
+curl http://localhost:8000/v1/images/edits \
+  -F 'image=@source.png' \
+  -F 'prompt=Change the background to a beach.' \
+  -F 'response_format=b64_json' \
+  -F 'decode_mode=decoder-turbo' \
+  -F 'num_inference_steps=8' \
+  -F 'dllm_steps=8' \
+  -F 'cfg_text_scale=4.0' -F 'cfg_image_scale=1.5' -F 'seed=42'
+```
+
+Both routes are non-streaming, support one PNG (`n=1`), and return
+`{id, created, data: [...]}`. `response_format=b64_json` returns raw base64;
+`response_format=url` returns an inline PNG data URL without server-side file
+retention. T2I accepts either `size` or paired `width`/`height`, defaulting to
+1024x1024. Dimensions must be positive multiples of 32; if both forms are
+supplied, they must agree. Unsupported native sampling controls are rejected
+rather than ignored.
+Image endpoints imply image output; no `modalities` field is required.
+`/v1/chat/completions` retains text and image-understanding requests; use the
+image endpoints for T2I and editing.
+
+The response's `usage` counts prompt and generated tokens, including both
+passes in thinking mode.
+
+Text-to-image supports `mode: "normal"` and `mode: "thinking"`. Editing supports
+only `mode: "normal"`. Generation mode is separate from `decode_mode`, which
+selects `normal` or `decoder-turbo` diffusion decoding.
+For normal decoding, `num_inference_steps` specifies at least two sampling
+points, giving `num_inference_steps - 1` solver intervals. For decoder-turbo, it specifies at
+least one decoder iteration. The examples use eight turbo iterations.
+When `decode_mode` is omitted, validation uses the decoder factory's configured
+mode, so a turbo factory accepts `num_inference_steps=1` without a mode override.
+
+Common controls include `seed`, `cfg_rescale`, and `dllm_steps`. T2I uses
+`guidance_scale` (the thinker's `cfg_scale`); editing uses `cfg_text_scale` and
+`cfg_image_scale`. `resolution_multiplier` is a decoder factory setting, not a
+request field. Its default value of 2 maps the semantic grid to output pixels.
+
+The server selects a patch-aligned source grid near a 512x512 pixel budget,
+then resizes proportionally and center-crops the image to that grid. Small
+images are enlarged without black padding; images already matching the grid
+are preserved. Aspect ratios beyond 4:1 or 1:4 require additional cropping.
+Image understanding retains its separate preprocessing and pixel budgets.
+
+## Thinking Image Generation
+
+Use the same `POST /v1/images/generations` endpoint with top-level
+`mode: "thinking"`. For example, add it to the T2I request above:
+
+```python
+request["mode"] = "thinking"
+response = requests.post(
+    "http://localhost:8000/v1/images/generations", json=request, timeout=600
+)
+response.raise_for_status()
+Path("thinking.png").write_bytes(
+    base64.b64decode(response.json()["data"][0]["b64_json"])
+)
+```
+
+The thinker first generates text with a 2048-token budget, stopping at
+`<boi>`. It then retains that context and generates the requested VQ grid
+with CFG before image decoding. Both phases must fit the configured context
+length. The native response remains `data[]` containing one PNG; it does not
+expose the thinking text. No `modalities` field is needed. Thinking-mode
+editing is unsupported, and chat completions remain for understanding.
+
+## Interleaved Output
+
+The interleaved variant answers with text and images in one response. Each
+image decodes while the model writes the next text.
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --variant interleaved --port 8000 \
+  --thinker.engine.enable_torch_compile false
+```
+
+Send text-only `messages` to `POST /v1/chat/completions`:
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/v1/chat/completions",
+    json={
+        "model": "inclusionAI/LLaDA2.0-Uni",
+        "messages": [{"role": "user", "content": "Illustrate a three-frame story"}],
+        "stage_params": {"orchestrator": {"max_frames": 3, "seed": 42}},
+    },
+    timeout=1800,
+)
+segments = response.json()["choices"][0]["message"]["segments"]
+```
+
+`choices[0].message.segments` lists the text and image segments in the order
+the model wrote them, and `message.content` holds the text. With
+`stream: true`, each segment arrives in `choices[0].delta.segment` as soon as it
+is ready. An image segment carries the PNG with its size and SHA-256, and `url` is a
+PNG data URL:
+
+```json
+{
+  "type": "segment",
+  "execution_id": "...",
+  "segment_index": 1,
+  "kind": "image",
+  "data": {
+    "kind": "image",
+    "mime_type": "image/png",
+    "size_bytes": 12345,
+    "sha256": "...",
+    "url": "..."
+  }
+}
+```
+
+Optional controls go in `stage_params.orchestrator`: `max_frames` (default
+10, the most the default server admits), `text_max_new_tokens`,
+`image_max_new_tokens`, `max_image_tokens`, `dllm_steps`, `cfg_scale`,
+`cfg_text_scale`, `cfg_image_scale`, `cfg_rescale`, `decode_mode`,
+`decoder_steps`, and `seed`.
 
 ## Text Input
 
@@ -133,24 +371,19 @@ print(result["choices"][0]["message"]["content"])
 
 ## Request Parameters
 
-The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for LLaDA2.0-Uni.
+The table below lists common text and image-understanding parameters for
+`/v1/chat/completions`.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `model` | string | `null` | Model identifier |
 | `messages` | list | (required) | List of chat messages, each with `role` and `content` |
-| `modalities` | list | `["text"]` | Output modalities (only `["text"]` is supported) |
+| `modalities` | list | `["text"]` | Use `["text"]` for text and image understanding |
 | `images` | list | `null` | List of image file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 
-### Incoming Features
-
-- Text-to-image generation
-- Text-to-Image Generation with Thinking
-- Interleaved Generation
-
 ## Known Limitations
 
-- Text output is supported for text and image input. Image generation and
-  interleaved generation are not wired to the OpenAI-compatible response path
-  yet.
+- Image generation and editing return one image per non-streaming request.
+- Thinking mode supports text-to-image only.
+- Interleaved output takes text-only input.

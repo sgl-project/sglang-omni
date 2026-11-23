@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from sglang_omni.config import PipelineConfig, StagePlacementPlan
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
 
 _SPEECH_STAGE_ORDER = (
     "preprocessing",
@@ -23,7 +24,8 @@ _COLOCATED_BUDGET_STAGES = {
     "code2wav",
 }
 _AR_STAGES = ("thinker", "talker_ar")
-_COLOCATED_CONFIG_CLASS = "Qwen3OmniSpeechColocatedPipelineConfig"
+# Stages another model package adds to the same server are not Qwen's; only Qwen's own stage names take part in the check.
+_QWEN_STAGE_SET = _SPEECH_STAGE_SET | {"mm_aggregate"}
 
 
 class Qwen3OmniPlacementPolicy:
@@ -50,7 +52,7 @@ class Qwen3OmniPlacementPolicy:
         else:
             pass
 
-        if type(config).__name__ == _COLOCATED_CONFIG_CLASS:
+        if isinstance(config, Qwen3OmniSpeechColocatedPipelineConfig):
             self.validate_colocated_qwen_replicas(plan)
             self.validate_colocated_qwen_parallelism(stage_map)
             self.validate_colocated_qwen_topology(plan)
@@ -76,7 +78,7 @@ class Qwen3OmniPlacementPolicy:
                     pass
                 raise ValueError(
                     f"Qwen thinker and talker_ar ({talker.stage_name!r}) may "
-                    f"share a GPU only with {_COLOCATED_CONFIG_CLASS}"
+                    f"share a GPU only with {Qwen3OmniSpeechColocatedPipelineConfig.__name__} or its subclasses"
                 )
 
     def validate_colocated_qwen_replicas(self, plan: StagePlacementPlan) -> None:
@@ -106,7 +108,7 @@ class Qwen3OmniPlacementPolicy:
                 pass
 
     def validate_speech_topology(self, stage_map) -> None:
-        names = set(stage_map)
+        names = set(stage_map) & _QWEN_STAGE_SET
         if names != _SPEECH_STAGE_SET:
             missing = sorted(_SPEECH_STAGE_SET - names)
             extra = sorted(names - _SPEECH_STAGE_SET)

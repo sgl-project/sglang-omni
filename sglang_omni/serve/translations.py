@@ -11,6 +11,7 @@ from fastapi.responses import Response
 
 from sglang_omni.client import Client
 from sglang_omni.serve import speech_to_text
+from sglang_omni.serve.protocol import build_sglext
 from sglang_omni.serve.speech_errors import openai_error_response
 
 TRANSLATIONS_ENDPOINT = "/v1/audio/translations"
@@ -154,6 +155,7 @@ def register_translations(app: FastAPI) -> None:
                     architectures=getattr(app.state, "architectures", None),
                     duration_s=duration_s,
                     operation_name="translation",
+                    return_spec_tokens_details=form.return_spec_tokens_details,
                 )
             except HTTPException as exc:
                 return http_exception_response(exc, param=None)
@@ -162,6 +164,7 @@ def register_translations(app: FastAPI) -> None:
 
         try:
             result = await speech_to_text.complete_speech_to_text_request(
+                request,
                 client,
                 gen_req,
                 request_id=request_id,
@@ -184,6 +187,10 @@ def register_translations(app: FastAPI) -> None:
                 architectures=getattr(app.state, "architectures", None),
                 duration_s=duration_s,
                 response_formats=TRANSLATION_RESPONSE_FORMATS,
+                finish_reason=result.finish_reason,
+                sglext=build_sglext(
+                    form.return_spec_tokens_details, result.spec_tokens_details
+                ),
             )
         except HTTPException as exc:
             return http_exception_response(exc, param=None)

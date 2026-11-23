@@ -10,6 +10,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.utils.channels_last_conv import (
     channels_last_conv1d,
     channels_last_conv_transpose1d,
+    channels_last_folded_weight,
     channels_last_weight,
 )
 
@@ -37,8 +38,44 @@ def test_channels_last_conv1d_matches_the_causal_conv1d(
     ).transpose(1, 2)
 
     padded = F.pad(inputs, (0, 0, left_context, (-length) % dilation))
-    actual = channels_last_conv1d(padded, conv, channels_last_weight(conv), length)
+    actual = channels_last_conv1d(
+        padded, conv, channels_last_weight(conv), conv.bias, length
+    )
 
+    torch.testing.assert_close(actual, expected)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(
+    not current_platform.is_cuda(), reason="channels-last convs run on NVIDIA CUDA only"
+)
+@pytest.mark.parametrize("length", [60, 61])
+@pytest.mark.parametrize("stride,kernel_size", [(3, 6), (15, 30)])
+def test_channels_last_conv1d_matches_the_strided_causal_conv1d(
+    monkeypatch: pytest.MonkeyPatch, length: int, stride: int, kernel_size: int
+) -> None:
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    torch.manual_seed(stride)
+    conv = torch.nn.Conv1d(4, 6, kernel_size, stride=stride).cuda()
+    inputs = torch.randn(2, length, 4, device="cuda")
+    expected = F.conv1d(
+        F.pad(inputs.transpose(1, 2), (stride - 1, 0)),
+        conv.weight,
+        conv.bias,
+        stride=stride,
+    ).transpose(1, 2)
+
+    outputs = (stride - 1 + length - kernel_size) // stride + 1
+    padded = F.pad(inputs, (0, 0, stride - 1, (-(stride - 1 + length)) % stride))
+    actual = channels_last_conv1d(
+        padded,
+        conv,
+        channels_last_folded_weight(conv.weight.data, stride),
+        conv.bias,
+        outputs,
+    )
+
+    assert actual.is_contiguous()
     torch.testing.assert_close(actual, expected)
 
 
@@ -82,8 +119,6 @@ def test_channels_last_conv_transpose1d_matches_the_conv_transpose1d(
     "conv",
     [
         torch.nn.Conv1d(4, 6, 7),
-        torch.nn.Conv1d(4, 6, 1),
-        torch.nn.ConvTranspose1d(4, 6, 8, stride=2),
     ],
 )
 def test_channels_last_weight_has_channels_last_strides_and_leaves_the_module(

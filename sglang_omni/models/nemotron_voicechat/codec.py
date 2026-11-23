@@ -60,8 +60,10 @@ class ResidualVectorQuantizer(nn.Module):
             for _ in range(num_quantizers)
         )
 
-    def forward(self, codes_TQ):
-        levels = [codebook[codes_TQ[:, q]] for q, codebook in enumerate(self.mus_list)]
+    def forward(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+        levels = [
+            codebook[codes_BTQ[..., q]] for q, codebook in enumerate(self.mus_list)
+        ]
         return torch.stack(levels, dim=0).sum(0)
 
 
@@ -78,7 +80,13 @@ class Latent2Wav(nn.Module):
         groups = int(config["groups"])
         layers: list[nn.Module] = []
         in_channels = int(config["latent_size"])
+        self.spectrogram_frames_per_code: int = 1
+        self.left_context_spectrogram_frames: int = 0
         for mult, rate in zip(reversed(mults), reversed(rates)):
+            self.spectrogram_frames_per_code *= rate
+            self.left_context_spectrogram_frames = (
+                self.left_context_spectrogram_frames * rate + blocks * (kernel_size - 1)
+            )
             channels = base * mult
             layers.append(
                 nn.ConvTranspose1d(
@@ -95,8 +103,8 @@ class Latent2Wav(nn.Module):
         layers.append(nn.Conv1d(in_channels, self.n_fft + 2, kernel_size=1, bias=False))
         self.layers = nn.ModuleList(layers)
 
-    def forward(self, latent_TD):
-        hidden_BCT = rearrange(latent_TD, "t d -> 1 d t")
+    def forward(self, latent_BTD: torch.Tensor) -> torch.Tensor:
+        hidden_BCT = rearrange(latent_BTD, "b t d -> b d t")
         for layer in self.layers:
             hidden_BCT = layer(hidden_BCT)
         return self.spectrogram_to_wave(hidden_BCT.float())
@@ -144,6 +152,7 @@ class RVQVAEDecoder(nn.Module):
         self.prvq = ResidualVectorQuantizer(config)
         self.decoder = Latent2Wav(config)
         self.samples_per_frame = int(config["wav_to_token_ratio"])
+        self.num_quantizers = int(config["num_quantizers"])
         # The codes marking an utterance's edges sit above the codebook and
         # index nothing, so they decode as silence.
         self.register_buffer(
@@ -151,15 +160,41 @@ class RVQVAEDecoder(nn.Module):
         )
         self.register_buffer(
             "silence_codes",
-            torch.empty(int(config["num_quantizers"]), dtype=torch.long),
+            torch.empty(self.num_quantizers, dtype=torch.long),
             persistent=False,
         )
 
-    def forward(self, codes_TQ):
-        codes_TQ = torch.where(
-            torch.isin(codes_TQ, self.control_codes),
-            self.silence_codes.to(codes_TQ.device).expand_as(codes_TQ),
-            codes_TQ,
+    def required_context_frames(self, holdback_samples: int) -> int:
+        """Include causal convolutions and iSTFT overlap for held-back samples."""
+        decoder = self.decoder
+        if (
+            self.samples_per_frame
+            != decoder.spectrogram_frames_per_code * decoder.hop_length
+        ):
+            raise ValueError(
+                f"Invalid codec config: wav_to_token_ratio={self.samples_per_frame}, "
+                f"rates product={decoder.spectrogram_frames_per_code}, "
+                f"hop_length={decoder.hop_length}; "
+                "wav_to_token_ratio must equal rates product * hop_length"
+            )
+        else:
+            pass
+        padding_samples = (decoder.n_fft - decoder.hop_length) // 2
+        first_spectrogram_frame = (
+            -holdback_samples + padding_samples - decoder.n_fft
+        ) // decoder.hop_length + 1
+        return -(
+            (first_spectrogram_frame - decoder.left_context_spectrogram_frames)
+            // decoder.spectrogram_frames_per_code
         )
-        wave_BS = self.decoder(self.prvq(codes_TQ))
-        return rearrange(wave_BS, "1 s -> s")
+
+    def forward(self, codes_TQ: torch.Tensor) -> torch.Tensor:
+        return self.decode_batch(codes_TQ[None])[0]
+
+    def decode_batch(self, codes_BTQ: torch.Tensor) -> torch.Tensor:
+        codes_BTQ = torch.where(
+            torch.isin(codes_BTQ, self.control_codes),
+            self.silence_codes.to(codes_BTQ.device).expand_as(codes_BTQ),
+            codes_BTQ,
+        )
+        return self.decoder(self.prvq(codes_BTQ))

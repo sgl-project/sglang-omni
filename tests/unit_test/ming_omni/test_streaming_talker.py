@@ -163,14 +163,20 @@ def test_streaming_talker_stream_before_payload_buffers_correctly():
 
 
 def test_streaming_talker_abort_short_circuits_generation():
+    first_chunk_out = threading.Event()
+    abort_sent = threading.Event()
+
     class SlowTalker(FakeTalker):
         def omni_audio_generation(
             self, *, tts_text, voice_name, audio_detokenizer, stream, abort_event=None
         ):
             self.calls.append(tts_text)
-            for _ in range(10):
-                if abort_event is not None and abort_event.is_set():
-                    return
+            for index in range(10):
+                if index == 1:
+                    first_chunk_out.set()
+                    assert abort_sent.wait(timeout=5.0)
+                else:
+                    pass
                 time.sleep(0.02)
                 yield (torch.zeros(256, dtype=torch.float32), None, None, None)
 
@@ -187,9 +193,9 @@ def test_streaming_talker_abort_short_circuits_generation():
             )
         )
         segment(sched, rid, "long segment", segment_id=0)
-        # Let a couple chunks emit, then abort.
-        time.sleep(0.05)
+        assert first_chunk_out.wait(timeout=5.0)
         sched.abort(rid)
+        abort_sent.set()
         # Mark stream done so the scheduler finalizes the aborted request.
         sched.inbox.put(IncomingMessage(request_id=rid, type="stream_done"))
         # Also send the new_request first if not already — already sent.

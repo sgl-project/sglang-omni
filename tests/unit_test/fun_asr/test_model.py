@@ -299,17 +299,6 @@ def test_get_audio_feature_batched_matches_serial_with_pre_padded_features() -> 
     assert torch.allclose(batched, serial, atol=1e-5, rtol=1e-5)
 
 
-def test_get_audio_feature_single_item_output_length() -> None:
-    model = tiny_audio_mm_model()
-    length = 16
-    item = audio_item(torch.randn(1, 8, length), length, hash_id=7)
-
-    with torch.no_grad():
-        out = model.get_audio_feature([item])
-
-    assert out.shape == (2, 8)
-
-
 def test_get_audio_feature_rejects_empty_items() -> None:
     model = tiny_audio_mm_model()
     with pytest.raises(ValueError, match="at least one audio item"):

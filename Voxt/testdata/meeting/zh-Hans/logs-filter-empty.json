@@ -1,0 +1,29 @@
+{
+  "name": "logs-filter-empty",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": null,
+    "count": "0 行",
+    "sources": [
+      {
+        "code": "",
+        "label": "全部来源"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "辅助进程"
+      },
+      {
+        "code": "dictionary",
+        "label": "词典"
+      }
+    ],
+    "source": "全部来源",
+    "query": "zzqx",
+    "log_file": false
+  }
+}

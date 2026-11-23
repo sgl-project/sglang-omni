@@ -66,11 +66,12 @@ def test_aborted_deferred_request_is_never_admitted() -> None:
     payload, _, future, deferred = make_deferred("r1")
     scheduler.admit_or_defer_built_request(payload, False, deferred)
 
-    scheduler.abort("r1")
+    scheduler.aborted_request_ids.add("r1")
     future.set_result(None)
     scheduler.drain_request_admission_results()
 
     assert scheduler.admitted == []
+    assert scheduler.pending_request_admissions == {}
     assert not future.cancelled()
 
 

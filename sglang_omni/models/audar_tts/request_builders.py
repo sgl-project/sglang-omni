@@ -15,12 +15,6 @@ _DEFAULT_GENERATION = {
     "top_p": 0.9,
     "repetition_penalty": 1.1,
 }
-_IMPLICIT_SAMPLING_DEFAULTS = {
-    "temperature": {0.8, 1.0},
-    "top_p": {0.8, 1.0},
-    "top_k": {-1, 30},
-    "repetition_penalty": {1.0, 1.1},
-}
 
 
 def build_audar_state(payload: StagePayload) -> AudarTTSState:
@@ -71,13 +65,6 @@ def build_generation_kwargs(
     params: Mapping[str, object], *, tts_params: Mapping[str, object]
 ) -> dict[str, int | float]:
     generation = dict(_DEFAULT_GENERATION)
-    explicit = tts_params.get("explicit_generation_params")
-    explicit_fields = (
-        {str(field) for field in explicit}
-        if isinstance(explicit, (list, tuple, set))
-        else set()
-    )
-
     max_new_tokens = params.get("max_new_tokens")
     if max_new_tokens is not None:
         generation["max_new_tokens"] = int(max_new_tokens)
@@ -86,10 +73,6 @@ def build_generation_kwargs(
     for field in ("temperature", "top_k", "top_p", "repetition_penalty"):
         value = params.get(field)
         if value is None:
-            continue
-        else:
-            pass
-        if field not in explicit_fields and value in _IMPLICIT_SAMPLING_DEFAULTS[field]:
             continue
         else:
             pass

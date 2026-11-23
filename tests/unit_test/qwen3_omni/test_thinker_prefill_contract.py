@@ -11,12 +11,20 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("sglang")
 
-import sglang_omni.models.qwen3_omni.thinker_model_runner as qwen_thinker_runner_module
+from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.request_builders import (
+    QwenThinkerRequest,
+    build_sglang_thinker_request,
+)
 from sglang_omni.models.qwen3_omni.thinker_model_runner import (
     Qwen3OmniThinkerModelRunner,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
+from tests.unit_test.fixtures.qwen_fakes import make_thinker_config
 
 VOCAB = 64
 HIDDEN = 4
@@ -99,14 +107,52 @@ def make_batch(
     return forward_batch, schedule_batch
 
 
+def admit_thinker_request(
+    state: Qwen3OmniPipelineState, *, capture_prompt_hidden_states: bool
+) -> QwenThinkerRequest:
+    """Build a thinker request and attach its data the way the scheduler admits one."""
+    request_data = build_sglang_thinker_request(
+        state,
+        params={"max_new_tokens": 8},
+        tokenizer=None,
+        vocab_size=VOCAB,
+        thinker_config=make_thinker_config(
+            image_token_id=IMAGE_ID,
+            video_token_id=VIDEO_ID,
+            audio_token_id=AUDIO_ID,
+            vision_start_token_id=54,
+            audio_start_token_id=55,
+        ),
+        capture_prompt_hidden_states=capture_prompt_hidden_states,
+        speaks=False,
+    )
+    request = request_data.req
+    assert isinstance(request, QwenThinkerRequest)
+    request.omni_data = request_data
+    OmniScheduler.normalize_req_token_arrays(request)
+    return request
+
+
+def prefill_input_embeds(
+    runner: Qwen3OmniThinkerModelRunner,
+    request: QwenThinkerRequest,
+    token_ids: array[int],
+) -> torch.Tensor:
+    """The embeddings the runner composes for one extend of the request over token_ids."""
+    forward_batch, schedule_batch = make_batch([request], [list(token_ids)])
+    runner.before_prefill(forward_batch, schedule_batch, [request])
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None, "the runner fell back from composing the prefill"
+    return prefill_inputs.input_embeds
+
+
 def test_custom_prefill_forward_records_eager_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = object.__new__(Qwen3OmniThinkerModelRunner)
-    calls: list[str] = []
-    runner.tp_worker = SimpleNamespace(
-        record_custom_prefill_eager=lambda: calls.append("recorded")
-    )
+    worker = object.__new__(ModelWorker)
+    worker.prefill_cuda_graph_usage = PrefillCudaGraphUsage()
+    runner.tp_worker = worker
     runner.classify_prefill = lambda *args: SimpleNamespace(kind="custom")
     expected = object()
     monkeypatch.setattr(
@@ -118,7 +164,7 @@ def test_custom_prefill_forward_records_eager_fallback(
     result = runner.custom_prefill_forward(SimpleNamespace(), object(), [])
 
     assert result is expected
-    assert calls == ["recorded"]
+    assert worker.prefill_cuda_graph_usage.custom_eager_count == 1
 
 
 def test_text_only_prefill_attaches_live_embeddings_without_official_batch_mutation():
@@ -173,76 +219,6 @@ def test_text_invalid_token_ids_are_not_silently_clamped():
         runner.before_prefill(forward_batch, schedule_batch, [request])
 
     assert get_omni_prefill_inputs(forward_batch) is None
-
-
-def test_text_only_prefill_skips_chunk_span_normalization(monkeypatch):
-    runner = make_runner()
-    request = make_request([7, 8, 9], None)
-    forward_batch, schedule_batch = make_batch([request])
-
-    def unexpected_chunk_span_normalization(*args):
-        pytest.fail("text-only prefill should not normalize multimodal spans")
-
-    monkeypatch.setattr(
-        runner, "batch_chunk_spans", unexpected_chunk_span_normalization
-    )
-
-    runner.before_prefill(forward_batch, schedule_batch, [request])
-
-    assert get_omni_prefill_inputs(forward_batch) is not None
-
-
-def test_explicit_positions_skip_redundant_origin_prompt_tensorization(monkeypatch):
-    runner = make_runner()
-    request = make_request(
-        [7, AUDIO_ID, 8],
-        {"audio_embeds": torch.ones(1, HIDDEN)},
-        positions=make_positions(audio=(1,)),
-    )
-    forward_batch, schedule_batch = make_batch([request])
-
-    def unexpected_prompt_tensorization(*args, **_kwargs):
-        raise AssertionError("explicit positions must not rebuild origin_input_ids")
-
-    monkeypatch.setattr(
-        qwen_thinker_runner_module.torch,
-        "as_tensor",
-        unexpected_prompt_tensorization,
-    )
-
-    runner.before_prefill(forward_batch, schedule_batch, [request])
-
-    assert get_omni_prefill_inputs(forward_batch) is not None
-
-
-def test_multi_audio_batch_normalizes_chunk_spans_once(monkeypatch):
-    runner = make_runner()
-    requests = [
-        make_request(
-            [7, AUDIO_ID],
-            {"audio_embeds": torch.ones(1, HIDDEN)},
-            positions=make_positions(audio=(1,)),
-        ),
-        make_request(
-            [8, AUDIO_ID],
-            {"audio_embeds": torch.full((1, HIDDEN), 2.0)},
-            positions=make_positions(audio=(1,)),
-        ),
-    ]
-    forward_batch, schedule_batch = make_batch(requests)
-    calls = []
-    original = runner.batch_chunk_spans
-
-    def wrapped_batch_chunk_spans(batch, expected_batch_size):
-        calls.append(expected_batch_size)
-        return original(batch, expected_batch_size)
-
-    monkeypatch.setattr(runner, "batch_chunk_spans", wrapped_batch_chunk_spans)
-
-    runner.before_prefill(forward_batch, schedule_batch, requests)
-
-    assert calls == [2]
-    assert get_omni_prefill_inputs(forward_batch) is not None
 
 
 def test_audio_prefill_composes_embeddings_into_the_private_sidecar():
@@ -884,3 +860,66 @@ def test_existing_official_embedding_fields_never_get_overwritten(
         runner.custom_prefill_forward(forward_batch, schedule_batch, [request])
         == "eager"
     )
+
+
+@pytest.mark.parametrize("capture_prompt_hidden_states", [False, True])
+def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows(
+    capture_prompt_hidden_states: bool,
+) -> None:
+    """A thinker request retracted between prefill chunks or during decode could not re-prefill its prompt with the audio rows it was built with."""
+    runner = make_runner()
+    audio_state = Qwen3OmniPipelineState(
+        prompt={"input_ids": torch.tensor([7, AUDIO_ID, AUDIO_ID, 8])},
+        thinker_inputs={
+            "model_inputs": {
+                "audio_embeds": torch.full((2, HIDDEN), 99.0),
+                "audio_feature_lengths": torch.tensor([13]),
+            },
+            "media_cache_keys": {"audio": "clip-0"},
+        },
+    )
+    fresh_request = admit_thinker_request(
+        audio_state, capture_prompt_hidden_states=capture_prompt_hidden_states
+    )
+    fresh_prompt_embeds = prefill_input_embeds(
+        runner, fresh_request, fresh_request.origin_input_ids
+    )
+    request = admit_thinker_request(
+        audio_state, capture_prompt_hidden_states=capture_prompt_hidden_states
+    )
+    assert isinstance(request, PromptHiddenRequest) is capture_prompt_hidden_states
+
+    request.inflight_middle_chunks = 1
+    prefill_input_embeds(runner, request, request.origin_input_ids[:2])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    assert torch.equal(
+        prefill_input_embeds(runner, request, request.full_untruncated_fill_ids),
+        fresh_prompt_embeds,
+    )
+
+    request.output_ids.extend([11, 12])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    reprefill_embeds = prefill_input_embeds(
+        runner, request, request.full_untruncated_fill_ids
+    )
+    assert torch.equal(
+        reprefill_embeds[: len(request.origin_input_ids)], fresh_prompt_embeds
+    )
+
+
+def test_a_retracted_text_request_keeps_no_multimodal_inputs() -> None:
+    """Retraction must leave a text-only thinker request without multimodal inputs, as its builder made it."""
+    request = admit_thinker_request(
+        Qwen3OmniPipelineState(
+            prompt={"input_ids": torch.tensor([7, 8, 9])},
+            thinker_inputs={"model_inputs": {}},
+        ),
+        capture_prompt_hidden_states=False,
+    )
+    request.output_ids.extend([11, 12])
+    request.reset_for_retract()
+    request.init_next_round_input()
+
+    assert request.omni_model_inputs is None

@@ -7,7 +7,6 @@ import asyncio
 import base64
 import logging
 import os
-import random
 import re
 import time
 from typing import TypedDict
@@ -15,7 +14,7 @@ from typing import TypedDict
 import aiohttp
 
 from benchmarks.benchmarker.conditions import sampling_seed_field
-from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
 from benchmarks.benchmarker.runner import SendFn
 from benchmarks.dataset.mmmu import MMMUSample
 
@@ -43,7 +42,7 @@ class MMMURecord(TypedDict):
     raw_response: str
     is_correct: bool
     is_success: bool
-    is_mc_fallback: bool
+    is_unparseable: bool
     error: str
 
 
@@ -175,19 +174,21 @@ def parse_multi_choice_response(
 ) -> tuple[str, bool]:
     """Extract a single answer letter from the model response.
 
-    Priority: ``Answer: X`` → ``(A)`` bracket → ``·A·`` space-padded →
-    option-text match → last-occurrence tie-break → random fallback.
-
-    Returns ``(choice, is_fallback)``. ``is_fallback`` is ``True`` iff
-    nothing could be parsed out of *response* and a random choice was
-    returned — this counter is observational and doesn't change scoring
-    behavior vs. the MMMU reference eval.
+    Priority: Answer: X, then (A), then a space-padded letter, then the option text, with the last occurrence breaking ties.
+    Returns (choice, is_unparseable); a response that names no option returns an empty choice, which scores as wrong.
     """
-    answer_matches = re.findall(r"[Aa]nswer\s*:\s*\*?\*?\s*\(?([A-Z])\)?", response)
+    # note (ratish): a lowercase letter counts only when no word follows it, so the article in "Answer: a dog" is not read as A.
+    answer_matches = re.findall(
+        r"[Aa]nswer\s*:\s*\*?\*?\s*\(?([A-Z]|[a-z](?![\w ]))\)?", response
+    )
     if answer_matches:
-        candidate = answer_matches[-1]
+        candidate = answer_matches[-1].upper()
         if candidate in all_choices:
             return candidate, False
+        else:
+            pass
+    else:
+        pass
 
     for char in (",", ".", "!", "?", ";", ":", "'"):
         response = response.strip(char)
@@ -206,7 +207,9 @@ def parse_multi_choice_response(
             if ans and ans.lower() in response.lower():
                 candidates.append(idx)
     if not candidates:
-        return random.choice(all_choices), True
+        # note (ratish): a random letter credits a guess, and with one seed per run each guess
+        # depends on how many answers before it went unparsed.
+        return "", True
     if len(candidates) == 1:
         return candidates[0], False
 
@@ -273,6 +276,9 @@ def make_mmmu_send_fn(
             message = body.get("choices", [{}])[0].get("message", {})
             content = message.get("content", "")
             result.text = content or ""
+            result.finish_reason = finish_reason_from_server(
+                body.get("choices", [{}])[0].get("finish_reason")
+            )
 
             if enable_audio and audio_dir:
                 audio_obj = message.get("audio")
@@ -322,8 +328,6 @@ def build_mmmu_result_records(
     assert len(samples) == len(
         results
     ), f"Sample/result count mismatch: {len(samples)} samples vs {len(results)} results"
-    # Fix the random seed so MC fallback choices stay deterministic across CI runs.
-    random.seed(42)
 
     per_sample: list[MMMURecord] = []
 
@@ -343,28 +347,29 @@ def build_mmmu_result_records(
             "raw_response": result.error,
             "is_correct": False,
             "is_success": False,
-            "is_mc_fallback": False,
+            "is_unparseable": False,
             "error": result.error,
         }
 
         if result.is_success:
             gold = sample.answer
-            is_fallback = False
+            is_unparseable = False
             if (
                 sample.question_type == "multiple-choice"
                 and sample.all_choices
                 and sample.index2ans
             ):
-                predicted, is_fallback = parse_multi_choice_response(
+                predicted, is_unparseable = parse_multi_choice_response(
                     result.text,
                     sample.all_choices,
                     sample.index2ans,
                 )
-                if is_fallback:
+                if is_unparseable:
                     logger.debug(
-                        f"MMMU multi-choice parse fallback for sample "
-                        f"{sample.sample_id}"
+                        f"MMMU answer unparseable for sample {sample.sample_id}"
                     )
+                else:
+                    pass
                 is_correct = gold is not None and predicted == gold
             else:
                 parsed_list = parse_open_response(result.text)
@@ -376,7 +381,7 @@ def build_mmmu_result_records(
                 raw_response=result.text,
                 is_correct=is_correct,
                 is_success=True,
-                is_mc_fallback=is_fallback,
+                is_unparseable=is_unparseable,
                 error="",
             )
 

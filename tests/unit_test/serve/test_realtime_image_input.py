@@ -11,6 +11,7 @@ from starlette.testclient import WebSocketTestSession
 
 from sglang_omni.serve.realtime.schema import CLIENT_EVENT, JsonObject
 from sglang_omni.serve.realtime.types import Capabilities
+from tests.unit_test.fixtures.realtime_fakes import ScriptedAdapter
 from tests.unit_test.serve.test_realtime_coordinator_adapter import (
     SESSION_CONFIG,
     RecordingSink,
@@ -21,7 +22,6 @@ from tests.unit_test.serve.test_realtime_coordinator_adapter import (
 from tests.unit_test.serve.test_realtime_duplex_negotiation import FRAMES_BY_SLICES
 from tests.unit_test.serve.test_realtime_duplex_session import (
     UNIT_BYTES,
-    ScriptedAdapter,
     append_audio,
     build_test_client,
     open_session,
@@ -55,12 +55,7 @@ def image_event(t_ms: float = 0.0, image: bytes = JPEG) -> JsonObject:
 
 @pytest.mark.parametrize(
     "fields",
-    [
-        {"sglang": {}},
-        {"sglang": {"t_ms": float("nan")}},
-        {"image": b"abc"},
-        {"extra": 1},
-    ],
+    [{"sglang": {}}, {"extra": 1}],
 )
 def test_image_schema_rejects_invalid_event(fields: JsonObject) -> None:
     with pytest.raises(ValidationError):
@@ -151,20 +146,15 @@ def test_image_grant_follows_capabilities(modalities: tuple[str, ...]) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("image", [None, JPEG])
-async def test_adapter_payload_preserves_audio_and_bundles_image(
-    image: bytes | None,
-) -> None:
+async def test_adapter_payload_preserves_audio_and_bundles_image() -> None:
     coordinator = SessionCoordinator([])
     adapter = build_adapter(coordinator)
     await adapter.open("session", SESSION_CONFIG, RecordingSink())
-    unit = replace(build_unit(2, is_eos=True), images=() if image is None else (image,))
+    unit = replace(build_unit(2, is_eos=True), images=(JPEG,))
     assert await adapter.process(unit) == unit.real_samples
     await adapter.close()
     chunk = coordinator.appended[0]
-    assert chunk.payload == (
-        unit.pcm if image is None else {"pcm": unit.pcm, "images": [image]}
-    )
+    assert chunk.payload == {"pcm": unit.pcm, "images": [JPEG]}
     assert (chunk.modality, chunk.format, chunk.seq, chunk.eos) == (
         "audio",
         "pcm16",

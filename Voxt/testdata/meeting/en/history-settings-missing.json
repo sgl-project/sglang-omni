@@ -1,0 +1,88 @@
+{
+  "name": "history-settings-missing",
+  "kind": "history-settings",
+  "history_settings": {
+    "open": true,
+    "directory": "~/Custom Recordings",
+    "missing_notice": "~/Custom Recordings is not available, so new recordings go to ~/Default Recordings until it is back.",
+    "can_use_default": true,
+    "usage_text": "2 recordings · 2 KB",
+    "can_delete": true,
+    "can_export": true,
+    "recording_scopes": [
+      "All recordings",
+      "Transcribe only"
+    ],
+    "recording_scope": "All recordings",
+    "text_scopes": [
+      "All entries",
+      "Transcribe only"
+    ],
+    "text_scope": "All entries",
+    "text_formats": [
+      "Markdown",
+      "JSONL"
+    ],
+    "text_format": "Markdown",
+    "text_busy": false,
+    "busy": false,
+    "busy_label": "",
+    "progress": 0,
+    "can_cancel": false,
+    "clean_on": true,
+    "day_options": [
+      {
+        "label": "1 year",
+        "value": 365
+      },
+      {
+        "label": "6 months",
+        "value": 180
+      },
+      {
+        "label": "3 months",
+        "value": 90
+      },
+      {
+        "label": "30 days",
+        "value": 30
+      },
+      {
+        "label": "1 week",
+        "value": 7
+      }
+    ],
+    "days_selection": "30 days",
+    "count_options": [
+      {
+        "label": "No limit",
+        "value": 0
+      },
+      {
+        "label": "50",
+        "value": 50
+      },
+      {
+        "label": "100",
+        "value": 100
+      },
+      {
+        "label": "300",
+        "value": 300
+      },
+      {
+        "label": "500",
+        "value": 500
+      },
+      {
+        "label": "1000",
+        "value": 1000
+      }
+    ],
+    "count_selection": "No limit",
+    "prune_ask": false,
+    "prune_prompt": "",
+    "prune_detail": "",
+    "delete_audio_ask": false
+  }
+}

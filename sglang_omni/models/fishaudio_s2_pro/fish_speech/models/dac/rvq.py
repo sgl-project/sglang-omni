@@ -1,6 +1,7 @@
 import math
 import typing as tp
 from dataclasses import dataclass
+from itertools import islice
 
 import torch
 import torch.nn as nn
@@ -87,7 +88,10 @@ class CausalConvNet(nn.Module):
         extra_padding = get_extra_padding_for_conv1d(
             x, self.kernel_size, self.stride, pad
         )
-        x = pad1d(x, (pad, extra_padding), mode="constant", value=0)
+        if pad != 0 or extra_padding != 0:
+            x = pad1d(x, (pad, extra_padding), mode="constant", value=0)
+        else:
+            pass
         return self.conv(x).contiguous()
 
     def weight_norm(self, name="weight", dim=0):
@@ -300,15 +304,7 @@ class DownsampleResidualVectorQuantize(nn.Module):
         else:
             pass
 
-    def forward(
-        self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs
-    ):
-        # z: (B, D, T)
-        original_shape = z.shape
-        if semantic_len is None:
-            semantic_len = torch.LongTensor([z.shape[-1]])
-        else:
-            pass
+    def quantize_latents(self, z: torch.Tensor, n_quantizers: int | None) -> VQResult:
         z = self.downsample(z)
         z = self.pre_module(z)  # B, T, D
         (
@@ -327,12 +323,50 @@ class DownsampleResidualVectorQuantize(nn.Module):
         codebook_loss = codebook_loss + semantic_codebook_loss
         codes = torch.cat([semantic_codes, codes], dim=1)
         latents = torch.cat([semantic_latents, latents], dim=1)
-        z = self.post_module(z)
+        return VQResult(
+            z=z,
+            codes=codes,
+            latents=latents,
+            commitment_loss=commitment_loss,
+            codebook_loss=codebook_loss,
+        )
+
+    def encode_codes(
+        self, z: torch.Tensor, n_quantizers: int | None = None
+    ) -> torch.Tensor:
+        """The codes of quantize_latents by the same operations, minus the losses and
+        the projection after the last codebook, which no code reads."""
+        residual = self.pre_module(self.downsample(z))
+        *leading_quantizers, last_quantizer = (
+            *self.semantic_quantizer.quantizers,
+            *islice(self.quantizer.quantizers, n_quantizers),
+        )
+        codes = []
+        for vector_quantizer in leading_quantizers:
+            projected = vector_quantizer.in_proj(residual)
+            nearest, quantizer_codes = vector_quantizer.decode_latents(projected)
+            codes.append(quantizer_codes)
+            # note (Wenyao Gao): VectorQuantize.forward's straight-through sum rounds
+            # differently from nearest, and the next codebook quantizes what is left.
+            residual = residual - vector_quantizer.out_proj(
+                projected + (nearest - projected)
+            )
+        codes.append(last_quantizer.decode_latents(last_quantizer.in_proj(residual))[1])
+        return torch.stack(codes, dim=1)
+
+    def forward(
+        self, z, n_quantizers: int = None, semantic_len: torch.Tensor = None, **kwargs
+    ):
+        # z: (B, D, T)
+        original_shape = z.shape
+        if semantic_len is None:
+            semantic_len = torch.LongTensor([z.shape[-1]])
+        else:
+            pass
+        results = self.quantize_latents(z, n_quantizers)
+        z = self.post_module(results.z)
         z = self.upsample(z)
         # z: (B, D, T)
-
-        # semantic distillation (disabled here since only used in training)
-        # semantic_distill_z = self.semantic_predictor_module(semantic_z, semantic_len).mT  # wav2vec target is B, T, D
 
         # Pad or crop z to match original shape
         diff = original_shape[-1] - z.shape[-1]
@@ -346,14 +380,7 @@ class DownsampleResidualVectorQuantize(nn.Module):
         else:
             pass
 
-        results = VQResult(
-            z=z,
-            codes=codes,
-            latents=latents,
-            commitment_loss=commitment_loss,
-            codebook_loss=codebook_loss,
-        )
-
+        results.z = z
         return results
 
     # def encode(self, z):

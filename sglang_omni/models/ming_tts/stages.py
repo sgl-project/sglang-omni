@@ -49,11 +49,9 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
     from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
     from sglang_omni.models.ming_tts.engine_io import MingTTSSGLangRequestData
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 else:
     pass
@@ -92,9 +90,7 @@ def load_ming_tts_audio_vae(
 ) -> AudioVAE:
     import torch
 
-    from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import (
-        AudioVAE,
-    )
+    from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 
     if getattr(audio_config, "semantic_module_kwargs", None) is not None:
         raise ValueError(
@@ -355,11 +351,12 @@ def create_audio_decode_executor(
 
     resolved_device = resolve_concrete_device(device, gpu_id)
     if (
-        resolved_device.type not in ("cuda", "xpu")
+        resolved_device.type not in ("cuda", "musa", "xpu")
         or not torch.get_device_module(resolved_device).is_available()
     ):
         raise ValueError(
-            "Ming-Omni-TTS fixed AudioVAE serving requires an available CUDA or XPU device"
+            "Ming-Omni-TTS fixed AudioVAE serving requires an available "
+            "CUDA, MUSA, or XPU device"
         )
     else:
         pass
@@ -379,7 +376,6 @@ def create_audio_decode_executor(
         )
     else:
         pass
-
     device_info = get_gpu_device_info(logical_gpu_id)
     pre_process_bytes = process_memory_bytes(resolved_device)
 

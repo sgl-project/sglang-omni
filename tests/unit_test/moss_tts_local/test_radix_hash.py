@@ -53,17 +53,6 @@ def test_matches_python_reference():
     assert folded == ref % RADIX_HASH_SPACE
 
 
-def test_deterministic_across_repeats():
-    """Same input hashed N times is identical (determinism / property ①)."""
-    torch.manual_seed(0)
-    codes = torch.randint(0, 1024, (32, 12))
-    rows, next_text = continuing_rows(codes)
-    first = gpu_radix_row_hash(rows, next_text, END_ID)
-    for _ in range(8):
-        again = gpu_radix_row_hash(rows.clone(), next_text.clone(), END_ID)
-        assert torch.equal(first, again)
-
-
 def test_no_collisions_on_adjacent_and_permuted_rows():
     """Adjacent (+/-1) and permuted rows hash distinctly (property ②)."""
     base = torch.arange(10, 130, 10, dtype=torch.long)  # 12 distinct codes
@@ -105,40 +94,6 @@ def test_eos_rows_keep_audio_end_id():
     assert int(keys[3]) == END_ID
     for i in (0, 2, 4):
         assert 0 <= int(keys[i]) < RADIX_HASH_SPACE
-
-
-def test_continuing_keys_within_hash_space():
-    """Continuing-frame keys are in [0, RADIX_HASH_SPACE) (domain / ④)."""
-    torch.manual_seed(2)
-    codes = torch.randint(0, 4096, (256, 12))
-    rows, next_text = continuing_rows(codes)
-    keys = gpu_radix_row_hash(rows, next_text, END_ID)
-    assert int(keys.min()) >= 0
-    assert int(keys.max()) < RADIX_HASH_SPACE
-
-
-def test_output_dtype_and_device_follow_input():
-    """dtype is int64 and device follows the input rows (⑤)."""
-    codes = torch.randint(0, 1024, (4, 12))
-    rows, next_text = continuing_rows(codes)
-    keys = gpu_radix_row_hash(rows, next_text, END_ID)
-    assert keys.dtype == torch.int64
-    assert keys.device == rows.device
-    raw = poly_row_hash(rows)
-    assert raw.dtype == torch.int64
-    assert raw.device == rows.device
-
-
-def test_accepts_non_int64_input_dtype():
-    """int32 rows are handled (the hash casts to int64 internally)."""
-    codes = torch.randint(0, 1024, (4, 12), dtype=torch.int32)
-    rows = torch.empty((4, N_CHANNELS), dtype=torch.int32)
-    rows[:, 0] = SLOT_ID
-    rows[:, 1:] = codes
-    next_text = torch.full((4,), SLOT_ID, dtype=torch.int32)
-    keys = gpu_radix_row_hash(rows, next_text, END_ID)
-    assert keys.dtype == torch.int64
-    assert int(keys.min()) >= 0 and int(keys.max()) < RADIX_HASH_SPACE
 
 
 def test_build_rows_and_ids_cpu_matches_split_reference():

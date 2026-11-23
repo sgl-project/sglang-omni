@@ -63,7 +63,7 @@ ALLOWED_DEFS: frozenset[tuple[str, str]] = frozenset(
         ),
         # torch.nn.Module._buffers
         ("sglang_omni/models/qwen3_tts/codec_state_arena.py", "_buffers"),
-        # SGLang ModelRunner / Scheduler / cache / MLX hooks
+        # SGLang ModelRunner / Scheduler / cache hooks
         ("sglang_omni/model_runner/sglang_model_runner.py", "_extend_forward_kwargs"),
         (
             "sglang_omni/model_runner/sglang_model_runner.py",
@@ -76,13 +76,6 @@ ALLOWED_DEFS: frozenset[tuple[str, str]] = frozenset(
             "sglang_omni/scheduling/sglang_backend/evict_heap_radix_cache.py",
             "_update_leaf_status",
         ),
-        (
-            "sglang_omni/models/fun_cosyvoice3/mlx/runner.py",
-            "_select_tokens_with_logprobs",
-        ),
-        ("sglang_omni/models/fun_cosyvoice3/mlx/runner.py", "_load_model"),
-        ("sglang_omni/models/qwen3_asr/mlx/runner.py", "_load_model"),
-        ("sglang_omni/models/arkasr/mlx/runner.py", "_load_model"),
         # OmniPlatform hook kept to avoid infinite recursion
         ("sglang_omni/platforms/interface.py", "_get_device_graph_backend"),
         ("sglang_omni/platforms/cuda.py", "_get_device_graph_backend"),

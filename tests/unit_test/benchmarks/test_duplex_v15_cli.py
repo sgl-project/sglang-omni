@@ -1,24 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+"""Full-Duplex-Bench v1.5 record and transcribe CLI and its run artifacts."""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import hashlib
 import io
 import json
 import math
 import sys
-import threading
 import types
-from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 import pytest
 import soundfile
-import websockets
-from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.run_artifacts import (
     TIMELINES,
@@ -28,9 +24,9 @@ from benchmarks.duplex.run_artifacts import (
     load_run,
 )
 from benchmarks.eval.benchmark_duplex_v15 import main
-from tests.unit_test.benchmarks.test_duplex_client import DuplexPeer
-from tests.unit_test.benchmarks.test_duplex_v15_runner import (
+from tests.unit_test.fixtures.duplex_fakes import (
     SERVER_REVISION,
+    peer_server,
     write_dataset,
 )
 
@@ -40,34 +36,6 @@ SELECTED = [
     "talking_to_other/1",
     "background_speech/1",
 ]
-
-
-@contextlib.contextmanager
-def peer_server() -> Iterator[str]:
-    """Serve fake native peers on a background loop so the CLI can own its own."""
-    loop = asyncio.new_event_loop()
-    ready = threading.Event()
-    state: dict = {}
-
-    async def handler(websocket: ServerConnection) -> None:
-        await DuplexPeer().handler(websocket)
-
-    async def serve() -> None:
-        state["stop"] = asyncio.Event()
-        async with websockets.serve(handler, "127.0.0.1", 0) as server:
-            state["port"] = server.sockets[0].getsockname()[1]
-            ready.set()
-            await state["stop"].wait()
-
-    thread = threading.Thread(target=loop.run_until_complete, args=(serve(),))
-    thread.start()
-    ready.wait(5)
-    try:
-        yield f"ws://127.0.0.1:{state['port']}/v1/realtime"
-    finally:
-        loop.call_soon_threadsafe(state["stop"].set)
-        thread.join(5)
-        loop.close()
 
 
 def run_cli(argv: list[str]) -> tuple[int, dict]:

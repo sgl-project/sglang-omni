@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterable
 from typing import NamedTuple
 
 import torch
+from sglang.srt.model_executor.runner.base_cuda_graph_runner import freeze_gc
+from sglang.srt.utils.common import get_available_gpu_memory
 
 logger = logging.getLogger(__name__)
 HIT_RATE_LOG_EVERY = 1024
@@ -69,29 +72,43 @@ class DotsVocoderGraphRunner:
             {(int(b), int(t)) for b, t in keys} - set(self.graphs), reverse=True
         )
         with torch.cuda.device(self.device):
-            current_stream = torch.cuda.current_stream(self.device)
-            capture_stream = torch.cuda.Stream(device=self.device)
-            capture_stream.wait_stream(current_stream)
-            graph_pool = torch.cuda.graph_pool_handle()
-            for key in ordered:
-                inputs = self.new_inputs(*key)
-                graph = torch.cuda.CUDAGraph()
-                with torch.cuda.stream(capture_stream):
-                    for _ in range(self.warmup_iters):
-                        self.forward(*inputs)
-                capture_stream.synchronize()
-                with torch.cuda.graph(
-                    graph,
-                    pool=graph_pool,
-                    stream=capture_stream,
-                    capture_error_mode="thread_local",
-                ):
-                    outputs = self.forward(*inputs)
-                self.graphs[key] = CapturedStepGraph(graph, *inputs, outputs)
-            current_stream.wait_stream(capture_stream)
-            torch.cuda.synchronize(self.device)
+            capture_start_seconds = time.perf_counter()
+            device_index = torch.cuda.current_device()
+            available_memory_before_gib = get_available_gpu_memory(
+                self.device.type, device_index
+            )
+            # note (ratish): a collection during capture can free what a reference cycle
+            # holds, a dead pool's graphs among them, and invalidate the graph.
+            with freeze_gc(enable_cudagraph_gc=False):
+                current_stream = torch.cuda.current_stream(self.device)
+                capture_stream = torch.cuda.Stream(device=self.device)
+                capture_stream.wait_stream(current_stream)
+                graph_pool = torch.cuda.graph_pool_handle()
+                for key in ordered:
+                    inputs = self.new_inputs(*key)
+                    graph = torch.cuda.CUDAGraph()
+                    with torch.cuda.stream(capture_stream):
+                        for _ in range(self.warmup_iters):
+                            self.forward(*inputs)
+                    capture_stream.synchronize()
+                    with torch.cuda.graph(
+                        graph,
+                        pool=graph_pool,
+                        stream=capture_stream,
+                        capture_error_mode="thread_local",
+                    ):
+                        outputs = self.forward(*inputs)
+                    self.graphs[key] = CapturedStepGraph(graph, *inputs, outputs)
+                current_stream.wait_stream(capture_stream)
+                torch.cuda.synchronize(self.device)
+            available_memory_after_gib = get_available_gpu_memory(
+                self.device.type, device_index
+            )
         logger.info(
-            f"dots.tts streaming vocoder CUDA graphs captured: {self.captured_keys}"
+            f"dots.tts streaming vocoder CUDA graphs captured: {self.captured_keys}, "
+            f"elapsed={time.perf_counter() - capture_start_seconds:.2f} s, "
+            f"mem usage={available_memory_before_gib - available_memory_after_gib:.2f} GiB, "
+            f"avail mem={available_memory_after_gib:.2f} GiB."
         )
 
     @torch.no_grad()

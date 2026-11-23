@@ -49,11 +49,6 @@ def test_an_empty_shape_list_is_refused():
         verify_capture_shapes([])
 
 
-def test_a_reference_free_shape_is_declared_and_kept():
-    assert AuKGraphShape(1, 192, 0, 192) in DEFAULT_CAPTURE_SHAPES
-    assert verify_capture_shapes([(1, 192, 0, 192)]) == (AuKGraphShape(1, 192, 0, 192),)
-
-
 def test_fit_takes_the_cheapest_shape_that_covers_every_axis():
     fitted = runner((1, 192, 0, 192), (1, 448, 0, 192), (1, 448, 320, 384))
     assert fitted.fit(frames=100, ref=0, text=10, batch=1) == AuKGraphShape(

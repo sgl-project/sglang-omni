@@ -6,13 +6,20 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
+from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.schema import PipelineConfig
+from sglang_omni.models.qwen3_omni.config import Qwen3OmniSessionPipelineConfig
+from sglang_omni.models.registry import resolve_variant
+from sglang_omni.models.streaming_cascade.config import StreamingCascadePipelineConfig
 from sglang_omni.utils.imports import import_string
 
 MODELS_DIR = Path(importlib.import_module("sglang_omni.models").__file__).parent
@@ -26,6 +33,31 @@ CPU_ONLY_GPU_PLACED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def restore_cudnn_switches() -> Iterator[None]:
+    # note (wilsonzheng0327): the MiniMax-Music3 factories turn cuDNN off process-wide, and Inductor's cache key does not record it.
+    is_cudnn_enabled = torch.backends.cudnn.enabled
+    is_cudnn_attention_enabled = torch.backends.cuda.cudnn_sdp_enabled()
+    yield
+    torch.backends.cudnn.enabled = is_cudnn_enabled
+    torch.backends.cuda.enable_cudnn_sdp(is_cudnn_attention_enabled)
+
+
+def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    model_path = str(MODELS_DIR)
+    profiles = {
+        Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
+        StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
+    }
+    if config_cls in profiles:
+        profile = MODELS_DIR.parent.parent / profiles[config_cls]
+        return ConfigManager.from_file(str(profile)).config.model_copy(
+            update={"model_path": model_path}
+        )
+    else:
+        return config_cls(model_path=model_path)
+
+
 def iter_stages():
     for config_path in sorted(MODELS_DIR.glob("*/config.py")):
         model = config_path.parent.name
@@ -34,9 +66,20 @@ def iter_stages():
         if getattr(module, "EntryClass", None) is not None:
             topologies["default"] = module.EntryClass
         topologies.update(getattr(module, "Variants", None) or {})
-        for label, config_cls in topologies.items():
-            for stage in config_cls(model_path="unused").stages:
+        for label, variant in topologies.items():
+            config_cls = resolve_variant(variant)
+            for stage in pipeline_config(config_cls).stages:
                 yield model, label, stage
+
+
+def pipeline_wiring(model: str, label: str, stage_name: str) -> Mapping[str, object]:
+    module = importlib.import_module(f"sglang_omni.models.{model}.config")
+    config_cls = (
+        module.EntryClass
+        if label == "default"
+        else resolve_variant(module.Variants[label])
+    )
+    return pipeline_config(config_cls).stage_factory_kwargs(stage_name)
 
 
 # note (lennox): only device/gpu_id are asserted on below, but a non-literal
@@ -77,6 +120,8 @@ def factory_parameters(dotted: str) -> dict[str, object]:
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
 REQUIRES_REAL_ACCELERATOR = {
+    ("firered_tts3", "talker"),
+    ("firered_tts3", "vocoder"),
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
@@ -197,7 +242,10 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
     kwargs: dict[str, object] = {"device": None, "gpu_id": 2}
     if "model_path" in parameters:
         kwargs["model_path"] = "unused"
-    configured = stage.factory.model_dump()
+    configured = {
+        **stage.factory.model_dump(),
+        **pipeline_wiring(model, label, stage.name),
+    }
     for name, default in parameters.items():
         if default is ... and name not in kwargs and name in configured:
             kwargs[name] = configured[name]
@@ -234,6 +282,11 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 ENGINE_FACTORIES = {
+    "firered_tts3": (
+        "sglang_omni.models.firered_tts3.stages.create_talker_executor",
+        "sglang_omni.models.firered_tts3.engine_builder",
+        "FireRedTTS3EngineBuilder",
+    ),
     "nemotron_voicechat_thinker": (
         "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
         "sglang_omni.models.nemotron_voicechat.engine_builder",
@@ -300,6 +353,11 @@ ENGINE_FACTORIES = {
         "sglang_omni.models.fishaudio_s2_pro.engine_builder",
         "FishS2ProEngineBuilder",
     ),
+    "fishaudio_drama3": (
+        "sglang_omni.models.fishaudio_drama3.stages.create_tts_engine_executor",
+        "sglang_omni.models.fishaudio_drama3.engine_builder",
+        "Drama3EngineBuilder",
+    ),
     "higgs_tts": (
         "sglang_omni.models.higgs_tts.stages.create_sglang_tts_engine_executor",
         "sglang_omni.models.higgs_tts.engine_builder",
@@ -330,7 +388,7 @@ ENGINE_FACTORIES = {
 
 # note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"firered_tts3", "minimax_music3", "zonos2"}
 
 
 def engine_factory_ids():
@@ -376,14 +434,19 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
+    stage_factory_arguments = (
+        pipeline_wiring("firered_tts3", "default", "talker")
+        if model == "firered_tts3"
+        else {}
+    )
 
     with pytest.raises(Stop):
-        factory(model_path="unused", device=None, gpu_id=2)
+        factory(model_path="unused", device=None, gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
     final.clear()
     with pytest.raises(Stop):
-        factory(model_path="unused", device="cuda", gpu_id=2)
+        factory(model_path="unused", device="cuda", gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
 
@@ -396,6 +459,11 @@ SELF_BUILT_SERVER_ARGS_FACTORIES = [
     "sglang_omni.models.qwen3_omni.stages.create_sglang_thinker_executor_from_config",
     "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config",
 ]
+REQUIRED_FACTORY_KWARGS = {
+    "sglang_omni.models.qwen3_omni.stages.create_talker_ar_executor_from_config": {
+        "max_running_requests": 32
+    },
+}
 
 
 @pytest.mark.parametrize(
@@ -434,13 +502,18 @@ def test_self_built_server_args_carry_the_resolved_device_type(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
 
+    required = REQUIRED_FACTORY_KWARGS.get(factory_path, {})
     with pytest.raises(Stop):
-        factory("unused", device=None, gpu_id=2)
+        factory("unused", device=None, gpu_id=2, **required)
     assert captured["device"] == "cuda"
 
     with pytest.raises(ValueError, match="stage placement"):
         factory(
-            "unused", device=None, gpu_id=2, server_args_overrides={"device": "xpu"}
+            "unused",
+            device=None,
+            gpu_id=2,
+            server_args_overrides={"device": "xpu"},
+            **required,
         )
 
 
@@ -566,7 +639,7 @@ def config_with_one_replicated_process(config_cls, model):
     from sglang_omni.config.schema import ProcessConfig
     from sglang_omni.config.topology import stage_process_name
 
-    config = config_cls(model_path="unused")
+    config = pipeline_config(config_cls)
     by_process: dict[str, list] = {}
     for stage in config.stages:
         by_process.setdefault(stage_process_name(stage), []).append(stage)
@@ -591,10 +664,11 @@ def config_with_one_replicated_process(config_cls, model):
     )
     stages_cfg = list(config.stages)
     if len(gpu_members) > 1:
+        stage_memory_fraction = 0.9 / len(gpu_members)
         member_names = {stage.name for stage in gpu_members}
         stages_cfg = [
             (
-                stage.model_copy(update={"gpu_memory_fraction": 0.3})
+                stage.model_copy(update={"gpu_memory_fraction": stage_memory_fraction})
                 if stage.name in member_names
                 else stage
             )
@@ -639,7 +713,7 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         topologies["default"] = module.EntryClass
     topologies.update(getattr(module, "Variants", None) or {})
     config, replicated_stages = config_with_one_replicated_process(
-        topologies[label], model
+        resolve_variant(topologies[label]), model
     )
     if config is None:
         pytest.skip("no tp_size=1 GPU process to replicate")
@@ -654,6 +728,16 @@ def test_every_model_routes_each_process_replica_to_its_own_gpu(
         with pytest.raises(ValueError, match="does not support process replicas"):
             prepare_pipeline_runtime(config)
         return
+    elif any(
+        stage.http_routes for stage in config.stages if stage.name in replicated_stages
+    ):
+        # A stage that serves its own HTTP routes keeps route state in one
+        # instance, so its process refuses replicas.
+        with pytest.raises(ValueError, match="serves http_routes"):
+            prepare_pipeline_runtime(config)
+        return
+    else:
+        pass
 
     prep = prepare_pipeline_runtime(config)
     try:

@@ -6,6 +6,8 @@ from __future__ import annotations
 import copy
 import fcntl
 import json
+import threading
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from benchmarks.duplex import reference_behavior, reference_core, reference_cust
 from benchmarks.duplex.reference_source import load_official_behavior, verify_reference
 from benchmarks.duplex.run_artifacts import file_sha256
 from benchmarks.eval import benchmark_duplex_reference as cli_module
-from tests.unit_test.benchmarks.test_duplex_reference import (
+from tests.unit_test.fixtures.duplex_fakes import (
     REF,
     StubBehavior,
     build_trees,
@@ -479,3 +481,151 @@ def test_custom_cli_requires_endpoint_and_independent_out(custom_run, tmp_path):
     argv[argv.index("--out") + 1] = str(link)
     with pytest.raises(SystemExit):
         cli_module.main([*argv, "--base-url", "http://localhost:8109/v1"])
+
+
+def test_custom_requests_are_in_flight_together(custom_run):
+    args, engines, paths = custom_run
+    args.concurrency = 3
+    all_sent = threading.Barrier(3, timeout=5)
+    in_flight, peak, lock = 0, 0, threading.Lock()
+
+    def transport(body, seed):
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        all_sent.wait()
+        with lock:
+            in_flight -= 1
+        return custom_response()
+
+    counts = reference_custom_judge.run_custom(args, engines, paths, transport)
+    assert counts == {"valid": 3, "variant_ineligible": 1}
+    assert peak == 3
+
+
+def give_each_sample_its_own_reply(engines: list[reference_core.Engine]) -> None:
+    for index, (engine, sid) in enumerate(
+        (engine, sid) for engine in engines for sid in sorted(engine.samples)
+    ):
+        sample = engine.sample_dir(sid)
+        transcript = sample / "output.json"
+        transcript.write_text(
+            json.dumps(
+                {
+                    "text": f"reply {index}",
+                    "chunks": [{"text": f"reply {index}", "timestamp": [1.3, 1.6]}],
+                }
+            )
+        )
+        receipt_path = sample / "receipts" / "asr-output.json"
+        receipt = reference_core.read_json(receipt_path)
+        receipt["transcript_sha256"] = file_sha256(transcript)
+        reference_core.atomic_write_json(receipt_path, receipt)
+
+
+def reply_index(body: dict[str, JsonValue]) -> int:
+    content = body["messages"][-1]["content"]
+    return next(index for index in range(4) if f"reply {index}" in content)
+
+
+def scripted_reply(body, seed):
+    index = reply_index(body)
+    if index == 1 and seed == 1:
+        raise ConnectionError("transient")
+    elif index == 3:
+        return custom_response(finish="length")
+    else:
+        return custom_response(
+            json.dumps({"behaviour": [reference_core.C_LABELS[index]]})
+        )
+
+
+def run_documents(out: Path) -> dict[str, JsonValue]:
+    timestamps = {
+        "started_at",
+        "finished_at",
+        "generated_at",
+        "updated_at",
+        "recorded_at",
+    }
+
+    def without_timestamps(value):
+        if isinstance(value, dict):
+            return {
+                key: without_timestamps(item)
+                for key, item in value.items()
+                if key not in timestamps
+            }
+        elif isinstance(value, list):
+            return [without_timestamps(item) for item in value]
+        else:
+            return value
+
+    documents = {}
+    for path in sorted(out.rglob("*.json")):
+        name = str(path.relative_to(out))
+        if name.startswith("identity/"):
+            name = name.rsplit("-", 1)[0]
+        else:
+            pass
+        documents[name] = without_timestamps(reference_core.read_json(path))
+    return documents
+
+
+def test_custom_concurrent_outputs_equal_sequential(custom_run, tmp_path):
+    args, engines, paths = custom_run
+    give_each_sample_its_own_reply(engines)
+    args.concurrency = 1
+    sequential_counts = reference_custom_judge.run_custom(
+        args, engines, paths, scripted_reply
+    )
+    all_sent = threading.Barrier(3, timeout=5)
+
+    def concurrent_reply(body, seed):
+        if seed == 1:
+            all_sent.wait()
+            time.sleep(0.05 * (3 - reply_index(body)))
+        else:
+            pass
+        return scripted_reply(body, seed)
+
+    sequential_out, args.out = args.out, tmp_path / "custom-concurrent"
+    args.concurrency = 3
+    counts = reference_custom_judge.run_custom(args, engines, paths, concurrent_reply)
+    assert counts == sequential_counts
+    assert sorted(counts.elements()) == [
+        "invalid_finish",
+        "valid",
+        "valid",
+        "variant_ineligible",
+    ]
+    documents, sequential = run_documents(args.out), run_documents(sequential_out)
+    assert documents["identity/custom-judge"]["concurrency"] == 3
+    assert sequential["identity/custom-judge"]["concurrency"] == 1
+    documents["identity/custom-judge"]["concurrency"] = 1
+    assert documents == sequential
+
+
+def test_custom_cli_concurrency_defaults_to_16_and_must_be_positive(custom_run, capsys):
+    args, _, _ = custom_run
+    assert args.concurrency == 16
+    argv = [
+        "custom-judge",
+        "--reference-source",
+        str(args.reference_source),
+        "--source-scores",
+        str(args.source_scores),
+        "--out",
+        str(args.out),
+        "--judge-config",
+        str(args.judge_config),
+        "--base-url",
+        "http://localhost:8109/v1",
+        "--concurrency",
+        "0",
+        *[f"--tree={tree}" for tree in args.tree],
+    ]
+    with pytest.raises(SystemExit):
+        cli_module.main(argv)
+    assert "--concurrency must be positive" in capsys.readouterr().err

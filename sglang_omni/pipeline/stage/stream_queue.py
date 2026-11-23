@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Per-request bounded queue for streaming between pipeline stages."""
+"""Per-request unbounded queues for streaming between pipeline stages."""
 from __future__ import annotations
 
 import asyncio
@@ -42,8 +42,7 @@ class StreamQueue:
         sq.close("req-1")             # cleanup
     """
 
-    def __init__(self, max_pending: int = 16):
-        self.max_pending = max_pending
+    def __init__(self) -> None:
         self.queues: dict[str, asyncio.Queue[StreamItem | StreamSignal]] = {}
         self.closed: set[str] = set()  # track closed request IDs for abort race
 

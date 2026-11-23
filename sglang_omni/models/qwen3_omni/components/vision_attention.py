@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3-Omni vision attention with platform rotary and shared patch counts."""
+"""Qwen3-Omni vision attention with platform rotary and packed variable-length attention."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 from transformers.processing_utils import Unpack
 from transformers.utils.generic import TransformersKwargs
 
+from sglang_omni.models.qwen3_omni.components.packed_attention import PackedAttention
 from sglang_omni.models.qwen3_omni.components.vision_compat import (
     VisionRotaryInputs,
     VisionSequenceMetadata,
@@ -25,6 +26,7 @@ class Qwen3OmniVisionAttention(nn.Module):
         attention: hf_modeling.Qwen3OmniMoeVisionAttention,
         *,
         joint_rope_kernel: JointRopeInplaceKernel | None,
+        packed_attention: PackedAttention | None,
     ) -> None:
         super().__init__()
         self.qkv: nn.Linear = attention.qkv
@@ -36,6 +38,7 @@ class Qwen3OmniVisionAttention(nn.Module):
         self.attention_dropout: float = attention.attention_dropout
         self.is_causal: bool = attention.is_causal
         self.joint_rope_kernel: JointRopeInplaceKernel | None = joint_rope_kernel
+        self.packed_attention: PackedAttention | None = packed_attention
         self.train(attention.training)
 
     def forward(
@@ -43,6 +46,7 @@ class Qwen3OmniVisionAttention(nn.Module):
         hidden_states: torch.Tensor,
         cu_seqlens: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | VisionRotaryInputs,
+        max_seqlen: int,
         *,
         sequence_metadata: VisionSequenceMetadata,
         **kwargs: Unpack[TransformersKwargs],
@@ -66,6 +70,22 @@ class Qwen3OmniVisionAttention(nn.Module):
                 is_neox=True,
             )
 
+        if self.packed_attention is not None:
+            attention_output = self.packed_attention(
+                query,
+                key,
+                value,
+                cu_seqlens,
+                bsz=1,
+                seq_len=sequence_patch_count,
+                softmax_scale=self.scaling,
+                forward_metadata=sequence_metadata.packed_attention_metadata,
+            )
+            return self.proj(
+                attention_output.reshape(sequence_patch_count, -1).contiguous()
+            )
+        else:
+            pass
         query = query.transpose(0, 1).unsqueeze(0)
         key = key.transpose(0, 1).unsqueeze(0)
         value = value.transpose(0, 1).unsqueeze(0)
@@ -84,8 +104,8 @@ class Qwen3OmniVisionAttention(nn.Module):
                 dropout=0.0 if not self.training else self.attention_dropout,
                 cu_seq_lens_q=cu_seqlens,
                 cu_seq_lens_k=cu_seqlens,
-                max_length_q=sequence_metadata.max_sequence_patch_count,
-                max_length_k=sequence_metadata.max_sequence_patch_count,
+                max_length_q=max_seqlen,
+                max_length_k=max_seqlen,
                 is_causal=False,
                 **kwargs,
             )

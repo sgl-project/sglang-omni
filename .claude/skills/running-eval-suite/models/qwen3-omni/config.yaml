@@ -207,7 +207,7 @@ rows:
       accuracy:    { path: "summary.accuracy", format: "{v:.2%}" }
       correct:     { paths: { v: "summary.correct", t: "summary.total_samples" }, format: "{v}/{t}" }
       failed:      { path: "summary.failed", format: "{v}" }
-      mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
+      unparseable: { path: "summary.unparseable", format: "{v}" }
 
   - id: mmmu-audio-c1-accuracy
     file: "benchmarks/eval/benchmark_omni_mmmu.py"
@@ -221,7 +221,7 @@ rows:
       accuracy:    { path: "summary.accuracy", format: "{v:.2%}" }
       correct:     { paths: { v: "summary.correct", t: "summary.total_samples" }, format: "{v}/{t}" }
       failed:      { path: "summary.failed", format: "{v}" }
-      mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
+      unparseable: { path: "summary.unparseable", format: "{v}" }
 
   - id: mmmu-no-audio-c8-speed
     file: "benchmarks/eval/benchmark_omni_mmmu.py"
@@ -395,7 +395,7 @@ rows:
       accuracy:    { path: "summary.accuracy", format: "{v:.2%}" }
       correct:     { paths: { v: "summary.correct", t: "summary.total_samples" }, format: "{v}/{t}" }
       failed:      { path: "summary.failed", format: "{v}" }
-      mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
+      unparseable: { path: "summary.unparseable", format: "{v}" }
 
   - id: videomme-thinker-only-c4-speed
     file: "benchmarks/eval/benchmark_omni_videomme.py"
@@ -434,7 +434,7 @@ rows:
       accuracy:    { path: "summary.accuracy", format: "{v:.2%}" }
       correct:     { paths: { v: "summary.correct", t: "summary.total_samples" }, format: "{v}/{t}" }
       failed:      { path: "summary.failed", format: "{v}" }
-      mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
+      unparseable: { path: "summary.unparseable", format: "{v}" }
 
   - id: videoamme-thinker-talker-ci50-c8-accuracy
     file: "benchmarks/eval/benchmark_omni_videoamme.py"
@@ -449,7 +449,7 @@ rows:
       accuracy:    { path: "summary.accuracy", format: "{v:.2%}" }
       correct:     { paths: { v: "summary.correct", t: "summary.total_samples" }, format: "{v}/{t}" }
       failed:      { path: "summary.failed", format: "{v}" }
-      mc_fallback: { path: "summary.mc_fallback", format: "{v}" }
+      unparseable: { path: "summary.unparseable", format: "{v}" }
 
   - id: videoamme-thinker-only-ci50-c8-speed
     file: "benchmarks/eval/benchmark_omni_videoamme.py"

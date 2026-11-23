@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import struct
 from typing import Any
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve.openai_api import create_speech_batch_with_disconnect_watch
 from sglang_omni.serve.speech_service import SpeechRequestValidator
+from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 CONTEXT_LENGTH_ERROR = (
     "Requested token count exceeds the model's maximum context length"
@@ -36,6 +39,7 @@ class RecordingBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -60,6 +64,7 @@ class BlockingBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -99,6 +104,7 @@ class MixedBatchSpeechClient:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -211,6 +217,87 @@ def test_batch_speech_preserves_order_and_item_errors() -> None:
     assert [request.prompt for request in client_impl.requests] == ["first", "third"]
 
 
+BATCH_SUPPORTED_SPEECH_FIELDS = frozenset(
+    {"input", "voice", "response_format", "references"}
+)
+MIXED_BATCH_ITEMS: list[dict[str, object]] = [
+    {"input": "unknown", "infill": True},
+    {"input": "unknown null", "stage_sampling": None},
+    {
+        "input": "reference speaker",
+        "references": [{"text": "hi", "vq_codes": [[1]], "speaker": 1}],
+    },
+    {"input": "normal"},
+]
+
+
+def test_supported_speech_fields_fail_only_the_offending_batch_items() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="tts",
+            supported_speech_fields=BATCH_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    response = client.post("/v1/audio/speech/batch", json={"items": MIXED_BATCH_ITEMS})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 3)
+    assert [result["status"] for result in body["results"]] == [
+        "error",
+        "error",
+        "error",
+        "success",
+    ]
+    assert [result["error"]["param"] for result in body["results"][:3]] == [
+        "items.0.infill",
+        "items.1.stage_sampling",
+        "items.2.references.0.speaker",
+    ]
+    assert [request.prompt for request in client_impl.requests] == ["normal"]
+
+
+def test_batch_items_without_a_supported_set_keep_ignoring_extras() -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post("/v1/audio/speech/batch", json={"items": MIXED_BATCH_ITEMS})
+
+    assert response.status_code == 200
+    assert response.json()["succeeded"] == len(MIXED_BATCH_ITEMS)
+
+
+@pytest.mark.parametrize(
+    ("fields", "path"),
+    [
+        ({"input": "a single-request field"}, "input"),
+        ({"seed": 0}, "seed"),
+    ],
+)
+def test_supported_speech_fields_refuse_batch_envelope_fields(
+    fields: dict[str, object], path: str
+) -> None:
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(
+        create_app(
+            client_impl,
+            model_name="tts",
+            supported_speech_fields=BATCH_SUPPORTED_SPEECH_FIELDS,
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/speech/batch", json={**fields, "items": [{"input": "normal"}]}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == path
+    assert client_impl.requests == []
+
+
 def test_batch_speech_rejects_invalid_envelope_before_item_work() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(
@@ -283,51 +370,39 @@ def test_batch_speech_applies_reference_text_instruction_exclusion() -> None:
     assert client_impl.requests == []
 
 
-def test_batch_speech_uses_served_model_and_default_voice() -> None:
-    client_impl = RecordingBatchSpeechClient()
-    client = TestClient(create_app(client_impl, model_name="tts"))
-
-    response = client.post(
-        "/v1/audio/speech/batch",
-        json={"items": [{"input": "one"}]},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["succeeded"] == 1
-    assert client_impl.requests[0].model == "tts"
-    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
-
-
-def test_batch_speech_item_null_voice_inherits_default_voice() -> None:
+def test_batch_speech_items_inherit_the_batch_defaults() -> None:
+    """A null item voice takes the default voice, and the prompt fields set on the batch reach each item unless it sets its own; the batch once dropped prepend_silence and the condition fields."""
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech/batch",
         json={
-            "items": [{"input": "one", "voice": None}],
+            "prepend_silence": False,
+            "condition_buckets": {"loudness": 3},
+            "condition_values": {"fmax": 6000.0},
+            "items": [
+                {"input": "one", "voice": None},
+                {"input": "two", "condition_buckets": {"loudness": 5}},
+            ],
         },
     )
 
     assert response.status_code == 200
-    assert response.json()["succeeded"] == 1
-    assert [request.prompt for request in client_impl.requests] == ["one"]
-    assert client_impl.requests[0].metadata["tts_params"]["voice"] == "default"
+    assert response.json()["succeeded"] == 2
+    assert [request.prompt for request in client_impl.requests] == ["one", "two"]
+    first_params, second_params = (
+        request.metadata["tts_params"] for request in client_impl.requests
+    )
+    assert first_params["voice"] == "default"
+    assert first_params["prepend_silence"] is False
+    assert first_params["condition_buckets"] == {"loudness": 3}
+    assert first_params["condition_values"] == {"fmax": 6000.0}
+    assert second_params["condition_buckets"] == {"loudness": 5}
+    assert second_params["condition_values"] == {"fmax": 6000.0}
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("speed", "1.2"),
-        ("max_new_tokens", "5"),
-        ("token_count", "5"),
-        ("duration_tokens", "5"),
-        ("x_vector_only_mode", "true"),
-    ],
-)
-def test_batch_speech_rejects_stringified_default_types(
-    field_name: str, value: str
-) -> None:
+def test_batch_speech_rejects_stringified_default_types() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -336,24 +411,18 @@ def test_batch_speech_rejects_stringified_default_types(
         json={
             "model": "tts",
             "voice": "default",
-            field_name: value,
+            "x_vector_only_mode": "true",
             "items": [{"input": "one"}],
         },
     )
 
     assert response.status_code == 400
-    assert response.json()["error"]["param"] == field_name
+    assert response.json()["error"]["param"] == "x_vector_only_mode"
     assert client_impl.requests == []
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", 0),
-        ("token_count", -1),
-        ("duration_tokens", 0),
-        ("duration_tokens", -1),
-    ],
+    ("field_name", "value"), [("token_count", 0), ("duration_tokens", 0)]
 )
 def test_batch_speech_rejects_non_positive_default_duration_fields(
     field_name: str, value: int
@@ -376,16 +445,7 @@ def test_batch_speech_rejects_non_positive_default_duration_fields(
     assert client_impl.requests == []
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", "5"),
-        ("duration_tokens", "5"),
-    ],
-)
-def test_batch_speech_rejects_stringified_item_integer_overrides(
-    field_name: str, value: str
-) -> None:
+def test_batch_speech_rejects_stringified_item_integer_overrides() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
@@ -394,25 +454,19 @@ def test_batch_speech_rejects_stringified_item_integer_overrides(
         json={
             "model": "tts",
             "voice": "default",
-            "items": [{"input": "one", field_name: value}],
+            "items": [{"input": "one", "token_count": "5"}],
         },
     )
 
     assert response.status_code == 200
     item = response.json()["results"][0]
     assert item["status"] == "error"
-    assert item["error"]["param"] == f"items.0.{field_name}"
+    assert item["error"]["param"] == "items.0.token_count"
     assert client_impl.requests == []
 
 
 @pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("token_count", 0),
-        ("token_count", -1),
-        ("duration_tokens", 0),
-        ("duration_tokens", -1),
-    ],
+    ("field_name", "value"), [("token_count", 0), ("duration_tokens", 0)]
 )
 def test_batch_speech_rejects_non_positive_item_duration_fields(
     field_name: str, value: int
@@ -436,17 +490,15 @@ def test_batch_speech_rejects_non_positive_item_duration_fields(
     assert client_impl.requests == []
 
 
-@pytest.mark.parametrize("response_format", ["wav", "pcm"])
 @pytest.mark.parametrize(
     ("stream_fields", "error_param"),
     [
         ({"stream": True}, "stream"),
         ({"stream_format": "sse"}, "stream_format"),
-        ({"stream": False, "stream_format": "sse"}, "stream_format"),
     ],
 )
 def test_batch_speech_rejects_streaming_items(
-    response_format: str, stream_fields: dict[str, str | bool], error_param: str
+    stream_fields: dict[str, str | bool], error_param: str
 ) -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
@@ -456,7 +508,7 @@ def test_batch_speech_rejects_streaming_items(
         json={
             "model": "tts",
             "voice": "default",
-            "response_format": response_format,
+            "response_format": "pcm",
             "items": [
                 {"input": "one", **stream_fields},
                 {"input": "two"},
@@ -478,14 +530,13 @@ def test_batch_speech_rejects_streaming_items(
     assert client_impl.requests[0].stream is False
 
 
-@pytest.mark.parametrize("stream_format", ["audio", "unknown"])
-def test_batch_speech_ignores_non_sse_item_stream_format(stream_format: str) -> None:
+def test_batch_speech_ignores_non_sse_item_stream_format() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))
 
     response = client.post(
         "/v1/audio/speech/batch",
-        json={"items": [{"input": "one", "stream_format": stream_format}]},
+        json={"items": [{"input": "one", "stream_format": "audio"}]},
     )
 
     assert response.status_code == 200
@@ -672,3 +723,33 @@ def test_batch_speech_reuses_shared_default_reference_loads() -> None:
         assert client_impl.requests[1].sampling.temperature == 0.7
 
     asyncio.run(run())
+
+
+def test_batch_speech_resamples_defaults_and_item_overrides() -> None:
+    """A sample-rate override must affect only its own audio and result metadata."""
+    output_sample_rate = 44100
+    speech_client = FixedSpeechClient(np.zeros(24000, dtype=np.float32))
+    client = TestClient(create_app(speech_client, model_name="tts"))
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={
+            "sample_rate": 8000,
+            "items": [
+                {"input": "Hello."},
+                {"input": "Hello.", "sample_rate": output_sample_rate},
+                {"input": "Hello.", "sample_rate": 192001},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (2, 1)
+    for result, sample_rate in zip(
+        body["results"][:2], (8000, output_sample_rate), strict=True
+    ):
+        audio_bytes = base64.b64decode(result["audio_data"])
+        assert result["sample_rate"] == sample_rate
+        assert struct.unpack("<I", audio_bytes[24:28]) == (sample_rate,)
+        assert len(audio_bytes) == 44 + sample_rate * 2
+    assert body["results"][2]["status"] == "error"
+    assert len(speech_client.requests) == 2

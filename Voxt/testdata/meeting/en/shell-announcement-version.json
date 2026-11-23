@@ -1,0 +1,12 @@
+{
+  "name": "shell-announcement-version",
+  "kind": "shell-announcement",
+  "shell_ui": {
+    "announcement_open": true
+  },
+  "shell_announcement": {
+    "title": "Voxt 2.1 is out",
+    "sub": "Jan 2 15:04 · Version 2.1.0",
+    "body": "Faster transcription and a new look for the cards."
+  }
+}

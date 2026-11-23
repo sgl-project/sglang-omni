@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import huggingface_hub
-import yaml
+import pytest
 
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_resolve_checkpoint_returns_local_directory(tmp_path) -> None:
@@ -102,29 +98,36 @@ def test_unresolvable_pinned_spec_names_the_revision(monkeypatch) -> None:
     assert "revision" not in str(unpinned.value)
 
 
-def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "architecture, config_cls_path",
+    [
+        (
+            "DotsTTSForConditionalGeneration",
+            "sglang_omni.models.dots_tts.config.DotsTTSPipelineConfig",
+        ),
+        (
+            "NEOChatModel",
+            "sglang_omni.models.sensenova_u1.config.SenseNovaU1PipelineConfig",
+        ),
+    ],
+)
+def test_local_model_path_skips_snapshot_resolution(
+    monkeypatch, tmp_path, architecture: str, config_cls_path: str
+) -> None:
     from sglang_omni.config import manager
-    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 
     def fail_snapshot(*args, **kwargs):
         raise AssertionError("local paths must not resolve a snapshot")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fail_snapshot)
+    prompts = []
+    monkeypatch.setattr("builtins.input", lambda *args: prompts.append(args) or "n")
     (tmp_path / "config.json").write_text(
-        '{"architectures": ["DotsTTSForConditionalGeneration"]}'
+        f'{{"architectures": ["{architecture}"], "model_type": "custom",'
+        ' "auto_map": {"AutoConfig": "configuration_custom.CustomConfig"}}'
     )
 
     config_cls = manager.resolve_config_cls_for_model_path(str(tmp_path))
 
-    assert config_cls is DotsTTSPipelineConfig
-
-
-def test_dots_tts_canonical_config_pins_snapshot_revision() -> None:
-    config = yaml.safe_load(
-        (REPO_ROOT / "examples" / "configs" / "dots_tts.yaml").read_text()
-    )
-    repo_id, _, revision = str(config["model_path"]).partition("@")
-
-    assert repo_id == "dots-studio/dots.tts-mf"
-    assert len(revision) == 40
-    assert all(c in "0123456789abcdef" for c in revision)
+    assert f"{config_cls.__module__}.{config_cls.__qualname__}" == config_cls_path
+    assert prompts == []

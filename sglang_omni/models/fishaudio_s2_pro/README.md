@@ -24,7 +24,7 @@ S2 uses a 3-stage pipeline:
 
 ```
 Text input ──► Preprocessing ──► SGLang AR Engine ──► DAC Vocoder ──► Audio output
-                 (CPU)              (GPU)               (GPU)
+                 (GPU)              (GPU)               (GPU)
 ```
 
 **Stage 1 — Preprocessing:** Tokenizes the input text into a Qwen3-style chat prompt. For voice cloning, it encodes the reference audio into VQ codes via the DAC codec and prepends them to the prompt as a system message.

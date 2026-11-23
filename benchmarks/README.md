@@ -18,8 +18,6 @@ benchmarks/
 └── results/        # (gitignored) evaluation outputs
 ```
 
-PersonaPlex reference comparisons: [evaluation setup and limits](eval/personaplex.md).
-
 ## Quick Start
 
 ```bash
@@ -235,6 +233,8 @@ raw summary.
 `--fingerprint` records the client environment and the server `/v1/models`
 identity.
 
+`--mixture 48+16,48+0,0+16 --generate-only` runs non streaming and streaming closed loop clients at the same time, one load after another on one server, and measures each load over a fixed window (`--mixture-duration-s`, default 120, after `--mixture-settle-s`, default 10). Each load writes `ns<NS>_s<S>[_r<k>]/speed_results.json` with per class `summary_by_class` and a `mixture` block, and `mixture_sweep.json` aggregates the loads. One load without `--generate-only` writes to `--output-dir` and then scores WER on every request in `generated.json`. See [the TTS benchmark runbook](../docs/developer_reference/tts_bench.md#mixed-streaming-and-non-streaming-load) for the fields and caveats.
+
 Chat-completion speed runs forward `--seed` on the request when it is set
 (MMSU, MMAU, and MMAR also use it to shuffle the dataset) and accept
 `--fingerprint`. `benchmark_omni_streaming_ttft.py` uses one `--seed` for
@@ -366,7 +366,9 @@ only records timestamps; every metric definition lives in
 
 - `first_partial_latency_s`: per segment, from the send time of the packet that
   reached the server's first refresh point (`segment_start + decode_interval_ms`)
-  to the first partial `transcription.segment`.
+  to the first partial `transcription.segment`. `segment_start` is the
+  `audio_start_ms` carried by the segment's own events, so segments opened by
+  a hard cut are measured from the cut.
 - `partial_interval_s`: gaps between consecutive partials of one segment.
 - `final_latency_s`: `input_audio_buffer.committed` to the segment's final event.
 - `done_to_completed_s`: `transcription.done` sent to `transcription.completed`.
@@ -440,18 +442,13 @@ The harness follows the session protocol merged in
 output epochs, `response.cancel` and the `session.closed.held` resource receipt.
 Use a VoiceChat server that includes this protocol and record its actual revision.
 
-This needs **two checkouts**, because neither side contains the other: the
-launcher `examples/run_nemotron_voicechat_duplex.py` exists only in the pinned
-target, and `benchmarks/duplex/` exists only here. Run the server from the
-target checkout and the harness from this one.
-
 ```bash
-# Terminal A — in the pinned target checkout: serve the native duplex endpoint
-python examples/run_nemotron_voicechat_duplex.py \
-    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
-    --serve --port 8097
+# Terminal A — serve the native duplex endpoint
+python -m sglang_omni.cli serve \
+    --model-path nvidia/NVIDIA-NemotronLabs-VoiceChat-11B --variant session \
+    --enable-realtime --port 8097
 
-# Terminal B — in this repository: record and grade the continuous case
+# Terminal B — record and grade the continuous case
 python -m benchmarks.eval.benchmark_duplex \
     --url ws://127.0.0.1:8097/v1/realtime \
     --audio caller-16k.wav \
@@ -522,9 +519,9 @@ time.
 
 A case that is healthy but did not exercise its scenario grades
 `not_exercised`, never `pass`: continuous duplex requires input sent between
-observed output audio packets. A second concurrent connection is refused with HTTP 503 and
-retried up to three times before any input is sent; that is admission behavior,
-not concurrency support.
+observed output audio packets.
+
+HTTP 503 and a nonfatal `admission_rejected` during initial `session.update` share one budget of `ADMISSION_RETRIES` retries after the initial attempt. The recorder backs off on the same socket for in-session rejection, and stops that wait if the session aborts. The session deadline covers retries and recording. The oracle checks the combined budget and update correlation before accepting recovery or classifying clean exhaustion.
 
 Declared limits, also written into `manifest.config`: explicit response
 cancellation, automatic speech interruption, concurrent native sessions, session
@@ -574,8 +571,8 @@ The recorder also saves append-send completion receipts in
 `input-send-receipts.json` and waits until the complete input duration has
 elapsed before sending EOS, so offline analysis can verify the input window.
 
-Start a compatible MiniCPM-o server using its full-duplex example configuration,
-then record all v1.5 pairs:
+Start a MiniCPM-o server with `--variant session --enable-realtime`, then record
+all v1.5 pairs:
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v15 record \
@@ -589,6 +586,24 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --output results/minicpmo-v15 --timeout 90
 ```
 
+`--concurrency N` processes up to N variants at once, including post-processing.
+Connections above the server's `max_sessions` may receive HTTP 503, and a
+pipeline whose stages cap their sessions answers `session.update` with a
+non-fatal `admission_rejected` instead; a session fails if admission retries
+are exhausted. Latencies recorded under load are not comparable to N=1, and
+`run.json` gains a `load` block (p50/p90/max initial delay, pacing violations,
+admission diagnostics).
+`load.input_pacing_violations` counts variants with measured out-of-tolerance
+appends; a session that sends no appends is excluded. The
+`load.variants_with_admission_denials` count includes each variant with recorded
+HTTP 503 admission denials once, even if a retry succeeds and the variant passes.
+Each case retains `admission_denials` for HTTP 503 events and `admission_rejections` for in-session events, including the final exhausted attempt. `load.variants_with_admission_rejections` counts sessions affected by in-session rejection, and `load.variants_with_admission_events` counts the union across both transports. `load.admission_denial_events` totals all rejection events, with `http_admission_denial_events` and `session_admission_rejection_events` preserving the breakdown.
+
+Clean exhaustion retains status `fail` with `failure_kind: admission_rejected`, separately from `failure_kind: runtime` for runtime, protocol or cleanup failures. `load.variants_rejected` and `load.variants_failed` count these outcomes separately. Audio that was never sent after clean rejection is not an artifact-integrity failure. Recovered sessions retain their rejection counts.
+
+Each variant saves replayed admission counts under `admission` before reconstructing audio, so an output reconstruction failure remains a runtime failure without erasing earlier rejection events. Serving reports count affected sessions and rejection events from the retained traces.
+Final outcomes remain in `summary.variants` and `load.variants_passed`.
+
 Pin the server and model revisions separately. Sending 80 ms transport packets
 does not change MiniCPM-o's one-second native processing unit. The v1.5 scoring
 commands below retain their documented measurement scope; adding a model
@@ -599,7 +614,7 @@ profile does not change their definitions or imply paper-identical evaluation.
 `benchmark_duplex_v15.py` records the four v1.5 overlap subsets against the same native
 endpoint; `benchmark_duplex_reference.py` scores them with the official ASR, timing and
 behavior code. Follow the
-[Full-Duplex-Bench v1.5 runbook](../docs/developer_reference/full_duplex_bench.md)
+[Full-Duplex Guide](../docs/developer_reference/full_duplex_guide.md)
 for setup, the copy-paste commands, measurement definitions and results.
 
 ## Full-Duplex-Bench v1.0 turn-taking tasks (VoiceChat)
@@ -614,17 +629,9 @@ endpoint, one `continuous` session per sample (no clean variant):
 | `synthetic_user_interruption` | user interruption | `interrupt.json` (span plus `context`/`interrupt` text) |
 | `icc_backchannel` | backchannel | none |
 
-It reuses the v1.5 runner, the 80 ms input pacing gate, output reconstruction and
-the `transcribe` step. Non-passing samples stay in the selected denominator, and
+It reuses the v1.5 runner, the 80 ms input pacing gate and output
+reconstruction. Non-passing samples stay in the selected denominator, and
 `record` exits 0 only when every selected sample passes. The dataset is acquired separately.
-
-v1.0 transcribes with Parakeet (`nvidia/parakeet-tdt-0.6b-v2`, the upstream
-ASR) by default. Whisper invents words such as "Thank you." on silent output
-and stretches their timestamps across the whole file, which turns a model that
-correctly stayed quiet into a takeover; pause handling is the task most hurt.
-Parakeet needs NeMo, so run `transcribe` in the scoring venv that the
-[v1.5 runbook](../docs/developer_reference/full_duplex_bench.md) sets up, with a local `.nemo`
-checkpoint. `--asr whisper` remains for diagnostics.
 
 ```bash
 python -m benchmarks.eval.benchmark_duplex_v10 record \
@@ -635,52 +642,72 @@ python -m benchmarks.eval.benchmark_duplex_v10 record \
     --model <served model path or ID> \
     --dataset-revision <release or archive digest> \
     --max-per-subset 2
-
-python -m benchmarks.eval.benchmark_duplex_v10 transcribe \
-    --run results/fdb10-run --output results/fdb10-asr \
-    --model-path /models/parakeet-tdt-0.6b-v2.nemo --device cuda
-
-python -m benchmarks.eval.benchmark_duplex_v10 score \
-    --run results/fdb10-run --output results/fdb10-score \
-    --transcripts results/fdb10-asr \
-    [--backchannel-reference icc_gt_distribution.json]
 ```
 
-`score` (`fdb-v10-synthetic-v4`) reports per-task takeover rate and latency
-from the ASR word timestamps. A takeover is output lasting at least 1 s or
-more than 3 words, as upstream. Every task only counts words starting inside
-the input duration, matching upstream's equal-length `output.wav`.
+`record --concurrency N` processes up to N variants at once, including
+post-processing. Connections above the server's capacity are retried on HTTP
+503 or a rejected `session.update`. Latencies recorded under load are not
+comparable to N=1, and `run.json` gains a `load` block with the same metric
+definitions as the v1.5 recorder above.
 
-- Pause handling: any takeover inside the input is a failure.
-- Turn taking and user interruption only count words starting after the user
-  turn or interruption ends; latency is the first such word's start minus that
-  end, reported only for takeovers. Silero VAD on the output gates both: a
-  turn-taking sample whose model is already speaking when the user turn ends is
-  `spoke_before_turn_end` (talking over the user is not a response), an
-  interruption with no model speech at its onset is `not_exercised`, and an
-  interruption the model talks straight through, one VAD segment from before
-  its onset to after its end, is `talked_through`. None of these enter the
-  takeover rate or latency; their counts are reported. A sample whose
-  output speech reaches the input end is flagged `right_censored`.
-- Backchannel runs Silero VAD on the output. It reports backchannel rate and,
-  with `--backchannel-reference` (upstream `icc_gt_distribution.json`), the
-  Jensen-Shannon distance of 0.2 s binned backchannel timing to the human
-  reference; 1 when the model produced none. Without the reference, timing is
-  unscored.
-
-Selected samples without a record count as `missing`; invalid, unqualified or
-untranscribed samples are listed with an `unscored_reason`. This is not the
-upstream evaluation code. Upstream has no speaking gates: a model that talks
-through the user turn or the interruption scores a near-zero latency there,
-and every interruption sample counts. The backchannel classifier differs from upstream
-`eval_backchannel.py`: segments after the input end are ignored and others are
-clipped to it, any takeover segment marks the sample (upstream keeps the
-last segment's verdict and stops at the first segment over 3 s), and a takeover
-segment is not also counted as a backchannel (upstream adds every segment up to
-3 s to the backchannel list, takeover or not). Interruption
-relevance (the upstream GPT-4 rating) is not scored.
+Scoring runs on a reference tree: `reference-export`, `reference-asr` with the
+pinned Parakeet checkpoint, then `reference-evaluate` for the official numbers
+and `unified-score` for the metrics in
+[full_duplex_guide.md](../docs/developer_reference/full_duplex_guide.md#full-duplex-bench-v10-unified-metrics).
+The [runbook](../docs/developer_reference/full_duplex_guide.md) runs all of them.
 
 Both `*_seedtts.py` scripts also support speech quality and similarity evaluation via UTMOS and WavLM speaker verification metrics. Running with `--utmos-only` or `--similarity-only` loads the respective pre-trained predictor and computes scores on the previously generated audio in the output directory without requiring the TTS/ASR servers to be running.
+
+## Duplex-MPE (Multi-Party Full-Duplex Evaluation)
+
+[Duplex-MPE](https://arxiv.org/abs/2609.31948) ([Project Page](https://step-out.github.io/Duplex-MPE-Page/) | [GitHub](https://github.com/step-out/Duplex-MPE) | [Hugging Face](https://huggingface.co/datasets/ChengqianMa/Duplex-MPE)) evaluates selective participation of a full-duplex speech assistant (`Aria`) inside continuous 3–4 human multi-party conversations over `/v1/realtime`. Unlike dyadic turn-taking suites or static-prefix chat benchmarks, Duplex-MPE streams multi-speaker conversations in closed loop: after the single direct user request (`T`) in each scenario, the client feeds silence until causal Silero VAD detects fresh speech onset within `5.0 s` and `2.0 s` of confirmed endpoint silence (capped at `60.0 s`) before advancing to the next human turn.
+
+The full dataset pins Hugging Face revision `6d5f59fab1237c14ee8229ea36f111b7423b0fe6` (`2,000` paired `explicit` and `implicit` scenarios = `4,000` streams, `31,025` mono WAV clips). A deterministic `20`-pair (`40`-stream) smoke subset is available via `duplex-mpe-mini`:
+
+```bash
+# 20-pair (40-scenario) smoke subset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini --local-dir benchmarks/cache/duplex_mpe_mini
+
+# Full 2,000-pair (4,000-scenario) benchmark
+python -m benchmarks.dataset.prepare --dataset duplex-mpe --local-dir benchmarks/cache/duplex_mpe
+```
+
+`benchmark_duplex_mpe.py` inspects `/v1/realtime/capabilities` to negotiate native full-duplex (`MiniCPM-o 4.5` at 16 kHz in / 24 kHz out, `PersonaPlex` at 24 kHz in / 24 kHz out, `Nemotron VoiceChat` at 16 kHz in / 22.05 kHz out) as well as `turn_based` (`Qwen3-Omni`, `Streaming Cascade`) and `legacy` sessions automatically. Following Section 3.4 of the Duplex-MPE paper, scored full-duplex evaluation applies only to native full-duplex endpoints (`evaluation_mode="scored_full_duplex"`); turn-based and legacy runs execute as separate unscored probes (`evaluation_mode="unscored_turn_based_probe"`), reporting `interaction` and `turn_detection` while omitting `TR` and `AY`. Each scenario opens with the spoken duty preamble (`audio/aria_duty_preamble.wav`), so models that reject text `session.instructions` remain directly comparable.
+
+```bash
+# 1. Serve the /v1/realtime model under test (e.g., MiniCPM-o 4.5 on port 8000)
+python -m sglang_omni.cli serve \
+    --model-path openbmb/MiniCPM-o-4_5 --variant session \
+    --enable-realtime --port 8000
+
+# 2. Serve Qwen3-ASR-1.7B on port 8001 for window transcription
+python -m sglang_omni.cli serve \
+    --model-path Qwen/Qwen3-ASR-1.7B --port 8001
+
+# 3. Configure an OpenAI-compatible semantic judge (e.g., SGLang Qwen3.8-27B on port 30000)
+#    See benchmarks/configs/duplex_mpe_judge.example.json (declares model, optional model_revision, enable_thinking, and per-task decoding; stores api_key_env name, never raw keys)
+
+# 4. Run end-to-end on the 40-scenario smoke set (or omit --mini for all 4,000 scenarios)
+python -m benchmarks.eval.benchmark_duplex_mpe \
+    --dataset-root benchmarks/cache/duplex_mpe_mini \
+    --output-dir benchmarks/results/duplex_mpe_minicpmo \
+    --mini \
+    --model openbmb/MiniCPM-o-4_5 \
+    --base-url http://127.0.0.1:8000 \
+    --asr-base-url http://127.0.0.1:8001 \
+    --judge-config benchmarks/configs/duplex_mpe_judge.example.json
+```
+
+Phases can also run independently via `--phase {generate,asr,judge,score}` against the same `--output-dir` so model, ASR, and judge servers do not need to hold GPU memory simultaneously (`generate` writes `report.json`, `asr` writes `transcribed.json`, `judge` writes `labels.json`, and `--phase all` or `--phase score` emits `RESULTS.md` and `duplex_mpe_results.json` with selected/completed/missing coverage counts and a partial-run banner whenever coverage is incomplete, exiting non-zero whenever any scenario or semantic task fails or remains incomplete). Scoring covers the four capabilities — `TR` (`fresh_onset_response_rate`), `AA` (`conditional_answer_accuracy` and `unconditional_answer_accuracy`), `SP` (`silence_preservation` across `N1`–`N3` bystander turns), and `AY` (`answering_window_yield` when another human resolves `N4_Q` via `N4_R`) — alongside coverage diagnostics `RP` (`response_presence`) and `WR` (`window_response`). The public dataset is released under CC BY 4.0; cite:
+
+```bibtex
+@article{ma2026duplexmpe,
+  title   = {Duplex-MPE: Benchmarking Multi-Party Interaction in Full-Duplex Dialogue},
+  author  = {Ma, Chengqian and Feng, Wenhao and Jin, Weixuan and Dai, Gaole and Xie, Tianyu and Ma, Yuexiao and Kang, Zhaolu and Zhao, Xiangyu and Zheng, Xiawu and Chao, Fei},
+  journal = {arXiv preprint arXiv:2609.31948},
+  year    = {2026}
+}
+```
 
 ## SocialOmni
 
@@ -704,7 +731,7 @@ python -m sglang_omni.cli serve \
 
 The example sets a 65,536-token context limit for both preprocessing and model
 execution. Adjust it and the GPU configuration for the selected videos and
-available hardware; see [Qwen3-Omni configuration](../docs/basic_usage/qwen3_omni.md).
+available hardware; see [Qwen3-Omni configuration](../docs/cookbook/qwen3_omni.md).
 Run the benchmark on the server host or use a shared filesystem with identical
 media paths. `--base-url` accepts the server root, such as
 `http://localhost:8000`, or the same address ending in `/v1` or
@@ -910,6 +937,8 @@ python -m benchmarks.dataset.prepare --dataset videomme-ci-50  # Video-MME CI su
 python -m benchmarks.dataset.prepare --dataset videomme      # full Video-MME
 python -m benchmarks.dataset.prepare --dataset videoamme-ci-50  # Video-AMME CI subset
 python -m benchmarks.dataset.prepare --dataset socialomni --local-dir /path/to/socialomni
+python -m benchmarks.dataset.prepare --dataset duplex-mpe       # full Duplex-MPE (2,000 pairs / 4,000 streams)
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini  # 20-pair (40-stream) Duplex-MPE smoke subset
 ```
 
 Most datasets are pre-warmed into the default Hugging Face cache via

@@ -10,10 +10,7 @@ from numbers import Integral
 from typing import TYPE_CHECKING, ClassVar, Generic
 
 import torch
-from sglang.srt.arg_groups.model_override_base import (
-    attention_backends_of,
-    resolved_view,
-)
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from typing_extensions import TypedDict
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -21,10 +18,10 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
-    FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     GenerationStageDefaults,
     build_generation_batch_overrides,
+    falls_back_to_breakable_prefill,
     get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
     validate_generation_batch_policy,
@@ -38,10 +35,6 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
-    from sglang.srt.hardware_backend.mlx.model_runner_stub import (
-        _DummyModel as MlxStubModel,
-    )
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
     from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
     from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
@@ -84,9 +77,15 @@ class GenerationDefaults(GenerationBatchSizeCaps):
 
 
 class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
+    enable_plain_fallback: bool
     stream_output_builder: StreamOutputBuilder[RequestDataT] | None
     enable_async_decode: bool
     async_decode_min_batch_size: int
+    prefill_drain_below_batch_size: int | None
+    async_decode_resolve_before_prefill: bool
+    async_prefill: bool
+    should_run_top_priority_stream: bool
+    request_build_admission_wait_s: float
     prefill_coalesce_requests: int
     prefill_coalesce_wait_ms: float
     prefill_coalesce_when_idle: bool
@@ -94,6 +93,7 @@ class SchedulerExtras(TypedDict, Generic[RequestDataT], total=False):
     prefill_coalesce_after_builds_during_decode: bool
     request_build_max_workers: int
     request_build_max_pending: int | None
+    early_request_builds: bool
 
 
 class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
@@ -107,6 +107,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
 
     model_name: str
     context_length: int
+    # The operator's overrides, to tell a set value from one the policy derived.
+    server_args_overrides: Mapping[str, object]
     model_arch_override: str | None = None
     supports_context_length_override: ClassVar[bool] = False
     # Set True only by builders whose model has adopted the breakable prefill
@@ -159,6 +161,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             server_args_overrides["disable_cuda_graph"] = True
         else:
             pass
+        self.server_args_overrides = server_args_overrides or {}
 
         requested_context_length = (
             server_args_overrides.get("context_length")
@@ -231,13 +234,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             # note (luojiaxuan): full is only the model's default here, so a
             # prefill attention backend that cannot capture it keeps the
             # breakable graph; an operator's explicit full fails validation.
-            attention_backend = attention_backends_of(resolved_view(server_args))[0]
-            if attention_backend not in FULL_PREFILL_ATTENTION_BACKENDS:
-                logger.info(
-                    f"{self.model_name}: prefill attention backend "
-                    f"{attention_backend!r} cannot capture a full prefill graph; "
-                    "using the breakable prefill graph"
-                )
+            if falls_back_to_breakable_prefill(server_args, self.model_name):
                 overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
                 server_args = resolve_server_args()
             else:
@@ -264,7 +261,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         else:
             pass
 
-        def before_memory_pool(model_worker: ModelWorker | MlxTpModelWorker) -> None:
+        def before_memory_pool(model_worker: ModelWorker) -> None:
             self.before_memory_pool(
                 model_worker=model_worker,
                 checkpoint_dir=checkpoint_dir,
@@ -401,7 +398,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         del server_args
 
     def validate_after_model_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
@@ -417,7 +414,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def before_memory_pool(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -429,7 +426,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -437,23 +434,21 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     ) -> None:
         del model_worker, checkpoint_dir, device, gpu_id, server_args
 
-    def get_model_buffer_bs(self, model: torch.nn.Module | MlxStubModel) -> int | None:
+    def get_model_buffer_bs(self, model: torch.nn.Module) -> int | None:
         del model
         return None
 
-    def compile_model(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
-    ) -> None:
+    def compile_model(self, model: torch.nn.Module, server_args: ServerArgs) -> None:
         del model, server_args
 
     def post_cuda_graph_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
     def setup_model_resources(
         self,
-        model: torch.nn.Module | MlxStubModel,
+        model: torch.nn.Module,
         server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
@@ -461,20 +456,20 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         del model, server_args, generation_cuda_graph_enabled
 
     def setup_runtime_resources(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         del model, server_args
 
     @abstractmethod
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         raise NotImplementedError
 
     @abstractmethod
-    def make_adapters(self, model: torch.nn.Module | MlxStubModel) -> tuple[
+    def make_adapters(self, model: torch.nn.Module) -> tuple[
         Callable[[StagePayload], RequestDataT | DeferredAdmission[RequestDataT]] | None,
         Callable[[RequestDataT], StagePayload] | None,
     ]:
@@ -483,8 +478,8 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def build_runtime(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
-        model: torch.nn.Module | MlxStubModel,
+        model_worker: ModelWorker,
+        model: torch.nn.Module,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
@@ -527,7 +522,7 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
     def make_scheduler(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -585,7 +580,7 @@ class AsrEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         from sglang_omni.model_runner.base import ModelRunner
@@ -600,7 +595,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -611,7 +606,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     @abstractmethod
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> ModelRunner[RequestDataT]:
         raise NotImplementedError
@@ -623,7 +618,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
         del server_args
 
     def validate_after_model_setup(
-        self, model: torch.nn.Module | MlxStubModel, server_args: ServerArgs
+        self, model: torch.nn.Module, server_args: ServerArgs
     ) -> None:
         validate_generation_batch_policy(
             model_name=self.model_name,
@@ -635,7 +630,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def make_scheduler(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,
         token_to_kv_pool_allocator: BaseTokenToKVPoolAllocator,
@@ -664,8 +659,8 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder[RequestDataT]):
     def build_runtime(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
-        model: torch.nn.Module | MlxStubModel,
+        model_worker: ModelWorker,
+        model: torch.nn.Module,
         output_proc: SGLangOutputProcessor,
         tree_cache: BasePrefixCache,
         req_to_token_pool: ReqToTokenPool,

@@ -5,7 +5,9 @@ from __future__ import annotations
 import queue
 from array import array
 from dataclasses import replace
+from unittest.mock import Mock
 
+import pytest
 import torch
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
@@ -18,6 +20,7 @@ from sglang_omni.proto import (
     OmniRequest,
     StagePayload,
 )
+from sglang_omni.proto.session import SessionIdentity, SessionOperation
 from sglang_omni.scheduling.pd_utils import (
     DecodeContinuation,
     DecodeKVReceiver,
@@ -172,7 +175,8 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     assert list(req.origin_input_ids) == [10, 11, 12]
     assert list(req.output_ids) == [42]
     assert req.sampling_params.stop_token_ids == {2}
-    assert req.prefix_indices.tolist() == [7, 8, 9]
+    assert req.prefix_len == 3
+    assert req.extend_end == 3
     assert req.kv.req_pool_idx is not None
     assert req_to_token_pool.req_to_token[req.kv.req_pool_idx, :3].tolist() == [7, 8, 9]
     assert req.kv.kv_committed_len == 3
@@ -208,9 +212,10 @@ def test_continuation_preserves_the_hidden_state_mode() -> None:
 
 def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
     source = prefill_req(custom_params={"segment_timestamps": True})
+    source.sampling_params.custom_params["__req__"] = source
     req = rebuilt_req(source)
     assert req.sampling_params.custom_params["segment_timestamps"] is True
-    assert req.sampling_params.custom_params["__req__"] is req
+    assert "__req__" not in req.sampling_params.custom_params
     assert source.sampling_params.custom_params["__req__"] is source
 
 
@@ -240,3 +245,57 @@ def test_prefill_defers_first_token_stop_policy_to_decode() -> None:
     assert req.sampling_params.max_new_tokens == original_max
     req.update_finish_state()
     assert req.finished()
+
+
+@pytest.mark.parametrize("priority", [None, -7, 0, 7])
+def test_continuation_preserves_request_priority(priority: int | None) -> None:
+    request = prefill_req()
+    request.priority = priority
+    assert rebuilt_req(request).priority == priority
+
+
+@pytest.mark.parametrize("priority", [True, 1.5, "7"])
+def test_continuation_rejects_invalid_priority(priority: object) -> None:
+    request = prefill_req()
+    request.priority = priority
+    with pytest.raises(ValueError, match="priority"):
+        continuation_from_req(request, "transfer", state_builder)
+
+
+def test_pd_rejects_retained_session_metadata() -> None:
+    request = prefill_req()
+    request.omni_data.stage_payload.request.metadata["omni_session"] = SessionOperation(
+        operation="open",
+        session_identity=SessionIdentity("session"),
+        stages=("thinker",),
+    ).to_dict()
+    with pytest.raises(NotImplementedError, match="session"):
+        continuation_from_req(request, "transfer", state_builder)
+
+
+def test_continuation_rejects_native_session_without_metadata() -> None:
+    request = prefill_req()
+    request.session = Mock()
+    with pytest.raises(NotImplementedError, match="retained streaming-session"):
+        continuation_from_req(request, "transfer-1", state_builder)
+
+
+@pytest.mark.parametrize(
+    "rollback_parameter",
+    ["_asr_streaming_rollback_tokens", "_asr_streaming_rollback_chars"],
+)
+def test_continuation_allows_asr_refresh_without_retained_kv(
+    rollback_parameter: str,
+) -> None:
+    request = prefill_req()
+    parameters = request.omni_data.stage_payload.request.params
+    parameters.update(
+        {
+            "_asr_streaming": True,
+            "_asr_streaming_prefix_text": "Previously recognized text",
+            rollback_parameter: 5,
+        }
+    )
+    restored = rebuilt_req(request)
+    assert restored.session is None
+    assert restored.omni_data.stage_payload.request.params == parameters

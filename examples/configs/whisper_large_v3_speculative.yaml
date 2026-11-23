@@ -1,0 +1,10 @@
+config_cls: WhisperASRPipelineConfig
+name: whisper-large-v3-speculative
+model_path: openai/whisper-large-v3
+
+stages:
+  asr:
+    engine:
+      speculative_algorithm: STANDALONE
+      speculative_draft_model_path: wilsonzheng0327/Whisper-large-v3-distil-draft
+      speculative_num_steps: 7

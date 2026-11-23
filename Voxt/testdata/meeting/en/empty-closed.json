@@ -1,0 +1,47 @@
+{
+  "name": "empty-closed",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": false,
+    "step": 0,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Welcome to Voxt",
+    "subtitle": "Speak in any app and get text where your cursor is: transcribe, translate and rewrite. There are a few short steps, and you can skip any of them.",
+    "recording": false,
+    "welcome": {
+      "legacy_available": false,
+      "legacy": {
+        "done": false,
+        "failed": "",
+        "imported": null,
+        "skipped": null,
+        "todos": null
+      }
+    },
+    "footer": {
+      "mode": "welcome",
+      "busy": false,
+      "back": false,
+      "continue_label": "Get started",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

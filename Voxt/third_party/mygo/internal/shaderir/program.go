@@ -1,0 +1,610 @@
+// Copyright 2020 The Ebiten Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Modified by the MyGo contributors: uint and uvecN, and dynamic loops.
+
+// Package shaderir offers intermediate representation for shader programs,
+// forked from Ebitengine with package shader (see its documentation).
+package shaderir
+
+import (
+	"bytes"
+	"encoding/base32"
+	"fmt"
+	"go/constant"
+	"go/token"
+	"hash/fnv"
+	"slices"
+	"strings"
+)
+
+type SourceID [16]byte
+
+func CalcSourceID(source []byte) SourceID {
+	h := fnv.New128a()
+	_, _ = h.Write(bytes.TrimSpace(source))
+
+	var hash SourceID
+	h.Sum(hash[:0])
+	return hash
+}
+
+func (s SourceID) String() string {
+	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(s[:]))
+}
+
+// ParseSourceID parses a base32 string returned by [SourceID.String] back into a SourceID.
+func ParseSourceID(str string) (SourceID, error) {
+	bs, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(str))
+	if err != nil {
+		return SourceID{}, err
+	}
+	var id SourceID
+	if len(bs) != len(id) {
+		return SourceID{}, fmt.Errorf("shaderir: invalid SourceID string: %q", str)
+	}
+	copy(id[:], bs)
+	return id, nil
+}
+
+type Program struct {
+	UniformNames []string
+	Uniforms     []Type
+	TextureCount int
+	Attributes   []Type
+	Varyings     []Type
+	Funcs        []Func
+	VertexFunc   VertexFunc
+	FragmentFunc FragmentFunc
+
+	SourceID SourceID
+
+	// FragmentSource is the Kage source the program was compiled from, or nil if it was not built from
+	// Kage source.
+	FragmentSource []byte
+
+	uniformFactors []uint32
+}
+
+type Func struct {
+	Index     int
+	InParams  []Type
+	OutParams []Type
+	Return    Type
+	Block     *Block
+}
+
+// VertexFunc takes pseudo params, and the number is len(attributes) + len(varyings) + 1.
+// If 0 <= index < len(attributes), the params are in-params and represent attribute variables.
+// If index == len(attributes), the param is an out-param and represents the position in vec4 (gl_Position in GLSL)
+// If len(attributes) + 1 <= index < len(attributes) + len(varyings) + 1, the params are out-params and represent
+// varying variables.
+type VertexFunc struct {
+	Block *Block
+}
+
+// FragmentFunc takes pseudo params, and the number is len(varyings) + 1.
+// If index == 0, the param represents the coordinate of the fragment (gl_FragCoord in GLSL).
+// If 0 < index <= len(varyings), the param represents (index-1)th varying variable.
+type FragmentFunc struct {
+	Block *Block
+}
+
+type Block struct {
+	LocalVars           []Type
+	LocalVarIndexOffset int
+	Stmts               []Stmt
+}
+
+// Stmt is a statement. A For loop's counter starts from ForInit and runs
+// while it compares with ForEnd as ForOp says, ForDelta at a time; where
+// the compiler made it, Exprs holds the start and the end as expressions,
+// which need not be constants (MyGo's), and ForInit and ForEnd are nil
+// for those that are not.
+type Stmt struct {
+	Type        StmtType
+	Exprs       []Expr
+	Blocks      []*Block
+	ForVarType  Type
+	ForVarIndex int
+	ForInit     constant.Value
+	ForEnd      constant.Value
+	ForOp       Op
+	ForDelta    constant.Value
+	InitIndex   int
+}
+
+type StmtType int
+
+const (
+	ExprStmt StmtType = iota
+	BlockStmt
+	Assign
+	Init
+	If
+	For
+	Continue
+	Break
+	Return
+	Discard
+)
+
+type Expr struct {
+	Type        ExprType
+	Exprs       []Expr
+	Const       constant.Value
+	BuiltinFunc BuiltinFunc
+	// Swizzling is spelled in the xyzw set regardless of [Expr.SwizzlingSet].
+	Swizzling    string
+	SwizzlingSet SwizzlingSet
+	Index        int
+	Op           Op
+
+	// Unsigned marks an expression of type uint or uvecN, as the compiler
+	// infers it: a constant of it is written as one (1u), which GLSL ES
+	// needs, as it converts no int to uint.
+	Unsigned bool
+
+	// Untyped marks an integer expression that is not a constant but takes
+	// the type of its context, as in Go: a shift of an untyped constant by
+	// a count that is not one, and operations of such shifts with untyped
+	// constants. Its type is int where the context gives none.
+	Untyped bool
+}
+
+type ExprType int
+
+const (
+	Blank ExprType = iota
+	NumberExpr
+	UniformVariable
+	TextureVariable
+	LocalVariable
+	StructMember
+	BuiltinFuncExpr
+	SwizzlingExpr
+	FunctionExpr
+	Unary
+	Binary
+	Selection
+	Call
+	FieldSelector
+	Index
+)
+
+type Op int
+
+const (
+	Add Op = iota
+	Sub
+	NotOp
+	ComplementOp
+	ComponentWiseMul
+	MatrixMul
+	Div
+	ModOp
+	LeftShift
+	RightShift
+	LessThanOp
+	LessThanEqualOp
+	GreaterThanOp
+	GreaterThanEqualOp
+	EqualOp
+	NotEqualOp
+	VectorEqualOp
+	VectorNotEqualOp
+	And
+	AndNot
+	Xor
+	Or
+	AndAnd
+	OrOr
+)
+
+func OpFromToken(t token.Token, lhs, rhs Type) (Op, bool) {
+	switch t {
+	case token.ADD:
+		return Add, true
+	case token.SUB:
+		return Sub, true
+	case token.NOT:
+		return NotOp, true
+	case token.MUL:
+		if lhs.IsMatrix() || rhs.IsMatrix() {
+			return MatrixMul, true
+		}
+		return ComponentWiseMul, true
+	case token.QUO:
+		return Div, true
+	case token.QUO_ASSIGN:
+		// QUO_ASSIGN indicates an integer division.
+		// https://pkg.go.dev/go/constant/#BinaryOp
+		return Div, true
+	case token.REM:
+		return ModOp, true
+	case token.SHL:
+		return LeftShift, true
+	case token.SHR:
+		return RightShift, true
+	case token.LSS:
+		return LessThanOp, true
+	case token.LEQ:
+		return LessThanEqualOp, true
+	case token.GTR:
+		return GreaterThanOp, true
+	case token.GEQ:
+		return GreaterThanEqualOp, true
+	case token.EQL:
+		if lhs.IsFloatVector() || lhs.IsIntegerVector() || rhs.IsFloatVector() || rhs.IsIntegerVector() {
+			return VectorEqualOp, true
+		}
+		return EqualOp, true
+	case token.NEQ:
+		if lhs.IsFloatVector() || lhs.IsIntegerVector() || rhs.IsFloatVector() || rhs.IsIntegerVector() {
+			return VectorNotEqualOp, true
+		}
+		return NotEqualOp, true
+	case token.AND:
+		return And, true
+	case token.AND_NOT:
+		return AndNot, true
+	case token.XOR:
+		return Xor, true
+	case token.OR:
+		return Or, true
+	case token.LAND:
+		return AndAnd, true
+	case token.LOR:
+		return OrOr, true
+	}
+	return 0, false
+}
+
+type BuiltinFunc string
+
+const (
+	Len         BuiltinFunc = "len"
+	Cap         BuiltinFunc = "cap"
+	BoolF       BuiltinFunc = "bool"
+	IntF        BuiltinFunc = "int"
+	FloatF      BuiltinFunc = "float"
+	Vec2F       BuiltinFunc = "vec2"
+	Vec3F       BuiltinFunc = "vec3"
+	Vec4F       BuiltinFunc = "vec4"
+	IVec2F      BuiltinFunc = "ivec2"
+	IVec3F      BuiltinFunc = "ivec3"
+	IVec4F      BuiltinFunc = "ivec4"
+	UintF       BuiltinFunc = "uint"
+	UVec2F      BuiltinFunc = "uvec2"
+	UVec3F      BuiltinFunc = "uvec3"
+	UVec4F      BuiltinFunc = "uvec4"
+	Mat2F       BuiltinFunc = "mat2"
+	Mat3F       BuiltinFunc = "mat3"
+	Mat4F       BuiltinFunc = "mat4"
+	Radians     BuiltinFunc = "radians" // This function is not used yet (#2253)
+	Degrees     BuiltinFunc = "degrees" // This function is not used yet (#2253)
+	Sin         BuiltinFunc = "sin"
+	Cos         BuiltinFunc = "cos"
+	Tan         BuiltinFunc = "tan"
+	Asin        BuiltinFunc = "asin"
+	Acos        BuiltinFunc = "acos"
+	Atan        BuiltinFunc = "atan"
+	Atan2       BuiltinFunc = "atan2"
+	Pow         BuiltinFunc = "pow"
+	Exp         BuiltinFunc = "exp"
+	Log         BuiltinFunc = "log"
+	Exp2        BuiltinFunc = "exp2"
+	Log2        BuiltinFunc = "log2"
+	Sqrt        BuiltinFunc = "sqrt"
+	Inversesqrt BuiltinFunc = "inversesqrt"
+	Abs         BuiltinFunc = "abs"
+	Sign        BuiltinFunc = "sign"
+	Floor       BuiltinFunc = "floor"
+	Ceil        BuiltinFunc = "ceil"
+	Fract       BuiltinFunc = "fract"
+	Mod         BuiltinFunc = "mod"
+	Min         BuiltinFunc = "min"
+	Max         BuiltinFunc = "max"
+	Clamp       BuiltinFunc = "clamp"
+	Mix         BuiltinFunc = "mix"
+	Step        BuiltinFunc = "step"
+	Smoothstep  BuiltinFunc = "smoothstep"
+	Length      BuiltinFunc = "length"
+	Distance    BuiltinFunc = "distance"
+	Dot         BuiltinFunc = "dot"
+	Cross       BuiltinFunc = "cross"
+	Normalize   BuiltinFunc = "normalize"
+	Faceforward BuiltinFunc = "faceforward"
+	Reflect     BuiltinFunc = "reflect"
+	Refract     BuiltinFunc = "refract"
+	Transpose   BuiltinFunc = "transpose"
+	Dfdx        BuiltinFunc = "dfdx"
+	Dfdy        BuiltinFunc = "dfdy"
+	Fwidth      BuiltinFunc = "fwidth"
+	DiscardF    BuiltinFunc = "discard"
+	TexelAt     BuiltinFunc = "__texelAt"
+	FrontFacing BuiltinFunc = "frontfacing"
+)
+
+func ParseBuiltinFunc(str string) (BuiltinFunc, bool) {
+	switch BuiltinFunc(str) {
+	case Len,
+		Cap,
+		BoolF,
+		IntF,
+		FloatF,
+		Vec2F,
+		Vec3F,
+		Vec4F,
+		IVec2F,
+		IVec3F,
+		IVec4F,
+		UintF,
+		UVec2F,
+		UVec3F,
+		UVec4F,
+		Mat2F,
+		Mat3F,
+		Mat4F,
+		Sin,
+		Cos,
+		Tan,
+		Asin,
+		Acos,
+		Atan,
+		Atan2,
+		Pow,
+		Exp,
+		Log,
+		Exp2,
+		Log2,
+		Sqrt,
+		Inversesqrt,
+		Abs,
+		Sign,
+		Floor,
+		Ceil,
+		Fract,
+		Mod,
+		Min,
+		Max,
+		Clamp,
+		Mix,
+		Step,
+		Smoothstep,
+		Length,
+		Distance,
+		Dot,
+		Cross,
+		Normalize,
+		Faceforward,
+		Reflect,
+		Refract,
+		Transpose,
+		Dfdx,
+		Dfdy,
+		Fwidth,
+		DiscardF,
+		TexelAt,
+		FrontFacing:
+		return BuiltinFunc(str), true
+	}
+	return "", false
+}
+
+// SwizzlingSet is the naming set of vector components a swizzle is written in.
+type SwizzlingSet int
+
+const (
+	SwizzlingSetXYZW SwizzlingSet = iota
+	SwizzlingSetRGBA
+	SwizzlingSetSTPQ
+)
+
+// SourceSwizzling returns the swizzle of a [SwizzlingExpr] spelled in [Expr.SwizzlingSet].
+func (e Expr) SourceSwizzling() string {
+	var names string
+	switch e.SwizzlingSet {
+	case SwizzlingSetRGBA:
+		names = "rgba"
+	case SwizzlingSetSTPQ:
+		names = "stpq"
+	default:
+		return e.Swizzling
+	}
+	return strings.Map(func(r rune) rune {
+		if i := strings.IndexRune("xyzw", r); i >= 0 {
+			return rune(names[i])
+		}
+		return r
+	}, e.Swizzling)
+}
+
+func IsValidSwizzling(s string) bool {
+	if len(s) < 1 || 4 < len(s) {
+		return false
+	}
+
+	const (
+		xyzw = "xyzw"
+		rgba = "rgba"
+		stpq = "stpq"
+	)
+
+	switch {
+	case strings.IndexByte(xyzw, s[0]) >= 0:
+		for _, c := range s {
+			if !strings.ContainsRune(xyzw, c) {
+				return false
+			}
+		}
+		return true
+	case strings.IndexByte(rgba, s[0]) >= 0:
+		for _, c := range s {
+			if !strings.ContainsRune(rgba, c) {
+				return false
+			}
+		}
+		return true
+	case strings.IndexByte(stpq, s[0]) >= 0:
+		for _, c := range s {
+			if !strings.ContainsRune(stpq, c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func (p *Program) ReachableFuncsFromBlock(block *Block) []*Func {
+	indexToFunc := map[int]*Func{}
+	for _, f := range p.Funcs {
+		indexToFunc[f.Index] = &f
+	}
+
+	visited := map[int]struct{}{}
+	var indices []int
+	var f func(expr *Expr)
+	f = func(expr *Expr) {
+		if expr.Type != FunctionExpr {
+			return
+		}
+		if _, ok := visited[expr.Index]; ok {
+			return
+		}
+		indices = append(indices, expr.Index)
+		visited[expr.Index] = struct{}{}
+		walkExprs(f, indexToFunc[expr.Index].Block)
+	}
+	walkExprs(f, block)
+
+	slices.Sort(indices)
+
+	funcs := make([]*Func, 0, len(indices))
+	for _, i := range indices {
+		funcs = append(funcs, indexToFunc[i])
+	}
+	return funcs
+}
+
+// AssignedAttributes reports, for each attribute, whether the vertex entry point assigns to the whole attribute or a part of it.
+func (p *Program) AssignedAttributes() []bool {
+	assigned := make([]bool, len(p.Attributes))
+	var walk func(block *Block)
+	walk = func(block *Block) {
+		if block == nil {
+			return
+		}
+		for _, s := range block.Stmts {
+			if s.Type == Assign {
+				// Attributes are the first in-params, whose indices are never reused by local variables.
+				e := &s.Exprs[0]
+				for e.Type == FieldSelector || e.Type == Index {
+					e = &e.Exprs[0]
+				}
+				if e.Type == LocalVariable && e.Index < len(assigned) {
+					assigned[e.Index] = true
+				}
+			}
+			for _, b := range s.Blocks {
+				walk(b)
+			}
+		}
+	}
+	walk(p.VertexFunc.Block)
+	return assigned
+}
+
+func walkExprs(f func(expr *Expr), block *Block) {
+	if block == nil {
+		return
+	}
+	for _, s := range block.Stmts {
+		for _, e := range s.Exprs {
+			walkExprsInExpr(f, &e)
+		}
+		for _, b := range s.Blocks {
+			walkExprs(f, b)
+		}
+	}
+}
+
+func walkExprsInExpr(f func(expr *Expr), expr *Expr) {
+	if expr == nil {
+		return
+	}
+	f(expr)
+	for _, e := range expr.Exprs {
+		walkExprsInExpr(f, &e)
+	}
+}
+
+func (p *Program) appendReachableUniformVariablesFromBlock(indices []int, block *Block) []int {
+	indexToFunc := map[int]*Func{}
+	for _, f := range p.Funcs {
+		indexToFunc[f.Index] = &f
+	}
+
+	visitedFuncs := map[int]struct{}{}
+	indicesSet := map[int]struct{}{}
+	var f func(expr *Expr)
+	f = func(expr *Expr) {
+		switch expr.Type {
+		case UniformVariable:
+			if _, ok := indicesSet[expr.Index]; ok {
+				return
+			}
+			indicesSet[expr.Index] = struct{}{}
+			indices = append(indices, expr.Index)
+		case FunctionExpr:
+			if _, ok := visitedFuncs[expr.Index]; ok {
+				return
+			}
+			visitedFuncs[expr.Index] = struct{}{}
+			walkExprs(f, indexToFunc[expr.Index].Block)
+		}
+	}
+	walkExprs(f, block)
+
+	return indices
+}
+
+// FilterUniformVariables replaces uniform variables with 0 when they are not used.
+// By minimizing uniform variables, more commands can be merged in the graphicscommand package.
+func (p *Program) FilterUniformVariables(uniforms []uint32) {
+	if p.uniformFactors == nil {
+		indices := p.appendReachableUniformVariablesFromBlock(nil, p.VertexFunc.Block)
+		indices = p.appendReachableUniformVariablesFromBlock(indices, p.FragmentFunc.Block)
+		reachableUniforms := make([]bool, len(p.Uniforms))
+		for _, idx := range indices {
+			reachableUniforms[idx] = true
+		}
+		p.uniformFactors = make([]uint32, len(uniforms))
+		var idx int
+		for i, typ := range p.Uniforms {
+			c := typ.DwordCount()
+			if reachableUniforms[i] {
+				for i := idx; i < idx+c; i++ {
+					p.uniformFactors[i] = 1
+				}
+			}
+			idx += c
+		}
+	}
+
+	for i, factor := range p.uniformFactors {
+		uniforms[i] *= factor
+	}
+}

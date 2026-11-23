@@ -33,7 +33,6 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 if TYPE_CHECKING:
-    from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.server_args import ServerArgs
 
     from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner
@@ -243,7 +242,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
     def setup_model(
         self,
         *,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         checkpoint_dir: str,
         device: str,
         gpu_id: int,
@@ -273,7 +272,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder["Zonos2SGLangRequestData"]):
 
     def make_model_runner(
         self,
-        model_worker: ModelWorker | MlxTpModelWorker,
+        model_worker: ModelWorker,
         output_proc: SGLangOutputProcessor,
     ) -> Zonos2ModelRunner:
         from sglang_omni.models.zonos2.model_runner import Zonos2ModelRunner

@@ -8,6 +8,13 @@ from typing import Annotated, NamedTuple, Optional
 import typer
 import yaml
 
+from sglang_omni.cli.serve import (
+    apply_engine_writes,
+    default_draft_engine_writes,
+    patches_from_broadcast_flags,
+    resolve_variant,
+    tensor_parallel_engine_writes,
+)
 from sglang_omni.config.compat import canonicalize_dotted_key
 from sglang_omni.config.manager import ConfigManager, resolve_config_cls_for_model_path
 from sglang_omni.config.patch import (
@@ -22,9 +29,13 @@ from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.config.sources import (
     dump_user_config,
     patches_from_dotted_cli,
-    patches_from_model_path_flag,
     sources_from_config_file,
 )
+from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.mps.control import SubprocessMpsControlClient
+from sglang_omni.mps.devices import NvmlDeviceInfo
+from sglang_omni.mps.replica_profiles import decide_replica_profile
+from sglang_omni.pipeline.replicas import warn_replica_device_overrides
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +44,7 @@ config_app = typer.Typer(help="Inspect, resolve and export the pipeline configur
 _MODEL_PATH_HELP = "The Hugging Face model ID or the path to the model directory."
 _CONFIG_HELP = "Path to a pipeline config file, as accepted by `sgl-omni serve`."
 _TEXT_ONLY_HELP = "Use the thinker-only pipeline, as `sgl-omni serve --text-only` does."
+VARIANT_HELP = "Use this pipeline variant, as `sgl-omni serve --variant` does."
 _MEM_FRACTION_HELP = (
     "Set engine.mem_fraction_static on every SGLang engine stage, as "
     "`sgl-omni serve --mem-fraction-static` does."
@@ -120,6 +132,7 @@ def resolve_sources(
     model_path: str | None,
     config_file: str | None,
     text_only: bool,
+    variant: str | None,
     mem_fraction_static: float | None,
     argv: list[str],
 ) -> Resolution:
@@ -130,34 +143,22 @@ def resolve_sources(
     difference is that a launch throws the provenance away and this keeps it,
     which is what lets these commands answer *which source set this value*.
     """
-    # Local import: serve owns the broadcast flag's fan-out and the TP
-    # derivation; importing them here keeps the two commands building
-    # identical configurations.
-    from sglang_omni.cli.serve import (
-        apply_tensor_parallel_engine_overrides,
-        patches_from_broadcast_flags,
-        tensor_parallel_engine_writes,
-    )
-
     if config_file is None and model_path is None:
         raise typer.BadParameter("--model-path is required unless --config is set")
     else:
         pass
+    selected_variant = resolve_variant(
+        config=config_file, text_only=text_only, variant=variant
+    )
 
     try:
         if config_file:
-            baseline, patches = sources_from_config_file(config_file)
-            if model_path is not None:
-                # `serve` semantics: given both, the flag is a command line
-                # source and outranks the file's own model_path.
-                patches = patches.merge(
-                    patches_from_model_path_flag(model_path, baseline)
-                )
-            else:
-                pass
+            baseline, patches = sources_from_config_file(
+                config_file, model_path_override=model_path
+            )
         else:
             manager = ConfigManager.from_model_path(
-                str(model_path), variant="text" if text_only else None
+                str(model_path), variant=selected_variant
             )
             baseline, patches = manager.config, ConfigPatchSet()
 
@@ -171,10 +172,26 @@ def resolve_sources(
             patches_from_dotted_cli(extra_args, baseline, origin="command line")
         )
         resolved = ConfigResolver(baseline).resolve(patches)
-        # The same post-merge derivation `serve` runs; it only fills engine
-        # keys no source set, so the previewed config is the launched one.
-        derivation_writes = tensor_parallel_engine_writes(resolved.config)
-        derived = apply_tensor_parallel_engine_overrides(resolved.config)
+        if config_file and model_path is not None:
+            # note (kermit): The checkpoint selected at construction is a CLI value, so it has no model default.
+            resolved.provenance.baseline.pop("model_path", None)
+        else:
+            pass
+        # The same post-merge derivations serve runs; they only fill keys no
+        # source set, so the previewed config is the launched one.
+        replica_profile = decide_replica_profile(
+            resolved.config,
+            user_patches=patches,
+            device_info=NvmlDeviceInfo(),
+            mps_client=SubprocessMpsControlClient(),
+        )
+        profiled = apply_engine_writes(resolved.config, replica_profile.writes)
+        logical_plan, logical_stages = compile_logical_processes(profiled)
+        warn_replica_device_overrides(logical_stages, logical_plan)
+        draft_writes = default_draft_engine_writes(profiled)
+        drafted = apply_engine_writes(profiled, draft_writes)
+        derivation_writes = tensor_parallel_engine_writes(drafted)
+        derived = apply_engine_writes(drafted, derivation_writes)
         # The derivation may fill a key a source explicitly cleared (an
         # engine key set to none is unset again, and unset keys are the
         # derivation's to fill). Re-record what the launched config holds so
@@ -184,22 +201,42 @@ def resolve_sources(
             resolved.provenance.record_resolved(patch.key, patch.path.read(derived))
         # A purely derived key has no patch; give it an entry of its own so
         # explain names the derivation instead of claiming a model default.
-        derivation_source = ConfigSource(
-            SourceKind.MODEL_DEFAULT,
-            detail="derived from the resolved TP settings at launch",
+        derivation_sources = (
+            (
+                replica_profile.writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="the replica profile measured on this GPU, added at launch",
+                ),
+            ),
+            (
+                draft_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="the model's default draft, added at launch",
+                ),
+            ),
+            (
+                derivation_writes,
+                ConfigSource(
+                    SourceKind.MODEL_DEFAULT,
+                    detail="derived from the resolved TP settings at launch",
+                ),
+            ),
         )
-        for path_text, value in derivation_writes.items():
-            if resolved.provenance.touched(path_text):
-                continue
-            else:
-                pass
-            derivation_patch = ConfigPatch.create(
-                path_text, value, derivation_source, root=type(baseline)
-            )
-            resolved.provenance.record(derivation_patch, winning=True)
-            resolved.provenance.record_resolved(
-                path_text, derivation_patch.path.read(derived)
-            )
+        for writes, derivation_source in derivation_sources:
+            for path_text, value in writes.items():
+                if resolved.provenance.touched(path_text):
+                    continue
+                else:
+                    pass
+                derivation_patch = ConfigPatch.create(
+                    path_text, value, derivation_source, root=type(baseline)
+                )
+                resolved.provenance.record(derivation_patch, winning=True)
+                resolved.provenance.record_resolved(
+                    path_text, derivation_patch.path.read(derived)
+                )
         return Resolution(baseline, replace(resolved, config=derived))
     except (ConfigPathError, ValueError) as exc:
         # An unknown path, a path the schema will not let a user write, two
@@ -220,6 +257,7 @@ def resolve(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -246,6 +284,7 @@ def resolve(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )
@@ -260,7 +299,25 @@ def resolve(
     if show is ResolveOutput.diff:
         # Against the baseline config rather than against the recorded patches,
         # so that a field an alias carried along is shown as changed too.
-        changes = diff_configs(resolution.baseline, resolution.resolved.config)
+        baseline_values = resolution.baseline.model_dump()
+        file_model_path = next(
+            (
+                entry.value
+                for entry in provenance.entries.get("model_path", [])
+                if entry.source.kind is SourceKind.YAML_FILE and not entry.winning
+            ),
+            None,
+        )
+        if model_path is not None and isinstance(file_model_path, str):
+            # note (kermit): Preserve the diff against the YAML path without loading that checkpoint.
+            baseline_values["model_path"] = file_model_path
+            if resolution.baseline.name == resolution.baseline.model_path:
+                baseline_values["name"] = file_model_path
+            else:
+                pass
+        else:
+            pass
+        changes = diff_configs(baseline_values, resolution.resolved.config)
         if not changes:
             print("No configuration source changed the pipeline's defaults.")
             return
@@ -309,6 +366,7 @@ def explain(
     text_only: Annotated[
         bool, typer.Option("--text-only", help=_TEXT_ONLY_HELP)
     ] = False,
+    variant: Annotated[str | None, typer.Option("--variant", help=VARIANT_HELP)] = None,
     mem_fraction_static: Annotated[
         float | None, typer.Option("--mem-fraction-static", help=_MEM_FRACTION_HELP)
     ] = None,
@@ -322,6 +380,7 @@ def explain(
         model_path=model_path,
         config_file=config,
         text_only=text_only,
+        variant=variant,
         mem_fraction_static=mem_fraction_static,
         argv=ctx.args,
     )

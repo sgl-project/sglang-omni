@@ -31,6 +31,7 @@ class MossTDFactoryArgs(FactoryArgs):
 
     encoder_cache_size_bytes: int | None = Field(default=None, ge=0)
     encoder_max_batch_size: int | None = Field(default=None, ge=1)
+    enable_trimmed_fbank: bool = True
 
 
 class MossTDStageConfig(EngineStageConfig):
@@ -42,6 +43,9 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
 
     architecture: ClassVar[str] = "MossTranscribeDiarizeForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
+    server_warmup_request_factory: ClassVar[str] = (
+        "sglang_omni.serve.server_warmup.build_transcription_warmup_request"
+    )
 
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "asr": MossTDStageConfig,
@@ -63,10 +67,11 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=12,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
-                max_running_requests=16,
+                # Note (Jiaxin Deng): 16 left half of a C32 load queued behind
+                # idle GPU time; 64 matches the other ASR stages.
+                max_running_requests=64,
                 enable_torch_compile=True,
                 torch_compile_max_bs=4,
             ),
