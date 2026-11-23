@@ -34,6 +34,8 @@ type MascotPiece struct {
 	Box [4]float32
 }
 
+var mascotSmall = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="-100 -16 600 600"><g fill="currentColor"><path fill="none" stroke="currentColor" stroke-width="48" stroke-linecap="round" d="M24.5 215V296C24.5 393 103 471.5 200 471.5S375.5 393 375.5 296V215"/><rect x="166" y="478" width="70" height="58"/><rect x="104" y="520" width="194" height="46" rx="23"/><path fill-rule="evenodd" d="M203.5 0C132.53 0 75 57.53 75 128.5V285.5C75 356.47 132.53 414 203.5 414S332 356.47 332 285.5V128.5C332 57.53 274.47 0 203.5 0ZM196 154A41 55 0 1 0 114 154A41 55 0 1 0 196 154ZM294 154A41 55 0 1 0 212 154A41 55 0 1 0 294 154Z"/><circle cx="170" cy="128" r="24"/><circle cx="268" cy="128" r="24"/></g></svg>`))
+
 var (
 	MascotMicrophone      = ui.MustParseSVG(mascotMicrophone)
 	MascotMicrophoneBlink = ui.MustParseSVG(mascotMicrophoneBlink)
@@ -41,6 +43,10 @@ var (
 	MascotChristmas = []MascotPiece{{ui.MustParseSVG(mascotHatChristmas), [4]float32{10, -180, 320, 230}}}
 	// MascotNewYear is the New Year outfit: a party hat.
 	MascotNewYear = []MascotPiece{{ui.MustParseSVG(mascotHatNewYear), [4]float32{80, -225, 240, 275}}}
+	// MascotSmall is the mascot as a small mark (the share card's footer,
+	// the hat studio's preview button): its pupils larger than the big
+	// one's, so they still show at 15 DIPs.
+	MascotSmall = Icon{Name: "mascot-small", Linear: mascotSmall, Bold: mascotSmall}
 	// MascotSpring is the Spring Festival outfit: a red cap.
 	MascotSpring = []MascotPiece{{ui.MustParseSVG(mascotHatSpring), [4]float32{76, -76, 256, 140}}}
 )
