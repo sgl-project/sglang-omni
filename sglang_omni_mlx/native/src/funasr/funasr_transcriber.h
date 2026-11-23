@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "common/dflash_draft.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
 #include "funasr/funasr_model.h"
@@ -32,7 +33,14 @@ struct FunAsrOptions {
 
 class FunAsrTranscriber {
 public:
-  explicit FunAsrTranscriber(const std::filesystem::path &model_directory);
+  // With a DFlash draft directory, greedy requests verify the draft's
+  // proposals instead of decoding one token per step; a request with a
+  // repetition penalty decodes plainly.
+  explicit FunAsrTranscriber(const std::filesystem::path &model_directory,
+                             const std::filesystem::path &draft_directory = {},
+                             int draft_quantization_bits = 0,
+                             omni_common::DraftPolicy draft_policy =
+                                 omni_common::DraftPolicy::kAdaptive);
 
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const FunAsrOptions &options,
@@ -51,6 +59,8 @@ private:
   // The prompt after the audio, embedded once.
   mlx::core::array suffix_embeddings_;
   int im_end_id_ = 0;
+  std::optional<omni_common::DFlashDraft> draft_;
+  omni_common::DraftPolicy draft_policy_;
 };
 
 } // namespace funasr

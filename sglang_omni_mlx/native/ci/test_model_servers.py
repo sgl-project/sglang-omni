@@ -59,6 +59,7 @@ MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
 FUNASR_REPO = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+FUNASR_DRAFT_REPO = "wilsonzheng0327/Fun-ASR-Nano-dflash"
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
 SENSEVOICE_VAD_FIELDS = {
     "vad_threshold": "0.5",
@@ -1051,6 +1052,29 @@ def test_funasr_disconnected_stream_stops_its_decode(
             time.monotonic() - closed_at < 2.0
         ), "the decode kept running after its client left"
         time.sleep(0.05)
+
+
+def test_funasr_uses_the_published_dflash_draft() -> None:
+    draft = Path(DATA_ROOT) / "models" / FUNASR_DRAFT_REPO.replace("/", "_")
+    server = ModelServer(
+        "funasr_server", "funasr", FUNASR_REPO, ("--draft-model-path", str(draft))
+    )
+    try:
+        fields = {"stream": "true", "include_generation_metadata": "true"}
+        status, body = server.post_form(fields, clip("0064_en_mid"))
+        assert status == 200
+        result, end = sse_events(body)
+        assert end == "[DONE]"
+        assert result["text"]
+        assert result["generation_metadata"]["accepted_draft_token_count"] > 0
+        # A penalized request decodes without the draft.
+        status, body = server.post_form(
+            {**fields, "repetition_penalty": "1.1"}, clip("0064_en_mid")
+        )
+        assert status == 200
+        assert "verify_round_count" not in sse_events(body)[0]["generation_metadata"]
+    finally:
+        server.stop()
 
 
 def test_funasr_serves_no_realtime_api(funasr_server: ModelServer) -> None:

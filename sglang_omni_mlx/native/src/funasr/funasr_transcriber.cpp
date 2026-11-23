@@ -97,12 +97,20 @@ int DefaultMaxNewTokens(size_t sample_count) {
 } // namespace
 
 FunAsrTranscriber::FunAsrTranscriber(
-    const std::filesystem::path &model_directory)
+    const std::filesystem::path &model_directory,
+    const std::filesystem::path &draft_directory, int draft_quantization_bits,
+    omni_common::DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       suffix_embeddings_(PromptEmbeddings(kPromptSuffix)),
-      im_end_id_(tokenizer_.AddedTokenId(kEndOfTurn)) {
+      im_end_id_(tokenizer_.AddedTokenId(kEndOfTurn)),
+      draft_policy_(draft_policy) {
   if (im_end_id_ < 0) {
     throw std::runtime_error(std::string("tokenizer has no ") + kEndOfTurn);
+  } else {
+  }
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   model_.decoder().config());
   } else {
   }
 }
@@ -149,12 +157,24 @@ TranscriptionResult FunAsrTranscriber::TranscribeWindow(
     output_ids.push_back(token_id);
     return static_cast<int>(output_ids.size()) >= max_new_tokens;
   };
-  std::vector<KVCache> caches = model_.decoder().NewCaches();
-  mx::array next_token = mx::argmax(model_.decoder().LastLogits(
-      model_.decoder().Forward(embeddings, caches)));
-  mx::async_eval({next_token});
-  model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
-                               commit, cancel);
+  // Note (wilsonzheng0327): a penalty would have to be applied per block
+  // position with the block's own earlier tokens; a request that asks for one
+  // decodes without the draft.
+  if (draft_.has_value() && options.repetition_penalty == 1.0f) {
+    const omni_common::DraftStatistics statistics =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens, 0, commit,
+                       cancel, draft_policy_);
+    result.verify_round_count = statistics.verify_round_count;
+    result.proposed_draft_token_count = statistics.proposed_token_count;
+    result.accepted_draft_token_count = statistics.accepted_token_count;
+  } else {
+    std::vector<KVCache> caches = model_.decoder().NewCaches();
+    mx::array next_token = mx::argmax(model_.decoder().LastLogits(
+        model_.decoder().Forward(embeddings, caches)));
+    mx::async_eval({next_token});
+    model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
+                                 commit, cancel);
+  }
   const std::string decoded = tokenizer_.Decode(output_ids, true);
   std::vector<std::string> spoken_parts;
   for (size_t begin = 0;;) {
@@ -204,6 +224,9 @@ FunAsrTranscriber::Transcribe(const std::vector<float> &samples,
         cancel);
     parts.push_back(window.text);
     combined.generated_token_count += window.generated_token_count;
+    combined.verify_round_count += window.verify_round_count;
+    combined.proposed_draft_token_count += window.proposed_draft_token_count;
+    combined.accepted_draft_token_count += window.accepted_draft_token_count;
     remaining_tokens -= window.generated_token_count;
     if (window.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;

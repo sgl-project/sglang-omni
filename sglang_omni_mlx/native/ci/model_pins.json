@@ -262,5 +262,12 @@
       "tokenizer_config.json": "1d8065984f39c1d9dd8aaf754bbeda44f270110563a1afc729e183739cda8d12",
       "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
+  },
+  "wilsonzheng0327/Fun-ASR-Nano-dflash": {
+    "revision": "b3cb091f554c88274378d549d7e7d3c5a13052e6",
+    "files": {
+      "config.json": "a6b9f54c2b94f189ef751d79166775fec356d44b2ea224fcd76774b1c0fb78bc",
+      "model.safetensors": "536aeb19f14222901767fe6d42d5779774fcbb61c282511b5f50e4415a0e10a1"
+    }
   }
 }
