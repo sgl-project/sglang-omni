@@ -69,8 +69,22 @@ struct LatentAttentionState {
   mlx::core::array values;
 };
 
+// A delta layer's inputs to the last Forward, from which a shorter Forward's
+// state is recomputed without the projections.
+struct DeltaRound {
+  mlx::core::array recurrent;
+  mlx::core::array queries;
+  mlx::core::array keys;
+  mlx::core::array values;
+  mlx::core::array decay;
+  mlx::core::array beta;
+  // Each of q, k and v: the convolution history, then the round's projections.
+  std::array<mlx::core::array, 3> convolution_inputs;
+};
+
 struct DeltaCache {
   std::optional<DeltaState> state;
+  std::optional<DeltaRound> last_round;
 };
 
 struct LatentAttentionCache {
@@ -84,6 +98,9 @@ class MingModel;
 class MingCache {
 public:
   const std::vector<LayerCache> &layers() const { return layers_; }
+  // Keeps each later Forward's delta inputs, so MingModel::Rewind can undo
+  // its newest positions.
+  void KeepLastRound() { keeps_last_round_ = true; }
 
 private:
   friend class MingModel;
@@ -93,6 +110,7 @@ private:
   std::vector<LayerCache> layers_;
   int token_count_ = 0;
   bool is_valid_ = true;
+  bool keeps_last_round_ = false;
 };
 
 struct GatedDeltaResult {
@@ -124,11 +142,20 @@ public:
   mlx::core::array EncodeAudio(const std::vector<float> &samples,
                                const std::atomic<bool> &cancel) const;
   // Appends [1, token_count, hidden_size] to the cache and returns hidden
-  // states with the same shape.
-  mlx::core::array Forward(const mlx::core::array &embeddings, MingCache &cache,
-                           const std::atomic<bool> &cancel) const;
+  // states with the same shape. The hidden states entering each layer in
+  // aux_layers are appended to aux_hidden_states, in that order.
+  mlx::core::array
+  Forward(const mlx::core::array &embeddings, MingCache &cache,
+          const std::atomic<bool> &cancel,
+          const std::vector<int> &aux_layers = {},
+          std::vector<mlx::core::array> *aux_hidden_states = nullptr) const;
+  // Drops the newest token_count positions of the cache's last Forward, which
+  // keeps at least one; the cache must keep its last round.
+  void Rewind(MingCache &cache, int token_count) const;
   // Projects only the last token to float32 [1, 1, vocabulary_size].
   mlx::core::array LastTokenLogits(const mlx::core::array &hidden_states) const;
+  // Projects every token to float32 [token_count, vocabulary_size].
+  mlx::core::array Logits(const mlx::core::array &hidden_states) const;
 
 private:
   MingModel(const nlohmann::json &configuration,
@@ -138,7 +165,8 @@ private:
                                     const std::atomic<bool> &cancel) const;
   mlx::core::array DeltaAttention(const mlx::core::array &hidden_states,
                                   const std::string &weight_prefix,
-                                  DeltaCache &cache) const;
+                                  DeltaCache &cache,
+                                  bool keeps_last_round) const;
   mlx::core::array LatentAttention(const mlx::core::array &hidden_states,
                                    const std::string &weight_prefix,
                                    LatentAttentionCache &cache) const;

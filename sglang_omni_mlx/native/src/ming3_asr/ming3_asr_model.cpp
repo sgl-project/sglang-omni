@@ -386,7 +386,9 @@ MingCache::MingCache(const MingModel *owner) : owner_(owner) {
 MingCache MingModel::NewCache() const { return MingCache(this); }
 
 mx::array MingModel::Forward(const mx::array &embeddings, MingCache &cache,
-                             const std::atomic<bool> &cancel) const {
+                             const std::atomic<bool> &cancel,
+                             const std::vector<int> &aux_layers,
+                             std::vector<mx::array> *aux_hidden_states) const {
   if (cache.owner_ != this ||
       cache.layers_.size() != static_cast<size_t>(config_.layer_count)) {
     throw std::invalid_argument("Ming cache does not belong to this model");
@@ -415,6 +417,12 @@ mx::array MingModel::Forward(const mx::array &embeddings, MingCache &cache,
     }
     const std::string weight_prefix =
         "model.layers." + std::to_string(layer_index);
+    if (std::find(aux_layers.begin(), aux_layers.end(), layer_index) !=
+        aux_layers.end()) {
+      aux_hidden_states->push_back(hidden_states);
+      evaluation_tensors.push_back(hidden_states);
+    } else {
+    }
     auto normalized_hidden_states =
         checkpoint_.RmsNorm(hidden_states, weight_prefix + ".input_layernorm",
                             config_.rms_norm_epsilon);
@@ -426,7 +434,8 @@ mx::array MingModel::Forward(const mx::array &embeddings, MingCache &cache,
                   std::get<LatentAttentionCache>(cache.layers_.at(layer_index)))
             : DeltaAttention(
                   normalized_hidden_states, weight_prefix + ".attention",
-                  std::get<DeltaCache>(cache.layers_.at(layer_index))));
+                  std::get<DeltaCache>(cache.layers_.at(layer_index)),
+                  cache.keeps_last_round_));
     normalized_hidden_states = checkpoint_.RmsNorm(
         hidden_states, weight_prefix + ".post_attention_layernorm",
         config_.rms_norm_epsilon);
@@ -463,6 +472,63 @@ mx::array MingModel::LastTokenLogits(const mx::array &hidden_states) const {
                                    hidden_states.shape()),
                          "lm_head"),
       mx::float32);
+}
+
+mx::array MingModel::Logits(const mx::array &hidden_states) const {
+  return mx::astype(
+      mx::reshape(checkpoint_.Linear(hidden_states, "lm_head"),
+                  {hidden_states.shape(1), config_.vocabulary_size}),
+      mx::float32);
+}
+
+void MingModel::Rewind(MingCache &cache, int token_count) const {
+  if (token_count == 0) {
+    return;
+  } else {
+  }
+  const int history_token_count = config_.convolution_kernel_token_count - 1;
+  for (LayerCache &layer_cache : cache.layers_) {
+    if (auto *delta = std::get_if<DeltaCache>(&layer_cache)) {
+      if (!delta->last_round.has_value() ||
+          token_count >= delta->last_round->queries.shape(1)) {
+        throw std::invalid_argument(
+            "Ming Rewind needs a kept round longer than the dropped positions");
+      } else {
+      }
+      // note (wilsonzheng0327): the recurrence runs token by token, so
+      // rerunning it over the kept prefix from the round's starting state
+      // gives the state a Forward of that prefix alone would have left.
+      const DeltaRound &round = *delta->last_round;
+      const int kept_token_count = round.queries.shape(1) - token_count;
+      const auto kept = [&](const mx::array &inputs) {
+        mx::Shape end = inputs.shape();
+        end[1] = kept_token_count;
+        return mx::slice(inputs, mx::Shape(inputs.ndim(), 0), end);
+      };
+      std::array<mx::array, 3> convolution = round.convolution_inputs;
+      for (mx::array &inputs : convolution) {
+        inputs = mx::slice(
+            inputs, {0, kept_token_count, 0},
+            {1, kept_token_count + history_token_count, inputs.shape(2)});
+      }
+      delta->state = DeltaState{
+          std::move(convolution),
+          GatedDelta(kept(round.queries), kept(round.keys), kept(round.values),
+                     kept(round.decay), kept(round.beta), round.recurrent)
+              .next_state};
+      delta->last_round.reset();
+    } else {
+      LatentAttentionState &state =
+          std::get<LatentAttentionCache>(layer_cache).state.value();
+      const auto kept = [&](const mx::array &cached) {
+        mx::Shape end = cached.shape();
+        end[2] -= token_count;
+        return mx::slice(cached, mx::Shape(cached.ndim(), 0), end);
+      };
+      state = {kept(state.keys), kept(state.values)};
+    }
+  }
+  cache.token_count_ -= token_count;
 }
 
 } // namespace ming3_asr

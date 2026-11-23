@@ -2,8 +2,9 @@
 """Fixtures of the native runtime's protocol tests.
 
 NATIVE_STUB_SERVER is the stub_server binary; NATIVE_RUNTIME_BIN is an
-installed runtime's bin directory; NATIVE_MING3_MTP_PROBE is the
-ming3_mtp_probe binary.
+installed runtime's bin directory; NATIVE_MING3_MTP_PROBE and
+NATIVE_MING3_DSPARK_PROBE are the ming3_mtp_probe and ming3_dspark_probe
+binaries.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ def stub_server_binary() -> Path:
 @pytest.fixture(scope="session")
 def ming3_mtp_probe_binary() -> Path:
     return Path(os.environ["NATIVE_MING3_MTP_PROBE"])
+
+
+@pytest.fixture(scope="session")
+def ming3_dspark_probe_binary() -> Path:
+    return Path(os.environ["NATIVE_MING3_DSPARK_PROBE"])
 
 
 @pytest.fixture(scope="session")

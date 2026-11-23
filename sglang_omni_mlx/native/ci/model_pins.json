@@ -13,6 +13,13 @@
       "model-00002-of-00002.safetensors": "99b923f145e0b5c7b6e56be402e163e9fecdc013ce82bfaf0be9b8a891f92f4f"
     }
   },
+  "wirybeaver/Ming-3.0-asr-tiny-dspark": {
+    "revision": "3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
+    "files": {
+      "config.json": "bfa502aa060ccea51b49839d2d91119b4fe51074c5adc00855332f1314aebae2",
+      "model.safetensors": "0274111d9238d45ce5a509b730c145048bf0d775f7183b882ed4647d94a0bd48"
+    }
+  },
   "mlx-community/whisper-large-v3-turbo": {
     "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
     "files": {

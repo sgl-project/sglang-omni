@@ -14,6 +14,8 @@
 int main(int argc, char **argv) {
   try {
     std::string model_path;
+    std::string draft_model_path;
+    int draft_quantization_bits = 0;
     ming3_asr::MingOptions options;
     std::vector<std::string> files;
     for (int index = 1; index < argc; ++index) {
@@ -21,7 +23,8 @@ int main(int argc, char **argv) {
       if (argument == "--help") {
         std::cout << "Usage: ming3_asr_transcribe --model-path DIR [--language "
                      "en|zh] "
-                     "[--max-new-tokens N] file.wav...\n";
+                     "[--max-new-tokens N] [--draft-model-path DIR] "
+                     "[--draft-bits 4|6|8] file.wav...\n";
         return 0;
       } else if (argument.starts_with("--")) {
         if (index + 1 >= argc) {
@@ -40,6 +43,10 @@ int main(int argc, char **argv) {
             throw std::invalid_argument("max-new-tokens must be an integer");
           } else {
           }
+        } else if (argument == "--draft-model-path") {
+          draft_model_path = value;
+        } else if (argument == "--draft-bits") {
+          draft_quantization_bits = std::stoi(value);
         } else {
           throw std::invalid_argument("unknown option " + argument);
         }
@@ -47,13 +54,19 @@ int main(int argc, char **argv) {
         files.push_back(argument);
       }
     }
-    if (model_path.empty() || files.empty()) {
+    if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+        draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+      throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+    } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
+      throw std::invalid_argument("--draft-bits needs --draft-model-path");
+    } else if (model_path.empty() || files.empty()) {
       throw std::invalid_argument(
           "--model-path and at least one WAV file are required");
     } else {
     }
     const auto load_started = std::chrono::steady_clock::now();
-    const ming3_asr::MingTranscriber transcriber(model_path);
+    const ming3_asr::MingTranscriber transcriber(model_path, draft_model_path,
+                                                 draft_quantization_bits);
     const double load_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       load_started)
@@ -80,7 +93,11 @@ int main(int argc, char **argv) {
                            ? nlohmann::json(*result.language)
                            : nlohmann::json()},
           {"generated_token_count", result.generated_token_count},
-          {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
+          {"finish_reason",
+           omni_common::FinishReasonName(result.finish_reason)},
+          {"verify_round_count", result.verify_round_count},
+          {"proposed_draft_token_count", result.proposed_draft_token_count},
+          {"accepted_draft_token_count", result.accepted_draft_token_count},
           {"load_seconds", load_seconds},
           {"peak_memory_bytes", mlx::core::get_peak_memory()},
           {"audio_seconds", audio_seconds},

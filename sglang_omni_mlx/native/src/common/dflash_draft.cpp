@@ -42,7 +42,7 @@ std::string ShapeText(const mx::Shape &shape) {
 // The draft's config and weights once they are known to fit the target, whose
 // hidden states it reads and whose tokens it embeds and predicts.
 LoadedDraft CheckedDraft(const std::filesystem::path &directory,
-                         const Qwen3DecoderConfig &target) {
+                         const DraftTarget &target) {
   const std::string draft = "the draft at " + directory.string();
   nlohmann::json config = omni_common::ReadJson(directory / "config.json");
   const int hidden_size =
@@ -52,6 +52,8 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
   const int draft_vocab_size = config.at("draft_vocab_size").get<int>();
   const std::vector<int> aux_layers =
       config.at("aux_hidden_state_layer_ids").get<std::vector<int>>();
+  const bool is_dspark =
+      config.value("speculators_model_type", std::string()) == "dspark";
   if (hidden_size != target.hidden_size) {
     throw std::runtime_error(
         draft + " has hidden size " + std::to_string(hidden_size) +
@@ -61,8 +63,12 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
                              std::to_string(mask_token_id) +
                              ", past the target's vocabulary of " +
                              std::to_string(target.vocab_size));
-  } else if (config.at("sample_from_anchor").get<bool>()) {
+  } else if (!is_dspark && config.at("sample_from_anchor").get<bool>()) {
     throw std::runtime_error(draft + " samples from the anchor");
+  } else if (is_dspark && config.at("markov_head_type") != "vanilla") {
+    throw std::runtime_error(draft + " has a " +
+                             config.at("markov_head_type").dump() +
+                             " Markov head; only the vanilla one is served");
   } else if (config.at("sliding_window_non_causal").get<bool>()) {
     throw std::runtime_error(
         draft + " was trained with a bidirectional block; blocks are decoded "
@@ -82,10 +88,10 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
   } else {
   }
   for (const int layer : aux_layers) {
-    if (layer < 0 || layer >= target.num_hidden_layers) {
+    if (layer < 0 || layer >= target.layer_count) {
       throw std::runtime_error(draft + " reads target layer " +
                                std::to_string(layer) + " of " +
-                               std::to_string(target.num_hidden_layers));
+                               std::to_string(target.layer_count));
     } else {
     }
   }
@@ -106,6 +112,14 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
                                               hidden_size});
   expect_shape("lm_head.weight", {draft_vocab_size, hidden_size});
   expect_shape("d2t", {draft_vocab_size});
+  if (is_dspark) {
+    const int markov_rank = config.at("markov_rank").get<int>();
+    expect_shape("markov_head.markov_w1.weight",
+                 {target.vocab_size, markov_rank});
+    expect_shape("markov_head.markov_w2.weight",
+                 {draft_vocab_size, markov_rank});
+  } else {
+  }
   const mx::array target_ids = mx::astype(
       mx::add(weights.at("d2t"), mx::arange(draft_vocab_size)), mx::int32);
   mx::eval(target_ids);
@@ -126,8 +140,7 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
 } // namespace
 
 DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
-                         int quantization_bits,
-                         const Qwen3DecoderConfig &target)
+                         int quantization_bits, const DraftTarget &target)
     : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
@@ -143,7 +156,17 @@ DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
       aux_layers_(draft.config.at("aux_hidden_state_layer_ids")
                       .get<std::vector<int>>()),
       block_size_(draft.config.at("block_size").get<int>()),
-      mask_token_id_(draft.config.at("mask_token_id").get<int>()) {}
+      mask_token_id_(draft.config.at("mask_token_id").get<int>()),
+      proposal_count_(draft.config.at("sample_from_anchor").get<bool>()
+                          ? block_size_
+                          : block_size_ - 1),
+      has_markov_head_(checkpoint_.Has("markov_head.markov_w1.weight")) {}
+
+std::vector<int> DFlashDraft::BlockIds(int anchor_id) const {
+  std::vector<int> block_ids(block_size_, mask_token_id_);
+  block_ids[0] = anchor_id;
+  return block_ids;
+}
 
 // note (wilsonzheng0327): the draft's trained sliding window is not enforced:
 // on a 194 s recording a 1.7B draft trained with a 2,048 window accepts 3.8
@@ -163,7 +186,8 @@ void DFlashDraft::AppendContext(const std::vector<mx::array> &aux_hidden_states,
   decoder_.AppendKeysValues(context, caches);
 }
 
-mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
+mx::array DFlashDraft::ProposeBlock(int anchor_id,
+                                    const mx::array &block_embeddings,
                                     std::vector<KVCache> &caches) const {
   // note (wilsonzheng0327): the block attends causally, as the pinned drafts
   // were trained (sliding_window_non_causal is false, checked at load). A
@@ -177,15 +201,36 @@ mx::array DFlashDraft::ProposeBlock(const mx::array &block_embeddings,
     cache.Trim(block_size_);
   }
   const mx::array proposals = checkpoint_.RmsNorm(
-      mx::slice(hidden, {0, 1, 0}, {1, block_size_, hidden.shape(2)}), "norm",
-      decoder_.config().rms_norm_eps);
-  const mx::array draft_ids =
-      mx::argmax(checkpoint_.Linear(proposals, "lm_head"), -1);
+      mx::slice(hidden, {0, block_size_ - proposal_count_, 0},
+                {1, block_size_, hidden.shape(2)}),
+      "norm", decoder_.config().rms_norm_eps);
+  const mx::array logits = mx::reshape(checkpoint_.Linear(proposals, "lm_head"),
+                                       {proposal_count_, -1});
   // note (wilsonzheng0327): the draft predicts a reduced vocabulary; d2t
   // holds each draft id's offset to its target id.
-  const mx::array target_ids =
-      mx::add(draft_ids, mx::take(checkpoint_.Weight("d2t"), draft_ids, 0));
-  return mx::reshape(mx::astype(target_ids, mx::int32), {block_size_ - 1});
+  const auto target_ids = [&](const mx::array &draft_ids) {
+    return mx::astype(
+        mx::add(draft_ids, mx::take(checkpoint_.Weight("d2t"), draft_ids, 0)),
+        mx::int32);
+  };
+  if (!has_markov_head_) {
+    return target_ids(mx::argmax(logits, -1));
+  } else {
+  }
+  // The Markov head biases each proposal's logits by w2(w1[the target id
+  // before it]), so the block is drafted left to right from the anchor.
+  std::vector<mx::array> proposed_ids;
+  mx::array previous_id = mx::array({anchor_id});
+  for (int i = 0; i < proposal_count_; ++i) {
+    const mx::array bias = checkpoint_.Linear(
+        checkpoint_.Embed(previous_id, "markov_head.markov_w1"),
+        "markov_head.markov_w2");
+    previous_id = target_ids(mx::argmax(
+        mx::add(mx::slice(logits, {i, 0}, {i + 1, logits.shape(1)}), bias),
+        -1));
+    proposed_ids.push_back(previous_id);
+  }
+  return mx::concatenate(proposed_ids, 0);
 }
 
 DraftPolicy ParseDraftPolicy(const std::string &value) {
@@ -316,17 +361,17 @@ DraftStatistics DFlashDraft::Decode(
     } else {
     }
     const auto round_started = std::chrono::steady_clock::now();
-    std::vector<int> block_ids(block_size_, mask_token_id_);
-    block_ids[0] = anchor_id;
+    const std::vector<int> block_ids = BlockIds(anchor_id);
     const mx::array proposed_ids =
-        ProposeBlock(target.EmbedTokens(mx::array(block_ids.data(),
+        ProposeBlock(anchor_id,
+                     target.EmbedTokens(mx::array(block_ids.data(),
                                                   {1, block_size_}, mx::int32)),
                      draft_caches);
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
     // allows, so the caches never hold a position plain decoding would not
     // have reached.
     const int verify_count =
-        std::min(block_size_, max_new_tokens - committed_token_count);
+        std::min(proposal_count_ + 1, max_new_tokens - committed_token_count);
     const mx::array verify_ids =
         mx::slice(mx::concatenate(
                       {mx::array(&anchor_id, {1}, mx::int32), proposed_ids}, 0),

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string_view>
@@ -18,7 +17,6 @@ namespace mx = mlx::core;
 
 namespace {
 
-constexpr int kPrefillChunkSize = 256;
 constexpr const char *kInstruction =
     "Please recognize the language of this speech and transcribe it, "
     "placing a `\t` between the identified language and the transcribe.";
@@ -127,12 +125,23 @@ LanguageCode(const std::optional<std::string> &language) {
 
 } // namespace
 
-MingTranscriber::MingTranscriber(const std::filesystem::path &model_directory)
+MingTranscriber::MingTranscriber(const std::filesystem::path &model_directory,
+                                 const std::filesystem::path &draft_directory,
+                                 int draft_quantization_bits)
     : model_(model_directory), tokenizer_(model_directory),
       audio_tokens_(
           ResolveAudioTokens(tokenizer_, model_.config().audio_token_id)),
       stop_token_ids_(
-          ResolveStopTokenIds(model_directory, tokenizer_, model_.config())) {}
+          ResolveStopTokenIds(model_directory, tokenizer_, model_.config())) {
+  if (!draft_directory.empty()) {
+    const MingConfig &config = model_.config();
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   omni_common::DraftTarget{config.hidden_size,
+                                            config.vocabulary_size,
+                                            config.layer_count});
+  } else {
+  }
+}
 
 MingRequest MingTranscriber::Prepare(std::vector<float> samples,
                                      const MingOptions &options) const {
@@ -208,7 +217,6 @@ MingTranscriber::Transcribe(const MingRequest &request,
     throw omni_common::GenerationCancelled();
   } else {
   }
-  const auto &config = model_.config();
   const auto prefix_embeddings = model_.EmbedTokens(request.prefix_token_ids);
   const auto audio_embeddings = mx::astype(
       model_.EncodeAudio(request.samples, cancel), prefix_embeddings.dtype());
@@ -216,66 +224,19 @@ MingTranscriber::Transcribe(const MingRequest &request,
       mx::concatenate({prefix_embeddings, audio_embeddings,
                        model_.EmbedTokens(request.suffix_token_ids)},
                       1);
-  auto cache = model_.NewCache();
-  std::optional<mx::array> hidden_states;
-  for (int start = 0; start < embeddings.shape(1); start += kPrefillChunkSize) {
-    hidden_states = model_.Forward(
-        mx::slice(embeddings, {0, start, 0},
-                  {1, std::min(start + kPrefillChunkSize, embeddings.shape(1)),
-                   config.hidden_size}),
-        cache, cancel);
-  }
-  std::vector<int> generated_token_ids;
+  const GreedyDecoding decoding =
+      DecodeGreedy(model_, draft_.has_value() ? &*draft_ : nullptr, embeddings,
+                   stop_token_ids_, request.max_new_tokens,
+                   request.no_repeat_ngram_size, cancel);
   omni_common::TranscriptionResult result;
-  for (int step = 0; step < request.max_new_tokens; ++step) {
-    if (cancel.load()) {
-      throw omni_common::GenerationCancelled();
-    } else {
-    }
-    auto next_token_logits =
-        mx::reshape(model_.LastTokenLogits(hidden_states.value()), {-1});
-    const size_t ngram_token_count =
-        static_cast<size_t>(request.no_repeat_ngram_size);
-    if (ngram_token_count > 0 &&
-        generated_token_ids.size() >= ngram_token_count) {
-      std::vector<int> banned_token_ids;
-      for (size_t start = 0;
-           start + ngram_token_count <= generated_token_ids.size(); ++start) {
-        if (std::equal(generated_token_ids.begin() + start,
-                       generated_token_ids.begin() + start + ngram_token_count -
-                           1,
-                       generated_token_ids.end() - (ngram_token_count - 1))) {
-          banned_token_ids.push_back(
-              generated_token_ids[start + ngram_token_count - 1]);
-        } else {
-        }
-      }
-      if (!banned_token_ids.empty()) {
-        next_token_logits = mx::put_along_axis(
-            next_token_logits,
-            mx::array(banned_token_ids.data(),
-                      {static_cast<int>(banned_token_ids.size())}),
-            mx::array(-std::numeric_limits<float>::infinity()), 0);
-      } else {
-      }
-    } else {
-    }
-    const int token_id = mx::argmax(next_token_logits).item<int>();
-    if (std::find(stop_token_ids_.begin(), stop_token_ids_.end(), token_id) !=
-        stop_token_ids_.end()) {
-      result.finish_reason = omni_common::FinishReason::kStop;
-      break;
-    } else {
-      generated_token_ids.push_back(token_id);
-    }
-    if (step + 1 < request.max_new_tokens) {
-      hidden_states =
-          model_.Forward(model_.EmbedTokens({token_id}), cache, cancel);
-    } else {
-    }
-  }
+  result.finish_reason = decoding.finish_reason;
+  result.verify_round_count = decoding.draft_statistics.verify_round_count;
+  result.proposed_draft_token_count =
+      decoding.draft_statistics.proposed_token_count;
+  result.accepted_draft_token_count =
+      decoding.draft_statistics.accepted_token_count;
   result.text = omni_common::StripUnicodeWhitespace(
-      tokenizer_.Decode(generated_token_ids, true));
+      tokenizer_.Decode(decoding.token_ids, true));
   result.language = request.language;
   static const std::map<std::string, std::string> language_codes = {
       {"English", "en"},
@@ -302,7 +263,7 @@ MingTranscriber::Transcribe(const MingRequest &request,
       }
     }
   }
-  result.generated_token_count = static_cast<int>(generated_token_ids.size());
+  result.generated_token_count = static_cast<int>(decoding.token_ids.size());
   return result;
 }
 

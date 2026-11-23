@@ -15,7 +15,8 @@ constexpr float kQueryKeyNormEpsilon = 1e-6f;
 
 mx::array MingModel::DeltaAttention(const mx::array &hidden_states,
                                     const std::string &weight_prefix,
-                                    DeltaCache &cache) const {
+                                    DeltaCache &cache,
+                                    bool keeps_last_round) const {
   const int token_count = hidden_states.shape(1);
   const int head_count = config_.attention_head_count;
   const int head_dimension = config_.attention_head_dimension;
@@ -30,12 +31,14 @@ mx::array MingModel::DeltaAttention(const mx::array &hidden_states,
                                  hidden_states.dtype()),
                        mx::zeros({1, history_token_count, projection_dimension},
                                  hidden_states.dtype())};
+  std::array<mx::array, 3> convolution_inputs = convolution_history;
   const auto project_convolution = [&](const std::string &projection_name,
                                        size_t projection_index) {
     auto projected_states = checkpoint_.Linear(
         hidden_states, weight_prefix + "." + projection_name + "_proj");
     projected_states = mx::concatenate(
         {convolution_history[projection_index], projected_states}, 1);
+    convolution_inputs[projection_index] = projected_states;
     convolution_history[projection_index] = mx::slice(
         projected_states, {0, token_count, 0}, projected_states.shape());
     projected_states = omni_common::Silu(
@@ -84,6 +87,16 @@ mx::array MingModel::DeltaAttention(const mx::array &hidden_states,
       GatedDelta(queries, keys, projected_states[2], decay, beta, state);
   cache.state =
       DeltaState{std::move(convolution_history), recurrent.next_state};
+  if (keeps_last_round) {
+    cache.last_round = DeltaRound{state,
+                                  queries,
+                                  keys,
+                                  projected_states[2],
+                                  decay,
+                                  beta,
+                                  std::move(convolution_inputs)};
+  } else {
+  }
   const auto rounded_output =
       mx::astype(recurrent.output, projected_states[2].dtype());
   auto output = mx::astype(rounded_output, mx::float32);

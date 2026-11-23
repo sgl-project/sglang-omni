@@ -231,8 +231,11 @@ MossTranscriber::MossTranscriber(const std::filesystem::path &model_directory,
                                  int draft_quantization_bits)
     : model_(model_directory), tokenizer_(model_directory) {
   if (!draft_directory.empty()) {
+    const auto &target = model_.decoder().config();
     draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+                   omni_common::DraftTarget{target.hidden_size,
+                                            target.vocab_size,
+                                            target.num_hidden_layers});
   } else {
   }
   for (char digit = '0'; digit <= '9'; ++digit) {
