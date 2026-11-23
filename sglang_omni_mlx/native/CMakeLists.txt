@@ -265,6 +265,21 @@ set_target_properties(sensevoice_server sensevoice_transcribe PROPERTIES
   INSTALL_RPATH "@loader_path")
 install(TARGETS sensevoice_server sensevoice_transcribe RUNTIME DESTINATION bin)
 
+# Note (wilsonzheng0327): Fun-ASR-Nano: funasr_server, with qwen3_asr_server's
+# API without realtime, and its parity tool; the encoder is SenseVoice's
+# shared SAN-M encoder and the decoder the shared Qwen3 decoder.
+add_library(funasr_asr STATIC src/funasr/funasr_model.cpp src/funasr/funasr_transcriber.cpp)
+target_link_libraries(funasr_asr PUBLIC common)
+target_compile_options(funasr_asr PRIVATE -Wall -Wextra)
+add_executable(funasr_server src/funasr/funasr_server.cpp)
+target_link_libraries(funasr_server PRIVATE funasr_asr asr_service)
+add_executable(funasr_transcribe tools/funasr_transcribe.cpp)
+target_link_libraries(funasr_transcribe PRIVATE funasr_asr)
+set_target_properties(funasr_server funasr_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS funasr_server funasr_transcribe RUNTIME DESTINATION bin)
+
 # AuK's reference front end uses the same SoX resampler revision as python-soxr.
 FetchContent_Declare(
   soxr
