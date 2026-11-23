@@ -99,10 +99,7 @@ jobs:
         id: prepare
         run: |
           sglang_version=$(python scripts/npu/config.py --get sglang-version)
-          cann_image=$(python scripts/npu/config.py --get cann-image-910b)
           echo "sglang_tag=v$sglang_version" >> "$GITHUB_OUTPUT"
-          echo "cann_image=$cann_image" >> "$GITHUB_OUTPUT"
-          echo "cann_image_tag=${cann_image%@*}" >> "$GITHUB_OUTPUT"
           bash scripts/npu/prepare_sglang_a2.sh .cache/sglang-910b
       - name: Build the SGLang 910B base
         if: matrix.device == '910b'
@@ -112,7 +109,6 @@ jobs:
           context: .cache/sglang-910b
           file: .cache/sglang-910b/npu.Dockerfile
           platforms: linux/arm64
-          build-contexts: ${{ steps.prepare.outputs.cann_image_tag }}=docker-image://${{ steps.prepare.outputs.cann_image }}
           build-args: |
             DEVICE_TYPE=910b
             CANN_VERSION=${{ matrix.cann }}
