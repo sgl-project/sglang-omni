@@ -4,6 +4,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-11-22
+
 ### Added
 
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
@@ -14,9 +16,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Transcribe's clean-up follows its rules better on small local models** (#4459): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
 - **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
-- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
@@ -66,9 +68,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
-- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。
