@@ -26,7 +26,7 @@ import (
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
 	router         *uiRouter
-	openingStarted time.Time // the first-use opening's start (opening_controller.go)
+	openingStarted time.Time // the opening's start (opening_controller.go)
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -202,7 +202,8 @@ func (a *app) openWindow() {
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
-	a.startOpening() // opening_controller.go
+	hidden := startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General)
+	a.startOpening(hidden) // opening_controller.go
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -214,7 +215,7 @@ func (a *app) openWindow() {
 		TitleBarHeight: titleBarHeight,
 		Transparent:    true,
 		Content:        shellContent(a.view),
-		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
+		Hidden:         hidden,
 	})
 	a.life = a.win
 	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start

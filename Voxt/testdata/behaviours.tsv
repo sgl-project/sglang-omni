@@ -63,6 +63,7 @@ In-app update	M	scripts/mac-update-e2e.sh	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingWalk	none
 First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOptionalKey	none
+Opening at each start of the app	L	TestOpeningPlaysAtEachStart	A real quit and relaunch of Voxt.app is checked by hand only
 Settings and appearance	L	TestWindowTransparencySettings	none
 Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
