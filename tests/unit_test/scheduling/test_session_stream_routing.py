@@ -46,7 +46,7 @@ def scheduler_with_unit(stages: tuple[str, ...]):
         OmniScheduler.put_stream_messages, scheduler
     )
     sched_output = SimpleNamespace(
-        requests=[SimpleNamespace(request_id="unit-1", data="data")]
+        batch_data=None, requests=[SimpleNamespace(request_id="unit-1", data="data")]
     )
     mr_output = SimpleNamespace(outputs={"unit-1": "output"})
     return scheduler, sched_output, mr_output

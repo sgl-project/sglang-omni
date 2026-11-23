@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.profiler.event_recorder import get_recorder
@@ -50,7 +50,7 @@ def bridge_with_unit(ids: list[int]) -> tuple[ARSessionBridge, SessionUnit]:
         )
 
     scheduler.session_controller.get.return_value = SimpleNamespace(
-        session_id="native", create_req=create_req, req_nodes={}
+        session_id="native", create_req=create_req, turns={}
     )
     bridge = ARSessionBridge(scheduler, Mock(**{"plan_history_cut.return_value": None}))
     chunk = TimedChunk("text", 0, 0, 0, {"text": "hi"}, format="text_delta")
@@ -139,9 +139,9 @@ def test_a_completed_unit_does_not_inspect_kv_without_profiling() -> None:
 def test_a_completed_unit_records_the_checkpointed_session_kv(tmp_path: Path) -> None:
     bridge, _ = bridge_with_unit([1, 2])
     bridge.bridge_scheduler.tree_cache.session_records.return_value = {
-        "talker": SimpleNamespace(
+        "talker": ReqKvInfo(
             kv_allocated_len=3127,
-            get_evicted_seqlen=lambda _component_type: 127,
+            window_evicted_seqlens={"window.128": 127, "window.256": 0},
         )
     }
     bridge.bridge_scheduler.tree_cache.evictable_size.return_value = 17

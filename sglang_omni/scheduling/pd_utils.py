@@ -63,7 +63,7 @@ def serialize_kv_allocator(
 
         return call
 
-    for name in dir(allocator):
+    for name, _ in inspect.getmembers(type(allocator), inspect.isfunction):
         method = getattr(allocator, name)
         if not name.startswith("_") and inspect.ismethod(method):
             setattr(allocator, name, synchronized(method))
@@ -491,6 +491,7 @@ class DecodeKVReceiver:
         admissions: queue.SimpleQueue[DecodeAdmission],
         resume_schema: str,
         lifecycle_lock: _thread.RLock | None = None,
+        cancelled_request_ids: set[str] | None = None,
     ) -> None:
         self.pool_id = pool_id
         self.allocator = allocator
@@ -498,6 +499,11 @@ class DecodeKVReceiver:
         self.resume_schema = resume_schema
         self.lock = lifecycle_lock or threading.RLock()
         self.reservations: dict[str, DecodeAdmission] = {}
+        self.committed: dict[str, DecodeAdmission] = {}
+        self.cancelled_transfers: set[str] = set()
+        self.cancelled_request_ids = (
+            set() if cancelled_request_ids is None else cancelled_request_ids
+        )
         self.transfer_tombstones: dict[str, None] = {}
         self.accepting_reservations = True
         self.closed = False
@@ -505,7 +511,7 @@ class DecodeKVReceiver:
     def remember_finished_transfer(self, transfer_id: str) -> None:
         self.transfer_tombstones[transfer_id] = None
         if len(self.transfer_tombstones) > _TRANSFER_TOMBSTONE_LIMIT:
-            del self.transfer_tombstones[next(iter(self.transfer_tombstones))]
+            self.transfer_tombstones.pop(next(iter(self.transfer_tombstones)))
         else:
             pass
 
@@ -547,6 +553,10 @@ class DecodeKVReceiver:
             pass
         bindings = dict(request.metadata.get("replica_bindings") or {})
         with self.lock:
+            if request.request_id in self.cancelled_request_ids:
+                raise RuntimeError("KV transfer request was cancelled")
+            else:
+                pass
             if self.closed:
                 raise RuntimeError("decode KV receiver is closed")
             else:
@@ -557,6 +567,7 @@ class DecodeKVReceiver:
                 pass
             if (
                 request.transfer_id in self.reservations
+                or request.transfer_id in self.committed
                 or request.transfer_id in self.transfer_tombstones
             ):
                 raise RuntimeError(f"duplicate KV transfer {request.transfer_id!r}")
@@ -598,6 +609,8 @@ class DecodeKVReceiver:
             else:
                 pass
             self.remember_finished_transfer(request.transfer_id)
+            cancelled = request.transfer_id in self.cancelled_transfers
+            self.cancelled_transfers.discard(request.transfer_id)
             if (
                 self.closed
                 or request.request_id != reservation.continuation.request_id
@@ -609,7 +622,48 @@ class DecodeKVReceiver:
                 raise RuntimeError("KV commit does not match a live reservation")
             else:
                 pass
+            if cancelled or request.request_id in self.cancelled_request_ids:
+                self.allocator.free(reservation.allocation.slots)
+                return
+            else:
+                pass
+            self.committed[request.transfer_id] = reservation
             self.admissions.put(reservation)
+
+    def cancel_request(self, request_id: str) -> None:
+        """Hold in-flight destinations until the comm thread finishes copying."""
+        with self.lock:
+            self.cancelled_transfers.update(
+                transfer_id
+                for transfer_id, admission in self.reservations.items()
+                if admission.continuation.request_id == request_id
+            )
+            for admission in tuple(self.committed.values()):
+                if admission.continuation.request_id == request_id:
+                    self.release_admission(admission)
+                else:
+                    pass
+
+    def owns_admission(self, admission: DecodeAdmission) -> bool:
+        with self.lock:
+            return self.committed.get(admission.continuation.transfer_id) is admission
+
+    def adopt(self, admission: DecodeAdmission) -> None:
+        """The scheduler has installed these slots in a real request row."""
+        with self.lock:
+            owned = self.committed.pop(admission.continuation.transfer_id)
+            assert owned is admission
+
+    def release_admission(self, admission: DecodeAdmission) -> None:
+        """Drop committed slots that never acquired a request-table row."""
+        with self.lock:
+            owned = self.committed.pop(admission.continuation.transfer_id)
+            assert owned is admission
+            self.allocator.free(admission.allocation.slots)
+
+    def owned_allocations(self) -> tuple[DecodeAdmission, ...]:
+        with self.lock:
+            return (*self.reservations.values(), *self.committed.values())
 
     def abort(
         self,
@@ -619,15 +673,16 @@ class DecodeKVReceiver:
     ) -> None:
         del destination
         with self.lock:
+            self.cancelled_transfers.discard(request.transfer_id)
             reservation = self.reservations.pop(request.transfer_id, None)
             if reservation is not None:
                 self.remember_finished_transfer(request.transfer_id)
             else:
                 pass
-        if reservation is not None:
-            self.allocator.free(reservation.allocation.slots)
-        else:
-            pass
+            if reservation is not None:
+                self.allocator.free(reservation.allocation.slots)
+            else:
+                pass
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)
 
     def has_reservations(self) -> bool:

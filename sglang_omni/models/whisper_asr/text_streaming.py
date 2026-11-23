@@ -3,6 +3,7 @@
 
 import time
 
+from sglang.srt.managers.scheduler_components.request_list import ListKind
 from transformers import WhisperTokenizer
 
 from sglang_omni.models.whisper_asr.request_builders import WhisperASRRequestData
@@ -35,7 +36,10 @@ class ExactWhisperStreamOutputBuilder:
         payload = request_data.stage_payload
         if request is None or payload is None:
             return []
-        elif request.inflight_middle_chunks > 0:
+        elif (
+            request.owner_list is not None
+            and request.owner_list.kind is ListKind.CHUNKED
+        ):
             return []
         elif not (payload.request.params or {}).get("stream", False):
             return []

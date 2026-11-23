@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Callable
 
+from sglang.srt.managers.scheduler_components.request_list import ListKind
+
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.types import RequestOutput
 
@@ -47,7 +49,7 @@ def make_token_text_stream_output_builder(
             pass
 
         # note (guozhihao): suppress while chunked prefill is still on prompt tokens.
-        if req.inflight_middle_chunks > 0:
+        if req.owner_list is not None and req.owner_list.kind is ListKind.CHUNKED:
             return []
         else:
             pass

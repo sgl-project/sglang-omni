@@ -13,7 +13,7 @@ from array import array
 from collections import deque
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from queue import Empty, Queue
@@ -24,8 +24,9 @@ from unittest.mock import Mock
 import pytest
 import sglang.srt.managers.scheduler as sglang_scheduler_module
 import sglang.srt.managers.scheduler_components.batch_result_processor as batch_result_processor_module
+import sglang.srt.managers.scheduler_components.request_retirer as request_retirer_module
 import torch
-from sglang.srt.disaggregation.utils import DisaggregationMode
+from sglang.srt.disaggregation.mode import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import (
     FINISH_LENGTH,
@@ -38,6 +39,13 @@ from sglang.srt.managers.scheduler import GenerationBatchResult
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    KeyedReqList,
+    ListKind,
+    move,
+)
+from sglang.srt.managers.scheduler_components.request_retirer import RequestRetirer
 from sglang.srt.mem_cache.allocator.paged import PagedTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
@@ -46,6 +54,9 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 )
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.penalties import PenaltyStatusPool
+from sglang.srt.sampling.sampler_params import SamplerParamsPool
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
@@ -96,7 +107,7 @@ def serving_bag(monkeypatch):
     monkeypatch.setattr(sglang_scheduler_module, "get_serving", lambda: serving)
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def published_config():
     with get_context().override_server_args():
         yield
@@ -110,10 +121,97 @@ def ingress(*chunks, done: bool = False) -> omni_scheduler_module.PendingStreamI
 
 
 def req_to_token_pool() -> SimpleNamespace:
-    return SimpleNamespace(req_to_token=torch.zeros((2, 4), dtype=torch.int32))
+    return SimpleNamespace(
+        req_to_token=torch.zeros((2, 4), dtype=torch.int32), device="cpu"
+    )
+
+
+def waiting_requests(*requests):
+    waiting = IndexedReqList(ListKind.WAITING)
+    move(requests, waiting)
+    return waiting
+
+
+class ModelConfigStub:
+    """Identity and weak-reference semantics used by main's model registries."""
+
+    def __init__(self, **attributes):
+        self.__dict__.update(attributes)
+
+
+def scheduler_stub():
+    """Main's ownership components, without a model or device allocation."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    scheduler.running_reqs = KeyedReqList(ListKind.DECODING)
+    scheduler.prefill_launched_reqs = KeyedReqList(ListKind.PREFILL_LAUNCHED)
+    scheduler.grammar_manager = omni_scheduler_module.NoOpGrammarManager()
+    scheduler.disagg_prefill_transfer_queue = IndexedReqList(ListKind.PD_SENDING)
+    for name in (
+        "disagg_prefill_bootstrap_queue",
+        "disagg_decode_prealloc_queue",
+        "disagg_decode_transfer_queue",
+        "hisparse_coordinator",
+        "uocr_runtime",
+        "deferred_responses",
+        "decode_offload_manager",
+        "dllm_config",
+        "abort_callback",
+        "request_finished_callback",
+        "_pending_chunked_abort_req",
+    ):
+        setattr(scheduler, name, None)
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
+    scheduler.enable_unified_cache_external_linker = False
+    scheduler.enable_overlap = False
+    scheduler.inflight_step_requests = {}
+    scheduler.invariant_checker = Mock()
+    scheduler.tree_cache = Mock()
+    scheduler.penalty_status_pool = PenaltyStatusPool(vocab_size=32, device="cpu")
+    scheduler.request_retirer = RequestRetirer(
+        tree_cache=scheduler.tree_cache,
+        beam_coordinator=Mock(),
+        hisparse_coordinator=None,
+        uocr_runtime=None,
+        penalty_status_pool=scheduler.penalty_status_pool,
+        send_abort_output=scheduler.send_abort_output,
+        stream_output=scheduler.stream_output,
+    )
+    scheduler.aborted_request_ids = set()
+    scheduler.completed_request_ids = {}
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.pending_stream_ingress = {}
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    return scheduler
+
+
+def cpu_batch(scheduler, requests, **kwargs):
+    batch = ScheduleBatch(
+        reqs=requests,
+        device="cpu",
+        sampling_info=SamplingBatchInfo(vocab_size=32, device="cpu"),
+        **kwargs,
+    )
+    scheduler.sampler_params_pool = SamplerParamsPool(
+        num_rows=len(requests) + 1, device="cpu"
+    )
+    for index, request in enumerate(requests):
+        request.kv.req_pool_idx = index
+    scheduler.sampler_params_pool.write(requests)
+    scheduler.penalty_status_pool.alloc(requests)
+    batch.req_pool_indices = torch.arange(len(requests), dtype=torch.int64)
+    batch.req_pool_indices_cpu = batch.req_pool_indices
+    return batch
 
 
 def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
+    if "chunked_reqs" not in vars(scheduler):
+        scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    scheduler.inflight_step_requests = {}
+    scheduler.invariant_checker = Mock()
     scheduler.enable_overlap = False
     scheduler.result_queue = deque()
     scheduler.request_admission_lock = threading.RLock()
@@ -128,6 +226,7 @@ def init_sync_request_build_state(scheduler: OmniScheduler) -> None:
     scheduler.abort_on_priority_when_disabled = False
     scheduler.processed_tokens_counter = 0
     scheduler.enable_lmcache = False
+    scheduler.enable_unified_cache_external_linker = False
     scheduler.sliding_window_size = None
     scheduler.chunked_prefill_size = None
     if not hasattr(scheduler, "max_queued_requests"):
@@ -223,7 +322,7 @@ def test_route_session_input_records_authoritative_ar_bypass(
         complete=Mock(),
         adapter=SimpleNamespace(finish_input=Mock(return_value=eos_payload)),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.session_bridge = bridge
     scheduler.aborted_request_ids = set()
     scheduler.outbox = Queue()
@@ -250,7 +349,7 @@ def test_route_session_input_records_authoritative_ar_bypass(
 def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
     should_run_top_priority_stream: bool,
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_async_decode = False
     scheduler.enable_overlap = False
     scheduler.should_run_top_priority_stream = should_run_top_priority_stream
@@ -282,7 +381,7 @@ def test_start_runs_the_loop_on_the_top_priority_stream_only_when_asked(
 
 
 def test_shutdown_resources_stops_the_borrowed_d2h_copy_worker_once() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.shutdown_lock = threading.Lock()
     calls: list[str] = []
     scheduler.shutdown_callback = lambda: calls.append("callback")
@@ -299,7 +398,7 @@ def test_shutdown_resources_stops_the_borrowed_d2h_copy_worker_once() -> None:
 
 
 def test_shutdown_resources_without_a_d2h_copy_worker_runs_only_the_callback() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.shutdown_lock = threading.Lock()
     calls: list[str] = []
     scheduler.shutdown_callback = lambda: calls.append("callback")
@@ -321,16 +420,14 @@ def make_abortable_req(request_id: str, **attributes):
         "grammar": None,
     }
     values.update(attributes)
-    req = SimpleNamespace(**values)
-    req.finished = lambda: req.finished_reason is not None
-
-    def update_finish_state() -> None:
-        if req.finished() or req.to_finish is None:
-            return
-        req.finished_reason = req.to_finish
-        req.to_finish = None
-
-    req.update_finish_state = update_finish_state
+    req = Req(
+        rid=request_id,
+        origin_input_text="",
+        origin_input_ids=array("q", [1]),
+        sampling_params=SamplingParams(max_new_tokens=8),
+    )
+    for name, value in values.items():
+        setattr(req, name, value)
     return req
 
 
@@ -347,7 +444,7 @@ def make_abortable_req(request_id: str, **attributes):
 def test_scheduler_idle_sleep_yields_to_pending_request_builds(
     monkeypatch, tp_size, is_entry_rank, pending_queue
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.tp_size = tp_size
     scheduler.is_entry_rank = is_entry_rank
     scheduler.inbox = Mock()
@@ -383,7 +480,7 @@ def test_event_loops_run_without_autograd(loop_name: str) -> None:
     class StopLoop(Exception):
         pass
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = False
     scheduler.running = True
     grad_modes: list[bool] = []
@@ -401,7 +498,7 @@ def test_event_loops_run_without_autograd(loop_name: str) -> None:
 
 
 def test_normal_event_loop_uses_request_build_aware_idle_sleep(monkeypatch) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.running = True
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.request_admission_lock = threading.RLock()
@@ -532,12 +629,12 @@ def test_threaded_simple_scheduler_reports_worker_errors() -> None:
 
 
 def test_take_deferred_request_payloads_is_event_driven() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.running_batch = None
     scheduler.cur_batch = None
     scheduler.last_batch = None
     scheduler.async_pending = None
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.completed_request_ids = {}
     scheduler.pending_stream_ingress = {}
     payload = object()
@@ -571,7 +668,7 @@ def test_take_deferred_request_payloads_is_event_driven() -> None:
 def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) -> None:
     """Forward failures are owned by the scheduler, not model executors."""
     release_calls: list[tuple[str, object, bool]] = []
-    tree_cache = object()
+    tree_cache = Mock()
     model_path_events: list[tuple[str, str, str | None]] = []
     monkeypatch.setattr(
         omni_scheduler_module,
@@ -591,7 +688,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             # note (Richard Wang): the coordinator's abort echo can land mid release
             scheduler.abort(req.rid)
 
-    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", release_kv_cache)
+    monkeypatch.setattr(request_retirer_module, "release_kv_cache", release_kv_cache)
 
     class BoomModelRunner:
         def execute(self, sched_output):
@@ -601,7 +698,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
             ]
             raise RuntimeError("cuda out of memory")
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.model_runner = BoomModelRunner()
     scheduler.stream_output_builder = None
     scheduler.outbox = Queue()
@@ -617,7 +714,8 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.dirty_deferred_request_ids = {"req-1"}
     scheduler.abort_callback = None
     scheduler.tree_cache = tree_cache
-    scheduler.waiting_queue = []
+    scheduler.request_retirer.tree_cache = tree_cache
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.last_batch = None
     scheduler.forward_ct = 0
     scheduler._sched_idled = False  # noqa: leading-underscore  # production name
@@ -625,8 +723,9 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
 
-    batch = SimpleNamespace(
-        reqs=[
+    batch = cpu_batch(
+        scheduler,
+        requests=[
             make_abortable_req(
                 "req-1",
                 omni_data=SimpleNamespace(),
@@ -642,7 +741,7 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         ],
         batch_is_full=True,
         is_prefill_only=True,
-        is_extend_in_batch=False,
+        forward_mode=ForwardMode.EXTEND,
         extend_num_tokens=None,
         spec_algorithm=SpeculativeAlgorithm.NONE,
     )
@@ -651,7 +750,9 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
         req.omni_data.req = req
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
-    scheduler.chunked_req = failed_reqs[1]
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    failed_reqs[1].owner_list = None
+    move([failed_reqs[1]], scheduler.chunked_reqs)
     init_sync_request_build_state(scheduler)
 
     result = scheduler.run_batch(batch)
@@ -682,9 +783,9 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
 
 
 def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
-    from sglang.srt.disaggregation.utils import DisaggregationMode
+    from sglang.srt.disaggregation.mode import DisaggregationMode
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
     scheduler.disaggregation_mode = DisaggregationMode.NULL
@@ -692,7 +793,7 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.abort_on_priority_when_disabled = False
     scheduler.rust_server = None
     scheduler.max_queued_requests = 0
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.enable_hicache_storage = False
     scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
@@ -700,15 +801,14 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     scheduler.tree_cache = SimpleNamespace(
         finish=lambda handle, outcome: cache_finishes.append((handle, outcome))
     )
+    scheduler.request_retirer.tree_cache = scheduler.tree_cache
     aborts: list[tuple[str, bool]] = []
-    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
-        (rid, defer_running_cleanup)
-    )
+    scheduler.abort_callback = lambda rid: aborts.append((rid, False))
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
     trace_aborts: list[dict] = []
-    req = SimpleNamespace(
-        rid="req-over-limit",
+    req = make_abortable_req(
+        "req-over-limit",
         release_mm_inputs_on_abort=Mock(),
         session=None,
         cache_request_handle=CacheRequestHandle(rid="req-over-limit", attempt_id=0),
@@ -732,20 +832,21 @@ def test_upstream_queue_limit_abort_is_translated_to_omni_output() -> None:
     assert "queue is full" in str(output.data)
     assert aborts == [(req.rid, False)]
     assert trace_aborts == [{"reason": "The request queue is full."}]
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert cache_finishes == [(req.cache_request_handle, CacheRequestOutcome.ABORT)]
 
 
 def requeue_scheduler() -> OmniScheduler:
-    from sglang.srt.disaggregation.utils import DisaggregationMode
+    from sglang.srt.disaggregation.mode import DisaggregationMode
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler.enable_priority_scheduling = False
     scheduler.abort_on_priority_when_disabled = False
     scheduler.rust_server = None
     scheduler.max_queued_requests = None
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
+    scheduler.invariant_checker = Mock()
     scheduler.enable_hicache_storage = False
     scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
@@ -758,8 +859,8 @@ def history_request(
 ) -> SimpleNamespace:
     data = SGLangARRequestData()
     data.decode_input_embeds = [snapshot[row] for snapshot in snapshots]
-    return SimpleNamespace(
-        rid=f"req-{row}",
+    return make_abortable_req(
+        f"req-{row}",
         priority=None,
         is_retracted=is_retracted,
         omni_data=data,
@@ -794,7 +895,7 @@ def test_retracted_request_history_gets_its_own_storage_before_requeue(
         scheduler, fresh
     )  # noqa: leading-underscore  # production name
 
-    assert scheduler.waiting_queue == [retracted, fresh]
+    assert list(scheduler.waiting_queue) == [retracted, fresh]
     assert retracted_request_ids == [retracted.rid]
     history = retracted.omni_data.decode_input_embeds
     assert torch.equal(torch.stack(history), expected)
@@ -821,7 +922,7 @@ def test_retracted_request_without_history_is_requeued_untouched() -> None:
         scheduler, retracted, is_retracted=True
     )  # noqa: leading-underscore  # production name
 
-    assert scheduler.waiting_queue == [retracted]
+    assert list(scheduler.waiting_queue) == [retracted]
     assert retracted.omni_data.decode_input_embeds == []
 
 
@@ -852,7 +953,7 @@ def test_retracted_request_with_model_owned_data_is_requeued(
         scheduler, retracted, is_retracted=True
     )  # noqa: leading-underscore  # production name
 
-    assert scheduler.waiting_queue == [retracted]
+    assert list(scheduler.waiting_queue) == [retracted]
     assert retracted.omni_data.decode_input_embeds == []
     assert retracted.omni_data.prefill_input_embeds is None
 
@@ -860,8 +961,8 @@ def test_retracted_request_with_model_owned_data_is_requeued(
 def retractable_request(
     request_id: str, *, is_finished: bool = False
 ) -> SimpleNamespace:
-    return SimpleNamespace(
-        rid=request_id,
+    return make_abortable_req(
+        request_id,
         priority=None,
         is_retracted=False,
         omni_data=SGLangARRequestData(),
@@ -903,22 +1004,20 @@ def retract_scheduler(
     def record_retract(
         *,
         reqs: list[SimpleNamespace],
-        req_to_token_pool: Mock,
-        token_to_kv_pool_allocator: Mock,
         tree_cache: Mock,
-        hisparse_coordinator: None,
-    ) -> None:
-        assert req_to_token_pool is scheduler.req_to_token_pool
-        assert token_to_kv_pool_allocator is scheduler.token_to_kv_pool_allocator
+        request_retirer,
+    ) -> list:
+        assert request_retirer is scheduler.request_retirer
         assert tree_cache is scheduler.tree_cache
-        assert hisparse_coordinator is None
         released_batches.append(list(reqs))
+        return []
 
     monkeypatch.setattr(omni_scheduler_module, "retract_all", record_retract)
     scheduler.req_to_token_pool = Mock()
     scheduler.token_to_kv_pool_allocator = Mock()
     scheduler.tree_cache = Mock()
     scheduler.hisparse_coordinator = None
+    scheduler.request_retirer = Mock()
     scheduler.async_pending = None
     scheduler.result_queue = deque()
     scheduler.running_batch = RunningBatchStub(
@@ -928,7 +1027,10 @@ def retract_scheduler(
         tree_cache=scheduler.tree_cache,
     )
     scheduler.last_batch = last_batch
-    scheduler.chunked_req = chunked_request
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    if chunked_request is not None:
+        chunked_request.owner_list = None
+        move([chunked_request], scheduler.chunked_reqs)
     return scheduler, released_batches
 
 
@@ -949,7 +1051,7 @@ def test_retract_releases_a_request_cut_between_its_extends(
     assert OmniScheduler.retract_running_requests(scheduler) == 1
 
     assert released_batches == [[chunked_request]]
-    assert scheduler.waiting_queue == [chunked_request]
+    assert list(scheduler.waiting_queue) == [chunked_request]
     assert scheduler.last_batch is None
     assert scheduler.chunked_req is None
 
@@ -974,7 +1076,7 @@ def test_retract_releases_and_requeues_each_unfinished_request_once(
 
     retracted_requests = [decoding_request, prefilled_request, chunked_request]
     assert released_batches == [retracted_requests]
-    assert scheduler.waiting_queue == retracted_requests
+    assert list(scheduler.waiting_queue) == retracted_requests
     assert scheduler.running_batch.reqs == []
     assert not scheduler.running_batch.batch_is_full
     assert scheduler.last_batch is None
@@ -996,12 +1098,12 @@ def test_retract_takes_only_the_running_batch_after_a_decode_step(
     assert OmniScheduler.retract_running_requests(scheduler) == 1
 
     assert released_batches == [[decoding_request]]
-    assert scheduler.waiting_queue == [decoding_request]
+    assert list(scheduler.waiting_queue) == [decoding_request]
     assert scheduler.last_batch is None
 
 
 def enqueue_limit_scheduler(monkeypatch):
-    from sglang.srt.disaggregation.utils import DisaggregationMode
+    from sglang.srt.disaggregation.mode import DisaggregationMode
 
     events: list[str] = []
     monkeypatch.setattr(
@@ -1009,7 +1111,7 @@ def enqueue_limit_scheduler(monkeypatch):
         "_emit_event",
         lambda **kwargs: events.append(kwargs["event_name"]),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
     scheduler.disaggregation_mode = DisaggregationMode.NULL
@@ -1018,7 +1120,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.abort_on_priority_when_disabled = False
     scheduler.rust_server = None
     scheduler.max_queued_requests = 1
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.enable_hicache_storage = False
     scheduler.enable_lmcache = False
     scheduler.enable_hierarchical_cache = False
@@ -1030,6 +1132,7 @@ def enqueue_limit_scheduler(monkeypatch):
     scheduler.abort_callback = None
     aborts: list[str] = []
     scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(rid)
+    scheduler.abort_callback = aborts.append
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
     scheduler.request_kv_capacity_error = lambda req, **_kwargs: None
@@ -1040,8 +1143,8 @@ def enqueue_limit_scheduler(monkeypatch):
 
 
 def admission_req(rid: str, token_ids: list[int]) -> SimpleNamespace:
-    return SimpleNamespace(
-        rid=rid,
+    return make_abortable_req(
+        rid,
         priority=None,
         weight_version_events=[],
         output_ids=[],
@@ -1093,7 +1196,7 @@ def test_enqueue_built_request_rejects_a_prompt_without_tokens(monkeypatch) -> N
     assert reject.type == "error"
     assert is_bad_request_error(RuntimeError(str(reject.data)))
     assert aborts == ["req-empty"]
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert "scheduler_queue_enter" not in events
 
 
@@ -1126,7 +1229,7 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
         ),
     )
 
-    assert scheduler.waiting_queue == [session_request]
+    assert list(scheduler.waiting_queue) == [session_request]
     assert unit.is_enqueued
     assert scheduler.outbox.empty()
     assert aborts == []
@@ -1177,14 +1280,14 @@ def test_enqueue_built_request_reports_a_full_session_capacity_as_overload(
     assert not ContextExhaustedError.matches(RuntimeError(str(reject.data)))
     assert released == ["req-append"]
     assert aborts == ["req-append"]
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
     None
 ):
     built: list[str] = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
     scheduler.max_queued_requests = 1
@@ -1221,7 +1324,7 @@ def staging_scheduler(
     request_build_max_pending: int = 4,
     backlog_limit: int = 4,
 ) -> OmniScheduler:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.request_admission_lock = threading.RLock()
     scheduler.request_build_executor = object()
     scheduler.request_build_max_pending = request_build_max_pending
@@ -1307,7 +1410,7 @@ def test_stage_request_build_payloads(
 
 
 def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
     scheduler.enable_hierarchical_cache = False
@@ -1318,7 +1421,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     scheduler.decode_offload_manager = None
     scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 0)
     scheduler.tree_cache = SimpleNamespace(
-        req_to_token_pool=SimpleNamespace(mamba_allocator=None)
+        token_to_kv_pool_allocator=SimpleNamespace(state_slots=None)
     )
     scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.5)
     scheduler.metrics_reporter = SimpleNamespace(
@@ -1327,14 +1430,12 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
     )
     scheduler.beam_coordinator = SimpleNamespace(retire_group=lambda req: None)
     aborts: list[tuple[str, bool]] = []
-    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
-        (rid, defer_running_cleanup)
-    )
+    scheduler.abort_callback = lambda rid: aborts.append((rid, False))
     scheduler.send_to_detokenizer = omni_scheduler_module.NoOpSender()
     scheduler.ipc_channels = omni_scheduler_module.OmniIpcChannels(scheduler)
 
-    req = SimpleNamespace(
-        rid="req-kv-exhausted",
+    req = make_abortable_req(
+        "req-kv-exhausted",
         to_finish=omni_scheduler_module.FINISH_ABORT("decode KV exhausted"),
         weight_version_events=[],
         output_ids=[],
@@ -1358,7 +1459,7 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
         def check_decode_mem(self) -> bool:
             return False
 
-        def retract_decode(self):
+        def retract_decode(self, request_retirer):
             self.reqs = []
             return [], 0.5, [req]
 
@@ -1379,20 +1480,19 @@ def test_upstream_kv_exhaustion_abort_is_translated_to_omni_output() -> None:
 def test_upstream_abort_translation_emits_only_on_entry_rank() -> None:
     from sglang.srt.managers.io_struct import AbortReq
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = False
     aborts: list[tuple[str, bool]] = []
-    scheduler.abort = lambda rid, *, defer_running_cleanup=True: aborts.append(
-        (rid, defer_running_cleanup)
-    )
+    scheduler.abort_callback = lambda rid: aborts.append((rid, False))
     sender = omni_scheduler_module.UpstreamAbortSender(scheduler)
 
     sender.send_output(
         AbortReq(
             rid="req-follower",
             finished_reason={"type": "abort", "message": "out of KV"},
-        )
+        ),
+        make_abortable_req("req-follower"),
     )
 
     assert scheduler.outbox.empty()
@@ -1417,7 +1517,7 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
         def execute_launch(self, sched_output):
             return SimpleNamespace()
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.model_runner = FakeModelRunner()
     scheduler.stream_output_builder = None
     scheduler.prefill_start_done = set()
@@ -1427,14 +1527,13 @@ def test_omni_scheduler_custom_runner_stamps_upstream_launch_metadata() -> None:
     scheduler.processed_tokens_counter = 0
 
     def batch(extend_num_tokens: int | None):
-        return SimpleNamespace(
-            reqs=[
-                SimpleNamespace(
-                    rid="r", omni_data=SimpleNamespace(), inflight_middle_chunks=0
-                )
-            ],
+        return cpu_batch(
+            scheduler,
+            requests=[make_abortable_req("r", omni_data=SimpleNamespace())],
             is_prefill_only=False,
-            is_extend_in_batch=False,
+            forward_mode=(
+                ForwardMode.EXTEND if extend_num_tokens else ForwardMode.DECODE
+            ),
             extend_num_tokens=extend_num_tokens,
             spec_algorithm=SpeculativeAlgorithm.NONE,
         )
@@ -1473,19 +1572,24 @@ def test_omni_scheduler_resolve_drops_retracted_req() -> None:
         captured["reqs"] = [r.rid for r in batch.reqs]
         captured["ntids"] = result.next_token_ids.tolist()
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.run_batch_resolve = fake_resolve
     scheduler.process_batch_result = fake_process
 
-    keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
-    retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
+    keep = make_abortable_req("keep")
+    retr = make_abortable_req("retr", is_retracted=True)
+    move([keep], scheduler.running_reqs)
+    move([retr], scheduler.waiting_queue)
     batch = SimpleNamespace(reqs=[keep, retr])
 
     scheduler.resolve_and_process(batch, object(), object())
 
     assert captured["skip_rids"] == {"retr"}
-    assert captured["reqs"] == ["keep"]
-    assert captured["ntids"] == [10]  # retracted row trimmed from next_token_ids
+    assert captured["reqs"] == ["keep", "retr"]
+    assert captured["ntids"] == [
+        10,
+        20,
+    ]  # main processes the complete launched snapshot
 
 
 def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
@@ -1510,7 +1614,7 @@ def test_omni_scheduler_fast_path_drops_retracted_req() -> None:
             self.reqs = [self.reqs[i] for i in keep_indices]
             self.out_cache_loc = None
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     keep = SimpleNamespace(rid="keep", finished=lambda: False, is_retracted=False)
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
 
@@ -1540,8 +1644,9 @@ def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
     ]
     live_batch = SimpleNamespace(reqs=list(reqs))
     snapshot = SimpleNamespace(reqs=list(reqs))
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.result_queue = deque()
+    move(reqs, scheduler.running_reqs)
     scheduler.running_batch = live_batch
     scheduler.cur_batch = live_batch
     scheduler.last_batch = None
@@ -1567,12 +1672,13 @@ def test_immediate_finish_keeps_async_snapshot_aligned_until_resolve() -> None:
     assert matches == [reqs[0]]
     assert live_batch.reqs == reqs
     assert snapshot.reqs == reqs
+    scheduler.request_retirer.release(reqs[0], checkpoint=False)
 
     scheduler.resolve_and_process(snapshot, object(), object())
 
     assert captured["skip_rids"] == {"req-0"}
-    assert captured["reqs"] == [reqs[1]]
-    assert captured["tokens"] == [20]
+    assert captured["reqs"] == reqs
+    assert captured["tokens"] == [10, 20]
 
 
 def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
@@ -1583,8 +1689,8 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     def fail_release(_req, _cache, *, checkpoint) -> None:
         raise RuntimeError("kv cleanup failed")
 
-    monkeypatch.setattr(omni_scheduler_module, "release_kv_cache", fail_release)
-    scheduler = object.__new__(OmniScheduler)
+    monkeypatch.setattr(request_retirer_module, "release_kv_cache", fail_release)
+    scheduler = scheduler_stub()
     scheduler.abort_callback = None
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -1595,7 +1701,7 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.tree_cache = object()
 
     req = make_abortable_req(
@@ -1621,7 +1727,7 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
     cleaned: list[str] = []
     release_calls: list[str] = []
     monkeypatch.setattr(
-        omni_scheduler_module,
+        request_retirer_module,
         "release_kv_cache",
         lambda req, _cache, *, checkpoint: release_calls.append(req.rid),
     )
@@ -1631,7 +1737,7 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
         "_emit_model_path_end",
         lambda rid, *, status: model_path_ends.append((rid, status)),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.abort_callback = cleaned.append
     scheduler.request_finished_callback = None
     scheduler.aborted_request_ids = set()
@@ -1644,10 +1750,10 @@ def test_omni_scheduler_abort_marks_running_request_for_finish(monkeypatch) -> N
     scheduler.prefill_start_done = {"req-run"}
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
 
-    req = SimpleNamespace(
-        rid="req-run",
+    req = make_abortable_req(
+        "req-run",
         to_finish=None,
         finished_reason=None,
         kv=ReqKvInfo(req_pool_idx=1),
@@ -1692,7 +1798,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
         "_emit_model_path_end",
         lambda rid, *, status: model_path_ends.append((rid, status)),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.abort_callback = cleaned.append
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -1704,10 +1810,10 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
 
-    req = SimpleNamespace(rid="req-wait")
+    req = make_abortable_req("req-wait")
     request_data = SimpleNamespace(req=req)
     req.omni_data = request_data
-    scheduler.waiting_queue = [req]
+    scheduler.waiting_queue = waiting_requests(req)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -1715,7 +1821,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
 
     scheduler.abort("req-wait")
 
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert cleaned == ["req-wait"]
     assert req.omni_data is None
     assert request_data.req is req
@@ -1723,7 +1829,7 @@ def test_omni_scheduler_abort_cleans_queued_request_immediately(monkeypatch) -> 
 
 def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     cleaned: list[str] = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.abort_callback = cleaned.append
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -1734,7 +1840,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.tree_cache = None
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
 
     req = make_abortable_req(
         "req-retracted",
@@ -1750,7 +1856,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
         input_ids=torch.tensor([20, 21]),
         batch_is_full=True,
     )
-    scheduler.waiting_queue = [req]
+    scheduler.waiting_queue = waiting_requests(req)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = stale_batch
@@ -1758,7 +1864,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
 
     scheduler.abort("req-retracted")
 
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert stale_batch.reqs == [req, other_req]
     assert stale_batch.req_pool_indices.tolist() == [10, 11]
     assert stale_batch.input_ids.tolist() == [20, 21]
@@ -1771,7 +1877,7 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
 
 def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
     """A mid-step abort must not ship one more chunk to the vocoder."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = {"req-aborted"}
     scheduler.first_emit_done = set()
@@ -1780,10 +1886,11 @@ def test_omni_scheduler_emit_stream_output_skips_aborted_requests() -> None:
     ]
 
     sched_output = SimpleNamespace(
+        batch_data=None,
         requests=[
             SimpleNamespace(request_id="req-live", data=None),
             SimpleNamespace(request_id="req-aborted", data=None),
-        ]
+        ],
     )
     mr_output = SimpleNamespace(outputs={"req-live": object(), "req-aborted": object()})
 
@@ -1799,7 +1906,7 @@ def test_stream_builder_failure_preserves_other_requests(
     async_decode: bool, lazy_failure: bool
 ) -> None:
     """A failing stream must not abort its batch or publish partial generator output."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
     scheduler.is_entry_rank = True
@@ -1813,7 +1920,7 @@ def test_stream_builder_failure_preserves_other_requests(
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.last_batch = None
     scheduler.forward_ct = 0
     scheduler._sched_idled = False  # noqa: leading-underscore  # production name
@@ -1846,11 +1953,12 @@ def test_stream_builder_failure_preserves_other_requests(
         make_abortable_req(request_id, omni_data=SGLangARRequestData(), output_ids=[7])
         for request_id in ("bad", "good")
     ]
-    batch = SimpleNamespace(
-        reqs=requests,
+    batch = cpu_batch(
+        scheduler,
+        requests=requests,
         batch_is_full=True,
         is_prefill_only=False,
-        is_extend_in_batch=False,
+        forward_mode=ForwardMode.DECODE,
         extend_num_tokens=0,
         spec_algorithm=SpeculativeAlgorithm.NONE,
     )
@@ -1971,7 +2079,7 @@ def test_put_messages_wakes_a_blocked_consumer() -> None:
 def test_omni_scheduler_emit_stream_output_enqueues_the_step_together(
     monkeypatch,
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
     scheduler.first_emit_done = set()
@@ -1990,10 +2098,11 @@ def test_omni_scheduler_emit_stream_output_enqueues_the_step_together(
 
     monkeypatch.setattr(omni_scheduler_module, "put_messages", recording_put_messages)
     sched_output = SimpleNamespace(
+        batch_data=None,
         requests=[
             SimpleNamespace(request_id="req-a", data=None),
             SimpleNamespace(request_id="req-b", data=None),
-        ]
+        ],
     )
     mr_output = SimpleNamespace(outputs={"req-a": object(), "req-b": object()})
 
@@ -2004,7 +2113,7 @@ def test_omni_scheduler_emit_stream_output_enqueues_the_step_together(
 
 
 def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -2023,8 +2132,8 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
         prefill_input_embeds=None,
         decode_input_embeds=None,
     )
-    req = SimpleNamespace(
-        rid="req-finished",
+    req = make_abortable_req(
+        "req-finished",
         omni_data=request_data,
         output_ids=[1, 2],
         finished=lambda: True,
@@ -2075,7 +2184,7 @@ def test_omni_scheduler_flushes_stream_before_terminal_result(monkeypatch) -> No
 def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     monkeypatch, num_draft_tokens: int, adaptive: bool, expected_rate: dict
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -2112,6 +2221,7 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
     finished = False
     req = SimpleNamespace(
         rid="req-spec",
+        send_via=None,
         omni_data=request_data,
         output_ids=[5, 6, 7],
         output_ids_through_stop=[5, 6, 7],
@@ -2171,7 +2281,7 @@ def test_speculative_stream_output_emits_each_committed_token_before_the_result(
 
 
 def test_speculative_emission_failure_fails_only_its_request() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -2193,6 +2303,7 @@ def test_speculative_emission_failure_fails_only_its_request() -> None:
     def running_request(request_id: str) -> SimpleNamespace:
         return SimpleNamespace(
             rid=request_id,
+            send_via=None,
             omni_data=SimpleNamespace(emitted_token_count=1, generation_steps=1),
             output_ids_through_stop=[5, 6],
             finished=lambda: False,
@@ -2244,7 +2355,7 @@ def test_abort_during_speculative_emission_lands_before_or_after_the_step(
     monkeypatch.setattr(
         omni_scheduler_module, "_emit_model_path_end", lambda rid, *, status: None
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_sync_request_build_state(scheduler)
     lock = ObservedRLock()
     scheduler.request_admission_lock = lock
@@ -2259,7 +2370,7 @@ def test_abort_during_speculative_emission_lands_before_or_after_the_step(
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     request_data = SimpleNamespace(emitted_token_count=1, generation_steps=1)
     req = SimpleNamespace(
         rid="req-spec-abort",
@@ -2321,7 +2432,7 @@ def assert_refusal_is_a_caller_error(refusal: str) -> None:
 
 
 def test_speculative_reserve_rejection_names_the_reserve(monkeypatch) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.draft_worker = SimpleNamespace()
     scheduler.max_req_len = 100
     scheduler.model_config = SimpleNamespace(context_len=200)
@@ -2363,7 +2474,7 @@ def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
     expected_hint: str,
 ) -> None:
     """A KV-capacity refusal told users to raise --thinker-mem-fraction-static, which sgl-omni serve rejects, whether engine.max_total_tokens, the model context or a speculative draft's context set the limit."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.draft_worker = SimpleNamespace() if has_draft else None
     monkeypatch.setattr(
         omni_scheduler_module, "get_alloc_reserve_per_decode", lambda: 16
@@ -2394,7 +2505,7 @@ def test_kv_capacity_rejection_names_the_setting_that_sets_the_limit(
 def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.draft_worker = None
     scheduler.max_req_len = 3404
     scheduler.model_config = SimpleNamespace(context_len=8192)
@@ -2474,7 +2585,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
     refused_option: str | None,
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.draft_worker = SimpleNamespace()
     scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
@@ -2529,7 +2640,7 @@ def test_plain_fallback_admission_preserves_sampling_contract(
     expected_fallback_reason: str | None,
 ) -> None:
     """Unsupported sampling must select plain before any draft prefill runs."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_plain_fallback = True
     scheduler.max_req_len = 100
     monkeypatch.setattr(
@@ -2573,7 +2684,7 @@ def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
     expected_path: Literal["plain", "spec"],
 ) -> None:
     """A request that fits plain must not be refused for draft-only KV reserves."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_plain_fallback = True
     scheduler.draft_worker = SimpleNamespace()
     scheduler.max_req_len = 100
@@ -2615,7 +2726,7 @@ def test_plain_fallback_accepts_requests_without_room_for_draft_reserve(
 
 def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req, Req]:
     """Create one active spec request and one queued plain request."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_plain_fallback = True
     scheduler.decode_path = "spec"
     scheduler.speculative_steps_since_plain = 1
@@ -2635,7 +2746,7 @@ def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req,
     scheduler.running_batch = ScheduleBatch(reqs=[request], batch_is_full=False)
     scheduler.last_batch = scheduler.running_batch
     scheduler.cur_batch = None
-    scheduler.chunked_req = None
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
     scheduler._pending_chunked_abort_req = (
         None  # noqa: leading-underscore  # upstream scheduler contract
     )
@@ -2658,7 +2769,7 @@ def plain_fallback_scheduler() -> tuple[OmniScheduler[SGLangARRequestData], Req,
     plain_request.omni_data = SGLangARRequestData(
         req=plain_request, decode_path="plain"
     )
-    scheduler.waiting_queue = [plain_request]
+    scheduler.waiting_queue = waiting_requests(plain_request)
     init_sync_request_build_state(scheduler)
     return scheduler, request, plain_request
 
@@ -2685,7 +2796,7 @@ def test_plain_fallback_weights_sparse_traffic_without_starvation(
     assert "plain" in selected_paths
     assert "spec" in selected_paths
     assert selected_paths.count("plain") == (5 if speculative_rows == 1 else 3)
-    scheduler.waiting_queue.remove(plain_request)
+    move([plain_request], scheduler.running_reqs)
     scheduler.select_next_decode_path()
     assert scheduler.decode_path == "spec"
 
@@ -2781,7 +2892,7 @@ def test_plain_fallback_retracts_active_rows_before_touching_parked_kv(
     scheduler.decode_batch_states["plain"] = omni_scheduler_module.DecodeBatchState(
         running_batch=parked_batch, last_batch=parked_batch
     )
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
 
     def filter_active_batch(*, keep_indices: list[int] | None = None) -> None:
         if keep_indices is not None:
@@ -2803,12 +2914,12 @@ def test_plain_fallback_retracts_active_rows_before_touching_parked_kv(
     scheduler.token_to_kv_pool_allocator = Mock()
     scheduler.tree_cache = Mock()
     scheduler.hisparse_coordinator = None
-    release_parked_requests = Mock()
+    release_parked_requests = Mock(return_value=[])
     monkeypatch.setattr(omni_scheduler_module, "retract_all", release_parked_requests)
     monkeypatch.setattr(
         scheduler,
         "_add_request_to_queue",  # noqa: leading-underscore
-        lambda request, is_retracted: scheduler.waiting_queue.append(request),
+        lambda request, is_retracted: move([request], scheduler.waiting_queue),
     )
     native_update = Mock(return_value=active_batch)
     monkeypatch.setattr(
@@ -2817,16 +2928,18 @@ def test_plain_fallback_retracts_active_rows_before_touching_parked_kv(
 
     assert scheduler.update_running_batch(active_batch) is active_batch
 
-    active_batch.release_req.assert_called_once_with(1, 1, offload_kv=False)
+    active_batch.release_req.assert_called_once_with(
+        1, 1, scheduler.request_retirer, offload_kv=False
+    )
     native_update.assert_called_once_with(scheduler, active_batch)
     assert active_batch.reqs == [request]
     if last_row_fits:
         release_parked_requests.assert_not_called()
-        assert scheduler.waiting_queue == [retracted_request]
+        assert list(scheduler.waiting_queue) == [retracted_request]
         assert scheduler.decode_batch_states["plain"].running_batch is parked_batch
     else:
         assert release_parked_requests.call_args.kwargs["reqs"] == [parked_request]
-        assert scheduler.waiting_queue == [retracted_request, parked_request]
+        assert list(scheduler.waiting_queue) == [retracted_request, parked_request]
         assert scheduler.decode_batch_states["plain"].running_batch.is_empty()
         assert scheduler.decode_batch_states["plain"].last_batch is None
     assert parked_request.omni_data.decode_path == "plain"
@@ -2849,7 +2962,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
     )
     adapted: list = []
     cleaned: list = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
     scheduler.abort_callback = cleaned.append
@@ -2870,7 +2983,7 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
         return result_adapter(data)
 
     scheduler.result_adapter = tracking_result_adapter
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     init_sync_request_build_state(scheduler)
 
     codes = torch.full((11, 1), 7, dtype=torch.long)
@@ -2881,8 +2994,8 @@ def test_omni_scheduler_fish_abort_during_step_suppresses_chunk_and_result() -> 
         latest_stream_code_chunk=codes,
         output_codes=[codes],
     )
-    req = SimpleNamespace(
-        rid="req-fish",
+    req = make_abortable_req(
+        "req-fish",
         to_finish=None,
         finished=lambda: False,
         finished_reason=None,
@@ -2927,7 +3040,7 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
     """The runner hook must fire on a non-abort finish, and strictly before the
     terminal payload lands on the shared outbox."""
     calls: list[tuple[str, object, str | None, int]] = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -2943,8 +3056,8 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
         )
     )
     finished_reason = SimpleNamespace(to_json=lambda: {"type": "stop"})
-    req = SimpleNamespace(
-        rid="req-1",
+    req = make_abortable_req(
+        "req-1",
         finished=lambda: True,
         finished_reason=finished_reason,
         output_ids=[7],
@@ -2964,7 +3077,7 @@ def test_stream_output_sets_finish_reason_and_drains_runner_before_terminal() ->
 
 
 def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -2979,8 +3092,8 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
 
     scheduler.model_runner = SimpleNamespace(on_request_finished=fail_finish_hook)
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
-    req = SimpleNamespace(
-        rid="req-hook-error",
+    req = make_abortable_req(
+        "req-hook-error",
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
@@ -3000,7 +3113,7 @@ def test_stream_output_cleans_request_when_runner_finish_hook_fails() -> None:
 
 
 def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -3018,8 +3131,8 @@ def test_stream_output_releases_request_when_terminal_flush_fails() -> None:
         "the result adapter must not run after a failed terminal flush"
     )
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
-    req = SimpleNamespace(
-        rid="req-flush-error",
+    req = make_abortable_req(
+        "req-flush-error",
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
@@ -3068,6 +3181,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     class Request:
         def __init__(self, data):
             self.rid = "req-terminal-abort-race"
+            self.send_via = None
             self.omni_data_value = data
             self.output_ids = []
             self.finished_reason = None
@@ -3100,7 +3214,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
         def finished(self):
             return True
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
     scheduler.inbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -3119,8 +3233,8 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     scheduler.result_adapter = lambda _data: {"ok": True}
     scheduler.model_runner = None
     scheduler.stream_output_builder = None
-    scheduler.tree_cache = None
-    scheduler.waiting_queue = []
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     init_sync_request_build_state(scheduler)
     scheduler.request_admission_lock = terminal_lock
 
@@ -3156,7 +3270,7 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
 
 
 def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.inbox = Queue()
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -3167,8 +3281,8 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
     scheduler.first_emit_done = set()
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
-    scheduler.waiting_queue = []
-    scheduler.tree_cache = None
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
     cleaned: list[str] = []
     scheduler.abort_callback = cleaned.append
     init_sync_request_build_state(scheduler)
@@ -3216,7 +3330,7 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
             self.owner = None
             self.lock.release()
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_sync_request_build_state(scheduler)
     scheduler.request_admission_lock = ObservedRLock()
     scheduler.outbox = Queue()
@@ -3236,12 +3350,12 @@ def test_abort_publishes_request_id_before_marking_terminal_finish() -> None:
     scheduler.result_adapter = lambda _data: pytest.fail(
         "an abort-winning terminal request must not be adapted"
     )
-    scheduler.tree_cache = None
-    scheduler.waiting_queue = []
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
-    req = SimpleNamespace(
-        rid="req-abort-wins",
+    req = make_abortable_req(
+        "req-abort-wins",
         output_ids=[],
         finished_reason=None,
         is_retracted=False,
@@ -3306,7 +3420,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
     class RequestData:
         pass
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -3320,6 +3434,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
     try:
         req = Request()
         req.rid = "req-collectable"
+        req.send_via = None
         req.finished = lambda: True
         req.finished_reason = None
         req.output_ids = []
@@ -3347,7 +3462,7 @@ def test_terminal_request_data_is_collectable_without_cyclic_gc() -> None:
 
 def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
     calls: list[str] = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = {"req-1"}
@@ -3359,8 +3474,8 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
         on_request_finished=lambda rid, _data: calls.append(rid)
     )
     data = SimpleNamespace()
-    req = SimpleNamespace(
-        rid="req-1",
+    req = make_abortable_req(
+        "req-1",
         finished=lambda: True,
         finished_reason=None,
         omni_data=data,
@@ -3377,7 +3492,7 @@ def test_stream_output_skips_runner_hook_for_aborted_requests() -> None:
 
 
 def test_stream_output_closes_late_stream_ingress() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -3387,8 +3502,8 @@ def test_stream_output_closes_late_stream_ingress() -> None:
     scheduler.result_adapter = lambda _data: {"ok": True}
 
     data = SimpleNamespace(prefill_input_embeds=None, decode_input_embeds=None)
-    req = SimpleNamespace(
-        rid="req-late-stream",
+    req = make_abortable_req(
+        "req-late-stream",
         finished=lambda: True,
         finished_reason=None,
         output_ids=[],
@@ -3409,7 +3524,7 @@ def test_stream_output_closes_late_stream_ingress() -> None:
 def test_completed_request_id_is_cleared_on_explicit_readmission(
     received_during_idle: bool,
 ) -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.tp_size = 1
     scheduler.is_entry_rank = True
     scheduler.outbox = Queue()
@@ -3437,7 +3552,7 @@ def test_completed_request_id_is_cleared_on_explicit_readmission(
 
 def tp_rank_scheduler(tp_rank: int, tp_size: int, placement: str) -> OmniScheduler:
     """One TP rank that owns an expired and a fresh request of its own."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.tp_size = tp_size
     scheduler.is_entry_rank = tp_rank == 0
     scheduler.tp_group = SimpleNamespace(rank=tp_rank, ranks=list(range(tp_size)))
@@ -3473,7 +3588,9 @@ def tp_rank_scheduler(tp_rank: int, tp_size: int, placement: str) -> OmniSchedul
     )
     queued = [expired, fresh] if placement == "waiting" else []
     running = [expired, fresh] if placement == "running" else []
-    scheduler.waiting_queue = queued
+    for request in (expired, fresh):
+        request.omni_data = SimpleNamespace(req=request)
+    scheduler.waiting_queue = waiting_requests(*queued)
     scheduler.running_batch = SimpleNamespace(reqs=running, batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -3503,6 +3620,33 @@ def install_tp_broadcast(monkeypatch: pytest.MonkeyPatch) -> None:
             return pickle.loads(published["messages"])
 
     monkeypatch.setattr(omni_scheduler_module, "broadcast_pyobj", broadcast_pyobj)
+
+
+def abort_from_stage_thread(scheduler: OmniScheduler, request_id: str) -> None:
+    """Call abort the way the stage's abort listener does: off the scheduler thread."""
+    thread_errors: list[BaseException] = []
+
+    def abort_request() -> None:
+        try:
+            scheduler.abort(request_id)
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=abort_request)
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert thread_errors == []
+
+
+def tp1_scheduler_on_this_thread() -> OmniScheduler:
+    """A TP=1 scheduler without a session bridge whose loop runs on this thread."""
+    scheduler = tp_rank_scheduler(0, 1, "waiting")
+    for request in scheduler.waiting_queue:
+        request.omni_data = SimpleNamespace(decode_prep_epoch=None)
+    scheduler.running = True
+    scheduler.scheduler_thread_id = threading.get_ident()
+    return scheduler
 
 
 @pytest.mark.parametrize("tp_size", [1, 2])
@@ -3539,7 +3683,7 @@ def test_request_timeout_fails_only_the_expired_request(
 
 
 @pytest.mark.parametrize(
-    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True)]
+    "tp_size,has_session_bridge", [(2, False), (2, True), (1, True), (1, False)]
 )
 @pytest.mark.parametrize("placement", ["waiting", "running"])
 def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
@@ -3560,26 +3704,11 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         else:
             pass
 
-    def abort_from_stage_thread(scheduler: OmniScheduler) -> None:
-        thread_errors: list[BaseException] = []
-
-        def abort_request() -> None:
-            try:
-                scheduler.abort("req-expired")
-            except BaseException as exc:
-                thread_errors.append(exc)
-
-        thread = threading.Thread(target=abort_request)
-        thread.start()
-        thread.join(timeout=1)
-        assert not thread.is_alive()
-        assert thread_errors == []
-
     for follower in ranks[1:]:
-        abort_from_stage_thread(follower)
+        abort_from_stage_thread(follower, "req-expired")
         assert schedulable_request_ids(follower) == ["req-expired", "req-fresh"]
         assert follower.inbox.empty()
-    abort_from_stage_thread(ranks[0])
+    abort_from_stage_thread(ranks[0], "req-expired")
     assert schedulable_request_ids(ranks[0]) == ["req-expired", "req-fresh"]
     for scheduler in ranks:
         assert scheduler.recv_requests() == []
@@ -3587,6 +3716,46 @@ def test_off_thread_abort_lands_on_every_tp_rank_in_one_pass(
         ["req-fresh"]
     ] * tp_size
     assert all(scheduler.inbox.empty() for scheduler in ranks)
+
+
+def test_off_thread_abort_keeps_the_data_of_a_request_in_a_formed_batch() -> None:
+    """A client disconnect while the scheduler forms a batch must not strip its data."""
+    scheduler = tp1_scheduler_on_this_thread()
+    # The scheduler thread takes both requests into a prefill batch ...
+    can_run = list(scheduler.waiting_queue)
+    # ... while the client of one of them disconnects.
+    abort_from_stage_thread(scheduler, "req-expired")
+    scheduler.waiting_queue = []
+
+    sched_output = scheduler.build_sched_output(SimpleNamespace(reqs=can_run))
+
+    assert [request.data is not None for request in sched_output.requests] == [
+        True,
+        True,
+    ]
+
+
+def test_off_thread_abort_finishes_a_request_held_by_batch_selection() -> None:
+    """A stage thread abort between waiting-queue removal and batch publication lands."""
+    scheduler = tp1_scheduler_on_this_thread()
+    selected = scheduler.waiting_queue[:1]
+    scheduler.waiting_queue = scheduler.waiting_queue[1:]
+
+    abort_from_stage_thread(scheduler, "req-expired")
+    scheduler.running_batch.reqs = selected
+
+    assert scheduler.recv_requests() == []
+    assert schedulable_request_ids(scheduler) == ["req-fresh"]
+
+
+def test_abort_on_the_scheduler_thread_still_applies_at_once() -> None:
+    """Only an off-thread abort is deferred; the scheduler thread's own is inline."""
+    scheduler = tp1_scheduler_on_this_thread()
+
+    scheduler.abort("req-expired")
+
+    assert schedulable_request_ids(scheduler) == ["req-fresh"]
+    assert scheduler.inbox.empty()
 
 
 @pytest.mark.parametrize("late_follower", [False, True])
@@ -3632,13 +3801,13 @@ def test_tp_admin_action_lands_on_every_rank_in_one_pass(
 def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_LIMIT", 3)
     monkeypatch.setattr(omni_scheduler_module, "_PENDING_STREAM_REQUEST_RETAINED", 2)
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.result_queue = deque()
     scheduler.running_batch = None
     scheduler.cur_batch = None
     scheduler.last_batch = None
     scheduler.async_pending = None
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.completed_request_ids = {}
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
@@ -3656,7 +3825,7 @@ def test_pending_stream_requests_are_bounded(monkeypatch, caplog) -> None:
 
 def test_completed_request_tombstones_evict_oldest(monkeypatch) -> None:
     monkeypatch.setattr(omni_scheduler_module, "_COMPLETED_REQUEST_ID_LIMIT", 3)
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.completed_request_ids = {}
     scheduler.pending_stream_ingress = {}
 
@@ -3667,7 +3836,7 @@ def test_completed_request_tombstones_evict_oldest(monkeypatch) -> None:
 
 
 def test_stream_output_drops_stale_terminal_alias_without_raising() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.aborted_request_ids = set()
@@ -3675,8 +3844,8 @@ def test_stream_output_drops_stale_terminal_alias_without_raising() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
 
-    req = SimpleNamespace(
-        rid="req-stale-terminal",
+    req = make_abortable_req(
+        "req-stale-terminal",
         finished=lambda: True,
         finished_reason=None,
         omni_data=None,
@@ -3691,7 +3860,7 @@ def test_stream_output_drops_stale_terminal_alias_without_raising() -> None:
 
 def test_omni_scheduler_abort_caps_aborted_id_set() -> None:
     """The aborted-id set is trimmed instead of growing without bound."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.abort_callback = None
     scheduler.aborted_request_ids = set()
     scheduler.aborted_request_id_order = deque()
@@ -3707,7 +3876,7 @@ def test_omni_scheduler_abort_caps_aborted_id_set() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
@@ -3739,9 +3908,9 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
         "sglang_omni.scheduling.omni_scheduler._emit_model_path_start",
         model_path_starts.append,
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -3753,8 +3922,8 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     scheduler.max_req_input_len = 16
     init_sync_request_build_state(scheduler)
 
-    req = SimpleNamespace(
-        rid="req-delayed",
+    req = make_abortable_req(
+        "req-delayed",
         origin_input_ids=[1, 2, 3],
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=SimpleNamespace(max_new_tokens=1, min_new_tokens=0),
@@ -3772,7 +3941,7 @@ def test_omni_scheduler_distinguishes_queue_enter_from_prefill_start(
     names = [event["event_name"] for event in events]
     assert "scheduler_queue_enter" in names
     assert "scheduler_prefill_start" not in names
-    assert scheduler.waiting_queue == [req]
+    assert list(scheduler.waiting_queue) == [req]
 
     batch = SimpleNamespace(reqs=[req], is_prefill_only=True, is_extend_in_batch=False)
     scheduler.emit_prefill_start_for_batch(batch)
@@ -3792,9 +3961,9 @@ def scheduler_with_build_pool(monkeypatch, builder) -> OmniScheduler:
         "sglang_omni.scheduling.omni_scheduler._emit_model_path_start",
         lambda _request_id: None,
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -3816,8 +3985,8 @@ def scheduler_with_build_pool(monkeypatch, builder) -> OmniScheduler:
 
 
 def built_request(request_id: str) -> SimpleNamespace:
-    req = SimpleNamespace(
-        rid=request_id,
+    req = make_abortable_req(
+        request_id,
         origin_input_ids=[1, 2, 3],
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=SimpleNamespace(max_new_tokens=1, min_new_tokens=0),
@@ -3838,7 +4007,7 @@ def test_a_fast_request_build_joins_the_waiting_queue_in_the_same_iteration(
     finally:
         scheduler.request_build_executor.shutdown()
 
-    assert scheduler.waiting_queue == [built.req]
+    assert list(scheduler.waiting_queue) == [built.req]
     assert scheduler.pending_request_builds == {}
 
 
@@ -3857,7 +4026,7 @@ def test_a_slow_request_build_does_not_hold_the_loop(monkeypatch) -> None:
         elapsed = time.monotonic() - started
 
         assert elapsed < 0.5
-        assert scheduler.waiting_queue == []
+        assert list(scheduler.waiting_queue) == []
         assert "req-slow" in scheduler.pending_request_builds
 
         release.set()
@@ -3867,7 +4036,7 @@ def test_a_slow_request_build_does_not_hold_the_loop(monkeypatch) -> None:
         release.set()
         scheduler.request_build_executor.shutdown()
 
-    assert scheduler.waiting_queue == [built.req]
+    assert list(scheduler.waiting_queue) == [built.req]
 
 
 def scheduler_with_early_builds(monkeypatch, builder) -> OmniScheduler:
@@ -3917,7 +4086,7 @@ def test_an_early_request_build_starts_on_arrival_and_the_loop_takes_it(
         scheduler.request_build_executor.shutdown()
 
     assert build_calls == ["req-early"]
-    assert scheduler.waiting_queue == [built.req]
+    assert list(scheduler.waiting_queue) == [built.req]
     assert scheduler.early_request_build_futures == {}
 
 
@@ -3993,7 +4162,7 @@ def allow_weight_updates(scheduler: OmniScheduler, update_weights_from_disk) -> 
     )
     scheduler.cur_batch = None
     scheduler.last_batch = None
-    scheduler.chunked_req = None
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
     scheduler.decode_batch_states = {}
     scheduler.decode_path = "spec"
 
@@ -4028,7 +4197,7 @@ def test_a_weight_update_sees_an_early_build_the_loop_has_not_taken(
     if abort_all_requests:
         assert result["success"] is True
         assert len(weight_updates) == 1
-        assert scheduler.waiting_queue == []
+        assert list(scheduler.waiting_queue) == []
     else:
         assert result["success"] is False
         assert result["data"]["active_request_ids"] == ["req-early"]
@@ -4238,6 +4407,7 @@ def construct_omni_scheduler(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        enable_prefill_weight_versions=False,
         prefill_decode_interval=prefill_decode_interval,
         prefill_decode_interval_min_bs=0,
     )
@@ -4315,9 +4485,18 @@ def construct_omni_scheduler(
         tp_worker=tp_worker,
         tree_cache=None,
         req_to_token_pool=req_to_token_pool(),
-        token_to_kv_pool_allocator=None,
+        token_to_kv_pool_allocator=PagedTokenToKVPoolAllocator(
+            128, 1, torch.float32, "cpu", None, False
+        ),
         server_args=server_args,
-        model_config=SimpleNamespace(context_len=128),
+        model_config=ModelConfigStub(
+            context_len=128,
+            vocab_size=32,
+            hf_config=SimpleNamespace(),
+            model_path="",
+            revision=None,
+            is_draft_model=False,
+        ),
         **kwargs,
     )
 
@@ -4561,6 +4740,7 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        enable_prefill_weight_versions=False,
         prefill_decode_interval=0,
         prefill_decode_interval_min_bs=0,
     )
@@ -4586,9 +4766,18 @@ def test_omni_scheduler_binds_one_execution_bridge_to_any_runner(
         tp_worker=tp_worker,
         tree_cache=None,
         req_to_token_pool=req_to_token_pool(),
-        token_to_kv_pool_allocator=None,
+        token_to_kv_pool_allocator=PagedTokenToKVPoolAllocator(
+            128, 1, torch.float32, "cpu", None, False
+        ),
         server_args=server_args,
-        model_config=SimpleNamespace(context_len=128),
+        model_config=ModelConfigStub(
+            context_len=128,
+            vocab_size=32,
+            hf_config=SimpleNamespace(),
+            model_path="",
+            revision=None,
+            is_draft_model=False,
+        ),
         model_runner=None if bind_late else model_runner,
         enable_overlap=enable_overlap,
         enable_async_decode=enable_async_decode,
@@ -4648,6 +4837,7 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
         schedule_conservativeness=1.0,
         enable_metrics=False,
         enable_metrics_for_all_schedulers=False,
+        enable_prefill_weight_versions=False,
         prefill_decode_interval=0,
         prefill_decode_interval_min_bs=0,
     )
@@ -4679,7 +4869,9 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
             tp_worker=tp_worker,
             tree_cache=None,
             req_to_token_pool=req_to_token_pool(),
-            token_to_kv_pool_allocator=None,
+            token_to_kv_pool_allocator=PagedTokenToKVPoolAllocator(
+                128, 1, torch.float32, "cpu", None, False
+            ),
             server_args=server_args,
             model_config=SimpleNamespace(),
             enable_overlap=True,
@@ -4689,9 +4881,7 @@ def test_omni_scheduler_refuses_spec_overlap_without_a_draft(monkeypatch) -> Non
 
 @pytest.fixture
 def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
-    monkeypatch.setenv("SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP", "0")
-    monkeypatch.setenv("SGLANG_FORCE_COARSE_WAR_BARRIER", "0")
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = True
     scheduler.async_decode_min_batch_size = 1
     scheduler.prefill_drain_below_batch_size = 1
@@ -4714,7 +4904,11 @@ def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
     scheduler.schedule_stream = SimpleNamespace(wait_stream=lambda stream: None)
     scheduler.self_check_during_idle = lambda: None
     scheduler.sleep_during_idle = lambda: setattr(scheduler, "running", False)
-    return scheduler
+    with (
+        envs.SGLANG_DISABLE_OVERLAP_AFTER_PREFILL.override(False),
+        envs.SGLANG_FORCE_COARSE_WAR_BARRIER.override(False),
+    ):
+        yield scheduler
 
 
 @pytest.mark.parametrize("forward_mode", [ForwardMode.DECODE, ForwardMode.EXTEND])
@@ -4728,15 +4922,13 @@ def test_spec_overlap_orders_launch_consumption_and_shared_reads(
     fine_read_barrier: bool,
 ) -> None:
     """A next launch may pass result consumption, but shared writes must wait for reads."""
-    monkeypatch.setenv(
-        "SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP", str(int(resolve_before_prefill))
-    )
     events: list[str] = []
     batches = []
     for index in range(2):
         batch = SimpleNamespace(
             index=index,
             reqs=[SimpleNamespace(inflight_middle_chunks=0)],
+            chunked_req=None,
             forward_mode=forward_mode,
             spec_algorithm=SpeculativeAlgorithm.DFLASH,
             grammar_needs_sync=lambda: False,
@@ -4763,8 +4955,9 @@ def test_spec_overlap_orders_launch_consumption_and_shared_reads(
     scheduler.process_batch_result = lambda batch, result: events.append(
         f"consume {result}"
     )
-    scheduler.event_loop_spec_overlap()
-    scheduler.resolve_pending_async()
+    with envs.SGLANG_DISABLE_OVERLAP_AFTER_PREFILL.override(resolve_before_prefill):
+        scheduler.event_loop_spec_overlap()
+        scheduler.resolve_pending_async()
 
     first = ["launch 0", "read 0" if fine_read_barrier else "read stream"]
     second = ["launch 1", "read 1" if fine_read_barrier else "read stream"]
@@ -4826,6 +5019,7 @@ def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
         batch = SimpleNamespace(
             index=index,
             reqs=[requests[name] for name in request_names],
+            chunked_req=None,
             forward_mode=forward_mode,
             spec_algorithm=SpeculativeAlgorithm.DFLASH,
             grammar_needs_sync=lambda: False,
@@ -4907,6 +5101,7 @@ def test_spec_overlap_sets_the_prefill_drain_apart_from_the_decode_minimum(
             index=index,
             reqs=[request],
             forward_mode=forward_mode,
+            chunked_req=None,
             spec_algorithm=SpeculativeAlgorithm.DFLASH,
             grammar_needs_sync=lambda: False,
         )
@@ -4953,11 +5148,15 @@ def spec_prefill_scheduler(
     scheduler.token_to_kv_pool_allocator = Mock()
     scheduler.tree_cache = Mock()
     scheduler.output_streamer = Mock()
+    scheduler.tree_cache.lease_checkpoint_state_slots.side_effect = (
+        lambda requests: nullcontext()
+    )
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    scheduler.prefill_launched_reqs = KeyedReqList(ListKind.PREFILL_LAUNCHED)
+    scheduler.running_reqs = KeyedReqList(ListKind.DECODING)
     scheduler.batch_result_processor = SchedulerBatchResultProcessor(
         is_generation=True,
         disaggregation_mode=DisaggregationMode.NULL,
-        enable_overlap=True,
-        enable_overlap_mlx=False,
         model_config=SimpleNamespace(
             think_end_ids=None, self_opened_think_start_ids=None
         ),
@@ -4965,6 +5164,7 @@ def spec_prefill_scheduler(
         tree_cache=scheduler.tree_cache,
         hisparse_coordinator=None,
         req_to_token_pool=None,
+        kv_weight_version_tracker=None,
         decode_offload_manager=None,
         metrics_collector=None,
         metrics_reporter=Mock(),
@@ -4973,11 +5173,17 @@ def spec_prefill_scheduler(
         logprob_result_processor=None,
         output_streamer=scheduler.output_streamer,
         beam_coordinator=None,
+        request_retirer=Mock(),
+        still_in_batch=scheduler.still_in_batch,
+        prefill_launched_reqs=scheduler.prefill_launched_reqs,
         abort_request=scheduler.abort,
     )
-    scheduler.process_batch_result = (
-        scheduler.batch_result_processor.process_batch_result_prefill
-    )
+
+    def process_prefill(batch, result):
+        scheduler.batch_result_processor.process_batch_result_prefill(batch, result)
+        batch.drop_inflight_step()
+
+    scheduler.process_batch_result = process_prefill
     monkeypatch.setattr(
         batch_result_processor_module,
         "checkpoint_kv_cache",
@@ -5028,6 +5234,7 @@ def test_spec_overlap_final_prefill_chunk_releases_multimodal_inputs(
             spec_algorithm=SpeculativeAlgorithm.DFLASH,
             extend_lens=[1] * len(requests),
             prefix_lens=[0] * len(requests) if index == 0 else [index],
+            chunked_req=request if index < chunk_count - 1 else None,
             enable_overlap=True,
             device="cpu",
         )
@@ -5042,15 +5249,24 @@ def test_spec_overlap_final_prefill_chunk_releases_multimodal_inputs(
         else:
             pass
         batch = next(selected_batches)
-        if batch is not None and batch.forward_iter < chunk_count - 1:
-            request.inflight_middle_chunks += 1
+        if batch is not None:
+            owner = (
+                scheduler.chunked_reqs
+                if batch.chunked_req is request
+                else scheduler.prefill_launched_reqs
+            )
+            if request.owner_list is not owner:
+                move([request], owner)
+            if complete_request in batch.reqs:
+                move([complete_request], scheduler.prefill_launched_reqs)
         else:
             pass
         return batch
 
     def launch(batch: ScheduleBatch) -> GenerationBatchResult:
+        batch.add_inflight_step()
         is_middle_chunk = batch.forward_iter < chunk_count - 1
-        assert request.inflight_middle_chunks == int(is_middle_chunk)
+        assert (batch.chunked_req is request) == is_middle_chunk
         forward_batch = SimpleNamespace(
             input_ids=torch.tensor(
                 [
@@ -5075,7 +5291,7 @@ def test_spec_overlap_final_prefill_chunk_releases_multimodal_inputs(
     scheduler.event_loop_spec_overlap()
     scheduler.resolve_pending_async()
     assert not scheduler.result_queue
-    assert request.inflight_middle_chunks == 0
+    assert scheduler.chunked_req is None
     assert list(request.output_ids) == [7]
     assert list(complete_request.output_ids) == [7]
     assert request.omni_model_inputs is None
@@ -5087,7 +5303,7 @@ def test_spec_overlap_final_prefill_chunk_releases_multimodal_inputs(
 
 def test_legacy_overlap_loop_refuses_direct_calls() -> None:
     """Removing the guard would expose a loop that bypasses Omni's prefill boundary."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     with pytest.raises(NotImplementedError):
         scheduler.event_loop_overlap()
 
@@ -5098,12 +5314,14 @@ def test_spec_overlap_abort_finds_a_chunk_owned_only_by_the_pending_snapshot(
     """Filtering the original batch must not hide an in-flight chunk from cancellation or lose its accounting."""
     scheduler = spec_prefill_scheduler
     request = multimodal_prefill_request("cancelled", [8, 1])
-    request.inflight_middle_chunks = 1
+    move([request], scheduler.chunked_reqs)
     batch = ScheduleBatch(
         reqs=[request],
+        chunked_req=request,
         forward_mode=ForwardMode.EXTEND,
         spec_algorithm=SpeculativeAlgorithm.DFLASH,
     )
+    batch.add_inflight_step()
     scheduler.result_queue.append(
         (batch.copy(), GenerationBatchResult(next_token_ids=torch.tensor([7])))
     )
@@ -5115,13 +5333,17 @@ def test_spec_overlap_abort_finds_a_chunk_owned_only_by_the_pending_snapshot(
     scheduler.async_pending = None
 
     assert scheduler.mark_running_request_aborted(request.rid)
-    assert request.to_finish.to_json()["type"] == "abort"
+    assert (
+        scheduler._pending_chunked_abort_req is request
+    )  # noqa: leading-underscore  # exercise the existing runtime API
     scheduler.resolve_pending_async()
 
     assert not scheduler.result_queue
-    assert request.inflight_middle_chunks == 0
+    assert request.inflight_steps == 0
     assert not request.output_ids
-    assert request.to_finish.to_json()["type"] == "abort"
+    assert (
+        scheduler._pending_chunked_abort_req is request
+    )  # noqa: leading-underscore  # exercise the existing runtime API
     scheduler.token_to_kv_pool_allocator.free.assert_not_called()
 
 
@@ -5132,12 +5354,14 @@ def test_spec_overlap_pause_consumes_a_middle_chunk_before_resuming(
     scheduler = spec_prefill_scheduler
     scheduler.admin_lock = threading.Lock()
     request = multimodal_prefill_request("paused", [8, 1])
-    request.inflight_middle_chunks = 1
+    move([request], scheduler.chunked_reqs)
     batch = ScheduleBatch(
         reqs=[request],
+        chunked_req=request,
         forward_mode=ForwardMode.EXTEND,
         spec_algorithm=SpeculativeAlgorithm.DFLASH,
     )
+    batch.add_inflight_step()
     scheduler.result_queue.append(
         (batch.copy(), GenerationBatchResult(next_token_ids=torch.tensor([7])))
     )
@@ -5147,7 +5371,7 @@ def test_spec_overlap_pause_consumes_a_middle_chunk_before_resuming(
         scheduler._engine_paused
     )  # noqa: leading-underscore  # native scheduler contract
     assert not scheduler.result_queue
-    assert request.inflight_middle_chunks == 0
+    assert request.inflight_steps == 0
     assert not request.output_ids
     assert request.omni_model_inputs is not None
 
@@ -5163,7 +5387,7 @@ def test_partial_spec_launch_failure_does_not_reclaim_inflight_kv(
     enable_overlap: bool,
 ) -> None:
     """An overlap failure can leave GPU work queued against the batch's KV slots."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = enable_overlap
     scheduler._run_batch = Mock(
         side_effect=RuntimeError("partial launch")
@@ -5184,7 +5408,7 @@ def test_spec_prefill_completion_precedes_host_result_processing(
 ) -> None:
     """Prefill lifecycle events and CPU consumption must wait for the result copy."""
     events: list[str] = []
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = True
     scheduler.emit_prefill_end_for_batch = lambda batch: events.append("prefill end")
     monkeypatch.setattr(
@@ -5296,7 +5520,7 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
         )
         events.append(("record_output", tuple(active_streams)))
 
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = True
     scheduler._confidence_budget_prepare = (
         None  # noqa: leading-underscore  # native scheduler contract
@@ -5382,7 +5606,7 @@ def test_stage_output_cache_tracks_bytes_and_detaches() -> None:
 
 
 def test_omni_scheduler_stop_runs_shutdown_callback_once() -> None:
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_overlap = False
     shutdowns: list[None] = []
     scheduler.running = True
@@ -5417,7 +5641,7 @@ def test_omni_scheduler_start_closes_active_model_paths(
         "_emit_model_path_end",
         lambda rid, *, status: model_path_ends.append((rid, status)),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.enable_async_decode = False
     scheduler.enable_overlap = False
     scheduler.should_run_top_priority_stream = False
@@ -5452,9 +5676,9 @@ def test_omni_scheduler_start_closes_active_model_paths(
 
 def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     """Covers per-request build errors before an SGLang Req exists."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5468,7 +5692,7 @@ def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.tree_cache = None
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
     init_sync_request_build_state(scheduler)
 
     def request_builder(payload: SimpleNamespace) -> None:
@@ -5483,14 +5707,14 @@ def test_omni_scheduler_request_builder_errors_do_not_stop_loop() -> None:
     assert output.request_id == "req-err"
     assert output.type == "error"
     assert isinstance(output.data, ValueError)
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
 
 
 def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
     """TP followers clean local state but do not emit user-visible errors."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {"req-err": ingress(done=True)}
     scheduler.deferred_request_payloads = {"req-err": object()}
     scheduler.dirty_deferred_request_ids = set()
@@ -5505,7 +5729,7 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.tree_cache = None
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
     init_sync_request_build_state(scheduler)
 
     def request_builder(payload: SimpleNamespace) -> None:
@@ -5516,7 +5740,7 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
     scheduler.process_input_requests([new_stage_payload("req-err")])
 
     assert scheduler.outbox.empty()
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert scheduler.pending_stream_ingress == {}
     assert scheduler.deferred_request_payloads == {}
 
@@ -5524,9 +5748,9 @@ def test_omni_scheduler_follower_request_builder_errors_do_not_emit() -> None:
 @pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     """Preserves upstream max_new_tokens clamping for custom request builders."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5540,8 +5764,8 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
     init_sync_request_build_state(scheduler)
 
     sampling_params = SimpleNamespace(max_new_tokens=10, min_new_tokens=0)
-    req = SimpleNamespace(
-        rid="req-ok",
+    req = make_abortable_req(
+        "req-ok",
         origin_input_ids=[1, 2, 3],
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=sampling_params,
@@ -5553,7 +5777,7 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
 
     scheduler.process_input_requests([new_stage_payload("req-ok")])
 
-    assert scheduler.waiting_queue == [req]
+    assert list(scheduler.waiting_queue) == [req]
     assert req.omni_data is req_data
     assert req.sampling_params.max_new_tokens == 2
     assert req_data.max_new_tokens == 2
@@ -5563,9 +5787,9 @@ def test_omni_scheduler_prepares_custom_request_token_budget() -> None:
 @pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
     """Clamp requests that pass the surface KV check but cannot be prefetched."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5583,8 +5807,8 @@ def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
         max_new_tokens=requested_max_new_tokens,
         min_new_tokens=0,
     )
-    req = SimpleNamespace(
-        rid="req-near-capacity",
+    req = make_abortable_req(
+        "req-near-capacity",
         origin_input_ids=[1] * 9,
         origin_input_ids_unpadded=[1] * 9,
         sampling_params=sampling_params,
@@ -5613,16 +5837,16 @@ def test_omni_scheduler_clamps_request_to_strict_prefill_budget() -> None:
         paged_input_tokens + req.sampling_params.max_new_tokens + scheduler.page_size
         < scheduler.max_total_num_tokens
     )
-    assert scheduler.waiting_queue == [req]
+    assert list(scheduler.waiting_queue) == [req]
     assert scheduler.outbox.empty()
 
 
 @pytest.mark.usefixtures("published_config")
 def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     """Covers context-length validation for custom request builders."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5641,11 +5865,11 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.tree_cache = None
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
     init_sync_request_build_state(scheduler)
 
-    req = SimpleNamespace(
-        rid="req-long",
+    req = make_abortable_req(
+        "req-long",
         origin_input_ids=[1, 2, 3, 4, 5],
         origin_input_ids_unpadded=[1, 2, 3, 4, 5],
         sampling_params=SimpleNamespace(max_new_tokens=10, min_new_tokens=0),
@@ -5666,7 +5890,7 @@ def test_omni_scheduler_rejects_custom_request_over_context() -> None:
     assert output.type == "error"
     assert isinstance(output.data, ValueError)
     assert "Input length (5 tokens) exceeds" in str(output.data)
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
     assert not hasattr(req, "omni_data")
     assert request_data.req is req
 
@@ -5676,11 +5900,16 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     """Request-limit and KV-capacity rejections are entry-rank emissions only."""
     monkeypatch.setattr(
         "sglang.srt.runtime_context.get_schedule",
-        lambda: SimpleNamespace(mem_fraction_static=0.85, max_total_tokens=None),
+        lambda: SimpleNamespace(
+            mem_fraction_static=0.85,
+            max_total_tokens=None,
+            chunked_prefill_size=0,
+            disable_overlap_schedule=False,
+        ),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5695,18 +5924,20 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.inbox = Queue()
-    scheduler.tree_cache = None
+    scheduler.tree_cache = Mock(supports_prefix_sharing=lambda: False)
     scheduler.max_req_len = 6
     scheduler.max_req_input_len = 5
     scheduler.max_new_tokens_limit = None
     scheduler.page_size = 1
     scheduler.max_total_num_tokens = 128
     scheduler.model_config = SimpleNamespace(context_len=7)
-    scheduler.server_args = SimpleNamespace(mem_fraction_static=0.85)
+    scheduler.server_args = SimpleNamespace(
+        mem_fraction_static=0.85, chunked_prefill_size=0, enable_mixed_chunk=False
+    )
     init_sync_request_build_state(scheduler)
 
-    over_context_req = SimpleNamespace(
-        rid="req-long",
+    over_context_req = make_abortable_req(
+        "req-long",
         origin_input_ids=[1, 2, 3, 4, 5],
         origin_input_ids_unpadded=[1, 2, 3, 4, 5],
         sampling_params=SimpleNamespace(max_new_tokens=10, min_new_tokens=0),
@@ -5721,10 +5952,10 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     scheduler.process_input_requests([new_stage_payload("req-long")])
 
     assert scheduler.outbox.empty()
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
 
-    over_kv_req = SimpleNamespace(
-        rid="req-kv",
+    over_kv_req = make_abortable_req(
+        "req-kv",
         origin_input_ids=[1, 2, 3],
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=SimpleNamespace(max_new_tokens=4, min_new_tokens=0),
@@ -5739,14 +5970,14 @@ def test_omni_scheduler_follower_rejections_do_not_emit_errors(monkeypatch) -> N
     scheduler.process_input_requests([new_stage_payload("req-kv")])
 
     assert scheduler.outbox.empty()
-    assert scheduler.waiting_queue == []
+    assert list(scheduler.waiting_queue) == []
 
 
 def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None:
     """Keeps existing OmniScheduler users on their original request semantics."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.outbox = Queue()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
     scheduler.dirty_deferred_request_ids = set()
@@ -5760,8 +5991,8 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
     init_sync_request_build_state(scheduler)
 
     sampling_params = SimpleNamespace(max_new_tokens=3, min_new_tokens=0)
-    req = SimpleNamespace(
-        rid="req-original",
+    req = make_abortable_req(
+        "req-original",
         origin_input_ids=[1, 2, 3],
         origin_input_ids_unpadded=[1, 2, 3],
         sampling_params=sampling_params,
@@ -5777,7 +6008,7 @@ def test_omni_scheduler_leaves_request_budget_unchanged_without_opt_in() -> None
 
     scheduler.process_input_requests([new_stage_payload("req-original")])
 
-    assert scheduler.waiting_queue == [req]
+    assert list(scheduler.waiting_queue) == [req]
     assert req.sampling_params.max_new_tokens == 3
     assert req_data.max_new_tokens == 3
     assert scheduler.outbox.empty()
@@ -5787,7 +6018,7 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
     monkeypatch,
 ) -> None:
     """Finished-request adapter failures remain request-local."""
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     init_terminal_output_state(scheduler)
     scheduler.outbox = Queue()
     scheduler.is_entry_rank = True
@@ -5810,8 +6041,8 @@ def test_omni_scheduler_result_adapter_failure_emits_error_without_raise(
         prefill_input_embeds=torch.ones(1),
         decode_input_embeds=[torch.ones(1)],
     )
-    req = SimpleNamespace(
-        rid="req-adapter",
+    req = make_abortable_req(
+        "req-adapter",
         omni_data=request_data,
         _omni_terminal_claimed=False,
         output_ids=[1, 2],
@@ -5850,7 +6081,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
         "_emit_model_path_end",
         lambda rid, *, status: ends.append((rid, status)),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.mark_running_request_aborted = lambda _rid: True
     scheduler.enable_overlap = False
     scheduler.request_admission_lock = threading.Lock()
@@ -5859,7 +6090,7 @@ def test_omni_scheduler_running_abort_does_not_leak_prefill_dedup_state(
     scheduler.pending_request_builds = {}
     scheduler.pending_request_admissions = {}
     scheduler.backlogged_request_build_payloads = []
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.abort_callback = None
     scheduler.pending_stream_ingress = {}
     scheduler.deferred_request_payloads = {}
@@ -5885,7 +6116,7 @@ def test_prefill_end_emission_skips_when_no_request_is_pending(
         "_emit_event",
         lambda **kwargs: emitted.append(kwargs["request_id"]),
     )
-    scheduler = object.__new__(OmniScheduler)
+    scheduler = scheduler_stub()
     scheduler.prefill_start_done = {"r1"}
     scheduler.prefill_end_done = {"r1"}
 

@@ -13,11 +13,17 @@ from unittest.mock import Mock
 import msgpack
 import pytest
 import torch
+from sglang.srt.disaggregation.mode import DisaggregationMode
 from sglang.srt.managers.io_struct import SessionParams, TokenizedGenerateReqInput
 from sglang.srt.managers.schedule_batch import Req, ReqKvInfo
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    ListKind,
+)
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams, MatchResult
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import Session
 from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
@@ -65,6 +71,12 @@ from tests.unit_test.fixtures.session_pipeline import (
 class RecordedState:
     session_id: str
     byte_count: int = 0
+
+
+@pytest.fixture
+def runtime_config():
+    with get_context().override_server_args():
+        yield
 
 
 class Hooks(SessionHooks):
@@ -700,6 +712,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
 )
 def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     monkeypatch: pytest.MonkeyPatch,
+    runtime_config,
     input_length: int,
     requested_new_tokens: int,
     expected_new_tokens: int | None,
@@ -732,6 +745,8 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     )
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = False
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
+    scheduler.invariant_checker = Mock()
     scheduler.scheduler_thread_id = None
     scheduler.is_entry_rank = True
     scheduler.inbox = queue.Queue()
@@ -748,11 +763,11 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.backlogged_request_build_payloads = deque()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
     scheduler.last_batch = None
-    scheduler.chunked_req = None
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
     scheduler._pending_chunked_abort_req = (
         None  # noqa: leading-underscore  # upstream scheduler contract
     )
@@ -786,7 +801,10 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     )
     scheduler.req_to_token_pool = SimpleNamespace(free_slots=[0, 1, 2, 3])
     scheduler.tree_cache = SimpleNamespace(
-        session_records=lambda: {}, evictable_size=lambda: 0
+        session_records=lambda: {},
+        evictable_size=lambda: 0,
+        supports_prefix_sharing=lambda: False,
+        window_checkpoint_interval=lambda: None,
     )
     scheduler.session_controller = Mock()
     bridge = ARSessionBridge(scheduler, Mock(), speculative_reserve_tokens=16)
@@ -819,7 +837,7 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
         scheduler.session_controller.get.return_value.abort_req.assert_called_once()
     else:
         assert scheduler.outbox.empty()
-        assert scheduler.waiting_queue == [request]
+        assert list(scheduler.waiting_queue) == [request]
         assert request.sampling_params.max_new_tokens == expected_new_tokens
         assert req_data.max_new_tokens == expected_new_tokens
         assert unit.is_enqueued is True
@@ -920,7 +938,7 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     scheduler.model_config.vocab_size = 100
     native = scheduler.session_controller.get.return_value
     native.session_id = identity.id
-    native.req_nodes = {}
+    native.turns = {}
     native.abort_req.side_effect = lambda: order.append("native")
     native_request = Mock(origin_input_ids=[10, 20, 30], to_finish=None)
     native.create_req.return_value = native_request
@@ -1170,8 +1188,8 @@ def test_ar_bridge_refuses_a_rewind_that_does_not_land_between_units(
     with pytest.raises(ValueError):
         bridge.prepare_unit(unit, payload)
 
-    [last_request_node] = session.req_nodes.values()
-    assert list(last_request_node.req.output_ids) == SECOND_UNIT_OUTPUT_IDS
+    [last_request] = session.turns.values()
+    assert list(last_request.output_ids) == SECOND_UNIT_OUTPUT_IDS
     assert session.committed_origin_len == prompt_length
     assert record.kv_committed_len == prompt_length + COMMITTED_PAST_PROMPT
     assert bridge.sessions[NATIVE_SESSION_ID].embedding_spans == embedding_spans

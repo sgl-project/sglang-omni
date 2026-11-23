@@ -14,9 +14,14 @@ from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.pure_swa_radix_cache import PureSWARadixCache
 from sglang.srt.mem_cache.radix_cache import RadixCache
-from sglang.srt.mem_cache.unified_cache.components import ComponentType
+from sglang.srt.mem_cache.static_kv_storage import StaticPoolShape, kv_storage_of
 from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
-from sglang.srt.runtime_context import get_memory, get_schedule, get_serving
+from sglang.srt.runtime_context import (
+    get_memory,
+    get_schedule,
+    get_serving,
+    mamba_cache_chunk_size,
+)
 
 from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
     EvictHeapRadixCache,
@@ -67,16 +72,24 @@ def create_tree_cache(
     elif get_memory().disable_radix_cache or get_serving().enable_streaming_session:
         # note (ratish): streaming sessions live inside the unified cache, so a
         # session stage takes it whether or not its radix tree is enabled.
-        tree_components = [ComponentType.FULL]
-        if isinstance(token_to_kv_pool_allocator, SWATokenToKVPoolAllocator):
-            tree_components.append(ComponentType.SWA)
-        else:
-            pass
-        if isinstance(req_to_token_pool, HybridReqToTokenPool):
-            tree_components.append(ComponentType.MAMBA)
-        else:
-            pass
-        params.tree_components = tuple(tree_components)
+        storage = kv_storage_of(
+            req_to_token_pool,
+            token_to_kv_pool_allocator,
+            shape=StaticPoolShape(
+                has_window=isinstance(
+                    token_to_kv_pool_allocator, SWATokenToKVPoolAllocator
+                ),
+                has_state=isinstance(req_to_token_pool, HybridReqToTokenPool),
+                token_capacity=token_to_kv_pool_allocator.size,
+                window=sliding_window_size,
+                checkpoint_interval=(
+                    mamba_cache_chunk_size()
+                    if isinstance(req_to_token_pool, HybridReqToTokenPool)
+                    else None
+                ),
+            ),
+        )
+        params.tree_slots = tuple(storage.tree_slots())
         return UnifiedRadixCache(params)
     elif params.eviction_policy.lower() == "lru":
         return EvictHeapRadixCache(params)

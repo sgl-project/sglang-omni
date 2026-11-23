@@ -115,11 +115,10 @@ class HistoryCut:
 
 def retained_history_length(native_session: Session) -> int:
     """Tokens Session.create_req puts ahead of the next request: the committed ids, then the last outputs up to max_new_tokens."""
-    if not native_session.req_nodes:
+    if not native_session.turns:
         return 0
     else:
-        [last_node] = native_session.req_nodes.values()
-        last_request = last_node.req
+        [last_request] = native_session.turns.values()
         return native_session.committed_origin_len + len(
             last_request.output_ids[: last_request.sampling_params.max_new_tokens]
         )
@@ -127,8 +126,7 @@ def retained_history_length(native_session: Session) -> int:
 
 def cut_token_ids(native_session: Session, cut: HistoryCut) -> None:
     """Drop the cut from the committed token arrays that the next request extends in place."""
-    [last_node] = native_session.req_nodes.values()
-    last_request = last_node.req
+    [last_request] = native_session.turns.values()
     assert cut.ranges[-1][1] <= min(
         native_session.committed_origin_len,
         native_session.committed_unpadded_len,

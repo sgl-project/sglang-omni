@@ -3,15 +3,21 @@
 
 import threading
 from collections.abc import Iterator
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import torch
-from sglang.srt.managers.schedule_batch import FINISH_ABORT
+from sglang.srt.disaggregation.mode import DisaggregationMode
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
+from sglang.srt.managers.scheduler_components.batch_result_processor import (
+    SchedulerBatchResultProcessor,
+)
 from sglang.srt.runtime_context import get_context
 
 from sglang_omni.scheduling.message import OutgoingMessage
 from sglang_omni.scheduling.pd_scheduler import OmniDecodeScheduler
+from sglang_omni.scheduling.pd_state import PDDecodeBatchResultProcessor
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import RequestOutput
 from tests.unit_test.pipeline.test_pd_lifecycle import decode_scheduler
@@ -137,3 +143,51 @@ def test_first_sample_failure_preserves_other_requests(
     assert failed_request.rid in stream_scheduler.completed_request_ids
     stream_scheduler.release_request_kv_cache.assert_called_once_with(failed_request)
     stream_scheduler.abort_callback.assert_called_once_with(failed_request.rid)
+
+
+@pytest.mark.parametrize("max_new_tokens", [1, 4])
+def test_main_prebuilt_emits_transferred_sample_before_decode(
+    stream_scheduler, max_new_tokens
+):
+    """Main's PREBUILT callback omits unfinished requests unless Omni publishes them."""
+    request = rebuilt_req(prefill_req(max_new_tokens=max_new_tokens))
+    processor = PDDecodeBatchResultProcessor(
+        SchedulerBatchResultProcessor(
+            is_generation=True,
+            disaggregation_mode=DisaggregationMode.DECODE,
+            token_to_kv_pool_allocator=Mock(),
+            request_retirer=Mock(),
+            output_streamer=SimpleNamespace(
+                stream_output=stream_scheduler.stream_output
+            ),
+            model_config=None,
+            tree_cache=None,
+            hisparse_coordinator=None,
+            req_to_token_pool=None,
+            kv_weight_version_tracker=None,
+            decode_offload_manager=None,
+            metrics_collector=None,
+            metrics_reporter=None,
+            draft_worker=None,
+            model_worker=None,
+            logprob_result_processor=None,
+            beam_coordinator=None,
+            abort_request=None,
+            still_in_batch=None,
+            prefill_launched_reqs=None,
+        )
+    )
+    batch = ScheduleBatch(reqs=[request])
+    processor.process_batch_result_prebuilt(batch)
+    messages = list(stream_scheduler.outbox.queue)
+    assert [message.type for message in messages] == (
+        ["stream", "result"] if max_new_tokens == 1 else ["stream"]
+    )
+    assert messages[0].data.tolist() == [42]
+    assert request.finished() == (max_new_tokens == 1)
+    if max_new_tokens == 1:
+        processor.request_retirer.release.assert_called_once_with(
+            request, checkpoint=True
+        )
+    else:
+        processor.request_retirer.release.assert_not_called()

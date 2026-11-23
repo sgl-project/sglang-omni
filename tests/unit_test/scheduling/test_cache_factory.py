@@ -12,11 +12,13 @@ import torch
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.mem_cache.allocator import BaseTokenToKVPoolAllocator
 from sglang.srt.mem_cache.allocator.swa import PureSWATokenToKVPoolAllocator
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixCache
+from sglang.srt.mem_cache.static_kv_storage import kv_storage_of
 from sglang.srt.mem_cache.swa_memory_pool import SWAKVPool
 from sglang.srt.mem_cache.unified_cache.components import ComponentType
 from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
@@ -38,7 +40,10 @@ def test_factory_selects_evict_heap_only_for_lru() -> None:
             radix_eviction_policy=policy,
         ):
             return create_tree_cache(
-                None, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
+                None,
+                TokenToKVPoolAllocator(32, torch.float32, "cpu", None, False),
+                1,
+                None,
             )
 
     assert type(build("lru")) is EvictHeapRadixCache
@@ -61,7 +66,7 @@ def test_factory_passes_the_eviction_policy_config_to_the_strategy() -> None:
         radix_eviction_policy_config={"protected_threshold": 4},
     ):
         cache = create_tree_cache(
-            None, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
+            None, TokenToKVPoolAllocator(32, torch.float32, "cpu", None, False), 1, None
         )
 
     assert cache.eviction_strategy.protected_threshold == 4
@@ -93,7 +98,10 @@ def test_factory_serves_hybrid_state_pools_from_the_unified_cache() -> None:
         _mamba_cache_chunk_size=64,
     ):
         cache = create_tree_cache(
-            hybrid_pool, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
+            hybrid_pool,
+            TokenToKVPoolAllocator(32, torch.float32, "cpu", None, False),
+            1,
+            None,
         )
 
     assert type(cache) is UnifiedRadixCache
@@ -125,6 +133,7 @@ def make_window_cache(
         kvcache=kv_pool,
         need_sort=False,
     )
+    kv_storage_of(request_pool, allocator).bind_window_retention(window_positions, None)
     with get_context().override_server_args(
         disable_radix_cache=True,
         chunked_prefill_size=None,
@@ -144,7 +153,7 @@ def test_factory_preserves_window_eviction_capability() -> None:
         enable_streaming_session=False,
     ):
         ordinary_cache = create_tree_cache(
-            None, Mock(spec=BaseTokenToKVPoolAllocator, device="cpu"), 1, None
+            None, TokenToKVPoolAllocator(32, torch.float32, "cpu", None, False), 1, None
         )
     assert type(ordinary_cache) is UnifiedRadixCache
     assert not ordinary_cache.supports_swa()

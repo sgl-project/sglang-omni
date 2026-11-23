@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeGuard
 
 import torch
-from sglang.srt.managers.schedule_batch import MultimodalDataItem, MultimodalInputFormat
+from sglang.srt.managers.req_types import MultimodalDataItem
+from sglang.srt.multimodal.modality import MultimodalInputFormat
 
 from sglang_omni.scheduling.pre_lm_encoder import (
     PreLMEncoderService,

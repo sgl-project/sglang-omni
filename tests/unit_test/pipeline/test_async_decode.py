@@ -16,12 +16,20 @@ import queue
 import threading
 import time
 import types
+from array import array
 from concurrent.futures import Future
 from unittest import mock
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.managers.scheduler import Scheduler
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    ListKind,
+    move,
+)
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.sglang_execution import SGLangExecutionBridge
@@ -36,6 +44,18 @@ from sglang_omni.scheduling.types import (
 from tests.unit_test.fakes import FakeExecutionBridge
 
 STUB_DEVICE = torch.device("cpu")
+
+
+def assign_chunked_request(scheduler, present):
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    if present:
+        request = Req(
+            rid="chunked",
+            origin_input_text="",
+            origin_input_ids=array("q", [1]),
+            sampling_params=SamplingParams(),
+        )
+        move([request], scheduler.chunked_reqs)
 
 
 class StubRunner(ModelRunner):
@@ -733,7 +753,7 @@ def new_scheduler_for_async_loop():
     s.pending_request_builds = {}
     s.pending_request_admissions = {}
     s.model_runner = None
-    s.chunked_req = None
+    assign_chunked_request(s, False)
     s.is_mixed_chunk = False
     s.page_size = 1
     s.running_batch = types.SimpleNamespace(batch_is_full=False)
@@ -890,7 +910,7 @@ def test_pending_decode_drain_order_for_prefill(
     s.is_mixed_chunk = is_mixed_chunk
     s.running_batch.batch_is_full = batch_is_full
     s.waiting_queue = [object()] if prefill_source == "waiting" else []
-    s.chunked_req = object() if prefill_source == "chunked" else None
+    assign_chunked_request(s, prefill_source == "chunked")
     s.batch_is_decode = lambda batch: False
     s.resolve_and_process = lambda *args: events.append("resolve")
     s.process_batch_result = lambda batch, result: None
@@ -1342,6 +1362,7 @@ class RunningBatch:
         for req in self.reqs[:finished]:
             req.done = True
         self.batch_is_full = batch_is_full
+        self.is_prefill_only = False
 
     def is_empty(self) -> bool:
         return not self.reqs
@@ -1469,7 +1490,7 @@ def test_lookahead_continues_when_no_prefill_is_expected(
     )
     s.running_batch = RunningBatch(2, batch_is_full=batch_is_full)
     s.waiting_queue = [object()] if has_waiting else []
-    s.chunked_req = object() if has_chunked_request else None
+    assign_chunked_request(s, has_chunked_request)
     schedule_once(s, events, FakeBatch(2), is_decode=True)
 
     s.event_loop_async_decode()
@@ -1493,7 +1514,7 @@ def test_a_chunked_request_resolves_first_even_with_nothing_waiting() -> None:
     events: list[str] = []
     s = scaffold_resolve_before_prefill(events, async_pending=in_flight_step())
     s.waiting_queue = []
-    s.chunked_req = object()
+    assign_chunked_request(s, True)
     schedule_once(s, events, FakeBatch(1), is_decode=False)
 
     s.event_loop_async_decode()
@@ -1755,7 +1776,10 @@ def test_the_prediction_follows_each_upstream_gate(
 ) -> None:
     s = scaffold_resolve_before_prefill([], async_pending=in_flight_step())
     for name, value in change.items():
-        setattr(s, name, value)
+        if name == "chunked_req":
+            assign_chunked_request(s, value is not None)
+        else:
+            setattr(s, name, value)
 
     assert s.is_prefill_expected() is expected
 
@@ -1782,7 +1806,7 @@ def test_async_prefill_rejects_partial_or_special_batches(unsupported_state):
     scheduler = object.__new__(OmniScheduler)
     scheduler.async_prefill = True
     scheduler.session_bridge = None
-    scheduler.chunked_req = None
+    assign_chunked_request(scheduler, False)
     batch = types.SimpleNamespace(
         forward_mode=types.SimpleNamespace(
             is_extend=lambda: True,

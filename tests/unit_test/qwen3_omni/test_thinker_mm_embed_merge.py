@@ -10,9 +10,17 @@ test_no_host_syncs_* tests additionally assert that the merge calls none of
 from __future__ import annotations
 
 import types
+from array import array
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    ListKind,
+    move,
+)
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 
@@ -38,16 +46,22 @@ def make_req(
     input_ids,
     omni_model_inputs,
     *,
-    inflight_middle_chunks=0,
+    is_middle_chunk=False,
     consumed=None,
     positions=True,
 ):
-    req = types.SimpleNamespace(
-        origin_input_ids=list(input_ids),
-        omni_model_inputs=omni_model_inputs,
-        _omni_consumed=consumed,
-        inflight_middle_chunks=inflight_middle_chunks,
+    req = Req(
+        rid=str(id(omni_model_inputs)),
+        origin_input_text="",
+        origin_input_ids=array("q", input_ids),
+        sampling_params=SamplingParams(temperature=0),
     )
+    req.omni_model_inputs = omni_model_inputs
+    req._omni_consumed = (
+        consumed  # noqa: leading-underscore  # exercise the existing runtime API
+    )
+    if is_middle_chunk:
+        move([req], IndexedReqList(ListKind.CHUNKED))
     if positions:
         # note (chenrui): build_sglang_thinker_request records these for every
         # request, so omitting them pins a fallback the served path never takes.
@@ -82,7 +96,18 @@ def batches(reqs, chunk_ids=None, prefix_lens=None):
         extend_seq_lens_cpu=[len(ids) for ids in chunk_ids],
         extend_prefix_lens_cpu=list(prefix_lens),
     )
-    schedule_batch = types.SimpleNamespace(reqs=list(reqs))
+    schedule_batch = types.SimpleNamespace(
+        reqs=list(reqs),
+        chunked_req=next(
+            (
+                req
+                for req in reqs
+                if req.owner_list is not None
+                and req.owner_list.kind is ListKind.CHUNKED
+            ),
+            None,
+        ),
+    )
     return forward_batch, schedule_batch
 
 
@@ -199,7 +224,7 @@ def test_chunked_prefill_advances_consumed_offsets():
     image_embeds = rand(4)
     inputs = {"image_embeds": image_embeds}
 
-    req = make_req(prompt, inputs, inflight_middle_chunks=1)
+    req = make_req(prompt, inputs, is_middle_chunk=True)
     fb1, sb1 = batches([req], chunk_ids=[prompt[:4]], prefix_lens=[0])
     out1, _, _ = runner.inject_multimodal_embeds(fb1, sb1)
 
@@ -211,7 +236,7 @@ def test_chunked_prefill_advances_consumed_offsets():
     }  # noqa: leading-underscore  # production name
     assert req.omni_model_inputs is inputs
 
-    req.inflight_middle_chunks = 0
+    move([req], IndexedReqList(ListKind.PREFILL_LAUNCHED))
     fb2, sb2 = batches([req], chunk_ids=[prompt[4:]], prefix_lens=[4])
     out2, _, _ = runner.inject_multimodal_embeds(fb2, sb2)
 
@@ -230,7 +255,7 @@ def test_cached_prefix_mixed_audio_image_selects_live_embedding_rows():
     req = make_req(
         prompt,
         {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
@@ -253,7 +278,7 @@ def test_cached_prefix_reconstructs_missing_cursors_in_empty_existing_dict():
     req = make_req(
         prompt,
         {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
         consumed=existing,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
@@ -274,7 +299,7 @@ def test_cached_prefix_reconstructs_audio_preserving_unrelated_cursor():
     req = make_req(
         prompt,
         {"audio_embeds": audio_embeds},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
         consumed=existing,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
@@ -293,7 +318,7 @@ def test_cached_prefix_reconstructs_a_missing_video_cursor():
     req = make_req(
         prompt,
         {"video_embeds": embeds},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
@@ -314,7 +339,7 @@ def test_existing_cursor_is_authoritative_over_prefix_derived_offset():
         prompt,
         {"audio_embeds": audio_embeds},
         consumed=existing,
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
@@ -341,7 +366,7 @@ def test_invalid_modality_cursor_fails_before_embedding_scatter(cursor, error_ty
         [AUDIO_ID],
         audio_inputs,
         consumed={"audio": cursor},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req])
 
@@ -379,7 +404,7 @@ def test_cached_prefix_mixed_visual_audio_deepstack_stays_aligned():
             "image_embeds": image_embeds,
             "image_deepstack_visual_embeds": image_ds,
         },
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
@@ -401,7 +426,7 @@ def test_cached_prefix_reconstruction_rejects_ambiguous_embedding_rows():
     req = make_req(
         prompt,
         {"audio_embeds": rand(1)},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 
@@ -574,7 +599,7 @@ def test_prefix_lens_as_cpu_tensor():
     req = make_req(
         prompt,
         {"image_embeds": image_embeds},
-        inflight_middle_chunks=0,
+        is_middle_chunk=False,
         consumed={"image": 1},
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
@@ -676,7 +701,7 @@ def test_cached_prefix_reconstruction_has_no_host_syncs(monkeypatch):
     req = make_req(
         prompt,
         {"audio_embeds": audio_embeds, "image_embeds": image_embeds},
-        inflight_middle_chunks=1,
+        is_middle_chunk=True,
     )
     fb, sb = batches([req], chunk_ids=[prompt[2:]], prefix_lens=[2])
 

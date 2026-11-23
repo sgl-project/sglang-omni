@@ -7,12 +7,11 @@ import pytest
 import torch
 from sglang.srt.managers import scheduler as upstream_scheduler
 from sglang.srt.managers.schedule_batch import Req, ReqKvInfo, ScheduleBatch
+from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import MatchPrefixParams
-from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import RadixKey
-from sglang.srt.mem_cache.unified_cache.components import ComponentType
-from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
+from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.session.streaming_session import SessionSlot
@@ -20,21 +19,11 @@ from sglang.srt.session.streaming_session import SessionSlot
 from sglang_omni.scheduling import omni_scheduler
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 
 CONTEXT_LENGTH = 64
 RETAINED_TOKEN_COUNT = 8
 UNIT_TOKEN_IDS = list(range(1, RETAINED_TOKEN_COUNT + 4))
-
-
-class KVAllocator:
-    device = "cpu"
-    page_size = 1
-
-    def free(self, free_index: torch.Tensor) -> None:
-        pass
-
-    def available_size(self) -> int:
-        return 1 << 20
 
 
 class AdmissionScheduler:
@@ -51,21 +40,21 @@ class AdmissionScheduler:
             device="cpu",
             enable_memory_saver=False,
         )
-        self.token_to_kv_pool_allocator = KVAllocator()
-        self.tree_cache = UnifiedRadixCache(
-            CacheInitParams(
-                disable=False,
-                req_to_token_pool=self.req_to_token_pool,
-                token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
-                page_size=1,
-                enable_kv_cache_events=False,
-                eviction_policy="lru",
-                tree_components=(ComponentType.FULL,),
-            )
+        self.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+            512, torch.float32, "cpu", None, False
         )
+        with get_context().override_server_args(
+            disable_radix_cache=False, enable_streaming_session=True
+        ):
+            self.tree_cache = create_tree_cache(
+                self.req_to_token_pool, self.token_to_kv_pool_allocator, 1, None
+            )
         self.session_controller = SessionController(self.tree_cache)
         self.max_running_requests = request_rows
-        self.beam_coordinator = SimpleNamespace(pending_member_rows=lambda batch: 0)
+        self.beam_coordinator = SimpleNamespace(
+            pending_member_rows=lambda batch: 0,
+            pending_member_rows_of=lambda requests: 0,
+        )
         self.running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
         self.waiting_queue: list[Req] = []
         self.session_bridge = ARSessionBridge(self, adapter=None)

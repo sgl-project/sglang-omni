@@ -215,7 +215,7 @@ def make_tts_scheduler_adapters(
     ``S2ProTokenizerAdapter`` so we do not build a second one here.
     """
 
-    from sglang.srt.utils.hf_transformers_utils import attach_additional_stop_token_ids
+    from sglang.srt.hf_transformers.common import attach_additional_stop_token_ids
 
     if not hasattr(tokenizer, "additional_stop_token_ids"):
         attach_additional_stop_token_ids(tokenizer)

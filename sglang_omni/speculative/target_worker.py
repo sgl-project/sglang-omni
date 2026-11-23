@@ -63,7 +63,7 @@ class SpeculativeTargetWorker:
         skip_attn_backend_init: bool | None = None,
         *,
         capture_hidden_mode: CaptureHiddenMode | None = None,
-        return_kv_loc_plan: bool = False,
+        return_iteration_ids: bool = False,
     ) -> GenerationBatchResult:
         if pp_proxy_tensors is not None:
             raise ValueError("speculative decoding does not support pipeline parallel")
@@ -87,17 +87,6 @@ class SpeculativeTargetWorker:
                     )
                 else:
                     pass
-                if (
-                    self.omni_runner.speculative_repetition_penalty_owner
-                    == "verify_logits"
-                ):
-                    self.omni_runner.apply_speculative_repetition_penalty(
-                        logits.view(len(requests), rows_per_request, -1),
-                        forward_batch,
-                        requests,
-                    )
-                else:
-                    pass
             else:
                 pass
             return GenerationBatchResult(
@@ -106,7 +95,9 @@ class SpeculativeTargetWorker:
                 expert_distribution_metrics=output.expert_distribution_metrics,
                 routed_experts_output=output.routed_experts_output,
                 indexer_topk_output=output.indexer_topk_output,
-                kv_loc_plan=forward_batch.kv_loc_plan if return_kv_loc_plan else None,
+                iteration_ids=(
+                    forward_batch.iteration_ids if return_iteration_ids else None
+                ),
             )
         elif self.omni_runner is None:
             raise RuntimeError("the speculative target runner is not attached")
@@ -148,7 +139,7 @@ class SpeculativeTargetWorker:
                 pass
             # note (wilsonzheng0327): The draft writes its KV into the slots this
             # plan resolved for the target.
-            batch_result.kv_loc_plan = (
-                forward_batch.kv_loc_plan if return_kv_loc_plan else None
+            batch_result.iteration_ids = (
+                forward_batch.iteration_ids if return_iteration_ids else None
             )
             return batch_result

@@ -16,6 +16,7 @@ from sglang_omni.scheduling.sglang_backend.evict_heap_radix_cache import (
 
 class MockAllocator:
     device = "cpu"
+    page_size = 1
 
     def free(self, value):
         pass

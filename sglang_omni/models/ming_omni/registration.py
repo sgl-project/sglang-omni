@@ -10,7 +10,7 @@ def register_ming_hf_config() -> None:
     # a checkpoint of that type through its registry, after registering the
     # class with AutoConfig at import. The thinker reads this package's config
     # fields, so both registrations are replaced, on every call.
-    from sglang.srt.utils.hf_transformers import common as sglang_hf_configs
+    from sglang.srt.hf_transformers import common as sglang_hf_configs
     from transformers import AutoConfig
 
     from sglang_omni.models.ming_omni.configuration import BailingMM2Config

@@ -6,23 +6,32 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import types
 from collections.abc import Mapping
 from contextlib import nullcontext
 from typing import Callable
 from uuid import uuid4
 
+from sglang.srt.disaggregation.mode import DisaggregationMode
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.managers.scheduler_components.exit_ledger import record_send
+from sglang.srt.managers.scheduler_components.request_list import move
 from sglang.srt.mem_cache.allocator.swa import (
     PureSWATokenToKVPoolAllocator,
     SWATokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
+from sglang.srt.runtime_context import get_disagg
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.message import OutgoingMessage, put_messages
 from sglang_omni.scheduling.omni_scheduler import AdminActionResult, OmniScheduler
+from sglang_omni.scheduling.pd_state import (
+    PDDecodeBatchResultProcessor,
+    PDInvariantChecker,
+    PDLoadInquirer,
+    PDMetricsReporter,
+)
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -45,7 +54,62 @@ class PDKVLifecycle(OmniScheduler):
     def __init__(self, *args, **kwargs) -> None:
         self.pd_due_releases: queue.SimpleQueue = queue.SimpleQueue()
         self.pd_outstanding_releases: set[str] = set()
+        self.pd_lifecycle_lock = threading.RLock()
+        self.pd_receiver: DecodeKVReceiver | None = None
         super().__init__(*args, **kwargs)
+        self.invariant_checker = PDInvariantChecker(self.invariant_checker, self)
+        self.load_inquirer = PDLoadInquirer(self.load_inquirer, self)
+
+    def init_metrics_reporter(self) -> None:
+        self.metrics_reporter = PDMetricsReporter(
+            scheduler=self,
+            metrics_collector_context=self.metrics_collector_context,
+            metrics_collector=self.metrics_collector,
+        )
+
+    def pd_owned_allocations(self):
+        if self.pd_receiver is None:
+            return ()
+        else:
+            return self.pd_receiver.owned_allocations()
+
+    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        with self.pd_lifecycle_lock:
+            super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
+            on_scheduler = self.scheduler_thread_id == threading.get_ident() or (
+                self.scheduler_thread_id is None and not self.enable_overlap
+            )
+            if on_scheduler and self.pd_receiver is not None:
+                self.pd_receiver.cancel_request(request_id)
+            else:
+                pass
+
+    def active_request_ids(self) -> list[str]:
+        with self.pd_lifecycle_lock:
+            return sorted(
+                set(super().active_request_ids())
+                | self.pd_outstanding_releases
+                | {
+                    admission.continuation.request_id
+                    for admission in self.pd_owned_allocations()
+                }
+            )
+
+    def abort_request_for_admin(self, request_id: str) -> None:
+        cancelled_copy = self.pd_receiver is not None and any(
+            admission.continuation.request_id == request_id
+            and admission.continuation.transfer_id
+            in self.pd_receiver.cancelled_transfers
+            for admission in self.pd_owned_allocations()
+        )
+        if request_id in self.aborted_request_ids or cancelled_copy:
+            return
+        elif request_id in self.pd_outstanding_releases:
+            # The source has already sent its terminal handoff. Its lease must
+            # survive cancellation until the transport acknowledges the copy.
+            self.abort(request_id, defer_running_cleanup=False)
+        else:
+            super().abort_request_for_admin(request_id)
 
     def pd_holds_kv(self) -> bool:
         return bool(self.pd_outstanding_releases)
@@ -192,7 +256,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
             error = RuntimeError(
                 f"Prefill request {req.rid!r} terminated before KV handoff"
             )
-            self.emit_request_error(req.rid, error)
+            self.emit_request_error(req.rid, error, request=req)
             req.finished_reason = FINISH_ABORT(str(error))
         return super().stream_output(reqs, return_logprob, skip_req)
 
@@ -203,7 +267,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
     ) -> None:
         retained = []
         for req in batch.reqs:
-            if id(req) not in sampled or req.inflight_middle_chunks > 0:
+            if id(req) not in sampled or req is batch.chunked_req:
                 retained.append(req)
                 continue
             else:
@@ -225,20 +289,21 @@ class OmniPrefillScheduler(PDKVLifecycle):
                     req, terminal_error=exc
                 )
                 self.release_request_kv_cache(req)
-                self.emit_request_error(req.rid, terminal_error)
+                self.emit_request_error(req.rid, terminal_error, request=req)
                 continue
 
             terminal_error, abort_cleanup_needed = self.finalize_prefill_request(req)
             if terminal_error is not None or abort_cleanup_needed:
                 self.release_request_kv_cache(req)
                 if terminal_error is not None:
-                    self.emit_request_error(req.rid, terminal_error)
+                    self.emit_request_error(req.rid, terminal_error, request=req)
                 else:
                     pass
                 continue
             else:
                 pass
 
+            move([req], self.disagg_prefill_transfer_queue)
             transfer = KVPageTransfer(
                 request_id=req.rid,
                 transfer_id=transfer_id,
@@ -256,6 +321,7 @@ class OmniPrefillScheduler(PDKVLifecycle):
                     data=transfer,
                 )
             )
+            record_send(req, "omni_pd_transfer")
         batch.reqs = retained
         if not retained:
             batch.batch_is_full = False
@@ -306,7 +372,6 @@ class OmniDecodeScheduler(PDKVLifecycle):
     ) -> None:
         self.pd_admissions = queue.SimpleQueue()
         self.pd_deferred_admission = None
-        self.pd_lifecycle_lock = threading.RLock()
         self.pd_state_restorer = state_restorer
         self.emit_transferred_token = emit_transferred_token
         super().__init__(*args, **kwargs)
@@ -327,27 +392,20 @@ class OmniDecodeScheduler(PDKVLifecycle):
             admissions=self.pd_admissions,
             resume_schema=resume_schema,
             lifecycle_lock=self.pd_lifecycle_lock,
+            cancelled_request_ids=self.aborted_request_ids,
         )
         self.pd_receiver = receiver
         self.kv_registrations = ((pool, receiver),)
-        self.disagg_decode_prealloc_queue = types.SimpleNamespace(
-            queue=[],
-            retracted_queue=[],
-            num_tokens_pre_allocated=0,
-            pre_allocated_token_counts=lambda: (0, 0),
-        )
-        self.disagg_decode_transfer_queue = types.SimpleNamespace(
-            queue=[],
-            num_pending_deferred_releases=lambda: 0,
-            has_pending_deferred_releases=lambda: False,
+        self.kv_checksum_computer = None
+        self.batch_result_processor = PDDecodeBatchResultProcessor(
+            self.batch_result_processor
         )
 
     def pd_holds_kv(self) -> bool:
         with self.pd_lifecycle_lock:
             return (
-                self.pd_deferred_admission is not None
-                or not self.pd_admissions.empty()
-                or self.pd_receiver.has_reservations()
+                bool(self.waiting_queue)
+                or bool(self.pd_receiver.owned_allocations())
                 or super().pd_holds_kv()
             )
 
@@ -367,8 +425,6 @@ class OmniDecodeScheduler(PDKVLifecycle):
         return self.pd_receiver.suspend_reservations()
 
     def initial_disaggregation_mode(self):
-        from sglang.srt.disaggregation.utils import DisaggregationMode
-
         return DisaggregationMode.DECODE
 
     def get_next_batch_to_run(self):
@@ -387,7 +443,9 @@ class OmniDecodeScheduler(PDKVLifecycle):
         # Upstream retraction frees KV and expects its own rebootstrap queues.
         # This handoff has no re-prefill protocol; fail only the affected request.
         self.emit_request_error(
-            req.rid, RuntimeError("PD decode cannot resume a retracted request")
+            req.rid,
+            RuntimeError("PD decode cannot resume a retracted request"),
+            request=req,
         )
         self.abort(req.rid)
 
@@ -410,6 +468,11 @@ class OmniDecodeScheduler(PDKVLifecycle):
                         return
                 else:
                     pass
+                if not self.pd_receiver.owns_admission(admission):
+                    self.pd_deferred_admission = None
+                    continue
+                else:
+                    pass
                 request_id = admission.continuation.request_id
                 admitted = OutgoingMessage(
                     request_id=request_id,
@@ -418,7 +481,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 )
                 if request_id in self.aborted_request_ids:
                     self.pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self.pd_receiver.release_admission(admission)
                     continue
                 else:
                     pass
@@ -434,12 +497,14 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     return
                 except Exception as exc:
                     self.pd_deferred_admission = None
-                    self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+                    self.pd_receiver.release_admission(admission)
                     self.outbox.put(admitted)
                     self.emit_request_error(request_id, exc)
                     continue
                 self.pd_deferred_admission = None
-                self.waiting_queue.append(req)
+                move([req], self.waiting_queue)
+                self.invariant_checker.expect_output(req)
+                self.pd_receiver.adopt(admission)
                 self.outbox.put(admitted)
 
     def stream_output(
@@ -483,7 +548,7 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 self.release_request_kv_cache(request)
                 self.emit_model_path_end_once(request.rid, status="error")
                 self.close_completed_request(request)
-                self.emit_request_error(request.rid, error)
+                self.emit_request_error(request.rid, error, request=request)
             else:
                 self.stage_stream_messages(request.rid, messages, step_messages)
         put_messages(self.outbox, step_messages)
@@ -495,8 +560,8 @@ class OmniDecodeScheduler(PDKVLifecycle):
         with self.pd_lifecycle_lock:
             admission = self.pd_deferred_admission
             self.pd_deferred_admission = None
-            if admission is not None:
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
+            if admission is not None and self.pd_receiver.owns_admission(admission):
+                self.pd_receiver.release_admission(admission)
             else:
                 pass
             while True:
@@ -504,22 +569,10 @@ class OmniDecodeScheduler(PDKVLifecycle):
                     admission = self.pd_admissions.get_nowait()
                 except queue.Empty:
                     return
-                self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-
-    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
-        with self.pd_lifecycle_lock:
-            for req in self.waiting_queue:
-                if req.rid == request_id:
-                    # Note(Yue Yin): abort runs on the Stage event loop, and
-                    # only the scheduler thread may mutate the request table.
-                    self.defer_pd_kv_release(req)
-                    break
+                if self.pd_receiver.owns_admission(admission):
+                    self.pd_receiver.release_admission(admission)
                 else:
                     pass
-            super().abort(
-                request_id,
-                defer_running_cleanup=defer_running_cleanup,
-            )
 
 
 def validate_pd_runtime(scheduler: OmniScheduler) -> None:
@@ -552,5 +605,13 @@ def validate_pd_runtime(scheduler: OmniScheduler) -> None:
         pass
     if not scheduler.spec_algorithm.is_none():
         raise NotImplementedError("PD does not support speculative decoding")
+    else:
+        pass
+    if get_disagg().disaggregation_decode_host_receive_threshold != 1:
+        raise NotImplementedError("Omni PD does not support native host KV receive")
+    else:
+        pass
+    if get_disagg().disaggregation_enable_kv_checksum:
+        raise NotImplementedError("Omni PD does not carry native KV checksum metadata")
     else:
         pass
