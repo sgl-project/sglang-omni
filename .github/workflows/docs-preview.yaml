@@ -1,111 +1,239 @@
 name: Docs Preview
 
-# Publishes the Sphinx build of every pull request to
-# https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/ and links
-# it from a comment on the pull request, so reviewers read the rendered pages
-# without a local build.
+# Publishes the Sphinx build of a pull request to
+# https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/ and
+# comments on the pull request with the link and a per-page rendered diff, so
+# reviewers read what changed without a local build.
 #
-# Docs Check builds the HTML with the pull request's read-only token and
-# uploads it as the docs-html artifact. This workflow runs afterwards from the
-# default branch with a write token. It downloads that artifact and never
-# checks out or runs pull request code, which is the pattern GitHub documents
-# for pull requests from forks.
+# Which pull requests get a preview:
+#   - one that carries the maintainer-applied `docs-preview` label, or
+#   - one whose author is an owner, member or collaborator of the repository
+#     and that carries `documentation`, which the labeler adds to docs-only
+#     pull requests.
+# Anything else, including every pull request from an unknown account, is
+# never deployed. Removing the qualifying label or closing the pull request
+# removes the preview.
+#
+# Trust boundary: Docs Check runs the pull request's own workflow copy with a
+# read-only token and uploads docs/_build/html as the docs-html artifact. That
+# artifact, including _diff/pages.json, is attacker-controlled. This workflow
+# runs the default-branch copy with a write token, never checks out or runs
+# pull request code, treats the artifact as hostile (see
+# .github/scripts/docs_preview.sh) and takes every number, sha and label from
+# the GitHub API, not from the artifact.
 
 on:
   workflow_run:
     workflows: [Docs Check]
     types: [completed]
   pull_request_target:
-    types: [closed]
+    types: [labeled, unlabeled, closed]
 
 permissions: {}
 
+env:
+  DOCS_LABEL: documentation
+  OPT_IN_LABEL: docs-preview
+
 jobs:
+  decide:
+    name: decide - which preview action to take
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: read
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      number: ${{ steps.decide.outputs.number }}
+      head_sha: ${{ steps.decide.outputs.head_sha }}
+      run_id: ${{ steps.decide.outputs.run_id }}
+    steps:
+      - name: Resolve the pull request and the action
+        id: decide
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const docsLabel = process.env.DOCS_LABEL;
+            const optInLabel = process.env.OPT_IN_LABEL;
+            const trusted = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const qualifies = (pull) => {
+              const labels = pull.labels.map((l) => l.name);
+              return (
+                labels.includes(optInLabel) ||
+                (labels.includes(docsLabel) && trusted.has(pull.author_association))
+              );
+            };
+            const latestDocsCheckRun = async (headSha) => {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: 'docs-check.yaml',
+                head_sha: headSha,
+                event: 'pull_request',
+                status: 'success',
+                per_page: 1,
+              });
+              return data.workflow_runs[0]?.id;
+            };
+            const decide = (action, pull, runId) => {
+              core.info(`${action}: pull request #${pull?.number ?? '-'}`);
+              core.setOutput('action', action);
+              if (pull) {
+                core.setOutput('number', String(pull.number));
+                core.setOutput('head_sha', pull.head.sha);
+              }
+              if (runId) core.setOutput('run_id', String(runId));
+            };
+
+            if (context.eventName === 'workflow_run') {
+              const run = context.payload.workflow_run;
+              if (run.event !== 'pull_request' || run.conclusion !== 'success') {
+                return decide('none');
+              }
+              // The payload lists no pull request when the head is in a fork,
+              // so find the open pull request by its head commit.
+              const { data: pulls } =
+                await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner,
+                  repo,
+                  commit_sha: run.head_sha,
+                });
+              const pull = pulls.find(
+                (p) =>
+                  p.state === 'open' &&
+                  p.head.sha === run.head_sha &&
+                  p.head.repo?.full_name === run.head_repository?.full_name &&
+                  p.base.repo.full_name === `${owner}/${repo}`
+              );
+              if (!pull) {
+                core.info(`No open pull request has head ${run.head_sha}.`);
+                return decide('none');
+              }
+              return decide(qualifies(pull) ? 'deploy' : 'none', pull, run.id);
+            }
+
+            const pull = context.payload.pull_request;
+            const label = context.payload.label?.name;
+            if (context.payload.action === 'closed') {
+              return decide('remove', pull);
+            }
+            if (label !== docsLabel && label !== optInLabel) {
+              return decide('none', pull);
+            }
+            if (context.payload.action === 'unlabeled') {
+              return decide(qualifies(pull) ? 'none' : 'remove', pull);
+            }
+            // labeled
+            if (pull.state !== 'open' || !qualifies(pull)) {
+              return decide('none', pull);
+            }
+            const runId = await latestDocsCheckRun(pull.head.sha);
+            if (!runId) {
+              core.info('No successful Docs Check run for this head yet; the next run deploys.');
+              return decide('none', pull);
+            }
+            return decide('deploy', pull, runId);
+
   deploy:
     name: deploy - pull request preview
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success'
+    needs: decide
+    if: needs.decide.outputs.action == 'deploy'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       actions: read
       contents: write
       pull-requests: write
-    # Docs Publish pushes to gh-pages too; one push at a time.
-    concurrency:
-      group: gh-pages-branch
-      cancel-in-progress: false
     steps:
-      # The run's own payload lists no pull request when the head is in a
-      # fork, so look the open pull request up by its head commit instead.
-      # The number comes from the API, never from the artifact.
-      - name: Find the pull request
-        id: pr
-        uses: actions/github-script@v7
+      # Default-branch copy of the deploy script; no pull request code.
+      - name: Checkout the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          script: |
-            const headSha = context.payload.workflow_run.head_sha;
-            const { owner, repo } = context.repo;
-            const { data: pulls } =
-              await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                owner,
-                repo,
-                commit_sha: headSha,
-              });
-            const pull = pulls.find(
-              (p) =>
-                p.state === 'open' &&
-                p.head.sha === headSha &&
-                p.base.repo.full_name === `${owner}/${repo}`
-            );
-            if (!pull) {
-              core.info(`No open pull request has head ${headSha}; nothing to deploy.`);
-              return;
-            }
-            core.setOutput('number', String(pull.number));
-            core.setOutput('head_sha', headSha);
+          ref: ${{ github.event.repository.default_branch }}
+          path: repo
+          persist-credentials: false
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: gh-pages
+          path: gh-pages
 
       - name: Download the built documentation
-        if: steps.pr.outputs.number != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: docs-html
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ needs.decide.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: site
 
       - name: Deploy the preview
-        if: steps.pr.outputs.number != ''
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          destination_dir: pr-preview/pr-${{ steps.pr.outputs.number }}
-          user_name: github-actions[bot]
-          user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          full_commit_message: "Deploy docs preview for PR #${{ steps.pr.outputs.number }} (${{ steps.pr.outputs.head_sha }})"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.decide.outputs.number }}
+          HEAD_SHA: ${{ needs.decide.outputs.head_sha }}
+        run: bash repo/.github/scripts/docs_preview.sh deploy "$PR_NUMBER" "$HEAD_SHA" site gh-pages
 
       - name: Link the preview from the pull request
-        if: steps.pr.outputs.number != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
-          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_NUMBER: ${{ needs.decide.outputs.number }}
+          HEAD_SHA: ${{ needs.decide.outputs.head_sha }}
         with:
           script: |
+            const fs = require('fs');
             const number = Number(process.env.PR_NUMBER);
             const sha = process.env.HEAD_SHA;
             const url = `https://${context.repo.owner}.github.io/${context.repo.repo}/pr-preview/pr-${number}/`;
-            const body = [
+
+            // pages.json comes from the pull request's build. Only page paths
+            // of a strict shape are used, and page titles are never shown.
+            const pagePattern = /^(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.html$/;
+            let changed = [];
+            let added = [];
+            let removed = [];
+            let hasDiff = false;
+            try {
+              const pages = JSON.parse(fs.readFileSync('site/_diff/pages.json', 'utf8'));
+              hasDiff = true;
+              changed = (pages.changed ?? []).filter((p) => pagePattern.test(p?.page)).slice(0, 30);
+              added = (pages.added ?? []).filter((p) => pagePattern.test(p)).slice(0, 30);
+              removed = (pages.removed ?? []).filter((p) => pagePattern.test(p)).slice(0, 30);
+            } catch (error) {
+              core.warning(`No rendered diff in the build: ${error.message}`);
+            }
+
+            const lines = [
               '<!-- docs-preview -->',
               '## Docs preview',
               '',
+              'Automated preview of unreviewed pull request content. Nothing here is an approval.',
+              '',
               `The documentation built from ${sha} is deployed at ${url}`,
               '',
-              'GitHub Pages takes about a minute to publish each push. The preview is refreshed on every push and removed when the pull request closes.',
-            ].join('\n');
+            ];
+            const total = changed.length + added.length + removed.length;
+            if (total > 0) {
+              lines.push(`**${total} rendered page${total === 1 ? '' : 's'} changed** ([all diffs](${url}_diff/)):`, '');
+              for (const p of changed) {
+                lines.push(`- \`${p.page}\` · [page](${url}${p.page}) · [diff](${url}_diff/pages/${p.page}) · +${Number(p.added) | 0} −${Number(p.removed) | 0} lines`);
+              }
+              for (const p of added) {
+                lines.push(`- \`${p}\` · [page](${url}${p}) · new page`);
+              }
+              for (const p of removed) {
+                lines.push(`- \`${p}\` · removed`);
+              }
+              lines.push('');
+            } else if (hasDiff) {
+              lines.push('No rendered page differs from the base.', '');
+            }
+            lines.push('GitHub Pages takes about a minute to publish each push. The preview is refreshed on every push and removed when the label is removed or the pull request closes.');
+            const body = lines.join('\n');
+
             const { owner, repo } = context.repo;
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner,
@@ -113,7 +241,12 @@ jobs:
               issue_number: number,
               per_page: 100,
             });
-            const existing = comments.find((c) => c.body?.startsWith('<!-- docs-preview -->'));
+            // Only this bot's own comment is ever edited.
+            const ours = (c) =>
+              c.user?.login === 'github-actions[bot]' &&
+              c.user?.type === 'Bot' &&
+              c.body?.startsWith('<!-- docs-preview -->');
+            const existing = comments.find(ours);
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {
@@ -121,47 +254,49 @@ jobs:
             }
 
   remove:
-    name: remove - pull request preview on close
-    if: github.event_name == 'pull_request_target'
+    name: remove - pull request preview
+    needs: decide
+    if: needs.decide.outputs.action == 'remove'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
-    concurrency:
-      group: gh-pages-branch
-      cancel-in-progress: false
     steps:
-      # Only the gh-pages branch is checked out; no pull request code runs here.
+      # Default-branch copy of the script and the gh-pages branch; no pull
+      # request code runs here.
+      - name: Checkout the default branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repo
+          persist-credentials: false
+
       - name: Checkout gh-pages
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: gh-pages
+          path: gh-pages
 
       - name: Remove the preview
         id: remove
         shell: bash
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.decide.outputs.number }}
         run: |
-          dir="pr-preview/pr-${PR_NUMBER}"
-          if [ ! -d "$dir" ]; then
-            echo "No preview at $dir."
-            echo "removed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ -d "gh-pages/pr-preview/pr-${PR_NUMBER}" ]; then
+            echo "had_preview=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "had_preview=false" >> "$GITHUB_OUTPUT"
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm -r -q "$dir"
-          git commit -q -m "Remove docs preview for PR #${PR_NUMBER}"
-          git push origin gh-pages
-          echo "removed=true" >> "$GITHUB_OUTPUT"
+          bash repo/.github/scripts/docs_preview.sh remove "$PR_NUMBER" gh-pages
 
       - name: Update the pull request comment
-        if: steps.remove.outputs.removed == 'true'
-        uses: actions/github-script@v7
+        if: steps.remove.outputs.had_preview == 'true'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ needs.decide.outputs.number }}
         with:
           script: |
             const number = Number(process.env.PR_NUMBER);
@@ -172,11 +307,20 @@ jobs:
               issue_number: number,
               per_page: 100,
             });
-            const existing = comments.find((c) => c.body?.startsWith('<!-- docs-preview -->'));
+            const existing = comments.find(
+              (c) =>
+                c.user?.login === 'github-actions[bot]' &&
+                c.user?.type === 'Bot' &&
+                c.body?.startsWith('<!-- docs-preview -->')
+            );
             if (!existing) return;
+            const reason =
+              context.payload.action === 'closed'
+                ? 'The pull request is closed and its preview has been removed.'
+                : 'The pull request no longer qualifies for a preview, so the preview has been removed. A maintainer can add the `docs-preview` label to deploy it again.';
             await github.rest.issues.updateComment({
               owner,
               repo,
               comment_id: existing.id,
-              body: '<!-- docs-preview -->\n## Docs preview\n\nThe pull request is closed and its preview has been removed.',
+              body: `<!-- docs-preview -->\n## Docs preview\n\n${reason}`,
             });

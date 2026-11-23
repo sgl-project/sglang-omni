@@ -28,7 +28,7 @@ Add the labels that match the change. They combine, and no label runs all of CI.
 | Lint | GitHub-hosted | pre-commit | Every pull request |
 | Test Layout | GitHub-hosted | Test file location check | Every pull request except MLX-only ones |
 | Docs Check | GitHub-hosted | Sphinx documentation build and the documentation style checker's tests | Every pull request except MLX-only ones |
-| Docs Preview | GitHub-hosted | Deploys the Docs Check build to `https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/` and links it from a comment on the pull request; removes it when the pull request closes | After every successful Docs Check run of a pull request |
+| Docs Preview | GitHub-hosted | Deploys the Docs Check build to `https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/` and comments on the pull request with the link and a per-page rendered diff against the base; removes the preview when the pull request stops qualifying or closes | A successful Docs Check run, or a label change, on a pull request that carries the maintainer-applied `docs-preview` label, or that carries `documentation` and comes from a repository owner, member or collaborator |
 | Playground Test | GitHub-hosted | The playground frontend tests | Every pull request except MLX-only ones |
 | Rust Router | GitHub-hosted | Rust router format, lint, tests and release build | Every pull request except MLX-only ones |
 | Release Docker Images Nightly (NPU) | GitHub-hosted | NPU configuration checks and an ARM64 image build | Pull requests that change its Dockerfile, installer, pyproject files or workflows |

@@ -57,10 +57,29 @@ jobs:
           make html
 
       # Docs Preview (docs-preview.yaml) deploys this build to
-      # https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/.
+      # https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/ for
+      # a qualifying pull request, with a rendered diff against the base under
+      # _diff/ so reviewers read only what changed.
+      - name: Build the base documentation for the rendered diff
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          cd "$RUNNER_TEMP/base/docs"
+          make compile
+          make html
+
+      - name: Diff the rendered pages against the base
+        if: github.event_name == 'pull_request'
+        run: |
+          python .github/scripts/docs_diff.py \
+            "$RUNNER_TEMP/base/docs/_build/html" docs/_build/html docs/_build/html/_diff
+
       - name: Upload the built documentation
         if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: docs-html
           path: docs/_build/html
@@ -81,4 +100,4 @@ jobs:
         run: python -m pip install -r scripts/requirements-doc-lint.txt pytest
 
       - name: Test documentation style checker
-        run: python -m pytest tests/unit_test/scripts/test_check_doc_style*.py -q
+        run: python -m pytest tests/unit_test/scripts/test_check_doc_style*.py tests/unit_test/scripts/test_docs_diff.py -q

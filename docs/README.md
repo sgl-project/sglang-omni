@@ -25,7 +25,7 @@ bash serve.sh
 PORT=8080 make serve
 ```
 
-- Preview on GitHub: once a PR is open, the Docs Preview workflow deploys each Docs Check build to `https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/` and posts the link in a comment on the PR. The preview is refreshed on every push and removed when the PR closes.
+- Preview on GitHub: the Docs Preview workflow deploys each Docs Check build of a qualifying PR to `https://sgl-project.github.io/sglang-omni/pr-preview/pr-<number>/` and posts a comment on the PR with the link and, for every page whose rendered text changed, a side-by-side diff against the base under `_diff/`. A PR qualifies when a maintainer adds the `docs-preview` label, or when it carries `documentation` (the labeler adds it to docs-only PRs) and its author is a repository owner, member or collaborator. The preview is refreshed on every push and removed when the PR stops qualifying or closes.
 
 ## Style
 
