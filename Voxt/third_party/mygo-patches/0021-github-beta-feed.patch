@@ -1,0 +1,152 @@
+diff --git a/internal/update/github.go b/internal/update/github.go
+index c38f2f6..3379e52 100644
+--- a/internal/update/github.go
++++ b/internal/update/github.go
+@@ -17,8 +17,15 @@ import (
+ //
+ //	https://github.com/<owner>/<repo>/releases/download/<prefix>{version}/update-<target>.json
+ //
+-// and ResolveFeed finds the newest release tagged <prefix> through the
+-// GitHub API. Other feeds are the URL of the manifest.
++// and ResolveFeed finds the highest version tagged <prefix> through the
++// GitHub API. The beta channel of such a feed (updates.prereleases) names
++// the manifest under beta/,
++//
++//	https://github.com/<owner>/<repo>/releases/download/<prefix>{version}/beta/update-<target>.json
++//
++// which resolves to the manifest of the newest version of the releases and
++// prereleases alike, as a beta channel's server would keep it. Other feeds
++// are the URL of the manifest.
+ 
+ // VersionPlaceholder stands for the version in the feed of tagged releases.
+ const VersionPlaceholder = "{version}"
+@@ -46,9 +53,10 @@ func TaggedFeed(repo, prefix, name string) string {
+ }
+ 
+ // ResolveFeed returns the URL of the manifest that feed names: feed itself,
+-// or for a feed of tagged releases (TaggedFeed) the manifest of the newest
+-// release with the tag's prefix that is neither a draft nor a prerelease,
+-// as the GitHub API lists them, newest first.
++// or for a feed of tagged releases (TaggedFeed) the manifest of the highest
++// version with the tag's prefix that is neither a draft nor a prerelease;
++// for its beta channel, of the highest version tagged prefix, prerelease
++// or not.
+ func ResolveFeed(ctx context.Context, feed string, get Getter) (string, error) {
+ 	if !strings.Contains(feed, VersionPlaceholder) {
+ 		return feed, nil
+@@ -57,13 +65,21 @@ func ResolveFeed(ctx context.Context, feed string, get Getter) (string, error) {
+ 	if err != nil {
+ 		return "", err
+ 	}
+-	tag, err := latestTagged(ctx, get, repo, prefix)
++	dir := "/" + url.PathEscape(prefix) + VersionPlaceholder + "/"
++	beta := strings.Contains(feed, dir+betaDir+"/")
++	tag, err := latestTagged(ctx, get, repo, prefix, beta)
+ 	if err != nil {
+ 		return "", err
+ 	}
+-	return strings.Replace(feed, "/"+url.PathEscape(prefix)+VersionPlaceholder+"/", "/"+url.PathEscape(tag)+"/", 1), nil
++	if beta {
++		dir += betaDir + "/"
++	}
++	return strings.Replace(feed, dir, "/"+url.PathEscape(tag)+"/", 1), nil
+ }
+ 
++// betaDir is the directory that names a tagged feed's beta channel.
++const betaDir = "beta"
++
+ // parseTaggedFeed returns the repository and the tag prefix of a feed of
+ // tagged releases.
+ func parseTaggedFeed(feed string) (repo, prefix string, err error) {
+@@ -79,9 +95,11 @@ func parseTaggedFeed(feed string) (repo, prefix string, err error) {
+ 	return parts[0] + "/" + parts[1], prefix, nil
+ }
+ 
+-// latestTagged returns the tag of the newest release of repo tagged
+-// prefix that is neither a draft nor a prerelease.
+-func latestTagged(ctx context.Context, get Getter, repo, prefix string) (string, error) {
++// latestTagged returns the tag of the highest version among the releases
++// of repo tagged prefix that are neither drafts nor prereleases, on the
++// first page of the list that has one; with pre, prereleases count too.
++func latestTagged(ctx context.Context, get Getter, repo, prefix string, pre bool) (string, error) {
++	best := ""
+ 	for page := 1; page <= maxReleasePages; page++ {
+ 		u := GitHubAPI + "/repos/" + repo + "/releases?per_page=" + strconv.Itoa(releasesPerPage) + "&page=" + strconv.Itoa(page)
+ 		releases, err := getReleases(ctx, get, u)
+@@ -89,14 +107,22 @@ func latestTagged(ctx context.Context, get Getter, repo, prefix string) (string,
+ 			return "", err
+ 		}
+ 		for _, r := range releases {
+-			if !r.Draft && !r.Prerelease && strings.HasPrefix(r.TagName, prefix) {
+-				return r.TagName, nil
++			if r.Draft || !strings.HasPrefix(r.TagName, prefix) || (r.Prerelease && !pre) {
++				continue
++			}
++			if best == "" || Compare(strings.TrimPrefix(r.TagName, prefix), strings.TrimPrefix(best, prefix)) > 0 {
++				best = r.TagName
+ 			}
+ 		}
+-		if len(releases) < releasesPerPage {
++		// The highest version of the page, not its first: a fix for an
++		// older line published after a newer release is listed above it.
++		if best != "" || len(releases) < releasesPerPage {
+ 			break
+ 		}
+ 	}
++	if best != "" {
++		return best, nil
++	}
+ 	return "", fmt.Errorf("%w in %s tagged %s", ErrNotPublished, repo, prefix)
+ }
+ 
+diff --git a/internal/update/github_test.go b/internal/update/github_test.go
+index 0d6e81b..a19dc36 100644
+--- a/internal/update/github_test.go
++++ b/internal/update/github_test.go
+@@ -53,6 +53,46 @@ func TestResolveFeed(t *testing.T) {
+ 		t.Errorf("ResolveFeed = %s, %v", got, err)
+ 	}
+ 
++	// The beta channel: the highest version of the releases and prereleases.
++	beta := strings.Replace(feed, "{version}/", "{version}/beta/", 1)
++	pages = [][]string{{
++		rel("desktop-v1.3.0", true, false),
++		rel("desktop-v1.2.0-beta.2", false, true),
++		rel("desktop-v1.2.0-beta.10", false, true),
++		rel("desktop-v1.1.0", false, false),
++		rel("desktop-v1.0.0-beta.1", false, true),
++	}}
++	got, err = ResolveFeed(context.Background(), beta, get)
++	if want := "https://github.com/me/app/releases/download/desktop-v1.2.0-beta.10/update-linux-amd64.json"; err != nil || got != want {
++		t.Errorf("beta ResolveFeed = %s, %v, want %s", got, err, want)
++	}
++	// A fix for an older line, published after a newer release, is listed
++	// first; both channels still offer the highest version.
++	pages = [][]string{{
++		rel("desktop-v2.1.3", false, false),
++		rel("desktop-v2.2.0-beta.1", false, true),
++		rel("desktop-v2.2.0", false, false),
++		rel("desktop-v2.1.2", false, false),
++	}}
++	for _, f := range []string{feed, beta} {
++		if got, err := ResolveFeed(context.Background(), f, get); err != nil || !strings.HasSuffix(got, "/desktop-v2.2.0/update-linux-amd64.json") {
++			t.Errorf("after a fix for an older line, ResolveFeed(%s) = %s, %v", f, got, err)
++		}
++	}
++	// A release newer than every beta is the beta channel's too.
++	pages = [][]string{{rel("desktop-v1.2.0", false, false), rel("desktop-v1.2.0-beta.10", false, true)}}
++	if got, err := ResolveFeed(context.Background(), beta, get); err != nil || !strings.HasSuffix(got, "/desktop-v1.2.0/update-linux-amd64.json") {
++		t.Errorf("beta ResolveFeed = %s, %v", got, err)
++	}
++	// Only prereleases: the newest of them; the stable channel has none.
++	pages = [][]string{{rel("desktop-v0.1.0-beta.2", false, true), rel("desktop-v0.1.0-beta.1", false, true)}}
++	if got, err := ResolveFeed(context.Background(), beta, get); err != nil || !strings.Contains(got, "/desktop-v0.1.0-beta.2/update") {
++		t.Errorf("beta ResolveFeed = %s, %v", got, err)
++	}
++	if _, err := ResolveFeed(context.Background(), feed, get); !errors.Is(err, ErrNotPublished) {
++		t.Errorf("stable feed with only prereleases, err = %v", err)
++	}
++
+ 	pages = [][]string{{rel("cli-v2.0.0", false, false)}}
+ 	if _, err := ResolveFeed(context.Background(), feed, get); !errors.Is(err, ErrNotPublished) {
+ 		t.Errorf("without a release, err = %v", err)

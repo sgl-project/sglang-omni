@@ -143,20 +143,23 @@ func (a *app) addSelectedTerm(term string) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		have, err := repo.List(ctx, term)
 		existing := ""
-		for _, t := range have {
-			if strings.EqualFold(t.Term, term) {
-				existing = t.Term
+		err := withDictionaryLock(repo, func() error {
+			have, err := repo.List(ctx, term)
+			for _, t := range have {
+				if strings.EqualFold(t.Term, term) {
+					existing = t.Term
+				}
 			}
-		}
-		if err == nil && existing == "" {
-			now := time.Now()
-			err = repo.Put(ctx, store.Term{ID: core.NewID(now), Term: term, Enabled: true, CreatedAt: now, UpdatedAt: now})
-			if errors.Is(err, core.ErrExists) {
-				existing, err = term, nil
+			if err == nil && existing == "" {
+				now := time.Now()
+				err = repo.Put(ctx, store.Term{ID: core.NewID(now), Term: term, Enabled: true, CreatedAt: now, UpdatedAt: now})
+				if errors.Is(err, core.ErrExists) {
+					existing, err = term, nil
+				}
 			}
-		}
+			return err
+		})
 		a.post(func() {
 			switch {
 			case err != nil:
