@@ -19,7 +19,7 @@ import torch
 import torchaudio
 import xxhash
 from numpy.typing import NDArray
-from sglang.utils import LazyImport
+from sglang._lazy_import import LazyImport
 
 current_platform: LazyImport = LazyImport("sglang_omni.platforms", "current_platform")
 

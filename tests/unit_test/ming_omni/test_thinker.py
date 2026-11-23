@@ -233,16 +233,18 @@ def fake_batch(torch_module, input_ids, req):
         input_ids=torch_module.tensor(input_ids, dtype=torch_module.long),
         extend_seq_lens_cpu=[len(input_ids)],
     )
-    schedule_batch = SimpleNamespace(reqs=[req])
+    schedule_batch = SimpleNamespace(
+        reqs=[req], chunked_req=req if req.is_middle_chunk else None
+    )
     return forward_batch, schedule_batch
 
 
-def fake_req(model_inputs, *, inflight_middle_chunks=0, rid="req-1"):
+def fake_req(model_inputs, *, is_middle_chunk=False, rid="req-1"):
     return SimpleNamespace(
         rid=rid,
         omni_model_inputs=model_inputs,
         _omni_consumed=None,
-        inflight_middle_chunks=inflight_middle_chunks,
+        is_middle_chunk=is_middle_chunk,
     )
 
 
@@ -301,7 +303,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
     runner = fake_runner(torch, runner_cls, image=3)
     image_embeds = torch.tensor([[20.0, 21.0], [22.0, 23.0]])
     model_inputs = {"image_embeds": image_embeds}
-    req = fake_req(model_inputs, inflight_middle_chunks=1, rid="chunked-image")
+    req = fake_req(model_inputs, is_middle_chunk=True, rid="chunked-image")
     forward_batch, schedule_batch = fake_batch(torch, [3, 1], req)
 
     input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)
@@ -312,7 +314,7 @@ def test_ming_runner_keeps_chunk_state_until_final_chunk(monkeypatch) -> None:
         "image": 1
     }  # noqa: leading-underscore  # production name
 
-    req.inflight_middle_chunks = 0
+    req.is_middle_chunk = False
     forward_batch, schedule_batch = fake_batch(torch, [3, 2], req)
 
     input_embeds = runner.inject_multimodal_embeds(forward_batch, schedule_batch)

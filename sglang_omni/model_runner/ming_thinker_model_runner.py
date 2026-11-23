@@ -143,7 +143,7 @@ class MingThinkerModelRunner(ModelRunner):
                 getattr(req, "_omni_consumed", None) or {}
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             pad_values = omni_inputs.get("pad_values", {})
-            is_final_chunk = req.inflight_middle_chunks == 0
+            is_final_chunk = req is not schedule_batch.chunked_req
             req_id = self.request_id(req)
 
             for modality, embed_key, token_id in [

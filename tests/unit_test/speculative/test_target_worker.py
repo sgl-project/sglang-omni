@@ -3,14 +3,21 @@
 
 from __future__ import annotations
 
+from array import array
 from types import SimpleNamespace
 from typing import Literal
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
+from sglang.srt.runtime_context import get_context
+from sglang.srt.sampling.penalties import PenaltyStatusPool, StepPenalties
+from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
+from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
+from sglang.srt.speculative.target_verify import adjust_verify_logits
 
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
@@ -29,13 +36,12 @@ class PrefillRunner:
         return GenerationBatchResult(next_token_ids=torch.tensor([7, 8]))
 
 
-def test_prefill_hands_the_draft_its_kv_location_plan(
+def test_prefill_hands_the_draft_its_iteration_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Draft workers ask the target prefill for its KV location plan; the adapter
-    refused the keyword, so every draft failed on its first request."""
-    kv_location_plan = SimpleNamespace()
-    forward_batch = SimpleNamespace(kv_loc_plan=kv_location_plan)
+    """Draft workers need the target's iteration IDs to resolve their KV slots."""
+    iteration_ids = SimpleNamespace()
+    forward_batch = SimpleNamespace(iteration_ids=iteration_ids)
     monkeypatch.setattr(
         ForwardBatch,
         "init_new",
@@ -54,11 +60,11 @@ def test_prefill_hands_the_draft_its_kv_location_plan(
         is_prefill_only=False,
     )
 
-    planned = target_worker.forward_batch_generation(batch, return_kv_loc_plan=True)
+    planned = target_worker.forward_batch_generation(batch, return_iteration_ids=True)
     unplanned = target_worker.forward_batch_generation(batch)
 
-    assert planned.kv_loc_plan is kv_location_plan
-    assert unplanned.kv_loc_plan is None
+    assert planned.iteration_ids is iteration_ids
+    assert unplanned.iteration_ids is None
     assert planned.next_token_ids.tolist() == [7, 8]
 
 
@@ -95,7 +101,7 @@ class VerifyRunner:
     ("takes_logits_hooks", "repetition_penalty_owner", "applied_hooks"),
     [
         (True, None, ["logits hooks, 3 rows per request"]),
-        (False, "verify_logits", ["repetition penalty on (2, 3, 5)"]),
+        (False, "verify_logits", []),
         (False, "draft_worker", []),
     ],
 )
@@ -104,7 +110,7 @@ def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
     repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
     applied_hooks: list[str],
 ) -> None:
-    """A runner whose draft worker applies the penalty must not get the shared one too, and the penalty sees one block per request."""
+    """The main verify sampler owns standard penalties; target hooks must not double them."""
     verify_output = SimpleNamespace(
         logits_output=SimpleNamespace(next_token_logits=torch.zeros(6, 5)),
         can_run_graph=False,
@@ -124,9 +130,77 @@ def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
     target_worker.verify_requests = [SimpleNamespace(), SimpleNamespace()]
     verify_batch = SimpleNamespace(
         apply_deprecated_skip_attn_backend_init=lambda skip_attn_backend_init: None,
-        kv_loc_plan=None,
+        iteration_ids=None,
     )
 
     target_worker.forward_batch_generation(None, verify_batch, is_verify=True)
 
     assert runner.applied_hooks == applied_hooks
+
+
+def test_verify_sampler_applies_each_rows_history_once() -> None:
+    """Target-side penalties would penalize history twice before the verify sampler."""
+    with get_context().override_server_args():
+        request = Req(
+            rid="verify-history",
+            origin_input_text="",
+            origin_input_ids=array("q", [0]),
+            sampling_params=SamplingParams(temperature=0, repetition_penalty=2.0),
+        )
+        request.output_ids = array("q", [1])
+        pool = PenaltyStatusPool(vocab_size=5, device="cpu")
+        pool.alloc([request])
+        pool.reset_history([request])
+        sampling_info = SamplingBatchInfo(
+            vocab_size=5,
+            device="cpu",
+            step_penalties=StepPenalties.build([request], pool),
+        )
+        logits = torch.tensor([[4.0, 4.0, -4.0, 4.0, 4.0]]).repeat(3, 1)
+        verify_output = SimpleNamespace(
+            logits_output=SimpleNamespace(next_token_logits=logits),
+            can_run_graph=False,
+            expert_distribution_metrics=None,
+            routed_experts_output=None,
+            indexer_topk_output=None,
+        )
+        model_worker = SimpleNamespace(
+            model_runner=SimpleNamespace(forward=lambda forward_batch: verify_output),
+            model_config=None,
+            device="cpu",
+            random_seed=0,
+        )
+        target_worker = SpeculativeTargetWorker(
+            model_worker, SpeculativeAlgorithm.DFLASH
+        )
+        runner = VerifyRunner(model_worker, False, "verify_logits")
+        target_worker.attach_runner(runner)
+        target_worker.verify_requests = [SimpleNamespace()]
+        verify_batch = SimpleNamespace(
+            apply_deprecated_skip_attn_backend_init=lambda value: None,
+            iteration_ids=None,
+        )
+        result = target_worker.forward_batch_generation(
+            None, verify_batch, is_verify=True
+        )
+        assert runner.applied_hooks == []
+        with torch._dynamo.config.patch(
+            disable=True
+        ):  # noqa: leading-underscore  # disable compilation for the CPU numerical check
+            adjust_verify_logits(
+                result.logits_output.next_token_logits,
+                sampling_info=sampling_info,
+                grammar_mask=None,
+                draft_tokens=torch.tensor([[1, 2, 3]]),
+                has_custom_logit_processor=False,
+            )
+        torch.testing.assert_close(
+            logits,
+            torch.tensor(
+                [
+                    [4.0, 2.0, -4.0, 4.0, 4.0],
+                    [4.0, 2.0, -8.0, 4.0, 4.0],
+                    [4.0, 2.0, -8.0, 2.0, 4.0],
+                ]
+            ),
+        )

@@ -6,6 +6,11 @@ from typing import Literal
 
 import pytest
 from sglang.srt.managers.schedule_batch import FINISH_LENGTH, Req
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    ListKind,
+    move,
+)
 from sglang.srt.sampling.sampling_params import SamplingParams
 from tokenizers.pre_tokenizers import ByteLevel
 from transformers import WhisperTokenizer
@@ -125,7 +130,7 @@ def test_unsupported_modes_retain_the_final_only_path(
     current.segment_timestamps = mode == "timestamps"
     if mode == "prefill":
         assert current.req is not None
-        current.req.inflight_middle_chunks = 1
+        move([current.req], IndexedReqList(ListKind.CHUNKED))
     else:
         pass
     token_id = tokenizer.encode("a", add_special_tokens=False)[0]

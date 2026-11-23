@@ -17,7 +17,6 @@ from sglang.srt.managers.io_struct import (
     TokenizedGenerateReqInput,
 )
 from sglang.srt.managers.schedule_batch import FINISH_ABORT, Req
-from sglang.srt.mem_cache.unified_cache.components import ComponentType
 from sglang.srt.session.session_controller import Session, SessionController
 
 from sglang_omni.admission import (
@@ -57,9 +56,7 @@ logger = logging.getLogger(__name__)
 
 class SessionKV(RetainedKV, Protocol):
     holds_kv: bool
-
-    def get_evicted_seqlen(self, component_type: ComponentType) -> int:
-        pass
+    max_evicted_seqlen: int
 
 
 class SessionTreeCache(SessionRows, Protocol):
@@ -410,8 +407,7 @@ class ARSessionBridge:
     def rewind_streaming_session(self, session_id: str, kept_token_count: int) -> None:
         """Rewind the native session to its first kept_token_count tokens, a prefix of the last unit's prompt that ends between units: the last request's generated tokens, the session's committed array lengths, its KV record and the retained spans shrink together, so the next unit extends the kept tokens without a re-prefill."""
         native_session = self.bridge_scheduler.session_controller.get(session_id)
-        [last_request_node] = native_session.req_nodes.values()
-        last_request = last_request_node.req
+        [last_request] = native_session.turns.values()
         session = self.sessions[session_id]
         # note (ruoyu): The shared token array may still hold an aborted append's tokens until the next create_req trims it, so the finished prompt's length is the committed one.
         committed_token_count = native_session.committed_origin_len
@@ -652,10 +648,6 @@ class ARSessionBridge:
                     session_request.finished_reason = FINISH_ABORT()
                     self.bridge_scheduler.release_request_kv_cache(session_request)
                     # note (Junnan Li): Batch selection must filter rows and tensors together.
-                    if self.bridge_scheduler.chunked_req is session_request:
-                        self.bridge_scheduler.chunked_req = None
-                    else:
-                        pass
                     if session_request.omni_data is not None:
                         self.bridge_scheduler.run_abort_callback(request_id)
                         session_request.omni_data = None
@@ -798,9 +790,7 @@ class ARSessionBridge:
                     0 if record is None else int(record.kv_allocated_len)
                 )
                 session_swa_evicted_length = (
-                    0
-                    if record is None
-                    else int(record.get_evicted_seqlen(ComponentType.SWA))
+                    0 if record is None else int(record.max_evicted_seqlen)
                 )
                 recorder.emit(
                     request_id=request_id,

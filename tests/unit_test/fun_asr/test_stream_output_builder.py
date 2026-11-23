@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from array import array
 from types import SimpleNamespace
 from typing import Any
+
+from sglang.srt.managers.req_types import FINISH_LENGTH
+from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.models.fun_asr.request_builders import (
     make_fun_asr_stream_output_builder,
@@ -40,7 +45,14 @@ def make_req_data(*, stream: bool = True, finished: bool = False) -> Any:
         ),
         data={},
     )
-    req = SimpleNamespace(inflight_middle_chunks=0, finished=lambda: finished)
+    req = Req(
+        rid="r",
+        origin_input_text="",
+        origin_input_ids=array("q", [1]),
+        sampling_params=SamplingParams(temperature=0),
+    )
+    if finished:
+        req.finish_outside_step(FINISH_LENGTH(0))
     return SimpleNamespace(req=req, stage_payload=stage_payload)
 
 

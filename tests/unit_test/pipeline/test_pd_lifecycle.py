@@ -4,6 +4,7 @@
 import asyncio
 import queue
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from types import SimpleNamespace
@@ -11,17 +12,41 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import torch
+from sglang.srt.disaggregation.mode import DisaggregationMode
+from sglang.srt.environ import envs
+from sglang.srt.managers.schedule_batch import FINISH_ABORT, ScheduleBatch
 from sglang.srt.managers.scheduler import Scheduler as _Upstream
+from sglang.srt.managers.scheduler_components.invariant_checker import (
+    SchedulerInvariantChecker,
+)
+from sglang.srt.managers.scheduler_components.load_inquirer import SchedulerLoadInquirer
+from sglang.srt.managers.scheduler_components.pool_stats_observer import (
+    SchedulerPoolStatsObserver,
+)
+from sglang.srt.managers.scheduler_components.request_list import (
+    IndexedReqList,
+    KeyedReqList,
+    ListKind,
+)
+from sglang.srt.managers.scheduler_components.request_retirer import RequestRetirer
+from sglang.srt.managers.scheduler_components.state_check import (
+    CheckPhase,
+    StateCheckError,
+)
 from sglang.srt.mem_cache.allocator.swa import (
     PureSWATokenToKVPoolAllocator,
     SWATokenToKVPoolAllocator,
 )
 from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
-from sglang.srt.mem_cache.cache_init_params import CacheInitParams
 from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool, ReqToTokenPool
-from sglang.srt.mem_cache.unified_cache.components import ComponentType
-from sglang.srt.mem_cache.unified_radix_cache import UnifiedRadixCache
-from sglang.srt.runtime_context import get_context
+from sglang.srt.mem_cache.static_kv_storage import kv_storage_of
+from sglang.srt.observability.metrics_collector import SchedulerStats
+from sglang.srt.observability.scheduler_stage_metrics import (
+    SchedulerStageMetricsRecorder,
+)
+from sglang.srt.runtime_context import get_context, get_disagg, get_parallel
+from sglang.srt.sampling.penalties import PenaltyStatusPool
+from sglang.srt.session.session_controller import SessionController
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling import pd_utils
@@ -32,14 +57,19 @@ from sglang_omni.scheduling.pd_scheduler import (
     OmniPrefillScheduler,
     validate_pd_runtime,
 )
+from sglang_omni.scheduling.pd_state import (
+    PDInvariantChecker,
+    PDLoadInquirer,
+    PDMetricsReporter,
+)
 from sglang_omni.scheduling.pd_utils import (
-    DecodeAdmission,
     DecodeKVReceiver,
     ReservedKV,
     SGLangKVLease,
     req_from_continuation,
     serialize_kv_allocator,
 )
+from sglang_omni.scheduling.sglang_backend.cache import create_tree_cache
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from tests.unit_test.pipeline.helpers import make_stage
 from tests.unit_test.pipeline.test_pd_utils import (
@@ -147,7 +177,7 @@ def test_paused_flush_skips_the_waiting_queue_on_prefill_only(monkeypatch):
     decode.pd_lifecycle_lock = threading.RLock()
     decode.pd_deferred_admission = None
     decode.pd_admissions = queue.SimpleQueue()
-    decode.pd_receiver = SimpleNamespace(has_reservations=lambda: False)
+    decode.pd_receiver = SimpleNamespace(owned_allocations=lambda: ())
     decode.pd_outstanding_releases = set()
     decode.waiting_queue = [SimpleNamespace(rid="admitted")]
 
@@ -164,6 +194,8 @@ def prefill_scheduler_for_handoff(*, request_finished_callback=None):
     scheduler.pd_partner_stage = "decode"
     scheduler.pd_due_releases = queue.SimpleQueue()
     scheduler.pd_outstanding_releases = set()
+    scheduler.pd_lifecycle_lock = threading.RLock()
+    scheduler.disagg_prefill_transfer_queue = IndexedReqList(ListKind.PD_SENDING)
     scheduler.req_to_token_pool = ReqPool()
     scheduler.outbox = queue.Queue()
     scheduler.is_entry_rank = True
@@ -186,7 +218,7 @@ def prefill_handoff_batch(scheduler):
     scheduler.req_to_token_pool.req_to_token[req.kv.req_pool_idx, :3] = torch.tensor(
         [1, 2, 3]
     )
-    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    batch = SimpleNamespace(reqs=[req], batch_is_full=True, chunked_req=None)
     scheduler.first_emit_done.add(req.rid)
     scheduler.prefill_start_done.add(req.rid)
     scheduler.prefill_end_done.add(req.rid)
@@ -208,7 +240,11 @@ def test_prefill_handoff_runs_terminal_cleanup_and_closes_bookkeeping(
     )
     req, batch = prefill_handoff_batch(scheduler)
 
-    scheduler.handoff_prefilled_requests(batch, {id(req)})
+    with envs.SGLANG_ENABLE_RUNNING_REQS_CHECK.override(True):
+        scheduler.handoff_prefilled_requests(batch, {id(req)})
+
+    assert req.owner_list is scheduler.disagg_prefill_transfer_queue
+    assert req.send_via == "omni_pd_transfer"
 
     message = scheduler.outbox.get_nowait()
     assert message.type == "kv_transfer"
@@ -334,7 +370,8 @@ def decode_scheduler():
     scheduler.aborted_request_ids = set()
     scheduler.req_to_token_pool = ReqPool()
     scheduler.token_to_kv_pool_allocator = KVAllocator()
-    scheduler.waiting_queue = []
+    scheduler.waiting_queue = IndexedReqList(ListKind.WAITING)
+    scheduler.invariant_checker = Mock()
     scheduler.outbox = queue.Queue()
     scheduler.decode_offload_manager = None
     scheduler.pd_receiver = DecodeKVReceiver(
@@ -360,13 +397,6 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
         lambda self, **kwargs: not self.waiting_queue,
     )
 
-    def abort(self, request_id, **kwargs):
-        self.aborted_request_ids.add(request_id)
-        self.waiting_queue = [
-            req for req in self.waiting_queue if req.rid != request_id
-        ]
-
-    monkeypatch.setattr(OmniScheduler, "abort", abort)
     monkeypatch.setattr(
         _Upstream,
         "get_next_disagg_decode_batch_to_run",
@@ -394,15 +424,23 @@ def test_decode_kv_remains_live_across_ownership_transitions(monkeypatch):
     assert scheduler.outbox.get_nowait().type == "admitted"
     assert scheduler.is_fully_idle() is False
 
+    scheduler.session_bridge = None
+    scheduler.scheduler_thread_id = threading.get_ident()
+    scheduler.enable_overlap = False
+    scheduler.is_entry_rank = True
+    scheduler.inbox = queue.Queue()
     with ThreadPoolExecutor(1) as threads:
         threads.submit(scheduler.abort, "request-1").result(timeout=5)
     assert released == []
     assert scheduler.is_fully_idle() is False
-
-    scheduler.running_batch = None
-    scheduler.get_next_batch_to_run()
-    assert released == [("request-1", threading.get_ident())]
-    assert scheduler.is_fully_idle() is True
+    # The scheduler has already consumed this iteration's inbox. Its release
+    # drain must not race ahead of accepting the cancellation next iteration.
+    scheduler.drain_due_releases()
+    assert released == []
+    assert [request.rid for request in scheduler.waiting_queue] == ["request-1"]
+    assert scheduler.pd_due_releases.empty()
+    message = scheduler.inbox.get_nowait()
+    assert (message.type, message.request_id) == ("abort", "request-1")
 
 
 def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
@@ -412,13 +450,6 @@ def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
     scheduler.release_request_kv_cache = Mock()
     message = make_message()
 
-    def abort(self, request_id, **kwargs):
-        self.waiting_queue = [
-            req for req in self.waiting_queue if req.rid != request_id
-        ]
-
-    monkeypatch.setattr(OmniScheduler, "abort", abort)
-
     def upstream_flush(self):
         self.release_request_kv_cache.assert_called_once_with(req)
         with pytest.raises(RuntimeError, match="not accepting reservations"):
@@ -426,7 +457,7 @@ def test_decode_flush_drains_releases_and_gates_new_reservations(monkeypatch):
         return True
 
     monkeypatch.setattr(_Upstream, "flush_cache", upstream_flush)
-    scheduler.abort(req.rid)
+    scheduler.defer_pd_kv_release(req)
     assert scheduler.flush_cache() is True
 
     destination = scheduler.pd_receiver.reserve(message)
@@ -467,7 +498,8 @@ def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
 def test_deferred_admission_abort_frees_committed_pages_once():
     scheduler = decode_scheduler()
     scheduler.req_to_token_pool.capacity = 0
-    scheduler.pd_admissions.put(DecodeAdmission(make_continuation(), make_allocation()))
+    message = make_message()
+    scheduler.pd_receiver.commit(message, scheduler.pd_receiver.reserve(message))
     scheduler.drain_decode_admissions()
     assert scheduler.pd_deferred_admission is not None
     assert scheduler.token_to_kv_pool_allocator.freed == []
@@ -475,7 +507,7 @@ def test_deferred_admission_abort_frees_committed_pages_once():
     scheduler.drain_decode_admissions()
     scheduler.drain_decode_admissions()
     assert len(scheduler.token_to_kv_pool_allocator.freed) == 1
-    assert scheduler.waiting_queue == []
+    assert not scheduler.waiting_queue
 
 
 def test_stop_string_requires_and_uses_model_tokenizer():
@@ -614,13 +646,16 @@ def test_missing_binding_releases_before_comm_takes_ownership():
 
 
 def test_memory_pressure_fails_one_request_without_upstream_rebootstrap():
-    from sglang.srt.disaggregation.utils import DisaggregationMode
-
     scheduler = decode_scheduler()
     scheduler.disaggregation_mode = DisaggregationMode.DECODE
     scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.5)
     scheduler.enable_skip_finishing_decode = False
-    scheduler.tree_cache = SimpleNamespace(req_to_token_pool=SimpleNamespace())
+    scheduler.tree_cache = SimpleNamespace(
+        req_to_token_pool=SimpleNamespace(),
+        token_to_kv_pool_allocator=SimpleNamespace(state_slots=None),
+    )
+    scheduler.request_retirer = Mock()
+    scheduler.enable_plain_fallback = False
     scheduler.metrics_reporter = SimpleNamespace(enable_metrics=False)
     scheduler.server_args = SimpleNamespace()
     scheduler.abort = Mock()
@@ -630,7 +665,7 @@ def test_memory_pressure_fails_one_request_without_upstream_rebootstrap():
         filter_batch=lambda *, reqs_to_exclude: None,
         is_empty=lambda: False,
         check_decode_mem=lambda: False,
-        retract_decode=lambda: ([SimpleNamespace(rid="full")], 0.5, []),
+        retract_decode=lambda request_retirer: ([SimpleNamespace(rid="full")], 0.5, []),
         prepare_for_decode=Mock(),
     )
     scheduler.update_running_batch(batch)
@@ -668,6 +703,7 @@ def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
             resume_schema="test-v1",
         )
         receiver.allocator.next_slot = 0
+        scheduler.pd_receiver = receiver
         source.register_kv_pool(make_pool("prefill:kv"))
         destination.register_kv_pool(make_pool("decode:kv"))
         destination.register_kv_receiver("decode:kv", receiver)
@@ -760,7 +796,8 @@ def test_pd_allows_session_flag_without_adapter(
     scheduler.tp_size = 1
     scheduler.page_size = 1
     scheduler.spec_algorithm = SimpleNamespace(is_none=lambda: True)
-    validate_pd_runtime(scheduler)
+    with get_context().override_server_args():
+        validate_pd_runtime(scheduler)
 
 
 @pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])
@@ -775,21 +812,22 @@ def test_pd_rejects_retained_session_adapter(
 
 def test_pd_rebuilt_request_releases_real_kv_once() -> None:
     with get_context().override_server_args(
-        speculative_algorithm=None, strip_thinking_cache=False
+        speculative_algorithm=None, strip_thinking_cache=False, disable_radix_cache=True
     ):
         allocator = TokenToKVPoolAllocator(8, torch.float32, "cpu", None, False)
         request_pool = ReqToTokenPool(2, 32, "cpu", enable_memory_saver=False)
-        cache = UnifiedRadixCache(
-            CacheInitParams(
-                True,
-                request_pool,
-                allocator,
-                1,
-                tree_components=(ComponentType.FULL,),
-            )
-        )
+        cache = create_tree_cache(request_pool, allocator, 1, None)
         scheduler = decode_scheduler()
         scheduler.tree_cache = cache
+        scheduler.request_retirer = RequestRetirer(
+            tree_cache=cache,
+            beam_coordinator=Mock(),
+            hisparse_coordinator=None,
+            uocr_runtime=None,
+            penalty_status_pool=PenaltyStatusPool(vocab_size=128, device="cpu"),
+            send_abort_output=Mock(),
+            stream_output=Mock(),
+        )
         initial_free = allocator.available_size()
         slots = allocator.alloc(3)
         request = req_from_continuation(
@@ -810,6 +848,334 @@ def test_pd_rebuilt_request_releases_real_kv_once() -> None:
         scheduler.release_request_kv_cache(request)
         assert allocator.available_size() == initial_free
         assert request_pool.available_size() == 2
+
+
+@pytest.fixture
+def real_pd_scheduler():
+    with (
+        get_context().override_server_args(disable_radix_cache=True),
+        get_parallel().override(dp_rank=None),
+        envs.SGLANG_ENABLE_RUNNING_REQS_CHECK.override(True),
+        envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE.override(True),
+        envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.override(1),
+        envs.SGLANG_CHECK_KV_PAGE_INVARIANTS.override(True),
+    ):
+        scheduler = decode_scheduler()
+        scheduler.req_to_token_pool = ReqToTokenPool(
+            2, 32, "cpu", enable_memory_saver=False
+        )
+        scheduler.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
+            16, torch.float32, "cpu", None, False
+        )
+        serialize_kv_allocator(
+            scheduler.token_to_kv_pool_allocator, lock=scheduler.pd_lifecycle_lock
+        )
+        scheduler.tree_cache = create_tree_cache(
+            scheduler.req_to_token_pool, scheduler.token_to_kv_pool_allocator, 1, None
+        )
+        scheduler.running_batch = ScheduleBatch(reqs=[])
+        scheduler.running_reqs = KeyedReqList(ListKind.DECODING)
+        scheduler.request_lists = lambda: {
+            ListKind.WAITING: scheduler.waiting_queue,
+            ListKind.DECODING: scheduler.running_reqs,
+        }
+        scheduler.pd_receiver = DecodeKVReceiver(
+            pool_id="decode:kv",
+            allocator=scheduler.token_to_kv_pool_allocator,
+            admissions=scheduler.pd_admissions,
+            resume_schema="test-v1",
+            lifecycle_lock=scheduler.pd_lifecycle_lock,
+        )
+        scheduler.pool_stats_observer = SchedulerPoolStatsObserver(
+            tree_cache=scheduler.tree_cache,
+            storage=kv_storage_of(
+                scheduler.req_to_token_pool, scheduler.token_to_kv_pool_allocator
+            ),
+            token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+            session_controller=SessionController(scheduler.tree_cache),
+            hisparse_coordinator=None,
+            enable_hisparse=False,
+        )
+        checker = SchedulerInvariantChecker(
+            disaggregation_mode=DisaggregationMode.DECODE,
+            page_size=1,
+            tree_cache=scheduler.tree_cache,
+            token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+            req_to_token_pool=scheduler.req_to_token_pool,
+            pool_stats_observer=scheduler.pool_stats_observer,
+            scheduler_stage_metrics=SchedulerStageMetricsRecorder(enabled=False),
+            get_request_lists=scheduler.request_lists,
+            get_running_batches=lambda: (scheduler.running_batch,),
+        )
+        scheduler.invariant_checker = PDInvariantChecker(checker, scheduler)
+        scheduler.request_retirer = RequestRetirer(
+            tree_cache=scheduler.tree_cache,
+            beam_coordinator=Mock(),
+            hisparse_coordinator=None,
+            uocr_runtime=None,
+            penalty_status_pool=PenaltyStatusPool(vocab_size=128, device="cpu"),
+            send_abort_output=Mock(),
+            stream_output=Mock(),
+        )
+        yield scheduler
+
+
+def test_real_pd_slots_remain_accounted_until_request_release(real_pd_scheduler):
+    """Strict checks must see received KV even before a Req row exists."""
+    scheduler = real_pd_scheduler
+    receiver = scheduler.pd_receiver
+    message = make_message()
+    destination = receiver.reserve(message)
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
+    assert scheduler.token_to_kv_pool_allocator.available_size() == 13
+    receiver.commit(message, destination)
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
+    assert len(receiver.owned_allocations()) == 1
+    scheduler.drain_decode_admissions()
+    assert receiver.owned_allocations() == ()
+    request = next(iter(scheduler.waiting_queue))
+    scheduler.invariant_checker.run(CheckPhase.BUSY, scheduler.running_batch)
+    scheduler.invariant_checker.cancel_output(request)
+    request.finish_outside_step(FINISH_ABORT())
+    scheduler.request_retirer.release(request, checkpoint=False)
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
+    assert scheduler.token_to_kv_pool_allocator.available_size() == 16
+    assert scheduler.req_to_token_pool.available_size() == 2
+    assert not scheduler.invariant_checker.unended
+
+
+@pytest.mark.parametrize("corruption", ["freed", "aliased"])
+def test_pd_checker_rejects_corrupt_unbound_slots(real_pd_scheduler, corruption):
+    scheduler = real_pd_scheduler
+    receiver = scheduler.pd_receiver
+    message = make_message()
+    receiver.reserve(message)
+    allocation = next(iter(receiver.reservations.values())).allocation
+    if corruption == "freed":
+        scheduler.token_to_kv_pool_allocator.free(allocation.slots)
+    else:
+        allocation.slots[1] = allocation.slots[0]
+    with pytest.raises(StateCheckError, match="PD transfer slots alias"):
+        scheduler.invariant_checker.check_pd_slots()
+
+
+def test_pd_load_counts_reserved_committed_and_bound_tokens_once(real_pd_scheduler):
+    """A committed waiting request already occupies KV and must not be counted twice."""
+    scheduler = real_pd_scheduler
+    scheduler.max_total_num_tokens = 16
+    reporter = object.__new__(PDMetricsReporter)
+    reporter.scheduler = scheduler
+    reporter.stats = SchedulerStats()
+    scheduler.metrics_reporter = reporter
+    common = SchedulerLoadInquirer(
+        disaggregation_mode=DisaggregationMode.DECODE,
+        server_args=None,
+        max_total_num_tokens=16,
+        max_running_requests=2,
+        pool_stats_observer=scheduler.pool_stats_observer,
+        tp_worker=SimpleNamespace(),
+        token_to_kv_pool_allocator=scheduler.token_to_kv_pool_allocator,
+        spec_algorithm=SimpleNamespace(is_none=lambda: True),
+        get_running_batch=lambda: scheduler.running_batch,
+        get_waiting_queue=lambda: scheduler.waiting_queue,
+        waiting_queue_prefix_matched=lambda: True,
+        get_recent_cache_hit_rate=lambda: 0.0,
+        get_stats=lambda: reporter.stats,
+        get_chunked_req=lambda: None,
+        get_request_lists=scheduler.request_lists,
+        get_disagg_decode_prealloc_queue=lambda: None,
+        get_spec_total_num_accept_tokens=lambda: 0,
+        get_spec_total_num_forward_ct=lambda: 0,
+        get_total_prefill_uncached_tokens=lambda: 0,
+        get_total_prefill_busy_us=lambda: 0,
+        get_decode_moment_totals=lambda: [0.0] * 6,
+    )
+    loads = PDLoadInquirer(common, scheduler)
+    message = make_message()
+    receiver = scheduler.pd_receiver
+    destination = receiver.reserve(message)
+    reserved = loads.get_loads()
+    assert (
+        reserved.num_waiting_reqs,
+        reserved.num_total_tokens,
+        reserved.num_active_tokens,
+    ) == (1, 3, 0)
+    assert reserved.disaggregation.decode_transfer_queue_reqs == 1
+    receiver.commit(message, destination)
+    committed = loads.get_loads()
+    assert (
+        committed.num_waiting_reqs,
+        committed.num_total_tokens,
+        committed.num_active_tokens,
+    ) == (1, 3, 3)
+    assert committed.num_prealloc_ready_tokens == 3
+    assert committed.queues.prealloc_ready == 1
+    scheduler.drain_decode_admissions()
+    bound = loads.get_loads()
+    assert (
+        bound.num_waiting_reqs,
+        bound.num_total_tokens,
+        bound.num_active_tokens,
+    ) == (1, 3, 3)
+    assert bound.num_waiting_uncached_tokens == bound.num_prealloc_ready_tokens == 0
+    reporter._update_decode_queue_stats(
+        True
+    )  # noqa: leading-underscore  # exercise the reporter contract
+    queued = (
+        reporter._build_queued_request_metrics()
+    )  # noqa: leading-underscore  # exercise the reporter contract
+    assert queued.num_decode_requests == 1
+    assert queued.sum_decode_kv_tokens == 3
+    assert (
+        "#transfer-req: 0" in reporter._decode_queue_log_suffix()
+    )  # noqa: leading-underscore  # exercise the reporter contract
+
+
+def test_receiver_abort_keeps_ownership_and_free_atomic(real_pd_scheduler, monkeypatch):
+    """A checker must not observe popped ownership before the slots are freed."""
+    scheduler = real_pd_scheduler
+    receiver = scheduler.pd_receiver
+    message = make_message()
+    destination = receiver.reserve(message)
+    free_started, finish_free = threading.Event(), threading.Event()
+    original_free = receiver.allocator.free
+
+    def paused_free(slots):
+        free_started.set()
+        assert finish_free.wait(5)
+        original_free(slots)
+
+    monkeypatch.setattr(receiver.allocator, "free", paused_free)
+    with ThreadPoolExecutor(1) as threads:
+        abort = threads.submit(
+            receiver.abort, message, destination, RuntimeError("cancelled")
+        )
+        try:
+            assert free_started.wait(5)
+            acquired = scheduler.pd_lifecycle_lock.acquire(blocking=False)
+            if acquired:
+                scheduler.pd_lifecycle_lock.release()
+            else:
+                pass
+            assert not acquired
+        finally:
+            finish_free.set()
+        abort.result(timeout=5)
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
+    assert receiver.owned_allocations() == ()
+    assert receiver.allocator.available_size() == 16
+
+
+def test_live_committed_transfer_survives_tombstone_eviction(
+    real_pd_scheduler, monkeypatch
+):
+    """A live transfer must reject duplicates after its bounded tombstone expires."""
+    receiver = real_pd_scheduler.pd_receiver
+    monkeypatch.setattr(pd_utils, "_TRANSFER_TOMBSTONE_LIMIT", 2)
+    first = make_message()
+    receiver.commit(first, receiver.reserve(first))
+    for index in range(3):
+        later = make_message(transfer_id=f"aborted-{index}")
+        receiver.abort(later, receiver.reserve(later), RuntimeError("cancelled"))
+    assert first.transfer_id not in receiver.transfer_tombstones
+    before = receiver.allocator.available_size()
+    with pytest.raises(RuntimeError, match="duplicate KV transfer"):
+        receiver.reserve(first)
+    assert receiver.allocator.available_size() == before
+    assert len(receiver.owned_allocations()) == 1
+    real_pd_scheduler.invariant_checker.run(CheckPhase.IDLE)
+
+
+def test_idle_pd_does_not_run_disabled_page_diagnostics(real_pd_scheduler, monkeypatch):
+    """An idle transfer must not trigger tensor alias checks in ordinary serving."""
+    scheduler = real_pd_scheduler
+    scheduler.pd_receiver.reserve(make_message())
+    monkeypatch.setattr(
+        scheduler.invariant_checker,
+        "check_pd_slots",
+        Mock(side_effect=AssertionError("unexpected page scan")),
+    )
+    with envs.SGLANG_CHECK_KV_PAGE_INVARIANTS.override(False):
+        scheduler.invariant_checker.run(CheckPhase.IDLE)
+
+
+@pytest.mark.parametrize("phase", ["receiving", "committed", "deferred"])
+def test_admin_abort_covers_unbound_pd_and_never_reuses_copy_destination(
+    real_pd_scheduler, phase
+):
+    """An admin abort must not miss received KV outside the normal waiting list."""
+    scheduler = real_pd_scheduler
+    scheduler.session_bridge = None
+    scheduler.scheduler_thread_id = threading.get_ident()
+    scheduler.enable_overlap = False
+    scheduler.is_entry_rank = True
+    scheduler.admin_lock = threading.Lock()
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.resolve_pending_async = lambda: None
+    scheduler.cur_batch = scheduler.last_batch = None
+    scheduler.async_pending = None
+    scheduler.result_queue = deque()
+    scheduler.chunked_reqs = IndexedReqList(ListKind.CHUNKED)
+    scheduler.decode_batch_states = {}
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.early_request_builds = False
+    scheduler.deferred_request_payloads = {}
+    scheduler.pending_stream_ingress = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.abort_callback = None
+    scheduler.inbox = queue.Queue()
+    receiver = scheduler.pd_receiver
+    receiver.cancelled_request_ids = scheduler.aborted_request_ids
+    message = make_message()
+    destination = receiver.reserve(message)
+    if phase != "receiving":
+        receiver.commit(message, destination)
+    if phase == "deferred":
+        scheduler.pd_deferred_admission = scheduler.pd_admissions.get_nowait()
+    result = scheduler.admin_pause_generation({"mode": "abort"})
+    assert result["data"]["num_paused_requests"] == 1
+    assert scheduler.outbox.get_nowait().type == "error"
+    scheduler.admin_continue_generation({"torch_empty_cache": False})
+    if phase == "receiving":
+        assert receiver.allocator.available_size() == 13
+        scheduler.invariant_checker.run(CheckPhase.IDLE)
+        # Even eviction of the bounded request tombstone cannot recycle a
+        # destination while the comm thread is still copying into it.
+        scheduler.aborted_request_ids.clear()
+        scheduler.admin_pause_generation({"mode": "abort"})
+        assert scheduler.outbox.empty()
+        assert receiver.allocator.available_size() == 13
+        receiver.commit(message, destination)
+    scheduler.drain_decode_admissions()
+    assert not scheduler.waiting_queue
+    assert scheduler.outbox.empty()
+    assert receiver.allocator.available_size() == 16
+    assert not scheduler.pd_holds_kv()
+    scheduler.invariant_checker.run(CheckPhase.IDLE)
+
+
+@pytest.mark.parametrize(
+    "option,value,reason",
+    [
+        ("disaggregation_decode_host_receive_threshold", 0.5, "host KV receive"),
+        ("disaggregation_enable_kv_checksum", True, "checksum metadata"),
+    ],
+)
+def test_pd_rejects_native_transport_options(option, value, reason):
+    scheduler = decode_scheduler()
+    scheduler.session_adapter = None
+    scheduler.tp_size = scheduler.page_size = 1
+    scheduler.server_args = SimpleNamespace(disable_radix_cache=True)
+    scheduler.spec_algorithm = SimpleNamespace(is_none=lambda: True)
+    with get_context().override_server_args(), get_disagg().override(**{option: value}):
+        with pytest.raises(NotImplementedError, match=reason):
+            validate_pd_runtime(scheduler)
 
 
 @pytest.mark.parametrize("scheduler_type", [OmniPrefillScheduler, OmniDecodeScheduler])

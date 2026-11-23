@@ -448,7 +448,7 @@ class SGLModelRunner(ModelRunner):
             plain_decode_runner.decode_attn_backend_group = (
                 attention_backends.decode_attn_backend_group
             )
-            plain_decode_runner.kv_index_translator.bind_and_verify_backends(
+            plain_decode_runner.runner_ids.bind_and_verify_backends(
                 [
                     plain_decode_runner.attn_backend,
                     plain_decode_runner.decode_attn_backend,
@@ -474,8 +474,6 @@ class SGLModelRunner(ModelRunner):
         self,
         forward_batch: ForwardBatch,
         pp_proxy_tensors: PPProxyTensors | None,
-        reinit_attn_backend: bool = False,
-        split_forward_count: int = 1,
     ) -> ModelRunnerOutput:
         if (
             self.plain_decode_runner is not None
@@ -490,15 +488,11 @@ class SGLModelRunner(ModelRunner):
                 return self.plain_decode_runner._forward_raw(  # noqa: leading-underscore  # native forward interface
                     forward_batch,
                     pp_proxy_tensors,
-                    reinit_attn_backend,
-                    split_forward_count,
                 )
         else:
             return super()._forward_raw(  # noqa: leading-underscore  # native forward interface
                 forward_batch,
                 pp_proxy_tensors,
-                reinit_attn_backend,
-                split_forward_count,
             )
 
     def __init__(

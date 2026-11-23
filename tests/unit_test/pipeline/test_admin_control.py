@@ -8,8 +8,10 @@ import threading
 import time
 from collections import deque
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+import torch
 
 from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
 from sglang_omni.pipeline.coordinator import Coordinator
@@ -301,7 +303,20 @@ def test_tensor_update_failure_keeps_engine_paused(failure_mode: str) -> None:
     assert scheduler.prompt_cache_epoch == 0
 
 
-def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
+@pytest.mark.parametrize(
+    "pending_field",
+    [
+        None,
+        "pending_request_builds",
+        "pending_request_admissions",
+        "backlogged_request_build_payloads",
+        "deferred_request_payloads",
+        "early_request_build_futures",
+    ],
+)
+def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields(
+    pending_field: str | None,
+) -> None:
     from sglang.srt.runtime_context import get_context
 
     from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -314,19 +329,28 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
 
     reset_calls: list[str] = []
     scheduler = object.__new__(OmniScheduler)
-    scheduler.device = "cuda"
+    scheduler.device = "cpu"
+    scheduler.page_size = 1
     scheduler.session_adapter = None
     scheduler.tree_cache = SimpleNamespace(reset=lambda: reset_calls.append("tree"))
-    OmniScheduler.init_upstream_compat_flags(
-        scheduler,
-        SimpleNamespace(
-            enable_hisparse=False,
-            enable_priority_scheduling=False,
-            disable_priority_preemption=False,
-        ),
-    )
     scheduler.running_batch = EmptyBatch()
-    scheduler.chunked_req = None
+    scheduler.chunked_reqs = []
+    scheduler.prefill_launched_reqs = []
+    scheduler.running_reqs = []
+    scheduler.dllm_config = None
+    scheduler.decode_offload_manager = None
+    scheduler.request_admission_lock = threading.RLock()
+    scheduler.pending_request_builds = {}
+    scheduler.pending_request_admissions = {}
+    scheduler.backlogged_request_build_payloads = deque()
+    scheduler.deferred_request_payloads = {}
+    scheduler.early_request_builds = True
+    scheduler.early_request_build_futures = {}
+    scheduler.pending_stream_ingress = {"orphan-stream": SimpleNamespace(done=True)}
+    scheduler.inbox = queue.Queue()
+    scheduler.inbox.put(SimpleNamespace(type="wakeup"))
+    scheduler.invariant_checker = Mock()
+    scheduler.gc_freezer = Mock()
     scheduler.last_batch = None
     scheduler.cur_batch = None
     scheduler.enable_overlap = False
@@ -338,8 +362,11 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
     scheduler.disaggregation_mode = None
     scheduler.enable_hierarchical_cache = False
     scheduler.enable_lmcache = False
+    scheduler.enable_unified_cache_external_linker = False
     scheduler._engine_paused = False  # noqa: leading-underscore  # production name
     scheduler.req_to_token_pool = SimpleNamespace(
+        device="cpu",
+        req_to_token=torch.zeros((2, 8), dtype=torch.int32),
         clear=lambda: reset_calls.append("req_pool"),
         reset_aux_cache_allocator=lambda: reset_calls.append("aux_cache"),
     )
@@ -351,9 +378,48 @@ def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:
         is_stats_logging_rank=False,
     )
     scheduler.draft_worker = None
+    scheduler.model_config = SimpleNamespace(vocab_size=128)
+    scheduler.server_args = SimpleNamespace(enable_prefill_weight_versions=False)
+    pause_state = scheduler.pause_state
+    OmniScheduler.init_upstream_compat_flags(
+        scheduler,
+        SimpleNamespace(
+            enable_hisparse=False,
+            enable_priority_scheduling=False,
+            disable_priority_preemption=False,
+        ),
+    )
+    assert scheduler.pause_state is pause_state
 
     with get_context().override_server_args():
+        if pending_field is not None:
+            pending = getattr(scheduler, pending_field)
+            if isinstance(pending, deque):
+                pending.append(SimpleNamespace(request_id="pending"))
+            else:
+                pending["pending"] = SimpleNamespace(request_id="pending")
+            assert OmniScheduler.flush_cache_after_update(scheduler) is False
+            assert reset_calls == []
+            pending.clear()
+        else:
+            pass
+        scheduler.waiting_queue.append(
+            SimpleNamespace(kv=SimpleNamespace(holds_kv=False))
+        )
+        assert OmniScheduler.flush_cache_after_update(scheduler) is False
+        scheduler._engine_paused = (
+            True  # noqa: leading-underscore  # existing admin state
+        )
+        assert scheduler.pause_state.paused is True
+        assert scheduler.pause_state.may_launch() is False
         assert OmniScheduler.flush_cache_after_update(scheduler) is True
+        scheduler._engine_paused = (
+            False  # noqa: leading-underscore  # existing admin state
+        )
+        assert scheduler.pause_state.paused is False
+        assert scheduler.pause_state.may_launch() is True
+        assert OmniScheduler.flush_cache_after_update(scheduler) is False
+        scheduler.waiting_queue.clear()
     assert scheduler.device_module is not None
     assert reset_calls == [
         "tree",
@@ -376,6 +442,8 @@ def test_omni_scheduler_abort_pause_ends_each_dropped_request() -> None:
     scheduler.resolve_pending_async = lambda: None
     scheduler.active_request_ids = lambda: ["req-1", "req-2"]
     scheduler.abort = lambda request_id, **_kwargs: aborted.append(request_id)
+    scheduler.waiting_queue = []
+    scheduler.chunked_reqs = []
     scheduler.running_batch = scheduler.cur_batch = scheduler.last_batch = None
     scheduler.async_pending = None
     scheduler.result_queue = deque()

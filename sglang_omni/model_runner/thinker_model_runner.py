@@ -53,7 +53,7 @@ class ThinkerModelRunner(ModelRunner):
         self.audio_token_id = thinker_cfg.audio_token_id
         self.prompt_hidden_store: PromptHiddenStore | None = (
             PromptHiddenStore(
-                slot_count=sglang_model_runner.kv_index_translator.capture_token_capacity(
+                slot_count=sglang_model_runner.runner_ids.capture_token_capacity(
                     sglang_model_runner.max_token_pool_size
                 ),
                 hidden_size=thinker_cfg.text_config.hidden_size,
@@ -449,7 +449,7 @@ class ThinkerModelRunner(ModelRunner):
             else:
                 pass
 
-            if req.inflight_middle_chunks == 0:
+            if req is not schedule_batch.chunked_req:
                 req.omni_model_inputs = None
                 req._omni_consumed = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
                 req._omni_mm_positions = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken

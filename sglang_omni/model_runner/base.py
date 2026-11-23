@@ -7,14 +7,13 @@ pass, sampling, logit post-processing, and output extraction.
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeAlias
 
 import torch
-from sglang.srt.utils.common import async_h2d, is_pin_memory_available
+from sglang.srt.utils.device import async_h2d, is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.model_runner.prefill_inputs import (
@@ -322,87 +321,10 @@ class ModelRunner(Generic[RequestDataInput]):
         *,
         isolate_sampling: bool = False,
     ) -> AbstractContextManager[None]:
-        if schedule_batch.forward_mode.is_extend():
-            self.restore_output_penalty_history(schedule_batch)
-        else:
-            pass
         return self.execution_bridge.forward_context(
             schedule_batch,
             isolate_sampling=isolate_sampling,
         )
-
-    @staticmethod
-    def restore_output_penalty_history(schedule_batch: ScheduleBatch) -> None:
-        """Re-seed retained output history into the prepared penalizers."""
-        sampling_info = schedule_batch.sampling_info
-        if sampling_info.penalizer_orchestrator is None:
-            return
-        else:
-            pass
-        from sglang.srt.sampling.penaltylib import (
-            BatchedFrequencyPenalizer,
-            BatchedPresencePenalizer,
-            BatchedRepetitionPenalizer,
-        )
-
-        orchestrator = sampling_info.penalizer_orchestrator
-        prepared = []
-        for cls, state_name, param_name in (
-            (
-                BatchedRepetitionPenalizer,
-                "cumulated_repetition_penalties",
-                "repetition_penalty",
-            ),
-            (
-                BatchedFrequencyPenalizer,
-                "cumulated_frequency_penalties",
-                "frequency_penalty",
-            ),
-            (
-                BatchedPresencePenalizer,
-                "cumulated_presence_penalties",
-                "presence_penalty",
-            ),
-        ):
-            penalizer = orchestrator.penalizers.get(cls)
-            if penalizer is not None and penalizer.is_prepared():
-                prepared.append((getattr(penalizer, state_name), param_name))
-            else:
-                pass
-        if not prepared:
-            return
-        else:
-            pass
-
-        rows, token_ids, counts = [], [], []
-        for row, req in enumerate(schedule_batch.reqs):
-            # Note: (Junnan Li) prepare_for_extend clears req.is_retracted, so
-            # the retained output_ids are the only record of emitted tokens.
-            retained = Counter(
-                token_id
-                for token_id in req.output_ids
-                if 0 <= token_id < orchestrator.vocab_size
-            )
-            rows.extend([row] * len(retained))
-            token_ids.extend(retained)
-            counts.extend(retained.values())
-        if not rows:
-            return
-        else:
-            pass
-
-        device = prepared[0][0].device
-        row_indices = torch.tensor(rows, dtype=torch.long, device=device)
-        token_indices = torch.tensor(token_ids, dtype=torch.long, device=device)
-        for state, param_name in prepared:
-            values = [
-                float(getattr(schedule_batch.reqs[row].sampling_params, param_name))
-                * (count if param_name == "frequency_penalty" else 1)
-                for row, count in zip(rows, counts)
-            ]
-            state[row_indices, token_indices] = torch.tensor(
-                values, dtype=state.dtype, device=device
-            )
 
     def next_host_staging(
         self, shape: tuple[int, ...] | torch.Size, dtype: torch.dtype
