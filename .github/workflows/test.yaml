@@ -32,7 +32,7 @@ jobs:
 
       - name: Run CPU partitions
         shell: bash
-        run: bash .github/scripts/run_cpu_shards.sh 3
+        run: bash .github/scripts/run_cpu_shards.sh 6
 
       - name: Remove remaining containers from this job
         if: always()

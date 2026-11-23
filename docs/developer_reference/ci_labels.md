@@ -69,13 +69,11 @@ Only PR Test and the selected stages actually run; a stage that is not selected 
 
 | Job | What it runs |
 | --- | --- |
-| `unit-test-a` | First runtime-balanced partition of `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden |
-| `unit-test-b` | Second runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
-| `unit-test-c` | Third runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
+| `unit-test` | Six runtime-balanced CPU partitions in separate containers on one H100 runner, with CUDA hidden |
 | `unit-test-accelerator-a` | First runtime-balanced partition of `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
 | `unit-test-accelerator-b` | Second runtime-balanced partition of the same accelerator unit-test suite |
 
-The CPU and accelerator partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json` for the CPU suite and `.github/unit_test_accelerator_durations.json` for the accelerator suite; a file with both kinds of test has a weight in each. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
+The CPU job waits for all six containers and fails if any partition fails. Its artifact contains the log and exit code for each completed partition. The accelerator partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json` for the CPU suite and `.github/unit_test_accelerator_durations.json` for the accelerator suite; a file with both kinds of test has a weight in each. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
 
 The CPU weights are per-file p90 elapsed estimates from three successful H100 A/B runs: [41197670240](https://github.com/sgl-project/sglang-omni/actions/runs/41197670240), [41161315193](https://github.com/sgl-project/sglang-omni/actions/runs/41161315193) and [41140707601](https://github.com/sgl-project/sglang-omni/actions/runs/41140707601). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
