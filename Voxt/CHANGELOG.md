@@ -8,18 +8,41 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
+- **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
+- **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+
+### Changed
+
+- **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+
+### 中文
+
+#### 新增
+
+- **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
+- **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
+- **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
+- **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+
+#### 变更
+
+- **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+
+## [2.1.3] - 2026-11-22
+
+### Added
+
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
 - **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
 - **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. Both the page and the command refuse files over 8 MB. See docs/dictionary-import.md.
 - **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
-- **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 
 ### Changed
 
+- **Transcribe's clean-up follows its rules better on small local models** (#4459): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
 - **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
-- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
@@ -30,10 +53,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
-- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it. It plays in 2 seconds; in Settings → Appearance, Play the opening at start turns it off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second).
+- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
-- **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
 
@@ -62,20 +84,17 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
-- **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
 - **Qwen3-ASR 1.7B (6bit) 支持转录加速**：卡片上有了转录加速开关，与 1.7B (8bit) 共用同一个 726 MB 的草稿模型，下载一次两个都能用。默认保持关闭：草稿是随 8bit 下载的，并没有替 6bit 答应过开启。
 - **按 App 分组设置转录整理**（#3893）：在应用增强中选择“使用默认值”“已开启”或“已关闭”。可以全局关闭整理，只为聊天 App 开启，也可以全局开启、为终端关闭。关闭时跳过语言模型。已有分组继续使用全局设置。
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
 - **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。页面和命令行都会拒绝超过 8 MB 的文件。用法见 docs/dictionary-import.md。
 - **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
-- **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 
 #### 变更
 
+- **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
-- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。
@@ -86,10 +105,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
-- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减弱动态效果”时不播放。开场默认 2 秒播完。在设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒）。
+- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减少动态效果”时不播放。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
-- **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 #### 修复
