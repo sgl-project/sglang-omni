@@ -70,6 +70,14 @@ video sampling. Set use_audio on an inline video, or use_audio_in_video on a
 top-level request, to include interleaved audio from file or URL sources.
 Top-level interleaved videos follow explicit images and independent audio.
 
+For workloads that repeatedly reference the same local video, timed decoding can
+be reused across requests with `SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB`. The value is
+an optional per-process host-memory budget; `0` (the default) disables the cache.
+Cache entries include the file metadata, sampling options, and audio flag, so a
+file change or a different decode policy does not reuse stale frames. Remote URLs
+are not cached. For example, `SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB=512` allows up
+to 512 MiB of decoded local video frames and audio segments to be retained.
+
 Timed video frames retain native resolution by default; the MiniCPM image processor
 performs the final resize. video_max_frames limits the sampled frame count,
 while video_max_pixels and video_total_pixels resize frames after decoding.

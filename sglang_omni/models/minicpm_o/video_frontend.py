@@ -6,8 +6,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import math
+import os
 import tempfile
+import threading
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +23,7 @@ from pydantic import BaseModel
 from qwen_vl_utils.vision_process import smart_resize
 
 from sglang_omni.preprocessing.base import MediaIO, is_url
+from sglang_omni.preprocessing.cache_key import reference_path_cache_key
 from sglang_omni.preprocessing.resource_connector import (
     await_media_cleanup,
     get_global_resource_connector,
@@ -53,6 +57,109 @@ class TimedVideo:
     audio_segments: list[npt.NDArray[np.float32]] = field(default_factory=list)
     timestamps_seconds: list[float] = field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+# Decoding a local video is independent of the request text, but the resulting
+# frames and audio segments are safe to reuse for identical file contents and
+# sampling options.  Keep this cache opt-in because a single video can occupy
+# tens of megabytes of host memory.
+_TIMED_VIDEO_CACHE: OrderedDict[str, tuple[TimedVideo, int]] = OrderedDict()
+_TIMED_VIDEO_CACHE_BYTES = 0
+_TIMED_VIDEO_CACHE_LOCK = threading.Lock()
+
+
+def _timed_video_cache_capacity() -> int:
+    try:
+        megabytes = int(os.environ.get("SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB", "0"))
+    except ValueError:
+        return 0
+    return max(megabytes, 0) * 1024 * 1024
+
+
+def _timed_video_cache_key(
+    path: Path,
+    *,
+    use_audio: bool,
+    fps: float | None,
+    max_frames: int | None,
+    min_pixels: int | None,
+    max_pixels: int | None,
+    total_pixels: int | None,
+) -> str | None:
+    content_key = reference_path_cache_key(path)
+    if content_key is None:
+        return None
+    stat = path.stat()
+    return repr(
+        (
+            content_key,
+            stat.st_size,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            use_audio,
+            fps,
+            max_frames,
+            min_pixels,
+            max_pixels,
+            total_pixels,
+        )
+    )
+
+
+def _timed_video_size(video: TimedVideo) -> int:
+    frame_bytes = sum(
+        frame.width * frame.height * len(frame.getbands()) for frame in video.frames
+    )
+    audio_bytes = sum(segment.nbytes for segment in video.audio_segments)
+    return frame_bytes + audio_bytes
+
+
+def _clone_timed_video(video: TimedVideo) -> TimedVideo:
+    # PIL frames are only read by the prompt frontend; copy the containers and
+    # audio arrays so a future caller cannot mutate cache-owned request state.
+    return TimedVideo(
+        frames=[frame.copy() for frame in video.frames],
+        audio_segments=[segment.copy() for segment in video.audio_segments],
+        timestamps_seconds=list(video.timestamps_seconds),
+        duration_seconds=video.duration_seconds,
+    )
+
+
+def _get_timed_video_cache(key: str, capacity: int) -> TimedVideo | None:
+    if capacity <= 0:
+        return None
+    with _TIMED_VIDEO_CACHE_LOCK:
+        cached = _TIMED_VIDEO_CACHE.get(key)
+        if cached is None:
+            return None
+        _TIMED_VIDEO_CACHE.move_to_end(key)
+        video = cached[0]
+    return _clone_timed_video(video)
+
+
+def _put_timed_video_cache(key: str, video: TimedVideo, capacity: int) -> None:
+    global _TIMED_VIDEO_CACHE_BYTES
+    if capacity <= 0:
+        return
+    size = _timed_video_size(video)
+    if size > capacity:
+        return
+    with _TIMED_VIDEO_CACHE_LOCK:
+        previous = _TIMED_VIDEO_CACHE.pop(key, None)
+        if previous is not None:
+            _TIMED_VIDEO_CACHE_BYTES -= previous[1]
+        _TIMED_VIDEO_CACHE[key] = (video, size)
+        _TIMED_VIDEO_CACHE_BYTES += size
+        while _TIMED_VIDEO_CACHE_BYTES > capacity and _TIMED_VIDEO_CACHE:
+            _, (_, evicted_size) = _TIMED_VIDEO_CACHE.popitem(last=False)
+            _TIMED_VIDEO_CACHE_BYTES -= evicted_size
+
+
+def _clear_timed_video_cache() -> None:
+    global _TIMED_VIDEO_CACHE_BYTES
+    with _TIMED_VIDEO_CACHE_LOCK:
+        _TIMED_VIDEO_CACHE.clear()
+        _TIMED_VIDEO_CACHE_BYTES = 0
 
 
 class MiniCPMVideoIO(MediaIO[TimedVideo]):
@@ -265,6 +372,26 @@ async def load_timed_video(
         return await resource_connector.load_resource_async(media_url, video_decoder)
     else:
         video_path = Path(resource_connector.local_media_path(media_url))
+        cache_capacity = _timed_video_cache_capacity()
+        cache_key = (
+            _timed_video_cache_key(
+                video_path,
+                use_audio=use_audio,
+                fps=fps,
+                max_frames=max_frames,
+                min_pixels=min_pixels,
+                max_pixels=max_pixels,
+                total_pixels=total_pixels,
+            )
+            if cache_capacity > 0
+            else None
+        )
+        if cache_key is not None:
+            cached = _get_timed_video_cache(cache_key, cache_capacity)
+            if cached is not None:
+                return cached
+        else:
+            pass
         decode_future = asyncio.get_running_loop().run_in_executor(
             global_thread_pool, video_decoder.load_file, video_path
         )
@@ -273,6 +400,9 @@ async def load_timed_video(
             await asyncio.gather(decode_future, return_exceptions=True)
 
         try:
-            return await asyncio.shield(decode_future)
+            decoded = await asyncio.shield(decode_future)
         finally:
             await await_media_cleanup(cleanup_video_decoder())
+        if cache_key is not None:
+            _put_timed_video_cache(cache_key, decoded, cache_capacity)
+        return decoded

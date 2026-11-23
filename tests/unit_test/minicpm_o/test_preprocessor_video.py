@@ -53,6 +53,102 @@ def test_timed_video_reports_missing_decoder(monkeypatch: pytest.MonkeyPatch) ->
         MiniCPMVideoIO(use_audio=False).load_file(Path("unused.mp4"))
 
 
+def test_timed_video_cache_reuses_local_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(b"video")
+        decoded = TimedVideo(
+            frames=[Image.new("RGB", (4, 4), color="red")],
+            audio_segments=[np.ones(160, dtype=np.float32)],
+            timestamps_seconds=[0.0],
+            duration_seconds=1.0,
+        )
+        calls = 0
+
+        def load_file(_: MiniCPMVideoIO, __: Path) -> TimedVideo:
+            nonlocal calls
+            calls += 1
+            return decoded
+
+        monkeypatch.setenv("SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB", "1")
+        monkeypatch.setattr(video_frontend.MiniCPMVideoIO, "load_file", load_file)
+        video_frontend._clear_timed_video_cache()
+        try:
+            first = await video_frontend.load_timed_video(
+                str(video_path), use_audio=True, max_frames=1
+            )
+            second = await video_frontend.load_timed_video(
+                str(video_path), use_audio=True, max_frames=1
+            )
+            assert calls == 1
+            assert first is not second
+            assert first.frames == second.frames
+            assert first.audio_segments[0] is not second.audio_segments[0]
+        finally:
+            video_frontend._clear_timed_video_cache()
+
+    asyncio.run(run())
+
+
+def test_timed_video_cache_key_includes_sampling_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(b"video")
+        calls = 0
+
+        def load_file(_: MiniCPMVideoIO, __: Path) -> TimedVideo:
+            nonlocal calls
+            calls += 1
+            return TimedVideo()
+
+        monkeypatch.setenv("SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB", "1")
+        monkeypatch.setattr(video_frontend.MiniCPMVideoIO, "load_file", load_file)
+        video_frontend._clear_timed_video_cache()
+        try:
+            await video_frontend.load_timed_video(
+                str(video_path), use_audio=False, fps=1.0
+            )
+            await video_frontend.load_timed_video(
+                str(video_path), use_audio=False, fps=2.0
+            )
+            assert calls == 2
+        finally:
+            video_frontend._clear_timed_video_cache()
+
+    asyncio.run(run())
+
+
+def test_timed_video_cache_invalidates_changed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def run() -> None:
+        video_path = tmp_path / "clip.mp4"
+        video_path.write_bytes(b"video-a")
+        calls = 0
+
+        def load_file(_: MiniCPMVideoIO, __: Path) -> TimedVideo:
+            nonlocal calls
+            calls += 1
+            return TimedVideo()
+
+        monkeypatch.setenv("SGLANG_MINICPM_VIDEO_CACHE_SIZE_MB", "1")
+        monkeypatch.setattr(video_frontend.MiniCPMVideoIO, "load_file", load_file)
+        video_frontend._clear_timed_video_cache()
+        try:
+            await video_frontend.load_timed_video(str(video_path), use_audio=False)
+            video_path.write_bytes(b"video-b")
+            await video_frontend.load_timed_video(str(video_path), use_audio=False)
+            assert calls == 2
+        finally:
+            video_frontend._clear_timed_video_cache()
+
+    asyncio.run(run())
+
+
 class VideoRecordingProcessor(RecordingProcessor):
     def __init__(self) -> None:
         super().__init__()
