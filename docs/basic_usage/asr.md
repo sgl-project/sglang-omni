@@ -41,6 +41,7 @@ packages a pipeline imports beyond the base installation.
 | [Fun-ASR-Nano](../cookbook/fun_asr.md) | `--model-path` only | Multilingual transcription; `language` also selects the output language; no translation route |
 | [ARK-ASR-3B](../cookbook/arkasr.md) | `--model-path` only | Multilingual transcription; `language` is recorded but does not change its fixed prompt; prefill coalescing is tuned per GPU |
 | [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) | `--model-path` only | Multilingual RNN-T transcription; greedy decoding only; native PCM streaming through `/v1/realtime` without VAD or manual commit |
+| [Nemotron Unified ASR](../cookbook/nemotron_unified_asr.md) | `--model-path` only | Transformers-format checkpoint; multilingual RNN-T transcription; greedy decoding only; buffered PCM streaming through `/v1/realtime` |
 | [Nemotron Transcribe](../cookbook/nemotron_transcribe.md) | `--model-path` only | Whole-file transcription up to one hour as one decoder request; no realtime, timestamps, or translation; validated on one H100 80 GB |
 | [MOSS-Transcribe-Diarize](../cookbook/moss_transcribe_diarize.md) | `--model-path` only | Multi-speaker transcription, diarization and timestamps in one pass; up to ~90 minutes; `verbose_json` speaker segments and `srt`/`vtt` from real timestamps |
 | [Whisper ASR](../cookbook/whisper_asr.md) | `--model-path` only | Experimental transcription and speech-to-English translation; `srt` and `vtt` subtitles with model-derived timestamps |

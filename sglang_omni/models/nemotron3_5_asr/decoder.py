@@ -35,15 +35,19 @@ def decode_streaming_batch(
     states: Sequence[Nemotron3_5ASRDecodeState],
     encoded_frames: torch.Tensor,
     token_limits: Sequence[int | None],
+    frame_counts: Sequence[int] | None = None,
 ) -> None:
     decoder = model.decoder
     blank_token_id = model.config.blank_token_id
-    frame_count = encoded_frames.shape[1]
+    if frame_counts is None:
+        frame_counts = [encoded_frames.shape[1]] * len(states)
+    else:
+        pass
     frame_indices = [0] * len(states)
-    for state in states:
+    for state, frame_count in zip(states, frame_counts, strict=True):
         state.encoder_frames += frame_count
 
-    active_indices = list(range(len(states)))
+    active_indices = [index for index, count in enumerate(frame_counts) if count > 0]
     while active_indices:
         prediction_states = [
             states[index]
@@ -108,7 +112,7 @@ def decode_streaming_batch(
             else:
                 pass
             limit = token_limits[index]
-            if frame_indices[index] < frame_count and (
+            if frame_indices[index] < frame_counts[index] and (
                 limit is None or state.decoder_steps < limit
             ):
                 next_active.append(index)
