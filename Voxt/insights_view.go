@@ -15,7 +15,13 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
-const insightsCardW, insightsCardH = 600, 500
+const (
+	insightsCardW, insightsCardH = 600, 524
+	// insightsFootH is the lockup's line, insightsFootBottom its distance
+	// from the card's bottom: fixed, so it stays put whatever the numbers
+	// and the background.
+	insightsFootH, insightsFootBottom = 30, 26
+)
 
 type insightsCardViewState struct {
 	Background int               `json:"background"`
@@ -39,8 +45,8 @@ func homeInsightsSection(c *ui.Context, state *homeViewState, actions homeAction
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c.Key("insights-title")).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, i18n.T("Insights")).Grow(1)
-		if quietButton(c.Key("insights-share"), icons.Share, i18n.T("Share")).Label(i18n.T("Share your insights")).Clicked() {
+		sectionTitleText(c, i18n.T("Looking back")).Grow(1)
+		if quietButton(c.Key("insights-share"), icons.Share, i18n.T("Share")).Label(i18n.T("Share a look back")).Clicked() {
 			actions.openInsightsShare()
 		}
 	})
@@ -92,7 +98,11 @@ func insightsCardFace(c *ui.Context, state *insightsCardViewState, actions insig
 		}
 		return e.Background(shareWhite.Alpha(.9))
 	}
-	ui.Box(c.Key("insights-card")).Size(insightsCardW, insightsCardH).Radius(shareCardRadius).Clip().Children(func() {
+	radius := float32(shareCardRadius)
+	if !chrome {
+		radius = 0 // the copied picture: square, as renderShareCard's
+	}
+	ui.Box(c.Key("insights-card")).Size(insightsCardW, insightsCardH).Radius(radius).Clip().Children(func() {
 		shareBackdrop(c, state.Background, insightsCardW, insightsCardH)
 		insightsCardBody(c, state, ink, muted, a, tile)
 		if chrome {
@@ -106,7 +116,7 @@ func insightsCardFace(c *ui.Context, state *insightsCardViewState, actions insig
 func insightsCardBody(c *ui.Context, state *insightsCardViewState, ink, muted, a ui.Color, tile func(string) ui.Element) {
 	ins := state.Insights
 	ui.Column(c.Key("insights-body")).Absolute().Left(0).Top(0).Size(insightsCardW, insightsCardH).Padding(24).Gap(12).Children(func() {
-		ui.Text(c, i18n.T("My Voxt insights")).FontSize(30).FontWeight(700).TextColor(shareWhite).TextAlign(ui.Center).
+		ui.Text(c, i18n.T("Me and Voxt, lately")).FontSize(30).FontWeight(700).TextColor(shareWhite).TextAlign(ui.Center).
 			AlignSelf(ui.Stretch).Margin(4, 0, 6, 0)
 		for row := 0; row < 2; row++ {
 			ui.Row(c.Key("insights-row-" + strconv.Itoa(row))).Gap(12).Children(func() {
@@ -136,18 +146,21 @@ func insightsCardBody(c *ui.Context, state *insightsCardViewState, ink, muted, a
 				insightsWeeksGrid(c, &ins, a.Mix(shareWhite, 0), state.Dark)
 			})
 		})
-		ui.Spacer(c)
-		ui.Row(c.Key("insights-foot")).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Image(c, shareWordmark()).Size(22*443/173.0, 22)
-			ui.Image(c, shareAttribution()).Size(14*777/118.0, 14)
-		})
+	})
+	// The lockup on one line: the mascot, the wordmark, "by SGL-omni".
+	ui.Row(c.Key("insights-foot")).Absolute().Left(28).Top(insightsCardH - insightsFootBottom - insightsFootH).Height(insightsFootH).
+		Gap(8).AlignItems(ui.Center).Children(func() {
+		insightsMascotMark(c, 30)
+		ui.Image(c, shareWordmark()).Size(24*443/173.0, 24)
+		ui.Image(c, shareAttribution()).Size(15*777/118.0, 15).Margin(0, 0, 0, 2)
 	})
 }
 
 // insightsCorner is the card's buttons, top left: another background,
 // Copy.
 func insightsCorner(c *ui.Context, state *insightsCardViewState, actions insightsActions) {
-	ui.Column(c.Key("insights-corner")).Absolute().Left(14).Top(14).Gap(8).Children(func() {
+	// Side by side, clear of the tiles under them.
+	ui.Row(c.Key("insights-corner")).Absolute().Left(14).Top(14).Gap(8).Children(func() {
 		if shareCornerButton(c.Key("insights-shuffle"), icons.ShareShuffle, i18n.T("Another background")).Clicked() {
 			actions.shuffleInsightsShare()
 		}
@@ -190,5 +203,16 @@ func insightsWeeksGrid(c *ui.Context, ins *insightsViewState, color ui.Color, da
 				ui.Text(c.Key(w), month).FontSize(10).TextColor(ui.RGBA(138, 135, 154, 1)).Width(cell).NoWrap()
 			}
 		})
+	})
+}
+
+// insightsMascotMark is the mascot as a mark h DIPs tall: the white
+// microphone with its dark eyes and the logo's two stars, without a hat.
+func insightsMascotMark(c *ui.Context, h float32) {
+	u := h / 600
+	ui.Box(c.Key("insights-mascot")).Size(650*u, h).Shrink(0).Children(func() {
+		shareMicrophone(c, false, u)
+		ui.Icon(c, icons.ShareStar).Absolute().Left(480*u).Top(6*u).Size(130*u, 130*u).TextColor(shareOrange)
+		ui.Icon(c, icons.ShareStar).Absolute().Left(570*u).Top(136*u).Size(80*u, 80*u).TextColor(sharePeach)
 	})
 }

@@ -1,7 +1,7 @@
 package main
 
-// The share card: a picture to send, 768×384 DIPs, drawn as its mockup
-// is (deliverables/voxt-share-card). On the left, Voxt in a hat over its
+// The share card: a picture to send, 488×244 DIPs, the size and type of
+// its mockup (deliverables/voxt-share-card) as the user approved it. On the left, Voxt in a hat over its
 // wordmark and "by SGL-omni"; on the right, "Voxt and me:" and a sentence
 // the user says to it. Its corner offers another background and hat, the
 // hat studio and Copy; those buttons, the record controls and the studio
@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	shareCardW, shareCardH = 768, 384
+	shareCardW, shareCardH = 488, 244
 	shareCardRadius        = 22
 	shareLeftW             = shareCardW * 0.42
 	// shareFoot is how far the logo's foot sits from the card's bottom:
@@ -52,10 +52,11 @@ type sharePicture = ui.Bitmap
 
 var decodeSharePicture = ui.DecodeBitmap
 
-// renderShareCard is the card without its buttons, at 2×: what Copy
-// copies.
+// renderShareCard is the card without its buttons, at 3× (1464×732
+// pixels): what Copy copies. Its corners are square: chat apps lay a
+// picture's transparent corners on white, and round pictures themselves.
 func renderShareCard(state *shareCardViewState, actions shareActions) image.Image {
-	return ui.Render(func(c *ui.Context) { shareCardFace(c, state, actions, false) }, shareCardW, shareCardH, 2)
+	return ui.Render(func(c *ui.Context) { shareCardFace(c, state, actions, false) }, shareCardW, shareCardH, 3)
 }
 
 var (
@@ -116,7 +117,11 @@ func shareCardDialog(c *ui.Context, state *shareCardViewState, actions shareActi
 // shareCardFace draws the card; chrome false leaves out its buttons, the
 // record controls and the studio (the copied picture).
 func shareCardFace(c *ui.Context, state *shareCardViewState, actions shareActions, chrome bool) {
-	ui.Box(c.Key("share-card")).Size(shareCardW, shareCardH).Radius(shareCardRadius).Clip().Children(func() {
+	radius := float32(shareCardRadius)
+	if !chrome {
+		radius = 0 // the copied picture (renderShareCard)
+	}
+	ui.Box(c.Key("share-card")).Size(shareCardW, shareCardH).Radius(radius).Clip().Children(func() {
 		shareBackdrop(c, state.Background, shareCardW, shareCardH)
 		ui.Row(c.Key("share-body")).Absolute().Left(0).Top(0).Size(shareCardW, shareCardH).AlignItems(ui.Stretch).Children(func() {
 			shareCardLeft(c, state, actions, chrome)
@@ -244,7 +249,7 @@ func shareCardPanel(c *ui.Context, state *shareCardViewState, actions shareActio
 		case sharePhaseListening:
 			shareListening(c, state, actions)
 		case sharePhaseWorking:
-			ui.Text(c, "…").FontSize(21.6).FontWeight(600).TextColor(muted)
+			ui.Text(c, "…").FontSize(17).FontWeight(600).TextColor(muted)
 		case sharePhaseSaid:
 			shareSaid(c, state, actions, chrome)
 		default:
@@ -264,7 +269,7 @@ func shareEmpty(c *ui.Context, state *shareCardViewState, actions shareActions, 
 	}
 	text := i18n.T("What would you like to say?")
 	if !chrome {
-		ui.Text(c, text).FontSize(20).FontWeight(600).LineHeight(1.45).TextColor(hint)
+		ui.Text(c, text).FontSize(17).FontWeight(600).LineHeight(1.45).TextColor(hint)
 		return
 	}
 	b := ui.ButtonBase(c.Key("share-prompt")).AlignSelf(ui.Start).Radius(8).Padding(4, 8).Margin(-4, -8, 0, -8).
@@ -274,7 +279,7 @@ func shareEmpty(c *ui.Context, state *shareCardViewState, actions shareActions, 
 		b.Background(hover)
 		color = hoverInk
 	}
-	if b.Children(func() { ui.Text(c, text).FontSize(20).FontWeight(600).LineHeight(1.45).TextColor(color) }).Clicked() {
+	if b.Children(func() { ui.Text(c, text).FontSize(17).FontWeight(600).LineHeight(1.45).TextColor(color) }).Clicked() {
 		actions.startShareTry()
 	}
 	if state.Notice != "" {
@@ -328,11 +333,11 @@ func shareSaid(c *ui.Context, state *shareCardViewState, actions shareActions, c
 	if i18n.Locale() == "zh-Hans" {
 		ellipsis = "……"
 	}
-	ui.Text(c, state.Text).FontSize(21.6).FontWeight(600).LineHeight(1.5).TextColor(ink).MaxLines(3).Ellipsis(ellipsis)
+	ui.Text(c, state.Text).FontSize(17).FontWeight(600).LineHeight(1.5).TextColor(ink).MaxLines(3).Ellipsis(ellipsis)
 	ui.Spacer(c)
 	ui.Row(c.Key("share-foot")).Gap(6).AlignItems(ui.Center).Height(30).Children(func() {
 		ui.Icon(c, icons.MascotSmall.Linear).Size(15, 15).TextColor(muted.Alpha(.9))
-		ui.Text(c, state.Meta).FontSize(12.5).LetterSpacing(.25).TextColor(muted).FontFeatures("tnum").SingleLine()
+		ui.Text(c, state.Meta).FontSize(12.5).LetterSpacing(.25).TextColor(muted).FontFeatures("tnum").SingleLine().Shrink(0)
 		ui.Spacer(c)
 		if chrome && shareOrb(c.Key("share-resay"), state, i18n.T("Say it again"), func() {
 			ui.Icon(c, icons.ShareMic.Linear).Size(16, 16).TextColor(shareWhite)

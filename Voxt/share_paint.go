@@ -150,3 +150,48 @@ func shareRGB(hex string) [3]float64 {
 func shareLerp(p, q [3]float64, t float64) [3]float64 {
 	return [3]float64{p[0] + (q[0]-p[0])*t, p[1] + (q[1]-p[1])*t, p[2] + (q[2]-p[2])*t}
 }
+
+// renderTransparent draws view w×h DIPs at scale with a transparent
+// background. An offscreen render paints the window's background first,
+// so this renders the view over the light window and over the dark one,
+// and recovers each pixel's alpha and color from the two: a pixel the
+// view leaves alone differs between them as the backgrounds do, one it
+// covers not at all. The view must not change with the appearance.
+func renderTransparent(view func(c *ui.Context), w, h int, scale float32) image.Image {
+	frame := func(dark bool, v func(c *ui.Context)) *image.RGBA {
+		tt := ui.NewTester(v, w, h)
+		tt.SetScale(scale)
+		tt.SetDark(dark)
+		tt.Frame()
+		return cloneRGBA(tt.Image())
+	}
+	light, dark := frame(false, view), frame(true, view)
+	bgLight, bgDark := frame(false, func(*ui.Context) {}).RGBAAt(0, 0), frame(true, func(*ui.Context) {}).RGBAAt(0, 0)
+	spread := float64(int(bgLight.R)+int(bgLight.G)+int(bgLight.B)) - float64(int(bgDark.R)+int(bgDark.G)+int(bgDark.B))
+	out := image.NewNRGBA(light.Bounds())
+	for y := light.Bounds().Min.Y; y < light.Bounds().Max.Y; y++ {
+		for x := light.Bounds().Min.X; x < light.Bounds().Max.X; x++ {
+			l, d := light.RGBAAt(x, y), dark.RGBAAt(x, y)
+			diff := float64(int(l.R)+int(l.G)+int(l.B)) - float64(int(d.R)+int(d.G)+int(d.B))
+			alpha := 1.0
+			if spread != 0 {
+				alpha = math.Min(1, math.Max(0, 1-diff/spread))
+			}
+			if alpha < 1.0/255 {
+				continue
+			}
+			un := func(o, bg uint8) uint8 {
+				v := (float64(o) - (1-alpha)*float64(bg)) / alpha
+				return uint8(math.Min(255, math.Max(0, v)+.5))
+			}
+			out.SetNRGBA(x, y, color.NRGBA{un(d.R, bgDark.R), un(d.G, bgDark.G), un(d.B, bgDark.B), uint8(alpha*255 + .5)})
+		}
+	}
+	return out
+}
+
+func cloneRGBA(img *image.RGBA) *image.RGBA {
+	out := image.NewRGBA(img.Bounds())
+	copy(out.Pix, img.Pix)
+	return out
+}

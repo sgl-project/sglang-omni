@@ -99,8 +99,16 @@ func TestShareShuffleAndCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the copied picture: %v", err)
 	}
-	if b := img.Bounds(); b.Dx() != 2*shareCardW || b.Dy() != 2*shareCardH {
-		t.Errorf("copied %v, want the card at 2×", b)
+	if b := img.Bounds(); b.Dx() != 3*shareCardW || b.Dy() != 3*shareCardH {
+		t.Errorf("copied %v, want the card at 3×", b)
+	}
+	// Square and opaque to its corners: chat apps lay transparent corners
+	// on white.
+	if r, g, b, alpha := img.At(0, 0).RGBA(); alpha>>8 != 255 || (r>>8 > 250 && g>>8 > 250 && b>>8 > 250) {
+		t.Errorf("the picture's corner is %d,%d,%d alpha %d, want the card's background", r>>8, g>>8, b>>8, alpha>>8)
+	}
+	if _, _, _, alpha := img.At(3*shareCardW/2, 3*shareCardH/2).RGBA(); alpha>>8 != 255 {
+		t.Errorf("the card's middle has alpha %d, want opaque", alpha>>8)
 	}
 	if !a.shareModel(a.now()).Copied {
 		t.Error("Copy shows no tick")
@@ -151,6 +159,24 @@ func TestShareStudioDrawsUndoesAndWears(t *testing.T) {
 	}
 	if a.shareBitmap("hat:"+a.share.hat) == nil {
 		t.Error("the saved hat does not decode")
+	}
+	// The hat is a transparent picture: nothing around the stroke, the
+	// stroke's color where it was drawn.
+	data, err := os.ReadFile(filepath.Join(a.hatsDir(), a.share.hat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hat, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, alpha := hat.At(4, 4).RGBA(); alpha != 0 {
+		t.Errorf("the hat's corner is not transparent (alpha %d)", alpha>>8)
+	}
+	// The stroke ran from (150, -100) to (250, -100): its middle, at 2×.
+	r, g, b, alpha := hat.At(int((200-shareHatBox[0])*2), int((-100-shareHatBox[1])*2)).RGBA()
+	if alpha>>8 < 250 || r>>8 < 180 || g>>8 > 90 || b>>8 > 100 {
+		t.Errorf("the stroke's middle is %d,%d,%d alpha %d, want the opaque red pen", r>>8, g>>8, b>>8, alpha>>8)
 	}
 }
 

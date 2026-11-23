@@ -25,11 +25,12 @@ var shareStudioPalette = [3][10]string{
 }
 
 const (
-	studioPad   = 18
-	studioCellW = 16 // a palette cell
-	studioCellH = 15
-	studioTileW = 26 // a wardrobe tile
-	studioTileH = 22
+	studioPad    = 18
+	studioCellW  = 16 // a palette cell
+	studioCellH  = 15
+	studioTileW  = 26 // a wardrobe tile
+	studioTileH  = 22
+	studioKitPad = 14
 )
 
 var (
@@ -60,8 +61,11 @@ func shareStudio(c *ui.Context, state *shareCardViewState, actions shareActions)
 		ui.Box(c).Absolute().Left(0).Top(0).Size(shareCardW, shareCardH).Background(ui.RGBA(20, 18, 30, .12))
 		ui.Row(c.Key("studio-row")).Absolute().Left(0).Top(0).Size(shareCardW, shareCardH).Padding(studioPad).Gap(16).AlignItems(ui.Stretch).Children(func() {
 			h := float32(shareCardH - 2*studioPad)
-			studioBoard(c, state, studio, actions, h*shareHatBox[2]/shareHatBox[3], h)
-			studioKit(c, state, studio, actions)
+			w := h * shareHatBox[2] / shareHatBox[3]
+			studioBoard(c, state, studio, actions, w, h)
+			// The kit's inside: the row's width less the board, the gap,
+			// its padding and its hairline.
+			studioKit(c, state, studio, actions, shareCardW-2*studioPad-16-w-2*studioKitPad-2)
 		})
 	})
 }
@@ -243,12 +247,13 @@ func studioPeekButton(c *ui.Context, studio *shareStudioViewState, actions share
 	}
 }
 
-func studioKit(c *ui.Context, state *shareCardViewState, studio *shareStudioViewState, actions shareActions) {
+func studioKit(c *ui.Context, state *shareCardViewState, studio *shareStudioViewState, actions shareActions, inner float32) {
 	k := studioColors(state.Dark)
-	ui.Column(c.Key("studio-kit")).Grow(1).MinWidth(0).Radius(14).Padding(16, 18).Gap(12).AlignItems(ui.Center).
+	// Three rows: the palette as wide as the kit, the brushes, the tools.
+	ui.Column(c.Key("studio-kit")).Grow(1).MinWidth(0).Radius(14).Padding(studioKitPad).Gap(10).AlignItems(ui.Center).
 		Background(k.panel).Border(1, k.ring).Children(func() {
-		studioPalette(c, studio, actions)
-		ui.Row(c.Key("studio-tools")).Wrap().Gap(4).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		studioPalette(c, studio, actions, inner)
+		ui.Row(c.Key("studio-brushes")).Gap(6).AlignItems(ui.Center).Children(func() {
 			for i, dot := range []float32{5, 9, 13} {
 				label := []string{i18n.T("Thin"), i18n.T("Medium"), i18n.T("Thick")}[i]
 				b := studioTool(c.Key(i), k, studio.Brush == i && !studio.Erasing, label)
@@ -261,7 +266,8 @@ func studioKit(c *ui.Context, state *shareCardViewState, studio *shareStudioView
 					actions.studioBrush(i)
 				}
 			}
-			ui.Box(c).Size(1, 20).Margin(0, 4).Background(k.line)
+		})
+		ui.Row(c.Key("studio-tools")).Gap(2).AlignItems(ui.Center).Children(func() {
 			tools := []struct {
 				key   string
 				ic    icons.Icon
@@ -277,27 +283,27 @@ func studioKit(c *ui.Context, state *shareCardViewState, studio *shareStudioView
 			}
 			for _, tool := range tools {
 				if studioTool(c.Key(tool.key), k, tool.on, tool.label).Children(func() {
-					ui.Icon(c, tool.ic.Linear).Size(18, 18).TextColor(k.ink)
+					ui.Icon(c, tool.ic.Linear).Size(17, 17).TextColor(k.ink)
 				}).Clicked() {
 					tool.do()
 				}
 			}
 		})
 		ui.Spacer(c)
-		ui.Row(c.Key("studio-actions")).Gap(14).Children(func() {
-			cancel := ui.ButtonBase(c.Key("studio-cancel")).Size(40, 40).Radius(20).Background(k.hover).
+		ui.Row(c.Key("studio-actions")).Gap(12).Children(func() {
+			cancel := ui.ButtonBase(c.Key("studio-cancel")).Size(36, 36).Radius(18).Background(k.hover).
 				AlignItems(ui.Center).Justify(ui.Center).Label(i18n.T("Cancel")).Tooltip(i18n.T("Cancel"))
-			if cancel.Children(func() { ui.Icon(c, icons.ShareClose.Linear).Size(18, 18).TextColor(k.ink) }).Clicked() {
+			if cancel.Children(func() { ui.Icon(c, icons.ShareClose.Linear).Size(16, 16).TextColor(k.ink) }).Clicked() {
 				actions.studioCancel()
 			}
-			wear := ui.ButtonBase(c.Key("studio-wear")).Size(40, 40).Radius(20).Background(ui.Hex(studio.Color)).
+			wear := ui.ButtonBase(c.Key("studio-wear")).Size(36, 36).Radius(18).Background(ui.Hex(studio.Color)).
 				AlignItems(ui.Center).Justify(ui.Center).Label(i18n.T("Put on")).Tooltip(i18n.T("Put on"))
 			mark := shareWhite
 			if shareLight(studio.Color) {
 				mark = ui.Hex("#1E1B2E")
 				wear.Border(1, ui.RGBA(30, 27, 46, .18))
 			}
-			if wear.Children(func() { ui.Icon(c, icons.ShareHatBold.Linear).Size(22, 22).TextColor(mark) }).Clicked() {
+			if wear.Children(func() { ui.Icon(c, icons.ShareHatBold.Linear).Size(20, 20).TextColor(mark) }).Clicked() {
 				actions.studioWear()
 			}
 		})
@@ -314,10 +320,11 @@ func shareLight(hex string) bool {
 	return 0.2126*float32(col.R)+0.7152*float32(col.G)+0.0722*float32(col.B) > 0.72*255
 }
 
-// studioPalette is the palette strip (share_paint.go) with the chosen
-// cell ringed: white inside, ink outside.
-func studioPalette(c *ui.Context, studio *shareStudioViewState, actions shareActions) {
-	w, h := float32(10*studioCellW), float32(3*studioCellH)
+// studioPalette is the palette strip (share_paint.go), w DIPs wide, with
+// the chosen cell ringed: white inside, ink outside.
+func studioPalette(c *ui.Context, studio *shareStudioViewState, actions shareActions, w float32) {
+	h := w * (3 * studioCellH) / (10 * studioCellW)
+	cw, ch := w/10, h/3
 	strip := ui.ButtonBase(c.Key("studio-palette")).Size(w, h).Radius(7).Clip().Label(i18n.T("Colors"))
 	x, y, _ := strip.PointerPosition()
 	strip.Children(func() {
@@ -325,24 +332,24 @@ func studioPalette(c *ui.Context, studio *shareStudioViewState, actions shareAct
 		for row, colors := range shareStudioPalette {
 			for i, hex := range colors {
 				if hex == studio.Color {
-					ui.Box(c.Key("pick")).Absolute().Left(float32(i)*studioCellW).Top(float32(row)*studioCellH).
-						Size(studioCellW, studioCellH).Radius(4).Border(1.5, ui.RGBA(30, 27, 46, .85)).
+					ui.Box(c.Key("pick")).Absolute().Left(float32(i)*cw).Top(float32(row)*ch).
+						Size(cw, ch).Radius(4).Border(1.5, ui.RGBA(30, 27, 46, .85)).
 						InsetShadow(0, 0, 0, 2, shareWhite)
 				}
 			}
 		}
 	})
 	if strip.Clicked() {
-		col, row := int(x/studioCellW), int(y/studioCellH)
+		col, row := int(x/cw), int(y/ch)
 		if row >= 0 && row < 3 && col >= 0 && col < 10 {
 			actions.studioColor(shareStudioPalette[row][col])
 		}
 	}
 }
 
-// studioTool is a kit button 30 DIPs square, its face chosen or hovered.
+// studioTool is a kit button 28 DIPs square, its face chosen or hovered.
 func studioTool(c *ui.Context, k studioKitColors, chosen bool, label string) ui.Element {
-	b := ui.ButtonBase(c).Size(30, 30).Radius(9).AlignItems(ui.Center).Justify(ui.Center).Label(label).Tooltip(label)
+	b := ui.ButtonBase(c).Size(28, 28).Radius(8).AlignItems(ui.Center).Justify(ui.Center).Label(label).Tooltip(label)
 	switch {
 	case chosen:
 		b.Background(k.on)
@@ -392,7 +399,7 @@ func studioCloset(c *ui.Context, studio *shareStudioViewState, actions shareActi
 
 // renderHatPicture is the board's hat at 2×: what a drawn hat is saved as.
 func renderHatPicture(base string, strokes []shareStroke, actions shareActions) image.Image {
-	return ui.Render(func(c *ui.Context) { shareHatPicture(c, base, strokes, actions) }, int(shareHatBox[2]), int(shareHatBox[3]), 2)
+	return renderTransparent(func(c *ui.Context) { shareHatPicture(c, base, strokes, actions) }, int(shareHatBox[2]), int(shareHatBox[3]), 2)
 }
 
 // shareHatPicture is the board's hat alone, at one DIP a unit of the
