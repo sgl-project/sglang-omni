@@ -7,8 +7,7 @@
       "severity": "info",
       "title": "First card",
       "body": "The newest thing that happened.",
-      "action_label": "打开",
-      "time_hint": "1月2日 07:04"
+      "action_label": "打开"
     }
   ]
 }

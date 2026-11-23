@@ -17,6 +17,7 @@ type track struct {
 	stopping   bool
 	transcribe *trackTranscriber
 	done       chan struct{} // closed once Record returned, its PCM is handled and its transcriber finished
+	settled    chan struct{} // closed after the track's reconnect decision has settled
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -35,7 +36,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	m.timeline.Begin(src, job, m.timeline.Elapsed())
 	done := make(chan struct{})
-	tr := &track{src: src, job: job, audio: audio, done: done}
+	tr := &track{src: src, job: job, audio: audio, done: done, settled: make(chan struct{})}
 	m.tracks[src] = tr
 	m.mu.Unlock()
 
@@ -48,6 +49,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	if tx != nil {
 		m.mu.Lock()
+		tx.owner = tr
 		tr.transcribe = tx
 		m.mu.Unlock()
 	}
@@ -120,6 +122,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		pcm.close()
 		<-pumped
 		if tx != nil {
+			// The capture's original error takes precedence over a Final teardown error.
 			_ = tx.finish(context.Background())
 		}
 		close(done)
@@ -129,6 +132,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		if reconnect {
 			m.handleTrackLost(ctx, src)
 		}
+		close(tr.settled)
 	}()
 	select {
 	case err := <-started:
@@ -152,6 +156,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 func (t *track) stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// Teardown continues to the shared deadline even when the helper refuses Stop.
 	_ = t.audio.Stop(ctx, t.job)
 	select {
 	case <-t.done:

@@ -68,7 +68,6 @@
           "key": "turn-0-user",
           "kind": "bubble",
           "turn": 0,
-          "title": "You",
           "text": "写一句话告诉同事我会晚到十分钟",
           "user": true,
           "selectable": true
@@ -88,7 +87,6 @@
           "key": "turn-1-user",
           "kind": "bubble",
           "turn": 1,
-          "title": "You",
           "text": "再正式一点",
           "live": true,
           "user": true,

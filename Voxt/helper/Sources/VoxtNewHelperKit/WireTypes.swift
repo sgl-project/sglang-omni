@@ -685,7 +685,12 @@ public struct ClipboardImageParams: Codable, Sendable {
 public struct ClipboardImageResult: Codable, Sendable {
     /// A JPEG; base64 on the wire. nil: the clipboard holds no picture to send.
     public var jpeg: Data?
-    public init(jpeg: Data? = nil) { self.jpeg = jpeg }
+    /// True only when a source byte or pixel limit rejected the picture.
+    public var tooLarge: Bool?
+    public init(jpeg: Data? = nil, tooLarge: Bool? = nil) {
+        self.jpeg = jpeg
+        self.tooLarge = tooLarge
+    }
 }
 
 // MARK: output.*

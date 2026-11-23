@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -172,11 +173,12 @@ func testManagerStreams(t *testing.T, mic, system session.Audio, micStreamer, sy
 	}
 	t.Cleanup(func() { s.Close() })
 	cfg := meeting.Config{
-		Mic:     mic,
-		System:  system,
-		Store:   s.Meetings(),
-		Dir:     filepath.Join(dir, "meetings"),
-		Privacy: func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Mic:      mic,
+		System:   system,
+		Store:    s.Meetings(),
+		Dir:      filepath.Join(dir, "meetings"),
+		Privacy:  func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings: func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
 		FreeSpace: func(string) (int64, error) {
 			return meeting.DiskMinStartBytes() + 1, nil
 		},
@@ -192,6 +194,7 @@ func testManagerStreams(t *testing.T, mic, system session.Audio, micStreamer, sy
 }
 
 type finishGateStreamer struct {
+	text           string
 	first          chan struct{}
 	finishStarted  chan struct{}
 	releaseFinish  chan struct{}
@@ -230,6 +233,7 @@ func (s *finishGateStream) Send([]byte) error { return nil }
 func (s *finishGateStream) Finish() error {
 	close(s.streamer.finishStarted)
 	<-s.streamer.releaseFinish
+	s.events <- asr.Event{Kind: asr.EventFinal, Text: s.streamer.text, Result: asr.Result{Text: s.streamer.text}}
 	close(s.events)
 	close(s.streamer.finishReturned)
 	return nil
@@ -274,8 +278,30 @@ func TestSystemStartFailureKeepsCaptureErrorDuringSlowFinal(t *testing.T) {
 	}
 }
 
+type slowReconnectAudio struct {
+	*fakeAudio
+	thirdStarted chan struct{}
+	allowThird   chan struct{}
+}
+
+func newSlowReconnectAudio(pcm []byte) *slowReconnectAudio {
+	return &slowReconnectAudio{
+		fakeAudio:    newFakeAudio(pcm),
+		thirdStarted: make(chan struct{}),
+		allowThird:   make(chan struct{}),
+	}
+}
+
+func (a *slowReconnectAudio) Record(ctx context.Context, id string, params proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
+	if len(a.jobIDs()) == 2 {
+		close(a.thirdStarted)
+		<-a.allowThird
+	}
+	return a.fakeAudio.Record(ctx, id, params, fn)
+}
+
 func TestStoppedTrackDoesNotReconnectAfterPauseSetModeResume(t *testing.T) {
-	mic := newFakeAudio([]byte{9})
+	mic := newSlowReconnectAudio([]byte{9})
 	streamer := newFinishGateStreamer()
 	m, ctx := testManagerStreams(t, mic, newFakeAudio([]byte{8}), streamer, &meetTestStreamer{})
 	t.Cleanup(streamer.release)
@@ -283,7 +309,14 @@ func TestStoppedTrackDoesNotReconnectAfterPauseSetModeResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Finish(ctx, id)
+	oldDone := meeting.TrackDoneForTest(m, meeting.SourceMic)
+	if oldDone == nil {
+		t.Fatal("the first microphone track is not installed")
+	}
+	defer func() {
+		close(mic.allowThird)
+		_ = m.Finish(ctx, id)
+	}()
 	if err := m.Pause(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -295,13 +328,59 @@ func TestStoppedTrackDoesNotReconnectAfterPauseSetModeResume(t *testing.T) {
 	}
 	streamer.release()
 	select {
-	case <-streamer.finishReturned:
+	case <-oldDone:
+	case <-mic.thirdStarted:
+		t.Fatal("the replaced track started a slow reconnect")
 	case <-time.After(2 * time.Second):
-		t.Fatal("the replaced track did not finish")
+		t.Fatal("the replaced track did not settle")
 	}
-	<-time.After(250 * time.Millisecond)
 	if jobs := mic.jobIDs(); len(jobs) != 2 {
 		t.Fatalf("the replaced track reconnected: jobs %v", jobs)
+	}
+}
+
+func TestLateFinalDoesNotCommitIntoNextMeeting(t *testing.T) {
+	mic := newFakeAudio([]byte{9})
+	streamer := newFinishGateStreamer()
+	streamer.text = "late words from A"
+	m, ctx := testManagerStreams(t, mic, newFakeAudio([]byte{8}), streamer, &meetTestStreamer{})
+	t.Cleanup(streamer.release)
+	idA, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDone := meeting.TrackDoneForTest(m, meeting.SourceMic)
+	if oldDone == nil {
+		t.Fatal("meeting A's microphone track is not installed")
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- m.Finish(ctx, idA) }()
+	select {
+	case <-streamer.finishStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("meeting A did not reach its held Final")
+	}
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(7 * time.Second):
+		t.Fatal("meeting A did not finish behind its held Final")
+	}
+	idB, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, idB)
+	streamer.release()
+	select {
+	case <-oldDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("meeting A's late Final did not finish")
+	}
+	if segments := m.Current().Segments; len(segments) != 0 {
+		t.Fatalf("meeting B received meeting A's late Final: %+v", segments)
 	}
 }
 

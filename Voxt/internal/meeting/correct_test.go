@@ -226,8 +226,8 @@ func TestCorrectAndSummarizeWarns(t *testing.T) {
 // every line and the others' under none).
 func TestLiveTranslationFindsItsLine(t *testing.T) {
 	m, _, _ := correctFixture(t)
-	m.commitSegment(Segment{Source: SourceSystem, Text: "one"})
-	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"})
+	m.commitSegment(Segment{Source: SourceSystem, Text: "one"}, nil)
+	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"}, nil)
 	m.segWrites.Wait()
 	m.applyTranslation(1, "二")
 	segs := m.Current().Segments

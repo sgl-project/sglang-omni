@@ -25,7 +25,7 @@ func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteAct
 	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 	llmWaitView(c, &state.Wait, actions, local.wait)
 	on := state.Switch
-	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language-model server on this Mac you set up, once, even one you chose for another feature. Translate asks its own fallback model first. Voxt never switches to an external API you did not choose for that feature. A used-up plan does not switch."), func() {
+	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language model you set up in this page's order, once, even one you chose for another feature. Translate asks its own fallback model first. The fallback provider, including an external API, receives the same request. A used-up plan does not switch."), func() {
 		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Switch models when one fails")).Changed() {
 			actions.setLLMSwitch(on)
 		}
@@ -135,7 +135,9 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 					keyRow()
 				}
 				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					tagChip(c, state.Where)
+					if state.Where != "" {
+						tagChip(c, state.Where)
+					}
 					if state.Realtime {
 						tagChip(c, i18n.T("Realtime"))
 					}
@@ -147,7 +149,9 @@ func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions re
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Start).MinHeight(px(t, 22)).Children(func() {
 				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { statusDot(c, remoteDotColor(c, state.Status)) })
 				ui.Text(c, state.Name).FontWeight(600).Grow(1).MinWidth(0).MaxLines(2).Ellipsis("…").Margin(px(t, 2), 0, 0, 0)
-				ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, state.Where) })
+				if state.Where != "" {
+					ui.Row(c).Height(px(t, 22)).AlignItems(ui.Center).Shrink(0).Children(func() { tagChip(c, state.Where) })
+				}
 			})
 			truncText(c, state.Model).FontSize(px(t, fsCaption)).TextColor(colors.Text2)
 			if !state.Configured {
