@@ -20,6 +20,7 @@ type permissionRowViewState struct {
 	Status       string `json:"status"`
 	Allowed      bool   `json:"allowed"`
 	Known        bool   `json:"known"`
+	Tip          string `json:"tip,omitempty"` // the status's tooltip when not Known
 	Ask          bool   `json:"ask"`
 	Open         bool   `json:"open"`
 }
@@ -36,6 +37,7 @@ type permissionsStateInput struct {
 	Microphone        permission.State
 	Accessibility     bool
 	SpeechRecognition permission.State
+	SystemAudioAsked  bool
 }
 
 func buildPermissionsViewState(translator *i18n.Translator, input permissionsStateInput) permissionsViewState {
@@ -57,16 +59,29 @@ func buildPermissionsViewState(translator *i18n.Translator, input permissionsSta
 			Status: accessibilityText, Allowed: input.Accessibility, Known: true,
 			Ask: !input.Accessibility, Open: !input.Accessibility,
 		},
-		SystemAudio: permissionRowViewState{
-			PermissionID: proto.PermissionSystemAudio, SettingsURL: privacyAudioCapture,
-			Status: translator.T("Unknown"), Known: false, Ask: true, Open: true,
-		},
+		SystemAudio: systemAudioPermission(translator, input.SystemAudioAsked),
 		SpeechRecognition: permissionRowViewState{
 			PermissionID: proto.PermissionSpeechRecognition, SettingsURL: privacySpeech,
 			Status: speechText, Allowed: speechAllowed, Known: true,
 			Ask: input.SpeechRecognition == permission.NotDetermined, Open: !speechAllowed,
 		},
 	}
+}
+
+// systemAudioPermission is the System Audio Recording row. macOS prompts
+// only the first time and lets no app read the answer, so after an Ask
+// the row says it asked and leaves System Settings as the way.
+func systemAudioPermission(translator *i18n.Translator, asked bool) permissionRowViewState {
+	row := permissionRowViewState{
+		PermissionID: proto.PermissionSystemAudio, SettingsURL: privacyAudioCapture,
+		Status: translator.T("Unknown"), Tip: translator.T("macOS does not let apps read this permission. Check it in System Settings."),
+		Ask: !asked, Open: true,
+	}
+	if asked {
+		row.Status = translator.T("Asked: check System Settings")
+		row.Tip = translator.T("If you allowed it when macOS asked, it is on. No prompt means macOS asked before. Check it in System Settings.")
+	}
+	return row
 }
 
 func permissionStatusText(translator *i18n.Translator, state permission.State) (string, bool) {

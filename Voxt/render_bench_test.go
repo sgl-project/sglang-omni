@@ -121,6 +121,7 @@ func benchmarkFirstFrame(b *testing.B, a *app, sentinel string) {
 	b.Helper()
 	fresh := func() *app {
 		fresh := &app{lib: a.lib, shellState: newShellState(), helperLink: helperLink{host: a.host}}
+		fresh.now = a.now
 		fresh.router = ui.NewRouter(a.shownPath())
 		fresh.settings, fresh.prefs = a.settings, a.prefs
 		fresh.notes, fresh.notices, fresh.logs = a.notes, a.notices, a.logs
