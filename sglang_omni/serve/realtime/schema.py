@@ -28,6 +28,9 @@ SessionState = Literal["CREATED", "OPEN", "CLOSING", "CLOSED"]
 MAX_EVENT_ID_LENGTH = 256
 Interaction = Literal["native", "turn_based"]
 TailPolicy = Literal["flush", "pad", "reject"]
+FinishMode = Literal["input_end", "natural"]
+DEFAULT_MAX_TAIL_UNITS = 60
+MAX_TAIL_UNITS = 120
 PartialStyle = Literal["append_only", "revising"]
 
 
@@ -131,6 +134,8 @@ class AudioReference(BaseModel):
 class SessionExtension(TypedDict, total=False):
     interaction: Interaction
     tail_policy: TailPolicy
+    finish_mode: FinishMode
+    max_tail_units: Annotated[int, Field(ge=1, le=MAX_TAIL_UNITS)]
     timebase: TimebaseConfig
     sampling: SamplingConfig
     voice: str
@@ -174,6 +179,7 @@ class GrantedCapabilities(TypedDict, total=False):
     supports_truncate: bool
     supports_cancel: bool
     supports_resume: bool
+    supports_natural_finish: bool
     partial_style: PartialStyle
     pressure_policy: Literal["reject"]
     strict_order: bool

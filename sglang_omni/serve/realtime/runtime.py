@@ -46,6 +46,7 @@ from sglang_omni.serve.realtime.negotiation import SessionNegotiation
 from sglang_omni.serve.realtime.output import OutputEvent, ResponseStatus, TurnFailure
 from sglang_omni.serve.realtime.output_buffer import OutputBuffer
 from sglang_omni.serve.realtime.schema import (
+    DEFAULT_MAX_TAIL_UNITS,
     GrantedCapabilities,
     SessionConfiguration,
     SessionState,
@@ -631,9 +632,22 @@ class SessionRuntime:
                     continue
                 else:
                     pass
+                is_input_terminal = unit.eos
+                is_natural_finish = is_input_terminal and (
+                    self.config.get("sglang", {}).get("finish_mode") == "natural"
+                )
+                input_unit = unit
+                if is_natural_finish and unit.real_samples:
+                    unit = replace(unit, eos=False)
+                else:
+                    pass
                 self.processing_unit.set(unit)
                 try:
-                    consumption = await self.adapter.process(unit)
+                    consumption = (
+                        0
+                        if is_natural_finish and not unit.real_samples
+                        else await self.adapter.process(unit)
+                    )
                 finally:
                     self.is_unit_in_flight = False
                 self.mark_activity()
@@ -676,7 +690,7 @@ class SessionRuntime:
                 else:
                     pass
                 self.cleared_unit_receipt = None
-                if not unit.eos:
+                if not is_input_terminal:
                     self.input_ready.set()
                 elif self.close_task is not None:
                     return
@@ -691,6 +705,19 @@ class SessionRuntime:
                             self.end_event_id,
                         )
                     )
+                    if is_natural_finish:
+                        self.is_unit_in_flight = True
+                        try:
+                            await self.adapter.finish_tail(
+                                input_unit,
+                                self.config["sglang"].get(
+                                    "max_tail_units", DEFAULT_MAX_TAIL_UNITS
+                                ),
+                            )
+                        finally:
+                            self.is_unit_in_flight = False
+                    else:
+                        pass
                     return
         except asyncio.CancelledError:
             if self.close_task is None:

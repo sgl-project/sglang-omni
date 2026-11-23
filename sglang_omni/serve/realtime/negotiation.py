@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pydantic import ValidationError
 
 from sglang_omni.serve.realtime.schema import (
+    DEFAULT_MAX_TAIL_UNITS,
     GrantedCapabilities,
     SessionConfiguration,
     SessionState,
@@ -154,6 +155,21 @@ class SessionNegotiation:
 
     def validate_extension(self, candidate: SessionConfiguration) -> None:
         extension = candidate.get("sglang", {})
+        finish_mode = extension.get("finish_mode", "input_end")
+        if finish_mode == "natural" and not self.capabilities.supports_natural_finish:
+            raise ProtocolError(
+                "not_applicable",
+                "natural finish is unavailable",
+                "session.sglang.finish_mode",
+            )
+        elif "max_tail_units" in extension and finish_mode != "natural":
+            raise ProtocolError(
+                "invalid_request",
+                "max_tail_units requires natural finish",
+                "session.sglang.max_tail_units",
+            )
+        else:
+            pass
         unsupported_sampling = set(extension.get("sampling", {})) - set(
             self.capabilities.sampling_parameters
         )
@@ -252,6 +268,15 @@ class SessionNegotiation:
         else:
             pass
         granted["microturn_ms"] = None
+        if self.capabilities.supports_natural_finish:
+            extension = candidate.setdefault("sglang", {})
+            extension.setdefault("finish_mode", "input_end")
+            if extension["finish_mode"] == "natural":
+                extension.setdefault("max_tail_units", DEFAULT_MAX_TAIL_UNITS)
+            else:
+                pass
+        else:
+            pass
         if granted_modalities != requested_modalities:
             granted["rejections"].append(
                 dict(
