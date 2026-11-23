@@ -168,6 +168,7 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = general.Dock, general.CopyResult
 	appearance := a.appearanceSettingsModel()
 	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
+	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
 	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
@@ -303,6 +304,14 @@ func (a *app) settingsDialogModel(now time.Time) (settingsDialogViewState, tryCa
 		state.About = &section
 		updates := a.updatesSettingsModel(now)
 		state.Updates = &updates
+	}
+	for _, page := range a.navModel().ShortcutPages {
+		moved, ok := movedPaths[page.Path]
+		if !ok || !strings.HasPrefix(moved, "/settings/") {
+			continue
+		}
+		page.Path = moved
+		state.ShortcutPages = append(state.ShortcutPages, page)
 	}
 	return state, featureTryActions
 }

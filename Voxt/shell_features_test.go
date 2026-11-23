@@ -3,6 +3,9 @@ package main
 import (
 	"slices"
 	"testing"
+
+	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // TestFeaturesMovedToSettings: the feature pages have one home in Settings;
@@ -42,5 +45,32 @@ func TestFeaturesMovedToSettings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFeatureShortcutsSwitchSettingsSections(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/transcribe")
+	frames(tt)
+	for _, tc := range []struct {
+		key  ui.Key
+		want string
+	}{
+		{ui.Key4, "/settings/translate"},
+		{ui.Key5, "/settings/rewrite"},
+		{ui.Key3, "/settings/transcribe"},
+	} {
+		tt.Key(ui.Cmd, tc.key)
+		frames(tt)
+		if got := a.shownPath(); got != tc.want {
+			t.Errorf("shortcut went to %s, want %s", got, tc.want)
+		}
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Hidden = []string{settings.HideTranslate} })
+	frames(tt)
+	tt.Key(ui.Cmd, ui.Key4)
+	frames(tt)
+	if got := a.shownPath(); got != "/settings/transcribe" {
+		t.Errorf("shortcut opened a hidden feature at %s", got)
 	}
 }

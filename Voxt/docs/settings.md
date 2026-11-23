@@ -102,6 +102,8 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.windowTransparency` | integer | `8` | 5–15 percent (clamped), used by `transparent` | Theme |
 | `appearance.scale` | number | `1` | `0.9`, `1`, `1.1`, `1.25` (snapped to the nearest) | Interface size |
 | `appearance.reduceMotion` | bool | `false` | | Reduce motion |
+| `appearance.opening` | bool | `true` | | Play the opening at start (shown off and resting while Reduce motion is on, which skips the opening; the saved choice comes back when it is off) |
+| `appearance.openingMillis` | integer | `2000` | 3000, 2000, 1000 | Opening speed: a slider of three stops from the turtle (the opening in 3 s) to the rabbit (1 s), along the same timeline; the row shows only while Play the opening at start is on and Reduce motion is off |
 | `appearance.rail` | bool | `false` | `true` shows the sidebar as icons only | Sidebar |
 | `appearance.railChosen` | bool | `false` | the user chose names and icons | Sidebar |
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |

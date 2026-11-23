@@ -70,6 +70,8 @@ func (a *app) page(c *uiContext, p navPage) {
 			})
 		})
 		historyDeleteDialog(c, &a.histUI, a)
+		a.shareDialog(c)    // share_controller.go
+		a.insightsDialog(c) // insights_controller.go
 		return
 	case "/logs":
 		logsPage(c, a.logsModel(), a, a.logsLocal())

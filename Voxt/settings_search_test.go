@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // TestSettingsSearchFindsRows: Find in settings finds a row by its name
@@ -52,5 +53,21 @@ func TestSettingsSearchFeatureRows(t *testing.T) {
 	a.settingsForm.search = "target"
 	if !has(tt, "Target language for Translate") {
 		t.Errorf("feature row not found: %q", firstTexts(tt))
+	}
+}
+
+func TestSettingsSearchDoesNotStartHiddenTry(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/translate")
+	frames(tt)
+	a.settingsForm.search = "no-such-setting"
+	frames(tt)
+	if got := a.tryPlace(store.KindTranslate, *selfFront()); got != placeNone {
+		t.Errorf("shortcut targets an invisible Try card: %v, want %v", got, placeNone)
+	}
+	a.settingsForm.search = "target"
+	frames(tt)
+	if got := a.tryPlace(store.KindTranslate, *selfFront()); got != placeFeature {
+		t.Errorf("shortcut ignored a visible Try card: %v, want %v", got, placeFeature)
 	}
 }

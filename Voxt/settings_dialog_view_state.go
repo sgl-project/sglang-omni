@@ -39,23 +39,24 @@ type settingsDialogSectionViewState struct {
 }
 
 type settingsDialogViewState struct {
-	Open        bool                             `json:"open"`
-	Path        string                           `json:"path"`
-	ShownPath   string                           `json:"shown_path"`
-	Sections    []settingsDialogSectionViewState `json:"sections"`
-	General     *settingsGeneralViewState        `json:"general,omitempty"`
-	Feature     *featureViewState                `json:"feature,omitempty"`
-	Models      *settingsModelsViewState         `json:"models,omitempty"`
-	Remote      *remoteViewState                 `json:"language_models,omitempty"`
-	Permissions *permissionsViewState            `json:"permissions,omitempty"`
-	Audio       *settingsAudioViewState          `json:"audio,omitempty"`
-	Overlay     *settingsOverlayViewState        `json:"overlay,omitempty"`
-	Shortcuts   *settingsShortcutsViewState      `json:"shortcuts,omitempty"`
-	Appearance  *settingsAppearanceViewState     `json:"appearance,omitempty"`
-	Privacy     *settingsPrivacyViewState        `json:"privacy,omitempty"`
-	Storage     *settingsStorageViewState        `json:"storage,omitempty"`
-	About       *settingsAboutViewState          `json:"about,omitempty"`
-	Updates     *updatesViewState                `json:"updates,omitempty"`
+	Open          bool                             `json:"open"`
+	Path          string                           `json:"path"`
+	ShownPath     string                           `json:"shown_path"`
+	Sections      []settingsDialogSectionViewState `json:"sections"`
+	ShortcutPages []navShortcutViewState           `json:"-"`
+	General       *settingsGeneralViewState        `json:"general,omitempty"`
+	Feature       *featureViewState                `json:"feature,omitempty"`
+	Models        *settingsModelsViewState         `json:"models,omitempty"`
+	Remote        *remoteViewState                 `json:"language_models,omitempty"`
+	Permissions   *permissionsViewState            `json:"permissions,omitempty"`
+	Audio         *settingsAudioViewState          `json:"audio,omitempty"`
+	Overlay       *settingsOverlayViewState        `json:"overlay,omitempty"`
+	Shortcuts     *settingsShortcutsViewState      `json:"shortcuts,omitempty"`
+	Appearance    *settingsAppearanceViewState     `json:"appearance,omitempty"`
+	Privacy       *settingsPrivacyViewState        `json:"privacy,omitempty"`
+	Storage       *settingsStorageViewState        `json:"storage,omitempty"`
+	About         *settingsAboutViewState          `json:"about,omitempty"`
+	Updates       *updatesViewState                `json:"updates,omitempty"`
 }
 
 // settingsModelsViewState is Settings → Speech models: the models of

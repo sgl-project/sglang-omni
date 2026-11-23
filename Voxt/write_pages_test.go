@@ -14,12 +14,16 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// pageTester is the test app on a feature's Settings section, in a tall window.
+// pageTester is the test app on path, in a tall window.
 func pageTester(t *testing.T, path string) (*app, *ui.Tester) {
 	t.Helper()
-	a, _, _ := newTestApp(t)
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
 	a.navigate(path)
-	tt := featureViewTester(a)
+	switch path {
+	case "/transcribe", "/translate", "/rewrite":
+		tt = featureViewTester(a)
+	}
 	frames(tt)
 	return a, tt
 }

@@ -34,6 +34,7 @@ type settingsForm struct {
 	searchFocus bool
 	find        finder // Return steps through the matches (find_marks.go)
 	findN       int    // the matches in the names the section showed last
+	tryHidden   bool   // the current feature search hides its Try card
 }
 
 // settingsSectionIcon is a settings section's icon.
@@ -120,6 +121,12 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 	w, h := c.Size()
 	dw, dh := settingsDialogSize(t, w, h)
 	ui.DialogBase(c.Key("settings-dialog"), local.Open, func(backdrop, panel ui.Element) {
+		// Moved feature pages keep their shortcuts inside the modal; the window's wait behind it.
+		for _, page := range state.ShortcutPages {
+			if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(page.Num-1)) {
+				actions.navigate(page.Path)
+			}
+		}
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.32))
 		panel.Width(dw).Height(dh).Radius(px(t, radiusCard)).Background(k.Bg).Clip().
 			Shadow(0, 16, 48, 0, ui.RGBA(0, 0, 0, 0.28)).Label(i18n.T("Settings"))
@@ -202,12 +209,13 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 							settingsFind.query, settingsFind.n, settingsFind.cur, settingsFind.reveal = fq, 0, f.find.cur, moved
 							body := ui.Column(c).Gap(px(t, sp4))
 							body.Children(func() { settingsSection(c, r, state, actions, local, featureTryActions) })
+							f.tryHidden = query != "" && settingsSearchHits == 0
 							settingsSearchQuery, settingsFind.query = "", ""
 							if settingsFind.n != f.findN {
 								f.findN = settingsFind.n
 								c.AnimationFrame() // the count over the section shows it
 							}
-							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
+							if f.tryHidden { // its other parts (lists, cards) do not match either
 								body.Invisible().Height(0)
 								caption(c, i18n.T("Nothing in this section matches your search."))
 							}
