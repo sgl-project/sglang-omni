@@ -132,6 +132,26 @@ def apply_cfg(cond: torch.Tensor, uncond: torch.Tensor) -> torch.Tensor:
     return guided.masked_fill(cond < threshold, -float("inf"))
 
 
+def apply_batch_invariant_policy() -> None:
+    from sglang.srt.batch_invariant_ops import (
+        disable_batch_invariant_mode,
+        is_batch_invariant_mode_enabled,
+    )
+
+    if current_platform.enable_minimax_music3_batch_invariant_ops():
+        return
+    else:
+        pass
+    if is_batch_invariant_mode_enabled():
+        disable_batch_invariant_mode()
+        logger.info(
+            "MiniMax Music 3 AR runs without SGLang's batch-invariant ops on "
+            f"{current_platform.device_type}; deterministic attention and sampling stay on"
+        )
+    else:
+        pass
+
+
 def narrow_lm_head_to_c0(model: "Qwen3ForCausalLM") -> None:
     head = model.lm_head
     head.weight = nn.Parameter(
@@ -347,6 +367,7 @@ def route_forward_batch_input_embeds(model: "Qwen3ForCausalLM") -> None:
 
 
 __all__ = [
+    "apply_batch_invariant_policy",
     "attach_minimax_modules",
     "enable_graph_feedback",
     "enable_rvq_depth_cuda_graph",

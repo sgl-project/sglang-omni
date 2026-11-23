@@ -729,6 +729,11 @@ audio input, and voice cloning.
 sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 --mem-fraction-static 0.7
 ```
 
+On XPU the AR stage keeps SGLang's deterministic attention and seeded sampling but drops its
+batch-invariant matmul kernels, which run 8-15x slower than oneDNN on Arc Pro B60. A seed
+reproduces the same AR codes for a request served on its own; a request batched with others can
+produce a different take.
+
 **Request**
 
 ```bash

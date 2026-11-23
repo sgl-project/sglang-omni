@@ -193,6 +193,12 @@ def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_di
     assert platform.get_joint_rope_inplace_kernel() is kernel
 
 
+def test_only_xpu_drops_minimax_music3_batch_invariant_ops() -> None:
+    assert OmniPlatform().enable_minimax_music3_batch_invariant_ops() is True
+    assert CUDAOmniPlatform().enable_minimax_music3_batch_invariant_ops() is True
+    assert XPUOmniPlatform().enable_minimax_music3_batch_invariant_ops() is False
+
+
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     platform = platforms.as_omni_platform(XpuSRTPlatform())
 

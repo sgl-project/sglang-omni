@@ -37,6 +37,7 @@ from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRu
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
 from sglang_omni.models.minimax_music3.sglang_model import (
+    apply_batch_invariant_policy,
     build_c0_logit_ids,
     narrow_lm_head_to_c0,
     select_c0_logits,
@@ -340,6 +341,39 @@ def test_select_c0_logits_rejects_full_vocabulary_logits() -> None:
 
     with pytest.raises(RuntimeError, match="narrowed c0 head"):
         select_c0_logits(model, torch.zeros(2, model.lm_head.weight.shape[0]))
+
+
+@pytest.mark.parametrize(
+    ("platform_keeps", "mode_enabled", "expected_disables"),
+    [(True, True, 0), (False, True, 1), (False, False, 0)],
+)
+def test_batch_invariant_policy_follows_the_platform(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_keeps: bool,
+    mode_enabled: bool,
+    expected_disables: int,
+) -> None:
+    from sglang.srt import batch_invariant_ops
+
+    disables: list[None] = []
+    monkeypatch.setattr(
+        current_platform,
+        "enable_minimax_music3_batch_invariant_ops",
+        lambda: platform_keeps,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        batch_invariant_ops, "is_batch_invariant_mode_enabled", lambda: mode_enabled
+    )
+    monkeypatch.setattr(
+        batch_invariant_ops,
+        "disable_batch_invariant_mode",
+        lambda: disables.append(None),
+    )
+
+    apply_batch_invariant_policy()
+
+    assert len(disables) == expected_disables
 
 
 @pytest.mark.accelerator

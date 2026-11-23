@@ -79,6 +79,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
 
+    def enable_minimax_music3_batch_invariant_ops(self) -> bool:
+        return False
+
     def enable_zonos2_torch_compile(self) -> bool:
         return False
 

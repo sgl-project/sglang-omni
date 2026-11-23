@@ -230,6 +230,9 @@ class OmniPlatform(DeviceMixin):
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_minimax_music3_batch_invariant_ops(self) -> bool:
+        return True
+
     def enable_zonos2_torch_compile(self) -> bool:
         return True
 
