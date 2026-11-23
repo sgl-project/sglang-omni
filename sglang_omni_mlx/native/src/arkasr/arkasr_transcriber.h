@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "arkasr/arkasr_model.h"
+#include "common/dflash_draft.h"
 #include "common/tokenizer.h"
 #include "common/transcription.h"
 
@@ -27,7 +28,13 @@ struct ArkOptions {
 
 class ArkTranscriber {
 public:
-  explicit ArkTranscriber(const std::filesystem::path &model_directory);
+  // With a DFlash draft directory, each window's decoding verifies the
+  // draft's proposals, keeping the target's greedy transcript.
+  explicit ArkTranscriber(const std::filesystem::path &model_directory,
+                          const std::filesystem::path &draft_directory = {},
+                          int draft_quantization_bits = 0,
+                          omni_common::DraftPolicy draft_policy =
+                              omni_common::DraftPolicy::kAdaptive);
 
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const ArkOptions &options,
@@ -41,6 +48,8 @@ private:
   mlx::core::array PromptEmbeddings(const char *text) const;
 
   ArkASR model_;
+  std::optional<omni_common::DFlashDraft> draft_;
+  omni_common::DraftPolicy draft_policy_;
   omni_common::Tokenizer tokenizer_;
   // The prompt's text parts embedded once, [1, tokens, hidden]; each window's
   // prompt is them around its audio features.

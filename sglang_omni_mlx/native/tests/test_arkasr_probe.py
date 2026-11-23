@@ -8,6 +8,10 @@ strongly negative <|im_end|> row, so a decode never stops early and runs to
 its token limit. The stop checkpoint's rows form the chain 259 -> 5 -> 7 ->
 <|im_end|>, so every window decodes exactly "éx" and stops; the multi-window
 requests then show how the budget is spent and how the window texts join.
+
+The DFlash draft's one-token vocabulary maps to id 0, the loop checkpoint's
+token, so its proposals are always accepted there and never on the stop
+checkpoint; with either, decoding with the draft must equal plain decoding.
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ import random
 import struct
 import subprocess
 from pathlib import Path
+
+from native_server import EVENT_TIMEOUT_SECONDS, SupervisedServer
 
 HIDDEN = 32
 HEADS = 2
@@ -39,6 +45,8 @@ ASSISTANT_ID = 256 + ADDED_TOKENS.index("<|assistant|>")
 AUDIO_TOKEN_ID = 256 + ADDED_TOKENS.index("<|audio|>")
 ACCENTED_E_ID = 5
 PLAIN_X_ID = 7
+DRAFT_HEAD_DIM = 16
+DRAFT_MASK_ID = VOCABULARY - 1
 
 
 def write_safetensors(
@@ -168,6 +176,65 @@ def write_checkpoint(
     write_safetensors(directory / "model.safetensors", tensors)
 
 
+def write_draft(directory: Path, hidden_size: int = HIDDEN) -> None:
+    """A random one-layer DFlash draft that reads the target's only layer."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text(
+        json.dumps(
+            {
+                "aux_hidden_state_layer_ids": [0],
+                "block_size": 8,
+                "draft_vocab_size": 1,
+                "mask_token_id": DRAFT_MASK_ID,
+                "sample_from_anchor": False,
+                "sliding_window_non_causal": False,
+                "transformer_layer_config": {
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": HEADS,
+                    "num_key_value_heads": KV_HEADS,
+                    "head_dim": DRAFT_HEAD_DIM,
+                    "hidden_size": hidden_size,
+                    "vocab_size": VOCABULARY,
+                    "rms_norm_eps": 1e-6,
+                    "rope_parameters": {"rope_theta": 1000000.0},
+                },
+            }
+        )
+    )
+    generator = random.Random(7)
+    tensors: dict[str, tuple[list[int], list[float]]] = {}
+
+    def normal(name: str, *shape: int) -> None:
+        tensors[name] = (
+            list(shape),
+            [generator.gauss(0, 0.05) for _ in range(math.prod(shape))],
+        )
+
+    def constant(name: str, value: float, *shape: int) -> None:
+        tensors[name] = (list(shape), [value] * math.prod(shape))
+
+    attention_width = HEADS * DRAFT_HEAD_DIM
+    normal("fc.weight", hidden_size, hidden_size)
+    constant("hidden_norm.weight", 1, hidden_size)
+    layer = "layers.0"
+    constant(f"{layer}.input_layernorm.weight", 1, hidden_size)
+    constant(f"{layer}.post_attention_layernorm.weight", 1, hidden_size)
+    normal(f"{layer}.self_attn.q_proj.weight", attention_width, hidden_size)
+    normal(f"{layer}.self_attn.k_proj.weight", attention_width, hidden_size)
+    normal(f"{layer}.self_attn.v_proj.weight", attention_width, hidden_size)
+    normal(f"{layer}.self_attn.o_proj.weight", hidden_size, attention_width)
+    constant(f"{layer}.self_attn.q_norm.weight", 1, DRAFT_HEAD_DIM)
+    constant(f"{layer}.self_attn.k_norm.weight", 1, DRAFT_HEAD_DIM)
+    normal(f"{layer}.mlp.gate_proj.weight", MLP_HIDDEN, hidden_size)
+    normal(f"{layer}.mlp.up_proj.weight", MLP_HIDDEN, hidden_size)
+    normal(f"{layer}.mlp.down_proj.weight", hidden_size, MLP_HIDDEN)
+    constant("norm.weight", 1, hidden_size)
+    normal("lm_head.weight", 1, hidden_size)
+    # d2t holds each draft id's offset to its target id: draft id 0 is id 0.
+    constant("d2t", 0, 1)
+    write_safetensors(directory / "model.safetensors", tensors)
+
+
 def loop_embeddings() -> list[list[float]]:
     # Every row the same vector, so the argmax is the lowest id; <|im_end|>'s
     # row is its strong negative, so a decode never stops early.
@@ -203,14 +270,21 @@ def test_arkasr_budget_windowing_and_join(
         stop_embeddings(),
         {"Ã©": ACCENTED_E_ID, "x": PLAIN_X_ID},
     )
+    draft_checkpoint = tmp_path / "arkasr-draft"
+    write_draft(draft_checkpoint)
     completed = subprocess.run(
-        [str(arkasr_probe_binary), str(loop_checkpoint), str(stop_checkpoint)],
+        [
+            str(arkasr_probe_binary),
+            str(loop_checkpoint),
+            str(stop_checkpoint),
+            str(draft_checkpoint),
+        ],
         capture_output=True,
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    rows = json.loads(completed.stdout)
-    by_budget = {(row["checkpoint"], row["budget"]): row for row in rows}
+    output = json.loads(completed.stdout)
+    by_budget = {(row["checkpoint"], row["budget"]): row for row in output["plain"]}
     assert by_budget[("loop", 2)]["tokens"] == 2
     assert by_budget[("loop", 2)]["windows"] == 1
     assert by_budget[("loop", None)]["tokens"] == 3 * 256
@@ -222,3 +296,36 @@ def test_arkasr_budget_windowing_and_join(
     assert by_budget[("stop", None)]["text"] == "éx éx éx"
     assert by_budget[("stop", 5)]["tokens"] == 5
     assert by_budget[("stop", 5)]["windows"] == 3
+    # Plain-equality is checked in the probe; here, that the draft really ran:
+    # every loop proposal is accepted, every stop proposal rejected.
+    for row in output["drafted"]:
+        assert row["verify_rounds"] > 0
+        if row["checkpoint"] == "loop" and row["budget"] == 2:
+            assert row["proposed"] == 0
+        elif row["checkpoint"] == "loop":
+            assert row["accepted"] == row["proposed"] > 0
+        else:
+            assert row["accepted"] == 0 < row["proposed"]
+
+
+def test_arkasr_refuses_a_draft_for_another_target(
+    tmp_path: Path, runtime_bin: Path
+) -> None:
+    checkpoint = tmp_path / "arkasr-stop"
+    write_checkpoint(
+        checkpoint, stop_embeddings(), {"Ã©": ACCENTED_E_ID, "x": PLAIN_X_ID}
+    )
+    draft = tmp_path / "wider-draft"
+    write_draft(draft, hidden_size=2 * HIDDEN)
+    server = SupervisedServer(
+        runtime_bin / "arkasr_server",
+        "arkasr",
+        checkpoint,
+        ("--draft-model-path", str(draft)),
+    )
+    assert server.first_event["event"] == "failed"
+    assert (
+        f"has hidden size {2 * HIDDEN}, the target's is {HIDDEN}"
+        in server.first_event["reason"]
+    )
+    assert server.process.wait(timeout=EVENT_TIMEOUT_SECONDS) == 1

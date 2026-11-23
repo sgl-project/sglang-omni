@@ -58,6 +58,7 @@ VAD_FIELDS = {
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
 MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 ARKASR_REPO = "Edge0/ARK-ASR-3B"
+ARKASR_DRAFT_REPO = "wilsonzheng0327/ARK-ASR-3B-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
@@ -1319,9 +1320,23 @@ def test_music3_times_out_a_request_past_its_deadline(
         short_deadline_server.stop()
 
 
-@pytest.fixture(scope="module")
-def arkasr_server() -> Iterator[ModelServer]:
-    running = ModelServer("arkasr_server", "arkasr", ARKASR_REPO)
+ARKASR_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
+def arkasr_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / ARKASR_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
+    running = ModelServer("arkasr_server", "arkasr", ARKASR_REPO, flags)
     yield running
     running.stop()
 
@@ -1351,6 +1366,7 @@ def test_arkasr_plain_request_returns_json_text(arkasr_server: ModelServer) -> N
     assert json.loads(body)["text"]
 
 
+@pytest.mark.parametrize("arkasr_server", ARKASR_SERVER_MODES, indirect=True)
 @pytest.mark.parametrize("budget_fields", [{}, {"max_new_tokens": "0"}])
 def test_arkasr_decodes_long_audio_one_window_at_a_time(
     arkasr_server: ModelServer, budget_fields: dict[str, str]
@@ -1372,6 +1388,7 @@ def test_arkasr_decodes_long_audio_one_window_at_a_time(
     assert len(three_windows["window_texts"]) == 3
 
 
+@pytest.mark.parametrize("arkasr_server", ARKASR_SERVER_MODES, indirect=True)
 def test_arkasr_token_budget_covers_the_whole_request(
     arkasr_server: ModelServer,
 ) -> None:
@@ -1389,6 +1406,31 @@ def test_arkasr_token_budget_covers_the_whole_request(
     metadata = sse_events(body)[0]["generation_metadata"]
     assert metadata["finish_reason"] == "length"
     assert metadata["generated_token_count"] == 2
+
+
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_arkasr_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "arkasr_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / ARKASR_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / ARKASR_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
 
 
 def test_arkasr_zero_token_budget_means_the_default(

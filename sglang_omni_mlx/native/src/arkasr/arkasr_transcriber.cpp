@@ -14,6 +14,8 @@
 namespace arkasr {
 
 namespace mx = mlx::core;
+using omni_common::DraftPolicy;
+using omni_common::DraftStatistics;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
 using omni_common::KVCache;
@@ -45,11 +47,20 @@ bool WindowIsAllZero(const std::vector<float> &samples,
 
 } // namespace
 
-ArkTranscriber::ArkTranscriber(const std::filesystem::path &model_directory)
-    : model_(model_directory), tokenizer_(model_directory),
+ArkTranscriber::ArkTranscriber(const std::filesystem::path &model_directory,
+                               const std::filesystem::path &draft_directory,
+                               int draft_quantization_bits,
+                               DraftPolicy draft_policy)
+    : model_(model_directory), draft_policy_(draft_policy),
+      tokenizer_(model_directory),
       prefix_embeddings_(PromptEmbeddings(kPromptPrefix)),
       suffix_embeddings_(PromptEmbeddings(kPromptSuffix)),
       end_of_turn_id_(tokenizer_.AddedTokenId(kEndOfTurn)) {
+  if (!draft_directory.empty()) {
+    draft_.emplace(draft_directory, draft_quantization_bits,
+                   model_.decoder().config());
+  } else {
+  }
   if (end_of_turn_id_ < 0) {
     throw std::runtime_error(std::string("tokenizer has no ") + kEndOfTurn);
   } else {
@@ -95,31 +106,44 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
   } else {
   }
 
-  std::vector<KVCache> caches = model_.decoder().NewCaches();
-  mx::array next_token = mx::argmax(model_.decoder().LastLogits(
-      model_.decoder().Forward(embeddings, caches)));
-  mx::async_eval({next_token});
   std::vector<int> output_ids;
   FinishReason finish_reason = FinishReason::kLength;
-  while (static_cast<int>(output_ids.size()) < max_new_tokens) {
-    if (cancel.load()) {
-      throw GenerationCancelled();
-    } else {
-    }
-    const mx::array token = next_token;
-    // Note (AzizbekMuminoff): the next step is queued before this token is
-    // read, so the GPU decodes while the stop rule is checked.
-    next_token =
-        mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
-            model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})), caches)));
-    mx::async_eval({next_token});
-    const int token_id = static_cast<int>(token.item<uint32_t>());
+  // Adds a token to the output; true once the window is finished.
+  const auto commit = [&](int token_id) {
     if (token_id == end_of_turn_id_) {
       finish_reason = FinishReason::kStop;
-      break;
+      return true;
     } else {
+      output_ids.push_back(token_id);
+      return static_cast<int>(output_ids.size()) >= max_new_tokens;
     }
-    output_ids.push_back(token_id);
+  };
+  DraftStatistics draft_statistics;
+  if (draft_.has_value()) {
+    draft_statistics =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens, 0, commit,
+                       cancel, draft_policy_);
+  } else {
+    std::vector<KVCache> caches = model_.decoder().NewCaches();
+    mx::array next_token = mx::argmax(model_.decoder().LastLogits(
+        model_.decoder().Forward(embeddings, caches)));
+    mx::async_eval({next_token});
+    bool finished = false;
+    while (!finished) {
+      if (cancel.load()) {
+        throw GenerationCancelled();
+      } else {
+      }
+      const mx::array token = next_token;
+      // Note (AzizbekMuminoff): the next step is queued before this token is
+      // read, so the GPU decodes while the stop rule is checked.
+      next_token =
+          mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
+              model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
+              caches)));
+      mx::async_eval({next_token});
+      finished = commit(static_cast<int>(token.item<uint32_t>()));
+    }
   }
   std::vector<int> text_ids;
   std::copy_if(output_ids.begin(), output_ids.end(),
@@ -130,6 +154,9 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
       omni_common::StripUnicodeWhitespace(tokenizer_.Decode(text_ids, true));
   result.generated_token_count = static_cast<int>(output_ids.size());
   result.finish_reason = finish_reason;
+  result.verify_round_count = draft_statistics.verify_round_count;
+  result.proposed_draft_token_count = draft_statistics.proposed_token_count;
+  result.accepted_draft_token_count = draft_statistics.accepted_token_count;
   return result;
 }
 
@@ -153,6 +180,7 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
       request_budget != 0
           ? request_budget
           : kDefaultMaxNewTokens * static_cast<int>(windows.size());
+  TranscriptionResult combined;
   std::vector<std::string> parts;
   int generated_token_count = 0;
   FinishReason finish_reason = FinishReason::kStop;
@@ -180,6 +208,9 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
       parts.push_back(window.text);
     }
     generated_token_count += window.generated_token_count;
+    combined.verify_round_count += window.verify_round_count;
+    combined.proposed_draft_token_count += window.proposed_draft_token_count;
+    combined.accepted_draft_token_count += window.accepted_draft_token_count;
     remaining_tokens -= window.generated_token_count;
     if (window.finish_reason == FinishReason::kLength) {
       finish_reason = FinishReason::kLength;
@@ -187,7 +218,6 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
     }
     mx::clear_cache();
   }
-  TranscriptionResult combined;
   combined.text = omni_common::JoinTranscriptParts(parts);
   combined.language = options.language;
   combined.generated_token_count = generated_token_count;

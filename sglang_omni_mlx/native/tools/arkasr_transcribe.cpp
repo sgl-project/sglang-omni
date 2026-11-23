@@ -3,12 +3,14 @@
 // line each, for parity checks against the reference implementation.
 //
 //   arkasr_transcribe --model-path DIR [--language L] [--max-new-tokens N]
-//     a.wav...
+//     [--draft-model-path DIR [--draft-bits 4|6|8]
+//     [--draft-policy adaptive|fixed]] a.wav...
 #include <atomic>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,9 @@
 
 int main(int argc, char **argv) {
   std::string model_path;
+  std::string draft_model_path;
+  int draft_quantization_bits = 0;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   arkasr::ArkOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -30,6 +35,12 @@ int main(int argc, char **argv) {
       return 2;
     } else if (argument == "--model-path") {
       model_path = argv[++i];
+    } else if (argument == "--draft-model-path") {
+      draft_model_path = argv[++i];
+    } else if (argument == "--draft-policy") {
+      draft_policy = omni_common::ParseDraftPolicy(argv[++i]);
+    } else if (argument == "--draft-bits") {
+      draft_quantization_bits = std::stoi(argv[++i]);
     } else if (argument == "--language") {
       options.language = argv[++i];
     } else if (argument == "--max-new-tokens") {
@@ -41,8 +52,16 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
+  if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+      draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+  } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
+    throw std::invalid_argument("--draft-bits needs --draft-model-path");
+  } else {
+  }
   const auto load_started = std::chrono::steady_clock::now();
-  const arkasr::ArkTranscriber transcriber(model_path);
+  const arkasr::ArkTranscriber transcriber(
+      model_path, draft_model_path, draft_quantization_bits, draft_policy);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -64,6 +83,9 @@ int main(int argc, char **argv) {
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
         {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
+        {"verify_rounds", result.verify_round_count},
+        {"proposed_draft_token_count", result.proposed_draft_token_count},
+        {"accepted_draft_token_count", result.accepted_draft_token_count},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
                         .count()},

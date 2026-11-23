@@ -6,13 +6,16 @@
 // not the old byte rule that glued a non-ASCII ending to the next window.
 // A split window that is only the request's own zero padding must add no
 // text: the real checkpoint reads such a window as silence and hallucinates.
+// Decoding with a DFlash draft must give the plain decode's result.
 //
-//   arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT
+//   arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT DRAFT_CHECKPOINT
 //
 // The loop checkpoint decodes one repeated token, so every window runs to
 // its limit and the decoded window count shows where the budget stopped it.
 // The stop checkpoint decodes two tokens ("éx") and <|im_end|> per window,
-// so several windows produce text and their join is observable.
+// so several windows produce text and their join is observable. The draft
+// always proposes the loop checkpoint's token, so the loop's rounds accept
+// every proposal and the stop's reject every one.
 #include <atomic>
 #include <iostream>
 #include <optional>
@@ -47,8 +50,9 @@ std::vector<float> Noise(size_t sample_count, float amplitude = 0.02f) {
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr << "usage: arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT\n";
+  if (argc != 4) {
+    std::cerr << "usage: arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT "
+                 "DRAFT_CHECKPOINT\n";
     return 2;
   } else {
   }
@@ -132,6 +136,46 @@ int main(int argc, char **argv) {
                 "a nonzero window must decode however quiet it is (only "
                 "exact zeros are padding)");
 
+  nlohmann::json drafted_rows = nlohmann::json::array();
+  for (const omni_common::DraftPolicy policy :
+       {omni_common::DraftPolicy::kFixed,
+        omni_common::DraftPolicy::kAdaptive}) {
+    const auto compare = [&](const char *checkpoint,
+                             const arkasr::ArkTranscriber &plain_transcriber,
+                             const arkasr::ArkTranscriber &drafted_transcriber,
+                             std::optional<int> max_new_tokens) {
+      const omni_common::TranscriptionResult plain =
+          run(plain_transcriber, max_new_tokens);
+      const omni_common::TranscriptionResult drafted =
+          run(drafted_transcriber, max_new_tokens);
+      ok &= Require(drafted.text == plain.text &&
+                        drafted.generated_token_count ==
+                            plain.generated_token_count &&
+                        drafted.finish_reason == plain.finish_reason &&
+                        drafted.window_texts == plain.window_texts,
+                    "decoding with the draft must keep the plain decode's "
+                    "text, token count, finish reason and windows");
+      drafted_rows.push_back(
+          {{"checkpoint", checkpoint},
+           {"budget", max_new_tokens.has_value()
+                          ? nlohmann::json(*max_new_tokens)
+                          : nlohmann::json()},
+           {"policy",
+            policy == omni_common::DraftPolicy::kFixed ? "fixed" : "adaptive"},
+           {"tokens", drafted.generated_token_count},
+           {"verify_rounds", drafted.verify_round_count},
+           {"proposed", drafted.proposed_draft_token_count},
+           {"accepted", drafted.accepted_draft_token_count}});
+    };
+    const arkasr::ArkTranscriber drafted_loop(argv[1], argv[3], 0, policy);
+    compare("loop", loop, drafted_loop, 2);
+    compare("loop", loop, drafted_loop, std::nullopt);
+    compare("loop", loop, drafted_loop, 0);
+    const arkasr::ArkTranscriber drafted_stop(argv[2], argv[3], 0, policy);
+    compare("stop", stop, drafted_stop, std::nullopt);
+    compare("stop", stop, drafted_stop, 5);
+  }
+
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},
        {"budget", 2},
@@ -155,6 +199,7 @@ int main(int argc, char **argv) {
        {"tokens", capped.generated_token_count},
        {"windows", capped.window_texts.size()}},
   };
-  std::cout << rows.dump() << '\n';
+  std::cout << nlohmann::json{{"plain", rows}, {"drafted", drafted_rows}}.dump()
+            << '\n';
   return ok ? 0 : 1;
 }

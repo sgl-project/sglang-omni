@@ -270,5 +270,12 @@
       "tokenizer_config.json": "d6ef48bad22668f57a44db107dbbaf15adb8253e77e3012129dbf53c32558bd4",
       "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
     }
+  },
+  "wilsonzheng0327/ARK-ASR-3B-dflash": {
+    "revision": "b0789bb314fab990e0f2377054c4b1947d204273",
+    "files": {
+      "config.json": "6b2a6e3e80282a4590de7ac7b25986ab3095265d1b098fff4866176104941ce5",
+      "model.safetensors": "8f4db8cc741e3e53f49ca0215fd59965674837f9c4bacc1f8a780280ad6f1386"
+    }
   }
 }

@@ -4,6 +4,8 @@
 // protocol.
 //
 //   arkasr_server --model-path DIR [--model-name NAME] [--host H] [--port P]
+//     [--draft-model-path DIR [--draft-bits 4|6|8]
+//     [--draft-policy adaptive|fixed]]
 //   arkasr_server --supervised --model-kind arkasr --model-directory DIR
 //
 // Request fields beside the audio: language (reported back; the model
@@ -20,8 +22,12 @@ namespace {
 
 class ArkModelService : public asr_service::ServedModel {
 public:
-  explicit ArkModelService(const std::filesystem::path &model_directory)
-      : transcriber_(model_directory) {}
+  ArkModelService(const std::filesystem::path &model_directory,
+                  const std::filesystem::path &draft_directory,
+                  int draft_quantization_bits,
+                  omni_common::DraftPolicy draft_policy)
+      : transcriber_(model_directory, draft_directory, draft_quantization_bits,
+                     draft_policy) {}
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -46,10 +52,36 @@ private:
 } // namespace
 
 int main(int argc, char **argv) {
+  std::filesystem::path draft_directory;
+  int draft_quantization_bits = 0;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind kind;
   kind.model_kind = "arkasr";
-  kind.load = [](const std::filesystem::path &model_directory) {
-    return std::make_unique<ArkModelService>(model_directory);
+  kind.flags = {
+      {"--draft-model-path",
+       [&](const std::string &value) { draft_directory = value; }},
+      {"--draft-policy",
+       [&](const std::string &value) {
+         draft_policy = omni_common::ParseDraftPolicy(value);
+       }},
+      {"--draft-bits",
+       [&](const std::string &value) {
+         draft_quantization_bits = std::stoi(value);
+       }},
+  };
+  kind.check_flags = [&]() {
+    if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
+        draft_quantization_bits != 6 && draft_quantization_bits != 8) {
+      throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+    } else if (draft_quantization_bits != 0 && draft_directory.empty()) {
+      throw std::invalid_argument("--draft-bits needs --draft-model-path");
+    } else {
+    }
+  };
+  kind.load = [&](const std::filesystem::path &model_directory) {
+    return std::make_unique<ArkModelService>(model_directory, draft_directory,
+                                             draft_quantization_bits,
+                                             draft_policy);
   };
   return asr_service::Serve(argc, argv, kind);
 }
