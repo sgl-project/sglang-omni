@@ -1,0 +1,56 @@
+{
+  "name": "session-problem-llm-sign-in",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "llm",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "The language model failed: Your ChatGPT sign-in has expired. Sign in again in Settings → Language models.",
+      "action": "signin",
+      "action_label": "Sign in",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

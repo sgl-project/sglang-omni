@@ -8,8 +8,10 @@
 //
 // so wrapping a string never changes the English UI, and missing
 // translations fall back to English. Catalogs are JSON objects
-// {source: translation} embedded from locales/<tag>.json; en.json is empty
-// by design.
+// {source: translation} embedded from locales/<tag>.json, or from every
+// locales/<tag>/*.json merged when the locale is split by area (zh-Hans
+// is, to keep unrelated pull requests from conflicting on one file);
+// en.json is empty by design.
 //
 // TestKeyParity (parity_test.go) scans every non-test .go file for T/N/X
 // calls with literal messages, and fails
@@ -25,11 +27,12 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync/atomic"
 )
 
-//go:embed locales/*.json
+//go:embed locales
 var localeFS embed.FS
 
 // catalog is one locale's messages.
@@ -66,21 +69,103 @@ func Locale() string { return current.Load().tag }
 // supported exactly) and returns the tag in use.
 func SetLocale(tag string) string {
 	tag = Match(tag)
-	c := &catalog{tag: tag, messages: map[string]string{}}
-	if data, err := localeFS.ReadFile("locales/" + tag + ".json"); err == nil {
-		if err := json.Unmarshal(data, &c.messages); err != nil {
-			panic("i18n: locales/" + tag + ".json: " + err.Error()) // caught by tests
-		}
-	}
-	c.sources = make(map[string]string, len(c.messages))
-	for k, v := range c.messages {
-		if _, msg, ok := strings.Cut(k, "\x04"); ok { // X's context goes
-			k = msg
-		}
-		c.sources[v] = k
-	}
-	current.Store(c)
+	current.Store(newCatalog(tag))
 	return tag
+}
+
+// Translator reads messages for one explicit locale without changing the
+// process-wide catalog used by views.
+type Translator struct {
+	catalog *catalog
+}
+
+func NewTranslator(tag string) *Translator {
+	return &Translator{catalog: newCatalog(Match(tag))}
+}
+
+func CurrentTranslator() *Translator {
+	return &Translator{catalog: current.Load()}
+}
+
+func (t *Translator) Locale() string {
+	return t.catalog.tag
+}
+
+func (t *Translator) T(msg string, args ...any) string {
+	if translated, ok := t.catalog.messages[msg]; ok && translated != "" {
+		msg = translated
+	}
+	return format(msg, args)
+}
+
+// X translates msg in a context using the translator's locale.
+func (t *Translator) X(context, msg string, args ...any) string {
+	if translated, ok := t.catalog.messages[context+"\x04"+msg]; ok {
+		return format(translated, args)
+	}
+	return format(msg, args)
+}
+
+func (t *Translator) N(n int, one, other string, args ...any) string {
+	msg := other
+	if n == 1 && t.Locale() == "en" {
+		msg = one
+	}
+	if translated, ok := t.catalog.messages[msg]; ok && translated != "" {
+		msg = translated
+	}
+	return format(msg, args)
+}
+
+func newCatalog(tag string) *catalog {
+	messages, err := readMessages(localeFS, tag)
+	if err != nil {
+		panic("i18n: " + err.Error())
+	}
+	c := &catalog{tag: tag, messages: messages}
+	c.sources = make(map[string]string, len(c.messages))
+	for key, translated := range c.messages {
+		if _, msg, ok := strings.Cut(key, "\x04"); ok {
+			key = msg
+		}
+		c.sources[translated] = key
+	}
+	return c
+}
+
+// readMessages merges a locale's catalog in fsys: locales/<tag>.json
+// when it exists, then every locales/<tag>/*.json in name order. A key
+// in two files is an error.
+func readMessages(fsys fs.FS, tag string) (map[string]string, error) {
+	var names []string
+	if _, err := fs.Stat(fsys, "locales/"+tag+".json"); err == nil {
+		names = append(names, "locales/"+tag+".json")
+	}
+	if entries, err := fs.ReadDir(fsys, "locales/"+tag); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+				names = append(names, "locales/"+tag+"/"+e.Name())
+			}
+		}
+	}
+	messages := map[string]string{}
+	for _, name := range names {
+		data, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return nil, err
+		}
+		m := map[string]string{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		for key, translated := range m {
+			if _, dup := messages[key]; dup {
+				return nil, fmt.Errorf("%s: %q is in another catalog file too", name, key)
+			}
+			messages[key] = translated
+		}
+	}
+	return messages, nil
 }
 
 // Match maps a system or user locale ("zh-CN", "zh_Hans_CN", "en-GB") to

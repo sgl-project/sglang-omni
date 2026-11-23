@@ -52,18 +52,18 @@ func TestKeepLoadedDocument(t *testing.T) {
 }
 
 // TestLLMWait (#3821, #3941, #3978): each choice of Models.LLMWait, and
-// a custom whole number of minutes up to WaitMaxMinutes, is the least wait
-// for a language model, No limit the longest; empty and unknown values are Automatic (0). Older
-// documents have none (no migration); a choice survives a save and a read.
+// every custom whole number of minutes up to WaitMaxMinutes, is the least
+// wait for a language model, No limit the longest; empty and unknown values
+// are Automatic (0). Older documents have none (no migration); choices and
+// custom values survive a save and a read.
 func TestLLMWait(t *testing.T) {
 	for _, c := range []struct {
 		v string
 		d time.Duration
 	}{
 		{WaitAuto, 0}, {Wait1Min, time.Minute}, {Wait2Min, 2 * time.Minute},
-		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute}, {"1h", 0},
-		// #3941: any whole number of minutes the user typed, within limits
-		{"3m", 3 * time.Minute}, {"20m", 20 * time.Minute}, {WaitMinutes(WaitMaxMinutes), WaitMaxMinutes * time.Minute},
+		{Wait5Min, 5 * time.Minute}, {Wait10Min, 10 * time.Minute},
+		{Wait30Min, 30 * time.Minute}, {Wait60Min, 60 * time.Minute}, {"1h", 0},
 		{WaitNoLimit, NoLimit}, {"None", 0}, {"0", 0}, // #3978
 		{"0m", 0}, {"-5m", 0}, {"61m", 0}, {"+5m", 0}, {"05m", 0}, {"1.5m", 0}, {"m", 0}, {"5", 0}, {"九m", 0},
 	} {
@@ -71,11 +71,17 @@ func TestLLMWait(t *testing.T) {
 			t.Errorf("%q: %v, want %v", c.v, d, c.d)
 		}
 	}
+	for minutes := 1; minutes <= WaitMaxMinutes; minutes++ {
+		value := WaitMinutes(minutes)
+		if got := (Models{LLMWait: value}).LLMWaitFor(); got != time.Duration(minutes)*time.Minute {
+			t.Errorf("%q: %v, want %d minutes", value, got, minutes)
+		}
+	}
 	s, err := Migrate([]byte(`{"version":4,"models":{"keepLoaded":"5m"}}`))
 	if err != nil || s.Models.LLMWait != WaitAuto || s.Models.KeepLoaded != Keep5Min {
 		t.Fatalf("an older document: %+v %v", s.Models, err)
 	}
-	for _, v := range []string{Wait5Min, WaitNoLimit} {
+	for _, v := range append([]string{"20m"}, WaitChoices...) {
 		s.Models.LLMWait = v
 		data, err := json.Marshal(s)
 		if err != nil {
@@ -84,6 +90,25 @@ func TestLLMWait(t *testing.T) {
 		if back, err := Migrate(data); err != nil || back.Models.LLMWait != v {
 			t.Errorf("read back %+v %v", back.Models, err)
 		}
+	}
+}
+
+// TestLLMSwitchRemoteConsent: a switch saved when it promised local-only
+// fallback goes back off until the user accepts the remote data path. The
+// choice survives once made with that promise.
+func TestLLMSwitchRemoteConsent(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":5,"models":{"llmSwitch":true}}`))
+	if err != nil || s.Models.LLMSwitch || s.Version != Version {
+		t.Fatalf("an older opt-in: %+v %v", s.Models, err)
+	}
+	s.Models.LLMSwitch = true
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || !back.Models.LLMSwitch {
+		t.Errorf("the new opt-in did not survive: %+v %v", back.Models, err)
 	}
 }
 
@@ -102,12 +127,20 @@ func TestFasterOn(t *testing.T) {
 		{"on", true, true}, {"on", false, false},
 		{"off", true, false}, {"off", false, false},
 	} {
-		if got := m.FasterOn(c.id, c.installed); got != c.want {
+		if got := m.FasterOn(c.id, c.installed, false); got != c.want {
 			t.Errorf("%s, installed %v: %v", c.id, c.installed, got)
 		}
 	}
-	if !(Models{}).FasterOn("x", true) {
+	if !(Models{}).FasterOn("x", true, false) {
 		t.Error("no switches at all: an installed draft is off")
+	}
+	// An opt-in model's (a draft that came with another's download):
+	// never switched is off, the switch turns it on.
+	if (Models{}).FasterOn("x", true, true) {
+		t.Error("an opt-in model on without a switch")
+	}
+	if !(Models{Faster: map[string]bool{"x": true}}).FasterOn("x", true, true) {
+		t.Error("an opt-in model off with the switch on")
 	}
 	s := Defaults()
 	s.Models.Faster = map[string]bool{"asr.fast": false}

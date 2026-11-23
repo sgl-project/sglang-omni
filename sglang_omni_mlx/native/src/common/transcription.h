@@ -36,6 +36,8 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
+  // Ordered text of each window in a multi-window Whisper request.
+  std::vector<std::string> window_texts;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,

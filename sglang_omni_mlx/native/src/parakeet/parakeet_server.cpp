@@ -12,8 +12,8 @@
 #include <memory>
 #include <optional>
 
+#include "common/asr_service.h"
 #include "parakeet/parakeet_transcriber.h"
-#include "qwen3_asr/asr_service.h"
 
 namespace {
 

@@ -268,8 +268,8 @@ func TestOpenAIErrorsHideKey(t *testing.T) {
 	}
 }
 
-// TestResolveAddress: keys go over https, plain http only to this Mac,
-// never with credentials in the URL; a custom server needs an address.
+// TestResolveAddress: API-key services accept HTTP, sign-in tokens only
+// use remote HTTPS, and URLs cannot contain credentials.
 func TestResolveAddress(t *testing.T) {
 	for base, ok := range map[string]bool{
 		"":                                           true, // the preset's
@@ -277,8 +277,9 @@ func TestResolveAddress(t *testing.T) {
 		"http://localhost:11434/v1":                  true,
 		"http://127.0.0.1:8080/v1":                   true,
 		"http://[::1]:8080/v1":                       true,
-		"http://example.com/v1":                      false,
-		"http://192.168.1.5:11434/v1":                false,
+		"http://example.com/v1":                      true,
+		"http://192.168.1.5:11434/v1":                true,
+		"http://user:pass@example.com/v1":            false,
 		"https://user:pass@example.com/v1":           false,
 		"ftp://example.com/v1":                       false,
 		"example.com/v1":                             false,
@@ -292,6 +293,9 @@ func TestResolveAddress(t *testing.T) {
 	}
 	if _, err := (ProviderConfig{ID: Custom}).Resolve(); Code(err) != CodeConfig {
 		t.Errorf("custom without an address: %v", err)
+	}
+	if _, err := (ProviderConfig{ID: "codex", BaseURL: "http://example.com/backend-api/codex"}).Resolve(); Code(err) != CodeConfig {
+		t.Errorf("sign-in token over remote HTTP: %v", err)
 	}
 	if _, err := (ProviderConfig{ID: "nope"}).Resolve(); Code(err) != CodeUnknown {
 		t.Errorf("unknown preset: %v", err)

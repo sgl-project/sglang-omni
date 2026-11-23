@@ -1,0 +1,37 @@
+{
+  "name": "logs-filter",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": [
+      {
+        "seq": 2,
+        "time": "09:30:01",
+        "source": "helper",
+        "message": "line 2: the helper said hello",
+        "level": "info"
+      }
+    ],
+    "count": "1 line",
+    "sources": [
+      {
+        "code": "",
+        "label": "All sources"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "Helper"
+      },
+      {
+        "code": "dictionary",
+        "label": "Dictionary"
+      }
+    ],
+    "source": "All sources",
+    "query": "line 2",
+    "log_file": false
+  }
+}

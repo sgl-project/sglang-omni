@@ -282,7 +282,7 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, values,
       static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)),
-      "causal");
+      /*window_size=*/-1, "causal");
   const mx::array residual = mx::add(
       hidden,
       checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
@@ -295,9 +295,9 @@ mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
   return mx::add(
       residual,
       checkpoint_.Linear(
-          mx::multiply(omni_common::Silu(checkpoint_.Linear(
-                           mlp_input, prefix + ".mlp.gate_proj")),
-                       checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
+          omni_common::Swiglu(
+              checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
+              checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
           prefix + ".mlp.down_proj"));
 }
 

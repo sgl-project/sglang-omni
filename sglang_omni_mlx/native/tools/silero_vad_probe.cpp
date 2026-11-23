@@ -63,7 +63,7 @@ int main(int argc, char **argv) {
     for (size_t offset = 0;
          offset + silero_vad::kChunkSamples <= samples.size();
          offset += silero_vad::kChunkSamples) {
-      streamed.push_back(vad.Feed(samples.data() + offset, state));
+      streamed.push_back(vad.Feed(samples.data() + offset, 1, state)[0]);
     }
     const std::string stem = std::filesystem::path(file).stem().string();
     Write(streamed, out / (stem + ".stream.f32"));

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -31,6 +32,15 @@ func (f *fake) hotkeys(m proto.Message) {
 		return
 	}
 	f.mu.Lock()
+	if p.Generation < f.hkGen {
+		// A configuration older than the one in effect (requests land
+		// out of order) changes nothing, as the real helper.
+		f.mu.Unlock()
+		f.result(m.ID, f.hotkeyStatus())
+		return
+	}
+	f.hkGen = p.Generation
+	f.hkBindings = p.Bindings
 	f.bindings = len(p.Bindings)
 	f.hkCancel = p.Cancel != nil
 	f.installed = (f.bindings > 0 || f.hkCancel) && f.trusted
@@ -123,6 +133,13 @@ func (f *fake) playScript(bindings []proto.HotkeyBinding) {
 
 // ---- textio ----
 
+// hasText mirrors the real helper's SelectionRead.hasText: an
+// Accessibility reading of only whitespace or U+FFFC (an image-only
+// block selection) is not the selection's text.
+func hasText(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsSpace(r) && r != '\uFFFC' })
+}
+
 func (f *fake) textio(m proto.Message) {
 	if !f.isTrusted() {
 		f.failData(m.ID, proto.CodePermissionDenied, map[string]string{"permission": proto.PermissionAccessibility}, "VoxtNew may not use Accessibility")
@@ -151,14 +168,26 @@ func (f *fake) textio(m proto.Message) {
 		var p proto.SelectionParams
 		m.DecodeParams(&p)
 		res := proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: []string{"focus=AXTextArea"}}
+		// The AX reading: selection-file= when set, selection= otherwise.
+		// An empty selection file is no reading at all; a reading of only
+		// whitespace or U+FFFC is not text (the helper's
+		// SelectionRead.hasText): on to the copy.
+		sel, none := f.opts["selection"], false
 		if path := f.opts["selection-file"]; path != "" {
-			if b, _ := os.ReadFile(path); len(b) > 0 {
-				res.Text, res.Via = string(b), proto.ViaAX
-			}
-		} else if sel := f.opts["selection"]; sel != "" {
+			b, _ := os.ReadFile(path)
+			sel, none = string(b), len(b) == 0
+		}
+		switch {
+		case none:
+		case hasText(sel):
 			res.Text, res.Via = sel, proto.ViaAX
-		} else if sel := f.opts["copy-selection"]; sel != "" && p.AllowCopy {
-			res.Text, res.Via, res.Steps = sel, proto.ViaCopy, append(res.Steps, "copy: changed")
+		default:
+			if cp := f.opts["copy-selection"]; cp != "" && p.AllowCopy {
+				res.Text, res.Via, res.Steps = cp, proto.ViaCopy, append(res.Steps, "copy: changed")
+				if f.has("copy-selection-image") {
+					res.Image = Shot(812)
+				}
+			}
 		}
 		f.result(m.ID, res)
 	case proto.MethodTextPaste:

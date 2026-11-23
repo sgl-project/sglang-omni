@@ -189,6 +189,8 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	}
 	m.stopAllTracksLocked()
 	m.timeline.NotePause()
+	// A pause is not evidence that the system track stayed silent.
+	m.problems.systemQuietSince = time.Time{}
 	m.state = StatePaused
 	m.snap.State = StatePaused
 	m.snap.Elapsed = m.timeline.Elapsed()

@@ -8,8 +8,8 @@
 #include <stdexcept>
 
 #include "common/reference_audio.h"
+#include "common/speech_service.h"
 #include "common/text.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace auk {
 

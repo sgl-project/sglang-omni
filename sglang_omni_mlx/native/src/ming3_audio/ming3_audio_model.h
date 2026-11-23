@@ -10,9 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace ming3_audio {
 
@@ -108,7 +108,7 @@ private:
   };
 
   struct LayerCache {
-    qwen3_asr::KVCache attention;
+    omni_common::KVCache attention;
     std::array<std::optional<mlx::core::array>, 3> convolution;
     std::optional<mlx::core::array> recurrent;
     bool keeps_pending_rounds = false;
@@ -133,7 +133,7 @@ private:
   // cache.
   mlx::core::array DraftForward(const mlx::core::array &next_embeddings,
                                 const mlx::core::array &hidden,
-                                qwen3_asr::KVCache &cache) const;
+                                omni_common::KVCache &cache) const;
   void AcceptOldestRound(std::vector<LayerCache> &caches) const;
   // Keeps the oldest pending round's anchor and undoes the dropped_positions
   // latent-attention positions after it.
@@ -156,7 +156,7 @@ private:
                                   LayerCache &cache) const;
   mlx::core::array LatentAttention(const mlx::core::array &hidden,
                                    const std::string &prefix,
-                                   qwen3_asr::KVCache &cache) const;
+                                   omni_common::KVCache &cache) const;
 
   TextConfig text_;
   AudioConfig audio_;

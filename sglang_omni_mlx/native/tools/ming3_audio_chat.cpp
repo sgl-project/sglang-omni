@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "common/audio.h"
+#include "common/layers.h"
 #include "ming3_audio/ming3_audio_model.h"
 
 int main(int argc, char **argv) {
@@ -20,8 +21,11 @@ int main(int argc, char **argv) {
         std::cout
             << "ming3_audio_chat --model-path DIR --audio WAV --prompt TEXT "
                "[--system TEXT] [--max-new-tokens N] [--context-length N] "
-               "[--speculative-algorithm NEXTN]\n";
+               "[--speculative-algorithm NEXTN] [--full-precision]\n";
         return 0;
+      } else if (option == "--full-precision") {
+        omni_common::SetLoadTimeQuantization(false);
+        continue;
       } else if (i + 1 >= argc) {
         throw std::invalid_argument(option + " needs a value");
       } else {

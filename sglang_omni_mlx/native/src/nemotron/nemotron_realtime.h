@@ -11,17 +11,17 @@
 #include <string>
 #include <vector>
 
+#include "common/realtime_connection.h"
 #include "common/transcription.h"
+#include "common/worker.h"
 #include "nemotron/nemotron_transcriber.h"
 #include "nlohmann/json.hpp"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/worker.h"
 
 namespace nemotron {
 
-class NemotronRealtimeSession : public qwen3_asr::RealtimeConnection {
+class NemotronRealtimeSession : public omni_server::RealtimeConnection {
 public:
-  NemotronRealtimeSession(qwen3_asr::TranscriptionWorker &worker,
+  NemotronRealtimeSession(omni_server::TranscriptionWorker &worker,
                           const NemotronTranscriber &transcriber,
                           Sender sender);
 
@@ -35,7 +35,7 @@ private:
   // Decodes the audio still pending and flushes the stream's tail, once.
   void Finish();
 
-  qwen3_asr::TranscriptionWorker &worker_;
+  omni_server::TranscriptionWorker &worker_;
   const NemotronTranscriber &transcriber_;
 
   std::mutex mutex_;

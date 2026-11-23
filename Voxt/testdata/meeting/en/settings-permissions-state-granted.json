@@ -1,0 +1,106 @@
+{
+  "name": "settings-permissions-state-granted",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/permissions",
+    "shown_path": "/settings/permissions",
+    "sections": [
+      {
+        "id": "general",
+        "title": "General",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "Speech models",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "Language models",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "Permissions",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "Audio",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "Overlay style",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "Shortcuts",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "Appearance",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "Privacy",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "Storage",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "About",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "permission_id": "microphone",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        "status": "Allowed",
+        "allowed": true,
+        "known": true,
+        "ask": false,
+        "open": false
+      },
+      "accessibility": {
+        "permission_id": "accessibility",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        "status": "Allowed",
+        "allowed": true,
+        "known": true,
+        "ask": false,
+        "open": false
+      },
+      "system_audio": {
+        "permission_id": "systemAudio",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture",
+        "status": "Unknown",
+        "allowed": false,
+        "known": false,
+        "tip": "macOS does not let apps read this permission. Check it in System Settings.",
+        "ask": true,
+        "open": true
+      },
+      "speech_recognition": {
+        "permission_id": "speechRecognition",
+        "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
+        "status": "Unknown",
+        "allowed": false,
+        "known": true,
+        "ask": false,
+        "open": true
+      }
+    }
+  }
+}

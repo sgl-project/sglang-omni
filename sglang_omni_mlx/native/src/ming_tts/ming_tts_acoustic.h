@@ -40,8 +40,12 @@ public:
 private:
   MingAcoustic(const nlohmann::json &config,
                const std::filesystem::path &directory);
+  // The blocks and final layer over hidden [batch, length, width], output
+  // only for rows [kept_begin, kept_begin + kept_count): the last block's
+  // queries and everything after them skip the other rows.
   mlx::core::array Blocks(mlx::core::array hidden, const AcousticConfig &config,
-                          const std::string &prefix) const;
+                          const std::string &prefix, int kept_begin,
+                          int kept_count) const;
   // The DiT's time embeddings [steps, 1, hidden] of cfm_times_ but the last.
   mlx::core::array TimeEmbeddings() const;
   AcousticConfig dit_, aggregator_;

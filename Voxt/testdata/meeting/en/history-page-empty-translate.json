@@ -1,0 +1,28 @@
+{
+  "name": "history-page-empty-translate",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "translate",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [],
+    "empty": {
+      "search": false,
+      "kind": "translate",
+      "title": "No translations yet",
+      "body": "Translations show up here with their source.",
+      "action_label": "Set up Translate"
+    }
+  }
+}

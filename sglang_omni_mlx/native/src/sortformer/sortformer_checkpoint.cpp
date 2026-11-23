@@ -6,13 +6,18 @@
 #include <set>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 
 namespace sortformer {
 
+using omni_common::NemoProcessorConfig;
+
 namespace mx = mlx::core;
 
 namespace {
+
+constexpr float kBatchNormEps = 1e-5f;
 
 nlohmann::json Section(const nlohmann::json &config, const char *key) {
   // Note (Jiaxin Deng): Swift decodes a missing section from the top level.
@@ -68,7 +73,7 @@ Config ParseConfig(const nlohmann::json &json) {
   m.min_pos_scores_rate = modules.value("min_pos_scores_rate", 0.5f);
   m.use_aosc = modules.value("use_aosc", false);
   const nlohmann::json processor = Section(json, "processor_config");
-  ProcessorConfig &p = config.processor;
+  NemoProcessorConfig &p = config.processor;
   p.feature_size = processor.value("feature_size", 80);
   p.sampling_rate = processor.value("sampling_rate", 16000);
   p.hop_length = processor.value("hop_length", 160);
@@ -236,11 +241,7 @@ LoadCheckpoint(const std::filesystem::path &model_directory,
     } else {
     }
   }
-  std::vector<mx::array> parameters;
-  parameters.reserve(weights.size());
-  for (const auto &[name, array] : weights)
-    parameters.push_back(array);
-  mx::eval(parameters);
+  omni_common::FoldBatchNorms(weights, "norm", kBatchNormEps);
   return weights;
 }
 

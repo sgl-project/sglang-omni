@@ -41,5 +41,10 @@ let package = Package(
             dependencies: ["VoxtNewHelperKit"],
             path: "Tests/VoxtNewHelperKitTests"
         ),
+        .testTarget(
+            name: "VoxtNewHelperTests",
+            dependencies: ["VoxtNewHelper", "VoxtNewHelperKit"],
+            path: "Tests/VoxtNewHelperTests"
+        ),
     ]
 )

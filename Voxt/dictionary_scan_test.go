@@ -115,7 +115,7 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 			}
 			_ = tt.ClickControl("扫描历史…")
 			frames(tt)
-			if a.dv.scan.open || has(tt, "开始") {
+			if a.dictUI.scanOpen || has(tt, "开始") {
 				t.Fatalf("the button opened the dialog: %q", tt.Texts())
 			}
 			if !has(tt, "先给转录选一个语言模型") {
@@ -132,7 +132,7 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 func TestScanButtonOpensAndShowsWhatItWillSend(t *testing.T) {
 	a, tt, _, _ := scanTester(t, 5)
 	want := fmt.Sprintf("Voxt 会把 5 条转录结果发给 %s，找出人名和术语。你确认后才会加入词典。", fakeLLMModel.Name)
-	if !a.dv.scan.open || !has(tt, want) {
+	if !a.dictUI.scanOpen || !has(tt, want) {
 		t.Fatalf("dialog: %q", tt.Texts())
 	}
 	if has(tt, "先给转录选一个语言模型") {
@@ -181,7 +181,7 @@ func TestScanShowsProgressThenTheNewSuggestions(t *testing.T) {
 		t.Error("Stop stayed")
 	}
 	click(t, tt, "完成")
-	if a.dv.scan.open {
+	if a.dictUI.scanOpen {
 		t.Error("the dialog stayed")
 	}
 	if !has(tt, "Name00") || !has(tt, "Name12") || !has(tt, "来自历史记录") {
@@ -252,8 +252,8 @@ func TestScanRunsOnWithTheDialogClosed(t *testing.T) {
 	clickControl(t, tt, "开始")
 	<-chat.requests
 	click(t, tt, "关闭")
-	if a.dv.scan.open || !a.dv.scan.running {
-		t.Fatalf("open %v running %v", a.dv.scan.open, a.dv.scan.running)
+	if a.dictUI.scanOpen || !a.dv.scan.running {
+		t.Fatalf("open %v running %v", a.dictUI.scanOpen, a.dv.scan.running)
 	}
 	clickControl(t, tt, "扫描历史…")
 	if !has(tt, "已读 0/2 · 0 条建议") {

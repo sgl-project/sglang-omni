@@ -24,11 +24,15 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		return &StartError{
 			Source:   src,
 			Err:      fmt.Errorf("meeting: no capture for %s", src),
-			Guidance: "meeting.system.unavailable",
+			Guidance: GuidanceSystem,
 		}
 	}
 	job := m.nextJob(src)
 	m.mu.Lock()
+	if m.timeline == nil { // the meeting ended while a reconnect waited for the lock
+		m.mu.Unlock()
+		return &StartError{Source: src, Err: fmt.Errorf("meeting: ended before %s reopened", src)}
+	}
 	m.timeline.Begin(src, job, m.timeline.Elapsed())
 	done := make(chan struct{})
 	m.tracks[src] = &track{src: src, job: job, audio: audio, done: done}
@@ -125,9 +129,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	select {
 	case err := <-started:
 		if err != nil {
-			guidance := "meeting.mic.unavailable"
+			guidance := GuidanceMic
 			if src == SourceSystem {
-				guidance = "meeting.system.unavailable"
+				guidance = GuidanceSystem
 			}
 			return &StartError{Source: src, Err: err, Guidance: guidance}
 		}

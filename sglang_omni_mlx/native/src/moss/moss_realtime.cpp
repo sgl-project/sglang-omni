@@ -35,9 +35,9 @@ constexpr int kMinFinalTokens = 96;
 
 } // namespace
 
-MossRealtimeSession::MossRealtimeSession(qwen3_asr::TranscriptionWorker &worker,
-                                         const MossTranscriber &transcriber,
-                                         Sender sender)
+MossRealtimeSession::MossRealtimeSession(
+    omni_server::TranscriptionWorker &worker,
+    const MossTranscriber &transcriber, Sender sender)
     : RealtimeConnection(std::move(sender)), worker_(worker),
       transcriber_(transcriber) {}
 
@@ -111,7 +111,7 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
       return;
     }
   }
-  qwen3_asr::Transcription job = DecodeJob(*decode, std::move(options));
+  omni_server::Transcription job = DecodeJob(*decode, std::move(options));
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
@@ -199,7 +199,7 @@ MossOptions MossRealtimeSession::DecodeOptions(const Decode &decode) const {
   return options;
 }
 
-qwen3_asr::Transcription
+omni_server::Transcription
 MossRealtimeSession::DecodeJob(const Decode &decode,
                                MossOptions options) const {
   return [&transcriber = transcriber_, samples = decode.samples,

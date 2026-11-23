@@ -1,0 +1,92 @@
+{
+  "name": "session-recognizing",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 3,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "试一试转录",
+    "subtitle": "转录把你说的话写成文字。按下快捷键（或点“开始”），读下面这句话，再按一次结束。",
+    "recording": false,
+    "try": {
+      "prefix": "ob-tr",
+      "shortcut": {
+        "present": true,
+        "feature_title": "转录",
+        "text": "右 ⌥",
+        "how": "按一下开始，再按一下停止。",
+        "accessibility_warning": false,
+        "keyboard": {
+          "visible": true,
+          "lit_keys": {
+            "option-right": true
+          },
+          "extra_key": ""
+        }
+      },
+      "conflicts": null,
+      "passed": false,
+      "sample_title": "读这句话，或者随便说点什么",
+      "sample_text": "嗯，那个设计评审改到周四下午，不对，周五上午，议程我今晚发出来。",
+      "sample_action": false,
+      "hint": "",
+      "card": {
+        "mine": true,
+        "state": "recognizing",
+        "session_kind": "transcribe",
+        "live": true,
+        "ended": false,
+        "recording": false,
+        "composing": false,
+        "cancelled": false,
+        "failed": false,
+        "levels": [
+          0.1,
+          0.4,
+          0.8
+        ],
+        "heard": true,
+        "elapsed_text": "",
+        "partial": "fixture live text",
+        "draft": "",
+        "working_text": "识别中…",
+        "busy_text": "正在转录。",
+        "failure_text": "",
+        "show_result": false,
+        "result": "",
+        "raw": "",
+        "show_raw": false,
+        "raw_title": "",
+        "timings": "",
+        "problem_code": "",
+        "session_id": "fixture-onboarding-try",
+        "transcript": true
+      }
+    },
+    "footer": {
+      "mode": "try-wait",
+      "busy": true,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "试一次并得到结果后才能继续",
+      "continue_disabled": true
+    }
+  }
+}

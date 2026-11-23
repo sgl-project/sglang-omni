@@ -177,6 +177,87 @@ test("a completed reply keeps the heard part and the rest", () => {
   assert.deepEqual(session.captionParts("resp_0"), { heard: "One, two,", pending: " three." });
 });
 
+// The caption parts with each run of spaces left by a screen block read as one space.
+function captionWords(session, responseId) {
+  const { heard, pending } = session.captionParts(responseId);
+  return { heard: heard.replace(/\s+/g, " ").trim(), pending: pending.replace(/\s+/g, " ").trim() };
+}
+
+test("a screen block stays out of the caption, heard or still to play, and the server's offsets still fit", () => {
+  const text = "On screen. <screen>\nbrew install python\n</screen>\nThen run it.";
+  const blockEnd = text.indexOf("Then");
+  const { session } = openSession(text, [
+    { textEnd: 10, audioMs: 500 },
+    { textEnd: blockEnd, audioMs: 500 },
+    { textEnd: text.length, audioMs: 1500 },
+  ]);
+  session.played("resp_0", 500, false);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "On screen.", pending: "Then run it." });
+  session.played("resp_0", 1500, false);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "On screen. Then run it.", pending: "" });
+});
+
+test("the caption waits for a tag still arriving instead of showing it", () => {
+  const { session } = openSession("Look here <scr", []);
+  assert.deepEqual(captionWords(session, "resp_0"), { heard: "Look here", pending: "" });
+});
+
+test("the screen shows a reply's blocks once a progress point past them has played, so it never runs ahead of the audio", () => {
+  const { session } = openSession("Here. <screen>a</screen>", [{ textEnd: 24, audioMs: 400 }]);
+  session.played("resp_0", 400, false);
+  assert.equal(session.screen, "a");
+  // The text arrives before the first progress event, and the caption shows it whole until then.
+  const text = "Run this. <screen>lsof -i :8080</screen> Then check.";
+  session.handle({ type: "response.created", response: { id: "resp_1" } });
+  session.handle({ type: "response.output_audio_transcript.delta", response_id: "resp_1", delta: text });
+  session.handle({ type: "response.output_audio.delta", response_id: "resp_1", item_id: "item_1", delta: "" });
+  assert.equal(session.screen, "a");
+  // The server sums audio_ms chunk by chunk, so the last point can sit a rounding error past the player's count.
+  for (const [textEnd, audioMs] of [[9, 500], [text.length, 1500.0000000000002]]) {
+    session.handle({ type: "sglang.response.progress", response_id: "resp_1", item_id: "item_1", output_index: 0, content_index: 0, text_end: textEnd, audio_ms: audioMs });
+  }
+  // Late in "Then check." the caption has passed the block, but no progress point past it has played.
+  session.played("resp_1", 1400, false);
+  assert.ok(session.captionParts("resp_1").heard.includes("Then"));
+  assert.equal(session.screen, "a");
+  session.played("resp_1", 1500, false);
+  assert.equal(session.screen, "lsof -i :8080");
+});
+
+test("after a cut the screen shows the blocks in the prefix the server's history kept", () => {
+  const text = "Run this. <screen>lsof -i :8080</screen> Then check.";
+  const { session } = openSession(text, [{ textEnd: 9, audioMs: 500 }, { textEnd: text.length, audioMs: 1500 }]);
+  session.played("resp_0", 1500, true);
+  assert.equal(session.screen, "lsof -i :8080");
+  session.handle({ type: "sglang.response.heard", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: 9 });
+  assert.equal(session.screen, "");
+});
+
+test("a block shows once its closing tag has played or was kept, though the server reports a point at each of its lines", () => {
+  // The block on its own lines from test_openai_speech_never_speaks_a_screen_block_but_counts_it_in_progress, which ends at 72.
+  const text = "命令我放在屏幕上了。\n<screen>\nbrew install python@3.12\npython3 --version\n</screen>\n装好以后输入 python3 就能用。";
+  const point = (textEnd) => ({ type: "sglang.response.progress", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: textEnd, audio_ms: 100 });
+  const { session } = openSession(text, [10, 19, 44].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  session.played("resp_0", 100, false);
+  assert.equal(session.screen, "");
+  session.handle(point(62));
+  session.handle(point(72));
+  assert.equal(session.screen, "brew install python@3.12\npython3 --version");
+  const { session: cut } = openSession(text, [10, 19, 44, 62, 72].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  cut.played("resp_0", 100, true);
+  cut.handle({ type: "sglang.response.heard", response_id: "resp_0", item_id: "item_0", output_index: 0, content_index: 0, text_end: 44 });
+  assert.equal(cut.screen, "");
+});
+
+test("a block the reply left open shows once the completed reply's end has played", () => {
+  const text = "The steps are on screen: <screen>1. Open Settings. 2. Tap Wi-Fi.";
+  const { session } = openSession(text, [35, 50, 53, text.length].map((textEnd) => ({ textEnd, audioMs: 100 })));
+  session.played("resp_0", 100, false);
+  assert.equal(session.screen, "");
+  session.handle({ type: "response.done", response: { id: "resp_0", status: "completed" } });
+  assert.equal(session.screen, "1. Open Settings. 2. Tap Wi-Fi.");
+});
+
 function openGranted(interaction) {
   const sent = [];
   const session = new DuplexSession({ transport: (event) => sent.push(event), now: () => 0 });

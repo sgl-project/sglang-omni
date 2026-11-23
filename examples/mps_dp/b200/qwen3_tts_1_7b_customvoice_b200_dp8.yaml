@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# Qwen3-TTS 1.7B CustomVoice, 8 replicas on one 183 GB B200 under native MPS, measured with sglang-omni 8848e500: the most audio within a p99 stall-free start of 1 and 3 s.
+# The B200 default is 7 replicas, the most within 0.5 s; serve this file with sgl-omni serve --config for a looser target (see docs/basic_usage/mps_dp.md).
+
+config_cls: Qwen3TTSPipelineConfig
+model_path: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+mps: 'on'
+stages:
+  tts_engine:
+    gpu: 0
+    gpu_memory_fraction: 0.0667
+    engine:
+      mem_fraction_static: 0.911
+      max_running_requests: 16
+      max_queued_requests: 16
+      cuda_graph_max_bs: 32
+      max_total_tokens: 32768
+  vocoder:
+    gpu: 0
+    gpu_memory_fraction: 0.0178
+    process: vocoder
+processes:
+  pipeline:
+    num_replicas: 8
+    replica_devices: [0, 0, 0, 0, 0, 0, 0, 0]
+  vocoder:
+    num_replicas: 8
+    replica_devices: [0, 0, 0, 0, 0, 0, 0, 0]

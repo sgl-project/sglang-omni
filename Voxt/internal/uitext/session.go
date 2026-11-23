@@ -74,75 +74,87 @@ func SceneShort(s session.Snapshot) string {
 // WorkingText says what a session does after recording (the loader's
 // description).
 func WorkingText(s session.Snapshot) string {
+	return WorkingTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WorkingTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch s.State {
 	case session.Reading:
-		return i18n.T("Reading the selection…")
+		return translator.T("Reading the selection…")
 	case session.Composing:
 		switch {
 		case s.Kind == store.KindTranslate && s.Selection != "":
-			return i18n.T("Translating the selection…")
+			return translator.T("Translating the selection…")
 		case s.Kind == store.KindTranslate:
-			return i18n.T("Translating…")
+			return translator.T("Translating…")
 		case s.Kind == store.KindRewrite && s.Selection != "":
-			return i18n.T("Rewriting the selection…")
+			return translator.T("Rewriting the selection…")
 		case s.Kind == store.KindRewrite:
-			return i18n.T("Writing…")
+			return translator.T("Writing…")
 		}
-		return i18n.T("Cleaning up…")
+		return translator.T("Cleaning up…")
 	case session.Delivering:
-		return i18n.T("Inserting…")
+		return translator.T("Inserting…")
 	}
-	return i18n.T("Recognising…")
+	return translator.T("Recognising…")
 }
 
 // WaitText says what a session waits for (session.Snapshot.Waiting): the
 // starting icon's accessibility label, and the pill's line for WaitMic
 // until the live text comes; "" for nothing.
 func WaitText(s session.Snapshot) string {
+	return WaitTextFor(i18n.CurrentTranslator(), s)
+}
+
+func WaitTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	switch {
 	case s.Waiting == session.WaitMic && s.State == session.Recording:
-		return i18n.T("Starting the microphone…")
+		return translator.T("Starting the microphone…")
 	case s.Waiting == session.WaitModel && (s.State == session.Recording || s.State == session.Recognizing):
-		return i18n.T("Loading the speech model…")
+		return translator.T("Loading the speech model…")
 	}
 	return ""
 }
 
 func KindTitle(k store.Kind) string {
-	switch k {
-	case store.KindTranslate:
-		return i18n.T("Translate")
-	case store.KindRewrite:
-		return i18n.T("Rewrite")
-	}
-	return i18n.T("Transcribe")
+	return KindTitleFor(i18n.CurrentTranslator(), k)
 }
 
-// TimingsText is a try's stage times and models: "Recording 3.2 s ·
+func KindTitleFor(translator *i18n.Translator, k store.Kind) string {
+	switch k {
+	case store.KindTranslate:
+		return translator.T("Translate")
+	case store.KindRewrite:
+		return translator.T("Rewrite")
+	}
+	return translator.T("Transcribe")
+}
+
+// TimingsTextFor is a try's stage times and models: "Recording 3.2 s ·
 // Recognition 0.8 s · Clean-up 1.1 s · Accurate speech recognition,
 // Balanced language model".
-func TimingsText(s session.Snapshot) string {
-	secs := func(d time.Duration) string { return i18n.T("%.1f s", d.Seconds()) }
+func TimingsTextFor(translator *i18n.Translator, s session.Snapshot) string {
+	secs := func(d time.Duration) string { return translator.T("%.1f s", d.Seconds()) }
 	var parts []string
 	tm := s.Timings
 	if tm.Audio > 0 {
-		parts = append(parts, i18n.T("Recording %s", secs(tm.Audio)))
+		parts = append(parts, translator.T("Recording %s", secs(tm.Audio)))
 	}
 	if tm.ASR > 0 {
-		parts = append(parts, i18n.T("Recognition %s", secs(tm.ASR)))
+		parts = append(parts, translator.T("Recognition %s", secs(tm.ASR)))
 	}
 	if tm.LLM > 0 {
 		switch s.Kind {
 		case store.KindTranslate:
-			parts = append(parts, i18n.T("Translation %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Translation %s", secs(tm.LLM)))
 		case store.KindRewrite:
-			parts = append(parts, i18n.T("Writing %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Writing %s", secs(tm.LLM)))
 		default:
-			parts = append(parts, i18n.T("Clean-up %s", secs(tm.LLM)))
+			parts = append(parts, translator.T("Clean-up %s", secs(tm.LLM)))
 		}
 	}
 	if tm.Total > 0 {
-		parts = append(parts, i18n.T("Total %s", secs(tm.Total)))
+		parts = append(parts, translator.T("Total %s", secs(tm.Total)))
 	}
 	var svc []string
 	for _, m := range []session.Model{s.ASR, s.LLM} {
@@ -154,21 +166,6 @@ func TimingsText(s session.Snapshot) string {
 		parts = append(parts, strings.Join(svc, ", "))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// CardTitle is the card's heading: a Rewrite answer's own title, else
-// what the card holds.
-func CardTitle(kind store.Kind, title string) string {
-	if t := strings.TrimSpace(title); t != "" {
-		return t
-	}
-	switch kind {
-	case store.KindTranslate:
-		return i18n.T("Translation")
-	case store.KindRewrite:
-		return i18n.T("AI answer") // Voxt's, a rewritten selection's too
-	}
-	return i18n.T("Transcription")
 }
 
 // TargetLanguageLabel names a target language in the UI's language.

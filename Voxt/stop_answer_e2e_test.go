@@ -27,7 +27,7 @@ func TestStopAnswerEndToEnd(t *testing.T) {
 			a.pump("the answer in the card", func() bool {
 				return a.sess.CanStop() && a.ov.mode == ovAnswer
 			})
-			if v := a.cardNow(); !v.writing || !v.canStopAnswer {
+			if v := a.cachedCard(); !v.Writing || !v.CanStopAnswer {
 				t.Fatalf("the writing card %+v", v)
 			}
 			if how == "button" {
@@ -37,8 +37,8 @@ func TestStopAnswerEndToEnd(t *testing.T) {
 				a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 			}
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
-			v := a.cardNow()
-			if a.sess.State != session.Done || !a.answer.open || v.text != "先订会议室 then email Ann。" || v.title != "Plan" || !v.canInsert || !v.canFollowUp || v.canStopAnswer {
+			v := a.cachedCard()
+			if a.sess.State != session.Done || !a.answer.open || cardTextForTest(v) != "先订会议室 then email Ann。" || v.Title != "Plan" || !v.CanInsert || !v.CanFollowUp || v.CanStopAnswer {
 				t.Fatalf("end %s, card %+v", a.sess.State, v)
 			}
 			if p := a.pasted(); len(p) != 0 {
@@ -71,7 +71,7 @@ func TestStopFollowUpAnswer(t *testing.T) {
 	})
 	a.stopSession()
 	a.pump("the follow-up's answer", func() bool { return a.sess.CanStop() })
-	if v := a.cardNow(); !v.conversation || !v.canStopAnswer {
+	if v := a.cachedCard(); !v.Conversation || !v.CanStopAnswer {
 		t.Fatalf("the writing follow-up %+v", v)
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})

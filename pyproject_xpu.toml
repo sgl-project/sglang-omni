@@ -63,6 +63,7 @@ dependencies = [
     # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------
     "qwen-vl-utils==0.0.11",
     "librosa>=0.11.0",
+    "soxr>=0.3.7",
     "av>=16.1.0",
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
@@ -76,6 +77,11 @@ dependencies = [
     # --- MiniCPM-o ---------------------------------------------------------
     "einops>=0.8.1",
     "onnx>=1.18.0",
+    "audioread>=3.0.0",
+    "decord==0.6.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+
+    # --- Zonos2 ------------------------------------------------------------
+    "nemo_text_processing==1.2.0",
 
     # --- PersonaPlex -------------------------------------------------------
     "sentencepiece>=0.2.0",

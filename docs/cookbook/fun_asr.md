@@ -1,6 +1,6 @@
 # Fun-ASR-Nano
 
-[Fun-ASR-Nano](https://arxiv.org/abs/2509.12508) transcribes audio through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It runs one ASR stage on one GPU and accepts clips up to 30 seconds.
+[Fun-ASR-Nano](https://arxiv.org/abs/2509.12508) transcribes audio through the OpenAI-compatible `/v1/audio/transcriptions` endpoint. It runs one ASR stage on one accelerator and accepts clips up to 30 seconds.
 
 ## Prerequisites
 
@@ -17,6 +17,16 @@ Start the server on port 8000.
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --port 8000
+```
+
+### Ascend NPU
+
+Prepare the runtime with the [NPU installation guide](../other_platforms/installation_npu.md), then start the server with the NPU configuration. Add `--model-path` to use a local checkpoint instead of the configured one, and `--asr.gpu 1` to select the second visible NPU.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/fun_asr_npu.yaml \
   --port 8000
 ```
 
@@ -60,13 +70,16 @@ Use the [server command above](#server-configuration) with the official BF16 che
 
 ## Speculative Decoding
 
-On one CUDA GPU, use the checked-in [DFlash configuration](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/fun_asr_nano_dflash.yaml) to load the pinned draft alongside the target model. Start the server with this configuration from the repository root.
+On one CUDA GPU, Fun-ASR-Nano serves with its DFlash draft, [`wilsonzheng0327/Fun-ASR-Nano-dflash`](https://huggingface.co/wilsonzheng0327/Fun-ASR-Nano-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path is `FunAudioLLM/Fun-ASR-Nano-2512-hf`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Apple Silicon, Ascend NPUs, a stage with `tp_size` above 1, a copy outside the Hugging Face cache and the [two-replica H100 MPS profile](../basic_usage/mps_dp.md) serve without it. To serve without the draft:
 
 ```bash
-sgl-omni serve --config examples/configs/fun_asr_nano_dflash.yaml --port 8000
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf \
+  --asr.engine.disable_speculative_decoding true \
+  --port 8000
 ```
 
-With this profile, requests that set `repetition_penalty` are rejected. The profile disables torch compile and async decode. See the [DFlash evaluation](https://github.com/sgl-project/sglang-omni/pull/3453) for accuracy, throughput, and time to first text at different concurrency levels.
+With the draft, `temperature` and `repetition_penalty` work, torch compile and async decode are off, and the server starts in about 30 seconds. Send `return_spec_tokens_details=true` to get the acceptance length in `sglext.spec_tokens_details`. See the [DFlash evaluation](https://github.com/sgl-project/sglang-omni/pull/3453) for accuracy, throughput, and time to first text at different concurrency levels.
 
 ## Benchmarking
 

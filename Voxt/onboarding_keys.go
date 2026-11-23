@@ -7,8 +7,6 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
@@ -27,39 +25,15 @@ var keyboardRows = [][]keyboardKey{
 	{{"fn", "fn", 1}, {"control-left", "⌃", 1}, {"option-left", "⌥", 1}, {"command-left", "⌘", 1.25}, {"space", "", 5.1}, {"command-right", "⌘", 1.25}, {"option-right", "⌥", 1}, {"", "", 3}},
 }
 
-// keyboardLit is which keys of the drawing chord presses: a modifier on
-// its side, on both for either side; fn; the space bar.
-func keyboardLit(chord hotkey.Chord) map[string]bool {
-	lit := map[string]bool{}
-	for family, side := range chord.Mods {
-		if family == proto.ModFn {
-			lit["fn"] = true
-			continue
-		}
-		if side != proto.SideRight {
-			lit[family+"-left"] = true
-		}
-		if side != proto.SideLeft {
-			lit[family+"-right"] = true
-		}
-	}
-	if chord.Key == "Space" {
-		lit["space"] = true
-	}
-	return lit
-}
-
 // obKeyboard draws where keys' keys are on a Mac keyboard; nothing for a
 // mouse button or keys it cannot read. A key off the two rows (a letter)
 // follows the drawing as a keycap of its own.
-func (a *app) obKeyboard(c *ui.Context, keys string) {
-	chord, err := hotkey.Parse(keys)
-	if err != nil || chord.Mouse() {
+func obKeyboard(c *ui.Context, state onboardingKeyboardViewState) {
+	if !state.Visible {
 		return
 	}
 	t := c.Theme()
 	k := tok(t)
-	lit := keyboardLit(chord)
 	unit, gap := px(t, 22), px(t, 3)
 	cap := func(legend string, w float32, on bool) {
 		b := ui.Box(c).Size(w, unit).Shrink(0).Center().Radius(px(t, 4)).Border(1, k.Line)
@@ -79,13 +53,13 @@ func (a *app) obKeyboard(c *ui.Context, keys string) {
 			for _, row := range keyboardRows {
 				ui.Row(c).Gap(gap).Children(func() {
 					for _, key := range row {
-						cap(key.legend, unit*key.units+gap*(key.units-1), key.id != "" && lit[key.id])
+						cap(key.legend, unit*key.units+gap*(key.units-1), key.id != "" && state.LitKeys[key.id])
 					}
 				})
 			}
 		})
-		if chord.Key != "" && chord.Key != "Space" {
-			cap(chord.Key, max(unit, px(t, float32(8*len(chord.Key)+12))), true)
+		if state.ExtraKey != "" {
+			cap(state.ExtraKey, max(unit, px(t, float32(8*len(state.ExtraKey)+12))), true)
 		}
 	})
 }

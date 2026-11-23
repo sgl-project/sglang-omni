@@ -4,7 +4,9 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <optional>
+#include <string>
 
 #include "common/layers.h"
 
@@ -57,11 +59,14 @@ private:
   mlx::core::array
   EmbedAudio(const mlx::core::array &latents,
              const std::optional<mlx::core::array> &valid_frames) const;
-  mlx::core::array Predict(const mlx::core::array &latents,
-                           const mlx::core::array &projected_text,
-                           const mlx::core::array &timestep,
-                           const PreparedReference &reference,
-                           bool classifier_free_guidance) const;
+  // Each block's and the output norm's modulation linear, by prefix, of the
+  // time embeddings of timesteps [steps]: [steps, outputs].
+  std::map<std::string, mlx::core::array>
+  TimeModulations(const mlx::core::array &timesteps) const;
+  mlx::core::array Predict(
+      const mlx::core::array &latents, const mlx::core::array &projected_text,
+      const std::map<std::string, mlx::core::array> &modulations, int step,
+      const PreparedReference &reference, bool classifier_free_guidance) const;
 
   Config config_;
   omni_common::Checkpoint checkpoint_;

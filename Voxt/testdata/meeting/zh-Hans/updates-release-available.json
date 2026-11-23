@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-available",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": true,
+    "title": "Voxt 2.0.4 已发布",
+    "subtitle": "当前是 Voxt 2.0.3。",
+    "error_text": "",
+    "notes": "## What's new\n\n- Faster.",
+    "download": "https://fixture.invalid/Voxt-2.0.4.dmg"
+  }
+}

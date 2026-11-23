@@ -19,13 +19,15 @@ import (
 const moduleRoot = "../.."
 
 // sourceKeys scans every non-test .go file of the module for calls to
-// i18n.T, i18n.N and i18n.X whose message arguments are string literals,
+// i18n.T, i18n.N, i18n.X and an explicit translator's T whose message arguments are string literals,
 // and returns the catalog keys they need, with a position for each.
-// Calls with computed messages (i18n.T(name)) are returned in dynamic:
-// their texts must be literal T calls somewhere else.
-func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
+// usage maps each key to the sorted module-relative paths of the files
+// that use it. Calls with computed messages (i18n.T(name)) are returned
+// in dynamic: their texts must be literal T calls somewhere else.
+func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string, usage map[string][]string) {
 	t.Helper()
 	keys = map[string]string{}
+	files := map[string]map[string]bool{}
 	fset := token.NewFileSet()
 	err := filepath.WalkDir(moduleRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -69,10 +71,11 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
 			if !ok {
 				return true
 			}
-			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != local {
+			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != local && id.Name != "translator" {
 				return true
 			}
 			pos := fset.Position(call.Pos()).String()
+			rel := strings.TrimPrefix(path, moduleRoot+"/")
 			lit := func(i int) (string, bool) {
 				if i >= len(call.Args) {
 					return "", false
@@ -84,7 +87,13 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
 				s, err := strconv.Unquote(bl.Value)
 				return s, err == nil
 			}
-			add := func(k string) { keys[k] = pos }
+			add := func(k string) {
+				keys[k] = pos
+				if files[k] == nil {
+					files[k] = map[string]bool{}
+				}
+				files[k][rel] = true
+			}
 			switch sel.Sel.Name {
 			case "T":
 				if s, ok := lit(0); ok {
@@ -117,18 +126,21 @@ func sourceKeys(t *testing.T) (keys map[string]string, dynamic []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return keys, dynamic
+	usage = map[string][]string{}
+	for k, set := range files {
+		for f := range set {
+			usage[k] = append(usage[k], f)
+		}
+		sort.Strings(usage[k])
+	}
+	return keys, dynamic, usage
 }
 
 func readLocale(t *testing.T, tag string) map[string]string {
 	t.Helper()
-	data, err := localeFS.ReadFile("locales/" + tag + ".json")
+	m, err := readMessages(localeFS, tag)
 	if err != nil {
 		t.Fatal(err)
-	}
-	m := map[string]string{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("%s: %v", tag, err)
 	}
 	return m
 }
@@ -156,7 +168,7 @@ func verbs(s string) []string {
 // TestKeyParity fails when a supported locale lacks a message the sources
 // use, has one they no longer use, or formats it with other verbs.
 func TestKeyParity(t *testing.T) {
-	keys, dynamic := sourceKeys(t)
+	keys, dynamic, _ := sourceKeys(t)
 	for _, pos := range dynamic {
 		t.Logf("computed message at %s: its texts must be literal T calls elsewhere", pos)
 	}
@@ -188,6 +200,103 @@ func TestKeyParity(t *testing.T) {
 		for k := range m {
 			if _, ok := keys[k]; !ok {
 				t.Errorf("%s has %q, which nothing uses", tag, k)
+			}
+		}
+	}
+}
+
+// catalogAreas are the areas with their own zh-Hans catalog file: the
+// areas of the decoupling (docs/architecture.md), plus notes.
+var catalogAreas = []string{
+	"appenhance", "dictionary", "feature", "history", "home", "legacy",
+	"meeting", "models", "notes", "onboarding", "overlay", "remote",
+	"session", "settings", "shell", "updates",
+}
+
+// catalogAliases name a root file's area when its name prefix does not:
+// meetings is the meeting area, update the updates one, try the feature
+// area's try cards, tray the shell's, llm the remote (language models)
+// area's debug page and wait dialog.
+var catalogAliases = map[string]string{
+	"meetings": "meeting",
+	"update":   "updates",
+	"try":      "feature",
+	"tray":     "shell",
+	"llm":      "remote",
+}
+
+// catalogFileOf names the zh-Hans catalog file (without .json) a key
+// belongs in: the area of the files whose i18n calls use it, where a root
+// file's area is its name up to the first "_" or "."; common when more
+// than one area uses it or only shared code does (internal/, wiring, the
+// UI kit).
+func catalogFileOf(files []string) string {
+	area := ""
+	for _, f := range files {
+		a := "common"
+		if !strings.Contains(f, "/") {
+			tok := f
+			if i := strings.IndexAny(tok, "_."); i >= 0 {
+				tok = tok[:i]
+			}
+			if alias, ok := catalogAliases[tok]; ok {
+				tok = alias
+			}
+			if slices.Contains(catalogAreas, tok) {
+				a = tok
+			}
+		}
+		if area == "" {
+			area = a
+		} else if area != a {
+			return "common"
+		}
+	}
+	return area
+}
+
+// TestKeyPlacement: a key of a split locale lives in its area's catalog
+// file (catalogFileOf) and in no other; the split exists to keep
+// unrelated pull requests from conflicting on one zh-Hans.json.
+// TestKeyParity covers a key missing from a locale; this covers one in
+// the wrong file, and its error names the right one.
+func TestKeyPlacement(t *testing.T) {
+	_, _, usage := sourceKeys(t)
+	for _, tag := range Supported() {
+		entries, err := localeFS.ReadDir("locales/" + tag)
+		if err != nil {
+			continue // a single-file catalog: nothing to place
+		}
+		where := map[string]string{}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			name := e.Name()
+			data, err := localeFS.ReadFile("locales/" + tag + "/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := map[string]string{}
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("%s/%s: %v", tag, name, err)
+			}
+			for k := range m {
+				if prev, dup := where[k]; dup {
+					t.Errorf("%s: %q is in %s and %s", tag, k, prev, name)
+					continue
+				}
+				where[k] = name
+			}
+		}
+		for k, file := range where {
+			used, ok := usage[k]
+			if !ok {
+				continue // unused: TestKeyParity reports it
+			}
+			if want := catalogFileOf(used) + ".json"; file != want {
+				t.Errorf("%s: %q is in %s, belongs in %s (used in %s)",
+					tag, k, file, want, strings.Join(used, ", "))
 			}
 		}
 	}

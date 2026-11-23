@@ -1,0 +1,94 @@
+{
+  "name": "dictionary-scan-problem-invalid_json",
+  "kind": "dictionary",
+  "dictionary": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "query": "",
+    "list_for": "",
+    "count_label": "2 terms",
+    "enabled": true,
+    "asr_hints": true,
+    "glossary": true,
+    "learn": false,
+    "can_scan": true,
+    "legacy_import": true,
+    "tab": 0,
+    "terms": [
+      {
+        "id": "term-voxt",
+        "term": "Voxt",
+        "aliases_text": "vox t",
+        "note": "My app",
+        "enabled": true
+      },
+      {
+        "id": "term-kubernetes",
+        "term": "Kubernetes",
+        "aliases_text": "cooper netties, k8s",
+        "note": "",
+        "enabled": false
+      }
+    ],
+    "suggestions": [
+      {
+        "key": "claude code",
+        "term": "Claude Code",
+        "heard_text": "Cloud Code",
+        "source_code": "edit",
+        "source_text": "From your correction"
+      },
+      {
+        "key": "ghostty",
+        "term": "Ghostty",
+        "heard_text": "",
+        "source_code": "history",
+        "source_text": "From your history"
+      }
+    ],
+    "suggestion_count": 2,
+    "scan_open": true,
+    "scan": {
+      "stage": "ended",
+      "model_name": "Fixture model",
+      "body": "Found 0 suggestions",
+      "warning": "The language model answered something Voxt does not understand.",
+      "error_code": "llm.invalid_json",
+      "can_start": false,
+      "stop_disabled": false
+    },
+    "edit": {
+      "open": false,
+      "id": "",
+      "term": "",
+      "aliases": "",
+      "note": "",
+      "enabled": false,
+      "error": "",
+      "error_code": "",
+      "saving": false,
+      "original": "",
+      "suggestion": ""
+    },
+    "notes_text": "",
+    "notes_query": "",
+    "notes_find_current": 0,
+    "notes": {
+      "enabled": true,
+      "notes_off": false
+    },
+    "glossary_all_up_to": 30,
+    "max_glossary_terms": 60,
+    "learn_watch_seconds": 30,
+    "profiles": null,
+    "profile_edit": {
+      "open": false,
+      "id": "",
+      "name": "",
+      "error": "",
+      "saving": false
+    },
+    "profile_delete": ""
+  }
+}

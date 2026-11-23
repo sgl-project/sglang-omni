@@ -1,0 +1,49 @@
+{
+  "name": "remote-page-empty",
+  "kind": "remote",
+  "remote": {
+    "wait": {
+      "value": "",
+      "options": [
+        {
+          "title": "Automatic",
+          "value": ""
+        },
+        {
+          "title": "1 minute",
+          "value": "1m"
+        },
+        {
+          "title": "2 minutes",
+          "value": "2m"
+        },
+        {
+          "title": "5 minutes",
+          "value": "5m"
+        },
+        {
+          "title": "10 minutes",
+          "value": "10m"
+        },
+        {
+          "title": "30 minutes",
+          "value": "30m"
+        },
+        {
+          "title": "60 minutes",
+          "value": "60m"
+        },
+        {
+          "title": "No limit",
+          "value": "none"
+        }
+      ],
+      "selected": "Automatic",
+      "token": "\u0000en"
+    },
+    "cards": {
+      "kind": "llm",
+      "groups": null
+    }
+  }
+}

@@ -4,8 +4,6 @@ package main
 // loader and the recording's clock.
 
 import (
-	"time"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -57,10 +55,4 @@ func overlayLoader(c *ui.Context, label string, look pillLook, w float32) {
 			ui.Box(c).Size(d, d).Radius(d / 2).Background(ui.RGBA(255, 255, 255, float32(alpha))).Shrink(0)
 		}
 	})
-}
-
-// clock shows a duration as m:ss.
-func clock(d time.Duration) string {
-	sec := int(d.Seconds())
-	return itoa(sec/60) + ":" + string(rune('0'+sec%60/10)) + string(rune('0'+sec%10))
 }

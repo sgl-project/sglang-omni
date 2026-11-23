@@ -95,7 +95,7 @@ DiT::DiT(omni_common::WeightMap weights, const nlohmann::json &architecture,
           checkpoint_.Weight("transformer.rotary_embed.inv_freq"))),
       dtype_(dtype) {
   ValidateWeights();
-  mx::eval(rotary_periods_);
+  mx::async_eval(rotary_periods_);
 }
 
 void DiT::ValidateWeights() const {

@@ -16,6 +16,7 @@
 #include <thread>
 
 #include "common/http.h"
+#include "common/layers.h"
 
 namespace omni_server {
 
@@ -140,6 +141,10 @@ Arguments ParseArguments(int argc, char **argv,
       arguments.port = std::stoi(value());
     } else if (flag == "--supervised") {
       arguments.supervised = true;
+    } else if (flag == "--full-precision") {
+      // Note (XXXXRT666): loads the weights as stored, without the models'
+      // load-time quantization.
+      omni_common::SetLoadTimeQuantization(false);
     } else if (flag == "--model-kind") {
       value(); // Note (khazic): NamedKind already read it.
     } else if (flag == "--startup-timeout-s") {

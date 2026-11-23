@@ -1,0 +1,8 @@
+{
+  "name": "start-system-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "Could not record system audio. Try again, or record the microphone only."
+  }
+}

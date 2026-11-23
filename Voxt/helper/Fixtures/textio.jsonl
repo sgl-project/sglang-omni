@@ -10,6 +10,8 @@
 {"to":"app","msg":{"id":"c22","result":{"text":"Hello world","via":"ax","ms":2.4,"steps":["focus=AXTextArea"]}}}
 {"to":"helper","msg":{"id":"c23","method":"textio.selection","params":{"allowCopy":true}}}
 {"to":"app","msg":{"id":"c23","result":{"text":"const x = 1","via":"copy","ms":41.3,"steps":["focus=AXGroup","range=nil","copy: changed"]}}}
+{"to":"helper","msg":{"id":"c39","method":"textio.selection","params":{"allowCopy":true}}}
+{"to":"app","msg":{"id":"c39","result":{"text":"[Image]","image":"/9j/","via":"copy","ms":42.1,"steps":["copy: changed"]}}}
 {"to":"helper","msg":{"id":"c24","method":"textio.selection"}}
 {"to":"app","msg":{"id":"c24","result":{"via":"none","ms":1.1,"steps":["focus=AXTextField","range=3,0","caret-only"]}}}
 {"to":"helper","msg":{"id":"c25","method":"textio.paste","params":{"text":"你好，世界。","targetPid":812,"press":[{"key":36}],"pressDelayMs":120}}}

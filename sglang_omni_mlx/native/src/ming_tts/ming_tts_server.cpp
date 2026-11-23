@@ -23,13 +23,13 @@
 #include <stdexcept>
 #include <vector>
 
+#include "common/asr_service.h"
 #include "common/generation.h"
+#include "common/speech_service.h"
 #include "ming_tts/ming_tts_audio.h"
 #include "ming_tts/ming_tts_generator.h"
 #include "ming_tts/ming_tts_reference.h"
 #include "ming_tts/ming_tts_request.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
