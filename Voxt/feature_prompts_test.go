@@ -376,6 +376,38 @@ func TestFeaturePageFilledRequestEdges(t *testing.T) {
 	}
 }
 
+func TestTranscribeCustomPromptOverridesBasicCleanup(t *testing.T) {
+	cases := []struct {
+		name         string
+		mainLanguage string
+		prompt       string
+		cleanup      string
+		precedence   string
+	}{
+		{"English", "en", "Translate what I said into English and reformat it as a concise list.", "Never translate, never unify the languages.", "The custom rules above take precedence over basic cleanup when they request translation or reformatting."},
+		{"Chinese", "zh", "把我说的话翻译成英文，并重新整理成列表。", "不要翻译，也不要统一成一种语言。", "自定义规则要求翻译或重新整理时，覆盖基础清理中不翻译、不改变文风的限制。"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defaults := settings.Defaults()
+			defaults.General.MainLanguage = tc.mainLanguage
+			if !defaults.Features.Transcribe.Enhance || !defaults.Features.Transcribe.Cleanup {
+				t.Fatal("fresh defaults must enable language-model and basic clean-up")
+			}
+			out, err := composedPreviewFor(defaults, hotkey.Transcribe, tc.prompt, nil, i18n.CurrentTranslator())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.System, tc.prompt) || !strings.Contains(out.System, tc.cleanup) {
+				t.Fatalf("the default request does not exercise custom rules with basic clean-up:\n%s", out.System)
+			}
+			if !strings.Contains(out.System, tc.precedence) {
+				t.Fatalf("the custom translation and reformatting rules conflict with basic clean-up:\n%s", out.System)
+			}
+		})
+	}
+}
+
 // TestPreviewIsTheWholePrompt: What the language model receives is one
 // whole prompt, the personal dictionary in it where the request puts it,
 // with no system / user headings, and the variables' values marked

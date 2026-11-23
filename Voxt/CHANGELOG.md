@@ -18,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
+- **Translate or reformat dictation with a custom prompt** (#3875): with Basic clean-up on, custom rules that ask for translation or reformatting now take precedence over the basic rules that otherwise preserve the speaker's language and style.
 
 ### 中文
 
@@ -35,6 +36,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
+- **自定义提示词可以翻译或重新整理听写内容**（#3875）：开启“基础整理”时，要求翻译或重新整理的自定义规则现在会覆盖基础整理中保留原语言和文风的限制，不再互相矛盾。
 
 ## [2.1.3] - 2026-11-22
 
