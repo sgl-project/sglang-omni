@@ -49,7 +49,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 - **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports oversized images instead of silently dropping them, and distinguishes them from files or images it cannot read.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
-- **Rewrite paste errors clear after a successful paste, and pasted blocks keep their boundaries**: a later valid paste removes “This text is too large.”; typed text before or after a collapsed pasted block stays on a separate line in the request.
+- **Rewrite paste errors clear after a successful paste, and pasted blocks keep their boundaries**: a later valid paste removes “This text is too large.”; typed text before or after a collapsed pasted block stays on a separate line in the request. A follow-up starts with only its new input instead of restoring typed text from the completed request.
 - **Check again no longer makes the permission rows flash** (#4365): in Settings → Permissions and the setup guide's Permissions step, a granted Microphone or Speech Recognition row showed "Not asked yet" for a moment after Check again or when you came back to Voxt. The rows now keep what they show until the helper answers.
 - **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
 
@@ -101,7 +101,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 - **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片太大，不再静默丢弃，也会把超限图片与读不出来的文件或图片区分开。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
-- **改写粘贴成功后清除旧错误，粘贴块保留边界**：之后粘贴有效内容会清除“这段文字太大了。”的旧错误；折叠粘贴块与前后输入文字在请求中分行。
+- **改写粘贴成功后清除旧错误，粘贴块保留边界**：之后粘贴有效内容会清除“这段文字太大了。”的旧错误；折叠粘贴块与前后输入文字在请求中分行。完成一次请求后，追问只保留这次输入，不会带回上一次请求里的文字。
 - **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
 
 ## [2.1.2] - 2026-11-19
