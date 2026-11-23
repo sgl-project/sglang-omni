@@ -140,6 +140,36 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	}
 }
 
+// TestLLMDebugUneditedPresetReadsLatestSavedPrompt: an unedited preset
+// must not restore a cached prompt over a newer setting saved elsewhere.
+func TestLLMDebugUneditedPresetReadsLatestSavedPrompt(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "Transcribe old"
+		s.Features.Rewrite.Prompt = "Rewrite saved"
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	if model := a.llmDebugModel(); model.SavedPrompt != "Transcribe old" || a.llmDbg.prompt != "Transcribe old" {
+		t.Fatalf("initial prompt %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	a.llmDbg.preset = "Rewrite"
+	_ = a.llmDebugModel()
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe new"
+	})
+	a.llmDbg.preset = "Transcribe"
+	model := a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe new" || model.Edited || a.llmDbg.prompt != "Transcribe new" {
+		t.Fatalf("the unedited preset restored a stale prompt: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe new" {
+		t.Fatal("reading the preset overwrote the newer saved prompt")
+	}
+}
+
 func TestLLMDebugCloses(t *testing.T) {
 	srv, _ := mockOpenAI(t, "Hello there.")
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})

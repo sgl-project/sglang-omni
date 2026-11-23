@@ -29,6 +29,7 @@ const llmDebugTimeout = 2 * time.Minute
 type llmDebugUI struct {
 	model, preset      string // the menus' choices, by title
 	filled             string // the preset the prompt was filled from
+	saved              string // the saved prompt for filled
 	prompt             string // as edited here
 	input, instruction string
 	drafts             map[string]string
@@ -39,13 +40,17 @@ func (u *llmDebugUI) fillPreset(preset, saved string) {
 		u.drafts = map[string]string{}
 	}
 	if u.filled != "" {
-		u.drafts[u.filled] = u.prompt
+		if u.prompt != u.saved {
+			u.drafts[u.filled] = u.prompt
+		} else {
+			delete(u.drafts, u.filled)
+		}
 	}
 	u.prompt = saved
 	if draft, ok := u.drafts[preset]; ok {
 		u.prompt = draft
 	}
-	u.filled = preset
+	u.filled, u.saved = preset, saved
 }
 
 // llmDebugState adds the controller's in-flight and completed run state.
