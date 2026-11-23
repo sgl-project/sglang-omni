@@ -500,15 +500,13 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
     decoder_prefill_ms = draft_statistics.prefill_ms;
     autoregressive_decode_ms = draft_statistics.decode_ms;
   } else {
-    // prefill_started is before the call so the stage covers the submission;
-    // the frontend wait runs after Prefill has queued its forwards, so the
-    // GPU stays fed. The two spans overlap by design: the host submits the
-    // prefill while the GPU runs the encoder.
+    // prefill_started is before the call so the stage covers the submission.
+    // The frontend is observed inside the first iteration, after the
+    // second-token graph is queued, so every graph main schedules is
+    // submitted before the first blocking call. The two spans overlap by
+    // design: the host submits the prefill while the GPU runs the encoder.
     const auto prefill_started = std::chrono::steady_clock::now();
     PrefilledSequence sequence = Prefill(embeddings, cancel);
-    mx::eval(embeddings);
-    frontend_eval_ms =
-        Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
     auto decode_started = prefill_started;
     mx::array next_token = sequence.first_token;
     bool first = true;
@@ -524,6 +522,15 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
               model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
               sequence.caches)));
       mx::async_eval({next_token});
+      if (first) {
+        // Main queues the second-token graph before its first wait, so the
+        // frontend observation comes after it and only watches a pipeline
+        // that is already running.
+        mx::eval(embeddings);
+        frontend_eval_ms =
+            Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
+      } else {
+      }
       finished = commit(static_cast<int>(token.item<uint32_t>()));
       if (first) {
         // Main's own first wait of the loop: once the first token lands, the
