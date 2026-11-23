@@ -68,6 +68,7 @@
           {
             "path": "/snippets",
             "title": "Snippets",
+            "testing": true,
             "selected": false
           }
         ]

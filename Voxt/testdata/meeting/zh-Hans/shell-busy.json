@@ -81,6 +81,7 @@
             {
               "path": "/snippets",
               "title": "片段",
+              "testing": true,
               "selected": false
             }
           ]
