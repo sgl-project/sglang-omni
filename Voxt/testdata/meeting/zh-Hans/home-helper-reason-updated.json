@@ -14,7 +14,7 @@
     "missing": [
       {
         "key": "home-helper",
-        "title": "辅助程序",
+        "title": "辅助进程",
         "ok": false,
         "warn": false,
         "text": "Voxt 已更新，重启后生效。",

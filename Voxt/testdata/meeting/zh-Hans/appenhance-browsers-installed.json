@@ -160,7 +160,7 @@
           },
           "custom": false,
           "engine": "webkit",
-          "status_text": "未检测",
+          "status_text": "还没读取过",
           "status_tone": "info"
         },
         {
@@ -170,7 +170,7 @@
           },
           "custom": true,
           "engine": "",
-          "status_text": "未检测，可能只能按 App 匹配",
+          "status_text": "还没读取过，可能只能按 App 匹配",
           "status_tone": "info"
         }
       ],

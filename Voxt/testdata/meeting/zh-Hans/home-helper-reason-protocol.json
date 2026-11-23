@@ -14,12 +14,12 @@
     "missing": [
       {
         "key": "home-helper",
-        "title": "辅助程序",
+        "title": "辅助进程",
         "ok": false,
         "warn": false,
-        "text": "辅助程序版本过旧",
+        "text": "辅助进程版本过旧",
         "kind": "error",
-        "action": "重启辅助程序",
+        "action": "重启辅助进程",
         "fix": "restart-helper"
       }
     ],

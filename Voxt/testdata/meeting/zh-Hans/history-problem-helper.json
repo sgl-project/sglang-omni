@@ -19,7 +19,7 @@
     "rows": [
       {
         "id": "history-problem-helper",
-        "title": "辅助程序已停止，请稍后再试。",
+        "title": "辅助进程已停止，请稍后再试。",
         "failed_title": true,
         "meta": "5 分钟前 · Notes · 0:08",
         "selected": true,
@@ -47,8 +47,8 @@
     ],
     "detail": {
       "id": "history-problem-helper",
-      "error_text": "失败：辅助程序已停止，请稍后再试。",
-      "error_detail": "辅助程序已停止，请稍后再试。",
+      "error_text": "失败：辅助进程已停止，请稍后再试。",
+      "error_detail": "辅助进程已停止，请稍后再试。",
       "error_warning": false,
       "can_reveal": false,
       "retry": {

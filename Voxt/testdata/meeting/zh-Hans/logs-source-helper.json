@@ -30,14 +30,14 @@
       },
       {
         "code": "helper",
-        "label": "辅助程序"
+        "label": "辅助进程"
       },
       {
         "code": "dictionary",
         "label": "词典"
       }
     ],
-    "source": "辅助程序",
+    "source": "辅助进程",
     "query": "",
     "log_file": false
   }

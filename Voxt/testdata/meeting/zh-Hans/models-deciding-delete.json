@@ -46,7 +46,7 @@
             "draft": {
               "model_id": "asr.accurate.draft",
               "parent_id": "asr.accurate",
-              "help": "用一个小模型（725.7 MB）帮忙加速：它先猜几个词，再由语音识别模型核对。需要先下载这个小模型。",
+              "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
               "installed": false,
               "needs_download": false,
               "size_text": "需下载 725.7 MB",

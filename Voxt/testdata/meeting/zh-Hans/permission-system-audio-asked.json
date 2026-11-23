@@ -43,7 +43,7 @@
         "can_ask": false,
         "can_open": false,
         "ask_action": "accessibility",
-        "ask_tooltip": "把 Voxt 加到系统设置里，再打开它的开关"
+        "ask_tooltip": "把 Voxt 加入系统设置中的列表"
       },
       "speech": {
         "code": "granted",
@@ -56,13 +56,13 @@
       },
       "system_audio": {
         "code": "asked",
-        "text": "请在系统设置中开启",
+        "text": "已请求，请在系统设置里确认",
         "ok": false,
         "can_ask": false,
         "can_open": true,
         "ask_action": "systemAudio",
-        "ask_tooltip": "把 Voxt 加到系统设置里，再打开它的开关",
-        "tip": "在 macOS 弹窗里点了允许就已开启；没有弹窗的话，请在系统设置中查看。"
+        "ask_tooltip": "把 Voxt 加入系统设置中的列表",
+        "tip": "在 macOS 弹窗里点了允许就已开启。没有弹窗说明 macOS 之前问过，请在系统设置里查看。"
       }
     },
     "footer": {

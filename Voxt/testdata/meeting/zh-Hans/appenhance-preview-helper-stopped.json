@@ -142,7 +142,7 @@
       "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
-      "address": "辅助程序没有运行，无法读取网址。",
+      "address": "辅助进程没有运行，无法读取网址。",
       "address_status": "helper-stopped",
       "matched": false,
       "match_source": "global",

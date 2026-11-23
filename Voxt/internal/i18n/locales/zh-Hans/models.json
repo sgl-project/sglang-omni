@@ -13,7 +13,7 @@
   "%s will need to download it again (%s).": "%s 再次使用时需要重新下载（%s）。",
   "1 hour": "1 小时",
   "15 minutes": "15 分钟",
-  "Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.": "用一个小模型（%s）帮忙加速：它先猜几个词，再由语音识别模型核对。需要先下载这个小模型。",
+  "Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.": "使用推测解码：一个小的草稿模型（%s）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
   "Another app updated the shared format. Update Voxt to change these settings.": "另一个 App 用了更新的配置格式，请先更新 Voxt，再改这些设置。",
   "Another app is downloading or using this model. Try again later.": "另一个 App 正在下载或使用这个模型，请稍后再试。",
   "Applies to all apps that use this model library": "对使用这个模型库的所有 App 生效",

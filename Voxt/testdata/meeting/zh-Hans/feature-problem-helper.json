@@ -395,10 +395,10 @@
         "cancelled": false,
         "failure_text": "",
         "failure": {
-          "text": "辅助程序已停止，请稍后再试。",
+          "text": "辅助进程已停止，请稍后再试。",
           "more": "fixture problem",
           "action": "helper",
-          "action_label": "重启辅助程序",
+          "action_label": "重启辅助进程",
           "dismiss": false
         },
         "result": "",

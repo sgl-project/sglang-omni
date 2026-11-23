@@ -135,7 +135,7 @@
       "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
-      "address": "Google Chrome 暂时只能按 App 匹配。",
+      "address": "Google Chrome 现在读不到网址，只能按 App 匹配。",
       "address_status": "no-address",
       "matched": true,
       "match_source": "browserApp",

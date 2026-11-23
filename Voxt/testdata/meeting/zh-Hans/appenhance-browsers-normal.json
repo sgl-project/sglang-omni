@@ -161,7 +161,7 @@
           },
           "custom": false,
           "engine": "webkit",
-          "status_text": "可按网站匹配",
+          "status_text": "读到了网址",
           "status_tone": "success"
         },
         {
@@ -172,7 +172,7 @@
           },
           "custom": false,
           "engine": "chromium",
-          "status_text": "只能按 App 匹配",
+          "status_text": "读不到网址：只能按 App 匹配",
           "status_tone": "warning"
         },
         {
@@ -183,7 +183,7 @@
           },
           "custom": false,
           "engine": "gecko",
-          "status_text": "未检测，可能只能按 App 匹配",
+          "status_text": "还没读取过，可能只能按 App 匹配",
           "status_tone": "info"
         },
         {
@@ -193,7 +193,7 @@
           },
           "custom": true,
           "engine": "",
-          "status_text": "未检测，可能只能按 App 匹配",
+          "status_text": "还没读取过，可能只能按 App 匹配",
           "status_tone": "info"
         }
       ],

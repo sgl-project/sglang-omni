@@ -154,7 +154,7 @@
       "group_id": "g-chat",
       "title": "把 App 加入“Team chat”",
       "loading": false,
-      "error": "辅助程序没有运行，只能用 Bundle ID 添加 App。",
+      "error": "辅助进程没有运行，只能用 Bundle ID 添加 App。",
       "rows": null,
       "has_catalog": false,
       "no_matches": false,

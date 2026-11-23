@@ -142,7 +142,7 @@
       "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
-      "address": "正在检测…",
+      "address": "正在读取网址…",
       "address_status": "loading",
       "matched": true,
       "match_source": "url",
