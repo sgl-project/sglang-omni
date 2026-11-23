@@ -5,6 +5,7 @@
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 #include "common/audio.h"
 #include "common/audio_chunks.h"
@@ -37,6 +38,9 @@ constexpr size_t kMinTailSampleCount = omni_common::kSampleRate;
 // audio, and at least 16.
 constexpr double kDefaultTokensPerWindow = 200.0;
 constexpr int kMinDefaultTokens = 16;
+// Note (wilsonzheng0327): the checkpoint writes this marker where the audio
+// pauses; it is not speech, so the text leaves it out.
+constexpr std::string_view kSilenceMarker = "/sil";
 
 // The language the prompt names; none for Chinese and auto, which leave the
 // model to choose.
@@ -151,8 +155,18 @@ TranscriptionResult FunAsrTranscriber::TranscribeWindow(
   mx::async_eval({next_token});
   model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
                                commit, cancel);
-  result.text =
-      omni_common::StripUnicodeWhitespace(tokenizer_.Decode(output_ids, true));
+  const std::string decoded = tokenizer_.Decode(output_ids, true);
+  std::vector<std::string> spoken_parts;
+  for (size_t begin = 0;;) {
+    const size_t marker = decoded.find(kSilenceMarker, begin);
+    spoken_parts.push_back(decoded.substr(begin, marker - begin));
+    if (marker == std::string::npos) {
+      break;
+    } else {
+      begin = marker + kSilenceMarker.size();
+    }
+  }
+  result.text = omni_common::JoinTranscriptParts(spoken_parts);
   result.generated_token_count = static_cast<int>(output_ids.size());
   return result;
 }

@@ -964,6 +964,20 @@ def test_funasr_decodes_long_audio_one_window_at_a_time(
     assert len(three_windows["window_texts"]) == 3
 
 
+def test_funasr_leaves_the_silence_marker_out_of_the_text(
+    funasr_server: ModelServer,
+) -> None:
+    """The checkpoint writes the /sil marker at this clip's pauses between sentences, and the transcript kept it."""
+    status, body = funasr_server.post_form(
+        {"stream": "true", "language": "zh", "include_generation_metadata": "true"},
+        clip("0360_zh_long"),
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    assert "/sil" not in done["text"]
+    assert "/sil" not in done["generation_metadata"]["window_texts"]
+
+
 def test_funasr_token_budget_covers_the_whole_request(
     funasr_server: ModelServer,
 ) -> None:
