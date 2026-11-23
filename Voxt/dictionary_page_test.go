@@ -142,8 +142,8 @@ func TestDictionaryGuide(t *testing.T) {
 	for _, want := range []string{
 		"词典的用法",
 		"启用的词条用在三个地方",
-		"别名不参与",
-		fmt.Sprintf("超过 %d 个时，只参照文本里出现的词条", compose.GlossaryAllUpTo),
+		"别名不发送",
+		fmt.Sprintf("超过 %d 个时，只发送文本里出现的词条", compose.GlossaryAllUpTo),
 		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms),
 		"没有语言模型也有效",
 	} {

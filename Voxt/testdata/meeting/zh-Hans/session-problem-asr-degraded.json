@@ -37,7 +37,7 @@
       "can_think": false
     },
     "notice": {
-      "text": "整段识别超时，已改用实时文字。",
+      "text": "完整识别超时，用了实时识别的文字。",
       "tone": "warning"
     }
   },

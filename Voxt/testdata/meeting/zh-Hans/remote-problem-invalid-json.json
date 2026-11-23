@@ -12,7 +12,7 @@
     "has_key_url": true,
     "key": {
       "info": "本机上的服务可不填。保存在这台 Mac 的钥匙串里。",
-      "placeholder": "已保存：•••• · 粘贴新的 API Key 即可替换",
+      "placeholder": "已保存：•••• · 粘贴新的密钥即可替换",
       "has_saved": true
     },
     "endpoint": {
@@ -40,7 +40,7 @@
           "value": "on"
         },
         {
-          "title": "思考强度",
+          "title": "推理强度",
           "value": "effort"
         },
         {
@@ -112,7 +112,7 @@
           "value": "responses"
         }
       ],
-      "service_default": "服务商默认",
+      "service_default": "服务默认",
       "show_temperature": true,
       "show_top_p": true,
       "show_top_k": true,
@@ -151,9 +151,9 @@
       "state": "failure",
       "code": "llm.invalid_json",
       "text": "失败",
-      "long_text": "语言模型的回复格式不对。",
-      "tooltip": "语言模型的回复格式不对。\n\nredacted fixture detail",
-      "long_tooltip": "语言模型的回复格式不对。\n\nredacted fixture detail"
+      "long_text": "语言模型返回了 Voxt 无法解析的内容。",
+      "tooltip": "语言模型返回了 Voxt 无法解析的内容。\n\nredacted fixture detail",
+      "long_tooltip": "语言模型返回了 Voxt 无法解析的内容。\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

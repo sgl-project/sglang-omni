@@ -37,7 +37,7 @@
       "can_think": false
     },
     "notice": {
-      "text": "语音识别失败：语音识别模型的回复格式不对。",
+      "text": "语音识别失败：语音识别模型返回了 Voxt 无法解析的内容。",
       "action": "models",
       "action_label": "打开语音识别模型页",
       "tone": "error"

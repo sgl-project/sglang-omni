@@ -57,7 +57,7 @@ func TestLLMWaitRow(t *testing.T) {
 		t.Errorf("a choice made elsewhere: %q", firstTexts(tt))
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
-	if frames(tt); !hasExact(tt, "语言模型等待时间") || !hasExact(tt, "10 分钟") {
+	if frames(tt); !hasExact(tt, "等待语言模型") || !hasExact(tt, "10 分钟") {
 		t.Errorf("in Chinese: %q", firstTexts(tt))
 	}
 	inView("zh-Hans", "10 分钟")

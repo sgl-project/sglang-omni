@@ -1,7 +1,7 @@
 {
   "Click Import to bring over its dictionary, history and settings. The previous Voxt keeps all its data.": "点“导入”把它的词典、历史记录和设置带过来，旧版 Voxt 的数据保持不变。",
   "Bring its dictionary, history and settings over.": "把它的词典、历史记录和设置带过来。",
-  "No previous Voxt dictionary in this folder. Choose the folder the import window opens on.": "这个文件夹里没有旧版 Voxt 的词典。请选择导入窗口默认打开的文件夹。",
+  "No previous Voxt dictionary in this folder. Choose the folder the import window opens on.": "这个文件夹里没有旧版 Voxt 的词典。请选择导入窗口一开始打开的那个文件夹。",
   "This is not the previous Voxt's data folder. Nothing was imported.": "这不是旧版 Voxt 的数据文件夹，没有导入任何内容。",
   "The previous Voxt's dictionary could not be read and may be damaged. Nothing was imported.": "无法读取旧版 Voxt 的词典，文件可能已损坏，没有导入任何内容。",
   "Imported from the previous Voxt": "已从旧版 Voxt 导入",

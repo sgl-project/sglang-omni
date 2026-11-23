@@ -59,8 +59,8 @@
               "configured": true,
               "missing": "model",
               "status": "warning",
-              "status_text": "未选择模型",
-              "key_text": "未选择模型",
+              "status_text": "没有模型",
+              "key_text": "没有模型",
               "key_status": "warning"
             }
           ]

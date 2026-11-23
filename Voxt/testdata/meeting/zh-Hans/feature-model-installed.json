@@ -5,7 +5,7 @@
     "feature": "rewrite",
     "prefix": "rw",
     "title": "改写",
-    "caption": "按你说的修改选中的文字（“短一点”“正式一点”），或帮你写一段话。",
+    "caption": "按你说的修改选中的文字（“短一点”“正式一点”），或者按要求写出内容。",
     "refresh_recording": false,
     "shortcuts": {
       "prefix": "rw",
@@ -102,10 +102,10 @@
       "asr_label": "改写使用的语音识别模型",
       "llm_label": "改写使用的语言模型",
       "asr": {
-        "value": "自动（当前：Fixture speech model）",
+        "value": "自动（现在用：Fixture speech model）",
         "options": [
           {
-            "label": "自动（当前：Fixture speech model）",
+            "label": "自动（现在用：Fixture speech model）",
             "value": "",
             "custom": false
           },
@@ -118,10 +118,10 @@
         "disabled": false
       },
       "llm": {
-        "value": "自动（当前：Fixture language model）",
+        "value": "自动（现在用：Fixture language model）",
         "options": [
           {
-            "label": "自动（当前：Fixture language model）",
+            "label": "自动（现在用：Fixture language model）",
             "value": "",
             "custom": false
           },
@@ -181,7 +181,7 @@
       "state": "",
       "problem_code": "",
       "mode": "idle",
-      "intro": "按 ⌃ 右 ⌥ 或点“开始”，说出要写什么（“写一条短消息说我会晚到”）。结果只显示在这里。",
+      "intro": "按 ⌃ 右 ⌥ 或点“开始”，说出要写什么（“写一条短消息说我会晚到”）。结果显示在这里，不会输入到任何地方。",
       "start_label": "开始",
       "busy": false,
       "busy_text": "",

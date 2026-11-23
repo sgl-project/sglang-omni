@@ -91,7 +91,7 @@
                     "model_id": "asr.accurate",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -108,7 +108,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 712.8 MB",
-                "about": "更快、更省内存，适合安静环境、吐字清楚时使用。",
+                "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
                 "tags": [
                   "本地",
                   "快速",
@@ -121,7 +121,7 @@
                     "model_id": "asr.fast",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -151,7 +151,7 @@
                     "model_id": "asr.qwen3-6bit",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -189,7 +189,7 @@
                     "model_id": "asr.whisper-turbo",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Whisper Large v3 Turbo",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -219,7 +219,7 @@
                     "model_id": "asr.whisper-large",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Whisper Large v3",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -249,7 +249,7 @@
                     "model_id": "asr.whisper-small",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Whisper Small",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -285,7 +285,7 @@
                     "model_id": "asr.parakeet",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Parakeet TDT 0.6B v3",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -321,7 +321,7 @@
                     "model_id": "asr.sensevoice",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 SenseVoice Small",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -357,7 +357,7 @@
                     "model_id": "asr.cohere",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Cohere Transcribe 03-2026 (fp16)",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -394,7 +394,7 @@
                     "model_id": "asr.nemotron",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 Nemotron 3.5 ASR 0.6B (8bit)",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",
@@ -430,7 +430,7 @@
                     "model_id": "asr.moss",
                     "label": "隐藏",
                     "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                    "tooltip": "从模型菜单中隐藏"
+                    "tooltip": "不在功能页的模型菜单里列出"
                   },
                   {
                     "kind": "download",

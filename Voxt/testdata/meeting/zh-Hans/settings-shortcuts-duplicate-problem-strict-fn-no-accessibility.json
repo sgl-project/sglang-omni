@@ -107,7 +107,7 @@
           "page_title": "转录",
           "icon": "transcribe",
           "key_text": "fn",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": [
@@ -122,7 +122,7 @@
           "page_title": "转录",
           "icon": "transcribe",
           "key_text": "fn",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": [
@@ -137,7 +137,7 @@
           "page_title": "翻译",
           "icon": "translate",
           "key_text": "Bad+",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": false,
           "problems": [
@@ -152,7 +152,7 @@
           "page_title": "改写",
           "icon": "rewrite",
           "key_text": "A",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": [
@@ -167,7 +167,7 @@
           "page_title": "转录",
           "icon": "paste",
           "key_text": "fn",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": [
@@ -182,7 +182,7 @@
           "page_title": "转录",
           "icon": "cancel",
           "key_text": "⌘C",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": [
@@ -197,7 +197,7 @@
           "page_title": "笔记",
           "icon": "note",
           "key_text": "右 ⌘",
-          "trigger_text": "单击",
+          "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null

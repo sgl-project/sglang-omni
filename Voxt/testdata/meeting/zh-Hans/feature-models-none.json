@@ -352,7 +352,7 @@
       "state": "",
       "problem_code": "",
       "mode": "idle",
-      "intro": "按 右 ⌥ 或点“开始”，说一两句话。结果只显示在这里。",
+      "intro": "按 右 ⌥ 或点“开始”，说一两句话。结果显示在这里，不会输入到任何地方。",
       "start_label": "开始",
       "busy": false,
       "busy_text": "",

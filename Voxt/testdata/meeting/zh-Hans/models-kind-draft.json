@@ -27,7 +27,7 @@
                 "model_id": "asr.qwen3-6bit",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "delete",

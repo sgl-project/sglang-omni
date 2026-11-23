@@ -59,8 +59,8 @@
               "configured": true,
               "missing": "endpoint",
               "status": "warning",
-              "status_text": "未填写地址",
-              "key_text": "未填写地址",
+              "status_text": "没有地址",
+              "key_text": "没有地址",
               "key_status": "warning"
             }
           ]

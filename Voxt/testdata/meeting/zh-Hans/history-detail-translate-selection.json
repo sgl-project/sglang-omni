@@ -134,7 +134,7 @@
           "facts": [
             {
               "label": "录音",
-              "value": "7.5 s，实际识别 2.5 s",
+              "value": "7.5 s，送去识别 2.5 s",
               "empty": false
             },
             {

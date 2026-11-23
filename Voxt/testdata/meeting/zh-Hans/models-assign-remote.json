@@ -61,7 +61,7 @@
             "default": false,
             "installed": false,
             "size_text": "需下载 712.8 MB",
-            "about": "更快、更省内存，适合安静环境、吐字清楚时使用。",
+            "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
             "tags": [
               "本地",
               "快速",
@@ -74,7 +74,7 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -104,7 +104,7 @@
                 "model_id": "asr.qwen3-6bit",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -142,7 +142,7 @@
                 "model_id": "asr.whisper-turbo",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3 Turbo",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -172,7 +172,7 @@
                 "model_id": "asr.whisper-large",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -202,7 +202,7 @@
                 "model_id": "asr.whisper-small",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Small",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -238,7 +238,7 @@
                 "model_id": "asr.parakeet",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Parakeet TDT 0.6B v3",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -274,7 +274,7 @@
                 "model_id": "asr.sensevoice",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 SenseVoice Small",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -310,7 +310,7 @@
                 "model_id": "asr.cohere",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Cohere Transcribe 03-2026 (fp16)",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -347,7 +347,7 @@
                 "model_id": "asr.nemotron",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Nemotron 3.5 ASR 0.6B (8bit)",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -383,7 +383,7 @@
                 "model_id": "asr.moss",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "从模型菜单中隐藏"
+                "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
@@ -407,7 +407,7 @@
           "installed": false,
           "size_text": "内置",
           "about": "macOS 自带的语音识别，在这台 Mac 上运行。速度快，不用下载，但不如 Qwen3-ASR 准确，支持的语言也更少。只识别你的主要语言。",
-          "languages": "这台 Mac 可离线识别的听写语言（系统设置 → 键盘 → 听写）",
+          "languages": "这台 Mac 可在本机识别的 macOS 听写语言（系统设置 → 键盘 → 听写）",
           "tags": [
             "本地",
             "内置",
@@ -419,7 +419,7 @@
               "model_id": "asr.system",
               "label": "隐藏",
               "accessibility_label": "隐藏 系统听写",
-              "tooltip": "从模型菜单中隐藏"
+              "tooltip": "不在功能页的模型菜单里列出"
             },
             {
               "kind": "assign",
@@ -524,7 +524,7 @@
       "id": "asr.accurate",
       "title": "应用到功能",
       "subtitle": "Qwen3-ASR 1.7B (8bit)",
-      "caption": "只改勾选功能的模型，其他设置不变。",
+      "caption": "仅更改勾选功能的模型，其他设置和功能开关保持不变。",
       "notices": [
         "所选功能的录音将发送到此语音识别服务。"
       ],
@@ -533,25 +533,25 @@
           "key": "transcribe",
           "title": "转录",
           "label": "将模型应用到转录",
-          "current": "当前：自动（当前：Qwen3-ASR 1.7B (8bit)）"
+          "current": "当前：自动（现在用：Qwen3-ASR 1.7B (8bit)）"
         },
         {
           "key": "translate",
           "title": "翻译",
           "label": "将模型应用到翻译",
-          "current": "当前：自动（当前：Qwen3-ASR 1.7B (8bit)）"
+          "current": "当前：自动（现在用：Qwen3-ASR 1.7B (8bit)）"
         },
         {
           "key": "rewrite",
           "title": "改写",
           "label": "将模型应用到改写",
-          "current": "当前：自动（当前：Qwen3-ASR 1.7B (8bit)）"
+          "current": "当前：自动（现在用：Qwen3-ASR 1.7B (8bit)）"
         },
         {
           "key": "meeting",
           "title": "会议",
           "label": "将模型应用到会议",
-          "current": "当前：自动（当前：Qwen3-ASR 1.7B (8bit)）"
+          "current": "当前：自动（现在用：Qwen3-ASR 1.7B (8bit)）"
         }
       ],
       "checked": [

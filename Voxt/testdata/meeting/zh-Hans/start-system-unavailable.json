@@ -3,6 +3,6 @@
   "kind": "start",
   "start": {
     "code": "meeting.system.unavailable",
-    "text": "无法录制系统音频。请重试，或只录制麦克风。"
+    "text": "没能录制系统音频。请重试，或只录制麦克风。"
   }
 }

@@ -76,7 +76,7 @@
       "accessibility": {
         "permission_id": "accessibility",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "status": "未授权",
+        "status": "未允许",
         "allowed": false,
         "known": true,
         "ask": true,
@@ -95,7 +95,7 @@
       "speech_recognition": {
         "permission_id": "speechRecognition",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
-        "status": "已授权",
+        "status": "已允许",
         "allowed": true,
         "known": true,
         "ask": false,
