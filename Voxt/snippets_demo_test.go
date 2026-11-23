@@ -22,8 +22,8 @@ func TestSnippetsDemoActionControls(t *testing.T) {
 				t.Fatalf("dialog %+v", host.snipUI)
 			}
 		}},
-		{name: "example", fixture: "en/snippets-empty", steps: historySteps("my email"), check: func(t *testing.T, host *meetingDemoHost) {
-			if host.snipUI.edit.trigger != "my email" {
+		{name: "example", fixture: "en/snippets-empty", steps: historySteps("my work email"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.snipUI.edit.trigger != "my work email" {
 				t.Fatalf("dialog %+v", host.snipUI)
 			}
 		}},

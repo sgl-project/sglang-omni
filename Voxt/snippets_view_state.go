@@ -70,10 +70,10 @@ func buildSnippetsViewState(translator *i18n.Translator, list snippet.List, load
 	}
 	if loaded && state.Total == 0 {
 		state.Examples = []snippetExampleViewState{
-			{translator.T("my email"), "name@example.com"},
-			{translator.T("my address"), translator.T("Your street, city and postcode")},
-			{translator.T("insert my intro"), translator.T("Your name, role and what you work on")},
-			{translator.T("my meeting link"), "https://zoom.us/j/…"},
+			{translator.T("my work email"), "name@company.com"},
+			{translator.T("my office address"), translator.T("1 Market St, San Francisco, CA 94105")},
+			{translator.T("my personal meeting link"), "https://zoom.us/j/1234567890"},
+			{translator.T("organize thoughts prompt"), translator.T("Turn these scattered thoughts into a clear, tidy version without adding anything.")},
 		}
 	}
 	return state

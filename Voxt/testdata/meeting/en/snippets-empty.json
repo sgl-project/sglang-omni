@@ -6,20 +6,20 @@
     "rows": [],
     "examples": [
       {
-        "trigger": "my email",
-        "hint": "name@example.com"
+        "trigger": "my work email",
+        "hint": "name@company.com"
       },
       {
-        "trigger": "my address",
-        "hint": "Your street, city and postcode"
+        "trigger": "my office address",
+        "hint": "1 Market St, San Francisco, CA 94105"
       },
       {
-        "trigger": "insert my intro",
-        "hint": "Your name, role and what you work on"
+        "trigger": "my personal meeting link",
+        "hint": "https://zoom.us/j/1234567890"
       },
       {
-        "trigger": "my meeting link",
-        "hint": "https://zoom.us/j/…"
+        "trigger": "organize thoughts prompt",
+        "hint": "Turn these scattered thoughts into a clear, tidy version without adding anything."
       }
     ],
     "total": 0,

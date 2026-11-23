@@ -51,6 +51,18 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 			local.open(snippetEdit{})
 		}
 	})
+	if state.Ready && state.Error == "" && state.Total == 0 {
+		// No snippets yet: the examples sit in the middle of the page,
+		// as Notes' empty state does, not under the subtitle.
+		pageColumn(c).Shrink(0).Children(func() {
+			ui.Text(c, i18n.T("Say a trigger and Voxt types the text you saved, as it is.")).TextColor(k.Text2)
+		})
+		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
+			snippetExamples(c, state.Examples, local)
+		})
+		snippetDialog(c, actions, local)
+		return
+	}
 	ui.Scroll(c.Key("snippets-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			ui.Text(c, i18n.T("Say a trigger and Voxt types the text you saved, as it is.")).TextColor(k.Text2)
@@ -157,7 +169,7 @@ const snippetIcon = 22
 func snippetExamples(c *ui.Context, examples []snippetExampleViewState, local *snippetsLocalUI) {
 	t := c.Theme()
 	k := tok(t)
-	emptyState(c, icons.TextSquare, i18n.T("No snippets yet"), i18n.T("Save what you type again and again: an address, a link, a reply, a prompt."), func() {
+	emptyState(c, icons.TextSquare, i18n.T("No snippets yet"), "", func() {
 		// One example a line, each as wide as its text, in English and
 		// in Chinese alike.
 		ui.Column(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
@@ -196,8 +208,8 @@ func snippetDialog(c *ui.Context, actions snippetsActions, local *snippetsLocalU
 		}
 	}
 	if dialogFrame(c, "snippet-dlg", &local.editOpen, title, "", 480, func() {
-		fieldInfo(c, i18n.T("Trigger"), i18n.T("Words you won’t say by accident, like “insert my intro”: Voxt replaces them wherever they come up."), func() {
-			input := ui.TextInput(c.Key("snippet-trigger"), &edit.trigger).Label(i18n.T("Trigger to say")).Placeholder(i18n.T("my email")).AutoFocus()
+		fieldInfo(c, i18n.T("Trigger"), i18n.T("Words you won’t say by accident, like “organize thoughts prompt”: Voxt replaces them wherever they come up."), func() {
+			input := ui.TextInput(c.Key("snippet-trigger"), &edit.trigger).Label(i18n.T("Trigger to say")).Placeholder(i18n.T("my work email")).AutoFocus()
 			if input.Changed() {
 				local.err = ""
 			}

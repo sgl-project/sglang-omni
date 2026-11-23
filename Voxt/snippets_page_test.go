@@ -41,24 +41,24 @@ func TestSnippetsPage(t *testing.T) {
 	if a.shownPath() != "/snippets" || !has(tt, "No snippets yet") {
 		t.Fatalf("at %s: %q", a.shownPath(), firstTexts(tt))
 	}
-	clickControl(t, tt, "my email")
-	if !a.snipUI.editOpen || a.snipUI.edit.trigger != "my email" || a.snipUI.edit.id != "" {
+	clickControl(t, tt, "my work email")
+	if !a.snipUI.editOpen || a.snipUI.edit.trigger != "my work email" || a.snipUI.edit.id != "" {
 		t.Fatalf("dialog %+v", a.snipUI)
 	}
 	click(t, tt, "Text of the snippet")
 	tt.Type("name@example.com")
 	click(t, tt, "Save")
 	got := storedSnippets(t, a, tt, 1)
-	if got[0].Trigger != "my email" || got[0].Text != "name@example.com" || a.snipUI.editOpen {
+	if got[0].Trigger != "my work email" || got[0].Text != "name@example.com" || a.snipUI.editOpen {
 		t.Fatalf("stored %+v, open %v", got, a.snipUI.editOpen)
 	}
-	if !hasExact(tt, "my email") || !hasExact(tt, "name@example.com") {
+	if !hasExact(tt, "my work email") || !hasExact(tt, "name@example.com") {
 		t.Errorf("list: %q", firstTexts(tt))
 	}
 
 	click(t, tt, "Add snippet")
 	click(t, tt, "Trigger to say")
-	tt.Type("My Email!")
+	tt.Type("My Work Email!")
 	click(t, tt, "Text of the snippet")
 	tt.Type("other@example.com")
 	click(t, tt, "Save")
@@ -67,7 +67,7 @@ func TestSnippetsPage(t *testing.T) {
 	}
 	click(t, tt, "Cancel")
 
-	clickControl(t, tt, "my email → name@example.com")
+	clickControl(t, tt, "my work email → name@example.com")
 	click(t, tt, "Delete")
 	if got := storedSnippets(t, a, tt, 0); len(got) != 0 || !has(tt, "No snippets yet") {
 		t.Fatalf("after delete: %+v, %q", got, firstTexts(tt))
