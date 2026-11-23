@@ -77,7 +77,18 @@ sgl-omni serve \
 
 The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave `speculative_draft_model_path` and `speculative_draft_model_revision` unset. The draft proposes 3 tokens per step by default (`speculative_num_steps 3`, `speculative_num_draft_tokens 4`).
 
-This launch fits one H200 with the default 64 decoder slots. On one H100 80 GB it runs out of memory at startup; add `--asr.engine.max_running_requests 8` there. SGLang keeps an fp32 SSM state for every draft token of every decoder slot so it can roll back the Mamba layers after verify. On one H200 at `--mem-fraction-static 0.85`, that state takes 11.8 GB and the draft takes 9.4 GB, so the KV pool shrinks from 9.59 M to 5.87 M tokens. That still covers 64 requests at the full 73,728-token context. On one H100 at 8 slots, each request keeps 8,996 KV tokens, close to the 9,199 tokens per request that 64 slots get without the draft.
+On one H100 80 GB, the launch above runs out of memory at startup: to roll the Mamba layers back after verify, SGLang keeps an fp32 SSM state per draft token for every decoder slot. Limit the decoder to 8 slots. Each request then keeps 8,996 KV tokens, in line with the 9,199 tokens per request of the default launch without the draft (64 slots):
+
+```bash
+sgl-omni serve \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --model-name nemotron-transcribe \
+  --mem-fraction-static 0.85 \
+  --asr.engine.max_running_requests 8 \
+  --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634 \
+  --asr.engine.speculative_algorithm NEXTN \
+  --port 8000
+```
 
 Usage notes:
 
