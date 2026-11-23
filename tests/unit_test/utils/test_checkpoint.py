@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import huggingface_hub
+import pytest
 
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -97,9 +98,23 @@ def test_unresolvable_pinned_spec_names_the_revision(monkeypatch) -> None:
     assert "revision" not in str(unpinned.value)
 
 
-def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize(
+    "architecture, config_cls_path",
+    [
+        (
+            "DotsTTSForConditionalGeneration",
+            "sglang_omni.models.dots_tts.config.DotsTTSPipelineConfig",
+        ),
+        (
+            "NEOChatModel",
+            "sglang_omni.models.sensenova_u1.config.SenseNovaU1PipelineConfig",
+        ),
+    ],
+)
+def test_local_model_path_skips_snapshot_resolution(
+    monkeypatch, tmp_path, architecture: str, config_cls_path: str
+) -> None:
     from sglang_omni.config import manager
-    from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig
 
     def fail_snapshot(*args, **kwargs):
         raise AssertionError("local paths must not resolve a snapshot")
@@ -108,11 +123,11 @@ def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> No
     prompts = []
     monkeypatch.setattr("builtins.input", lambda *args: prompts.append(args) or "n")
     (tmp_path / "config.json").write_text(
-        '{"architectures": ["DotsTTSForConditionalGeneration"], "model_type": "custom",'
+        f'{{"architectures": ["{architecture}"], "model_type": "custom",'
         ' "auto_map": {"AutoConfig": "configuration_custom.CustomConfig"}}'
     )
 
     config_cls = manager.resolve_config_cls_for_model_path(str(tmp_path))
 
-    assert config_cls is DotsTTSPipelineConfig
+    assert f"{config_cls.__module__}.{config_cls.__qualname__}" == config_cls_path
     assert prompts == []

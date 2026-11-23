@@ -239,6 +239,19 @@ func (a *app) setAppEnhancementGroupPrompt(id, prompt string) {
 	a.updateGroup(id, func(group *appctx.Group) { group.Prompt = prompt })
 }
 
+func (a *app) setAppEnhancementGroupTranscribeCleanup(id, value string) {
+	a.updateGroup(id, func(group *appctx.Group) {
+		switch value {
+		case string(appctx.CleanupOn):
+			group.TranscribeCleanup = appctx.CleanupOn
+		case string(appctx.CleanupOff):
+			group.TranscribeCleanup = appctx.CleanupOff
+		default:
+			group.TranscribeCleanup = appctx.CleanupDefault
+		}
+	})
+}
+
 func (a *app) copyAppEnhancementVariable(token string) {
 	if a.copyText != nil {
 		_ = a.copyText(token)

@@ -321,7 +321,7 @@ func (a *app) saveTerm(term store.Term, fromDialog bool) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.Put(ctx, term)
+		err := withDictionaryLock(repo, func() error { return repo.Put(ctx, term) })
 		a.post(func() {
 			if fromDialog {
 				a.dictUI.edit.saving = false
@@ -358,7 +358,7 @@ func (a *app) deleteTerm(term store.Term) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		err := repo.Delete(ctx, term.ID, term.ProfileID)
+		err := withDictionaryLock(repo, func() error { return repo.Delete(ctx, term.ID, term.ProfileID) })
 		a.post(func() {
 			if err != nil && !errors.Is(err, core.ErrNotFound) {
 				a.toast(i18n.T("Could not delete the term: %v", err))
