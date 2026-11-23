@@ -4,6 +4,8 @@
 // request, unset or 0 is the default, also one budget, and window texts join
 // with a space between two spaced scripts (the shared JoinTranscriptParts),
 // not the old byte rule that glued a non-ASCII ending to the next window.
+// A split window that is only the request's own zero padding must add no
+// text: the real checkpoint reads such a window as silence and hallucinates.
 //
 //   arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT
 //
@@ -30,9 +32,9 @@ bool Require(bool holds, const char *message) {
   return holds;
 }
 
-// 75 s of low-amplitude noise: three windows of at most 30 s.
-std::vector<float> Noise() {
-  std::vector<float> samples(75 * 16000);
+// Low-amplitude noise: loud enough that no window is taken for silence.
+std::vector<float> Noise(size_t sample_count) {
+  std::vector<float> samples(sample_count);
   uint32_t state = 1;
   for (float &sample : samples) {
     state = state * 1664525 + 1013904223;
@@ -50,7 +52,7 @@ int main(int argc, char **argv) {
     return 2;
   } else {
   }
-  const std::vector<float> samples = Noise();
+  const std::vector<float> samples = Noise(75 * 16000);
   const std::atomic<bool> cancel(false);
   const auto run = [&](const arkasr::ArkTranscriber &transcriber,
                        std::optional<int> max_new_tokens) {
@@ -97,6 +99,25 @@ int main(int argc, char **argv) {
               "an explicit budget must be spent across windows in order, "
               "not renewed per window (5 tokens over three 2-token windows "
               "must stop the third at 1)");
+
+  // Note (AzizbekMuminoff): 20 s of noise zero-padded to one sample over
+  // 30 s splits into noise and an all-zero window; the zero window must add
+  // no text, at either end of the request.
+  std::vector<float> padded = Noise(20 * 16000);
+  padded.resize(480001, 0.0f);
+  const omni_common::TranscriptionResult trailed =
+      stop.Transcribe(padded, arkasr::ArkOptions{}, cancel);
+  std::vector<float> prepended(26 * 16000, 0.0f);
+  const std::vector<float> tail = Noise(20 * 16000);
+  prepended.insert(prepended.end(), tail.begin(), tail.end());
+  const omni_common::TranscriptionResult led =
+      stop.Transcribe(prepended, arkasr::ArkOptions{}, cancel);
+  ok &= Require(trailed.text == "\xc3\xa9x" && trailed.window_texts.size() == 1,
+                "a split window that is only the request's zero padding "
+                "must add no text after the speech");
+  ok &= Require(led.text == "\xc3\xa9x" && led.window_texts.size() == 1,
+                "a split window that is only the request's zero padding "
+                "must add no text before the speech");
 
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},

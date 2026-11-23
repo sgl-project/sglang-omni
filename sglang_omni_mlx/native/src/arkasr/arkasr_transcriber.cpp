@@ -2,6 +2,7 @@
 #include "arkasr/arkasr_transcriber.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <stdexcept>
 
@@ -35,6 +36,21 @@ constexpr size_t kCutEnergySampleCount = omni_common::kSampleRate / 10;
 // rubbish.
 constexpr size_t kMinTailSampleCount = omni_common::kSampleRate;
 constexpr int kDefaultMaxNewTokens = 256;
+// Note (AzizbekMuminoff): a split window below this loudness holds only the
+// split's own padding, and decoding it hallucinates text ("Okay." on the
+// frozen silence controls). -80 dBFS RMS is far under any speech, so quiet
+// speech still decodes.
+constexpr float kSilenceRmsThreshold = 1e-4f;
+
+float WindowRms(const std::vector<float> &samples,
+                const std::pair<size_t, size_t> &window) {
+  double square_sum = 0.0;
+  for (size_t i = window.first; i < window.second; ++i) {
+    square_sum += static_cast<double>(samples[i]) * samples[i];
+  }
+  return static_cast<float>(std::sqrt(
+      square_sum / static_cast<double>(window.second - window.first)));
+}
 
 } // namespace
 
@@ -153,6 +169,16 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
     if (remaining_tokens <= 0) {
       finish_reason = FinishReason::kLength;
       break;
+    } else {
+    }
+    // Note (AzizbekMuminoff): a split can leave a window that is only the
+    // request's own silence (a zero-padded tail or head); its hallucinated
+    // text must not join the real speech. A single-window request still
+    // decodes: silence is then the whole input, and its output is pinned by
+    // the frozen corpus.
+    if (windows.size() > 1 &&
+        WindowRms(samples, {start, end}) < kSilenceRmsThreshold) {
+      continue;
     } else {
     }
     const TranscriptionResult window =

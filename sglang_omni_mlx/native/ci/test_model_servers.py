@@ -32,6 +32,7 @@ from test_server_api import (
     long_wav,
     pcm16,
     sse_events,
+    wav_bytes,
 )
 from websockets.exceptions import InvalidHandshake
 from websockets.sync.client import connect
@@ -1398,6 +1399,28 @@ def test_arkasr_zero_token_budget_means_the_default(
     )
     assert status == 200
     assert json.loads(body)["text"]
+
+
+def test_arkasr_zero_padded_windows_add_no_text(arkasr_server: ModelServer) -> None:
+    # Note (AzizbekMuminoff): zero padding that the 30 s split turns into its
+    # own window reads as silence to the checkpoint, which hallucinates text
+    # for it ("Okay." on the frozen silence controls). Padding at either end
+    # of a request must not change the transcript.
+    speech = pcm16("0152_zh_short")
+    status, body = arkasr_server.post_form({}, wav_bytes(speech))
+    assert status == 200
+    reference = json.loads(body)["text"]
+    assert reference
+    # One silent sample past 30 s: the split's second window is all zeros.
+    status, body = arkasr_server.post_form(
+        {}, wav_bytes(speech + b"\0" * (2 * 480001 - len(speech)))
+    )
+    assert status == 200
+    assert json.loads(body)["text"] == reference
+    # 29.2 s of leading silence: the split's first window is all zeros.
+    status, body = arkasr_server.post_form({}, wav_bytes(b"\0" * (2 * 467200) + speech))
+    assert status == 200
+    assert json.loads(body)["text"] == reference
 
 
 @pytest.mark.parametrize(
