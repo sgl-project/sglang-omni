@@ -305,12 +305,14 @@ def test_sampling_cuda_graph_setup_failure_uses_eager(
 
 
 @pytest.mark.parametrize("missing_graph", ["audio", "mixed"])
-def test_npu_sampling_graph_setup_rejects_missing_buckets(
+@pytest.mark.parametrize("platform_name", ["npu", "cuda"])
+def test_sampling_graph_setup_handles_missing_buckets(
     missing_graph: Literal["audio", "mixed"],
+    platform_name: Literal["npu", "cuda"],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Incomplete NPU capture must identify the missing batch and recovery steps."""
-    monkeypatch.setattr(current_platform, "is_npu", lambda: True)
+    """Incomplete capture raises actionable NPU errors but preserves CUDA fallback."""
+    monkeypatch.setattr(current_platform, "is_npu", lambda: platform_name == "npu")
     graph_buckets = {1: object(), 2: object()}
     monkeypatch.setattr(
         MossTTSDelaySamplingCudaGraphRunner,
@@ -327,16 +329,25 @@ def test_npu_sampling_graph_setup_rejects_missing_buckets(
     model = SimpleNamespace(
         device=torch.device("cpu"), sampling_graph_support_reason=lambda: None
     )
-    with pytest.raises(
-        RuntimeError, match="NPU .*sampling graph capture is incomplete"
-    ) as failure:
+    if platform_name == "npu":
+        with pytest.raises(
+            RuntimeError,
+            match=f"NPU {missing_graph} sampling graph capture is incomplete",
+        ) as failure:
+            MossTTSDelaySGLangModel.init_sampling_graphs(model, [1, 2])
+        message = str(failure.value)
+        assert f"on {model.device}" in message
+        assert "expected batch sizes=[1, 2], captured=[1], missing=[2]" in message
+        assert "preceding capture traceback" in message
+        assert "stages.tts_engine.engine.max_running_requests" in message
+        assert "regenerates the buckets" in message
+        assert "installation_npu.md" in message
+    else:
         MossTTSDelaySGLangModel.init_sampling_graphs(model, [1, 2])
-    message = str(failure.value)
-    assert f"on {model.device}" in message
-    assert "expected batch sizes=[1, 2], captured=[1], missing=[2]" in message
-    assert "preceding capture traceback" in message
-    assert "stages.tts_engine.engine.cuda_graph_bs" in message
-    assert "installation_npu.md" in message
+        assert set(model.sampling_graph_runner.graphs) == (
+            {1} if missing_graph == "audio" else {1, 2}
+        )
+        assert set(model.mixed_sampling_graph_runner.graphs) == {1}
 
 
 class CudaGraphModel:

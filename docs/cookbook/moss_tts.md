@@ -40,7 +40,7 @@ sgl-omni serve --model-path OpenMOSS-Team/MOSS-TTS-v1.5 --config examples/config
 
 `PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md).
 
-Incomplete NPU sampling graph capture stops startup. Check the preceding traceback; for out-of-memory or insufficient-headroom errors, free device memory or reduce `stages.tts_engine.engine.cuda_graph_bs` in your configuration.
+Incomplete NPU sampling graph capture stops startup. Check the preceding traceback; for out-of-memory or insufficient-headroom errors, free device memory or reduce `stages.tts_engine.engine.max_running_requests` and remove explicit decode graph batch-size overrides so Omni regenerates the buckets for the new request limit.
 
 ## Server Configuration
 

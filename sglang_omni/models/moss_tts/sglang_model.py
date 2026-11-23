@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import os
 from copy import copy
-from typing import TYPE_CHECKING, Iterable, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Iterable, Literal, Optional, Sequence, Tuple
 
 import torch
 from sglang.srt.layers.logits_processor import (
@@ -63,11 +63,31 @@ logger = logging.getLogger(__name__)
 
 NPU_SAMPLING_GRAPH_CAPTURE_HINT = (
     "Check the preceding capture traceback. For OOM or insufficient capture "
-    "headroom, free device memory or reduce stages.tts_engine.engine.cuda_graph_bs. "
+    "headroom, free device memory or reduce stages.tts_engine.engine.max_running_requests "
+    "and remove explicit decode graph batch-size overrides so Omni regenerates the buckets. "
     "For other errors, check the runtime dependencies in "
     "docs/other_platforms/installation_npu.md. If the error persists, report "
     "the original traceback, runtime versions and batch sizes."
 )
+
+
+def validate_npu_sampling_graph_buckets(
+    device: torch.device,
+    sampler_name: Literal["audio", "mixed"],
+    expected_batch_sizes: tuple[int, ...],
+    captured_batch_sizes: set[int],
+) -> None:
+    """Require complete NPU capture while preserving CUDA's eager fallback."""
+    if current_platform.is_npu() and captured_batch_sizes != set(expected_batch_sizes):
+        raise RuntimeError(
+            f"MOSS-TTS NPU {sampler_name} sampling graph capture is incomplete on {device}: "
+            f"expected batch sizes={list(expected_batch_sizes)}, "
+            f"captured={sorted(captured_batch_sizes)}, "
+            f"missing={sorted(set(expected_batch_sizes) - captured_batch_sizes)}. "
+            f"{NPU_SAMPLING_GRAPH_CAPTURE_HINT}"
+        )
+    else:
+        pass
 
 
 class ChannelLogitsList(list[torch.Tensor | None]):
@@ -855,16 +875,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             capture_bs=buckets,
             disable_padding=disable_padding,
         )
-        if current_platform.is_npu() and set(runner.graphs) != set(buckets):
-            raise RuntimeError(
-                f"MOSS-TTS NPU sampling graph capture is incomplete on {self.device}: "
-                f"expected batch sizes={list(buckets)}, "
-                f"captured={sorted(runner.graphs)}, "
-                f"missing={sorted(set(buckets) - set(runner.graphs))}. "
-                f"{NPU_SAMPLING_GRAPH_CAPTURE_HINT}"
-            )
-        else:
-            pass
+        validate_npu_sampling_graph_buckets(
+            self.device, "audio", buckets, set(runner.graphs)
+        )
         if not runner.graphs:
             logger.warning(
                 "MOSS-TTS Delay sampling CUDA graph captured no buckets; "
@@ -880,16 +893,9 @@ class MossTTSDelaySGLangModel(torch.nn.Module):
             capture_bs=buckets,
             disable_padding=disable_padding,
         )
-        if current_platform.is_npu() and set(mixed_runner.graphs) != set(buckets):
-            raise RuntimeError(
-                f"MOSS-TTS NPU mixed sampling graph capture is incomplete on {self.device}: "
-                f"expected batch sizes={list(buckets)}, "
-                f"captured={sorted(mixed_runner.graphs)}, "
-                f"missing={sorted(set(buckets) - set(mixed_runner.graphs))}. "
-                f"{NPU_SAMPLING_GRAPH_CAPTURE_HINT}"
-            )
-        else:
-            pass
+        validate_npu_sampling_graph_buckets(
+            self.device, "mixed", buckets, set(mixed_runner.graphs)
+        )
         self.mixed_sampling_graph_runner = mixed_runner if mixed_runner.graphs else None
 
     def sampling_graph_available(

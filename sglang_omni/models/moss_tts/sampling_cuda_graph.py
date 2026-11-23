@@ -111,8 +111,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 runner.clear()
             except Exception:
                 logger.exception(
-                    "Failed to release MOSS-TTS Delay sampling CUDA graph "
-                    "resources after capture failure"
+                    f"Failed to release MOSS-TTS Delay sampling graph resources "
+                    f"on {model.device} after capture failure"
                 )
         else:
             pass
@@ -150,9 +150,8 @@ class MossTTSDelaySamplingCudaGraphRunner:
                 self.graphs.pop(bucket, None)
                 if self.is_cuda_oom(exc):
                     logger.exception(
-                        "MOSS-TTS Delay sampling CUDA graph OOM for "
-                        "backbone_bucket=%s; discarding partial graphs",
-                        bucket,
+                        f"MOSS-TTS Delay sampling graph OOM on {self.model.device} "
+                        f"for backbone_bucket={bucket}; discarding partial graphs"
                     )
                     self.clear()
                     return
