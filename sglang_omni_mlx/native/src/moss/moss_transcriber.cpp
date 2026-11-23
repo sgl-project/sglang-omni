@@ -3,10 +3,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
 #include <regex>
 
 #include "common/audio.h"
@@ -458,6 +460,8 @@ MossTranscriber::ChunkResult(const ChunkOutput &output, int sample_count,
   result.verify_round_count = draft_statistics.verify_round_count;
   result.proposed_draft_token_count = draft_statistics.proposed_token_count;
   result.accepted_draft_token_count = draft_statistics.accepted_token_count;
+  result.prefill_ms = draft_statistics.prefill_ms;
+  result.decode_rounds_ms = draft_statistics.decode_rounds_ms;
   return result;
 }
 
@@ -466,7 +470,13 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
                                  const MossOptions &options, int max_new_tokens,
                                  double offset_seconds,
                                  const std::atomic<bool> &cancel) const {
+  const auto embeddings_started = std::chrono::steady_clock::now();
   const mx::array embeddings = PromptEmbeddings(samples, options.prompt);
+  mx::eval(embeddings);
+  const double prompt_embeddings_ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - embeddings_started)
+          .count();
   ChunkOutput output;
   const auto commit = [&](int token_id) {
     return Commit(output, token_id, options, max_new_tokens);
@@ -477,7 +487,12 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
         draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
                        kPrefillStepTokens, commit, cancel);
   } else {
+    const auto prefill_started = std::chrono::steady_clock::now();
     PrefilledSequence sequence = Prefill(embeddings, cancel);
+    const auto decode_rounds_started = std::chrono::steady_clock::now();
+    draft_statistics.prefill_ms = std::chrono::duration<double, std::milli>(
+                                      decode_rounds_started - prefill_started)
+                                      .count();
     mx::array next_token = sequence.first_token;
     bool finished = false;
     while (!finished) {
@@ -493,9 +508,21 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
       mx::async_eval({next_token});
       finished = commit(static_cast<int>(token.item<uint32_t>()));
     }
+    draft_statistics.decode_rounds_ms =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - decode_rounds_started)
+            .count();
   }
-  return ChunkResult(output, static_cast<int>(samples.size()), offset_seconds,
-                     draft_statistics);
+  const auto result_started = std::chrono::steady_clock::now();
+  TranscriptionResult result =
+      ChunkResult(output, static_cast<int>(samples.size()), offset_seconds,
+                  draft_statistics);
+  result.prompt_embeddings_ms = prompt_embeddings_ms;
+  result.chunk_result_ms =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - result_started)
+          .count();
+  return result;
 }
 
 TranscriptionResult
@@ -516,8 +543,11 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
   const int max_new_tokens = FinalMaxNewTokens(samples.size(), options);
   TranscriptionResult combined;
   combined.finish_reason = FinishReason::kStop;
-  for (const AudioChunk &chunk :
-       SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds)) {
+  const std::vector<AudioChunk> chunks =
+      SplitAudio(samples, kChunkDurationSeconds, kMinChunkDurationSeconds);
+  for (size_t window_id = 0; window_id < chunks.size(); ++window_id) {
+    const AudioChunk &chunk = chunks[window_id];
+    const auto transcribe_started = std::chrono::steady_clock::now();
     TranscriptionResult result = TranscribeChunk(
         chunk.samples, options, max_new_tokens, chunk.offset_seconds, cancel);
     const std::string text = StripUnicodeWhitespace(result.text);
@@ -531,6 +561,29 @@ MossTranscriber::Transcribe(const std::vector<float> &samples,
     combined.verify_round_count += result.verify_round_count;
     combined.proposed_draft_token_count += result.proposed_draft_token_count;
     combined.accepted_draft_token_count += result.accepted_draft_token_count;
+    combined.prompt_embeddings_ms += result.prompt_embeddings_ms;
+    combined.prefill_ms += result.prefill_ms;
+    combined.decode_rounds_ms += result.decode_rounds_ms;
+    combined.chunk_result_ms += result.chunk_result_ms;
+    omni_common::MossOfflineFinalTiming timing;
+    timing.window_id = static_cast<int>(window_id);
+    timing.audio_sample_count = static_cast<int>(chunk.samples.size());
+    timing.transcribe_started_at_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            transcribe_started.time_since_epoch())
+            .count();
+    timing.transcribe_at_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    timing.verify_round_count = result.verify_round_count;
+    timing.proposed_draft_token_count = result.proposed_draft_token_count;
+    timing.accepted_draft_token_count = result.accepted_draft_token_count;
+    timing.prompt_embeddings_ms = result.prompt_embeddings_ms;
+    timing.prefill_ms = result.prefill_ms;
+    timing.decode_rounds_ms = result.decode_rounds_ms;
+    timing.chunk_result_ms = result.chunk_result_ms;
+    std::cerr << omni_common::MossOfflineFinalTimingJson(timing).dump() << "\n";
     // Note (Dayuxiaoshui): one truncated chunk cuts the whole transcript short.
     if (result.finish_reason == FinishReason::kLength) {
       combined.finish_reason = FinishReason::kLength;

@@ -37,6 +37,10 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
   // Ordered text of each window in a multi-window Whisper request.
   std::vector<std::string> window_texts;
 };
@@ -59,9 +63,31 @@ struct MossPreviewTiming {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
+};
+
+// Offline Final timing without prompt, transcript or speaker content. Each
+// window is one chunk of the full request, not a realtime preview window.
+struct MossOfflineFinalTiming {
+  int window_id = 0;
+  int audio_sample_count = 0;
+  int64_t transcribe_started_at_ms = 0;
+  int64_t transcribe_at_ms = 0;
+  int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
+  double prompt_embeddings_ms = 0.0;
+  double prefill_ms = 0.0;
+  double decode_rounds_ms = 0.0;
+  double chunk_result_ms = 0.0;
 };
 
 nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);
+nlohmann::ordered_json
+MossOfflineFinalTimingJson(const MossOfflineFinalTiming &timing);
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
 // and language, emotion and event when set.

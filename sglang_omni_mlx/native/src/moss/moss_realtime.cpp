@@ -156,6 +156,10 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
               result->proposed_draft_token_count;
           timing->accepted_draft_token_count =
               result->accepted_draft_token_count;
+          timing->prompt_embeddings_ms = result->prompt_embeddings_ms;
+          timing->prefill_ms = result->prefill_ms;
+          timing->decode_rounds_ms = result->decode_rounds_ms;
+          timing->chunk_result_ms = result->chunk_result_ms;
           self->Publish(decode, *result);
           // Stamped after Publish so publish_at_ms - transcribe_at_ms is the
           // real publish cost; the event line goes out once it is complete.
