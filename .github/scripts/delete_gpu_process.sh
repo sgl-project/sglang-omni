@@ -14,6 +14,12 @@ memory_threshold_mb="${OMNI_CI_GPU_MEMORY_CLEAN_THRESHOLD_MB:-1024}"
 wait_timeout_seconds="${OMNI_CI_GPU_CLEAN_WAIT_SECONDS:-120}"
 poll_seconds="${OMNI_CI_GPU_CLEAN_POLL_SECONDS:-5}"
 
+# note (0xtoward): CPU jobs share their host with the GPU runner.
+if [[ ${CUDA_VISIBLE_DEVICES-unset} == "" && ${OMNI_CI_ALLOW_UNSCOPED_GPU_CLEAN:-} != 1 ]]; then
+    echo "CPU job: skipping GPU cleanup."
+    exit 0
+fi
+
 # Capture physical targets BEFORE unsetting CVD for nvidia-smi.
 _raw_cvd="${CUDA_VISIBLE_DEVICES:-}"
 target_gpu_ids="${_raw_cvd}"

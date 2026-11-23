@@ -9,10 +9,16 @@ if [ -n "${OMNI_CI_CPUSET:-}" ]; then
   fi
   # note (Jiaxin Deng): readback catches the kernel silently narrowing the
   # mask (e.g. offline CPUs in the lane spec), mirroring the perf fixture.
-  _pin_effective="$(taskset -pc $$ | awk '{print $NF}')"
-  if [ "${_pin_effective}" != "${OMNI_CI_CPUSET}" ]; then
-    echo "::error::pinned mask '${_pin_effective}' != requested OMNI_CI_CPUSET='${OMNI_CI_CPUSET}'"
-    exit 2
-  fi
-  unset _pin_effective
+  python3 - "$$" "${OMNI_CI_CPUSET}" <<'PYTHON' || exit 2
+import os
+import sys
+
+requested = set()
+for part in sys.argv[2].split(","):
+    first, _, last = part.partition("-")
+    requested.update(range(int(first), int(last or first) + 1))
+effective = os.sched_getaffinity(int(sys.argv[1]))
+if effective != requested:
+    sys.exit(f"::error::requested CPUs {sorted(requested)}, got {sorted(effective)}")
+PYTHON
 fi

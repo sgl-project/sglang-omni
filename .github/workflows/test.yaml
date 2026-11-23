@@ -22,53 +22,31 @@ env:
 
 jobs:
   unit-test:
-    name: ${{ matrix.name }}
+    name: unit-test
     runs-on: [self-hosted, h100]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: unit-test-a
-            partition: 0
-          - name: unit-test-b
-            partition: 1
-          - name: unit-test-c
-            partition: 2
-    container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
+    timeout-minutes: 50
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
+      - uses: actions/checkout@v4
         with:
-          venv-name: omni
+          persist-credentials: false
 
-      - name: Run test
-        timeout-minutes: 30
+      - name: Run CPU partitions
         shell: bash
-        env:
-          # note (Jingwen): Hide CUDA from the default unit-test process. Tests
-          # that need an accelerator belong in the unit-test-accelerator jobs below.
-          CUDA_VISIBLE_DEVICES: ""
-          OMNI_CI_STAGE_LABEL: ${{ matrix.name }}
+        run: bash .github/scripts/run_cpu_shards.sh 3
+
+      - name: Remove remaining containers from this job
+        if: always()
+        shell: bash
         run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/ -v -m "not benchmark and not accelerator" -x \
-            -p scripts.ci.utils.pytest_partition \
-            --auto-partition-id "${{ matrix.partition }}" \
-            --auto-partition-size 3 \
-            --partition-model-file .github/unit_test_durations.json
+          docker ps -aq --filter "label=omni.cpu-job=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | xargs -r docker rm -f
+
+      - name: Upload partition logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-shard-logs
+          path: ${{ runner.temp }}/omni-cpu-${{ github.run_id }}-${{ github.run_attempt }}/*
+          if-no-files-found: ignore
 
   unit-test-accelerator:
     name: ${{ matrix.name }}
