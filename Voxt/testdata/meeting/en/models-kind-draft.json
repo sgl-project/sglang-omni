@@ -13,6 +13,7 @@
             "default": false,
             "installed": true,
             "size_text": "2.0 GB on disk",
+            "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
             "actions": [
               {
                 "kind": "hide",

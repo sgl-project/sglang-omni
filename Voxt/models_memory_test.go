@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/omni/omnitest"
@@ -113,8 +114,15 @@ func TestModelsMemory(t *testing.T) {
 	pm.set(pid, 1<<30)
 	timers.advance(memPoll)
 	frames(tt)
-	if a.modelMem[models.ASRFast] != 1<<30 || has(tt, "Loaded") {
+	if a.modelMem[models.ASRFast] != 1<<30 || has(tt, "Loaded") || has(tt, "1.0 GB in memory") {
 		t.Errorf("second measurement: %v %q", a.modelMem, tt.Texts())
+	}
+	i18n.SetLocale("zh-Hans")
+	frames(tt)
+	for _, text := range []string{"已载入", "已载入 · 占用内存 1.0 GB", "占用内存 1.0 GB"} {
+		if has(tt, text) {
+			t.Errorf("Chinese memory text returned to the simplified rows: %q", tt.Texts())
+		}
 	}
 
 	// Another page stops the ticks; the next visit measures at once.
@@ -134,7 +142,7 @@ func TestModelsMemory(t *testing.T) {
 	}
 	a.navigate(modelsPath)
 	frames(tt)
-	if has(tt, "Loaded") || len(a.modelMem) != 0 {
+	if has(tt, "Loaded") || has(tt, "已载入") || len(a.modelMem) != 0 {
 		t.Errorf("after the unload: %v %q", a.modelMem, tt.Texts())
 	}
 	if !a.memPolling {

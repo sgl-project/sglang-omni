@@ -14,6 +14,7 @@
             "default": false,
             "installed": true,
             "size_text": "占用 3.3 GB",
+            "languages": "200 多种语言，中文和英语效果最好",
             "actions": [
               {
                 "kind": "delete",

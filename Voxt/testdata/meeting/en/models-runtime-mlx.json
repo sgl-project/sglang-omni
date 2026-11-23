@@ -14,6 +14,7 @@
             "default": false,
             "installed": true,
             "size_text": "3.3 GB on disk",
+            "languages": "Over 200 languages, best in Chinese and English",
             "actions": [
               {
                 "kind": "delete",

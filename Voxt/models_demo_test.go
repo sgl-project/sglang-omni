@@ -3,9 +3,12 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestModelsDemoActionControls(t *testing.T) {
@@ -165,6 +168,66 @@ func TestModelsDemoActionControls(t *testing.T) {
 			}
 			if test.check != nil {
 				test.check(t, host)
+			}
+		})
+	}
+}
+
+// TestModelsDemoTooltips keeps language and family guidance available on hover
+// without putting it back into the simplified rows.
+func TestModelsDemoTooltips(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	for _, locale := range []string{"en", "zh-Hans"} {
+		t.Run(locale, func(t *testing.T) {
+			host, err := loadMeetingDemoHost("testdata/meeting")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectMeetingDemoFixture(t, host, locale+"/models-page-normal")
+			state := host.modelsViewState()
+			var single modelRowViewState
+			for _, card := range state.ASR {
+				if card.FamilyName == "" {
+					single = card.Rows[0]
+					break
+				}
+			}
+			if single.ID == "" || state.Dictation == nil {
+				t.Fatal("the fixture needs a single-model card and System dictation")
+			}
+			for _, test := range []struct {
+				name   string
+				anchor string
+				want   string
+			}{
+				{name: "family languages", anchor: state.ASR[0].FamilyName, want: state.ASR[0].Languages},
+				{name: "single-model languages", anchor: single.Name, want: uitext.ModelLanguages(single.ID)},
+				{name: "dictation languages", anchor: state.Dictation.Rows[0].Name, want: uitext.ModelLanguages(state.Dictation.Rows[0].ID)},
+				{name: "family status", anchor: state.ASR[0].Rows[0].SizeText, want: state.ASR[0].Rows[0].FamilyText},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					if test.want == "" {
+						t.Fatal("empty tooltip expectation")
+					}
+					tester := newMeetingDemoTester(t, host)
+					tester.SetSize(1000, 6000)
+					frames(tester)
+					if tester.HasText(test.want) {
+						t.Fatalf("tooltip starts visible: %q", test.want)
+					}
+					anchor, ok := tester.Find(test.anchor)
+					if !ok {
+						t.Fatalf("no anchor %q in %q", test.anchor, tester.Texts())
+					}
+					tester.Move(anchor.X+anchor.W/2, anchor.Y+anchor.H/2)
+					frames(tester)
+					tester.Advance(time.Second)
+					frames(tester)
+					if !tester.HasText(test.want) {
+						t.Fatalf("hovering %q does not show %q: %q", test.anchor, test.want, tester.Texts())
+					}
+				})
 			}
 		})
 	}

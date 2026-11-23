@@ -58,6 +58,7 @@ type modelRowViewState struct {
 	Installed  bool                    `json:"installed"`
 	SizeText   string                  `json:"size_text"`
 	FamilyText string                  `json:"family_text,omitempty"`
+	Languages  string                  `json:"languages,omitempty"`
 	Actions    []modelActionViewState  `json:"actions"`
 	Progress   *modelProgressViewState `json:"progress,omitempty"`
 	Error      *modelErrorViewState    `json:"error,omitempty"`
@@ -222,7 +223,9 @@ func buildModelCards(translator *i18n.Translator, input modelsViewStateInput, ki
 }
 
 func buildSingleModelCard(translator *i18n.Translator, input modelsViewStateInput, model models.Model) modelCardViewState {
-	return modelCardViewState{Key: "model-" + model.ID, Rows: []modelRowViewState{buildModelRowViewState(translator, input, model)}}
+	row := buildModelRowViewState(translator, input, model)
+	row.Languages = uitext.ModelLanguagesFor(translator, model.ID)
+	return modelCardViewState{Key: "model-" + model.ID, Rows: []modelRowViewState{row}}
 }
 
 func buildHiddenModelCards(translator *i18n.Translator, input modelsViewStateInput) []modelCardViewState {
@@ -253,7 +256,7 @@ func buildDictationCard(translator *i18n.Translator, input modelsViewStateInput,
 	usedBy := modelsUsedBy(translator, input.Settings, input.InstalledASR, input.InstalledLLM, local.ASR, dictation.ModelID)
 	row := modelRowViewState{
 		ID: dictation.ModelID, Kind: string(local.ASR), Name: uitext.ModelNameFor(translator, dictation.ModelID),
-		SizeText: translator.T("Built-in"),
+		SizeText: translator.T("Built-in"), Languages: uitext.ModelLanguagesFor(translator, dictation.ModelID),
 	}
 	row.Actions = buildHideAction(translator, input, dictation.ModelID, usedBy)
 	row.Actions = append(row.Actions, buildAssignAction(translator, models.Model{Kind: models.ASR, ID: dictation.ModelID})...)

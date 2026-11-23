@@ -227,6 +227,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 2.5 GB",
+                "languages": "25 种欧洲语言，包括英语、德语、法语、西班牙语和俄语",
                 "actions": [
                   {
                     "kind": "hide",
@@ -255,6 +256,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 936.5 MB",
+                "languages": "中文、粤语、英语、日语和韩语",
                 "actions": [
                   {
                     "kind": "hide",
@@ -283,6 +285,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 4.1 GB",
+                "languages": "14 种语言，包括中文、英语、日语和韩语",
                 "actions": [
                   {
                     "kind": "hide",
@@ -311,6 +314,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 755.8 MB",
+                "languages": "28 种语言，包括中文、英语、日语和韩语",
                 "actions": [
                   {
                     "kind": "hide",
@@ -339,6 +343,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "需下载 1.8 GB",
+                "languages": "中文和英语",
                 "actions": [
                   {
                     "kind": "hide",

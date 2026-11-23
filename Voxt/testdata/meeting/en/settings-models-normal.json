@@ -227,6 +227,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "2.5 GB download",
+                "languages": "25 European languages, including English, German, French, Spanish and Russian",
                 "actions": [
                   {
                     "kind": "hide",
@@ -255,6 +256,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "936.5 MB download",
+                "languages": "Chinese, Cantonese, English, Japanese and Korean",
                 "actions": [
                   {
                     "kind": "hide",
@@ -283,6 +285,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "4.1 GB download",
+                "languages": "14 languages, including Chinese, English, Japanese and Korean",
                 "actions": [
                   {
                     "kind": "hide",
@@ -311,6 +314,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "755.8 MB download",
+                "languages": "28 languages, including Chinese, English, Japanese and Korean",
                 "actions": [
                   {
                     "kind": "hide",
@@ -339,6 +343,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "1.8 GB download",
+                "languages": "Chinese and English",
                 "actions": [
                   {
                     "kind": "hide",

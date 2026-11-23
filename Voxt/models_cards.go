@@ -61,7 +61,7 @@ func modelRow(c *ui.Context, row modelRowViewState, alone bool, actions modelsAc
 				if alone {
 					ui.Icon(c, icon.Linear).Size(px(t, 20), px(t, 20)).TextColor(colors.Text2).Shrink(0)
 				}
-				ui.Text(c, row.Name).FontWeight(600)
+				ui.Text(c, row.Name).FontWeight(600).Tooltip(row.Languages)
 				if row.Default {
 					tagChip(c, i18n.T("Default"))
 				}

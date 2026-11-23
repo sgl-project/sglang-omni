@@ -14,6 +14,7 @@
   "Another app updated the shared format. Update Voxt to change these settings.": "另一个 App 更新了共享格式，请先更新 Voxt，再改这些设置。",
   "Another app is downloading or using this model. Try again later.": "另一个 App 正在下载或使用这个模型，请稍后再试。",
   "Applies to all apps that use this model library": "对使用这个模型库的所有 App 生效",
+  "Built-in": "内置",
   "Cancel downloading %s": "取消下载 %s",
   "Could not delete the model: %v": "无法删除模型：%v",
   "Could not use the model: %v": "无法使用这个模型：%v",

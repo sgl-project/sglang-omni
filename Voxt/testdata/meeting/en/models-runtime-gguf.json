@@ -14,6 +14,7 @@
             "default": false,
             "installed": true,
             "size_text": "1.1 GB on disk",
+            "languages": "Translates between 33 languages, including Chinese, English, Japanese, Korean and Cantonese",
             "actions": [
               {
                 "kind": "delete",

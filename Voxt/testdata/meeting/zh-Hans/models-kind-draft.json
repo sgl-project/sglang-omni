@@ -13,6 +13,7 @@
             "default": false,
             "installed": true,
             "size_text": "占用 2.0 GB",
+            "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
             "actions": [
               {
                 "kind": "hide",

@@ -13,7 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Simpler Speech model rows** (#3856): each row keeps the model's name, size and actions; descriptions, tags, feature-use and memory lines are gone, family languages and sharing details remain in tooltips, and the draft row is called Speed-up model. Redundant Speech context and Network captions are removed too.
+- **Simpler Speech model rows** (#3856): each row keeps the model's name, size and actions; descriptions, tags, feature-use and memory lines are gone, language and sharing details remain in tooltips, and the draft row is called Speed-up model. Redundant Speech context and Network captions are removed too.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
@@ -101,7 +101,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **语音识别模型列表更简洁**（#3856）：每行只保留模型名称、大小和操作，去掉描述、标签、用途和内存行；系列支持的语言和共享信息仍可在悬浮提示里查看，草稿模型一行改名为“加速模型”。识别上下文和网络设置里的重复说明也一并去掉。
+- **语音识别模型列表更简洁**（#3856）：每行只保留模型名称、大小和操作，去掉描述、标签、用途和内存行；支持的语言和共享信息仍可在悬浮提示里查看，草稿模型一行改名为“加速模型”。识别上下文和网络设置里的重复说明也一并去掉。
 - **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。

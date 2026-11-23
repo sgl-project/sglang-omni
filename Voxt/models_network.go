@@ -57,7 +57,9 @@ func networkDialog(c *ui.Context, state *modelsNetworkViewState, actions modelsA
 		ui.Box(c).Height(px(t, sp2)).Shrink(0)
 		ui.Text(c, i18n.T("Download source")).FontWeight(600)
 		segmentedFit(c.Key("net-source"), &form.source, state.SourceLabels...).Label(i18n.T("Download source"))
-		caption(c, state.SourceCaption)
+		if state.SourceCaption != "" {
+			caption(c, state.SourceCaption)
+		}
 		networkFamilyLine(c, state.SourceFamily, actions)
 	}, func() {
 		ui.Spacer(c)

@@ -52,6 +52,10 @@ func TestModelsPage(t *testing.T) {
 	frames(tt)
 	frames(tt)
 	texts := tt.Texts()
+	localModelTexts := texts
+	if online := slices.Index(texts, "Online services"); online >= 0 {
+		localModelTexts = texts[:online]
+	}
 	for _, family := range []string{"Qwen3-ASR", "Whisper"} {
 		if slices.Index(texts, family) < 0 {
 			t.Errorf("expected a %s family card: %q", family, texts)
@@ -67,6 +71,9 @@ func TestModelsPage(t *testing.T) {
 		if has(tt, s) {
 			t.Errorf("extra model row content %q in %q", s, tt.Texts())
 		}
+	}
+	if slices.Contains(localModelTexts, "Realtime") {
+		t.Errorf("extra local model tag in %q", localModelTexts)
 	}
 	if has(tt, "Silero VAD v6") || has(tt, "Installed") || has(tt, "Qwen3.5 4B OptiQ (4bit)") || has(tt, "Language models no longer used") || has(tt, "Speed-up model") {
 		t.Error("the VAD, a language model or a draft is listed, or a model is installed")
@@ -577,10 +584,10 @@ func TestModelsPageWhisperDraft(t *testing.T) {
 }
 
 // TestModelCardsLineUp: a single model's size starts at the card's edge,
-// as System dictation's and family rows' sizes do. A long name may wrap
-// below its icon without moving the size (#3854: single cards used to
-// leave an empty icon column). The same holds for the language models
-// and Chinese.
+// as System dictation's and family rows' sizes do. Name wrapping and its x
+// position vary with runner font metrics, so the size line is the stable
+// layout oracle; the 28 DIP single-row name shift still needs visual review.
+// Rendering one row per card keeps duplicate size strings unambiguous.
 func TestModelCardsLineUp(t *testing.T) {
 	for _, loc := range []string{"en", "zh-Hans"} {
 		for _, w := range []int{windowWidth, windowMinWidth} {
@@ -593,14 +600,19 @@ func TestModelCardsLineUp(t *testing.T) {
 			frames(tt)
 			frames(tt)
 			view := a.modelsPageModel()
-			sizes := map[string]string{}
-			for _, card := range append(append(append([]modelCardViewState{}, view.ASR...), view.LLM...), view.Hidden...) {
+			cards := map[string]modelCardViewState{}
+			addCard := func(card modelCardViewState) {
 				for _, row := range card.Rows {
-					sizes[row.ID] = row.SizeText
+					scoped := card
+					scoped.Rows = []modelRowViewState{row}
+					cards[row.ID] = scoped
 				}
 			}
+			for _, card := range append(append(append([]modelCardViewState{}, view.ASR...), view.LLM...), view.Hidden...) {
+				addCard(card)
+			}
 			if view.Dictation != nil {
-				sizes[dictation.ModelID] = view.Dictation.Rows[0].SizeText
+				addCard(*view.Dictation)
 			}
 			ids := []string{dictation.ModelID}
 			for _, m := range models.Catalog() {
@@ -613,9 +625,17 @@ func TestModelCardsLineUp(t *testing.T) {
 				if _, ok := tt.Find(uitext.ModelName(id)); !ok {
 					t.Fatalf("%s %d wide: no name for %s in %q", loc, w, id, firstTexts(tt))
 				}
-				r, ok := tt.Find(sizes[id])
+				scoped, ok := cards[id]
 				if !ok {
-					t.Fatalf("%s %d wide: no size for %s in %q", loc, w, id, firstTexts(tt))
+					t.Fatalf("%s %d wide: no card for %s", loc, w, id)
+				}
+				rowTester := ui.NewTester(func(c *ui.Context) {
+					pageColumn(c).Children(func() { modelCard(c, scoped, nil) })
+				}, w, 500)
+				frames(rowTester)
+				r, ok := rowTester.Find(scoped.Rows[0].SizeText)
+				if !ok {
+					t.Fatalf("%s %d wide: no size for %s in %q", loc, w, id, rowTester.Texts())
 				}
 				if i == 0 {
 					x0 = r.X
