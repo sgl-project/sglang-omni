@@ -29,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
 - **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
+- **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 
 ### Fixed
 
@@ -48,6 +49,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports oversized images instead of silently dropping them, and distinguishes them from files or images it cannot read.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
 - **Check again no longer makes the permission rows flash** (#4365): in Settings → Permissions and the setup guide's Permissions step, a granted Microphone or Speech Recognition row showed "Not asked yet" for a moment after Check again or when you came back to Voxt. The rows now keep what they show until the helper answers.
+- **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
 
 ### 中文
 
@@ -76,6 +78,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
 - **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
+- **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
+- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 #### 修复
 
@@ -94,25 +98,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 - **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片太大，不再静默丢弃，也会把超限图片与读不出来的文件或图片区分开。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
-### Fixed
-
-- **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
-
-### 中文
-
-#### 修复
-
 - **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
-### Changed
-
-- **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
-
-### 中文
-
-#### 变更
-
-- **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
-- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 ## [2.1.2] - 2026-11-19
 

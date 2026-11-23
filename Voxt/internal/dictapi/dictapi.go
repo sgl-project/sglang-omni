@@ -145,8 +145,12 @@ func Import(path, name string, data []byte, dryRun bool) (Result, error) {
 	if _, err := conn.Write(append(head, '\n')); err != nil {
 		return Result{}, fmt.Errorf("the connection to Voxt broke: %v", err)
 	}
-	if _, err := conn.Write(data); err != nil {
-		return Result{}, fmt.Errorf("the connection to Voxt broke: %v", err)
+	// An empty file has no body to send: the app may answer and close after
+	// the header, and a write to the closed socket fails with a broken pipe.
+	if len(data) > 0 {
+		if _, err := conn.Write(data); err != nil {
+			return Result{}, fmt.Errorf("the connection to Voxt broke: %v", err)
+		}
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
