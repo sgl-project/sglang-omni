@@ -101,6 +101,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 				ui.Icon(context, icons.VoxtAnswer.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Shrink(0).Label(i18n.T("Rewrite"))
 				ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
+				if card := state.Card; card != nil && card.Session != "" {
+					ui.Text(context, card.Session).FontSize(11).TextColor(ovText2).SingleLine().Shrink(0)
+				}
 
 				if state.Recording {
 					cardWave(context, state.Levels[:], state.Recording, state.Heard, state.Motion, state.Phase)

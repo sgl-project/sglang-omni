@@ -21,6 +21,8 @@ import (
 
 type settingsShortcutsLocalUI struct {
 	strictShortcuts, returnFinishes bool
+	sessions                        [3]keyRow
+	sessionEditing                  [3]bool
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.
@@ -59,6 +61,29 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 			shortcutRow(c, row, actions, state.AccessibilityInstalled, keysWidth)
 		}
 	})
+	caption(c, i18n.T("Sessions keep separate answer cards and conversations. A session's shortcut switches Rewrite, Translate and Transcribe to it."))
+	for i := range state.Sessions {
+		slot := &state.Sessions[i]
+		settingRowUnder(c, "sc-session-"+strconv.Itoa(i+1), slot.Title, "", func() {
+			if local.sessionEditing[i] {
+				keysField(c, &local.sessions[i], slot.Title, func(keys string) {
+					actions.setSessionKeys(i, keys)
+					local.sessionEditing[i] = false
+				}, slot.Recorder, actions)
+				return
+			}
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				kbd(c, slot.Recorder.DisplayedKeys)
+				if ghostButton(c.Key("change"), i18n.T("Change…")).Clicked() {
+					local.sessionEditing[i] = true
+					local.sessions[i] = keyRow{}
+				}
+			})
+		})
+		if len(slot.Problems) > 0 {
+			problemLines(c, slot.Problems)
+		}
+	}
 	settingRow(c, "sc-return", i18n.T("Return finishes a recording"), i18n.T("While Transcribe, Translate or Rewrite records, Return stops recording, and the key goes nowhere else. Off: Return reaches the app as usual."), func() {
 		if ui.Switch(c.Key("sc-return-switch"), &local.returnFinishes).Label(i18n.T("Return finishes a recording")).Changed() {
 			actions.setReturnFinishes(local.returnFinishes)

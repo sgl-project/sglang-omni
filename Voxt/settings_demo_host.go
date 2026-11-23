@@ -161,6 +161,10 @@ func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStric
 
 func (host *meetingDemoHost) setReturnFinishes(on bool) { host.record("setReturnFinishes %t", on) }
 
+func (host *meetingDemoHost) setSessionKeys(slot int, keys string) {
+	host.record("setSessionKeys %d %s", slot, keys)
+}
+
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {
 	host.record("setSendClipboardImage %t", on)

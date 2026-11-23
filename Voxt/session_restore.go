@@ -177,6 +177,7 @@ func (a *app) restoreAnswer(conversation string) {
 					}
 				}
 				a.setAside(false)
+				card.slot = a.slot // the reopened card joins the current session slot
 				a.answer, a.followUp, a.notice = card, "", nil
 				a.buildTrayMenu()
 				a.syncHotkeys()

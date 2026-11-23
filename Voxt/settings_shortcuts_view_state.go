@@ -37,18 +37,26 @@ type shortcutPresetPickerViewState struct {
 	Warnings []string                        `json:"warnings"`
 }
 
+type sessionSlotViewState struct {
+	Title    string               `json:"title"`
+	Recorder keyRecorderViewState `json:"recorder"`
+	Problems []string             `json:"problems"`
+}
+
 type settingsShortcutsViewState struct {
 	AccessibilityInstalled bool                           `json:"accessibility_installed"`
 	StrictShortcuts        bool                           `json:"strict_shortcuts"`
 	ReturnFinishes         bool                           `json:"return_finishes"`
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
+	Sessions               []sessionSlotViewState         `json:"sessions"`
 }
 
 type settingsShortcutsStateInput struct {
 	Features               settings.Features
 	FamilyConflicts        []shortcuts.Conflict
 	AccessibilityInstalled bool
+	HelperRecordsKeys      bool
 }
 
 func buildSettingsShortcutsViewState(translator *i18n.Translator, input settingsShortcutsStateInput) settingsShortcutsViewState {
@@ -72,6 +80,17 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 			lines := append(slices.Clone(problems[index]), conflictLinesFor(translator, input.FamilyConflicts, feature, index)...)
 			state.Rows = append(state.Rows, buildSettingsShortcutRow(translator, feature, index, &bindings[index], lines))
 		}
+	}
+	for i, id := range hotkey.Sessions {
+		recorder := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.Features.Sessions[i].Keys)
+		if input.Features.Sessions[i].Keys == "" {
+			recorder.DisplayedKeys = uitext.HotkeyGlyphs("") // "—": the slot is off
+		}
+		state.Sessions = append(state.Sessions, sessionSlotViewState{
+			Title:    uitext.FeatureTitleFor(translator, id),
+			Recorder: recorder,
+			Problems: uitext.HotkeyProblemsFor(translator, input.Features, id)[0],
+		})
 	}
 	return state
 }

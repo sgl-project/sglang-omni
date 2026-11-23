@@ -156,6 +156,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
+		if slot, ok := hotkey.SessionSlot(d.Feature); ok {
+			a.switchSlot(slot) // the multi-session prototype (#4005)
+			return
+		}
 		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {
 			return // only Transcribe starts beside a streaming answer (wall 116)
 		}

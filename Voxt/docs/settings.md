@@ -195,6 +195,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `features.pasteLast` | shortcut | `{"keys": "Control+Option+V", "trigger": "tap"}` | Transcribe → Paste the last result |
 | `features.cancel` | shortcut | `{"keys": "Escape", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Transcribe → Cancel recording |
 | `features.note` | shortcut | `{"keys": "RightCommand", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Notes |
+| `features.sessions` | array of 3 shortcuts | `[{"keys": "Option+1", "trigger": "tap"}, {"keys": "Option+2", "trigger": "tap"}, {"keys": "Option+3", "trigger": "tap"}]` (tap only; `"keys": ""` = that slot off) | Settings → Shortcuts → Sessions |
 | `features.strictShortcuts` | bool | `false` | Settings → Shortcuts → Strict shortcuts: only the starting feature's shortcut stops a recording |
 | `features.returnFinishes` | bool | `true` | Settings → Shortcuts → Return finishes a recording: Return stops a Transcribe, Translate or Rewrite recording (not a note's); off, Return reaches the app. Until 2.1.3 it was `features.transcribe.returnFinishes`, Transcribe's alone, which a document without this field still keeps |
 

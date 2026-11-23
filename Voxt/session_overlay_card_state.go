@@ -25,9 +25,12 @@ const (
 
 // sessionCardViewState is the JSON-safe display state of one answer card.
 type sessionCardViewState struct {
-	ID             string                `json:"id"`
-	Kind           string                `json:"kind"`
-	Title          string                `json:"title"`
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	// Session is the card's session slot ("Session 2"), once a session
+	// shortcut was pressed (#4005); "": the one default slot.
+	Session        string                `json:"session,omitempty"`
 	Message        string                `json:"message,omitempty"`
 	Why            string                `json:"why,omitempty"`
 	TargetName     string                `json:"target_name,omitempty"`
@@ -104,6 +107,8 @@ type sessionCardBlock struct {
 type sessionCardProjectionInput struct {
 	Snapshot          session.Snapshot
 	Answer            answerCard
+	SlotsUsed         bool
+	Slot              int
 	Own               bool
 	Writing           bool
 	HideLiveText      bool
@@ -138,7 +143,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		snapshot.Partial, snapshot.Draft = "", ""
 	}
 	if !card.open {
-		state := sessionCardViewState{SizeStep: input.SizeStep}
+		state := sessionCardViewState{SizeStep: input.SizeStep, Session: sessionSlotLabel(translator, input, input.Slot)}
 		if input.Writing {
 			state.ID, state.Kind = snapshot.ID, string(snapshot.Kind)
 			state.Title = sessionCardTitleFor(translator, snapshot.Kind, snapshot.Title)
@@ -162,6 +167,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	state := sessionCardViewState{
 		ID: card.id, Kind: string(card.kind), Title: sessionCardTitleFor(translator, card.kind, card.title),
+		Session: sessionSlotLabel(translator, input, card.slot),
 		Message: card.msg, Why: card.why, TargetName: card.target.Name,
 		Language: lang, LanguageLabel: compose.LanguageName(lang, translator.Locale()),
 		Thinking: sessionThinkingValueOf(think), SizeStep: input.SizeStep,
@@ -232,6 +238,15 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		state.Message, _, _ = sessionProblemTextFor(translator, card.problem)
 	}
 	return state
+}
+
+// sessionSlotLabel is the card's session slot label ("Session 2"), ""
+// until a session shortcut was pressed (#4005).
+func sessionSlotLabel(translator *i18n.Translator, input sessionCardProjectionInput, slot int) string {
+	if !input.SlotsUsed {
+		return ""
+	}
+	return translator.T("Session %d", slot+1)
 }
 
 // sessionCardBodyBlock is an ended card's text, its dictionary words'
@@ -424,6 +439,8 @@ type sessionCardProjectionKey struct {
 	own, writing, hideLiveText            bool
 	canFollowUp, copied, conversation     bool
 	copyKey, insertKey                    bool
+	slotsUsed                             bool
+	slot                                  int
 	redoWriting                           bool
 	problemCode, attachment               string
 	thumbnailCount, inputCount            int
@@ -463,6 +480,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
 		copyKey: input.CopyKey, insertKey: input.InsertKey,
+		slotsUsed: input.SlotsUsed, slot: card.slot,
 		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
 	}
 }
@@ -482,7 +500,8 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		kind = snapshot.Kind
 	}
 	input := sessionCardProjectionInput{
-		Snapshot: snapshot, Answer: a.answer, Own: a.cardSessionLive(), Writing: a.writingAnswer(),
+		Snapshot: snapshot, Answer: a.answer, SlotsUsed: a.slotsUsed, Slot: a.slot,
+		Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
 		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),
 	}

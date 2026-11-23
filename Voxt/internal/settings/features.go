@@ -3,6 +3,7 @@ package settings
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 )
 
 // Features: the three features and the shared paste-last and cancel
@@ -22,6 +23,11 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	// Sessions switch the session slot (Option+1 … by default; empty
+	// keys: off): Rewrite, Translate and Transcribe then run in that
+	// slot, each keeping its own answer card and conversation (the
+	// multi-session prototype, #4005). Only taps.
+	Sessions [3]Hotkey `json:"sessions,omitzero"`
 	// ReturnFinishes stops a Transcribe, Translate or Rewrite recording
 	// when Return is pressed (Settings → Shortcuts); the key is consumed,
 	// not sent after the text is inserted. Not a note's. Off: Return goes
@@ -169,5 +175,35 @@ func migrateReturnFinishes(data []byte, f *Features) {
 	}
 	if json.Unmarshal(data, &doc) == nil && doc.Features.ReturnFinishes == nil && doc.Features.Transcribe.ReturnFinishes != nil {
 		f.ReturnFinishes = *doc.Features.Transcribe.ReturnFinishes
+	}
+}
+
+const (
+	// DefaultSession1 … DefaultSession3 are the session slots' defaults:
+	// Option with a digit, free in the default set and in macOS, near
+	// the feature keys (the multi-session prototype, #4005).
+	DefaultSession1 = "Option+1"
+	DefaultSession2 = "Option+2"
+	DefaultSession3 = "Option+3"
+)
+
+// migrateSessionKeys gives a document from before the session slots their
+// default shortcuts, unless another shortcut already taps those keys:
+// that slot then stays off. Such a document has no sessions key; one that
+// has it is the user's.
+func migrateSessionKeys(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			Sessions json.RawMessage `json:"sessions"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) != nil || doc.Features.Sessions != nil {
+		return
+	}
+	defaults := Defaults().Features.Sessions
+	for i, d := range defaults {
+		if tapsKeys(*f, d.Keys) || strings.TrimSpace(f.Note.Keys) == d.Keys {
+			f.Sessions[i] = Hotkey{}
+		}
 	}
 }

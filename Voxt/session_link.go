@@ -77,6 +77,13 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// slot is the current session slot (0 by default): a session
+	// shortcut's tap parks this slot's cards in slots and restores the
+	// chosen one's (session_slots.go, #4005). slotsUsed turns on the
+	// card's session label once a slot shortcut was pressed.
+	slot      int
+	slots     [slotCount]parkedSlot
+	slotsUsed bool
 	// reopen is the history's continuable conversations, newest first.
 	reopen     []reopenConversation
 	restoreSeq int
@@ -115,6 +122,7 @@ type answerCard struct {
 	id         string // the session whose result it shows
 	conv       string // the first session of its conversation (store.Entry.Conversation)
 	kind       store.Kind
+	slot       int // the session slot it belongs to (#4005)
 	text       string
 	highlights []dict.Span
 	title      string // Rewrite's answer title ("" for none)

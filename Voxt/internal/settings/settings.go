@@ -374,12 +374,17 @@ func Defaults() Settings {
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe:     Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
-			Translate:      Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:        Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
-			PasteLast:      Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
-			Cancel:         Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
-			Note:           Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
+			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true},
+			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
+			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
+			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
+			Sessions: [3]Hotkey{
+				{Keys: DefaultSession1, Trigger: TriggerTap},
+				{Keys: DefaultSession2, Trigger: TriggerTap},
+				{Keys: DefaultSession3, Trigger: TriggerTap},
+			},
 			ReturnFinishes: true,
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},
@@ -411,6 +416,7 @@ func Migrate(data []byte) (Settings, error) {
 		migrateShortcuts(&s.Features)
 	}
 	migrateNoteKeys(data, &s.Features)
+	migrateSessionKeys(data, &s.Features)
 	migrateShowCard(data, &s.Features)
 	migrateReturnFinishes(data, &s.Features)
 	migrateSoundPreset(&s.Audio)

@@ -104,6 +104,9 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		icon = icons.VoxtTranscribe
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
+	if card.Session != "" {
+		ui.Text(context, card.Session).FontSize(11).TextColor(ovText2).SingleLine().Shrink(0)
+	}
 	if card.Conversation {
 		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
