@@ -1,0 +1,84 @@
+feature	level	check	gap
+Transcribe	L	TestSessionEndToEnd	Pasting into a real app is checked by hand only
+Transcribe	M	TestMacE2ESessionLocal	none
+Transcript clean-up by the language model	L	TestStopAnswerEndToEnd	No check of a real model's answer format
+Transcript clean-up by the language model	L	TestSkipLLMEndToEnd	none
+Spoken translation	L	TestTranslateSpeechCard	none
+Selection translation, both directions	L	TestTranslateSelectionEndToEnd	No check that the result is in the target language
+Translation follow-up and fallback model	L	TestTranslateContinue	none
+Translation follow-up and fallback model	L	TestTranslateFallbackModel	none
+Rewrite a selection by a spoken instruction	L	TestRewriteSelectionInCard	none
+Rewrite a selection by a spoken instruction	L	TestRewriteBlankSelectionReadsTheCopy	none
+Rewrite continue with a new selection	L	TestRewriteFollowUpNewSelection	none
+Image input: window screenshot and clipboard image	L	TestWindowScreenshotEndToEnd	No test of an unreadable selection with the image switch on
+Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	none
+Answer card	L	TestAnswerCardMarkdown	none
+Answer card	L	TestCardThinkingLevel	none
+Answer card	L	TestRewriteNoCard	none
+Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position and several displays are checked by hand only
+Recording overlay and live text	L	TestOverlayHidesWhileInserting	none
+Shortcuts	L	TestStrictShortcuts	Real key events run only in the Mac script
+Shortcuts	L	TestTranscribeMouseButton	none
+Shortcuts	M	scripts/mac-hotkey-coexist.sh	none
+End word and long press	L	TestTranscribeEndWord	none
+End word and long press	L	TestSessionLongPress	none
+App enhancement	L	TestSessionAppEnhancement	Finding the real front app and browser URL is checked by hand only
+App enhancement: per-app Transcribe clean-up	L	TestAppEnhancementTranscribeCleanup	none
+Dictionary and hot words	L	TestTranscribeDictionaryHighlights	none
+Dictionary and hot words	E	TestEvalDictASR	none
+Dictionary profiles	L	TestDictionaryProfileControls	none
+Dictionary profiles	L	TestDictionaryProfileExternalSwitch	none
+Dictionary suggestions, history scan, learning from edits	L	TestLearnFromCorrection	Reading a real text field is checked by hand only
+Dictionary suggestions, history scan, learning from edits	L	TestScanButtonNeedsTheTranscribeLanguageModel	none
+Notes	L	TestSessionNote	none
+Meeting live captions	L	TestCommitterLive	none
+Meeting live captions	L	TestMeetingPlaythrough	none
+Meeting live captions	L	TestDedupeOverlapText	none
+Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
+Meeting speakers and clean-up	L	TestCorrectTranscript	none
+Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none
+Meeting permissions	manual	docs/manual-test.md	System permission state can only be checked on a Mac
+History	L	TestHistoryTabs	No real-app check that each session leaves one entry
+History	L	TestHistoryAllTab	none
+Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessOff	none
+Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessReopens	none
+Local speech models	L	TestKeepIdle	none
+Local speech models	L	TestModelsPageMatchesCatalogue	none
+Local speech models	L	TestModelsMemory	none
+Local speech models	M	TestMacE2EOmni	none
+Remote speech recognition and system dictation	L	TestRemoteSpeechUpload	none
+Remote speech recognition and system dictation	L	TestRemoteSpeechStreaming	none
+Remote speech recognition and system dictation	L	TestSessionSystemDictation	none
+Remote language models	L	TestRemoteModelEndToEnd	none
+Remote language models	L	TestSavedOllamaSetupMenuIsTheServersModels	none
+Remote language models	L	TestRemoteErrorKeepsNoKey	none
+Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked on a real device only
+Audio settings	M	TestMacHelperMicrophoneSelection	none
+Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
+Command-line transcription	L	TestTranscribeCLIFailures	none
+Command-line dictionary import	L	TestDictionaryCLIImports	none
+Command-line dictionary import	L	TestDictionaryCLIFailures	none
+In-app update	L	TestAppUpdated	The upgrade from 1.x has no automatic run
+In-app update	M	scripts/mac-update-e2e.sh	none
+First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none
+First use: opening, setup guide, import from 1.x	L	TestOnboardingWalk	none
+First use: opening, setup guide, import from 1.x	L	TestLegacyImportAsksForOptionalKey	none
+Opening at each start of the app	L	TestOpeningPlaysAtEachStart	A real quit and relaunch of Voxt.app is checked by hand only
+Opening at each start of the app	L	TestOpeningOff	none
+Opening at each start of the app	L	TestOpeningLength	none
+Settings and appearance	L	TestWindowTransparencySettings	none
+Announcements and release notes	L	TestAnnouncements	none
+Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
+Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
+Privacy and where data goes	L	TestLearnNeverLogsTheEdit	none
+Drag the Rewrite card	L	TestRewriteCardDrags	That the card's face drags the window (DragWindow) is seen on a Mac only: the headless tester does not move windows
+The Rewrite card takes the front at each shortcut press, then other windows can cover it	L	TestRewriteCardTakesTheFront	macOS's ordering over another active app (WeChat) and Rectangle moving the card are seen on a Mac only
+An answer card takes the front when it opens and with a new answer, previews float	L	TestCardFront	macOS's ordering over another active app and Rectangle are seen on a Mac only, and overlaySync applies it on a native window only
+Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPictures	Each app's real clipboard types (Finder, browsers, chat apps) and the helper's decoding are seen on a Mac only
+Home activity calendar and its numbers	L	TestHomeActivityShows	The light-up and the look are checked by hand only
+Hover a preview's buttons while another app is in front	L	TestFloatingWindowOptions	That AppKit tracks the pointer over the window while another app is active (MyGo patch 0020) is seen on a Mac only
+Return finishes a recording of any feature, switched in Settings → Shortcuts	L	TestReturnFinishPlanScope	The helper's event tap consuming Return in another app is seen on a Mac only
+Home mascot and its holiday outfits	L	TestMascotOutfitOn	The moves and how the outfits look are checked by hand only
+Share card of Voxt and a sentence said to it, copied as a picture	L	TestShareCardTakesItsTry	How the card looks and pasting it into a chat app are checked by hand only
+Hat studio: draw, erase, undo, the wardrobe, put on	L	TestShareStudioDrawsUndoesAndWears	Drawing with a real pointer is checked by hand only
+Home Insights and their card	L	TestInsightsNumbers	How the card looks is checked by hand only

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import hashlib
 import importlib.metadata
 import json
@@ -11,9 +13,11 @@ import platform
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 _NVML_SESSION_LOCK = threading.Lock()
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -231,6 +235,144 @@ class ResourceMonitor:
             pass
         self._pynvml = None
         self._handle = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProcessFootprint:
+    process_id: int
+    physical_footprint_bytes: int
+    lifetime_peak_physical_footprint_bytes: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProcessTreeSample:
+    elapsed_s: float
+    processes: tuple[ProcessFootprint, ...]
+    physical_footprint_bytes: int
+
+
+class RusageInfoV4(ctypes.Structure):
+    """macOS rusage_info_v4, as proc_pid_rusage fills it."""
+
+    ri_phys_footprint: int
+    ri_lifetime_max_phys_footprint: int
+    _fields_ = [  # noqa: leading-underscore  # ctypes structure layout contract
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        *[
+            (f"ri_{field_name}", ctypes.c_uint64)
+            for field_name in (
+                "user_time system_time pkg_idle_wkups interrupt_wkups pageins "
+                "wired_size resident_size phys_footprint proc_start_abstime "
+                "proc_exit_abstime child_user_time child_system_time "
+                "child_pkg_idle_wkups child_interrupt_wkups child_pageins "
+                "child_elapsed_abstime diskio_bytesread diskio_byteswritten "
+                "cpu_time_qos_default cpu_time_qos_maintenance "
+                "cpu_time_qos_background cpu_time_qos_utility cpu_time_qos_legacy "
+                "cpu_time_qos_user_initiated cpu_time_qos_user_interactive "
+                "billed_system_time serviced_system_time logical_writes "
+                "lifetime_max_phys_footprint instructions cycles billed_energy "
+                "serviced_energy interval_max_phys_footprint runnable_time"
+            ).split()
+        ],
+    ]
+
+
+RUSAGE_INFO_VERSION = 4
+
+
+class ProcessTreeMemoryMonitor:
+    """Sample a macOS server process tree's physical footprint in a background thread.
+
+    Apple Silicon has no NVML; the footprint counts the unified memory a server
+    and its stage workers hold, MLX and Metal buffers included.
+    """
+
+    def __init__(self, root_process_id: int, interval_s: float = 0.25) -> None:
+        if platform.system() != "Darwin":
+            raise RuntimeError("process-tree footprint sampling requires macOS")
+        else:
+            self.root_process_id = root_process_id
+            self.root = psutil.Process(root_process_id)
+            self.interval_s = interval_s
+            self.samples: list[ProcessTreeSample] = []
+            self.error: str | None = None
+            self.library = ctypes.CDLL(ctypes.util.find_library("proc"), use_errno=True)
+            self.stop_event = threading.Event()
+            self.thread = threading.Thread(
+                target=self.run, name="benchmark-process-tree-memory", daemon=True
+            )
+            self.started_at = time.perf_counter()
+
+    def start(self) -> "ProcessTreeMemoryMonitor":
+        # A missing or foreign PID fails here, before any request is timed.
+        self.samples.append(self.sample())
+        self.thread.start()
+        return self
+
+    def stop(self) -> dict[str, Any]:
+        self.stop_event.set()
+        self.thread.join()
+        peaks: dict[str, int] = {}
+        for sample in self.samples:
+            for process in sample.processes:
+                peaks[str(process.process_id)] = max(
+                    peaks.get(str(process.process_id), 0),
+                    process.lifetime_peak_physical_footprint_bytes,
+                )
+        return {
+            "root_process_id": self.root_process_id,
+            "sample_interval_s": self.interval_s,
+            "peak_physical_footprint_bytes": max(
+                sample.physical_footprint_bytes for sample in self.samples
+            ),
+            "lifetime_peak_physical_footprint_bytes": peaks,
+            "error": self.error,
+            "samples": [asdict(sample) for sample in self.samples],
+        }
+
+    def run(self) -> None:
+        while not self.stop_event.wait(self.interval_s):
+            try:
+                self.samples.append(self.sample())
+            except (OSError, psutil.Error) as exc:
+                self.error = f"server process {self.root_process_id} exited: {exc}"
+                return
+
+    def sample(self) -> ProcessTreeSample:
+        processes = []
+        # Note (XXXXRT666): psutil lists the tree, but its macOS memory_info has
+        # no physical footprint, so libproc still reads that.
+        for process in [self.root, *self.root.children(recursive=True)]:
+            try:
+                processes.append(self.footprint(process.pid))
+            except OSError:
+                # A worker that exits between listing and sampling has no usage left.
+                if process.pid == self.root_process_id:
+                    raise
+                else:
+                    continue
+        return ProcessTreeSample(
+            elapsed_s=time.perf_counter() - self.started_at,
+            processes=tuple(processes),
+            physical_footprint_bytes=sum(
+                process.physical_footprint_bytes for process in processes
+            ),
+        )
+
+    def footprint(self, process_id: int) -> ProcessFootprint:
+        usage = RusageInfoV4()
+        if self.library.proc_pid_rusage(
+            process_id, RUSAGE_INFO_VERSION, ctypes.byref(usage)
+        ):
+            raise OSError(
+                ctypes.get_errno(), f"proc_pid_rusage failed for {process_id}"
+            )
+        else:
+            return ProcessFootprint(
+                process_id=process_id,
+                physical_footprint_bytes=usage.ri_phys_footprint,
+                lifetime_peak_physical_footprint_bytes=usage.ri_lifetime_max_phys_footprint,
+            )
 
 
 def summarize_resource_samples(
@@ -493,6 +635,7 @@ def _package_version(name: str) -> str | None:
 
 
 __all__ = [
+    "ProcessTreeMemoryMonitor",
     "ResourceMonitor",
     "ResourceSample",
     "collect_benchmark_provenance",

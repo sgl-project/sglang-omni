@@ -1,0 +1,10 @@
+## client → service
+GET /api-ws/v1/inference
+Authorization: Bearer <key>
+→ text {"header":{"action":"run-task","streaming":"duplex","task_id":"<task-id>"},"payload":{"function":"recognition","input":{},"model":"paraformer-realtime-v2","parameters":{"format":"pcm","language_hints":["ko"],"sample_rate":16000},"task":"asr","task_group":"audio"}}
+→ binary 3200 bytes
+→ text {"header":{"action":"finish-task","streaming":"duplex","task_id":"<task-id>"},"payload":{"input":{}}}
+
+## events
+final:
+  model=paraformer-realtime-v2 lang= duration=100ms

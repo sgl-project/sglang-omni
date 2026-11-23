@@ -5,6 +5,7 @@
 ## Installation and Startup
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
+For Intel GPUs, follow the [Ming-3.0-ASR-Tiny XPU recipe](../other_platforms/installation_xpu.md#ming-30-asr-tiny-speech-to-text-single-xpu).
 
 Startup uses one GPU. Preprocessing runs on the CPU. The audio encoder and the language model share that GPU. The pipeline is preprocessing, then thinker.
 
@@ -13,6 +14,18 @@ sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny
 ```
 
 Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `tests/data/query_to_cars.wav` and return `how many cars are there in the picture`.
+
+## DSpark decoding
+
+To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK`. The registry pins the draft revision automatically. Greedy and sampled requests (`temperature` above 0) and `repetition_penalty` all run under the draft:
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm DSPARK \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-dspark \
+  --dspark-use-greedy-draft true \
+  --ragged-verify-mode static
+```
 
 ## Transcription
 
@@ -133,3 +146,15 @@ data: [DONE]
 ```
 
 The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
+
+## MTP decoding
+
+Enable MTP with the [fine-tuned prediction weights](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-mtp):
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm NEXTN \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-mtp
+```
+
+Omit `--thinker.engine.speculative_draft_model_path` to use the official MTP bundled with the target checkpoint. Ming ASR MTP requires `speculative_eagle_topk=1` and `repetition_penalty=1.0`. You can omit both settings: NEXTN sets the former at startup, and transcription requests use the latter by default.

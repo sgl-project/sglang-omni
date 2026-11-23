@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 
 namespace fishaudio_drama3 {
@@ -37,7 +38,7 @@ mx::array Drama3Model::EmbeddingSum(const mx::array &frames, int first,
 
 mx::array Drama3Model::TowerLayer(
     const mx::array &hidden, const mx::array &codes,
-    const mx::array &is_semantic, int layer, qwen3_asr::KVCache &cache,
+    const mx::array &is_semantic, int layer, omni_common::KVCache &cache,
     const std::optional<mx::array> &unseen_embedding) const {
   const bool is_shared = layer < shared_tower_layer_count_;
   const std::string prefix =
@@ -71,10 +72,8 @@ mx::array Drama3Model::TowerLayer(
       block + ".attention.wqkv");
   const mx::array gate = SliceLast(qkv, query_width, 2 * query_width);
   const auto rotate = [&](const mx::array &input) {
-    return mx::astype(mx::fast::rope(mx::astype(input, mx::float32),
-                                     tower_rotary_dims_, true, tower_rope_base_,
-                                     1.0f, cache.offset()),
-                      input.dtype());
+    return mx::fast::rope(input, tower_rotary_dims_, true, tower_rope_base_,
+                          1.0f, cache.offset());
   };
   const mx::array queries = rotate(mx::transpose(
       Fp32Norm(mx::reshape(SliceLast(qkv, 0, query_width),
@@ -97,7 +96,7 @@ mx::array Drama3Model::TowerLayer(
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(tower_head_dim_), -0.5)),
-      time > 1 ? "causal" : "");
+      /*window_size=*/-1, time > 1 ? "causal" : "");
   const mx::array attention = checkpoint_.Linear(
       mx::multiply(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                {batch, time, query_width}),
@@ -107,9 +106,8 @@ mx::array Drama3Model::TowerLayer(
   const mx::array feed_forward_input =
       Fp32Norm(after_attention, block + ".ffn_norm", tower_norm_eps_);
   const mx::array feed_forward = checkpoint_.Linear(
-      mx::multiply(
-          omni_common::Silu(checkpoint_.Linear(feed_forward_input,
-                                               block + ".feed_forward.w1")),
+      omni_common::Swiglu(
+          checkpoint_.Linear(feed_forward_input, block + ".feed_forward.w1"),
           checkpoint_.Linear(feed_forward_input, block + ".feed_forward.w3")),
       block + ".feed_forward.w2");
   const mx::array layer_output =
@@ -121,7 +119,7 @@ mx::array Drama3Model::TowerLayer(
 mx::array Drama3Model::Enrich(mx::array hidden, const mx::array &semantic_codes,
                               const mx::array &is_semantic,
                               const mx::array &frames,
-                              std::vector<qwen3_asr::KVCache> &caches) const {
+                              std::vector<omni_common::KVCache> &caches) const {
   const mx::array unseen =
       EmbeddingSum(frames, 1 + backbone_codebook_count_, codebook_count_);
   const mx::array frame_is_semantic =

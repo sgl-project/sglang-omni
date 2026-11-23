@@ -6,9 +6,11 @@ A request's encoder slots lead its req_to_token row, so every draft and verify f
 
 from __future__ import annotations
 
+import bisect
 import copy
 import glob
 import json
+import logging
 import os
 from collections.abc import Iterable
 from tempfile import TemporaryDirectory
@@ -46,14 +48,26 @@ from sglang.srt.speculative.spec_utils import draft_pp_context
 from torch import nn
 from transformers import WhisperConfig
 
+from sglang_omni.models.whisper_asr.draft_cuda_graph import (
+    DraftDecodeGraph,
+    draft_capture_stream,
+)
 from sglang_omni.models.whisper_asr.sglang_model import (
     LogitsProcessor,
     WhisperDecoderModel,
     WhisperForConditionalGeneration,
 )
+from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
+    WhisperTimestampParams,
+    apply_timestamp_rules_on_device,
+)
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
+logger = logging.getLogger(__name__)
+
 DRAFT_ARCHITECTURE = "WhisperDraftForCausalLM"
+# note (Haoling Pu): these graphs take about 1 GB on an H100, and a round of more requests keeps the step loop.
+DRAFT_GRAPH_BATCH_SIZES = (1, 2, 4, 8, 16, 32)
 SHARED_ENCODER_TENSOR_NAMES = (
     "model.encoder.conv1.weight",
     "model.encoder.layer_norm.weight",
@@ -277,8 +291,187 @@ class WhisperDraftWorker(EagleDraftWorkerBase):
         flags.enable_torch_compile = enable_torch_compile
 
 
+class ChainSampler:
+    """Draw and check one speculative chain per request with that request's own sampling.
+
+    A greedy request (top_k 1) drafts and checks by argmax, as plain greedy decoding does. A sampled request draws each draft from the draft's distribution q and accepts it with probability min(1, p/q) under the target's distribution p. The first rejected position is drawn from max(p - q, 0) renormalized, and a fully accepted chain draws its bonus token from p, so the committed tokens follow the target's distribution (Leviathan et al., 2023). A request with segment timestamps applies Whisper's timestamp rules to every draft and verify row, counting the drafts ahead of the row as emitted.
+    """
+
+    def __init__(self, batch: ScheduleBatch) -> None:
+        sampling_info = batch.sampling_info
+        self.logit_bias = sampling_info.logit_bias
+        self.is_all_greedy = bool(sampling_info.is_all_greedy)
+        self.greedy_rows = None if self.is_all_greedy else sampling_info.top_ks <= 1
+        self.temperatures = sampling_info.temperatures.view(-1, 1)
+        timestamp_rows: list[int] = []
+        last_tokens: list[int] = []
+        penultimate_tokens: list[int] = []
+        last_timestamps: list[int] = []
+        self.timestamp_params: WhisperTimestampParams | None = None
+        for row, req in enumerate(batch.reqs):
+            custom_params = req.sampling_params.custom_params
+            if custom_params and custom_params.get("segment_timestamps"):
+                # note (wilsonzheng0327): output_ids ends with the newest committed token, the chain's first input, so it is never empty here.
+                history = req.output_ids
+                timestamp_begin = int(custom_params["timestamp_begin_id"])
+                timestamp_rows.append(row)
+                last_tokens.append(history[-1])
+                penultimate_tokens.append(
+                    history[-2] if len(history) > 1 else timestamp_begin
+                )
+                last_timestamps.append(
+                    next(
+                        (
+                            token
+                            for token in reversed(history)
+                            if token >= timestamp_begin
+                        ),
+                        -1,
+                    )
+                )
+                self.timestamp_params = custom_params
+            else:
+                pass
+        device = sampling_info.temperatures.device
+        self.timestamp_rows = (
+            torch.tensor(timestamp_rows, dtype=torch.long, device=device)
+            if timestamp_rows
+            else None
+        )
+        # note (wilsonzheng0327): the rules read only the last token, the one before it and the last timestamp, so each draft moves these on the device and no row waits for the host.
+        self.timestamp_states: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = (
+            [
+                tuple(
+                    torch.tensor(values, dtype=torch.long, device=device)
+                    for values in (last_tokens, penultimate_tokens, last_timestamps)
+                )
+            ]
+            if timestamp_rows
+            else []
+        )
+        self.draft_probs: list[torch.Tensor] = []
+
+    def scores(self, logits: torch.Tensor) -> torch.Tensor:
+        """Bias the draft or verify logits; logits is [batch, vocab] or [batch, rows, vocab]."""
+        if self.logit_bias is not None:
+            bias = self.logit_bias if logits.dim() == 2 else self.logit_bias[:, None, :]
+            return logits + bias
+        elif self.timestamp_rows is not None:
+            return logits.clone()
+        else:
+            return logits
+
+    def apply_timestamp_rules(
+        self,
+        scores: torch.Tensor,
+        states: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    ) -> None:
+        """Mask the timestamp rows of [batch, positions, vocab] scores, position j with states[j]."""
+        positions = len(states)
+        rows = scores[self.timestamp_rows].view(-1, scores.shape[-1])
+        last_token, penultimate_token, last_timestamp = (
+            torch.stack(values, dim=1).view(-1) for values in zip(*states)
+        )
+        apply_timestamp_rules_on_device(
+            rows,
+            last_token=last_token,
+            penultimate_token=penultimate_token,
+            last_timestamp=last_timestamp,
+            params=self.timestamp_params,
+        )
+        scores[self.timestamp_rows] = rows.view(-1, positions, scores.shape[-1])
+
+    def draw(self, logits: torch.Tensor) -> torch.Tensor:
+        """The next draft token of every request, from the draft's [batch, vocab] logits."""
+        scores = self.scores(logits)
+        if self.timestamp_rows is not None:
+            self.apply_timestamp_rules(scores[:, None], self.timestamp_states[-1:])
+        else:
+            pass
+        greedy_tokens = scores.argmax(dim=-1)
+        if self.is_all_greedy:
+            tokens = greedy_tokens
+        else:
+            probs = torch.softmax(scores.float() / self.temperatures, dim=-1)
+            sampled_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+            tokens = torch.where(self.greedy_rows, greedy_tokens, sampled_tokens)
+            self.draft_probs.append(probs)
+        if self.timestamp_rows is not None:
+            last_token, _, last_timestamp = self.timestamp_states[-1]
+            drafted = tokens[self.timestamp_rows].long()
+            timestamp_begin = int(self.timestamp_params["timestamp_begin_id"])
+            self.timestamp_states.append(
+                (
+                    drafted,
+                    last_token,
+                    torch.where(drafted >= timestamp_begin, drafted, last_timestamp),
+                )
+            )
+        else:
+            pass
+        return tokens
+
+    def verify(
+        self, logits: torch.Tensor, draft_token_ids: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Check the drafts against the target's [batch, rows, vocab] logits.
+
+        Returns each request's number of accepted drafts and its rows' committed tokens: the accepted drafts, then the target's token at the first rejected row, or the bonus after a fully accepted chain.
+        """
+        batch_size, draft_steps = draft_token_ids.shape
+        scores = self.scores(logits)
+        if self.timestamp_rows is not None:
+            self.apply_timestamp_rules(scores, self.timestamp_states)
+        else:
+            pass
+        target_token_ids = scores.argmax(dim=-1)
+        greedy_accepted = target_token_ids[:, :draft_steps] == draft_token_ids
+        if self.is_all_greedy:
+            num_correct_drafts = greedy_accepted.int().cumprod(dim=1).sum(dim=1)
+            return num_correct_drafts, target_token_ids
+        else:
+            pass
+        target_probs = torch.softmax(
+            scores.float() / self.temperatures[:, :, None], dim=-1
+        )
+        draft_probs = torch.stack(self.draft_probs, dim=1)
+        drafts = draft_token_ids.long()[:, :, None]
+        target_draft_probs = target_probs[:, :draft_steps].gather(2, drafts).squeeze(2)
+        draft_draft_probs = draft_probs.gather(2, drafts).squeeze(2)
+        sampled_accepted = (
+            torch.rand_like(target_draft_probs) * draft_draft_probs < target_draft_probs
+        )
+        accepted = torch.where(
+            self.greedy_rows[:, None], greedy_accepted, sampled_accepted
+        )
+        num_correct_drafts = accepted.int().cumprod(dim=1).sum(dim=1)
+        rows = torch.arange(batch_size, device=logits.device)
+        stop_probs = target_probs[rows, num_correct_drafts]
+        rejected = (num_correct_drafts < draft_steps)[:, None]
+        stop_draft_probs = (
+            draft_probs[rows, num_correct_drafts.clamp(max=draft_steps - 1)] * rejected
+        )
+        residual = (stop_probs - stop_draft_probs).clamp(min=0)
+        residual_mass = residual.sum(dim=-1, keepdim=True)
+        # note (wilsonzheng0327): the residual is empty only where p equals q, which never rejects; p keeps the draw valid.
+        residual = torch.where(
+            residual_mass > 0, residual / residual_mass.clamp(min=1e-30), stop_probs
+        )
+        sampled_stop_tokens = torch.multinomial(residual, num_samples=1).squeeze(1)
+        stop_tokens = torch.where(
+            self.greedy_rows,
+            target_token_ids[rows, num_correct_drafts],
+            sampled_stop_tokens,
+        )
+        committed_token_ids = torch.cat(
+            [draft_token_ids, draft_token_ids[:, :1]], dim=1
+        ).to(target_token_ids.dtype)
+        committed_token_ids[rows, num_correct_drafts] = stop_tokens
+        return num_correct_drafts, committed_token_ids
+
+
 class WhisperSpeculativeWorker(BaseSpecWorker):
-    """Greedy chain speculation: the draft proposes speculative_num_steps tokens and the target checks them in one forward.
+    """Chain speculation: the draft proposes speculative_num_steps tokens and the target checks them in one forward.
 
     The draft's first step reads two tokens, the last committed one and the newest, so a fully accepted chain's last token gets its draft KV before it is attended.
     """
@@ -333,6 +526,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         check_shared_encoder(target_model, get_spec().speculative_draft_model_path)
         draft_model.target_encoder = target_model.run_encoder
         self.previous_token_ids: torch.Tensor | None = None
+        self.draft_graphs: list[DraftDecodeGraph] = []
 
     def alloc_memory_pool(
         self,
@@ -354,6 +548,41 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             device=self.device,
         )
 
+    def init_cuda_graphs(self) -> None:
+        self.draft_worker.init_cuda_graphs()
+        # note (Haoling Pu): the draft graphs follow the draft's decode graphs, so disable_cuda_graph turns them off too, and their attention reads the KV cache without scales, so it needs the model's dtype there.
+        if (
+            self.speculative_num_steps > 1
+            and self.draft_runner.decode_cuda_graph_runner is not None
+            and self.draft_runner.kv_cache_dtype == self.draft_runner.dtype
+        ):
+            free_bytes_before, _ = torch.cuda.mem_get_info()
+            memory_pool = torch.cuda.graph_pool_handle()
+            # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so these graphs take their own.
+            capture_stream = draft_capture_stream()
+            # note (Haoling Pu): a round holds at most the request pool's rows, so a graph past the first size that holds them all would never replay.
+            graph_batch_sizes = DRAFT_GRAPH_BATCH_SIZES[
+                : bisect.bisect_left(
+                    DRAFT_GRAPH_BATCH_SIZES, self.req_to_token_pool.size
+                )
+                + 1
+            ]
+            # note (Haoling Pu): the largest graph is captured first, so the smaller ones reuse its memory in the shared pool.
+            for batch_size in sorted(graph_batch_sizes, reverse=True):
+                draft_graph = DraftDecodeGraph(
+                    self.draft_runner, self.speculative_num_steps - 1, batch_size
+                )
+                draft_graph.capture(memory_pool, capture_stream)
+                self.draft_graphs.insert(0, draft_graph)
+            free_bytes_after, _ = torch.cuda.mem_get_info()
+            logger.info(
+                f"Captured the Whisper draft decode graphs of {self.speculative_num_steps - 1} steps "
+                f"for batch sizes {list(graph_batch_sizes)} "
+                f"in {(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
+            )
+        else:
+            pass
+
     def forward_batch_generation(self, batch: ScheduleBatch) -> GenerationBatchResult:
         if batch.forward_mode.is_extend():
             return self.forward_prefill(batch)
@@ -367,10 +596,10 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             capture_hidden_mode=CaptureHiddenMode.NULL,
             return_hidden_states_before_norm=False,
         )
-        self.draft_runner.forward(draft_batch)
         result = self.target_worker.forward_batch_generation(
             batch, capture_hidden_mode=CaptureHiddenMode.NULL
         )
+        self.draft_runner.forward(draft_batch)
         # note (wilsonzheng0327): the sampled token has no KV yet, so the committed
         # length is the prompt's.
         result.new_seq_lens = batch.seq_lens
@@ -382,10 +611,8 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         return result
 
     def forward_decode(self, batch: ScheduleBatch) -> GenerationBatchResult:
-        assert (
-            batch.sampling_info.is_all_greedy
-        ), "the request builder refuses sampled requests under speculation"
         batch_size = len(batch.reqs)
+        sampler = ChainSampler(batch)
         draft_steps = self.speculative_num_steps
         verify_width = draft_steps + 1
         newest_token_ids = batch.spec_info.bonus_tokens.long()
@@ -407,17 +634,30 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             offset=-1,
             slots=slots[:, :2],
         )
-        drafts = [self.greedy(logits.view(batch_size, 2, -1)[:, 1], batch)]
-        for step in range(1, draft_steps):
-            logits = self.decode_forward(
-                batch,
-                self.draft_runner,
-                token_ids=drafts[-1],
-                offset=step + 1,
-                slots=slots[:, step + 1],
-            )
-            drafts.append(self.greedy(logits, batch))
-        draft_token_ids = torch.stack(drafts, dim=1)
+        drafts = [sampler.draw(logits.view(batch_size, 2, -1)[:, 1])]
+        draft_graph = next(
+            (graph for graph in self.draft_graphs if graph.batch_size >= batch_size),
+            None,
+        )
+        # note (Haoling Pu): the draft graphs draft by plain argmax.
+        if (
+            draft_graph is not None
+            and sampler.is_all_greedy
+            and sampler.timestamp_rows is None
+        ):
+            draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
+            draft_token_ids = draft_graph.replay()[:batch_size]
+        else:
+            for step in range(1, draft_steps):
+                logits = self.decode_forward(
+                    batch,
+                    self.draft_runner,
+                    token_ids=drafts[-1],
+                    offset=step + 1,
+                    slots=slots[:, step + 1],
+                )
+                drafts.append(sampler.draw(logits))
+            draft_token_ids = torch.stack(drafts, dim=1)
 
         verify_token_ids = torch.cat(
             [newest_token_ids[:, None], draft_token_ids], dim=1
@@ -434,14 +674,9 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             is_verify=True,
         )
         logits_output = target_output.logits_output
-        target_token_ids = self.greedy(
-            logits_output.next_token_logits, batch, rows_per_request=verify_width
-        ).view(batch_size, verify_width)
-        num_correct_drafts = (
-            (target_token_ids[:, :draft_steps] == draft_token_ids)
-            .int()
-            .cumprod(dim=1)
-            .sum(dim=1)
+        num_correct_drafts, target_token_ids = sampler.verify(
+            logits_output.next_token_logits.view(batch_size, verify_width, -1),
+            draft_token_ids,
         )
         accept_lens = (num_correct_drafts + 1).to(torch.int32)
         self.previous_token_ids[batch.req_pool_indices] = verify_token_ids.gather(
@@ -470,16 +705,6 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             hidden_states=None,
             capture_hidden_mode=CaptureHiddenMode.NULL,
         )
-
-    def greedy(
-        self, logits: torch.Tensor, batch: ScheduleBatch, rows_per_request: int = 1
-    ) -> torch.Tensor:
-        logit_bias = batch.sampling_info.logit_bias
-        if logit_bias is not None:
-            logits = logits + logit_bias.repeat_interleave(rows_per_request, dim=0)
-        else:
-            pass
-        return logits.argmax(dim=-1)
 
     def step_batch(
         self,

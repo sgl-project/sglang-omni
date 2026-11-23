@@ -1,0 +1,8 @@
+{
+  "name": "start-system-denied",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "没能录制系统音频。请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”中允许 Voxt 录制系统音频，或者只录制麦克风。"
+  }
+}

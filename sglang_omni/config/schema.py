@@ -213,7 +213,7 @@ class EngineArgs(BaseModel):
         SGLang's own defaults stay in charge; free-form keys are always
         included because writing one is itself the intent. With
         disable_speculative_decoding set, the speculative_* keys are left out
-        whichever source wrote them. A draft pinned in the draft registry gets
+        whichever source wrote them. A separate draft pinned in the draft registry gets
         its pinned revision when this block has no speculative_draft_model_revision
         key, so a revision the block sets, None included, still wins.
         """
@@ -233,6 +233,7 @@ class EngineArgs(BaseModel):
                 draft.draft_model_revision
                 for draft in DRAFT_REGISTRY
                 if draft.draft_model_path == draft_model_path
+                and draft.draft_model_path != draft.model_path
             ),
             None,
         )
@@ -267,7 +268,9 @@ class FactoryArgs(BaseModel):
     max_batch_size: int | None = Field(default=None, ge=1)
     max_batch_wait_ms: float | None = Field(default=None, ge=0)
     enable_async_decode: bool | None = None
+    enable_plain_fallback: bool | None = None
     async_decode_min_batch_size: int | None = Field(default=None, ge=1)
+    prefill_drain_below_batch_size: int | None = Field(default=None, ge=0)
     prefill_coalesce_requests: int | None = Field(default=None, ge=0)
     prefill_coalesce_wait_ms: float | None = Field(default=None, gt=0)
     prefill_coalesce_when_idle: bool | None = None
@@ -275,6 +278,7 @@ class FactoryArgs(BaseModel):
     prefill_coalesce_after_builds_during_decode: bool | None = None
     request_build_max_workers: int | None = Field(default=None, ge=1)
     request_build_max_pending: int | None = Field(default=None, ge=1)
+    early_request_builds: bool | None = None
     encoder_mem_reserve: float | None = Field(default=None, ge=0, lt=1)
     enable_partial_start: bool | None = None
     partial_start_min_chunks: int | None = Field(default=None, ge=1)
@@ -765,6 +769,7 @@ class PipelineConfig(BaseModel):
     required_speech_reference_count: ClassVar[int | None] = None
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
+    speech_request_validator_factory: ClassVar[str | None] = None
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
     realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
     realtime_deployment_factory: ClassVar[str | None] = None

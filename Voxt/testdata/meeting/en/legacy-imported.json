@@ -1,0 +1,58 @@
+{
+  "name": "legacy-imported",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 0,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Welcome to Voxt",
+    "subtitle": "Speak in any app and get text where your cursor is: transcribe, translate and rewrite. There are a few short steps, and you can skip any of them.",
+    "recording": false,
+    "welcome": {
+      "legacy_available": true,
+      "legacy": {
+        "done": true,
+        "failed": "",
+        "imported": [
+          "Fixture dictionary"
+        ],
+        "skipped": [
+          "Fixture unsupported setting"
+        ],
+        "todos": [
+          {
+            "text": "Finish the speech model setup",
+            "kind": "asr",
+            "id": "asr.accurate",
+            "service_name": "asr.accurate"
+          }
+        ]
+      }
+    },
+    "footer": {
+      "mode": "welcome",
+      "busy": false,
+      "back": false,
+      "continue_label": "Get started",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

@@ -30,7 +30,9 @@ from contextlib import aclosing, suppress
 from dataclasses import asdict, replace
 from enum import Enum
 from typing import AsyncGenerator, AsyncIterator, Literal
+from urllib.parse import quote
 
+import anyio
 from fastapi import (
     Depends,
     FastAPI,
@@ -60,18 +62,11 @@ from sglang_omni.client import (
     SamplingParams,
     SpeechResult,
 )
-from sglang_omni.client.audio import (
-    DEFAULT_SAMPLE_RATE,
-    apply_speed,
-    encode_pcm,
-    select_audio_delta,
-)
 from sglang_omni.client.types import (
     UNKNOWN_FINISH_REASON,
     UMMCompletionResult,
     UMMCompletionStreamChunk,
     UMMGenerateChunk,
-    UsageInfo,
 )
 from sglang_omni.config import (
     CustomVoiceConfig,
@@ -113,8 +108,8 @@ from sglang_omni.serve.protocol import (
     PauseGenerationRequest,
     RolloutGenerateRequest,
     RolloutSamplingParams,
-    SglExt,
     SpeechBatchResponse,
+    SpeechStreamOutcome,
     UpdateWeightFromDiskRequest,
     UpdateWeightsFromDistributedRequest,
     UsageResponse,
@@ -139,6 +134,11 @@ from sglang_omni.serve.speech_limits import (
 )
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_stream_outcomes import SpeechStreamOutcomes
+from sglang_omni.serve.speech_streaming import (
+    SpeechAudioStream,
+    create_speech_sse_response,
+    create_streaming_wav_header,
+)
 from sglang_omni.serve.speech_to_text import complete_unless_disconnected
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
@@ -233,6 +233,7 @@ def create_app(
     speaker_embedding_size: int | None = None,
     speech_reference_text_required: bool = False,
     speech_reference_text_excludes_instructions: bool = False,
+    speech_request_validator_cls: type[SpeechRequestValidator] | None = None,
     additional_speech_languages: frozenset[str] = frozenset(),
     max_speech_input_chars: int | None = MAX_SPEECH_INPUT_CHARS,
     supported_speech_fields: frozenset[str] | None = None,
@@ -244,6 +245,7 @@ def create_app(
     allowed_media_domains: list[str] | None = None,
     admin_api_key: str | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     architectures: list[str] | None = None,
     audio_chunking: ResolvedAudioChunking | None = None,
     interleaved_output: bool = False,
@@ -273,6 +275,7 @@ def create_app(
             a transcript.
         speech_reference_text_excludes_instructions: Whether a reference
             transcript and style instructions are mutually exclusive.
+        speech_request_validator_cls: Model-specific speech validation and encoding policy.
         additional_speech_languages: Pipeline-specific accepted languages.
         max_speech_input_chars: Maximum accepted input characters, or ``None``
             to defer length validation to model-specific context checks.
@@ -293,6 +296,8 @@ def create_app(
         admin_api_key: Optional API key for admin-control endpoints.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
+        enable_speech_sse_named_events: Add event names to speech SSE frames
+            and report stream failures as speech.audio.error.
         audio_chunking: Long-audio chunking policy for ``/v1/audio/transcriptions``,
             declared by the pipeline config. None keeps chunking off.
         interleaved_output: Whether results are ordered interleaved (UMM)
@@ -335,7 +340,8 @@ def create_app(
     app.state.speech_stream_outcomes = SpeechStreamOutcomes(
         max_entries=MAX_SPEECH_STREAM_OUTCOMES
     )
-    app.state.speech_service = SpeechRequestValidator(
+    app.state.enable_speech_sse_named_events = enable_speech_sse_named_events
+    app.state.speech_service = (speech_request_validator_cls or SpeechRequestValidator)(
         default_model=app.state.model_name,
         custom_voice_config=custom_voice_config,
         requires_uploaded_voice_for_named_voice=(
@@ -1943,9 +1949,12 @@ def register_speech(app: FastAPI) -> None:
                     client=client,
                     gen_req=gen_req,
                     request_id=request_id,
-                    speed=req.speed,
+                    speed=speech_service.resolve_encode_speed(req),
+                    output_sample_rate=req.sample_rate,
                     speech_stream_outcomes=app.state.speech_stream_outcomes,
                     stream_format=req.stream_format,
+                    response_format="wav" if req.response_format == "wav" else "pcm",
+                    enable_speech_sse_named_events=app.state.enable_speech_sse_named_events,
                     return_spec_tokens_details=req.return_spec_tokens_details,
                 )
             except ClientError as exc:
@@ -1966,7 +1975,8 @@ def register_speech(app: FastAPI) -> None:
                 gen_req=gen_req,
                 request_id=request_id,
                 response_format=req.response_format,
-                speed=req.speed,
+                speed=speech_service.resolve_encode_speed(req),
+                output_sample_rate=req.sample_rate,
             )
         except ClientError as exc:
             return speech_generation_failure_response(request_id, exc)
@@ -1984,6 +1994,14 @@ def register_speech(app: FastAPI) -> None:
             # travels in the same X- header channel as usage.
             "X-Finish-Reason": result.finish_reason,
         }
+        if result.sample_rate is not None:
+            headers["X-Sample-Rate"] = str(result.sample_rate)
+        else:
+            pass
+        if result.text:
+            headers["X-Gen-Text"] = quote(result.text)
+        else:
+            pass
         if result.usage is not None:
             headers.update(
                 {
@@ -2142,75 +2160,47 @@ def register_speech_ws(app: FastAPI) -> None:
         await session.run()
 
 
-def speech_pcm_chunk_bytes(
-    chunk: GenerateChunk,
-    *,
-    emitted_samples: int,
-    speed: float,
-) -> tuple[bytes | None, int, int]:
-    sample_rate = chunk.sample_rate or DEFAULT_SAMPLE_RATE
-    audio_data, emitted_samples = select_audio_delta(
-        chunk.audio_data,
-        emitted_samples=emitted_samples,
-        is_terminal=chunk.finish_reason is not None,
-    )
-    if audio_data is None:
-        return None, emitted_samples, sample_rate
-    else:
-        pass
-
-    if speed != 1.0:
-        audio_data, sample_rate = apply_speed(audio_data, speed, sample_rate)
-    else:
-        pass
-    audio_bytes = encode_pcm(audio_data, sample_rate)
-    if not audio_bytes:
-        return None, emitted_samples, sample_rate
-    else:
-        pass
-    return audio_bytes, emitted_samples, sample_rate
-
-
 async def speech_audio_response(
     request: Request,
     client: Client,
     gen_req: GenerateRequest,
     request_id: str,
     speed: float,
-    stream_format: Literal["audio", "sse"],
+    stream_format: Literal["audio", "sse"] = "audio",
+    response_format: Literal["pcm", "wav"] = "pcm",
     *,
     speech_stream_outcomes: SpeechStreamOutcomes,
+    enable_speech_sse_named_events: bool,
     return_spec_tokens_details: bool,
+    output_sample_rate: int | None = None,
 ) -> StreamingResponse:
-    """Stream raw PCM or SSE events once the first audio chunk sets the headers."""
-    emitted_samples = 0
-    finish_reason = UNKNOWN_FINISH_REASON
-    final_usage: UsageInfo | None = None
-    sglext: SglExt | None = None
+    """Stream PCM/WAV bytes or SSE after the first audio sets the headers."""
+    audio_stream = SpeechAudioStream(output_sample_rate=output_sample_rate, speed=speed)
+    stream_outcome = SpeechStreamOutcome(
+        request_id=request_id, finish_reason=UNKNOWN_FINISH_REASON
+    )
 
     def record_terminal_chunk_state(chunk: GenerateChunk) -> None:
         # note (Yucheng Hu): the terminal chunk carries these; the last reported
         # value wins so the outcome can be served once the stream has ended.
-        nonlocal finish_reason, final_usage, sglext
         if chunk.reported_finish_reason:
-            finish_reason = chunk.reported_finish_reason
+            stream_outcome.finish_reason = chunk.reported_finish_reason
         else:
             pass
         if chunk.usage is not None:
-            final_usage = chunk.usage
+            stream_outcome.usage = chunk.usage
         else:
             pass
         chunk_sglext = build_sglext(
             return_spec_tokens_details, chunk.spec_tokens_details
         )
         if chunk_sglext is not None:
-            sglext = chunk_sglext
+            stream_outcome.sglext = chunk_sglext
         else:
             pass
 
     chunk_stream = client.generate(gen_req, request_id=request_id)
     first_audio_bytes: bytes | None = None
-    stream_sample_rate: int | None = None
     stream_completed = False
     stream_closed = False
     disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))
@@ -2238,6 +2228,7 @@ async def speech_audio_response(
                 chunk = next_chunk_task.result()
             except StopAsyncIteration:
                 stream_completed = True
+                first_audio_bytes = audio_stream.finish()
                 break
             record_terminal_chunk_state(chunk)
             if chunk.audio_data is None:
@@ -2245,19 +2236,13 @@ async def speech_audio_response(
             else:
                 pass
 
-            first_audio_bytes, emitted_samples, stream_sample_rate = (
-                speech_pcm_chunk_bytes(
-                    chunk,
-                    emitted_samples=emitted_samples,
-                    speed=speed,
-                )
-            )
+            first_audio_bytes = audio_stream.push(chunk)
             if first_audio_bytes is not None:
                 break
             else:
                 pass
 
-        if first_audio_bytes is None or stream_sample_rate is None:
+        if first_audio_bytes is None:
             raise RuntimeError("No audio output generated from the pipeline.")
         else:
             pass
@@ -2284,9 +2269,12 @@ async def speech_audio_response(
             pass
 
     async def _body() -> AsyncGenerator[bytes, None]:
-        nonlocal emitted_samples
         active_request = True
         try:
+            if stream_format == "audio" and response_format == "wav":
+                yield create_streaming_wav_header(audio_stream.sample_rate)
+            else:
+                pass
             yield first_audio_bytes
 
             async for chunk in chunk_stream:
@@ -2296,88 +2284,56 @@ async def speech_audio_response(
                 else:
                     pass
 
-                audio_bytes, emitted_samples, sample_rate = speech_pcm_chunk_bytes(
-                    chunk,
-                    emitted_samples=emitted_samples,
-                    speed=speed,
-                )
+                audio_bytes = audio_stream.push(chunk)
                 if audio_bytes is None:
                     continue
                 else:
                     pass
-                if sample_rate != stream_sample_rate:
-                    raise RuntimeError(
-                        "Raw PCM speech stream sample rate changed from "
-                        f"{stream_sample_rate} to {sample_rate}"
-                    )
-                else:
-                    pass
                 yield audio_bytes
+            final_audio_bytes = audio_stream.finish()
+            if final_audio_bytes:
+                yield final_audio_bytes
+            else:
+                pass
             active_request = False
             if stream_format == "audio":
                 speech_stream_outcomes.record(
-                    request_id, finish_reason, final_usage, sglext
+                    request_id,
+                    stream_outcome.finish_reason,
+                    stream_outcome.usage,
+                    stream_outcome.sglext,
                 )
             else:
                 pass
         finally:
-            if active_request:
-                await abort_and_close_speech_stream(client, request_id, chunk_stream)
-            else:
-                await _close_async_iterator_if_supported(chunk_stream)
-
-    async def _sse_body() -> AsyncIterator[str]:
-        try:
-            async with aclosing(_body()) as pcm_chunks:
-                async for pcm_bytes in pcm_chunks:
-                    delta = {
-                        "type": "speech.audio.delta",
-                        "audio": base64.b64encode(pcm_bytes).decode("ascii"),
-                    }
-                    yield f"data: {json.dumps(delta)}\n\n"
-        except Exception as exc:
-            logger.exception(f"Speech SSE stream failed for request {request_id}")
-            error = speech_generation_error(exc)
-            payload = openai_error_payload(
-                error.message,
-                error_type=error.error_type,
-                param=error.param,
-                code=error.code,
-            )
-            yield f"data: {json.dumps({'type': 'error', **payload})}\n\n"
-        else:
-            if final_usage is None:
-                usage = None
-            else:
-                usage = {
-                    "input_tokens": final_usage.prompt_tokens,
-                    "output_tokens": final_usage.completion_tokens,
-                    "total_tokens": final_usage.total_tokens,
-                }
-            done = {
-                "type": "speech.audio.done",
-                "usage": usage,
-                "finish_reason": finish_reason,
-            }
-            if sglext is not None:
-                done["sglext"] = sglext.model_dump()
-            else:
-                pass
-            yield f"data: {json.dumps(done)}\n\n"
+            with anyio.CancelScope(shield=True):
+                if active_request:
+                    await abort_and_close_speech_stream(
+                        client, request_id, chunk_stream
+                    )
+                else:
+                    await _close_async_iterator_if_supported(chunk_stream)
 
     headers = {
         "X-Request-Id": request_id,
-        "X-Sample-Rate": str(stream_sample_rate),
+        "X-Sample-Rate": str(audio_stream.sample_rate),
         "X-Channels": "1",
         "X-Bit-Depth": "16",
     }
     if stream_format == "sse":
-        return _ClosableStreamingResponse(
-            _sse_body(), media_type="text/event-stream", headers=headers
+        return create_speech_sse_response(
+            _body(),
+            stream_outcome=stream_outcome,
+            sample_rate=audio_stream.sample_rate,
+            response_format=response_format,
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
+            headers=headers,
         )
     else:
         headers["X-SGLang-Omni-Speech-Id"] = request_id
-        return StreamingResponse(_body(), media_type="audio/pcm", headers=headers)
+        return _ClosableStreamingResponse(
+            _body(), media_type=f"audio/{response_format}", headers=headers
+        )
 
 
 async def await_speech_response(
@@ -2388,6 +2344,7 @@ async def await_speech_response(
     request_id: str,
     response_format: str,
     speed: float,
+    output_sample_rate: int | None,
 ) -> SpeechResult:
     speech_task = asyncio.create_task(
         client.speech(
@@ -2396,6 +2353,7 @@ async def await_speech_response(
             response_format=response_format,
             speed=speed,
             allow_format_fallback=False,
+            output_sample_rate=output_sample_rate,
         )
     )
     disconnect_task = asyncio.create_task(wait_for_request_disconnect(request))

@@ -202,7 +202,7 @@ def test_packed_dit_compile_warmup_failure_fails_startup() -> None:
     assert leftover_batches == []
 
 
-def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
+def test_cpu_f0_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
     calls = []
 
     class Predictor:
@@ -221,7 +221,7 @@ def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
 
     hift = SimpleNamespace(f0_predictor=Predictor())
 
-    stages.MpsHiFTAdapter(hift, "mps")
+    stages.CpuF0HiFTAdapter(hift, "mps")
 
     assert calls == [
         ((), {"device": "cpu"}),

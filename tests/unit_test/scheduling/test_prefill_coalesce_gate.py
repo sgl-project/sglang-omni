@@ -39,6 +39,9 @@ def make_req(enqueue_t: float | None):
 class StubScheduler:
     """The attribute surface get_new_batch_prefill touches."""
 
+    enable_plain_fallback = False
+    get_coalesced_batch_prefill = OmniScheduler.get_coalesced_batch_prefill
+
     def __init__(
         self,
         *,

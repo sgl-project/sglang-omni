@@ -694,6 +694,7 @@ async def run_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     skip_server_warmup: bool = False,
 ) -> None:
     """Start the pipeline and run the OpenAI server.
@@ -811,6 +812,11 @@ async def run_server(
                 speech_reference_text_excludes_instructions=(
                     pipeline_config.speech_reference_text_excludes_instructions
                 ),
+                speech_request_validator_cls=(
+                    import_string(pipeline_config.speech_request_validator_factory)
+                    if pipeline_config.speech_request_validator_factory is not None
+                    else None
+                ),
                 additional_speech_languages=pipeline_config.additional_speech_languages,
                 max_speech_input_chars=pipeline_config.max_speech_input_chars,
                 supported_speech_fields=pipeline_config.supported_speech_fields,
@@ -823,6 +829,7 @@ async def run_server(
                 allowed_local_media_path=allowed_local_media_path,
                 allowed_media_domains=allowed_media_domains,
                 tts_batch_max_items=tts_batch_max_items,
+                enable_speech_sse_named_events=enable_speech_sse_named_events,
                 architectures=[pipeline_config.architecture],
                 audio_chunking=pipeline_config.resolved_audio_chunking,
                 interleaved_output=type(pipeline_config).interleaved_output,
@@ -980,6 +987,7 @@ def launch_server(
     allowed_local_media_path: str | None = None,
     allowed_media_domains: list[str] | None = None,
     tts_batch_max_items: int = DEFAULT_TTS_BATCH_MAX_ITEMS,
+    enable_speech_sse_named_events: bool = False,
     skip_server_warmup: bool = False,
 ) -> None:
     """Blocking helper: start the pipeline and OpenAI-compatible server.
@@ -1004,6 +1012,7 @@ def launch_server(
         allowed_media_domains: Domains allowed for remote TTS reference audio.
         tts_batch_max_items: Maximum items accepted by
             ``/v1/audio/speech/batch``.
+        enable_speech_sse_named_events: Add event names to speech SSE frames.
         skip_server_warmup: Report ready without running the pipeline's
             warmup requests or its realtime deployment's warmup first.
     """
@@ -1031,6 +1040,7 @@ def launch_server(
             allowed_local_media_path=allowed_local_media_path,
             allowed_media_domains=allowed_media_domains,
             tts_batch_max_items=tts_batch_max_items,
+            enable_speech_sse_named_events=enable_speech_sse_named_events,
             skip_server_warmup=skip_server_warmup,
         )
         previous_handler = signal.getsignal(signal.SIGTERM)

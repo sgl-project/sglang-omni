@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
-from contextlib import nullcontext
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 
 import numpy as np
 import torch
@@ -14,6 +14,9 @@ from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoConfig, AutoTokenizer
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.bootstrap import (
     create_talker_scheduler,
     create_thinker_scheduler,
@@ -71,6 +74,7 @@ def create_preprocessing_executor(
         video_decode_threads = automatic_video_decode_threads(max_concurrency)
     else:
         pass
+    register_minicpm_o_hf_config()
     preprocessor = MiniCPMOPreprocessor(
         model_path,
         speech_enabled=speech_enabled,
@@ -106,7 +110,12 @@ ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 
 
 def create_encoder_executor(
-    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder, *, stage_name: str
+    encoder: MiniCPMOImageEncoder | MiniCPMOAudioEncoder,
+    *,
+    stage_name: str,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
+    max_batch_mel_frames: int | None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     device_module = torch.get_device_module(encoder.device)
     if encoder.device.type == "npu":
@@ -121,6 +130,21 @@ def create_encoder_executor(
         cache_device="cpu",
     )
 
+    @contextmanager
+    def encoder_context() -> Iterator[None]:
+        stream_context = (
+            device_module.stream(encoder_stream)
+            if encoder_stream is not None
+            else nullcontext()
+        )
+        with stream_context, torch.no_grad():
+            yield
+            if encoder_stream is not None:
+                # note (guomangmang): downstream stages read on other streams.
+                encoder_stream.synchronize()
+            else:
+                pass
+
     def _encode_stage(payload: StagePayload) -> StagePayload:
         state = MiniCPMOPipelineState.from_dict(payload.data)
         request = build_encoder_request(state, stage_name=stage_name)
@@ -132,24 +156,50 @@ def create_encoder_executor(
         elif cached is not None:
             encoder_out = cached
         else:
-            stream_context = (
-                device_module.stream(encoder_stream)
-                if encoder_stream is not None
-                else nullcontext()
-            )
-            with stream_context, torch.no_grad():
+            with encoder_context():
                 encoder_out = encoder(**request.model_inputs)
                 cache.put(request.cache_key, encoder_out)
-                if encoder_stream is not None:
-                    # note (guomangmang): downstream stages read on other streams.
-                    encoder_stream.synchronize()
-                else:
-                    pass
         state.encoder_outs[stage_name] = encoder_out
         payload.data = state.to_dict()
         return payload
 
-    return SimpleScheduler(_encode_stage)
+    if isinstance(encoder, MiniCPMOAudioEncoder):
+        max_chunk_mel_frames = (
+            encoder.apm.embed_positions.num_embeddings * encoder.apm.conv2.stride[0]
+        )
+
+        def request_mel_frame_cost(payload: StagePayload) -> int:
+            state = MiniCPMOPipelineState.from_dict(payload.data)
+            request = build_encoder_request(state, stage_name=stage_name)
+            if request.skip_result is not None:
+                return 0
+            else:
+                # note (wirybeaver): charging full windows bounds the cost after cross-request padding.
+                return (
+                    request.model_inputs["audio_features"].shape[0]
+                    * max_chunk_mel_frames
+                )
+
+        def encode_batch(
+            payloads: list[StagePayload],
+        ) -> list[StagePayload | ValueError]:
+            with encoder_context():
+                return batch_audio_encoder_payloads(
+                    payloads, encoder=encoder, cache=cache
+                )
+
+    else:
+        encode_batch = None
+        request_mel_frame_cost = None
+
+    return SimpleScheduler(
+        _encode_stage,
+        batch_compute_fn=encode_batch,
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        request_cost_fn=request_mel_frame_cost,
+        max_batch_cost=max_batch_mel_frames,
+    )
 
 
 def create_image_encoder_executor(
@@ -162,7 +212,13 @@ def create_image_encoder_executor(
     encoder = MiniCPMOImageEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="image_encoder")
+    return create_encoder_executor(
+        encoder,
+        stage_name="image_encoder",
+        max_batch_size=1,
+        max_batch_wait_ms=0,
+        max_batch_mel_frames=None,
+    )
 
 
 def create_audio_encoder_executor(
@@ -171,11 +227,20 @@ def create_audio_encoder_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str | None = None,
+    max_batch_size: int,
+    max_batch_wait_ms: int,
+    max_batch_mel_frames: int,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     encoder = MiniCPMOAudioEncoder(
         model_path, device=str(resolve_concrete_device(device, gpu_id)), dtype=dtype
     )
-    return create_encoder_executor(encoder, stage_name="audio_encoder")
+    return create_encoder_executor(
+        encoder,
+        stage_name="audio_encoder",
+        max_batch_size=max_batch_size,
+        max_batch_wait_ms=max_batch_wait_ms,
+        max_batch_mel_frames=max_batch_mel_frames,
+    )
 
 
 # note (0xtoward): the talker prefills unchunked, so no chunk bounds the capture;
@@ -349,6 +414,7 @@ def create_code2wav_executor(
     enable_flow_cuda_graph: bool,
     flow_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
     packed_dit_cuda_graph_capture_shapes: tuple[tuple[int, int], ...],
+    hift_cuda_graph_capture_shapes: tuple[tuple[int, int], ...] = (),
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     model = MiniCPMOCode2Wav(
         model_path,
@@ -364,6 +430,7 @@ def create_code2wav_executor(
         enable_flow_cuda_graph=enable_flow_cuda_graph,
         flow_cuda_graph_capture_shapes=flow_cuda_graph_capture_shapes,
         packed_dit_cuda_graph_capture_shapes=packed_dit_cuda_graph_capture_shapes,
+        hift_cuda_graph_capture_shapes=hift_cuda_graph_capture_shapes,
     )
 
     def codec_token_cost(payload: StagePayload) -> int:
@@ -399,6 +466,7 @@ def create_code2wav_executor(
 
 
 def create_decode_executor(model_path: str) -> StreamingDetokenizeScheduler:
+    register_minicpm_o_hf_config()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     eos_token_id = tokenizer.eos_token_id
     return StreamingDetokenizeScheduler(
@@ -476,9 +544,8 @@ def create_sglang_thinker_executor_from_config(
             )
         else:
             pass
-        # note (0xtoward): the draft worker verifies whole blocks in a synchronous loop.
+        # note (0xtoward): the draft worker verifies whole blocks without mixed-chunk prefill.
         overrides["enable_mixed_chunk"] = False
-        enable_async_decode = False
         # The draft has its own positional capacity; the target serves within it.
         draft_context_length = int(
             AutoConfig.from_pretrained(

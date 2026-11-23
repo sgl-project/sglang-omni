@@ -9,11 +9,17 @@ from array import array
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Protocol
+from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.managers.schedule_batch import ScheduleBatch
+from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
+from sglang.srt.speculative.spec_tp_sync import SpecTpSync
+from sglang.srt.utils import DynamicGradMode
+from torch._dynamo.utils import counters
 
 from sglang_omni.models.fun_cosyvoice3 import dspark_draft, dspark_worker
 from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
@@ -26,16 +32,13 @@ from sglang_omni.models.fun_cosyvoice3.dspark_draft import (
     materialize_draft_checkpoint,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
-    ACCEPTANCE_NOISE_SEED_SALT,
-    DRAFT_NOISE_SEED_SALT,
     EMPTY_HISTORY_TOKEN,
-    LARGEST_FLOAT32_BELOW_ONE,
-    RESIDUAL_NOISE_SEED_SALT,
+    TOP_K_BOUND,
+    DraftSamplingState,
+    ExactAccept,
     exact_accept,
     rejection_sample,
     sample_draft_block,
-    seeded_exponential_noise,
-    seeded_uniform_noise,
     target_probabilities,
 )
 from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
@@ -45,11 +48,21 @@ from sglang_omni.models.fun_cosyvoice3.dspark_worker import (
     build_step_sampling_state,
 )
 from sglang_omni.models.fun_cosyvoice3.engine_builder import FunCosyVoice3EngineBuilder
+from sglang_omni.models.fun_cosyvoice3.exact_draft_graph import ExactDraftGraphSampler
 from sglang_omni.models.fun_cosyvoice3.model_runner import (
     COSYVOICE3_RAS_WINDOW_SIZE,
     FunCosyVoice3ModelRunner,
 )
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE, VOCAB_SIZE
+from sglang_omni.sampling.speculative_noise import (
+    ACCEPTANCE_NOISE_SEED_SALT,
+    DRAFT_NOISE_SEED_SALT,
+    LARGEST_FLOAT32_BELOW_ONE,
+    RESIDUAL_NOISE_SEED_SALT,
+    seeded_exponential_noise,
+    seeded_uniform_noise,
+)
+from sglang_omni.sampling.speculative_noise_kernel import draw_seeded_noise
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
@@ -58,6 +71,95 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 REQUIRES_CUDA = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="the seeded noise hashes with a CUDA kernel"
 )
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("batch_size", [1, 3, 64])
+@pytest.mark.parametrize("captured", [False, True])
+def test_fused_seeded_noise_preserves_the_existing_draws(
+    batch_size: int, captured: bool
+) -> None:
+    """Fusion must keep seeded proposals and acceptance decisions bit-identical."""
+    seeds = torch.arange(batch_size * 2, device="cuda", dtype=torch.int64)[::2]
+    output_lengths = torch.arange(batch_size, device="cuda", dtype=torch.int64) * 100003
+    draft_columns = DRAFT_TOKENS_PER_STEP * TOTAL_VOCAB_SIZE
+
+    def draw() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        draft = seeded_exponential_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        residual, uniform = draw_seeded_noise(
+            seeds,
+            output_lengths,
+            exponential_columns=TOTAL_VOCAB_SIZE,
+            exponential_salt=RESIDUAL_NOISE_SEED_SALT,
+            acceptance_columns=DRAFT_TOKENS_PER_STEP,
+            acceptance_salt=ACCEPTANCE_NOISE_SEED_SALT,
+        )
+        return draft, residual, uniform
+
+    if captured:
+        draw()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual_draft, actual_residual, actual_uniform = draw()
+    else:
+        pass
+    seeds[-1] = 2**31 - 1
+    if batch_size >= 3:
+        # note (ruiling): These counters hit acceptance hashes 0 and 2**32 - 1 at column zero.
+        seeds[:2] = 0
+        output_lengths[:2] = torch.tensor([1639430020, 284207454], device="cuda")
+    else:
+        pass
+    if captured:
+        graph.replay()
+    else:
+        actual_draft, actual_residual, actual_uniform = draw()
+    expected_draft = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=DRAFT_NOISE_SEED_SALT,
+            column_count=draft_columns,
+        )
+        .log()
+        .float()
+    )
+    expected_residual = (
+        -seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=RESIDUAL_NOISE_SEED_SALT,
+            column_count=TOTAL_VOCAB_SIZE,
+        )
+        .log()
+        .float()
+    )
+    expected_uniform = (
+        seeded_uniform_noise(
+            seeds,
+            output_lengths,
+            salt=ACCEPTANCE_NOISE_SEED_SALT,
+            column_count=DRAFT_TOKENS_PER_STEP,
+        )
+        .float()
+        .clamp_(max=LARGEST_FLOAT32_BELOW_ONE)
+    )
+    assert torch.equal(actual_draft, expected_draft)
+    assert torch.equal(actual_residual, expected_residual)
+    assert torch.equal(actual_uniform, expected_uniform)
+    assert torch.isfinite(actual_draft).all() and (actual_draft > 0).all()
+    assert (actual_uniform > 0).all() and (actual_uniform < 1).all()
+    if batch_size >= 3:
+        assert actual_uniform[0, 0] == 2**-33
+        assert actual_uniform[1, 0] == 1.0 - 2**-24
+    else:
+        pass
 
 
 def stage_distribution(
@@ -116,8 +218,11 @@ def stage_distribution(
     return distribution
 
 
+@pytest.mark.parametrize("is_top_k_bounded", [False, True])
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> None:
+def test_target_probabilities_match_the_stage_sampling_procedure(
+    seed: int, is_top_k_bounded: bool
+) -> None:
     generator = torch.Generator().manual_seed(seed)
     rows = 6
     logits = torch.randn(rows, TOTAL_VOCAB_SIZE, generator=generator) * 3
@@ -129,8 +234,12 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
     stop_suppressed = torch.tensor([True, False, False, True, False, False])
     repetition_penalties = torch.tensor([1.21, 1.1, 1.0, 1.3, 1.21, 1.21])
     temperatures = torch.tensor([0.7, 0.8, 1.0, 0.7, 0.7, 0.7])
-    top_ks = torch.tensor([20, 15, 25, 1, 20, TOTAL_VOCAB_SIZE])
-    top_ps = torch.tensor([0.8, 0.95, 0.9, 0.8, 1.0, 0.8])
+    # The last row filters by top_p alone, or on the bounded path keeps exactly
+    # TOP_K_BOUND tokens.
+    top_ks = torch.tensor(
+        [20, 15, 25, 1, 20, TOP_K_BOUND if is_top_k_bounded else TOTAL_VOCAB_SIZE]
+    )
+    top_ps = torch.tensor([0.8, 0.95, 0.9, 0.8, 1.0, 1.0 if is_top_k_bounded else 0.8])
     recent_tokens = torch.full((rows, COSYVOICE3_RAS_WINDOW_SIZE), EMPTY_HISTORY_TOKEN)
     recent_tokens[:, :4] = hot_tokens
     recent_tokens[:, 4] = hot_tokens[:, 0]
@@ -145,6 +254,7 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
         top_ks=top_ks,
         top_ps=top_ps,
         recent_tokens=recent_tokens,
+        is_top_k_bounded=is_top_k_bounded,
     )
 
     for row in range(rows):
@@ -163,12 +273,20 @@ def test_target_probabilities_match_the_stage_sampling_procedure(seed: int) -> N
         )
 
 
-@pytest.mark.parametrize("logit_gap", [28.0, 33.0])
+@pytest.mark.parametrize(
+    ("logit_gap", "is_redraw_weight_above_float32"),
+    [(28.0, False), (33.0, False), (70.0, True)],
+)
 def test_target_probabilities_redraw_a_repeated_token_that_holds_all_the_mass(
-    logit_gap: float,
+    logit_gap: float, is_redraw_weight_above_float32: bool
 ) -> None:
     logits = torch.zeros(1, TOTAL_VOCAB_SIZE)
     logits[0, 42] = logit_gap
+    tempered = torch.softmax(logits / 0.7, dim=-1)
+    tempered[0, 42] = 0.0
+    redraw_weight = 1 / tempered.double().sum()
+    assert bool(redraw_weight.isfinite())
+    assert bool(redraw_weight.float().isinf()) == is_redraw_weight_above_float32
     arguments = dict(
         presence_mask=torch.zeros(1, TOTAL_VOCAB_SIZE, dtype=torch.bool),
         stop_suppressed=torch.tensor([False]),
@@ -181,7 +299,7 @@ def test_target_probabilities_redraw_a_repeated_token_that_holds_all_the_mass(
     recent_tokens[0, -1] = 42
 
     probabilities = target_probabilities(
-        logits, recent_tokens=recent_tokens, **arguments
+        logits, recent_tokens=recent_tokens, is_top_k_bounded=True, **arguments
     )
 
     expected = stage_distribution(
@@ -376,6 +494,7 @@ def test_exact_accept_verifies_each_row_with_the_drafts_before_it() -> None:
         **arguments,
         uniform_noise=torch.zeros(batch, drafts),
         exponential_noise=torch.ones(batch, TOTAL_VOCAB_SIZE),
+        is_top_k_bounded=True,
     )
 
     assert accepted_count.tolist() == [drafts, drafts]
@@ -394,6 +513,7 @@ def test_exact_accept_verifies_each_row_with_the_drafts_before_it() -> None:
             top_ks=arguments["top_ks"][row : row + 1],
             top_ps=arguments["top_ps"][row : row + 1],
             recent_tokens=torch.tensor([window]),
+            is_top_k_bounded=False,
         )
         assert int(next_tokens[row]) == int(expected.argmax())
 
@@ -416,6 +536,65 @@ def test_greedy_rows_accept_only_the_target_argmax() -> None:
     assert next_tokens.tolist() == [2, 1]
 
 
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize(
+    ("batch_size", "is_top_k_bounded"), [(1, True), (3, True), (3, False)]
+)
+def test_compiled_exact_accept_matches_eager(
+    batch_size: int, is_top_k_bounded: bool
+) -> None:
+    """The worker compiles the verify into one graph, rejection sampling included."""
+    generator = torch.Generator().manual_seed(batch_size)
+    drafts = DRAFT_TOKENS_PER_STEP
+    target_logits = torch.randn(batch_size, drafts + 1, TOTAL_VOCAB_SIZE) * 3
+    distinct_tokens = torch.randperm(VOCAB_SIZE, generator=generator)
+    draft_tokens = distinct_tokens[: batch_size * drafts].view(batch_size, drafts)
+    window_tokens = distinct_tokens[
+        batch_size * drafts : batch_size * drafts + COSYVOICE3_RAS_WINDOW_SIZE
+    ]
+    # A window token the target favors, so each bonus row takes the redraw.
+    target_logits[:, :, window_tokens[0]] = 8.0
+    # Accepted drafts hold nearly all the target mass and the first rejected one
+    # almost none, so no acceptance sits near its threshold.
+    expected_accepted = (torch.arange(batch_size) * 3 + 2) % (drafts + 1)
+    for request in range(batch_size):
+        for draft in range(drafts):
+            token = draft_tokens[request, draft]
+            if draft < expected_accepted[request]:
+                target_logits[request, draft, token] = 20.0
+            elif draft == expected_accepted[request]:
+                target_logits[request, draft, token] = -20.0
+            else:
+                pass
+    inputs = [
+        target_logits.view(-1, TOTAL_VOCAB_SIZE),
+        torch.zeros(batch_size, drafts, TOTAL_VOCAB_SIZE),
+        draft_tokens,
+        torch.rand(batch_size, TOTAL_VOCAB_SIZE, generator=generator) < 0.02,
+        torch.full((batch_size,), 1.21),
+        torch.full((batch_size,), 300),
+        torch.zeros(batch_size, dtype=torch.long),
+        torch.full((batch_size,), 0.7),
+        torch.zeros(batch_size, dtype=torch.bool),
+        torch.full((batch_size,), 20, dtype=torch.int32),
+        torch.full((batch_size,), 0.8),
+        window_tokens.expand(batch_size, -1).clone(),
+        torch.rand(batch_size, drafts, generator=generator),
+        torch.empty(batch_size, TOTAL_VOCAB_SIZE).exponential_(generator=generator),
+    ]
+    inputs = [tensor.cuda() for tensor in inputs]
+
+    eager_accepted, eager_next_tokens = exact_accept(*inputs, is_top_k_bounded)
+    compiled_accepted, compiled_next_tokens = torch.compile(exact_accept, dynamic=True)(
+        *inputs, is_top_k_bounded
+    )
+
+    assert eager_accepted.tolist() == expected_accepted.tolist()
+    assert compiled_accepted.tolist() == eager_accepted.tolist()
+    assert compiled_next_tokens.tolist() == eager_next_tokens.tolist()
+
+
 def seeded_step_request(
     request_id: str, seed: int | None, output_ids: list[int], slot: int
 ) -> SimpleNamespace:
@@ -434,6 +613,7 @@ def run_speculative_step(
     markov_head: MirroredMarkovHead,
     base_logits: torch.Tensor,
     target_logits: torch.Tensor,
+    accept_function: ExactAccept = exact_accept,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Draft and verify one block per request, returning drafts, accepts and bonus."""
     device = base_logits.device
@@ -452,16 +632,21 @@ def run_speculative_step(
         top_ps=torch.ones(request_count, device=device),
         need_top_p_sampling=False,
         need_top_k_sampling=False,
+        max_top_k=None,
+        sampling_seed=None,
     )
     state = build_step_sampling_state(
         batch, sampling_info, RequestHistories(slot_count=4, device=device)
     )
     markov_head.sampling_state = state.draft
-    draft_tokens, shaped_logits = markov_head.draw_block(
-        base_logits,
-        torch.tensor([request.output_ids[-1] for request in requests], device=device),
+    # As in serving, the anchor is a column of the step's token block.
+    token_block = torch.tensor(
+        [[request.output_ids[-1]] * VERIFY_TOKENS_PER_STEP for request in requests],
+        device=device,
     )
+    draft_tokens, shaped_logits = markov_head.draw_block(base_logits, token_block[:, 0])
     executor = object.__new__(ExactVerifyExecutor)
+    executor.accept_function = accept_function
     executor.step_state = state
     executor.gamma = DRAFT_TOKENS_PER_STEP
     executor.verify_num_draft_tokens = VERIFY_TOKENS_PER_STEP
@@ -478,6 +663,51 @@ def run_speculative_step(
         draft_tokens=draft_tokens,
     )
     return draft_tokens, accept.correct_len, accept.bonus
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+def test_the_first_requests_after_the_warm_up_compile_nothing() -> None:
+    """The warm-up traced inputs laid out unlike serving's, so each server's first requests recompiled the draft block and the exact verify for seconds."""
+    device = torch.device("cuda")
+    markov_head = MirroredMarkovHead(vocab_size=TOTAL_VOCAB_SIZE, markov_rank=4).to(
+        device
+    )
+    worker = object.__new__(FunCosyVoice3DSparkWorker)
+    worker.device = device
+    worker.gamma = DRAFT_TOKENS_PER_STEP
+    worker.draft_model = SimpleNamespace(markov_head=markov_head)
+    worker.exact_verify_executor = object.__new__(ExactVerifyExecutor)
+    torch.compiler.reset()
+    accept_function = torch.compile(exact_accept, dynamic=True)
+    worker.exact_verify_executor.accept_function = accept_function
+    markov_head.block_sampler = torch.compile(sample_draft_block, dynamic=True)
+    worker.warm_up_compiled_sampling()
+    compiled_graphs = counters["stats"]["unique_graphs"]
+
+    with DynamicGradMode():
+        for request_count in (1, 3):
+            run_speculative_step(
+                [
+                    seeded_step_request(f"request-{slot}", None, [3, 4], slot=slot)
+                    for slot in range(request_count)
+                ],
+                markov_head,
+                torch.randn(
+                    request_count,
+                    DRAFT_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                torch.randn(
+                    request_count * VERIFY_TOKENS_PER_STEP,
+                    TOTAL_VOCAB_SIZE,
+                    device=device,
+                ),
+                accept_function=accept_function,
+            )
+
+    assert counters["stats"]["unique_graphs"] == compiled_graphs
 
 
 @pytest.mark.accelerator
@@ -534,6 +764,38 @@ def test_a_seeded_request_steps_the_same_beside_any_other_request() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("request_seed", "installed_seeds", "is_top_k_bounded"),
+    [(None, None, True), (1234, None, False), (None, torch.tensor([42]), False)],
+)
+def test_only_an_unseeded_batch_takes_the_bounded_top_k(
+    request_seed: int | None,
+    installed_seeds: torch.Tensor | None,
+    is_top_k_bounded: bool,
+) -> None:
+    """The bounded top-k is a batch-wide path, so a seeded draw would depend on the
+    neighbors' top_k; deterministic inference seeds every row without a request seed."""
+    batch = SimpleNamespace(
+        reqs=[seeded_step_request("a", request_seed, [7], slot=0)],
+        req_pool_indices=torch.tensor([0]),
+    )
+    sampling_info = SimpleNamespace(
+        temperatures=torch.tensor([[0.7]]),
+        top_ks=torch.tensor([20]),
+        top_ps=torch.tensor([0.8]),
+        need_top_p_sampling=True,
+        need_top_k_sampling=True,
+        max_top_k=20,
+        sampling_seed=installed_seeds,
+    )
+    state = build_step_sampling_state(
+        batch,
+        sampling_info,
+        RequestHistories(slot_count=1, device=torch.device("cpu")),
+    )
+    assert state.is_top_k_bounded == is_top_k_bounded
+
+
 def test_request_histories_track_each_slot_through_reuse() -> None:
     histories = RequestHistories(slot_count=4, device=torch.device("cpu"))
 
@@ -569,7 +831,13 @@ def test_request_histories_track_each_slot_through_reuse() -> None:
     assert presence(same_id) == [[4]]
 
 
-def test_target_keeps_every_token_when_no_request_filters() -> None:
+@pytest.mark.parametrize(
+    ("top_k", "max_top_k"),
+    [(TOTAL_VOCAB_SIZE, None), (TOP_K_BOUND + 1, TOP_K_BOUND + 1)],
+)
+def test_target_keeps_every_token_the_request_admits(
+    top_k: int, max_top_k: int | None
+) -> None:
     request = SimpleNamespace(
         rid="a",
         kv=SimpleNamespace(req_pool_idx=0),
@@ -581,10 +849,12 @@ def test_target_keeps_every_token_when_no_request_filters() -> None:
     batch = SimpleNamespace(reqs=[request], req_pool_indices=torch.tensor([0]))
     sampling_info = SimpleNamespace(
         temperatures=torch.tensor([[0.7]]),
-        top_ks=torch.tensor([TOTAL_VOCAB_SIZE]),
+        top_ks=torch.tensor([top_k]),
         top_ps=torch.tensor([1.0]),
         need_top_p_sampling=False,
-        need_top_k_sampling=False,
+        need_top_k_sampling=max_top_k is not None,
+        max_top_k=max_top_k,
+        sampling_seed=None,
     )
     state = build_step_sampling_state(
         batch,
@@ -604,12 +874,23 @@ def test_target_keeps_every_token_when_no_request_filters() -> None:
         top_ks=state.top_ks,
         top_ps=state.top_ps,
         recent_tokens=torch.full((1, COSYVOICE3_RAS_WINDOW_SIZE), EMPTY_HISTORY_TOKEN),
+        is_top_k_bounded=state.is_top_k_bounded,
     )
 
-    # The stage samples the full softmax here, tail included.
-    assert bool((probabilities > 0).all())
+    # With no top_k the stage samples the full softmax, tail included.
+    assert int((probabilities > 0).sum()) == top_k
+    expected = stage_distribution(
+        logits[0] * 3,
+        presence_mask=state.draft.presence_mask[0],
+        stop_suppressed=False,
+        repetition_penalty=1.0,
+        temperature=0.7,
+        top_k=top_k,
+        top_p=float(state.top_ps[0]),
+        recent_tokens=[],
+    )
     torch.testing.assert_close(
-        probabilities, torch.softmax(logits * 3 / 0.7, dim=-1), atol=1e-8, rtol=1e-5
+        probabilities[0].double(), expected, atol=1e-8, rtol=1e-5
     )
 
 
@@ -724,7 +1005,7 @@ def test_dspark_draft_reserves_its_verify_windows_in_the_kv_pool_cap(
     materialized_draft: str,
 ) -> None:
     builder, overrides = dspark_overrides(
-        speculative_draft_model_path="yuekai/cosyvoice3_llm_dspark"
+        speculative_draft_model_path="wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark"
     )
 
     assert overrides["speculative_algorithm"] == "DSPARK"
@@ -810,3 +1091,172 @@ def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(
     assert mirrored_block.greedy_mask.tolist() == [False]
     assert other_block == "sglang block"
     assert forwarded_heads == [other_head]
+
+
+def decode_step_worker(
+    draft_model: SimpleNamespace | dspark_draft.FunCosyVoice3DSparkDraftModel,
+    draft_sampler: SimpleNamespace | ExactDraftGraphSampler,
+    device: torch.device,
+) -> tuple[FunCosyVoice3DSparkWorker, SimpleNamespace]:
+    """A worker reduced to its decode step, and the batch it steps."""
+    worker = FunCosyVoice3DSparkWorker.__new__(FunCosyVoice3DSparkWorker)
+    worker.draft_model = draft_model
+    worker.request_histories = RequestHistories(slot_count=1, device=device)
+    worker.exact_verify_executor = SimpleNamespace(step_state=None)
+    worker._draft_sampler = (
+        draft_sampler  # noqa: leading-underscore  # inherited sampler slot under test
+    )
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        is_extend_in_batch=False,
+        return_logprob=False,
+        reqs=[],
+        sampling_info=SimpleNamespace(
+            penalizer_orchestrator=None,
+            need_min_p_sampling=False,
+            logit_bias=None,
+            has_custom_logit_processor=False,
+        ),
+    )
+    return worker, batch
+
+
+def test_worker_restages_every_step_a_captured_graph_can_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive decodes reused stale history when sampling tensor identities matched."""
+    staged_states: list[int] = []
+    sampler = SimpleNamespace(max_bs=2, stage_step_state=staged_states.append)
+    worker, batch = decode_step_worker(
+        SimpleNamespace(markov_head=SimpleNamespace(sampling_state=None)),
+        sampler,
+        torch.device("cpu"),
+    )
+    state_builder = Mock()
+    monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
+    monkeypatch.setattr(
+        dspark_worker.DSparkWorkerV2, "forward_batch_generation", Mock()
+    )
+
+    for output_length, request_count in ((7, 1), (14, 2), (21, 3), (0, 2)):
+        state_builder.return_value = SimpleNamespace(draft=output_length)
+        batch.reqs = [None] * request_count
+        worker.forward_batch_generation(batch)
+        assert worker.exact_verify_executor.step_state is state_builder.return_value
+
+    assert staged_states == [7, 14, 0]
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("graph_rows", [1, 4])
+@pytest.mark.parametrize("seeded", [False, True])
+def test_exact_draft_graph_refreshes_history_and_noise(
+    graph_rows: int,
+    seeded: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph replay must use current histories after shrink, growth, and slot reuse."""
+    torch.manual_seed(817)
+    model = dspark_draft.FunCosyVoice3DSparkDraftModel.__new__(
+        dspark_draft.FunCosyVoice3DSparkDraftModel
+    )
+    torch.nn.Module.__init__(model)
+    model.sample_from_anchor = False
+    model.confidence_head = None
+    model.lm_head = torch.nn.Linear(
+        32, TOTAL_VOCAB_SIZE, bias=False, device="cuda", dtype=torch.bfloat16
+    )
+    model.markov_head = MirroredMarkovHead(
+        vocab_size=TOTAL_VOCAB_SIZE, markov_rank=8
+    ).to("cuda", torch.bfloat16)
+    model.register_buffer(
+        "unreachable_logits", torch.zeros(TOTAL_VOCAB_SIZE, device="cuda")
+    )
+    sampler = ExactDraftGraphSampler(
+        draft_model=model,
+        gamma=7,
+        max_batch_size=graph_rows,
+        device=torch.device("cuda"),
+        draft_noise=sglang_dspark_draft.DraftNoise(
+            key=0, offset=torch.zeros((), device="cuda", dtype=torch.int64)
+        ),
+        tp_sync=SpecTpSync(SimpleNamespace(world_size=1)),
+    )
+    model.markov_head.block_sampler = sampler.compiled_sampler
+    worker, batch = decode_step_worker(model, sampler, torch.device("cuda"))
+    state_builder = Mock()
+    monkeypatch.setattr(dspark_worker, "build_step_sampling_state", state_builder)
+
+    def run_draft_step(
+        batch: ScheduleBatch,
+        on_publish: None,
+        grammar_barrier: None,
+        *,
+        pp_proxy_tensors: PPProxyTensors | None,
+    ) -> None:
+        graph.replay()
+
+    monkeypatch.setattr(
+        dspark_worker.DSparkWorkerV2,
+        "forward_batch_generation",
+        Mock(side_effect=run_draft_step),
+    )
+    with torch.inference_mode():
+        hidden_states = torch.randn(
+            graph_rows * 8, 32, device="cuda", dtype=torch.bfloat16
+        )
+        input_tokens = torch.randint(0, VOCAB_SIZE, (graph_rows * 8,), device="cuda")
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                sampler(hidden_states, input_tokens)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            sampler(hidden_states, input_tokens)
+        for step, request_count in enumerate(
+            (graph_rows, graph_rows, max(1, graph_rows - 1), graph_rows, graph_rows)
+        ):
+            state = DraftSamplingState(
+                presence_mask=torch.rand(request_count, TOTAL_VOCAB_SIZE, device="cuda")
+                < 0.2,
+                repetition_penalties=torch.full((request_count,), 1.2, device="cuda"),
+                output_lengths=torch.full(
+                    (request_count,), (step % 3) * 7, device="cuda", dtype=torch.long
+                ),
+                min_new_tokens=torch.full(
+                    (request_count,), 12, device="cuda", dtype=torch.long
+                ),
+                temperatures=torch.full((request_count,), 0.8, device="cuda"),
+                greedy=torch.arange(request_count, device="cuda") % 3 == step % 3,
+                seeds=(
+                    torch.arange(request_count, device="cuda") + 19 if seeded else None
+                ),
+            )
+            state_builder.return_value = SimpleNamespace(draft=state)
+            batch.reqs = [None] * request_count
+            hidden_states.normal_()
+            input_tokens.random_(0, VOCAB_SIZE)
+            random_state = torch.cuda.get_rng_state()
+            worker.forward_batch_generation(batch)
+            actual_tokens = (
+                sampler.out[: request_count * 7].view(request_count, 7).clone()
+            )
+            actual_logits = sampler.step_logits[:request_count].clone()
+            base_logits, _ = model.compute_base_logits(
+                hidden_states.view(graph_rows, 8, 32)[:request_count, 1:].reshape(
+                    -1, 32
+                )
+            )
+            torch.cuda.set_rng_state(random_state)
+            expected_tokens, expected_logits = model.markov_head.draw_block(
+                base_logits.view(request_count, 7, TOTAL_VOCAB_SIZE),
+                input_tokens.view(graph_rows, 8)[:request_count, 0],
+            )
+            torch.testing.assert_close(actual_tokens, expected_tokens, rtol=0, atol=0)
+            torch.testing.assert_close(
+                actual_logits, expected_logits, rtol=1e-5, atol=1e-5
+            )

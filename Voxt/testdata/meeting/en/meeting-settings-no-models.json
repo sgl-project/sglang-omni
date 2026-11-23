@@ -1,0 +1,107 @@
+{
+  "name": "meeting-settings-no-models",
+  "kind": "meeting-settings",
+  "meeting_settings": {
+    "capture_mode_options": [
+      {
+        "code": "",
+        "label": "Full meeting (microphone and system audio)"
+      },
+      {
+        "code": "subtitles",
+        "label": "Subtitles (system audio only)"
+      },
+      {
+        "code": "recording",
+        "label": "Recording (microphone only)"
+      }
+    ],
+    "capture_mode_selected": "Full meeting (microphone and system audio)",
+    "hide_from_sharing": false,
+    "asr_options": [
+      {
+        "code": "",
+        "label": "Automatic"
+      }
+    ],
+    "asr_selected": "Automatic",
+    "asr_disabled": true,
+    "spoken_language_options": [
+      {
+        "code": "",
+        "label": "Same as the main language"
+      },
+      {
+        "code": "zh",
+        "label": "Chinese · 中文"
+      },
+      {
+        "code": "en",
+        "label": "English"
+      },
+      {
+        "code": "ja",
+        "label": "Japanese · 日本語"
+      },
+      {
+        "code": "ko",
+        "label": "Korean · 한국어"
+      },
+      {
+        "code": "yue",
+        "label": "Cantonese · 粵語"
+      },
+      {
+        "code": "fr",
+        "label": "French · Français"
+      },
+      {
+        "code": "de",
+        "label": "German · Deutsch"
+      },
+      {
+        "code": "es",
+        "label": "Spanish · Español"
+      },
+      {
+        "code": "pt",
+        "label": "Portuguese · Português"
+      },
+      {
+        "code": "ru",
+        "label": "Russian · Русский"
+      },
+      {
+        "code": "it",
+        "label": "Italian · Italiano"
+      },
+      {
+        "code": "vi",
+        "label": "Vietnamese · Tiếng Việt"
+      },
+      {
+        "code": "th",
+        "label": "Thai · ไทย"
+      },
+      {
+        "code": "id",
+        "label": "Indonesian · Indonesia"
+      },
+      {
+        "code": "ar",
+        "label": "Arabic · العربية"
+      }
+    ],
+    "spoken_language_selected": "English",
+    "llm_options": [
+      {
+        "code": "",
+        "label": "Automatic"
+      }
+    ],
+    "llm_selected": "Automatic",
+    "no_llm": true,
+    "correction_style": "1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.\n2. Drop stutters (\"I I I\") and filler sounds (um, uh, 嗯, 呃). Keep everything else as it was said, in the language it was said in: do not rewrite, summarize, translate, merge, split, reorder or add anything.\n3. Leave a word you cannot make out as it is.",
+    "correction_style_reset_disabled": true
+  }
+}

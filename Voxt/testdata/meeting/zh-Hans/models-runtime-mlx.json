@@ -1,0 +1,92 @@
+{
+  "name": "models-runtime-mlx",
+  "kind": "models",
+  "models": {
+    "asr": null,
+    "llm": [
+      {
+        "key": "model-llm.balanced",
+        "rows": [
+          {
+            "id": "llm.balanced",
+            "kind": "llm",
+            "name": "Qwen3.5 4B OptiQ (4bit)",
+            "default": false,
+            "installed": true,
+            "size_text": "占用 3.3 GB",
+            "about": "整理、翻译和改写都做得好，质量和速度最均衡。",
+            "languages": "200 多种语言，中文和英语效果最好",
+            "tags": null,
+            "actions": [
+              {
+                "kind": "delete",
+                "model_id": "llm.balanced",
+                "label": "删除",
+                "accessibility_label": "删除 Qwen3.5 4B OptiQ (4bit)…"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "show_llm": true,
+    "hidden": null,
+    "hidden_open": false,
+    "advanced": {
+      "open": false,
+      "locale": "zh-Hans",
+      "value": "",
+      "selection": "自动",
+      "options": [
+        {
+          "label": "自动",
+          "value": ""
+        },
+        {
+          "label": "5 分钟",
+          "value": "5m"
+        },
+        {
+          "label": "15 分钟",
+          "value": "15m"
+        },
+        {
+          "label": "30 分钟",
+          "value": "30m"
+        },
+        {
+          "label": "1 小时",
+          "value": "1h"
+        },
+        {
+          "label": "直到退出 Voxt",
+          "value": "quit"
+        }
+      ]
+    },
+    "delete": {},
+    "network": {
+      "open": false,
+      "proxy_mode": 0,
+      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
+      "source": 0,
+      "source_labels": [
+        "自动",
+        "只用 Hugging Face",
+        "只用 hf-mirror.com"
+      ],
+      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "proxy_family": {
+        "key": "network.proxy",
+        "kind": "",
+        "text": ""
+      },
+      "source_family": {
+        "key": "network.hfEndpoints",
+        "kind": "",
+        "text": ""
+      }
+    },
+    "speech_context": ""
+  }
+}

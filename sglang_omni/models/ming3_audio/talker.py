@@ -29,6 +29,8 @@ from sglang_omni.modules.ming_audio.flow.cfm import CFM, get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.dit import DiT
 from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEconfig
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
+from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.utils.audio_features import cached_fbank
 
 TTS_PROMPT = "Please generate speech based on the following description.\n"
@@ -45,7 +47,7 @@ GRAPH_WARMUP_STEPS = 3
 
 @dataclass(kw_only=True)
 class AcousticGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     hidden: torch.Tensor
     history: torch.Tensor
     noise: torch.Tensor
@@ -143,14 +145,22 @@ class Ming3Talker(nn.Module):
                 diffusion_noise,
             )
         )
-        stream = torch.cuda.Stream(device=hidden.device)
-        stream.wait_stream(torch.cuda.current_stream(hidden.device))
-        with torch.cuda.stream(stream):
+        device = hidden.device
+        device_module = torch.get_device_module(device)
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            raise RuntimeError(
+                f"Ming 3 audio acoustic graph has no device graph backend for {device}"
+            )
+        else:
+            pass
+        stream = device_module.Stream(device=device)
+        stream.wait_stream(device_module.current_stream(device))
+        with device_module.stream(stream):
             for _ in range(GRAPH_WARMUP_STEPS):
                 self.decode_acoustic(*inputs)
-        torch.cuda.synchronize(hidden.device)
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, stream=stream, capture_error_mode="thread_local"):
+        device_module.synchronize(device)
+        with graph_backend.capture(stream=stream, thread_local_errors=True) as graph:
             latent, embeddings, stop_probability = self.decode_acoustic(*inputs)
         return AcousticGraph(
             graph=graph,

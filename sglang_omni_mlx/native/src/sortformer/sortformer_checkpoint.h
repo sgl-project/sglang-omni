@@ -18,7 +18,7 @@ Config LoadConfig(const std::filesystem::path &model_directory);
 
 // Every *.safetensors in the directory, sanitized as Swift does (PyTorch
 // layouts converted, num_batches_tracked dropped) and checked strictly: each
-// key must be a model parameter and each parameter present. Evaluated.
+// key must be a model parameter and each parameter present.
 std::unordered_map<std::string, mlx::core::array>
 LoadCheckpoint(const std::filesystem::path &model_directory,
                const Config &config);

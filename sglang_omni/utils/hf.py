@@ -39,6 +39,8 @@ _PERSONAPLEX_ARCHITECTURE = "PersonaPlexForCausalLM"
 _PERSONAPLEX_LAYOUT_MARKER = "tokenizer_spm_32k_3.model"
 _MING3_DENSE_TTS_ARCHITECTURE = "Ming3DenseTTSForConditionalGeneration"
 _MING_OMNI_TTS_ARCHITECTURE = "BailingMMNativeForConditionalGeneration"
+ZONOS3_ARCHITECTURE = "Zonos3ForCausalLM"
+ZONOS3_LAYOUT_MARKER = "lm/zonos3_mini/params.json"
 
 
 def architecture_from_hf_config(hf_config: PretrainedConfig) -> str | None:
@@ -291,6 +293,25 @@ def try_resolve_arch_from_personaplex_layout(
     except (OSError, ValueError):
         return None
     return _PERSONAPLEX_ARCHITECTURE
+
+
+def try_resolve_arch_from_zonos3_layout(
+    model_path: str, revision: str | None = None
+) -> str | None:
+    """Resolve Zonos3 from its released layout; its params.json names no architecture."""
+    if os.path.isfile(os.path.join(model_path, ZONOS3_LAYOUT_MARKER)):
+        return ZONOS3_ARCHITECTURE
+    elif os.path.isdir(model_path):
+        return None
+    else:
+        pass
+    try:
+        hf_hub_download(
+            repo_id=model_path, filename=ZONOS3_LAYOUT_MARKER, revision=revision
+        )
+    except (OSError, ValueError):
+        return None
+    return ZONOS3_ARCHITECTURE
 
 
 def auk_architecture_from_config(path: str) -> str | None:

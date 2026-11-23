@@ -1,0 +1,12 @@
+# Files over the line limit today (TestFileSizes: 600 lines of code, 800 of
+# tests), each with the most lines it may have: its size when the list was
+# made (refactor R0, docs/architecture.md "Code structure rules"). A file
+# here may shrink but not grow; once it is within the limit, its line goes.
+# Each says why it is long and the refactor batch that splits it (the plan:
+# R1 and R2 split package main's files, R3 internal's, without changing
+# code). New files may not be added here except for a fix that cannot wait,
+# said why in the commit.
+#
+# path                                  lines  # why it is long; the batch that splits it
+#
+# (none: refactor R1–R3 split every file that was over the limit)

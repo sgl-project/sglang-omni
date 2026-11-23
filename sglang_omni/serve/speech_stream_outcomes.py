@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Terminal state of recent raw PCM speech streams, kept for a follow-up GET.
+"""Terminal state of recent raw audio streams, kept for a follow-up GET.
 
-A raw PCM stream sends its headers before generation ends and has no in-band
+A raw audio stream sends its headers before generation ends and has no in-band
 channel for trailing metadata, so the server keeps each finished stream's
 terminal state by request id for GET /v1/audio/speech/{request_id}.
 """

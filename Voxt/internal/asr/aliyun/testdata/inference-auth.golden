@@ -1,0 +1,7 @@
+## client → service
+GET /api-ws/v1/inference
+Authorization: Bearer <key>
+→ text {"header":{"action":"run-task","streaming":"duplex","task_id":"<task-id>"},"payload":{"function":"recognition","input":{},"model":"fun-asr-realtime","parameters":{"format":"pcm","sample_rate":16000},"task":"asr","task_group":"audio"}}
+
+## events
+open: kind=auth code=InvalidApiKey detail=Invalid API-key provided.

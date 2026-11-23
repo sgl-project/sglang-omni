@@ -220,15 +220,6 @@ def make_whisper_scheduler_adapters(
         params = payload.request.params or {}
         temperature = float(params.get("temperature") or 0.0)
         segment_timestamps = bool(params.get("segment_timestamps"))
-        # note (wilsonzheng0327): the verify applies neither sampling nor timestamps.
-        if speculative_num_steps > 0 and (temperature != 0.0 or segment_timestamps):
-            raise ValueError(
-                "Whisper speculative decoding supports only greedy decoding without "
-                "segment timestamps; set temperature=0 and use a response_format "
-                "other than srt or vtt"
-            )
-        else:
-            pass
         prepared = prepare_audio(
             payload,
             source_name="Whisper ASR",
@@ -387,6 +378,7 @@ def make_whisper_scheduler_adapters(
                 "asr_latency_s": engine_time_s,
                 "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

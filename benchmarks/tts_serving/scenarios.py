@@ -1419,11 +1419,11 @@ def _speech_raw_pcm_stream(
 def _speech_stream_non_pcm_error(
     index: int, spec: BenchmarkSpec, stage: LoadStage
 ) -> Scenario:
-    payload = _base_payload(spec, "Streaming must reject non-PCM response formats.")
+    payload = _base_payload(spec, "Streaming must reject unsupported response formats.")
     payload.update(
         {
             "stream": True,
-            "response_format": "wav",
+            "response_format": "mp3",
             "seed": spec.seed + index,
         }
     )
@@ -1439,7 +1439,7 @@ def _speech_stream_non_pcm_error(
         expected_http_status=400,
         expected_error_type="BadRequestError",
         alternate_error_signatures=(RUST_MALFORMED_REQUEST,),
-        description="raw PCM streaming request with invalid non-PCM response format",
+        description="raw audio streaming request with unsupported response format",
         planned_metadata={"stream_error_case": "stream_non_pcm"},
     )
 
@@ -1547,7 +1547,7 @@ def _malformed_payloads(
                 "model": spec.model_name,
                 "input": "Streaming format violation",
                 "voice": "default",
-                "response_format": "wav",
+                "response_format": "mp3",
                 "stream": True,
             },
         ),

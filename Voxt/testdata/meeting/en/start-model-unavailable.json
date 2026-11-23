@@ -1,0 +1,8 @@
+{
+  "name": "start-model-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.model.unavailable",
+    "text": "Could not load the speech model for meetings: load failed"
+  }
+}

@@ -18,6 +18,7 @@ from sglang_omni.models.qwen3_asr.audio_lengths import (
 )
 from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import Qwen3ASRProcessor
 from sglang_omni.models.qwen3_asr.languages import resolve_language
+from sglang_omni.models.qwen3_asr.mrope_fast_path import all_degenerate
 from sglang_omni.models.qwen3_asr.request_builders import (
     Qwen3ASRRequestData,
     make_qwen3_asr_scheduler_adapters,
@@ -171,6 +172,7 @@ def test_speculative_verify_positions_support_partial_batches(
         multimodal_inputs=[request.multimodal_inputs for request in requests],
         spec_info=SimpleNamespace(positions=positions),
     )
+    assert all_degenerate(batch.multimodal_inputs)
 
     forward_batch.compute_spec_mrope_positions(SimpleNamespace(device="cpu"), batch)
 
@@ -544,6 +546,31 @@ def test_qwen3_asr_greedy_only_rejects_non_greedy_sampling(monkeypatch) -> None:
     # The refusal crosses the stage boundary as text, and chunked transcription wraps it.
     assert is_bad_request_error(RuntimeError(str(refusal.value)))
     assert is_bad_request_error(RuntimeError(f"chunk 0 failed: {refusal.value}"))
+
+
+@pytest.mark.parametrize(
+    ("params", "expected_repetition_penalty"),
+    [
+        ({}, 1.0),
+        ({"repetition_penalty": 1.3}, 1.3),
+    ],
+)
+def test_qwen3_asr_request_builder_preserves_repetition_penalty(
+    monkeypatch,
+    params: dict[str, float],
+    expected_repetition_penalty: float,
+) -> None:
+    """A transcription request's repetition_penalty must reach decoding instead of being dropped."""
+    request_builder = budget_test_builder(monkeypatch, num_samples=1600)
+    payload = StagePayload(
+        request_id="req-asr-repetition-penalty",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+
+    data = request_builder(payload)
+
+    assert data.req.sampling_params.repetition_penalty == expected_repetition_penalty
 
 
 def test_qwen3_asr_request_builder_preserves_audio_beyond_30_seconds(

@@ -1,0 +1,44 @@
+{
+  "name": "logs-source-helper",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": [
+      {
+        "seq": 4,
+        "time": "09:30:03",
+        "source": "helper",
+        "message": "line 4: an error",
+        "level": "error"
+      },
+      {
+        "seq": 2,
+        "time": "09:30:01",
+        "source": "helper",
+        "message": "line 2: the helper said hello",
+        "level": "info"
+      }
+    ],
+    "count": "2 行",
+    "sources": [
+      {
+        "code": "",
+        "label": "全部来源"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "辅助进程"
+      },
+      {
+        "code": "dictionary",
+        "label": "词典"
+      }
+    ],
+    "source": "辅助进程",
+    "query": "",
+    "log_file": false
+  }
+}

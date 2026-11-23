@@ -17,7 +17,6 @@ namespace {
 
 namespace mx = mlx::core;
 
-constexpr int kSampleRate = 16000;
 // SentencePiece piece types that decoding skips.
 constexpr int kControlPiece = 3;
 constexpr int kUnusedPiece = 5;
@@ -120,24 +119,6 @@ std::vector<mx::array> ReluGraph(const std::vector<mx::array> &inputs) {
   return {mx::maximum(inputs[0], mx::array(0.0f, inputs[0].dtype()))};
 }
 
-float HertzToMel(float frequency_hz, float linear_step_hz, float min_log_hz,
-                 float min_log_mel, float log_step) {
-  if (frequency_hz < min_log_hz) {
-    return frequency_hz / linear_step_hz;
-  } else {
-    return min_log_mel + std::log(frequency_hz / min_log_hz) / log_step;
-  }
-}
-
-float MelToHertz(float mel, float linear_step_hz, float min_log_hz,
-                 float min_log_mel, float log_step) {
-  if (mel < min_log_mel) {
-    return linear_step_hz * mel;
-  } else {
-    return min_log_hz * std::exp(log_step * (mel - min_log_mel));
-  }
-}
-
 bool IsWhitespace(uint32_t code_point, bool newlines) {
   const bool is_newline = (code_point >= 0x0A && code_point <= 0x0D) ||
                           code_point == 0x85 || code_point == 0x2028 ||
@@ -189,53 +170,6 @@ uint32_t CodePointAt(const std::string &text, size_t offset, size_t &length) {
 }
 
 } // namespace
-
-std::vector<float> SlaneyMelFilterBank(int fft_size, int mel_bin_count) {
-  const int frequency_bin_count = fft_size / 2 + 1;
-  const float linear_step_hz = 200.0f / 3.0f;
-  const float min_log_hz = 1000.0f;
-  const float min_log_mel = min_log_hz / linear_step_hz;
-  const float log_step = std::log(6.4f) / 27.0f;
-
-  std::vector<float> bin_frequencies_hz(frequency_bin_count);
-  for (int i = 0; i < frequency_bin_count; ++i) {
-    bin_frequencies_hz[i] = static_cast<float>(i) *
-                            static_cast<float>(kSampleRate) /
-                            static_cast<float>(fft_size);
-  }
-  const float mel_max =
-      HertzToMel(static_cast<float>(kSampleRate) / 2.0f, linear_step_hz,
-                 min_log_hz, min_log_mel, log_step);
-  std::vector<float> edges_hz(mel_bin_count + 2);
-  for (int i = 0; i < mel_bin_count + 2; ++i) {
-    edges_hz[i] = MelToHertz(static_cast<float>(i) * mel_max /
-                                 static_cast<float>(mel_bin_count + 1),
-                             linear_step_hz, min_log_hz, min_log_mel, log_step);
-  }
-  std::vector<float> filters(
-      static_cast<size_t>(frequency_bin_count) * mel_bin_count, 0.0f);
-  for (int mel_bin = 0; mel_bin < mel_bin_count; ++mel_bin) {
-    const float low = edges_hz[mel_bin];
-    const float center = edges_hz[mel_bin + 1];
-    const float high = edges_hz[mel_bin + 2];
-    const float normalization = 2.0f / (high - low);
-    for (int frequency_bin = 0; frequency_bin < frequency_bin_count;
-         ++frequency_bin) {
-      const float frequency_hz = bin_frequencies_hz[frequency_bin];
-      float weight = 0.0f;
-      if (low <= frequency_hz && frequency_hz < center) {
-        weight = (frequency_hz - low) / (center - low);
-      } else if (center <= frequency_hz && frequency_hz <= high) {
-        weight = (high - frequency_hz) / (high - center);
-      } else {
-        weight = 0.0f;
-      }
-      filters[static_cast<size_t>(frequency_bin) * mel_bin_count + mel_bin] =
-          weight * normalization;
-    }
-  }
-  return filters;
-}
 
 mx::array Silu(const mx::array &x) {
   static const auto compiled = mx::compile(SiluGraph, true);

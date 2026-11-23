@@ -112,7 +112,7 @@ def test_shutdown_during_the_model_load_reports_stopped(
     [
         (("--model-kind", "stub_asr"), "--model-path is required"),
         (("--model-directory", "x", "--model-kind", "stub_asr", "--no-such-flag", "1"), "unknown argument --no-such-flag"),
-        (("--model-directory", "x", "--model-kind", "whisper"), "--model-kind must be stub_asr or stub_speech"),
+        (("--model-directory", "x", "--model-kind", "whisper"), "--model-kind must be stub_asr, stub_speech, stub_ming_tts or stub_chat"),
         (("--model-directory", "x", "--model-kind", "stub_asr", "--model-name"), "--model-name needs a value"),
         (("--model-directory", "x", "--model-kind", "stub_asr", "--max-queued-requests", "1"), "unknown argument --max-queued-requests"),
         (("--model-directory", "x", "--model-kind", "stub_speech", "--max-queued-requests", "-1"), "--max-queued-requests must not be negative"),

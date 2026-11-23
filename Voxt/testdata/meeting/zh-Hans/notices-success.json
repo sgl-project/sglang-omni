@@ -1,0 +1,12 @@
+{
+  "name": "notices-success",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n1",
+      "severity": "success",
+      "title": "Done",
+      "body": "It worked."
+    }
+  ]
+}

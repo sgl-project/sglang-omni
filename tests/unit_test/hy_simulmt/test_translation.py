@@ -3,6 +3,7 @@
 
 import io
 import wave
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -23,8 +24,13 @@ from sglang_omni.models.hy_simulmt.request_builders import (
     HySimulMTResultAdapter,
 )
 from sglang_omni.models.hy_simulmt.sglang_model import FrameStackAdapter
+from sglang_omni.models.hy_simulmt.stages import (
+    HySimulMTEngineBuilder,
+    create_hy_simulmt_executor,
+)
 from sglang_omni.models.hy_simulmt.streaming import HySimulMTStreamingStrategy
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 
 
 def wav_bytes(sample_count: int, value: int = 100) -> bytes:
@@ -247,3 +253,56 @@ def test_realtime_history_is_committed_after_success_and_final_flush_is_complete
         )
         == "你好，世界。"
     )
+
+
+@dataclass(kw_only=True)
+class CapturedBuildCall:
+    server_args_overrides: dict[str, int]
+    infra_kwargs: InfrastructureOptions
+
+
+@pytest.mark.parametrize(
+    ("tp_rank", "tp_size", "nccl_port"),
+    [(2, 4, 29501), (0, 1, None)],
+)
+def test_tensor_parallel_arguments_reach_server_args_and_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+    tp_rank: int,
+    tp_size: int,
+    nccl_port: int | None,
+) -> None:
+    captured: list[CapturedBuildCall] = []
+
+    def fake_build(
+        self: HySimulMTEngineBuilder,
+        model_path: str,
+        *,
+        device: str | None,
+        gpu_id: int | None,
+        dtype: str,
+        server_args_overrides: dict[str, int],
+    ) -> str:
+        captured.append(
+            CapturedBuildCall(
+                server_args_overrides=dict(server_args_overrides),
+                infra_kwargs=self.infra_kwargs(),
+            )
+        )
+        return "scheduler"
+
+    monkeypatch.setattr(HySimulMTEngineBuilder, "build", fake_build)
+
+    create_hy_simulmt_executor(
+        "dummy",
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+        server_args_overrides={"max_running_requests": 8},
+    )
+
+    (call,) = captured
+    assert call.server_args_overrides == {
+        "max_running_requests": 8,
+        "tp_size": tp_size,
+    }
+    assert call.infra_kwargs == {"tp_rank": tp_rank, "nccl_port": nccl_port}

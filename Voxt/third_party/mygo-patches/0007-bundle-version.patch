@@ -1,0 +1,78 @@
+MyGo patch 0007 (Auralink): CFBundleVersion takes the numbers of the
+version.
+
+Apple wants CFBundleVersion to be one to three period-separated
+integers; mygo build wrote the whole version, 0.1.0-beta.1 for a beta.
+It now writes its numbers (0.1.0), as debVersion does for Debian;
+CFBundleShortVersionString keeps the whole version, which App.Version
+reads and updates compare. A version with no such numbers stays as it
+is. TestBundleVersion.
+diff --git a/cmd/mygo/bundle.go b/cmd/mygo/bundle.go
+index 3489580..527a311 100644
+--- a/cmd/mygo/bundle.go
++++ b/cmd/mygo/bundle.go
+@@ -212,12 +212,32 @@ func compileIcon(src, minimumSystemVersion string) (*assetCatalog, error) {
+ 	return &assetCatalog{car, icns}, nil
+ }
+ 
++// bundleVersion is CFBundleVersion for version: its numbers, as Apple
++// requires ("one to three period-separated integers"), without a
++// pre-release part or build metadata (1.3.0-beta.1 is 1.3.0), or version
++// itself when it has no such numbers. CFBundleShortVersionString keeps the
++// whole version, which App.Version reads and updates compare.
++func bundleVersion(version string) string {
++	v, _, _ := strings.Cut(version, "+")
++	v, _, _ = strings.Cut(v, "-")
++	fields := strings.Split(v, ".")
++	if len(fields) > 3 {
++		return version
++	}
++	for _, f := range fields {
++		if f == "" || strings.Trim(f, "0123456789") != "" {
++			return version
++		}
++	}
++	return v
++}
++
+ func infoPlist(c *Config, executable, icon, iconName string) []byte {
+ 	d := map[string]any{
+ 		"CFBundleName":                         c.Name,
+ 		"CFBundleDisplayName":                  c.Name,
+ 		"CFBundleIdentifier":                   c.Identifier,
+-		"CFBundleVersion":                      c.Version,
++		"CFBundleVersion":                      bundleVersion(c.Version),
+ 		"CFBundleShortVersionString":           c.Version,
+ 		"CFBundleExecutable":                   executable,
+ 		"CFBundlePackageType":                  "APPL",
+diff --git a/cmd/mygo/cli_test.go b/cmd/mygo/cli_test.go
+index 602dcbe..d2094fb 100644
+--- a/cmd/mygo/cli_test.go
++++ b/cmd/mygo/cli_test.go
+@@ -67,6 +67,26 @@ func TestConfigDefaults(t *testing.T) {
+ 	}
+ }
+ 
++func TestBundleVersion(t *testing.T) {
++	for v, want := range map[string]string{
++		"1.2.3": "1.2.3", "0.1.0-beta.1": "0.1.0", "1.2.3+42": "1.2.3", "2.0.0-rc.1+abc": "2.0.0",
++		"7": "7", "1.2": "1.2", "1.2.3.4": "1.2.3.4", "next": "next", "": "",
++	} {
++		if got := bundleVersion(v); got != want {
++			t.Errorf("bundleVersion(%q) = %q, want %q", v, got, want)
++		}
++	}
++	plist := string(infoPlist(&Config{Name: "A", Version: "0.1.0-beta.1"}, "A", "", ""))
++	for _, want := range []string{
++		"<key>CFBundleShortVersionString</key>\n\t<string>0.1.0-beta.1</string>",
++		"<key>CFBundleVersion</key>\n\t<string>0.1.0</string>",
++	} {
++		if !strings.Contains(plist, want) {
++			t.Errorf("Info.plist has no %q", want)
++		}
++	}
++}
++
+ func TestInfoPlist(t *testing.T) {
+ 	c := &Config{Name: "A & B", Identifier: "com.example.ab", Version: "1.2.3", MacOS: MacOS{MinimumSystemVersion: "12.0"}, URLSchemes: []string{"ab"}}
+ 	plist := string(infoPlist(c, "A & B", "icon.icns", ""))

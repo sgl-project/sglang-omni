@@ -1,0 +1,21 @@
+{
+  "name": "key-recorder-helper-recording",
+  "kind": "key-recorder",
+  "key_recorder": {
+    "helper_records_keys": true,
+    "displayed_keys": "右 ⌥ 空格",
+    "typed": {
+      "valid": true,
+      "canonical_keys": "RightOption+Space",
+      "formatted_keys": "右 ⌥ 空格",
+      "error_text": ""
+    },
+    "raw_keys": "RightOption+Space",
+    "custom": true,
+    "typing": false,
+    "edited": false,
+    "unknown": false,
+    "record_denied": false,
+    "focused": true
+  }
+}

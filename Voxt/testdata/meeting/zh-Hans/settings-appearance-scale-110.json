@@ -1,0 +1,123 @@
+{
+  "name": "settings-appearance-scale-110",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/appearance",
+    "shown_path": "/settings/appearance",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "appearance": {
+      "theme": 0,
+      "theme_options": [
+        "系统",
+        "深色",
+        "浅色",
+        "透明"
+      ],
+      "theme_values": [
+        "system",
+        "dark",
+        "light",
+        "transparent"
+      ],
+      "scale": 2,
+      "scale_options": [
+        "90%",
+        "100%",
+        "110%",
+        "125%"
+      ],
+      "scale_values": [
+        0.9,
+        1,
+        1.1,
+        1.25
+      ],
+      "sidebar": 0,
+      "sidebar_options": [
+        "自动",
+        "名称和图标",
+        "只显示图标"
+      ],
+      "sidebar_values": [
+        "automatic",
+        "names",
+        "icons"
+      ],
+      "reduce_motion": false,
+      "opening": true,
+      "opening_length": 1,
+      "opening_length_options": [
+        "3 秒",
+        "2 秒",
+        "1 秒"
+      ],
+      "opening_length_values": [
+        3000,
+        2000,
+        1000
+      ],
+      "palette": "#0d9384",
+      "default_palette": "#0d9384",
+      "transparent": false,
+      "min_transparency": 5,
+      "max_transparency": 15
+    }
+  }
+}

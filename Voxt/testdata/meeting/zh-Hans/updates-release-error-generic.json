@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-generic",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "无法检查更新",
+    "subtitle": "",
+    "error_text": "Voxt 读不到 GitHub 上的版本列表：fixture release list failed",
+    "notes": "",
+    "download": ""
+  }
+}

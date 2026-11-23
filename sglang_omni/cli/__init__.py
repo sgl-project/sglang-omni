@@ -1,9 +1,13 @@
+import sys
+from contextlib import redirect_stdout
+
 from typer import Typer
 
-from .check_gpu import check_gpu
-from .config import config_app
-from .serve import ServeCommand
-from .serve import serve as _serve
+with redirect_stdout(sys.stderr):
+    from sglang_omni.cli.check_gpu import check_gpu
+    from sglang_omni.cli.config import config_app
+    from sglang_omni.cli.serve import ServeCommand
+    from sglang_omni.cli.serve import serve as _serve
 
 app = Typer()
 

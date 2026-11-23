@@ -38,7 +38,7 @@ Five stages run under `MultiProcessPipelineRunner` (preprocessing, Mimi encode, 
 - Prompt plus reply must fit the LM context, 8192 positions by default (about 10.8 minutes); a longer recording is rejected with the limit in the message and needs `--lm.engine.context_length`.
 - The reply text is the model's inner monologue with the frame markers (`PAD`, `EPAD`, `BOS`, `EOS`) removed.
 
-For Intel GPUs, follow the [PersonaPlex XPU recipe](../get_started/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
+For Intel GPUs, follow the [PersonaPlex XPU recipe](../other_platforms/installation_xpu.md#personaplex-speech-to-speech-single-xpu).
 
 ## Serving over HTTP
 
@@ -60,7 +60,7 @@ curl -s localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -
 
 ## Native Full-Duplex Ability
 
-PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full Duplex Interactive Model](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
+PersonaPlex also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-personaplex).
 
 ## Request parameters
 

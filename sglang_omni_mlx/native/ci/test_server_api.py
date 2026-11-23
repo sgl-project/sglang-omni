@@ -11,15 +11,20 @@ import http.client
 import io
 import json
 import os
+import select
 import subprocess
 import time
 import uuid
 import wave
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from websockets.sync.client import connect
+
+from sglang_omni_mlx.native.ci.long_audio_client import score, stream_recording
+from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_clips
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
@@ -29,6 +34,9 @@ pytestmark = pytest.mark.skipif(
 MODEL_REPO = "mlx-community/Qwen3-ASR-0.6B-4bit"
 DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-0.6B-dflash"
 LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
+# Bounds on a server that hangs, so a test fails instead of waiting forever.
+STARTUP_TIMEOUT_SECONDS = 600
+SHUTDOWN_TIMEOUT_SECONDS = 10
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
@@ -67,7 +75,17 @@ class Server:
             stderr=subprocess.DEVNULL,
             text=True,
         )
-        self.ready = json.loads(self.process.stdout.readline())
+        readable, _, _ = select.select(
+            [self.process.stdout], [], [], STARTUP_TIMEOUT_SECONDS
+        )
+        if not readable:
+            self.process.kill()
+            self.process.wait()
+            raise TimeoutError(
+                f"{binary} sent no ready event within {STARTUP_TIMEOUT_SECONDS} s"
+            )
+        else:
+            self.ready = json.loads(self.process.stdout.readline())
         self.port = self.ready.get("port")
 
     def request(
@@ -106,7 +124,13 @@ class Server:
         if self.process.poll() is None:
             self.process.stdin.write('{"command": "shutdown"}\n')
             self.process.stdin.flush()
-            self.process.wait(timeout=10)
+            try:
+                self.process.wait(timeout=SHUTDOWN_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                # A server left running would keep its model in memory.
+                self.process.kill()
+                self.process.wait()
+                raise
         else:
             pass
 
@@ -214,11 +238,22 @@ def test_a_draft_model_serves_the_voxt_final_request() -> None:
     assert events[0]["text"]
     assert events[0]["generation_metadata"]["finish_reason"] == "stop"
     assert events[0]["generation_metadata"]["language"] == "English"
+    metadata = events[0]["generation_metadata"]
+    assert metadata["verify_round_count"] > 0
+    assert metadata["proposed_draft_token_count"] > 0
+    assert (
+        0
+        <= metadata["accepted_draft_token_count"]
+        <= metadata["proposed_draft_token_count"]
+    )
     assert budget_status == 200
     budget_done = sse_events(budget_body)[0]
     assert budget_done["text"]
     assert budget_done["generation_metadata"]["finish_reason"] == "length"
     assert budget_done["generation_metadata"]["generated_token_count"] == 2
+    assert budget_done["generation_metadata"]["verify_round_count"] == 1
+    assert budget_done["generation_metadata"]["proposed_draft_token_count"] == 0
+    assert budget_done["generation_metadata"]["accepted_draft_token_count"] == 0
 
 
 def test_a_draft_for_another_target_fails_at_load() -> None:
@@ -229,6 +264,66 @@ def test_a_draft_for_another_target_fails_at_load() -> None:
     assert failed.ready["event"] == "failed"
     assert "hidden size 2048" in failed.ready["reason"]
     assert failed.process.wait(timeout=10) == 1
+
+
+def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
+    recording_path = tmp_path / "recording.wav"
+    recording = build_recording(
+        load_clips(Path(DATA_ROOT) / "corpus" / "v1", "zh"),
+        900,
+        0,
+        recording_path,
+    )
+    outputs = {}
+    for policy in ("fixed", "adaptive"):
+        result = subprocess.run(
+            [
+                str(Path(RUNTIME_BIN) / "qwen3_asr_transcribe"),
+                "--model-path",
+                str(model_directory()),
+                "--draft-model-path",
+                str(model_directory(DRAFT_REPO)),
+                "--draft-policy",
+                policy,
+                "--layout",
+                "voxt_swift",
+                "--language",
+                "Chinese",
+                "--max-new-tokens",
+                "4096",
+                "--cache-limit-bytes",
+                str(2 << 30),
+                "--stop-at-end-of-text",
+                "--stop-on-token-loop",
+                str(recording_path),
+            ],  # fmt: skip
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=600,
+        )
+        outputs[policy] = json.loads(result.stdout)
+        assert outputs[policy]["finish_reason"] == "stop"
+        assert ("DFlash backoff after " in result.stderr) == (
+            policy == "adaptive"
+        ), result.stderr
+    fixed = outputs["fixed"]
+    adaptive = outputs["adaptive"]
+    assert 0 < adaptive["verify_rounds"] < fixed["verify_rounds"]
+    fixed_error = score(recording.reference, fixed["text"], "zh").error_rate
+    adaptive_error = score(recording.reference, adaptive["text"], "zh").error_rate
+    golden = json.loads(
+        (
+            Path(__file__).parent / "golden" / "qwen3-asr-0.6b-4bit-dflash.json"
+        ).read_text()
+    )
+    # note (ZaneZhang-67): a faster token-loop stop is not a quality-preserving backoff.
+    assert (adaptive_error - fixed_error) * 100 <= golden["tolerance"]["metric_pp"], (
+        fixed_error,
+        adaptive_error,
+        fixed["generated_token_count"],
+        adaptive["generated_token_count"],
+    )
 
 
 def test_plain_request_returns_json_text(server: Server) -> None:
@@ -306,6 +401,7 @@ def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
 
 
 def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
+    transcript_before = server.post_form({}, clip("0006_en_short"))
     boundary = uuid.uuid4().hex
     body = (
         (
@@ -341,6 +437,99 @@ def test_a_disconnected_stream_stops_its_decode(server: Server) -> None:
             time.monotonic() - closed_at < 1.5
         ), "the decode kept running after its client left"
         time.sleep(0.05)
+    assert server.post_form({}, clip("0006_en_short")) == transcript_before
+
+
+def open_stream(server: Server, wav: bytes) -> http.client.HTTPResponse:
+    """Starts a streamed request with a large token budget; closing the response cancels it."""
+    boundary = uuid.uuid4().hex
+    body = (
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="stream"\r\n\r\ntrue\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="max_new_tokens"\r\n\r\n4096\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n'
+        ).encode()
+        + wav
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=60)
+    connection.request(
+        "POST",
+        "/v1/audio/transcriptions",
+        body,
+        {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    response = connection.getresponse()
+    assert response.status == 200
+    return response
+
+
+def request_states(server: Server) -> dict:
+    return json.loads(server.request("GET", "/health")[1])["request_states"]
+
+
+def wait_for(condition, timeout_seconds: float, message: str) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not condition():
+        assert time.monotonic() < deadline, message
+        time.sleep(0.05)
+
+
+def test_concurrent_requests_decode_together_and_match_serial_output() -> None:
+    """Queued requests batch under --max-batch; each finishes on its own and a cancelled one leaves the rest intact."""
+    clip_ids = ["0006_en_short", "0007_en_short", "0008_en_short"]
+    server = Server(flags=("--max-batch", "4"))
+    try:
+        # Note: a request alone in the queue runs serially.
+        serial = {clip_id: server.post_form({}, clip(clip_id)) for clip_id in clip_ids}
+        assert all(status == 200 for status, _ in serial.values())
+        # The first request occupies the worker so the next four queue behind
+        # it and are taken as one batch once it is cancelled.
+        blocker = open_stream(server, long_wav(300))
+        wait_for(
+            lambda: request_states(server) == {"running": 1},
+            10,
+            "the blocking request never started",
+        )
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            short = {
+                clip_id: pool.submit(server.post_form, {}, clip(clip_id))
+                for clip_id in clip_ids
+            }
+            canceled = pool.submit(open_stream, server, long_wav(300))
+            wait_for(
+                lambda: request_states(server).get("queued") == 4,
+                10,
+                "the requests did not queue behind the blocker",
+            )
+            blocker.close()
+            # The short requests answer while the long one is still decoding.
+            results = {clip_id: future.result(60) for clip_id, future in short.items()}
+            assert request_states(server) == {"running": 1}
+            assert results == serial
+            # Cancelling the long row ends only that row.
+            canceled.result(10).close()
+            wait_for(
+                lambda: request_states(server) == {},
+                3,
+                "the cancelled row kept decoding",
+            )
+        assert server.post_form({}, clip(clip_ids[0])) == serial[clip_ids[0]]
+    finally:
+        server.stop()
+
+
+def test_realtime_accepts_silent_audio_without_a_preview(
+    server: Server, tmp_path: Path
+) -> None:
+    """A session with no preview events must stay open while audio is sent."""
+    recording = tmp_path / "silence.wav"
+    recording.write_bytes(wav_bytes(b"\x00\x00" * 64000))
+    result = stream_recording(
+        server.port, recording, "en", 1, 1, tmp_path / "events.jsonl"
+    )
+    assert result.text == ""
+    assert result.final_segment_count == 1
 
 
 def test_realtime_manual_session(server: Server) -> None:

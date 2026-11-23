@@ -1,0 +1,29 @@
+{
+  "name": "logs-empty",
+  "kind": "shell-logs",
+  "shell_logs": {
+    "lines": null,
+    "count": "0 lines",
+    "sources": [
+      {
+        "code": "",
+        "label": "All sources"
+      },
+      {
+        "code": "app",
+        "label": "App"
+      },
+      {
+        "code": "helper",
+        "label": "Helper"
+      },
+      {
+        "code": "dictionary",
+        "label": "Dictionary"
+      }
+    ],
+    "source": "App",
+    "query": "",
+    "log_file": false
+  }
+}

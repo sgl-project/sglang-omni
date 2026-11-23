@@ -109,16 +109,24 @@ Every published draft a stage serves has one entry in
 revision, the algorithm and its other `speculative_*` settings, the license
 and whether the model turns it on by default. A draft whose model card states
 no license stays off by default. No two entries share a draft repo. A stage
-that names a registry draft without a `speculative_draft_model_revision` key
+can have several drafts of one algorithm, and at most one of them is on by
+default. A stage that names a registry draft without a `speculative_draft_model_revision` key
 loads the entry's revision. A revision the stage sets wins, and `none` loads
 the repo's default branch. A cookbook command, an example config or a model's
 defaults that serve the draft give that entry's algorithm, draft repo and
 settings. They leave the revision out, and a revision they do give must match
-the entry. A model's defaults turn the draft on only for that entry's model
-path. `sgl-omni config resolve` shows the engine block as written, and the
-pinned revision is added when the stage's server args are built.
+the entry. `sgl-omni serve` adds a default-on entry's draft after every
+source is merged, so the model path and TP size that launch decide it: only
+for that entry's model path, with or without an `@<revision>` pin, or a
+Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
+`tp_size` 1 that does not set `disable_speculative_decoding`. Like the TP
+derivation, it fills only the `speculative_*` keys no source set.
+`sgl-omni config resolve` shows these keys and the engine block as written,
+and the pinned revision is added when the stage's server args are built.
 `tests/unit_test/speculative/test_draft_registry.py` checks these rules, so a
 new draft adds its entry in the same change.
+
+A model measured on one GPU model has an entry in `sglang_omni/mps/replica_profiles.py`: the model path, the GPU's NVML name and total memory, the replica count, the processes it replicates and the per-replica settings. `sgl-omni serve` applies the entry after every source is merged and before the default-on draft, for that entry's model path, with or without an `@<revision>` pin or as a Hugging Face cache snapshot, on a GPU whose NVML name matches and whose total memory is within 2%, where native MPS can start and no earlier run left MPS state a new launch cannot join, when every replicated process has a stage on that GPU and the replicas' reserved memory, fractions and byte reserves alike, is free. It writes the entry's settings, `processes.<name>.num_replicas` and `replica_devices` on the pipeline's GPU, and `mps: on` unless a source set `mps`. A source that writes anything under `processes`, `mps: off`, a stage's `process`, `tp_size`, `gpu_memory_fraction` or `total_reserve_bytes`, an engine's `mem_fraction_static`, `max_total_tokens` or `kv_cache_bytes`, or any setting of the entry keeps its own config, and the launch logs why. `sgl-omni config resolve` makes the same decision on the host it runs on, and `config explain` names the profile as the source of what it wrote. `tests/unit_test/mps/test_mps_replica_profiles.py` checks that every config in `examples/mps_dp/<gpu>/` is its model's entry at the file's replica count, so a new entry adds its measured configs in the same change.
 
 ## Setting Values: YAML and CLI
 

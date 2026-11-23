@@ -803,7 +803,7 @@ def test_cosyvoice3_needs_an_allowed_directory_for_local_paths(
         ),
         (
             {"input": "hi", "ref_audio": "data:audio/wav,abc"},
-            "a reference audio data URL must be base64",
+            "reference audio data URL must include base64 media data",
         ),
         (
             {"input": "hi", "ref_audio": "data:audio/wav;base64,aGVsbG8="},

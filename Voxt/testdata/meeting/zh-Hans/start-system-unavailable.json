@@ -1,0 +1,8 @@
+{
+  "name": "start-system-unavailable",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "没能录制系统音频。请重试，或只录制麦克风。"
+  }
+}

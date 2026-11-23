@@ -1,0 +1,17 @@
+# profile: custom
+# layers: custom
+
+Use 英语 as spoken in Taiwan; keep {{UNKNOWN}}.
+
+---- user ----
+<input>
+呃，帮我把那个周报，嗯，发给小王，不对，是发给小李，今天下班前。今天下班前一定要发，就是说，今天下班前一定要发出去。
+</input>
+
+---- assistant ----
+Please send the weekly report to Xiao Li before the end of today. It must go out before the end of today.
+
+---- user ----
+<input>
+嗯那个 aura link 的发布大概完成了百分之七十，不对，百分之八十
+</input>

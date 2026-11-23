@@ -41,6 +41,7 @@ from sglang_omni.pipeline.umm import (
     UMMLimits,
     route_umm,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -519,6 +520,7 @@ def test_umm_variant_wires_the_controller_and_inline_generation(monkeypatch):
     from sglang_omni.pipeline.umm import create_umm_controller
     from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
+    monkeypatch.setattr(current_platform, "is_xpu", lambda: False)
     # Both ways of selecting the variant reach the lazily imported class.
     monkeypatch.setattr(
         manager, "resolve_config_cls_for_model_path", lambda _: Cosmos3PipelineConfig

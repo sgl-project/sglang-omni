@@ -1,0 +1,13 @@
+{
+  "name": "notices-helper-protocol",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/helper",
+      "severity": "error",
+      "title": "辅助进程版本过旧",
+      "body": "它恢复运行前，录音和快捷键都不能用。",
+      "action_label": "重启辅助进程"
+    }
+  ]
+}

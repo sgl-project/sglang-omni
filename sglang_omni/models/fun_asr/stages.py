@@ -124,7 +124,7 @@ def create_sglang_fun_asr_executor(
     prefill_coalesce_wait_ms: float = 24.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
-    prefill_coalesce_after_builds_during_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = None,
     mm_attention_backend: str | None = None,
     enable_pre_lm_encoder: bool = True,
     pre_lm_cache_max_entries: int = 4096,
@@ -133,6 +133,7 @@ def create_sglang_fun_asr_executor(
     pre_lm_max_batch_wait_ms: int = 10,
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 32,
+    early_request_builds: bool | None = None,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[FunASRRequestData]:
@@ -151,7 +152,7 @@ def create_sglang_fun_asr_executor(
 
     from sglang_omni.models.fun_asr.engine_builder import FunASREngineBuilder
 
-    return FunASREngineBuilder(
+    builder = FunASREngineBuilder(
         max_running_requests=max_running_requests,
         max_new_tokens=max_new_tokens,
         mem_fraction_static=mem_fraction_static,
@@ -178,14 +179,22 @@ def create_sglang_fun_asr_executor(
         pre_lm_max_batch_wait_ms=pre_lm_max_batch_wait_ms,
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
+        early_request_builds=early_request_builds,
         stream_emit_interval_s=stream_emit_interval_s,
-    ).build(
-        model_path,
-        device=device,
-        gpu_id=gpu_id,
-        dtype=dtype,
-        server_args_overrides=server_args_overrides,
     )
+    try:
+        return builder.build(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            dtype=dtype,
+            server_args_overrides=server_args_overrides,
+        )
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def create_fun_asr_executor(*args, **kwargs) -> OmniScheduler[FunASRRequestData]:

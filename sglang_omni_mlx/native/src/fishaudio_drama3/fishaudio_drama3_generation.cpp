@@ -4,10 +4,15 @@
 #include <CommonCrypto/CommonDigest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <limits>
 #include <stdexcept>
 
+#include "common/generation.h"
+#include "common/kv_cache.h"
 #include "fishaudio_drama3/fishaudio_drama3_model.h"
 #include "fishaudio_drama3/fishaudio_drama3_text.h"
 
@@ -27,9 +32,6 @@ constexpr double kRepetitionTopP = 0.95;
 constexpr double kMinTemperature = 1e-5;
 constexpr int kCodebookTopK = 30;
 constexpr int kPrefillChunkRows = 256;
-// Frames per codec call when a chunk is decoded at once; the codec's working
-// set grows with the frames of one call.
-constexpr int kDecodeFrames = 64;
 constexpr int kStreamIntervalFrames = 7;
 constexpr size_t kVoiceCacheSize = 4;
 
@@ -94,12 +96,16 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
   std::optional<mx::array> hidden;
   for (int begin = start; begin < stop; begin += kPrefillChunkRows) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const int end = std::min(begin + kPrefillChunkRows, stop);
-    hidden =
-        Backbone(Embed(SliceAxis(batched, 1, begin, end)), caches.backbone);
+    if (expert_cache_) {
+      expert_cache_->SetProfileContext("prefill", begin);
+    } else {
+    }
+    hidden = Backbone(Embed(SliceAxis(batched, 1, begin, end)), caches.backbone,
+                      cancel);
     const int labelled = std::min(end, last);
     if (labelled > begin) {
       // The tower is teacher-forced: row t is labelled by row t + 1.
@@ -131,7 +137,7 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
       for (const mx::array &array : cache.attention.Arrays())
         state.push_back(array);
     }
-    for (const qwen3_asr::KVCache &cache : caches.tower) {
+    for (const omni_common::KVCache &cache : caches.tower) {
       for (const mx::array &array : cache.Arrays())
         state.push_back(array);
     }
@@ -146,11 +152,11 @@ mx::array Drama3Model::Prefill(const mx::array &frames, ModelCaches &caches,
   return SliceAxis(*hidden, 1, hidden->shape(1) - 1, hidden->shape(1));
 }
 
-Drama3Model::Step Drama3Model::DecodeStep(const mx::array &hidden,
-                                          const mx::array &frame,
-                                          const mx::array &history,
-                                          ModelCaches &caches,
-                                          const Sampling &sampling) const {
+Drama3Model::Step
+Drama3Model::DecodeStep(const mx::array &hidden, const mx::array &frame,
+                        const mx::array &history, ModelCaches &caches,
+                        const Sampling &sampling,
+                        const std::atomic<bool> &cancel) const {
   const mx::array logits = mx::astype(
       checkpoint_.Linear(mx::squeeze(hidden, 1), "semantic_head"), mx::float32);
   const mx::array first = mx::take(
@@ -195,7 +201,8 @@ Drama3Model::Step Drama3Model::DecodeStep(const mx::array &hidden,
       mx::astype(mx::expand_dims(mx::concatenate(columns, -1), 1), mx::int32);
   const mx::array frame_codes = mx::reshape(
       SliceLast(new_frame, 1, 1 + codebook_count_), {codebook_count_});
-  const mx::array next_hidden = Backbone(Embed(new_frame), caches.backbone);
+  const mx::array next_hidden =
+      Backbone(Embed(new_frame), caches.backbone, cancel);
   const mx::array next_history =
       mx::concatenate({SliceAxis(history, 0, 1, history.shape(0)), main_token});
   return {new_frame, frame_codes, next_hidden, next_history, main_token};
@@ -228,7 +235,12 @@ bool Drama3Model::GenerateChunk(
   // so the GPU never waits for the host; the one wasted step after the end
   // only touches this chunk's caches, and draws its random keys as the
   // reference does.
-  Step pending = DecodeStep(hidden, last_row, history, caches, sampling);
+  if (expert_cache_) {
+    expert_cache_->SetProfileContext("decode", 0);
+  } else {
+  }
+  Step pending =
+      DecodeStep(hidden, last_row, history, caches, sampling, cancel);
   mx::async_eval({pending.frame, pending.frame_codes, pending.hidden,
                   pending.history, pending.main_token});
   // Note (Yitong Li): a turn often ends with <|semantic:0|> right before the
@@ -237,13 +249,17 @@ bool Drama3Model::GenerateChunk(
   std::optional<mx::array> held;
   for (int frame_index = 0; frame_index < max_frames; ++frame_index) {
     if (cancel.load()) {
-      throw qwen3_asr::TranscriptionCancelled();
+      throw omni_common::GenerationCancelled();
     } else {
     }
     const Step current = pending;
     if (frame_index + 1 < max_frames) {
+      if (expert_cache_) {
+        expert_cache_->SetProfileContext("decode", frame_index + 1);
+      } else {
+      }
       pending = DecodeStep(current.hidden, current.frame, current.history,
-                           caches, sampling);
+                           caches, sampling, cancel);
       mx::async_eval({pending.frame, pending.frame_codes, pending.hidden,
                       pending.history, pending.main_token});
     } else {
@@ -335,21 +351,48 @@ SynthesisResult Drama3Model::Synthesize(
     const std::function<void(const mx::array &)> &on_frame,
     const std::function<void(std::vector<float>)> &on_audio) {
   const std::vector<std::string> chunks = SplitText(text);
-  CodecStream codec_stream(codec_);
+  const bool memory_profile = std::getenv("DRAMA3_MEMORY_PROFILE") != nullptr;
+  const auto profile_started = memory_profile
+                                   ? std::chrono::steady_clock::now()
+                                   : std::chrono::steady_clock::time_point{};
+  const auto profile = [&](const char *stage, size_t begin, size_t end) {
+    if (memory_profile) {
+      std::cerr
+          << nlohmann::
+                 json{{"drama3_memory_profile", true},
+                      {"stage", stage},
+                      {"frame_begin", begin},
+                      {"frame_end", end},
+                      {"unix_seconds",
+                       std::chrono::duration<double>(
+                           std::chrono::system_clock::now().time_since_epoch())
+                           .count()},
+                      {"monotonic_seconds",
+                       std::chrono::duration<double>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count()},
+                      {"elapsed_seconds",
+                       std::chrono::duration<double>(
+                           std::chrono::steady_clock::now() - profile_started)
+                           .count()},
+                      {"mlx_active_bytes", mx::get_active_memory()},
+                      {"mlx_allocator_cache_bytes", mx::get_cache_memory()},
+                      {"mlx_peak_bytes_cumulative", mx::get_peak_memory()},
+                      {"expert_released_entries",
+                       expert_cache_ ? expert_cache_->released_entries() : 0},
+                      {"expert_packed_bytes",
+                       expert_cache_ ? expert_cache_->resident_bytes() : 0}}
+                     .dump()
+          << std::endl;
+    } else {
+    }
+  };
+  profile("synthesis_begin", 0, 0);
+  fish_dac::CodecStream codec_stream(codec_);
   const auto decode = [&](const std::vector<mx::array> &codes, size_t begin,
                           size_t end) {
-    std::vector<float> audio;
-    for (size_t piece = begin; piece < end; piece += kDecodeFrames) {
-      const size_t piece_end = std::min(end, piece + kDecodeFrames);
-      const std::vector<mx::array> frames(codes.begin() + piece,
-                                          codes.begin() + piece_end);
-      const mx::array samples =
-          mx::astype(codec_stream.Push(mx::stack(frames, 1)), mx::float32);
-      mx::eval(samples);
-      audio.insert(audio.end(), samples.data<float>(),
-                   samples.data<float>() + samples.size());
-    }
-    return audio;
+    return codec_stream.Decode(codes, begin, end, expert_cache_ != nullptr,
+                               memory_profile, profile);
   };
   std::optional<SpeechTurn> pinned;
   std::optional<SpeechTurn> latest;
@@ -370,6 +413,7 @@ SynthesisResult Drama3Model::Synthesize(
       result.prompt_row_count += prompt.frames.shape(0);
       std::vector<mx::array> codes;
       size_t emitted = 0;
+      profile("token_generation_begin", 0, 0);
       const bool ended = GenerateChunk(
           prompt, voice, sampling, max_frames, cancel,
           [&](const mx::array &frame) {
@@ -382,9 +426,21 @@ SynthesisResult Drama3Model::Synthesize(
             } else {
             }
           });
+      profile("token_generation_end", 0, codes.size());
+      if (expert_cache_ && !stream) {
+        profile("expert_release_before_sync", 0, codes.size());
+        // Note (Codex): finish queued consumers before dropping expert storage.
+        mx::synchronize();
+        profile("expert_release_before", 0, codes.size());
+        expert_cache_->Release();
+        profile("expert_release_after", 0, codes.size());
+        mx::clear_cache();
+        profile("allocator_clear_after", 0, codes.size());
+      } else {
+      }
       result.frame_count += static_cast<int>(codes.size());
       if (!ended) {
-        result.finish_reason = qwen3_asr::FinishReason::kLength;
+        result.finish_reason = omni_common::FinishReason::kLength;
       } else {
       }
       if (!codes.empty()) {
@@ -409,6 +465,7 @@ SynthesisResult Drama3Model::Synthesize(
     mx::clear_cache();
     throw;
   }
+  profile("synthesis_end", 0, result.frame_count);
   return result;
 }
 

@@ -1,0 +1,112 @@
+{
+  "name": "state-recording-subtitles",
+  "kind": "overlay",
+  "overlay": {
+    "visible": true,
+    "id": "fixture-live",
+    "state": "recording",
+    "stage": "",
+    "mode": "subtitles",
+    "progress": 0,
+    "collapsed": false,
+    "show_bar": true,
+    "show_expanded": true,
+    "show_asking": false,
+    "show_finishing": false,
+    "live": true,
+    "paused": false,
+    "starting": false,
+    "status_text": "会议进行中",
+    "elapsed_text": "1:05:02",
+    "mode_title": "字幕",
+    "mode_hint": "仅系统音频",
+    "finishing_text": "正在结束会议…",
+    "problem_key": "",
+    "problem_text": "",
+    "show_microphone": false,
+    "show_system": true,
+    "microphone_levels": [
+      0.1,
+      0.4,
+      0.8
+    ],
+    "system_levels": [
+      0.2,
+      0.5,
+      0.7
+    ],
+    "rows": [
+      {
+        "key": "segment-mic",
+        "who": "你",
+        "text": "First part",
+        "me": true,
+        "live": false,
+        "first": true,
+        "source": "mic"
+      },
+      {
+        "key": "segment-system",
+        "who": "说话人 1",
+        "text": "A complete answer.",
+        "me": false,
+        "live": false,
+        "first": true,
+        "source": "system"
+      },
+      {
+        "key": "live/mic",
+        "who": "你",
+        "text": "still listening",
+        "me": true,
+        "live": true,
+        "first": true,
+        "source": "mic"
+      },
+      {
+        "key": "live/system",
+        "who": "对方",
+        "text": "system live",
+        "me": false,
+        "live": true,
+        "first": true,
+        "source": "system"
+      }
+    ],
+    "modes": [
+      {
+        "id": "meeting",
+        "title": "会议",
+        "hint": "麦克风与系统音频",
+        "selected": false
+      },
+      {
+        "id": "subtitles",
+        "title": "字幕",
+        "hint": "仅系统音频",
+        "selected": true
+      },
+      {
+        "id": "recording",
+        "title": "录音",
+        "hint": "仅麦克风",
+        "selected": false
+      }
+    ],
+    "more_items": [
+      {
+        "id": "translate",
+        "label": "实时翻译",
+        "selected": false,
+        "danger": false
+      },
+      {
+        "id": "cancel",
+        "label": "取消会议",
+        "selected": false,
+        "danger": true
+      }
+    ],
+    "card_size": 1
+  }
+}
