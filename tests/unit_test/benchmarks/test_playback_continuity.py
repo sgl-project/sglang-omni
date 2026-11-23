@@ -46,6 +46,10 @@ def test_continuity_pass_rate_excludes_na() -> None:
     assert continuity_pass_rate(underruns, threshold_s=0.05) == pytest.approx(2 / 3)
 
 
+def test_continuity_pass_rate_includes_exact_threshold() -> None:
+    assert continuity_pass_rate([0.050, 0.051], threshold_s=0.050) == 0.5
+
+
 def test_summarize_playback_continuity_reports_c_thresholds() -> None:
     summary = summarize_playback_continuity([0.01, 0.08, 0.15, None])
     assert summary["playback_continuity_requests"] == 3
