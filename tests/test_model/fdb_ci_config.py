@@ -63,6 +63,10 @@ QWEN3_OMNI_FDB_OMISSION_RATE_REFERENCE = 0.0067
 QWEN3_OMNI_FDB_UTMOS_MEAN_REFERENCE = 4.4305
 QWEN3_OMNI_FDB_VOICE_SIMILARITY_MEAN_REFERENCE = 82.7786
 
+# note (wenyao): these are the Qwen3.8-27B cascade's five H100 runs. The cascade now
+# serves Inkling-2-Mini, which is not calibrated yet, so its preset is
+# calibrated=False: the stage reports the metrics and fails until five H100 runs
+# of Inkling-2-Mini replace these values.
 CASCADE_FDB_RESPOND_ON_INTERRUPTION_REFERENCE = 0.84
 CASCADE_FDB_RESUME_ON_BACKCHANNEL_REFERENCE = 0.52
 CASCADE_FDB_RESUME_ON_TALKING_TO_OTHER_REFERENCE = 0.0
@@ -156,7 +160,7 @@ CASCADE_FDB_PRESET = FdbCiPreset(
         "listening_utmos_mean": CASCADE_FDB_UTMOS_MEAN_REFERENCE,
         "listening_voice_similarity_mean": CASCADE_FDB_VOICE_SIMILARITY_MEAN_REFERENCE,
     },
-    calibrated=True,
+    calibrated=False,
 )
 
 FDB_CI_PRESETS: dict[FdbCiStrategyName, FdbCiPreset] = {
