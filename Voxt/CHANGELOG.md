@@ -4,6 +4,30 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+
+- **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
+- **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
+- **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
+- **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+
+### Changed
+
+- **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+
+### 中文
+
+#### 新增
+
+- **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
+- **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
+- **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
+- **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+
+#### 变更
+
+- **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+
 ## [2.1.3] - 2026-11-22
 
 ### Added

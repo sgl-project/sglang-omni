@@ -97,3 +97,6 @@ key-minimalistic-square # a saved API key
 
 # Notes (notes_page.go).
 notes                    # the Notes page
+
+# Sharing (Home's Share and Insights; the cards draw their own marks, internal/icons/share.go).
+share                   # share (Home's header, Insights)
