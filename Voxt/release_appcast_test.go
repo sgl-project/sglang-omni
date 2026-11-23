@@ -414,3 +414,23 @@ func TestReleaseAppcastBetaChangelog(t *testing.T) {
 		t.Errorf("a release version got a beta section:\n%s", out)
 	}
 }
+
+// TestReleaseVerifyChecksTheAppsFeed: release-verify.sh, which every
+// signed build passes before it is uploaded, looks inside the app for the
+// feeds and the key of the release. An app with another feed or key can
+// never be updated, as 2.1.1 and 2.1.2 showed.
+func TestReleaseVerifyChecksTheAppsFeed(t *testing.T) {
+	data, err := os.ReadFile("scripts/release-verify.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`grep -aqF "$feed/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"`,
+		`grep -aqF "$feed/beta/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"`,
+		`grep -aqF "$(jq -r .updates.publicKey "$release")" "$app/Contents/MacOS/Voxt"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("release-verify.sh lacks %q", want)
+		}
+	}
+}
