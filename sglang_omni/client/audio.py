@@ -237,47 +237,48 @@ def apply_speed(
 
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
-    """Encode audio as a WAV file (16-bit PCM)."""
-    # Clamp to [-1, 1]
-    audio = np.clip(audio, -1.0, 1.0)
-    pcm = (audio * 32767.0).astype(np.int16)
-    if pcm.ndim == 2:
-        num_channels = int(pcm.shape[0])
-        pcm_bytes = np.ascontiguousarray(pcm.T).tobytes()
-    else:
-        num_channels = 1
-        pcm_bytes = pcm.tobytes()
+    """Encode audio as a WAV file (16-bit PCM).
+
+    The samples are interleaved straight into the output buffer: a long stereo
+    clip is tens of megabytes, so every extra copy shows in the latency.
+    """
+    # Clamp to [-1, 1] and scale in the input's precision
+    scaled = np.clip(np.atleast_1d(audio), -1.0, 1.0)
+    np.multiply(scaled, 32767.0, out=scaled)
+    num_channels = int(scaled.shape[0]) if scaled.ndim == 2 else 1
 
     bits_per_sample = 16
     byte_rate = sample_rate * num_channels * bits_per_sample // 8
     block_align = num_channels * bits_per_sample // 8
-    data_size = len(pcm_bytes)
+    data_size = scaled.size * bits_per_sample // 8
 
-    buf = io.BytesIO()
-    # RIFF header
-    buf.write(b"RIFF")
-    buf.write(struct.pack("<I", 36 + data_size))
-    buf.write(b"WAVE")
-    # fmt chunk
-    buf.write(b"fmt ")
-    buf.write(struct.pack("<I", 16))  # chunk size
-    buf.write(
-        struct.pack(
-            "<HHIIHH",
-            1,
-            num_channels,
-            sample_rate,
-            byte_rate,
-            block_align,
-            bits_per_sample,
-        )
+    wav = bytearray(44 + data_size)
+    struct.pack_into(
+        "<4sI4s4sIHHIIHH4sI",
+        wav,
+        0,
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,  # fmt chunk size
+        1,  # PCM
+        num_channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        bits_per_sample,
+        b"data",
+        data_size,
     )
-    # data chunk
-    buf.write(b"data")
-    buf.write(struct.pack("<I", data_size))
-    buf.write(pcm_bytes)
-
-    return buf.getvalue()
+    # Cast to int16 while interleaving the channels into the data chunk
+    samples = np.frombuffer(wav, dtype=np.int16, offset=44)
+    if scaled.ndim == 2:
+        samples = samples.reshape(scaled.shape[1], num_channels)
+        np.copyto(samples, scaled.T, casting="unsafe")
+    else:
+        np.copyto(samples, scaled.reshape(-1), casting="unsafe")
+    return bytes(wav)
 
 
 def resample_linear(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
