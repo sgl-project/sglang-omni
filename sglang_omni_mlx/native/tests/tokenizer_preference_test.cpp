@@ -28,10 +28,9 @@ int main() {
   std::ofstream(directory / "tokenizer_config.json") << "{}";
 
   nlohmann::json tokenizer;
-  tokenizer["model"] = {
-      {"type", "BPE"},
-      {"vocab", {{"hello", 2}, {"world", 3}}},
-      {"merges", nlohmann::json::array()}};
+  tokenizer["model"] = {{"type", "BPE"},
+                        {"vocab", {{"hello", 2}, {"world", 3}}},
+                        {"merges", nlohmann::json::array()}};
   tokenizer["normalizer"]["type"] = "NFC";
   nlohmann::json added = nlohmann::json::object();
   added["id"] = 99;
@@ -43,9 +42,7 @@ int main() {
   added["special"] = true;
   tokenizer["added_tokens"].push_back(added);
   nlohmann::json split = {
-      {"type", "Split"},
-      {"behavior", "Isolated"},
-      {"invert", false}};
+      {"type", "Split"}, {"behavior", "Isolated"}, {"invert", false}};
   split["pattern"]["Regex"] = omni_common::kQwen2SplitPattern;
   nlohmann::json byte_level = nlohmann::json::object();
   byte_level["type"] = "ByteLevel";
@@ -60,7 +57,8 @@ int main() {
   const std::vector<int> expected{2};
   Require(preferred.Decode(expected, true) == "hello",
           "the constructor must prefer tokenizer.json when it exists");
-  Require(omni_common::Tokenizer::FromJson(tokenizer).Decode(expected, true) == "hello",
+  Require(omni_common::Tokenizer::FromJson(tokenizer).Decode(expected, true) ==
+              "hello",
           "the preferred and direct tokenizer.json paths must agree");
   return 0;
 }
