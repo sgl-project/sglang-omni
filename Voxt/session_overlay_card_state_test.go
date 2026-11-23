@@ -49,6 +49,15 @@ func TestSessionCardBuilderLocaleRedoAndActions(t *testing.T) {
 	if english.InsertTooltip != "Insert into Arc" || !strings.Contains(english.FollowTooltip, "Follow up by voice") {
 		t.Errorf("action labels: %+v", english)
 	}
+	input.CopyKey, input.InsertKey = true, true
+	english = buildSessionCardViewState(i18n.NewTranslator("en"), input)
+	if english.InsertTooltip != "Insert into Arc (R)" || english.CopyTooltip != "Copy (C)" {
+		t.Errorf("card key labels: %+v", english)
+	}
+	chinese = buildSessionCardViewState(i18n.NewTranslator("zh-Hans"), input)
+	if chinese.InsertTooltip != "插入到 Arc（R）" || chinese.CopyTooltip != "复制（C）" {
+		t.Errorf("Chinese card key labels: %+v", chinese)
+	}
 }
 
 func chineseLanguageTitle(t *testing.T, title string) string {
@@ -74,7 +83,7 @@ func TestSessionCardRedoStreamsOnlyNewAnswerAndTitle(t *testing.T) {
 	projection.translator = i18n.NewTranslator("en")
 	var next sessionOverlayViewState
 	a.refreshSessionCardProjection(projection, &next)
-	if projection.card.Title != "AI answer" {
+	if projection.card.Title != "Rewrite" {
 		t.Fatalf("initial redo title %q", projection.card.Title)
 	}
 	a.sess.Title = "Streamed title"
@@ -197,7 +206,7 @@ func TestSessionOverlayProjectionUpdatesWritingTitle(t *testing.T) {
 	projection.translator = i18n.NewTranslator("en")
 	var next sessionOverlayViewState
 	a.refreshSessionCardProjection(projection, &next)
-	if projection.card.Title != "AI answer" {
+	if projection.card.Title != "Rewrite" {
 		t.Fatalf("initial writing title: %q", projection.card.Title)
 	}
 	a.sess.Title = "Streamed title"

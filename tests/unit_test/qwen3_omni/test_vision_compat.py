@@ -2,6 +2,7 @@
 """Contracts for Qwen3-Omni vision encoding."""
 
 import copy
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -18,6 +19,7 @@ from sglang_omni.models.qwen3_omni.components import image_encoder, vision_compa
 from sglang_omni.models.qwen3_omni.components.vision_encoder import (
     Qwen3OmniVisionEncoder,
 )
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 GRID_CASES = {
     "single": [[1, 16, 16]],
@@ -276,7 +278,30 @@ def test_image_encoder_preserves_outputs_with_platform_rotary(
         2 * vision_encoder.config.depth if should_use_joint_kernel else 0
     )
     assert kernel.call_count == expected_kernel_calls
-    assert provider.call_count == (1 if platform_device == "cpu" else 0)
+    if platform_device == "cpu":
+        provider.assert_called_once_with()
+    else:
+        provider.assert_not_called()
+
+
+def test_xpu_builds_the_72_wide_vision_tower_without_the_joint_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+    vision_encoder: vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+) -> None:
+    monkeypatch.setattr(vision_runtime, "current_platform", XPUOmniPlatform())
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", None)
+
+    with torch.device("cpu"):
+        visual = vision_runtime.instantiate_visual(
+            vision_encoder.config,
+            device="xpu",
+            dtype=torch.bfloat16,
+            native_visual_class=vision_compat.Qwen3OmniMoeVisionEncoderCompat,
+        )
+
+    assert isinstance(visual, Qwen3OmniVisionEncoder)
+    assert visual.joint_rope_kernel is None
+    assert all(block.attn.joint_rope_kernel is None for block in visual.blocks)
 
 
 @pytest.mark.parametrize(

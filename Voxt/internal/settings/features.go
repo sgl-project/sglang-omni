@@ -1,6 +1,9 @@
 package settings
 
-import "slices"
+import (
+	"encoding/json"
+	"slices"
+)
 
 // Features: the three features and the shared paste-last and cancel
 // shortcuts.
@@ -19,6 +22,12 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
+	// ReturnFinishes stops a Transcribe, Translate or Rewrite recording
+	// when Return is pressed (Settings → Shortcuts); the key is consumed,
+	// not sent after the text is inserted. Not a note's. Off: Return goes
+	// to the app as usual. Until 2.1.3 it was Transcribe's alone
+	// (features.transcribe.returnFinishes, migrateReturnFinishes).
+	ReturnFinishes bool `json:"returnFinishes"`
 	// StrictShortcuts: while recording, only the shortcuts of the feature
 	// that started the session stop it; another feature's do nothing.
 	// Off: any feature's shortcut stops (Voxt 1.x's common stop, #3823).
@@ -30,28 +39,32 @@ type Features struct {
 	EndWord string `json:"endWord,omitempty"`
 	// Hidden are the features left out of the sidebar, Home and the
 	// command palette (Settings → General, as Voxt 1.x's home could):
-	// HideTranslate, HideRewrite, HideAppEnhancement. A hidden feature's
-	// shortcuts and scene rules are off; its settings stay.
+	// HideTranslate, HideRewrite, HideAppEnhancement, HideNotes,
+	// HideMeetings. A hidden feature's shortcuts and scene rules are off;
+	// its settings and saved data stay.
 	Hidden []string `json:"hidden,omitempty"`
 	// CardSizes are the answer card's sizes by feature (store.Kind:
-	// "transcribe", "translate", "rewrite"): 0 small (the default), 1
-	// medium, 2 large (layout.CardSizes); each feature its own (#3644 FB41).
+	// transcribe, translate, rewrite), 0 small, 1
+	// medium, 2 large, 3 fill (layout.CardSizes); each feature its own
+	// (#3644 FB41).
 	CardSizes map[string]int `json:"cardSizes,omitempty"`
 }
 
-// The features Features.Hidden can hold: Translate's and Rewrite's are
-// internal/hotkey's ids.
+// The features Features.Hidden can hold, each its page's path without the
+// slash: Translate's and Rewrite's are also internal/hotkey's ids.
 const (
 	HideTranslate      = "translate"
 	HideRewrite        = "rewrite"
 	HideAppEnhancement = "app-enhancement"
+	HideNotes          = "notes"
+	HideMeetings       = "meetings"
 )
 
 // IsHidden reports whether feature id is hidden (Features.Hidden).
 func (f Features) IsHidden(id string) bool { return slices.Contains(f.Hidden, id) }
 
 // CardSizeSteps is how many sizes the answer card has.
-const CardSizeSteps = 3
+const CardSizeSteps = 4
 
 // CardSize is the answer card's size for feature kind, 0 to
 // CardSizeSteps-1 (Features.CardSizes).
@@ -122,7 +135,8 @@ type Rewrite struct {
 	// ShowCard sends every answer to the answer card, which takes
 	// follow-ups, instead of replacing the selection or typing it: on by
 	// default, as in Voxt 1.x (no omitempty: off is kept). The field
-	// cardChars of 0.1.0 is dropped.
+	// cardChars of 0.1.0 is dropped; so is inputBox (never released):
+	// the input box is the only Rewrite now.
 	ShowCard bool `json:"showCard"`
 }
 
@@ -139,4 +153,21 @@ type AppEnhancement struct {
 type Browser struct {
 	BundleID string `json:"bundleID"`
 	Name     string `json:"name,omitempty"`
+}
+
+// migrateReturnFinishes keeps the Return switch Transcribe had before it
+// covered every feature (features.transcribe.returnFinishes): a document
+// without features.returnFinishes takes it.
+func migrateReturnFinishes(data []byte, f *Features) {
+	var doc struct {
+		Features struct {
+			ReturnFinishes *bool `json:"returnFinishes"`
+			Transcribe     struct {
+				ReturnFinishes *bool `json:"returnFinishes"`
+			} `json:"transcribe"`
+		} `json:"features"`
+	}
+	if json.Unmarshal(data, &doc) == nil && doc.Features.ReturnFinishes == nil && doc.Features.Transcribe.ReturnFinishes != nil {
+		f.ReturnFinishes = *doc.Features.Transcribe.ReturnFinishes
+	}
 }

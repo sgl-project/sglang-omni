@@ -160,6 +160,7 @@ func (a *app) meetingSettingsDialog(c *uiContext) {
 		a.featureShortcuts(c, hotkey.Meeting)
 		meetingASRSettings(c, state, a)
 		meetingLLMSettings(c, state, a)
+		meetingCorrectionStyleSettings(c, state, a, a.meetingUI)
 		meetingConsent(c)
 	}, func() {
 		dialogDoneButton(c, "mt-set-done", &a.mvUI.setOpen)

@@ -53,7 +53,11 @@ func TestSessionMutesOutput(t *testing.T) {
 			muted := func() bool { return helpertest.LoadOutputSystem(state).Muted(testSpeakers) }
 			var mu sync.Mutex
 			var backAfter []time.Duration // after each request's start; -1: not within releaseBound
-			chat := &fakeChat{text: "Hello there.", onRequest: func() {
+			answer := "Hello there."
+			if tc.name == "translate by voice" {
+				answer = "你好。"
+			}
+			chat := &fakeChat{text: answer, onRequest: func() {
 				t0 := time.Now()
 				d := time.Duration(-1)
 				for time.Since(t0) < releaseBound {

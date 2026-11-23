@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -150,6 +151,18 @@ func sessionFixtureScenarios() []sessionFixtureScenario {
 			snap(a, session.Snapshot{ID: "session-inserting", State: session.Done, Card: true, Delivery: deliver.ReasonNotEditable, Result: "Insert this answer"})
 			a.answer.inserting = true
 			a.overlaySync()
+		}},
+		// A conversation whose answers carry Markdown (a bubble renders
+		// it), while the user's own markers stay plain text.
+		sessionFixtureScenario{name: "session-markdown-conversation", source: sessionFixtureCustom, apply: func(a *app) {
+			a.answer = answerCard{open: true, id: "first", kind: store.KindRewrite, conversation: true}
+			a.answer.turns = []compose.Turn{{
+				Instruction: "keep the **stars** and `ticks` as they are",
+				Answer:      compose.Answer{Title: "Release notes", Content: "## Plan\n\n- **Bold** step\n- `code` span"},
+			}}
+			a.followUp = "first"
+			snap(a, session.Snapshot{ID: "second", Kind: store.KindRewrite, State: session.Recording})
+			snap(a, session.Snapshot{ID: "second", Kind: store.KindRewrite, State: session.Done, Card: true, Delivery: deliver.ReasonCard, Raw: "shorter", Title: "Release notes", Result: "1. **Ship it** — see `main.go`."})
 		}},
 	)
 

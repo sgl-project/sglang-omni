@@ -26,6 +26,7 @@ type settingsPrivacyActions interface {
 	historyAccessActions
 	setSendWindow(on bool)
 	setSendClipboardImage(on bool)
+	setSendClipboardImageWithSelection(on bool)
 	setKeepHistory(on bool)
 	setKeepAudio(on bool)
 	showHistorySettings()
@@ -39,6 +40,8 @@ type settingsMeetingActions interface {
 	setMeetingASR(speechModelID string)
 	setMeetingLanguage(languageCode string)
 	setMeetingLLM(languageModelID string)
+	autosaveMeetingCorrectionStyle(changed, focused bool)
+	resetMeetingCorrectionStyle()
 }
 
 type settingsStorageActions interface {
@@ -70,6 +73,7 @@ type settingsShortcutsActions interface {
 	openShortcutPermissions()
 	openShortcutFeature(path string)
 	setStrictShortcuts(on bool)
+	setReturnFinishes(on bool)
 }
 
 type keyRecorderActions interface {

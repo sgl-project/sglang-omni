@@ -136,6 +136,11 @@ func compare(before, after string, opts options) (result, error) {
 	for name := range names {
 		orderedNames = append(orderedNames, name)
 	}
+	// An empty set compares nothing: the test that renders it was renamed
+	// or removed, and go test passes when no test matches.
+	if len(orderedNames) == 0 {
+		return result, fmt.Errorf("set %s has no snapshots in %s or %s", opts.setName, before, after)
+	}
 	slices.Sort(orderedNames)
 	result.files = len(orderedNames)
 	for _, name := range orderedNames {

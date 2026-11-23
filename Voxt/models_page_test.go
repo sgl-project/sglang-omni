@@ -38,7 +38,7 @@ func seedModels(t *testing.T, a *app, ids ...string) {
 }
 
 // reopenModels reads the models on disk again, with the environment's
-// options (VOXTNEW_HF_ENDPOINT).
+// options (HF_ENDPOINT).
 func reopenModels(a *app) {
 	a.models.Close()
 	a.models, a.local, a.modelStatus = nil, nil, nil

@@ -126,6 +126,11 @@ type WindowOptions struct {
 	// WS_EX_NOACTIVATE. Linux ignores it. Its content cannot take the
 	// keyboard: no text inputs.
 	NonActivating bool
+	// HoverWhileInactive tracks the pointer over the window while another
+	// app is active, as a NonActivating window does, so hover shows and
+	// clears on a window that floats over the app the user works in and
+	// can still be focused. macOS; the other platforms already do.
+	HoverWhileInactive bool
 	// AutoHideMenuBar keeps the window's menu bar out of sight until the
 	// user presses Alt or F10, and hides it again once they leave it
 	// (Linux, Windows). Its keyboard shortcuts work all along.
@@ -525,6 +530,7 @@ func (w *Window) platformOptions(o *WindowOptions) *platform.WindowOptions {
 		Schemes:        Protocol.schemes(),
 		Panel:          o.Panel,
 	}
+	p.HoverWhileInactive = o.HoverWhileInactive
 	if o.Panel {
 		p.Minimizable, p.Maximizable, p.Fullscreenable = false, false, false
 		p.AlwaysOnTop, p.SkipTaskbar = true, true

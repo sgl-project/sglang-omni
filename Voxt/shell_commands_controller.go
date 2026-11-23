@@ -216,8 +216,9 @@ func (a *app) sheetModel() *sheetViewState {
 }
 
 // buildMenu sets the native menu bar in the current language; the
-// language switch calls it again. Items with shortcuts open what the
-// window's own shortcuts open (shell_commands.go's shellShortcuts).
+// language switch and a change of the hidden features call it again.
+// Items with shortcuts open what the window's own shortcuts open
+// (shell_commands.go's shellShortcuts).
 func (a *app) buildMenu() {
 	a.menuLocale = i18n.Locale()
 	if !a.hasMenu {
@@ -235,6 +236,9 @@ func (a *app) buildMenu() {
 			if p.path == settingsPath {
 				continue // the app menu's Settings… (⌘,)
 			}
+			if a.pageHidden(p.path) {
+				continue // as in the sidebar and ⌘K
+			}
 			acc := ""
 			if k := pageKeys(p.path); k != "" {
 				acc = "CmdOrCtrl+" + k[len("⌘"):]
@@ -244,11 +248,13 @@ func (a *app) buildMenu() {
 	}
 	// Check for Updates… goes after About (updates.go).
 	appItems := append([]*mygo.MenuItem{{Role: mygo.RoleAbout, Label: i18n.T("About Voxt")}}, a.updateMenuItems(act)...)
-	appItems = append(appItems, &mygo.MenuItem{Label: i18n.T("Start meeting"), Click: act(func() {
-		if !a.meetingActive() {
-			a.startMeeting()
-		}
-	})})
+	if !a.prefs.Features.IsHidden(settings.HideMeetings) || a.meetingActive() {
+		appItems = append(appItems, &mygo.MenuItem{Label: i18n.T("Start meeting"), Click: act(func() {
+			if !a.meetingActive() {
+				a.startMeeting()
+			}
+		})})
+	}
 	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 		{Label: "Voxt", Submenu: append(appItems,
 			mygo.Separator(),

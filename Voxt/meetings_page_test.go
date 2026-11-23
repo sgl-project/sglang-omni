@@ -37,6 +37,24 @@ func TestMeetingsPageModelTimeZone(t *testing.T) {
 	}
 }
 
+// The release palette either hides Meetings or opens a working page (#3801).
+func TestMeetingsPaletteDestinationExists(t *testing.T) {
+	t.Setenv("MYGO_ENV", "production")
+	a, _, tt := newTestApp(t)
+	a.paletteQuery = "meetings"
+	for _, cmd := range a.paletteItems() {
+		if cmd.id != "go/meetings" {
+			continue
+		}
+		a.runCommand(cmd)
+		frames(tt)
+		if has(tt, "There is no page at /meetings.") {
+			t.Fatalf("the Meetings palette command opened Not found: %q", firstTexts(tt))
+		}
+		return
+	}
+}
+
 // Meetings are in release builds (C1-10): the sidebar, ⌘K and the menu bar
 // menu offer them, as in development builds.
 func TestMeetingsInReleaseBuild(t *testing.T) {

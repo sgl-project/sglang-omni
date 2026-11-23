@@ -16,7 +16,11 @@ func TestLLMWaitSetting(t *testing.T) {
 	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
 		for wait, want := range map[string]time.Duration{settings.WaitAuto: 0, settings.Wait5Min: 5 * time.Minute, "20m": 20 * time.Minute} { // 20m: a custom wait (#3941)
 			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
-				model := &fakeLLM{text: "Hello."}
+				answer := "Hello."
+				if kind == store.KindTranslate {
+					answer = "你好"
+				}
+				model := &fakeLLM{text: answer}
 				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 					c.Select = &fakeSelector{text: map[store.Kind]string{store.KindRewrite: "Dear Ann"}[kind]}
 					s.Models.LLMWait = wait
@@ -241,7 +245,11 @@ func TestLLMWaitNoLimit(t *testing.T) {
 	for _, kind := range []store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite} {
 		for _, wait := range []string{settings.WaitAuto, settings.WaitNoLimit} {
 			t.Run(string(kind)+"/"+wait, func(t *testing.T) {
-				model := &fakeLLM{text: "Hello there.", chunk: 3, pause: 100 * time.Millisecond}
+				answer := "Hello there."
+				if kind == store.KindTranslate {
+					answer = "你好。"
+				}
+				model := &fakeLLM{text: answer, chunk: 3, pause: 100 * time.Millisecond}
 				h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
 					short(c)
 					c.Select = &fakeSelector{text: map[store.Kind]string{store.KindRewrite: "Dear Ann"}[kind]}
@@ -260,7 +268,7 @@ func TestLLMWaitNoLimit(t *testing.T) {
 				if reqs[0].StallTimeout != h.m.cfg.LLMStall || reqs[0].StallTimeout <= 0 {
 					t.Errorf("stall check %v", reqs[0].StallTimeout)
 				}
-				timedOut := end.Problem != nil || end.State != Done || end.Result != "Hello there."
+				timedOut := end.Problem != nil || end.State != Done || end.Result != answer
 				if wait == settings.WaitNoLimit && timedOut {
 					t.Errorf("No limit cut the answer: %s %+v %q", end.State, end.Problem, end.Result)
 				}

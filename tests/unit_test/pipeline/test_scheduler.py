@@ -49,7 +49,11 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import (
+    ContextExhaustedError,
+    QueueFullError,
+    SessionCapacityExhaustedError,
+)
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -1129,6 +1133,51 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert capacity_checks == [
         (session_request, {"session_capacity_checked": True, "decode_path": "plain"})
     ]
+
+
+@pytest.mark.parametrize(
+    "capacity_message",
+    [
+        "session KV capacity exhausted",
+        "session request-to-token slots exhausted "
+        "(one slot kept for a session that already holds KV)",
+    ],
+)
+def test_enqueue_built_request_reports_a_full_session_capacity_as_overload(
+    monkeypatch, capacity_message: str
+) -> None:
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    released: list[str] = []
+    session_request = admission_req("req-append", [1, 2, 3])
+
+    def create_session_request(payload, request_data) -> None:
+        request_data.req = session_request
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"req-append": SimpleNamespace(is_enqueued=False)},
+        create_session_request=create_session_request,
+        check_session_capacity=lambda request_id: capacity_message,
+        release_append_unit=released.append,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="req-append"),
+        False,
+        SimpleNamespace(
+            req=admission_req("req-append", []), enforce_request_limits=False
+        ),
+    )
+
+    reject = scheduler.outbox.get_nowait()
+    assert reject.type == "error"
+    assert isinstance(reject.data, SessionCapacityExhaustedError)
+    assert str(reject.data) == f"session_capacity_exhausted: {capacity_message}"
+    assert SessionCapacityExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert not ContextExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert released == ["req-append"]
+    assert aborts == ["req-append"]
+    assert scheduler.waiting_queue == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -3468,6 +3517,7 @@ def test_request_timeout_fails_only_the_expired_request(
     monkeypatch: pytest.MonkeyPatch, timeout_env: str, placement: str, tp_size: int
 ) -> None:
     """The entry rank fails an expired request once, and every rank drops it."""
+    monkeypatch.setattr(time, "perf_counter", lambda: 120.0)
     install_tp_broadcast(monkeypatch)
     ranks = [tp_rank_scheduler(rank, tp_size, placement) for rank in range(tp_size)]
 
@@ -3818,6 +3868,297 @@ def test_a_slow_request_build_does_not_hold_the_loop(monkeypatch) -> None:
         scheduler.request_build_executor.shutdown()
 
     assert scheduler.waiting_queue == [built.req]
+
+
+def scheduler_with_early_builds(monkeypatch, builder) -> OmniScheduler:
+    scheduler = scheduler_with_build_pool(monkeypatch, builder)
+    scheduler.inbox = Queue()
+    scheduler.early_request_builds = True
+    scheduler.early_request_build_futures = {}
+    scheduler.early_request_build_declined_ids = set()
+    scheduler.early_request_build_stage = None
+    scheduler.early_request_build_stage_known = True
+    scheduler.reserved_request_build_ids = set()
+    scheduler._engine_paused = False  # noqa: leading-underscore  # production name
+    return scheduler
+
+
+def enqueue_new_request(scheduler: OmniScheduler, request_id: str) -> None:
+    scheduler.enqueue(
+        IncomingMessage(request_id, "new_request", new_stage_payload(request_id))
+    )
+
+
+def drain_inbox_payloads(scheduler: OmniScheduler) -> list[StagePayload]:
+    payloads: list[StagePayload] = []
+    while not scheduler.inbox.empty():
+        payloads.append(scheduler.inbox.get_nowait().data)
+    return payloads
+
+
+def test_an_early_request_build_starts_on_arrival_and_the_loop_takes_it(
+    monkeypatch,
+) -> None:
+    built = built_request("req-early")
+    build_calls: list[str] = []
+
+    def builder(payload):
+        build_calls.append(payload.request_id)
+        return built
+
+    scheduler = scheduler_with_early_builds(monkeypatch, builder)
+    try:
+        enqueue_new_request(scheduler, "req-early")
+        scheduler.early_request_build_futures["req-early"].result(timeout=5)
+        assert build_calls == ["req-early"]
+
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+    finally:
+        scheduler.request_build_executor.shutdown()
+
+    assert build_calls == ["req-early"]
+    assert scheduler.waiting_queue == [built.req]
+    assert scheduler.early_request_build_futures == {}
+
+
+def test_requests_after_one_left_to_the_loop_are_left_to_the_loop(
+    monkeypatch,
+) -> None:
+    scheduler = scheduler_with_early_builds(
+        monkeypatch, lambda payload: built_request(payload.request_id)
+    )
+    scheduler.early_request_build_stage_known = False
+    try:
+        enqueue_new_request(scheduler, "req-first")
+        scheduler.early_request_build_stage_known = True
+        enqueue_new_request(scheduler, "req-second")
+        assert scheduler.early_request_build_futures == {}
+
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+        assert scheduler.early_request_build_declined_ids == set()
+        for request_build in list(scheduler.pending_request_builds.values()):
+            request_build[2].result(timeout=5)
+        scheduler.process_input_requests([])
+
+        enqueue_new_request(scheduler, "req-third")
+        assert list(scheduler.early_request_build_futures) == ["req-third"]
+    finally:
+        scheduler.request_build_executor.shutdown()
+
+    assert [req.rid for req in scheduler.waiting_queue] == ["req-first", "req-second"]
+
+
+def test_an_abort_cancels_a_queued_early_request_build(monkeypatch) -> None:
+    release = threading.Event()
+
+    def blocking_builder(payload):
+        release.wait(timeout=5)
+        return built_request(payload.request_id)
+
+    scheduler = scheduler_with_early_builds(monkeypatch, blocking_builder)
+    scheduler.abort_callback = lambda request_id: None
+    scheduler.first_emit_done = set()
+    scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    try:
+        enqueue_new_request(scheduler, "req-running")
+        enqueue_new_request(scheduler, "req-queued")
+        queued_future = scheduler.early_request_build_futures["req-queued"]
+
+        scheduler.abort("req-queued")
+
+        assert queued_future.cancelled()
+        assert list(scheduler.early_request_build_futures) == ["req-running"]
+    finally:
+        release.set()
+        scheduler.request_build_executor.shutdown()
+
+
+def allow_weight_updates(scheduler: OmniScheduler, update_weights_from_disk) -> None:
+    scheduler.model_worker = SimpleNamespace(
+        update_weights_from_disk=update_weights_from_disk
+    )
+    scheduler.admin_lock = threading.Lock()
+    scheduler.session_bridge = None
+    scheduler.draft_worker = None
+    scheduler.last_pause_mode = None
+    scheduler.prompt_cache_epoch = 0
+    scheduler.resolve_pending_async = lambda: None
+    scheduler.is_entry_rank = True
+    scheduler.abort_callback = lambda request_id: None
+    scheduler.first_emit_done = set()
+    scheduler.running_batch = SimpleNamespace(
+        reqs=[], batch_is_full=False, filter_batch=lambda: None
+    )
+    scheduler.cur_batch = None
+    scheduler.last_batch = None
+    scheduler.chunked_req = None
+    scheduler.decode_batch_states = {}
+    scheduler.decode_path = "spec"
+
+
+@pytest.mark.parametrize("abort_all_requests", [False, True])
+def test_a_weight_update_sees_an_early_build_the_loop_has_not_taken(
+    monkeypatch, abort_all_requests: bool
+) -> None:
+    weight_updates: list[dict[str, object]] = []
+    scheduler = scheduler_with_early_builds(
+        monkeypatch, lambda payload: built_request(payload.request_id)
+    )
+    allow_weight_updates(
+        scheduler,
+        lambda payload: weight_updates.append(payload) or (True, "ok"),
+    )
+    try:
+        enqueue_new_request(scheduler, "req-early")
+        scheduler.early_request_build_futures["req-early"].result(timeout=5)
+
+        result = scheduler.admin_update_weights_from_disk(
+            {
+                "model_path": "/tmp/new-model",
+                "flush_cache": False,
+                "abort_all_requests": abort_all_requests,
+            }
+        )
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+    finally:
+        scheduler.request_build_executor.shutdown()
+
+    if abort_all_requests:
+        assert result["success"] is True
+        assert len(weight_updates) == 1
+        assert scheduler.waiting_queue == []
+    else:
+        assert result["success"] is False
+        assert result["data"]["active_request_ids"] == ["req-early"]
+        assert weight_updates == []
+        assert [req.rid for req in scheduler.waiting_queue] == ["req-early"]
+
+
+def test_a_request_that_arrives_during_a_weight_update_is_built_on_the_new_weights(
+    monkeypatch,
+) -> None:
+    weights = ["old"]
+    build_weights: list[str] = []
+
+    def builder(payload):
+        build_weights.append(weights[0])
+        return built_request(payload.request_id)
+
+    scheduler = scheduler_with_early_builds(monkeypatch, builder)
+
+    def update_weights_from_disk(payload):
+        enqueue_new_request(scheduler, "req-during-update")
+        weights[0] = "new"
+        return True, "ok"
+
+    allow_weight_updates(scheduler, update_weights_from_disk)
+    try:
+        result = scheduler.admin_update_weights_from_disk(
+            {"model_path": "/tmp/new-model", "flush_cache": False}
+        )
+        assert scheduler.early_request_build_futures == {}
+
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+        for request_build in list(scheduler.pending_request_builds.values()):
+            request_build[2].result(timeout=5)
+        scheduler.process_input_requests([])
+    finally:
+        scheduler.request_build_executor.shutdown()
+
+    assert result["success"] is True
+    assert build_weights == ["new"]
+    assert [req.rid for req in scheduler.waiting_queue] == ["req-during-update"]
+
+
+def test_an_arrival_while_the_loop_submits_a_backlogged_build_waits_behind_it(
+    monkeypatch,
+) -> None:
+    release = threading.Event()
+
+    def blocking_builder(payload):
+        release.wait(timeout=5)
+        return built_request(payload.request_id)
+
+    scheduler = scheduler_with_early_builds(monkeypatch, blocking_builder)
+    scheduler.request_build_max_pending = 2
+    stage_request_build_payloads = scheduler.stage_request_build_payloads
+
+    def stage_then_take_an_arrival(recv_reqs):
+        staged = stage_request_build_payloads(recv_reqs)
+        enqueue_new_request(scheduler, "req-late")
+        return staged
+
+    try:
+        scheduler.process_input_requests([new_stage_payload("req-running")])
+        scheduler.backlogged_request_build_payloads.append(
+            new_stage_payload("req-backlogged")
+        )
+        scheduler.stage_request_build_payloads = stage_then_take_an_arrival
+
+        scheduler.process_input_requests([])
+
+        assert scheduler.early_request_build_futures == {}
+        assert list(scheduler.pending_request_builds) == [
+            "req-running",
+            "req-backlogged",
+        ]
+        assert scheduler.reserved_request_build_ids == set()
+
+        scheduler.stage_request_build_payloads = stage_request_build_payloads
+        release.set()
+        for request_build in list(scheduler.pending_request_builds.values()):
+            request_build[2].result(timeout=5)
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+        for request_build in list(scheduler.pending_request_builds.values()):
+            request_build[2].result(timeout=5)
+        scheduler.process_input_requests([])
+    finally:
+        release.set()
+        scheduler.request_build_executor.shutdown()
+
+    assert [req.rid for req in scheduler.waiting_queue] == [
+        "req-running",
+        "req-backlogged",
+        "req-late",
+    ]
+
+
+def test_an_early_build_holds_its_slot_before_the_loop_takes_its_request(
+    monkeypatch,
+) -> None:
+    release = threading.Event()
+
+    def blocking_builder(payload):
+        release.wait(timeout=5)
+        return built_request(payload.request_id)
+
+    scheduler = scheduler_with_early_builds(monkeypatch, blocking_builder)
+    scheduler.request_build_max_pending = 2
+    try:
+        scheduler.process_input_requests([new_stage_payload("req-running")])
+        enqueue_new_request(scheduler, "req-early")
+        assert list(scheduler.early_request_build_futures) == ["req-early"]
+        scheduler.backlogged_request_build_payloads.append(
+            new_stage_payload("req-backlogged")
+        )
+
+        scheduler.process_input_requests([])
+
+        assert list(scheduler.pending_request_builds) == ["req-running"]
+        assert [
+            payload.request_id
+            for payload in scheduler.backlogged_request_build_payloads
+        ] == ["req-backlogged"]
+
+        scheduler.process_input_requests(drain_inbox_payloads(scheduler))
+
+        assert list(scheduler.pending_request_builds) == ["req-running", "req-early"]
+        assert scheduler.early_request_build_futures == {}
+    finally:
+        release.set()
+        scheduler.request_build_executor.shutdown()
 
 
 def test_omni_scheduler_normalizes_req_token_arrays() -> None:
@@ -4353,6 +4694,7 @@ def spec_overlap_scheduler(monkeypatch: pytest.MonkeyPatch) -> OmniScheduler:
     scheduler = object.__new__(OmniScheduler)
     scheduler.enable_overlap = True
     scheduler.async_decode_min_batch_size = 1
+    scheduler.prefill_drain_below_batch_size = 1
     scheduler.running_batch = SimpleNamespace(reqs=[])
     scheduler.running = True
     scheduler._engine_paused = (
@@ -4493,6 +4835,7 @@ def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
     selected_batches = iter([*batches, None])
     scheduler = spec_overlap_scheduler
     scheduler.async_decode_min_batch_size = min_batch_size
+    scheduler.prefill_drain_below_batch_size = min_batch_size
 
     def select() -> SimpleNamespace | None:
         # note (Haoling Pu): native batch selection drops finished requests from the running batch every step.
@@ -4532,6 +4875,70 @@ def test_spec_overlap_runs_decode_batches_below_the_minimum_synchronously(
     scheduler.resolve_pending_async()
 
     assert " ".join(events) == expected
+    assert not scheduler.result_queue
+
+
+@pytest.mark.parametrize(
+    "min_batch_size, prefill_drain_below_batch_size, expected_events",
+    [
+        (1, 2, "S0 L0 C0 S1 L1 S2 L2 C1 C2"),
+        (3, 0, "S0 L0 S1 L1 C0 C1 S2 L2 C2"),
+    ],
+    ids=["drain-without-synchronous-decode", "synchronous-decode-without-drain"],
+)
+def test_spec_overlap_sets_the_prefill_drain_apart_from_the_decode_minimum(
+    spec_overlap_scheduler: OmniScheduler,
+    min_batch_size: int,
+    prefill_drain_below_batch_size: int,
+    expected_events: str,
+) -> None:
+    """S selects batch N, L launches it and C consumes its result; batch 0 is a prefill, batches 1 and 2 are decodes.
+
+    The drain alone consumes the prefill before batch 1 is selected and still overlaps both decodes. The decode minimum alone consumes the prefill after the next launch and each decode right after its own launch. Before this change, either setting turned on both.
+    """
+    events: list[str] = []
+    request = SimpleNamespace(inflight_middle_chunks=0, omni_data="A")
+    request.finished = lambda: False
+    batches = []
+    for index, forward_mode in enumerate(
+        [ForwardMode.EXTEND, ForwardMode.DECODE, ForwardMode.DECODE]
+    ):
+        batch = SimpleNamespace(
+            index=index,
+            reqs=[request],
+            forward_mode=forward_mode,
+            spec_algorithm=SpeculativeAlgorithm.DFLASH,
+            grammar_needs_sync=lambda: False,
+        )
+        batch.copy = lambda batch=batch: batch
+        batches.append(batch)
+    selected_batches = iter([*batches, None])
+    scheduler = spec_overlap_scheduler
+    scheduler.async_decode_min_batch_size = min_batch_size
+    scheduler.prefill_drain_below_batch_size = prefill_drain_below_batch_size
+
+    def select() -> SimpleNamespace | None:
+        batch = next(selected_batches)
+        if batch is None:
+            pass
+        else:
+            events.append(f"S{batch.index}")
+            if batch.forward_mode == ForwardMode.DECODE:
+                scheduler.running_batch = batch
+            else:
+                pass
+        return batch
+
+    def launch(batch: SimpleNamespace) -> int:
+        events.append(f"L{batch.index}")
+        return batch.index
+
+    scheduler.get_next_batch_to_run = select
+    scheduler.run_batch = launch
+    scheduler.process_batch_result = lambda batch, result: events.append(f"C{result}")
+    scheduler.event_loop_spec_overlap()
+
+    assert " ".join(events) == expected_events
     assert not scheduler.result_queue
 
 

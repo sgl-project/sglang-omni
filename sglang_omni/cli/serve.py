@@ -19,9 +19,17 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
-from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.config.sources import (
+    dump_user_config,
+    patches_from_dotted_cli,
+    patches_from_model_path_flag,
+)
 from sglang_omni.models.auk.config import AuKPipelineConfig
+from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.mps.control import SubprocessMpsControlClient
+from sglang_omni.mps.devices import NvmlDeviceInfo
+from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -422,7 +430,8 @@ def apply_stage_offload_cli_overrides(
         pass
 
     if not isinstance(
-        pipeline_config, (MiniMaxMusic3PipelineConfig, AuKPipelineConfig)
+        pipeline_config,
+        (MiniMaxMusic3PipelineConfig, AuKPipelineConfig, LLaDA2UniOmniPipelineConfig),
     ):
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
@@ -543,7 +552,7 @@ def serve(
             "--stage-offload-components",
             "--stage_offload_components",
             help=(
-                "Comma-separated components to run request-serially, each "
+                "Comma-separated components to run serially on the GPU, each "
                 "offloading itself from the GPU before the next one runs."
             ),
         ),
@@ -626,7 +635,9 @@ def serve(
     )
     if config:
         try:
-            config_manager = ConfigManager.from_file(config)
+            config_manager = ConfigManager.from_file(
+                config, model_path_override=model_path
+            )
         except (ConfigPathError, ValueError) as exc:
             # A file that does not parse, an unknown path in a stage entry,
             # two entries disagreeing about one path: all of these carry a
@@ -674,10 +685,7 @@ def serve(
         mem_fraction_static=mem_fraction_static,
     )
     if config and model_path is not None:
-        # Given both, the flag is a command line source and outranks the
-        # file's model_path. Merged as a patch rather than assigned onto the
-        # result, so `sgl-omni config resolve/explain` previews exactly what
-        # launches here.
+        # note (kermit): Keep the path flag in the CLI patch set to detect conflicting dotted overrides.
         flag_patches = flag_patches.merge(
             patches_from_model_path_flag(model_path, config_manager.config)
         )
@@ -687,6 +695,9 @@ def serve(
         merged_config = config_manager.merge_config(
             extra_args,
             extra_patches=flag_patches,
+        )
+        cli_patches = patches_from_dotted_cli(extra_args, config_manager.config).merge(
+            flag_patches
         )
     except (ConfigPathError, ValueError) as exc:
         # Unknown path, unwritable path, two sources disagreeing at one
@@ -702,6 +713,17 @@ def serve(
         merged_config,
         stage_offload_components=stage_offload_components,
     )
+    replica_profile = decide_replica_profile(
+        merged_config,
+        user_patches=[*config_manager.source_patches, *cli_patches],
+        device_info=NvmlDeviceInfo(),
+        mps_client=SubprocessMpsControlClient(),
+    )
+    if replica_profile.message is not None:
+        logger.info(replica_profile.message)
+    else:
+        pass
+    merged_config = apply_engine_writes(merged_config, replica_profile.writes)
     merged_config = apply_default_draft_engine_overrides(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 

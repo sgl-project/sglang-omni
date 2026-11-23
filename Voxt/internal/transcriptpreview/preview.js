@@ -6,6 +6,9 @@
     const follow = (streaming || data.streaming) && window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
     version = data.version;
     streaming = data.streaming;
+    // While the answer streams the page follows its end, and each step
+    // there flashed the scroll bar: it shows again once the answer is done.
+    document.documentElement.classList.toggle("streaming", streaming);
     const template = document.createElement("template");
     template.innerHTML = data.html;
 

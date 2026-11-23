@@ -116,6 +116,8 @@
       }
     ],
     "llm_selected": "Fixture Language Two",
-    "no_llm": false
+    "no_llm": false,
+    "correction_style": "1. Fix what recognition got wrong, from the context of the meeting: words and characters that sound like the right ones, misheard names, product names and terms (write the glossary's terms as it gives them), and the punctuation.\n2. Drop stutters (\"I I I\") and filler sounds (um, uh, 嗯, 呃). Keep everything else as it was said, in the language it was said in: do not rewrite, summarize, translate, merge, split, reorder or add anything.\n3. Leave a word you cannot make out as it is.",
+    "correction_style_reset_disabled": true
   }
 }

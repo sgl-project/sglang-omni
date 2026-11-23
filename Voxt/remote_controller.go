@@ -84,6 +84,10 @@ func (a *app) chooseLLMWait(value string) {
 	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = value })
 }
 
+func (a *app) setLLMSwitch(on bool) {
+	a.updateSettings(func(s *settings.Settings) { s.Models.LLMSwitch = on })
+}
+
 func (a *app) openLLMDebug() { a.navigate(llmDebugPath) }
 
 func (a *app) openRemoteKeyURL() {

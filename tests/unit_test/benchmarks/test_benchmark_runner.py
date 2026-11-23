@@ -1,4 +1,4 @@
-"""Benchmark runner warmup, arrival schedules, client slots and dispatch lateness."""
+"""Benchmark runner warmup, arrival schedules, client slots, dispatch lateness and fixed duration runs."""
 
 from __future__ import annotations
 
@@ -12,8 +12,21 @@ import pytest
 from aiohttp import web
 
 import benchmarks.benchmarker.runner as runner_module
-from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
+from benchmarks.benchmarker.data import RequestClass, RequestResult
+from benchmarks.benchmarker.runner import (
+    BenchmarkRunner,
+    ClientGroup,
+    RunConfig,
+    SendFn,
+    resolve_warmup,
+    run_fixed_duration,
+)
+from benchmarks.dataset.seedtts import SampleInput
+
+POOL = [
+    SampleInput(sample_id=name, ref_text="r", ref_audio="r.wav", target_text=name)
+    for name in ("a", "b", "c", "d")
+]
 
 
 @pytest.mark.asyncio
@@ -218,6 +231,274 @@ async def test_after_send_runs_outside_the_slot_and_the_timed_window(
     assert [r.request_id for r in results] == ["a", "b"]
     assert sorted(followed) == ["a", "b"]
     assert runner.wall_clock_s == 2.0
+
+
+class FakeClock:
+    def __init__(self, now_s: float) -> None:
+        self.now_s = now_s
+
+    def perf_counter(self) -> float:
+        return self.now_s
+
+
+def install_fake_clock(monkeypatch: pytest.MonkeyPatch, now_s: float) -> FakeClock:
+    clock = FakeClock(now_s)
+    monkeypatch.setattr(
+        runner_module, "time", SimpleNamespace(perf_counter=clock.perf_counter)
+    )
+    return clock
+
+
+@pytest.mark.asyncio
+async def test_fixed_duration_run_keeps_each_client_closed_loop_until_the_window_ends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No send at or after the deadline, no cancelled request, one cursor per class."""
+    clock = install_fake_clock(monkeypatch, 100.0)
+    sent_ids: list[str] = []
+    in_flight = {"non_streaming": 0, "streaming": 0}
+    peak_in_flight = {"non_streaming": 0, "streaming": 0}
+
+    def make_send(request_class: RequestClass) -> SendFn:
+        async def send(
+            session: aiohttp.ClientSession, sample: SampleInput
+        ) -> RequestResult:
+            sent_ids.append(sample.sample_id)
+            in_flight[request_class] += 1
+            peak_in_flight[request_class] = max(
+                peak_in_flight[request_class], in_flight[request_class]
+            )
+            clock.now_s += 0.5
+            await asyncio.sleep(0)
+            in_flight[request_class] -= 1
+            return RequestResult(request_id=sample.sample_id, is_success=True)
+
+        return send
+
+    run = await run_fixed_duration(
+        [
+            ClientGroup(
+                request_class="non_streaming",
+                clients=2,
+                send_fn=make_send("non_streaming"),
+                first_sample_index=0,
+            ),
+            ClientGroup(
+                request_class="streaming",
+                clients=1,
+                send_fn=make_send("streaming"),
+                first_sample_index=2,
+            ),
+        ],
+        POOL,
+        settle_s=1.0,
+        duration_s=3.0,
+        should_warm_up=False,
+        timeout_s=5,
+        after_send=None,
+    )
+
+    assert sorted(result.request_id for result in run.results) == sorted(sent_ids)
+    assert [sample.sample_id for sample in run.issued_samples] == sent_ids
+    assert peak_in_flight == {"non_streaming": 2, "streaming": 1}
+    assert min(result.sent_at_s for result in run.results) == -1.0
+    assert max(result.finished_at_s for result in run.results) == clock.now_s - 101.0
+    assert all(result.sent_at_s < 3.0 for result in run.results)
+    assert all(result.finished_at_s > result.sent_at_s for result in run.results)
+    request_numbers: dict[RequestClass, list[int]] = {
+        "non_streaming": [],
+        "streaming": [],
+    }
+    first_sample_indexes: dict[RequestClass, int] = {"non_streaming": 0, "streaming": 2}
+    for result in run.results:
+        sample_id, suffix = result.request_id.split("#")
+        request_class = result.request_class
+        assert suffix[0] == {"non_streaming": "n", "streaming": "s"}[request_class]
+        request_number = int(suffix[1:])
+        expected_index = (first_sample_indexes[request_class] + request_number) % 4
+        assert sample_id == POOL[expected_index].sample_id
+        request_numbers[request_class].append(request_number)
+    for numbers in request_numbers.values():
+        assert sorted(numbers) == list(range(len(numbers)))
+    assert len(request_numbers["non_streaming"]) > len(POOL)
+
+
+@pytest.mark.asyncio
+async def test_fixed_duration_warmup_runs_each_client_once_and_fails_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = install_fake_clock(monkeypatch, 0.0)
+    calls: list[tuple[RequestClass, str]] = []
+    failing_sample_ids: set[str] = set()
+
+    def make_send(request_class: RequestClass) -> SendFn:
+        async def send(
+            session: aiohttp.ClientSession, sample: SampleInput
+        ) -> RequestResult:
+            calls.append((request_class, sample.sample_id))
+            clock.now_s += 10.0
+            is_success = sample.sample_id not in failing_sample_ids
+            return RequestResult(
+                request_id=sample.sample_id,
+                is_success=is_success,
+                error="" if is_success else "HTTP 500: boom",
+            )
+
+        return send
+
+    groups = [
+        ClientGroup(
+            request_class="non_streaming",
+            clients=2,
+            send_fn=make_send("non_streaming"),
+            first_sample_index=0,
+        ),
+        ClientGroup(
+            request_class="streaming",
+            clients=1,
+            send_fn=make_send("streaming"),
+            first_sample_index=2,
+        ),
+    ]
+    warmup_calls = [("non_streaming", "a"), ("non_streaming", "a"), ("streaming", "c")]
+
+    run = await run_fixed_duration(
+        groups,
+        POOL,
+        settle_s=0.0,
+        duration_s=1.0,
+        should_warm_up=True,
+        timeout_s=5,
+        after_send=None,
+    )
+    assert sorted(calls[:3]) == warmup_calls
+    assert run.results
+    assert all("#" in result.request_id for result in run.results)
+
+    calls.clear()
+    failing_sample_ids.add("c")
+    with pytest.raises(ValueError, match="Warmup failed"):
+        await run_fixed_duration(
+            groups,
+            POOL,
+            settle_s=0.0,
+            duration_s=1.0,
+            should_warm_up=True,
+            timeout_s=5,
+            after_send=None,
+        )
+    assert sorted(calls) == warmup_calls
+
+
+@pytest.mark.asyncio
+async def test_fixed_duration_follow_ups_run_outside_the_client_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow stream outcome lookup must not add think time between a client's requests."""
+    clock = install_fake_clock(monkeypatch, 0.0)
+    deadline_reached = asyncio.Event()
+    release_followups = asyncio.Event()
+    followed: list[str] = []
+
+    async def send(
+        session: aiohttp.ClientSession, sample: SampleInput
+    ) -> RequestResult:
+        clock.now_s += 1.0
+        if clock.now_s >= 3.0:
+            deadline_reached.set()
+        else:
+            pass
+        await asyncio.sleep(0)
+        return RequestResult(request_id=sample.sample_id, is_success=True)
+
+    async def after_send(result: RequestResult) -> None:
+        await release_followups.wait()
+        followed.append(result.request_id)
+
+    task = asyncio.create_task(
+        run_fixed_duration(
+            [
+                ClientGroup(
+                    request_class="streaming",
+                    clients=1,
+                    send_fn=send,
+                    first_sample_index=0,
+                )
+            ],
+            POOL,
+            settle_s=0.0,
+            duration_s=3.0,
+            should_warm_up=False,
+            timeout_s=5,
+            after_send=after_send,
+        )
+    )
+    try:
+        await asyncio.wait_for(deadline_reached.wait(), timeout=2)
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release_followups.set()
+        run = await asyncio.wait_for(task, timeout=2)
+
+    assert len(run.results) == 3
+    assert sorted(followed) == sorted(result.request_id for result in run.results)
+
+
+@pytest.mark.asyncio
+async def test_a_client_stops_after_its_first_failed_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead server must not turn the window into a loop of instant errors."""
+    clock = install_fake_clock(monkeypatch, 0.0)
+    sender_by_request_id: dict[str, asyncio.Task[None] | None] = {}
+
+    async def send(
+        session: aiohttp.ClientSession, sample: SampleInput
+    ) -> RequestResult:
+        sender_by_request_id[sample.sample_id] = asyncio.current_task()
+        clock.now_s += 1.0
+        await asyncio.sleep(0)
+        is_success = not sample.sample_id.endswith("#n1")
+        return RequestResult(
+            request_id=sample.sample_id,
+            is_success=is_success,
+            error="" if is_success else "HTTP 500: boom",
+        )
+
+    run = await run_fixed_duration(
+        [
+            ClientGroup(
+                request_class="non_streaming",
+                clients=2,
+                send_fn=send,
+                first_sample_index=0,
+            )
+        ],
+        POOL,
+        settle_s=0.0,
+        duration_s=6.0,
+        should_warm_up=False,
+        timeout_s=5,
+        after_send=None,
+    )
+
+    failures = [result for result in run.results if not result.is_success]
+    assert [result.request_id for result in failures] == ["b#n1"]
+    failing_client = sender_by_request_id["b#n1"]
+    failing_client_results = [
+        result
+        for result in run.results
+        if sender_by_request_id[result.request_id] is failing_client
+    ]
+    assert failing_client_results[-1] is failures[0]
+    other_client_finishes_s = [
+        result.finished_at_s
+        for result in run.results
+        if sender_by_request_id[result.request_id] is not failing_client
+    ]
+    assert max(other_client_finishes_s) >= 6.0
 
 
 def arrival_offsets(seed: int, rate: float, count: int) -> np.ndarray:

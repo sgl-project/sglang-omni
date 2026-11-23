@@ -45,6 +45,7 @@
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
       "insert_tooltip": "The text did not show up where you type. Press ⌘V to paste it from the clipboard, or insert it again.",
+      "copy_tooltip": "Copy (C)",
       "size_step": 0,
       "levels": [
         0,

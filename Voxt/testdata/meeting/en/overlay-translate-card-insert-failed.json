@@ -47,6 +47,7 @@
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
       "insert_tooltip": "The selection in Arc cannot be edited. Copy the result, or click where it should go and insert.",
+      "copy_tooltip": "Copy (C)",
       "size_step": 0,
       "levels": [
         0,

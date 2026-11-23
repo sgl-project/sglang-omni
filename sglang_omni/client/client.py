@@ -16,6 +16,7 @@ import numpy as np
 from sglang_omni.client.audio import (
     DEFAULT_SAMPLE_RATE,
     FORMAT_MIME_TYPES,
+    audio_output_sample_rate_error,
     audio_to_base64,
     encode_audio,
     to_numpy,
@@ -53,6 +54,7 @@ from sglang_omni.scheduling.types import SpecTokensDetailsDict
 class EncodeAudioOptions(TypedDict, total=False):
     response_format: str
     sample_rate: int
+    output_sample_rate: int | None
     speed: float
     allow_format_fallback: bool
 
@@ -450,6 +452,7 @@ class Client:
         *,
         request_id: str,
         response_format: str = "wav",
+        output_sample_rate: int | None = None,
         speed: float = 1.0,
         allow_format_fallback: bool = True,
     ) -> SpeechResult:
@@ -457,7 +460,15 @@ class Client:
 
         Raises:
             ClientError: If the pipeline produces no audio output.
+            ValueError: If the requested sample rate cannot be encoded.
         """
+        sample_rate_error = audio_output_sample_rate_error(
+            response_format.strip().lower(), output_sample_rate
+        )
+        if sample_rate_error is not None:
+            raise ValueError(sample_rate_error)
+        else:
+            pass
         audio_chunks: list[object] = []
         sample_rate: int | None = None
         last_chunk: GenerateChunk | None = None
@@ -490,6 +501,7 @@ class Client:
 
         encode_kwargs: EncodeAudioOptions = {
             "response_format": response_format,
+            "output_sample_rate": output_sample_rate,
             "speed": speed,
             "allow_format_fallback": allow_format_fallback,
         }
@@ -498,7 +510,7 @@ class Client:
         else:
             pass
 
-        audio_bytes, mime_type = await asyncio.to_thread(
+        encoded_audio = await asyncio.to_thread(
             encode_audio, audio_data, **encode_kwargs
         )
 
@@ -506,17 +518,17 @@ class Client:
         # to WAV if the requested codec is unavailable).
         actual_format = response_format
         for ext, mt in FORMAT_MIME_TYPES.items():
-            if mt == mime_type:
+            if mt == encoded_audio.mime_type:
                 actual_format = ext
                 break
             else:
                 pass
 
         return SpeechResult(
-            audio_bytes=audio_bytes,
-            mime_type=mime_type,
+            audio_bytes=encoded_audio.audio_bytes,
+            mime_type=encoded_audio.mime_type,
             format=actual_format,
-            sample_rate=sample_rate,
+            sample_rate=encoded_audio.sample_rate,
             usage=last_chunk.usage if last_chunk else None,
             spec_tokens_details=last_chunk.spec_tokens_details if last_chunk else None,
             finish_reason=(
@@ -524,6 +536,7 @@ class Client:
                 if last_chunk
                 else UNKNOWN_FINISH_REASON
             ),
+            text=last_chunk.text if last_chunk else None,
         )
 
     # ------------------------------------------------------------------

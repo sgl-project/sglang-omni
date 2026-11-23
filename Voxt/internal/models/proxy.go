@@ -82,14 +82,15 @@ func (s *systemProxy) proxy(request *http.Request) (*url.URL, error) {
 	return &url.URL{Scheme: "http", Host: hostPort}, nil
 }
 
-// bypassProxy reports whether host goes direct: the loopback, plain names
-// when ExcludeSimple or "<local>" is an exception, and the exceptions
-// (hosts, globs, address ranges whose missing octets are 0, as macOS
-// writes "169.254/16").
+// bypassProxy reports whether host goes direct: this Mac (localhost,
+// *.localhost, the loopback: core.IsLoopback, which a leaf cannot import;
+// TestBypassProxyThisMac keeps them equal), plain names when ExcludeSimple or "<local>"
+// is an exception, and the exceptions (hosts, globs, address ranges whose
+// missing octets are 0, as macOS writes "169.254/16").
 func bypassProxy(host string, proxies SystemProxies) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	ip := net.ParseIP(host)
-	if host == "localhost" || ip != nil && ip.IsLoopback() {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || ip != nil && ip.IsLoopback() {
 		return true
 	}
 	simple := ip == nil && !strings.Contains(host, ".")
@@ -119,16 +120,17 @@ func bypassProxy(host string, proxies SystemProxies) bool {
 // user name and password: the Transport sends them (Proxy-Authorization,
 // or SOCKS5's own), so the URL with them must never be logged.
 func ProxyFor(mode string, user *url.Userinfo, system func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
-	if strings.TrimSpace(mode) == "" && system != nil {
-		return system
-	}
 	proxy := hfhub.ProxyFunc(mode)
-	if user == nil {
-		return proxy
+	if strings.TrimSpace(mode) == "" && system != nil {
+		proxy = system
+		user = nil
 	}
 	return func(request *http.Request) (*url.URL, error) {
+		if bypassProxy(request.URL.Hostname(), SystemProxies{}) {
+			return nil, nil
+		}
 		proxyURL, err := proxy(request)
-		if proxyURL == nil || err != nil {
+		if proxyURL == nil || err != nil || user == nil {
 			return proxyURL, err
 		}
 		withUser := *proxyURL

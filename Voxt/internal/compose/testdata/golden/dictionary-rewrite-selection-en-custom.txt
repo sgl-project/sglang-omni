@@ -19,10 +19,10 @@ Glossary: write these terms exactly as below, also when the recognizer heard the
 - DeepSeek (heard as: deep seek)
 
 ---- user ----
-<instruction>
-改正式一点
-</instruction>
-
 <selected_text>
 走幺零幺去 401 K
 </selected_text>
+
+<instruction>
+改正式一点
+</instruction>
