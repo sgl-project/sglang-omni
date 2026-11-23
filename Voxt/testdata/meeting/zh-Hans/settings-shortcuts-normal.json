@@ -80,6 +80,7 @@
     "shortcuts": {
       "accessibility_installed": true,
       "strict_shortcuts": false,
+      "return_finishes": true,
       "preset": {
         "options": [
           {

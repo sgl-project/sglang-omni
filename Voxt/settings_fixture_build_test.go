@@ -50,6 +50,7 @@ func settingsFixtureApplyInput(t *testing.T, a *app, input settingsFixtureInput)
 		a.perms.mic = input.permissions.Microphone
 		a.perms.access = input.permissions.Accessibility
 		a.perms.speech = input.permissions.SpeechRecognition
+		a.perms.systemAudioAsked = input.permissions.SystemAudioAsked
 	case "audio":
 		a.prefs.Audio = input.audio.Audio
 		a.prefs.Audio.Sounds = input.sounds.Prefs.On
