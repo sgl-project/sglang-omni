@@ -16,6 +16,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
+### Fixed
+
+- **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
+
 ### 中文
 
 #### 新增
@@ -29,6 +33,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+
+#### 修复
+
+- **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
 
 ## [2.1.3] - 2026-11-22
 
