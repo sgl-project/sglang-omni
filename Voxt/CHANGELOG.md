@@ -4,6 +4,18 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **The first words appear sooner with MOSS-Transcribe-Diarize**: the first live preview now starts after 0.75 s of speech instead of 1.25 s, so the first text shows up about half a second earlier; the final transcript is unchanged.
+
+### 中文
+
+#### 变更
+
+- **MOSS-Transcribe-Diarize 出字更早**：第一条实时预览在说满 0.75 秒时就开始（原来是 1.25 秒），第一个字约早半秒出现；最终转录稿不变。
+
+## [2.1.3] - 2026-11-22
+
 ### Added
 
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
@@ -14,10 +26,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Transcribe's clean-up follows its rules better on small local models** (#4459): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
 - **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
-- **The first words appear sooner with MOSS-Transcribe-Diarize**: the first live preview now starts after 0.75 s of speech instead of 1.25 s, so the first text shows up about half a second earlier; the final transcript is unchanged.
-- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
@@ -28,7 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
-- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 
@@ -40,6 +51,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Resetting the look or all settings also restores the History detail width** (#4421): after widening the History details from their 290 DIP default, "Reset the look" and "Reset all settings" left the page showing the old width until a restart; both now bring back the default at once.
 - **Meeting and file transcripts honour the Chinese script preference**: Simplified and Traditional Chinese main languages now render chunked, live file-based, post-meeting and imported-file transcription in the selected script. Prompt and dictionary echo suppression compares Chinese text across scripts, as does microphone-versus-system echo detection.
 - **Check for Updates finds new versions again**: Voxt 2.1.1 and 2.1.2 looked for updates at an address that never served them, so Check for Updates always said Voxt was up to date. Voxt now reads its updates from its GitHub releases and installs them in the app. If you run 2.1.2 or earlier, download this version once from the release page; later versions update in the app.
+- **Fewer one-frame flashes, and Run check reads the permissions now**: Run check in Settings → About waits for the permission read instead of reporting the previous one. Opening a meeting no longer flashes "Loading…" when it opens at once, and Refresh microphones in Settings → Audio no longer greys out for a moment each time the section opens.
+- **Shorter guide text**: the shortcut warning on the try steps no longer adds that Start works now, the last step's section is called Shortcuts, and its subtitle invites you to try Voxt.
 - **A shortcut pressed while recording is no longer ignored now and then**: about one press in twenty-five did nothing while Voxt recorded, so the recording went on until the next press. Voxt sent the helper its shortcuts again at every update of the recording pill, and dropped a press the helper reported in between as one from an old configuration. It now sends them only when they change.
 - **Meeting audio meters keep updating during system silence** (#4198): when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
 - **Meetings explain how to enable speaker labels** (#4394): the spoken-language setting now says that Speaker 1–4 labels need MOSS-Transcribe-Diarize and an explicit Chinese or English choice, covering meetings whose automatic language hint is empty or unsupported.
@@ -65,10 +78,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
-- **MOSS-Transcribe-Diarize 出字更早**：第一条实时预览在说满 0.75 秒时就开始（原来是 1.25 秒），第一个字约早半秒出现；最终转录稿不变。
-- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。
@@ -79,7 +91,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
-- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减少动态效果”时不播放。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
@@ -92,6 +104,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **重置外观或全部设置时，历史详情宽度也一起恢复**（#4421）：把历史详情从默认的 290 DIP 调宽之后，“重置外观”和“重置所有设置”原来要重启才恢复默认宽度，现在立即回到默认。
 - **会议和文件转录稿遵循中文简繁偏好**：主语言选简体中文或繁体中文时，分段转写、无流式实时转写、会后重转和导入文件转写都按所选简繁输出。提示词和词典回显抑制、麦克风与系统声音回声比较也能识别跨简繁的同一文本。
 - **“检查更新”又能找到新版本了**：Voxt 2.1.1 和 2.1.2 去读更新的地址上一直没有内容，所以“检查更新”总是显示已是最新。现在 Voxt 从它的 GitHub Release 读更新，并在 app 里安装。还在用 2.1.2 或更早版本的话，请从 Release 页面手动下载一次这个版本，之后的版本就能在 app 里更新。
+- **少了几处一闪而过的画面，“运行检查”读的是当前权限**：“设置 → 诊断与关于”里的“运行检查”会等权限读完再出结果，不再用上一次读到的。打开会议时如果很快读完，不再闪出“加载中…”；“设置 → 音频”里的“刷新麦克风列表”也不再在每次打开时变灰一下。
+- **引导文案更短**：试用步骤里的快捷键提示不再说“开始”按钮现在就能用；最后一步的分区改叫“快捷键”，副标题改成邀请你去试试 Voxt。
 - **录音时按快捷键不再偶尔没反应**：录音过程中大约每二十五次按键有一次不起作用，录音会一直持续到下一次按键。原因是录音浮窗每次刷新时 Voxt 都把快捷键重新发给辅助进程，辅助进程在这期间报来的按键被当成旧配置的按键丢掉了。现在只在快捷键有变化时才发送。
 - **系统静音时会议音量表继续更新**（#4198）：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
 - **会议说明怎样启用说话人标签**（#4394）：说话语言设置现在写明，按说话人 1–4 分开需要安装 MOSS-Transcribe-Diarize 并明确选择中文或英文，覆盖自动语言提示为空或不受支持的会议。
