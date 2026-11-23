@@ -22,6 +22,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
 - **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
+- **Plainer Chinese wording** (#4542): about 120 Chinese strings read less like translations and use one word for one thing: 授权 for permissions, 匹配, 无法, Return, API Key, and macOS's own name 录屏与系统录音.
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
 - **The menu bar's recent results say Copy and confirm it** (#2967): the items under Recent results now read "Copy: …", so it is clear that a click copies that result, and a click toasts Copied; a failed copy already said so. The copy a session makes itself stays silent.
 
@@ -66,6 +67,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **中文文案更清楚**（#4542）：约 120 条中文文案改写，去掉翻译腔，同一个意思只用一个词：权限统一说“授权”，以及“匹配”“无法”“Return”“API Key”，录屏权限沿用 macOS 的叫法“录屏与系统录音”。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
 - **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
