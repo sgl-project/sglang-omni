@@ -7,7 +7,8 @@ package main
 // clashes, keys macOS uses, keys that need Accessibility while the event
 // tap is missing, keys another ActNow app uses too. A row opens its
 // feature's page, where it changes. Above it, the preset sets several at
-// once (internal/settings' Presets), and Strict shortcuts.
+// once (internal/settings' Presets), and Strict shortcuts; under it,
+// whether Return finishes a recording.
 
 import (
 	"strconv"
@@ -19,7 +20,7 @@ import (
 )
 
 type settingsShortcutsLocalUI struct {
-	strictShortcuts bool
+	strictShortcuts, returnFinishes bool
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.
@@ -56,6 +57,11 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 		})
 		for _, row := range state.Rows {
 			shortcutRow(c, row, actions, state.AccessibilityInstalled, keysWidth)
+		}
+	})
+	settingRow(c, "sc-return", i18n.T("Return finishes a recording"), i18n.T("While Transcribe, Translate or Rewrite records, Return stops recording, and the key goes nowhere else. Off: Return reaches the app as usual."), func() {
+		if ui.Switch(c.Key("sc-return-switch"), &local.returnFinishes).Label(i18n.T("Return finishes a recording")).Changed() {
+			actions.setReturnFinishes(local.returnFinishes)
 		}
 	})
 }
@@ -129,7 +135,7 @@ func shortcutIcon(code string) icons.Icon {
 	case "rewrite":
 		return icons.PenNewRound
 	default:
-		return icons.Microphone3
+		return transcribeIcon
 	}
 }
 

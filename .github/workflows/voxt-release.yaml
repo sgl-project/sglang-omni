@@ -93,7 +93,8 @@ jobs:
           # Under the runner's TMPDIR (/var/folders/…) the socket tests' paths come within a few bytes of macOS's 104-byte Unix socket limit.
           TMPDIR: ${{ runner.temp }}
         run: |
-          CGO_ENABLED=0 go test -count=1 ./...
+          # -timeout: the app's package takes 400 to 600 s on this runner, at go test's 10-minute default.
+          CGO_ENABLED=0 go test -count=1 -timeout 30m ./...
           swift test --package-path helper
 
       - name: Resolve the version
@@ -239,6 +240,9 @@ jobs:
           fi
           if [[ "$IS_BETA" == "true" ]]; then
             args+=(--runtimes "$RUNTIMES")
+            # A beta can run its update check without a window (update_check.go), so that the next beta's run
+            # can let this one update itself (scripts/mac-update-feed-e2e.sh --from). Releases do not have it.
+            export GOFLAGS="${GOFLAGS:-} -tags=updatecheck"
           else
             :
           fi
@@ -310,7 +314,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Voxt-${{ env.VERSION }}-arm64${{ env.IS_SIGNED != 'true' && '-unsigned' || '' }}
-          path: ${{ env.ARTIFACTS_DIR }}
+          # A beta's MyGo update archive and manifest go only to its prerelease.
+          path: |
+            ${{ env.ARTIFACTS_DIR }}/*.dmg
+            ${{ env.ARTIFACTS_DIR }}/*.dmg.sha256
+          if-no-files-found: error
           retention-days: 14
 
       # Beta updates in the app (updates_github.go) offers the newest of these prereleases; never the latest release, and only the last few kept.
@@ -335,6 +343,31 @@ jobs:
             | while read -r tag; do
                 gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
               done
+
+      # Installed betas read their updates from these prereleases (scripts/release-appcast.sh feed-check):
+      # fail here when the one just published is not what their feed resolves to, or its files do not download.
+      - name: Check that the beta feed offers this beta
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release-appcast.sh feed-check beta "$VERSION" "$GITHUB_REPOSITORY"
+
+      # The app users have, not a test build: the beta before this one, from its own release, checks for
+      # updates, downloads this beta, verifies and installs it. A failure here means installed betas cannot
+      # update, and the next beta has to fix it.
+      - name: The previous beta updates itself to this beta
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | startswith("voxt-v")) and .tagName != "voxt-v" + env.VERSION)] | sort_by(.createdAt) | reverse | .[0].tagName // ""')"
+          if [[ -n "$prev" ]]; then
+            scripts/mac-update-feed-e2e.sh --from "$prev" "$GITHUB_REPOSITORY"
+          else
+            echo "no earlier beta to update from"
+          fi
 
       - name: Create the draft release
         if: env.IS_RELEASE == 'true'
@@ -368,14 +401,3 @@ jobs:
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag --latest \
             --title "Voxt v$VERSION" --notes-file "$notes" "$ARTIFACTS_DIR"/*
-
-  voxt2-beta-feed:
-    name: Publish the beta update manifest
-    # A prerelease created by GITHUB_TOKEN emits no release event for another workflow.
-    if: inputs.beta == true && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: release
-    uses: ./.github/workflows/voxt-appcast.yaml
-    with:
-      tag: voxt-v${{ needs.release.outputs.version }}
-      channel: beta
-    secrets: inherit

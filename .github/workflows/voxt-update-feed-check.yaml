@@ -1,0 +1,64 @@
+name: Voxt Update Feed Check
+
+# Voxt 2 reads its updates from the GitHub releases tagged voxt-v (Voxt/docs/release.md): publishing a
+# release offers it to every installed app. This run fails when the release just published is not what
+# the apps' feed resolves to, or when its manifest or archive does not download, so that a release that
+# installed apps cannot see is noticed the minute it is published. A beta is checked by Voxt Release
+# itself: a prerelease made with GITHUB_TOKEN starts no workflow.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to check, e.g. voxt-v2.1.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  feed:
+    name: Voxt 2 update feed
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'voxt-v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the feed offers this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#voxt-v}"
+          if [[ "$version" == *-* ]]; then
+            channel=beta
+          else
+            channel=stable
+          fi
+          scripts/release-appcast.sh feed-check "$channel" "$version" "$GITHUB_REPOSITORY"
+
+  install:
+    name: Voxt 2 installs the published update
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'voxt-v')
+    runs-on: macos-26
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: Voxt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+      # An older build with the release's feed and key updates itself from the published releases, on
+      # the stable and the beta channel, and the installed bundle is checked (no secret, no window).
+      - name: Update an older build from the published releases
+        run: scripts/mac-update-feed-e2e.sh "$GITHUB_REPOSITORY"

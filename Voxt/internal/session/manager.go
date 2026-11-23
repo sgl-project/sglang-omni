@@ -225,6 +225,8 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	if t := req.Text; t != nil {
 		m.snap.Raw, m.snap.Selection, m.snap.Typed = strings.TrimSpace(t.Raw), t.Selection, t.Typed
 	}
+	// Set before the id is returned: the caller's card waits for it.
+	m.snap.ReadingSelection = req.Text == nil && r.canSelect()
 	s := m.snap.clone()
 	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()

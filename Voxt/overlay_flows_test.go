@@ -253,11 +253,11 @@ func TestOverlayFlows(t *testing.T) {
 		"translate-speech-not-inserted": "working recording working notice",
 		"translate-selection":           "working",
 		"translate-selection-readonly":  "working answer",
-		// Rewrite's card with the input box shows the recording instead
-		// of the pill.
-		"rewrite":           "working answer",
-		"rewrite-selection": "working answer",
-		"rewrite-no-card":   "working",
+		// Rewrite's input card shows the recording and the work: no pill
+		// (wall 122).
+		"rewrite":           "answer",
+		"rewrite-selection": "answer",
+		"rewrite-no-card":   "",
 		"follow-up":         "answer",
 	}
 	for _, fl := range overlayFlows() {

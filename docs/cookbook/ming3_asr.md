@@ -146,3 +146,15 @@ data: [DONE]
 ```
 
 The first stable text is emitted immediately; later updates use a 50 ms interval (`--thinker.factory.stream_emit_interval_seconds`). Completion flushes pending text, the language header is removed, and concatenated deltas equal the done event's `text`. When `max_new_tokens` is reached, `transcript.text.done` includes `"finish_reason":"length"` and the partial transcript.
+
+## MTP decoding
+
+Enable MTP with the [fine-tuned prediction weights](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-mtp):
+
+```bash
+sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
+  --thinker.engine.speculative_algorithm NEXTN \
+  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-mtp
+```
+
+Omit `--thinker.engine.speculative_draft_model_path` to use the official MTP bundled with the target checkpoint. Ming ASR MTP requires `speculative_eagle_topk=1` and `repetition_penalty=1.0`. You can omit both settings: NEXTN sets the former at startup, and transcription requests use the latter by default.
