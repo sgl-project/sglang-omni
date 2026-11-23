@@ -7,11 +7,12 @@ import "time"
 
 const openingDuration = 3200 * time.Millisecond
 
-// startOpening plays the opening when the app starts. A window that waits
-// hidden (opened at login into the menu bar) skips it: it would play
-// unseen. Reopening the window while the app runs does not come here.
+// startOpening plays the opening when the app starts, unless Settings →
+// Appearance turned it off. A window that waits hidden (opened at login
+// into the menu bar) skips it: it would play unseen. Reopening the window
+// while the app runs does not come here.
 func (a *app) startOpening(hidden bool) {
-	if !hidden {
+	if !hidden && a.prefs.Appearance.Opening {
 		a.openingStarted = time.Now()
 	}
 }

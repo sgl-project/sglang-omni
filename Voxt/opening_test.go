@@ -46,3 +46,25 @@ func TestOpeningSkipsHiddenStart(t *testing.T) {
 		t.Fatal("a hidden start played the opening")
 	}
 }
+
+// With Settings → Appearance's opening off, a start goes straight to the
+// main interface, and turning it on again plays it at the next start.
+func TestOpeningOff(t *testing.T) {
+	directory := testDir(t)
+	a, _, tester := newTestAppIn(t, directory)
+	if !a.prefs.Appearance.Opening {
+		t.Fatal("the opening must be on by default")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Setup.Done = true; s.Appearance.Opening = false })
+	a.startOpening(false)
+	frames(tester)
+	if !a.openingStarted.IsZero() {
+		t.Fatal("a start played the opening that Settings turned off")
+	}
+	a.setOpening(true)
+	a, _, _ = newTestAppIn(t, directory)
+	a.startOpening(false)
+	if a.openingStarted.IsZero() {
+		t.Fatal("turned on again, the opening did not play at the next start")
+	}
+}

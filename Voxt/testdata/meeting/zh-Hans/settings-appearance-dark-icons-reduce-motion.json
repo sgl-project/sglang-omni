@@ -101,6 +101,7 @@
         "icons"
       ],
       "reduce_motion": true,
+      "opening": true,
       "palette": "#0d9384",
       "default_palette": "#0d9384",
       "transparent": false,

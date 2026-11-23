@@ -16,6 +16,7 @@ type settingsAppearanceLocalUI struct {
 	scale        int
 	sidebar      int
 	reduceMotion bool
+	opening      bool
 
 	colorPalette         ui.Color // the picker's colour
 	colorPaletteOf       string   // the saved palette colorPalette was last set from
@@ -43,6 +44,13 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 	settingRow(c, "motion", i18n.T("Reduce motion"), i18n.T("Also follows the system setting."), func() {
 		if ui.Switch(c.Key("motion-switch"), &local.reduceMotion).Label(i18n.T("Reduce motion")).Changed() {
 			actions.setReduceMotion(local.reduceMotion)
+		}
+	})
+	// Reduce motion skips the opening, so its switch rests while it is on.
+	settingRow(c, "opening", i18n.T("Play the opening at start"), "", func() {
+		sw := ui.Switch(c.Key("opening-switch"), &local.opening).Label(i18n.T("Play the opening at start")).Disabled(state.ReduceMotion)
+		if sw.Changed() {
+			actions.setOpening(local.opening)
 		}
 	})
 }

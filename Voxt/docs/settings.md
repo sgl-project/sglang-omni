@@ -102,6 +102,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.windowTransparency` | integer | `8` | 5–15 percent (clamped), used by `transparent` | Theme |
 | `appearance.scale` | number | `1` | `0.9`, `1`, `1.1`, `1.25` (snapped to the nearest) | Interface size |
 | `appearance.reduceMotion` | bool | `false` | | Reduce motion |
+| `appearance.opening` | bool | `true` | | Play the opening at start (resting while Reduce motion is on, which skips the opening) |
 | `appearance.rail` | bool | `false` | `true` shows the sidebar as icons only | Sidebar |
 | `appearance.railChosen` | bool | `false` | the user chose names and icons | Sidebar |
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
