@@ -527,8 +527,8 @@ MossTranscriber::TranscribeChunk(const std::vector<float> &samples,
         // frontend observation comes after it and only watches a pipeline
         // that is already running.
         mx::eval(embeddings);
-        frontend_eval_ms =
-            Milliseconds(std::chrono::steady_clock::now() - frontend_eval_started);
+        frontend_eval_ms = Milliseconds(std::chrono::steady_clock::now() -
+                                        frontend_eval_started);
       } else {
       }
       finished = commit(static_cast<int>(token.item<uint32_t>()));
