@@ -120,6 +120,7 @@ def create_generation_executor(
                     modality="audio",
                     source_hint="Stable Audio 3",
                     keep_channels=True,
+                    keep_float16=True,
                 ),
             )
             for payload, waveform in zip(payloads, audio, strict=True)

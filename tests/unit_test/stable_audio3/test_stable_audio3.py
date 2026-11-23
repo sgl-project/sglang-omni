@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stable Audio 3: request contract, official layout values, batch invariance and checkpoint detection."""
+"""Stable Audio 3: request contract, official layout values, batch invariance, fp16 audio transport and checkpoint detection."""
 
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
 from transformers import BatchEncoding
 
+from sglang_omni.client.audio import encode_audio, to_numpy
+from sglang_omni.client.client import Client
+from sglang_omni.client.types import GenerateChunk
 from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner
 from sglang_omni.models.stable_audio3.cuda_graphs import (
@@ -33,6 +37,7 @@ from sglang_omni.models.stable_audio3.speech_validation import (
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
+from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.hf import try_resolve_arch_from_stable_audio3_layout
 
 PROMPT_TOKENS = 6
@@ -294,6 +299,24 @@ def test_latent_buckets_cover_every_length_within_the_graph_budget() -> None:
         bucket = bucket_latents(latent_length)
         assert latent_length <= bucket < latent_length + 32
         assert bucket % 32 == 0
+
+
+def test_float16_waveform_reaches_the_client_as_the_same_audio() -> None:
+    """The fp16 decoder output travels at half the bytes; the client widens it to the same float32 values and WAV."""
+    waveform = (torch.rand(2, 4410) * 2.4 - 1.2).half().clamp(-1, 1)
+    payload = audio_waveform_payload(
+        waveform, sample_rate=44100, keep_channels=True, keep_float16=True
+    )
+    chunk = GenerateChunk(request_id="stable-audio-3")
+    Client.set_audio_data(chunk, payload)
+    widened = waveform.float().numpy()
+    assert payload["audio_waveform_dtype"] == "float16"
+    assert len(payload["audio_waveform"]) == waveform.numel() * 2
+    assert np.array_equal(to_numpy(chunk.audio_data), widened)
+    assert (
+        encode_audio(chunk.audio_data, sample_rate=44100).audio_bytes
+        == encode_audio(widened, sample_rate=44100).audio_bytes
+    )
 
 
 @pytest.mark.parametrize(

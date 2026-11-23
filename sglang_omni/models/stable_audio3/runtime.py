@@ -279,5 +279,5 @@ class StableAudio3Runtime:
         ):
             decoded = self.decoder(latents[row : row + 1, :, :length], generator)
             samples = int(request.seconds * self.config.sample_rate)
-            audio.append(decoded[0, :, :samples].float().clamp(-1, 1))
+            audio.append(decoded[0, :, :samples].clamp(-1, 1))
         return audio
