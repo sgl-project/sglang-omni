@@ -457,7 +457,10 @@ func (m *Manager) requireID(id string) error {
 }
 
 func (m *Manager) notify(s Snapshot) {
-	for _, fn := range m.subs {
+	m.mu.Lock()
+	subs := append([]func(Snapshot){}, m.subs...)
+	m.mu.Unlock()
+	for _, fn := range subs {
 		fn(s)
 	}
 }
