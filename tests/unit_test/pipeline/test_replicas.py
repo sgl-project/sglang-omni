@@ -719,7 +719,7 @@ class TestSingleReplicaDeviceOverride:
         assert [(stage.name, stage.gpu) for stage in expanded] == [("thinker", [4, 5])]
 
 
-@pytest.mark.parametrize("devices", [[1], [1, 2], [3]])
+@pytest.mark.parametrize("devices", [[1], [1, 2], [3, 1]])
 def test_replica_placement_warns_once_per_gpu_stage(caplog, devices):
     """Process devices override explicit IDs without changing CPU stages or inputs."""
     config = build_pipeline_config(
@@ -741,6 +741,17 @@ def test_replica_placement_warns_once_per_gpu_stage(caplog, devices):
     assert len(warnings) == 1
     assert "processes.p.replica_devices overrides gpu=3" in warnings[0].message
     assert f"replica GPU assignments: {devices}" in warnings[0].message
+
+
+def test_replica_devices_on_the_declared_gpu_do_not_warn(caplog):
+    """Same-GPU replicas on the stage's own GPU move nothing, so nothing is overridden."""
+    config = build_pipeline_config(
+        [build_stage_config("gpu", gpu=3, process="p")],
+        processes={"p": ProcessConfig(num_replicas=2, replica_devices=[3, 3])},
+    )
+    _, expanded, _ = expand(config)
+    assert [stage.gpu for stage in expanded] == [3, 3]
+    assert not [record for record in caplog.records if record.levelname == "WARNING"]
 
 
 def test_stage_gpu_without_replica_devices_does_not_warn(caplog):

@@ -60,7 +60,7 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 		return false
 	}
 	segment := newBoxTextSegment(text, i18n.T("Pasted text"), true)
-	if segment.Lines <= boxTextCollapseLines && segment.Chars <= boxTextCollapseChars || index < -1 || index >= len(a.box.textSegments) {
+	if index < -1 || index >= len(a.box.textSegments) {
 		return false
 	}
 	editor := a.box.text
@@ -69,6 +69,13 @@ func (a *app) boxPasteTextAt(index int, text string, start, end int) bool {
 			return false
 		}
 		editor = a.box.textSegments[index].Text
+	}
+	if segment.Lines <= boxTextCollapseLines && segment.Chars <= boxTextCollapseChars {
+		if a.box.err != "" {
+			a.box.err = ""
+			a.boxSync()
+		}
+		return false
 	}
 	runes := []rune(editor)
 	start, end = max(0, min(start, len(runes))), max(0, min(end, len(runes)))
@@ -101,17 +108,17 @@ func (a *app) boxTextContent() string {
 		return a.box.textCache
 	}
 	var content strings.Builder
-	afterFile := false
-	add := func(text string, file bool) {
+	afterBlock := false
+	add := func(text string, block bool) {
 		if text == "" {
 			return
 		}
 		// An imported file or pasted block starts and ends on its own line.
-		if (file || afterFile) && content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
+		if (block || afterBlock) && content.Len() > 0 && !strings.HasSuffix(content.String(), "\n") {
 			content.WriteByte('\n')
 		}
 		content.WriteString(text)
-		afterFile = file
+		afterBlock = block
 	}
 	for _, segment := range a.box.textSegments {
 		add(segment.Text, segment.File || segment.Pasted)

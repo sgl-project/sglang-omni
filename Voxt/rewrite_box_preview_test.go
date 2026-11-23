@@ -70,12 +70,12 @@ func TestBoxImagePreviewMetadataAndFullView(t *testing.T) {
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if !has(tt, "draft.png") || !has(tt, "20 × 10") {
-		t.Fatalf("caption missing from %q", firstTexts(tt))
+	if hasExact(tt, "draft.png") || has(tt, "20 × 10") {
+		t.Fatalf("the thumbnail carries a caption: %q", firstTexts(tt))
 	}
 	click(t, tt, "Preview draft.png")
 	frames(tt)
-	if a.box.ui.previewImage != 1 || !has(tt, "Back to input") {
+	if a.box.ui.previewImage != 1 || !has(tt, "Back to input") || !has(tt, "20 × 10") {
 		t.Fatalf("full preview did not open: index %d, texts %q", a.box.ui.previewImage, firstTexts(tt))
 	}
 	click(t, tt, "Back to input")
@@ -242,8 +242,8 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 		t.Fatalf("Send did not confirm the preview: %v", err)
 	}
 	a.sessionChanged(session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Composing, Rev: 3})
-	if a.box.shown {
-		t.Fatal("the confirmed box stayed over the answer")
+	if !a.box.shown {
+		t.Fatal("the confirmed card left before its answer (wall 122)")
 	}
 }
 
@@ -284,8 +284,8 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	}
 	a.postQueue(func() {
 		a.boxSend()
-		if a.box.shown {
-			t.Error("the confirmed resend stayed visible")
+		if !a.box.shown {
+			t.Error("the confirmed resend left the screen (wall 122)")
 		}
 	})
 	a.postQueue(func() {
@@ -293,8 +293,8 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 		next.Rev++
 		next.Draft = "streaming"
 		a.sessionChanged(next)
-		if a.box.shown {
-			t.Error("a later draft reopened the confirmed resend")
+		if !a.box.shown {
+			t.Error("the card left when the answer began (wall 122)")
 		}
 	})
 	a.pump("the resend's answer", func() bool { return a.answer.open })
@@ -311,7 +311,7 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	}
 }
 
-func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
+func TestBoxResendWithoutWindowReviewKeepsTheCard(t *testing.T) {
 	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
 	set, keys, _ := fileSetup(t, "make it shorter", chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
@@ -324,8 +324,8 @@ func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
 
 	a.postQueue(a.boxSend)
 	a.pump("the resend", func() bool { return a.box.sending != "" })
-	if a.box.shown {
-		t.Fatal("a resend without a window review stayed visible")
+	if !a.box.shown {
+		t.Fatal("the resend left the screen (wall 122)")
 	}
 	a.pump("the resend's answer", func() bool { return a.answer.open })
 	if a.sess.State != session.Done || len(chat.requests()) <= sent {

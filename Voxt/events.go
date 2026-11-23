@@ -56,6 +56,7 @@ func (a *app) connectEvents() {
 			}
 		},
 		a.learnFromSession,                         // learn_link.go
+		a.recordActivity,                           // home_activity_controller.go: the activity calendar
 		func(session.Snapshot) { a.loadDevices() }, // settings_audio.go: the inputs again, for the menu bar
 	)
 	a.onSession = append(a.onSession, func(was, s session.Snapshot) {

@@ -109,7 +109,11 @@ MOSS-TD briefly holds newly built LM requests to admit larger prefills. The
 default target is 4 requests with a 12 ms oldest-request deadline. While more
 request builds are pending, the scheduler waits for either limit; after build
 work drains, it releases immediately only when decode is idle. During active
-decode, it continues coalescing until the target or deadline. Override the two
+decode, it continues coalescing until the target or deadline. With a draft
+(DFlash or DFlash2), a ready prefill is released as soon as build work drains,
+whether or not decode is active; set
+`--asr.factory.prefill_coalesce_after_builds_during_decode true` to keep
+coalescing during decode. Override the two
 limits with `--prefill-coalesce-requests` and `--prefill-coalesce-wait-ms`, or
 set the request target to `0` to disable coalescing.
 
@@ -125,6 +129,8 @@ sgl-omni serve \
   --asr.engine.cuda_graph_max_bs 16 \
   --mem-fraction-static 0.80
 ```
+
+On one CUDA GPU this serves the DFlash draft by default; see [Speculative Decoding](#speculative-decoding).
 
 **Intel GPU**
 
@@ -216,14 +222,12 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ### Speculative Decoding
 
-The decoder can verify tokens proposed by the DFlash draft [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash) on one CUDA GPU.
+On one CUDA GPU, MOSS-TD serves with its DFlash draft, [`wilsonzheng0327/MOSS-Transcribe-Diarize-dflash`](https://huggingface.co/wilsonzheng0327/MOSS-Transcribe-Diarize-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `OpenMOSS-Team/MOSS-Transcribe-Diarize`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it. Intel GPUs and other platforms serve without the draft, and so do a stage with `tp_size` above 1 and a copy outside the Hugging Face cache. The [two-replica H100 MPS profile](../basic_usage/mps_dp.md) turns it off, since it was validated without it. To serve without the draft, add `--asr.engine.disable_speculative_decoding true`:
 
 ```bash
 sgl-omni serve \
   --model-path OpenMOSS-Team/MOSS-Transcribe-Diarize \
-  --asr.engine.speculative_algorithm DFLASH \
-  --asr.engine.speculative_draft_model_path wilsonzheng0327/MOSS-Transcribe-Diarize-dflash \
-  --asr.engine.speculative_draft_kv_cache_dtype fp8_e4m3 \
+  --asr.engine.disable_speculative_decoding true \
   --port 8000
 ```
 
@@ -247,7 +251,7 @@ The notes below apply to both drafts:
 - **Capacity.** The draft's KV shares the pool, one slot per token, and is kept in fp8 (`speculative_draft_kv_cache_dtype fp8_e4m3`), which halves the 5-layer draft's share. With the memory of one H100 80GB at `mem_fraction_static=0.80` (measured on an H200 at 0.454), the pool holds 524k tokens, against 573k without the draft and 484k with the draft's KV in bf16. That decides whether 16 `aishell4_long` meetings of 37 to 40 minutes fit at once: with a bf16 draft KV at most 14 ran, and first output p95 was 48 to 51 s against 18 s without the draft; with fp8, 15 ran and first output p95 was 13 to 15 s, at the same throughput, acceptance, CER and DER. Given the same pool, the draft reaches first output sooner than the server without it (48 s against 148 s at 484k tokens), because it finishes meetings sooner. Long audio at high concurrency can still fill the pool; the scheduler then retracts requests and finishes them later, and every file completed.
 - **Compilation.** Torch compile is turned off under the draft: on SGLang 0.5.23 the compiled path makes each verify step about four times slower. Without a draft it stays on.
 - **Sampling.** `repetition_penalty` applies as ordinary decoding does: each verified position is penalized over the transcript so far and the drafted tokens before it. On one H200 with every `movies800times` clip sent at 1.2, no request failed, and transcripts differed from a synchronous server without the draft about as often as they do with no penalty (79 and 35 of 400 at 1 and 16 concurrent requests, against 100 and 28), while the penalty itself changes 392 of 400. Throughput fell 4% at one request and 10% at 16, and the logged acceptance length 6%. Requests with `frequency_penalty`, `presence_penalty`, `min_p` or logprobs are rejected, because the draft worker applies those penalties once per verify block, drops `min_p`, and skips the sampler that records logprobs.
-- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
+- **Scheduling.** Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap each verify round with host work, which is faster at every load below. `--asr.factory.prefill_drain_below_batch_size N` applies only with the draft and `enable_async_decode true`; otherwise the scheduler ignores it without a warning. With overlap, N processes a prefill's result before the next batch is chosen while fewer than N requests are decoding, and decode rounds still overlap; 0 never drains, and unset it follows `async_decode_min_batch_size`, which is 1, so no prefill is drained. On one H200 with DFlash2 on `movies800times`, N = 4096 kept first output within 1 ms of synchronous scheduling or earlier, at 97-99% of overlap's throughput. Async prefill stays off under the draft. Setting `enable_mixed_chunk` is rejected.
 
 Gain over the same server without a draft, on one H200 with SGLang 0.5.23, the default server config and the prefix cache off (`python -m benchmarks.eval.speculative_sweep`). Each draft ran on its own GPU of one node, against its own server without a draft. `movies800times` is the mean of 3 passes per load and `aishell4_long` one pass over its first 8 recordings (`--max-samples 8`):
 
@@ -335,7 +339,7 @@ pass every worker serve URL with a comma-separated `--profile-urls` value.
 
 ## Benchmark Results
 
-Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`.
+Here we provide the benchmark results of movies800times on a single H200 141GB GPU with SGLang 0.5.23, and of aishell4_long on a single H100 80GB GPU. Each row is the **mean of 3 runs** against a server without the draft, with `max_running_requests=16`, `cuda_graph_max_bs=16`, and `mem_fraction_static=0.80`; the draft's gains are under [Speculative Decoding](#speculative-decoding).
 
 ### movies800times
 

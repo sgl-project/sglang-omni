@@ -299,25 +299,43 @@ func TestBoxPasteClipboardTextAtRejectsOversize(t *testing.T) {
 
 func TestBoxPasteAfterOversizeClearsError(t *testing.T) {
 	long := "hello world\nsecond\nthird\nfourth"
-	for _, tc := range []struct{ name, text, want string }{
-		{name: "short", text: "hello", want: "keep mehello"},
-		{name: "collapsed block", text: long, want: "keep me\n" + long},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			a, _, _ := newTestApp(t)
-			a.box = rewriteBox{open: true, shown: true, text: "keep me"}
-			a.boxPasteClipboardTextAt(strings.Repeat("x", (32<<20)+1), -1, 7, 7)
-			if a.box.err == "" {
-				t.Fatal("the fixture rejection has no error")
-			}
-			a.boxPasteClipboardTextAt(tc.text, -1, 7, 7)
-			if a.box.err != "" {
-				t.Fatalf("successful paste kept the old error %q", a.box.err)
-			}
-			if got := a.boxTextContent(); got != tc.want {
-				t.Fatalf("request text %q, want %q", got, tc.want)
-			}
-		})
+	oversize := strings.Repeat("x", (32<<20)+1)
+	for _, route := range []string{"Add menu", "keyboard"} {
+		for _, tc := range []struct{ name, text, want string }{
+			{name: "short", text: "hello", want: "keep mehello"},
+			{name: "collapsed block", text: long, want: "keep me\n" + long},
+		} {
+			t.Run(route+"/"+tc.name, func(t *testing.T) {
+				a, _, _ := newTestApp(t)
+				a.box = rewriteBox{open: true, shown: true, focusText: true}
+				tt := hudTester(a.boxView, boxWinW, boxWinH)
+				frames(tt)
+				tt.Type("keep me")
+				paste := func(text string) {
+					tt.SetClipboardData(transfer.TextData(text))
+					if route == "Add menu" {
+						click(t, tt, "Add")
+						if err := tt.ClickControl("Paste clipboard"); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						tt.Command("paste")
+					}
+					frames(tt)
+				}
+				paste(oversize)
+				if a.box.err == "" {
+					t.Fatal("the fixture rejection has no error")
+				}
+				paste(tc.text)
+				if a.box.err != "" {
+					t.Fatalf("successful paste kept the old error %q", a.box.err)
+				}
+				if got := a.boxTextContent(); got != tc.want {
+					t.Fatalf("request text %q, want %q", got, tc.want)
+				}
+			})
+		}
 	}
 }
 
