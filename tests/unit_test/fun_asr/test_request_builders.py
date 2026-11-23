@@ -23,6 +23,8 @@ AUDIO_PAD_ID = 42  # arbitrary sentinel distinct from vocabulary ids below
 
 
 class UnexpectedEncoderService:
+    cache_enabled = True
+
     def get_cached_embedding(
         self, audio_fingerprint: str, expected_tokens: int
     ) -> None:
@@ -153,6 +155,8 @@ def test_fun_asr_request_builder_encodes_after_offsets_are_final(monkeypatch) ->
     observed: dict[str, object] = {}
 
     class EncoderService:
+        cache_enabled = True
+
         def get_cached_embedding(
             self, audio_fingerprint: str, expected_tokens: int
         ) -> None:
@@ -598,7 +602,13 @@ class CacheTestTokenizer(FakeTokenizer):
 
 
 @pytest.fixture
+def frontend_cache_limits() -> tuple[int, int]:
+    return 1, 1 << 20
+
+
+@pytest.fixture
 def cached_frontend(
+    frontend_cache_limits: tuple[int, int],
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> Iterator[tuple[Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray]]:
@@ -611,7 +621,10 @@ def cached_frontend(
         )
     )
     service = FunASRPreLMEncoderService(
-        FrontendTestEncoder(), cache_namespace="frontend-test", cache_max_entries=1
+        FrontendTestEncoder(),
+        cache_namespace="frontend-test",
+        cache_max_entries=frontend_cache_limits[0],
+        cache_max_bytes=frontend_cache_limits[1],
     )
     try:
         yield extractor, service, CacheTestTokenizer(), audio
@@ -707,7 +720,7 @@ def test_encoder_cache_hit_skips_frontend_and_preserves_request(
 
 
 @pytest.mark.parametrize(
-    "invalid", ["tokens", "hidden", "dtype", "namespace", "evicted", "disabled"]
+    "invalid", ["tokens", "hidden", "dtype", "namespace", "evicted"]
 )
 def test_early_cache_miss_runs_original_frontend(
     cached_frontend: tuple[
@@ -739,10 +752,6 @@ def test_early_cache_miss_runs_original_frontend(
         service.namespace = "changed-model"
     else:
         service.cache.put("other-audio", original)
-        if invalid == "disabled":
-            service.cache.max_size = 0
-        else:
-            pass
     rebuilt = build(payload)
     assert extractor.call_count == 2
     assert torch.equal(
@@ -752,10 +761,56 @@ def test_early_cache_miss_runs_original_frontend(
     assert service.stats()["hits"] == 0
 
 
+@pytest.mark.parametrize("frontend_cache_limits", [(0, 1 << 20), (1, 0)])
+def test_disabled_cache_from_first_request(
+    cached_frontend: tuple[
+        Mock, FunASRPreLMEncoderService, CacheTestTokenizer, np.ndarray
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero cache budget must bypass completed-cache work even on the first request."""
+    extractor, service, tokenizer, audio = cached_frontend
+    for operation in ("get", "put"):
+        monkeypatch.setattr(
+            service.cache, operation, Mock(side_effect=AssertionError(operation))
+        )
+    build, _ = request_builders.make_fun_asr_scheduler_adapters(
+        tokenizer=tokenizer,
+        max_new_tokens=32,
+        feature_extractor=extractor,
+        audio_encoder_service=service,
+    )
+    embeddings = []
+    for index in range(2):
+        result = build(
+            StagePayload(
+                request_id=str(index),
+                request=OmniRequest(inputs={"audio_bytes": b"wav"}),
+                data={},
+            )
+        )
+        embeddings.append(
+            result.req.multimodal_inputs.mm_items[0].precomputed_embeddings
+        )
+        stats = service.stats()
+        assert (
+            stats["cache_entries"]
+            == stats["cache_bytes"]
+            == stats["cache_evictions"]
+            == 0
+        )
+        assert stats["hits"] == 0 and stats["misses"] == index + 1
+    extractor.num_lfr_frames.assert_not_called()
+    assert extractor.call_count == 2
+    assert torch.equal(*embeddings)
+
+
+@pytest.mark.parametrize("frontend_cache_limits", [(2, 1 << 20)])
 @pytest.mark.parametrize(
     "params,context_length,error",
     [
         ({"max_new_tokens": 33}, None, "max_new_tokens"),
+        ({"max_new_tokens": 16}, None, None),
         ({"max_new_tokens": 32}, 10, "context length"),
     ],
 )
@@ -765,9 +820,9 @@ def test_warm_cache_preserves_request_validation(
     ],
     params: dict[str, int],
     context_length: int | None,
-    error: str,
+    error: str | None,
 ) -> None:
-    """A cache hit must not admit an invalid generation request or count a consumed hit."""
+    """Only an accepted warm request should promote its entry or count a hit."""
     extractor, service, tokenizer, audio = cached_frontend
     build, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
@@ -775,13 +830,16 @@ def test_warm_cache_preserves_request_validation(
         feature_extractor=extractor,
         audio_encoder_service=service,
     )
-    build(
+    cold = build(
         StagePayload(
             request_id="prime",
             request=OmniRequest(inputs={"audio_bytes": b"wav"}),
             data={},
         )
     )
+    embedding = cold.req.multimodal_inputs.mm_items[0].precomputed_embeddings
+    key = f"{service.namespace}:{audio_fingerprint(audio)}"
+    service.cache.put("B", embedding)
     checked_build, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
@@ -790,15 +848,20 @@ def test_warm_cache_preserves_request_validation(
         audio_encoder_service=service,
     )
     extractor.side_effect = AssertionError("warm validation recomputed frontend")
-    with pytest.raises(ValueError, match=error):
-        checked_build(
-            StagePayload(
-                request_id="invalid",
-                request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
-                data={},
-            )
-        )
-    assert service.stats()["hits"] == 0
+    payload = StagePayload(
+        request_id="warm",
+        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+        data={},
+    )
+    if error is None:
+        checked_build(payload)
+    else:
+        with pytest.raises(ValueError, match=error):
+            checked_build(payload)
+    service.cache.put("C", embedding)
+    assert (service.cache.get(key) is not None) == (error is None)
+    assert (service.cache.get("B") is not None) == (error is not None)
+    assert service.stats()["hits"] == int(error is None)
     assert service.stats()["misses"] == 1
 
 

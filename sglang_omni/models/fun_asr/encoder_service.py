@@ -124,6 +124,7 @@ class FunASRPreLMEncoderService(
             max_bytes=cache_max_bytes,
             cache_device="cpu",
         )
+        self.cache_enabled = cache_max_entries != 0 and cache_max_bytes != 0
         self.namespace = cache_namespace
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -208,9 +209,10 @@ class FunASRPreLMEncoderService(
             if future is None:
                 # Note (Akazaakane): Re-check under the single-flight lock so a
                 # stale miss cannot start work after the prior leader cached.
-                cached = self.cache.get(key)
-                if cached is None or not self.is_valid(cached, expected_tokens):
-                    cached = None
+                cached = self.get_cached_embedding(
+                    item.audio_fingerprint, expected_tokens
+                )
+                if cached is None:
                     future = concurrent.futures.Future()
                     self.inflight[key] = future
                     leader = True
@@ -220,6 +222,8 @@ class FunASRPreLMEncoderService(
                     except Exception:
                         del self.inflight[key]
                         raise
+                else:
+                    pass
             else:
                 self.merged += 1
         if cached is not None:
@@ -302,9 +306,13 @@ class FunASRPreLMEncoderService(
     def get_cached_embedding(
         self, audio_fingerprint: str, expected_tokens: int
     ) -> torch.Tensor | None:
-        """Return a validated embedding without counting an unconsumed hit."""
+        """Look up a validated embedding without promoting it before consumption."""
+        if not self.cache_enabled:
+            return None
+        else:
+            pass
         cache_key = f"{self.namespace}:{audio_fingerprint}"
-        embedding = self.cache.get(cache_key)
+        embedding = self.cache.get(cache_key, touch=False)
         if embedding is None:
             return None
         elif self.is_valid(embedding, expected_tokens):
@@ -330,8 +338,11 @@ class FunASRPreLMEncoderService(
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
         if cache_hit:
+            self.cache.touch_if_same(self.cache_key(item), embedding)
             with self.lock:
                 self.hits += 1
+        else:
+            pass
 
     def drain_batch(
         self,
@@ -431,7 +442,7 @@ class FunASRPreLMEncoderService(
     ) -> None:
         del host_copy
         key = self.cache_key(item)
-        if key is not None:
+        if self.cache_enabled and key is not None:
             self.cache.put(key, embedding)
         else:
             pass

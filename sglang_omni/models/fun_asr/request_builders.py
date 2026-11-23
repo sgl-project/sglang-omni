@@ -296,7 +296,7 @@ def make_fun_asr_scheduler_adapters(
 
         cached_embedding = None
         num_lfr_frames = None
-        if audio_encoder_service is not None:
+        if audio_encoder_service is not None and audio_encoder_service.cache_enabled:
             num_lfr_frames = feature_extractor.num_lfr_frames(len(audio))
             if num_lfr_frames is not None:
                 cached_embedding = audio_encoder_service.get_cached_embedding(
