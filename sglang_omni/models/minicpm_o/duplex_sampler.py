@@ -84,8 +84,8 @@ def duplex_sample_batch(
     forbidden_token_index: torch.Tensor,
     generation_steps: list[int],
     listen_forced_flags: list[bool],
-) -> list[int]:
-    """Apply the two-stage unit sampler to every row with two token-id transfers per step."""
+) -> torch.Tensor:
+    """Apply the two-stage unit sampler with one final token-id transfer."""
     device = logits.device
     decided_token_ids: dict[int, int] = {}
     undecided_rows: list[int] = []
@@ -98,7 +98,11 @@ def duplex_sample_batch(
         else:
             undecided_rows.append(row)
     if not undecided_rows:
-        return [decided_token_ids[row] for row in range(len(thinker_states))]
+        return torch.tensor(
+            [decided_token_ids[row] for row in range(len(thinker_states))],
+            dtype=torch.long,
+            device=device,
+        )
     else:
         pass
 
@@ -106,28 +110,23 @@ def duplex_sample_batch(
         torch.tensor(undecided_rows, dtype=torch.long, device=device)
     ].float()
     # note (Junnan Li): The first sample must use the unscaled model distribution.
+    # Keep the first-stage decision on the device.  The previous implementation
+    # called ``.tolist()`` here to find the rows that were not chunk EOS, then
+    # called it a second time for the final sample.  Both calls synchronize the
+    # scheduler thread with the GPU.  A device mask lets the second-stage
+    # sampler skip EOS rows without transferring the intermediate token ids.
     first_token_ids = sample_rows(
         undecided_logits,
         [thinker_states[row].sampling.greedy for row in undecided_rows],
-    ).tolist()
-    second_stage_positions: list[int] = []
-    for candidate_position, row in enumerate(undecided_rows):
-        if first_token_ids[candidate_position] == special_tokens.chunk_eos:
-            decided_token_ids[row] = special_tokens.chunk_eos
-        else:
-            second_stage_positions.append(candidate_position)
-    if not second_stage_positions:
-        return [decided_token_ids[row] for row in range(len(thinker_states))]
-    else:
-        pass
+    )
+    first_is_chunk_eos = first_token_ids == special_tokens.chunk_eos
 
-    second_stage_states = [
-        thinker_states[undecided_rows[candidate_position]]
-        for candidate_position in second_stage_positions
-    ]
-    second_stage_logits = undecided_logits[
-        torch.tensor(second_stage_positions, dtype=torch.long, device=device)
-    ]
+    # Apply the second-stage transforms to the complete device batch.  Rows
+    # which selected chunk EOS are masked out by ``sample_candidates`` before
+    # any random draw, so their presence does not consume RNG state or change
+    # the distribution of the remaining rows.
+    second_stage_states = [thinker_states[row] for row in undecided_rows]
+    second_stage_logits = undecided_logits
     second_stage_logits[:, forbidden_token_index] = -torch.inf
     apply_repetition_penalty(second_stage_logits, second_stage_states)
 
@@ -140,12 +139,38 @@ def duplex_sample_batch(
         pass
 
     candidate_token_ids = sample_candidates(
-        second_stage_logits, second_stage_states
-    ).tolist()
-    for candidate_position, candidate_token_id in zip(
-        second_stage_positions, candidate_token_ids, strict=True
-    ):
-        thinker_state = thinker_states[undecided_rows[candidate_position]]
+        second_stage_logits, second_stage_states, active_mask=~first_is_chunk_eos
+    )
+    final_token_ids = torch.where(
+        first_is_chunk_eos,
+        torch.full_like(candidate_token_ids, special_tokens.chunk_eos),
+        candidate_token_ids,
+    )
+    # Keep the model-facing result on the device.  The CPU copy is used only
+    # for the Python session bookkeeping below; the runner returns the device
+    # tensor directly instead of constructing a second GPU tensor from a list.
+    final_token_ids_cpu = final_token_ids.cpu().tolist()
+    output_token_ids = torch.empty(
+        len(thinker_states), dtype=torch.long, device=device
+    )
+    if decided_token_ids:
+        decided_rows = torch.tensor(
+            list(decided_token_ids), dtype=torch.long, device=device
+        )
+        decided_values = torch.tensor(
+            list(decided_token_ids.values()), dtype=torch.long, device=device
+        )
+        output_token_ids.index_copy_(0, decided_rows, decided_values)
+    else:
+        pass
+    undecided_index = torch.tensor(undecided_rows, dtype=torch.long, device=device)
+    output_token_ids.index_copy_(0, undecided_index, final_token_ids)
+    rewrite_positions: list[int] = []
+    for candidate_position, candidate_token_id in enumerate(final_token_ids_cpu):
+        row = undecided_rows[candidate_position]
+        if candidate_token_id == special_tokens.chunk_eos:
+            continue
+        thinker_state = thinker_states[row]
         sampling = thinker_state.sampling
         # note (Junnan Li): History retains controls before the mid-turn listen rewrite.
         history = thinker_state.generated_history
@@ -156,6 +181,7 @@ def duplex_sample_batch(
             and not thinker_state.is_turn_ended
         ):
             candidate_token_id = special_tokens.tts_bos
+            rewrite_positions.append(candidate_position)
         else:
             pass
         if candidate_token_id == special_tokens.turn_eos:
@@ -164,14 +190,18 @@ def duplex_sample_batch(
             thinker_state.is_turn_ended = False
         else:
             pass
-        decided_token_ids[undecided_rows[candidate_position]] = candidate_token_id
-    return [decided_token_ids[row] for row in range(len(thinker_states))]
+    if rewrite_positions:
+        rewrite_index = torch.tensor(rewrite_positions, dtype=torch.long, device=device)
+        output_token_ids[undecided_index[rewrite_index]] = special_tokens.tts_bos
+    else:
+        pass
+    return output_token_ids
 
 
 def apply_repetition_penalty(
     logits: torch.Tensor, thinker_states: list[MiniCPMOThinkerSessionState]
 ) -> None:
-    """Divide each row's recently generated token logits by that session's penalty, in place."""
+    """Divide each row's recent token logits by its session penalty, in place."""
     penalty_windows: list[list[int]] = []
     for thinker_state in thinker_states:
         sampling = thinker_state.sampling
@@ -211,9 +241,26 @@ def apply_repetition_penalty(
 
 
 def sample_candidates(
-    logits: torch.Tensor, thinker_states: list[MiniCPMOThinkerSessionState]
+    logits: torch.Tensor,
+    thinker_states: list[MiniCPMOThinkerSessionState],
+    *,
+    active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Second-stage token per row: argmax for greedy rows, filtered draws grouped by settings."""
+    """Sample the second-stage token, grouping filtered draws by settings.
+
+    ``active_mask`` keeps rows whose first-stage sample did not terminate on
+    device.  Inactive rows still receive an argmax placeholder, but are never
+    passed to a stochastic draw.  This is used by the duplex sampler to avoid
+    a host round-trip between its two sampling stages.
+    """
+    if active_mask is not None:
+        if active_mask.ndim != 1 or active_mask.shape[0] != logits.shape[0]:
+            raise ValueError(
+                "active_mask must be a one-dimensional mask aligned with logits"
+            )
+        active_mask = active_mask.to(device=logits.device, dtype=torch.bool)
+    else:
+        pass
     token_ids = torch.argmax(logits, dim=-1)
     sampled_groups: dict[tuple[float, int, float], list[int]] = {}
     for row, thinker_state in enumerate(thinker_states):
@@ -226,6 +273,14 @@ def sample_candidates(
             ).append(row)
     for (temperature, top_k, top_p), group_rows in sampled_groups.items():
         row_index = torch.tensor(group_rows, dtype=torch.long, device=logits.device)
+        if active_mask is not None:
+            row_index = row_index[active_mask[row_index]]
+        else:
+            pass
+        if row_index.numel() == 0:
+            continue
+        else:
+            pass
         filtered_logits = filter_top_k_top_p(
             logits[row_index] / temperature, top_k=top_k, top_p=top_p
         )
