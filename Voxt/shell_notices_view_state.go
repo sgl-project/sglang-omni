@@ -2,11 +2,10 @@ package main
 
 // The notifications' view state: a card for each of the centre's
 // notifications, with the form the sidebar shows already decided (the
-// severity as a code, the action's label, the time's tooltip).
+// severity as a code and the action's label).
 
 import (
 	"strings"
-	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -30,7 +29,6 @@ type noticeViewState struct {
 	// Summary is an announcement's short lines, shown instead of Body.
 	Summary     []string `json:"summary,omitempty"`
 	ActionLabel string   `json:"action_label,omitempty"`
-	TimeHint    string   `json:"time_hint"`
 }
 
 // noticeSeverity is the code of a notification's severity.
@@ -46,15 +44,13 @@ func noticeSeverity(severity core.Severity) string {
 	return noticeLevelInfo
 }
 
-// buildNoticeViewState decides how a notification shows: its action's
-// label from its link and its time's tooltip (a relative year needs now).
-func buildNoticeViewState(translator *i18n.Translator, n core.Notification, now time.Time) noticeViewState {
+// buildNoticeViewState decides how a notification shows and labels its action.
+func buildNoticeViewState(translator *i18n.Translator, n core.Notification) noticeViewState {
 	state := noticeViewState{
 		ID:       n.ID,
 		Severity: noticeSeverity(n.Severity),
 		Title:    n.Title,
 		Body:     n.Body,
-		TimeHint: translator.DateTimeAt(n.Time, now),
 	}
 	if n.Link == linkAnnouncement {
 		state.Summary = announcementSummary(n.Body)
@@ -67,13 +63,13 @@ func buildNoticeViewState(translator *i18n.Translator, n core.Notification, now 
 
 // buildNoticesViewState is the stack, in the order it shows (newest
 // first).
-func buildNoticesViewState(translator *i18n.Translator, notices []core.Notification, now time.Time) []noticeViewState {
+func buildNoticesViewState(translator *i18n.Translator, notices []core.Notification) []noticeViewState {
 	if len(notices) == 0 {
 		return nil
 	}
 	states := make([]noticeViewState, len(notices))
 	for i, n := range notices {
-		states[i] = buildNoticeViewState(translator, n, now)
+		states[i] = buildNoticeViewState(translator, n)
 	}
 	return states
 }

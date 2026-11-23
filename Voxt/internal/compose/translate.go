@@ -50,6 +50,8 @@ func LanguageName(code, set string) string {
 // judged untranslated. Ambiguous Latin text is still retried, then accepted
 // unless LanguageMismatch gives positive evidence for a hard failure.
 func Untranslated(source, result, target string) bool {
+	tags := strings.NewReplacer("<指令>", "", "</指令>", "")
+	source, result = tags.Replace(source), tags.Replace(result)
 	src, res := fold(source), fold(result)
 	if src == "" || res == "" {
 		return false

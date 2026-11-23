@@ -6,61 +6,105 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
+- **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
+- **Import dictionary terms from the command line**: while Voxt runs, `Voxt dictionary import terms.csv` merges a CSV, text or Voxt 1.x dictionary file into your dictionary the way Dictionary → Import… does: new spellings are added, known ones get the aliases they lacked, nothing is removed. `--dry-run` says how many terms it would add and update without saving, and `--json` prints the counts for a script. The Dictionary page refreshes when the import saves terms. Both the page and the command refuse files over 8 MB. See docs/dictionary-import.md.
 - **An activity calendar on Home** (#4360): under Today, the days you used Voxt over about the last five months, shaded in your accent color by how many results each had, lighting up from left to right. Beside it: the characters Voxt has written for you, how many characters a minute you speak, and your days in a row. Hover a day for its date and count; the arrows go back further. The first start counts the history you already have. Only finished results count, not tries, and nothing is counted while the history is off. The per-day counts (results, characters and speech time, no text) are kept apart from the history: the history's clean-up and Clear history leave them, and only Erase everything removes them.
 
 ### Changed
 
+- **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
+- **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
 - **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
-- **A shorter explanation for the model fallback switch** (#4377): the Language models switch is now called Retry with another model on this Mac, and its note says in three short sentences what it does.
+- **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
 - **Copy on a Rewrite answer is an icon beside it** (#4377): under the pointer, an answer bubble shows only the copy icon, right of the bubble, so it no longer covers the answer's first line; its name is in the tooltip.
 - **Home's recent results drop the "Open in History" tooltip** (#4377): a row still opens History when clicked; its highlight under the pointer and the section's Open History button already say so, and the tooltip covered the row above.
 - **Shorter, plainer explanations** (#4377): Translate's page and target language, the Privacy switches for a screenshot and a copied image, the guide's Rewrite step, the upload size limit, the wait for the language model and the prompt preview say what matters in a sentence or two; the details are in docs/settings.md.
+- **The menu bar's recent results say Copy and confirm it** (#2967): the items under Recent results now read "Copy: …", so it is clear that a click copies that result, and a click toasts Copied; a failed copy already said so. The copy a session makes itself stays silent.
+
+- **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
+- **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
+- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
+- **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 
 ### Fixed
 
+- **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
+- **Rewrite and Translate read an image-only block selection**: selecting only an image block in a web editor (a Lark doc in Chrome) no longer reaches the language model as the single character U+FFFC with no content. Chrome reports such a selection to Accessibility as the object replacement character, which Voxt mistook for the selected text and never tried copying; Voxt now treats it as no reading, as it already does an all-whitespace reading, and copies with ⌘C instead.
+- **Translate accepts answers that keep Chinese input-tag names**: `<指令>` around a valid translation no longer counts as untranslated Chinese text; the tags stay in the delivered answer.
+- **Resetting the look or all settings also restores the History detail width** (#4421): after widening the History details from their 290 DIP default, "Reset the look" and "Reset all settings" left the page showing the old width until a restart; both now bring back the default at once.
+- **Meeting and file transcripts honour the Chinese script preference**: Simplified and Traditional Chinese main languages now render chunked, live file-based, post-meeting and imported-file transcription in the selected script. Prompt and dictionary echo suppression compares Chinese text across scripts, as does microphone-versus-system echo detection.
+- **Check for Updates finds new versions again**: Voxt 2.1.1 and 2.1.2 looked for updates at an address that never served them, so Check for Updates always said Voxt was up to date. Voxt now reads its updates from its GitHub releases and installs them in the app. If you run 2.1.2 or earlier, download this version once from the release page; later versions update in the app.
 - **Fewer one-frame flashes, and Run check reads the permissions now**: Run check in Settings → About waits for the permission read instead of reporting the previous one. Opening a meeting no longer flashes "Loading…" when it opens at once, and Refresh microphones in Settings → Audio no longer greys out for a moment each time the section opens.
 - **Shorter guide text**: the shortcut warning on the try steps no longer adds that Start works now, the last step's section is called Shortcuts, and its subtitle invites you to try Voxt.
 - **A shortcut pressed while recording is no longer ignored now and then**: about one press in twenty-five did nothing while Voxt recorded, so the recording went on until the next press. Voxt sent the helper its shortcuts again at every update of the recording pill, and dropped a press the helper reported in between as one from an old configuration. It now sends them only when they change.
+- **Meeting audio meters keep updating during system silence** (#4198): when the Mac stops delivering system audio buffers, the waveform returns to silence and the existing sustained-silence reminder can still appear.
+- **Meetings explain how to enable speaker labels** (#4394): the spoken-language setting now says that Speaker 1–4 labels need MOSS-Transcribe-Diarize and an explicit Chinese or English choice, covering meetings whose automatic language hint is empty or unsupported.
 - **Rewrite is one card from the shortcut to the last follow-up** (#4375): the Rewrite card no longer hands over to a preview at the screen's edge and then to a separate answer card. It stays while your speech is recognised and the language model works, and says what it is doing; the answer is written in that same card, above the text box, with Insert and Copy in its header. The text box stays at the foot of the card: type there and press Enter to follow up (no recording needed), or press the Rewrite shortcut to say it, and the conversation scrolls above. The card keeps one height and follows Rewrite's card size for its width (Fill included), with the size button in its corner. Typed text alone is now enough: nothing has to be said. With Rewrite's card switched off, the card closes once the result is inserted. Sending again after a failure keeps the card too.
 - **Cards can be dragged and covered by other windows; only previews stay on top**: since Rewrite became one card (#4375), its card could not be moved, and like every answer card it floated above all apps' windows. Drag the Rewrite card by its margins or its header, as the answer card; it keeps its place when its size changes and through follow-ups, stays on the screen, and opens at its usual place next time. Answer cards and the Rewrite card no longer stay on top: another app's window can cover them. A card comes in front when it opens and with each new answer, and every press of the Rewrite shortcut brings the Rewrite card in front, as a click on it would: the press that opens it, the one that sends, and a follow-up. The recording pill and its live text, and the meeting's live window, are previews and still stay on top.
 - **Cards act like any app's window: the Rewrite card is no longer hidden under WeChat, and Rectangle moves cards**: a card stayed under the app you pressed the shortcut in, because macOS keeps a window of an app that is not in front under the front app's windows, and window managers such as Rectangle moved that app's window instead of the card, because Voxt never came to the front. Now each press of the Rewrite shortcut shows the Rewrite card above every window at once, and once Voxt has read your selection it comes to the front with the card as its window; an answer card of Transcribe, Translate or Rewrite does the same when it opens and with each new answer. Then the card is an ordinary window: the next app you click covers it, and Rectangle's shortcuts move it. A card that opens after you went to another app stays behind it instead of taking the front. Previews (the recording pill, its live text, the meeting's live window) still float above other windows and do not take the front, but are ordinary windows too: click one and Rectangle moves it. Closing a card gives the front back to the app you were in.
 - **A preview's button no longer stays highlighted with its tooltip over the live text**: since cards and previews became ordinary windows, they followed the pointer only while Voxt was the app in front. While you dictated into another app, a button the pointer last rested on when Voxt was in front, such as Use transcript, stayed highlighted, and its tooltip ("Insert the recognised text without waiting for the language model") covered the first line of the live text although the pointer was elsewhere; hovering a button did nothing. They now follow the pointer whichever app is in front: the tooltip shows only while the pointer rests on the button.
 - **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
+- **Clipboard images are bounded before decoding**: the helper rejects source images over 32 MiB or 40 megapixels before creating thumbnails, including copied files and images captured from a copied selection. Pasteboard representations are copied before their byte count is checked. The Rewrite box reports oversized images instead of silently dropping them, and distinguishes them from files or images it cannot read.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
 - **Check again no longer makes the permission rows flash** (#4365): in Settings → Permissions and the setup guide's Permissions step, a granted Microphone or Speech Recognition row showed "Not asked yet" for a moment after Check again or when you came back to Voxt. The rows now keep what they show until the helper answers.
+- **Fresh installs offer the recommended speech model beside each feature's picker**: System dictation no longer hides the download on Transcribe, Translate and Rewrite. Installed catalog models and configured remote services keep their existing controls.
 
 ### 中文
 
 #### 新增
 
+- **Qwen3-ASR 1.7B (6bit) 支持转录加速**：卡片上有了转录加速开关，与 1.7B (8bit) 共用同一个 726 MB 的草稿模型，下载一次两个都能用。默认保持关闭：草稿是随 8bit 下载的，并没有替 6bit 答应过开启。
+- **按 App 分组设置转录整理**（#3893）：在应用增强中选择“使用默认值”“已开启”或“已关闭”。可以全局关闭整理，只为聊天 App 开启，也可以全局开启、为终端关闭。关闭时跳过语言模型。已有分组继续使用全局设置。
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
+- **在命令行里导入词典词条**：Voxt 运行时，`Voxt dictionary import terms.csv` 按“词典 → 导入…”的方式把 CSV、文本或 Voxt 1.x 词典文件合并进词典：新写法新增，已有的词条补上缺的别名，不删除任何词条。`--dry-run` 只报告会新增、更新几条，不保存；`--json` 以 JSON 输出计数，方便脚本使用。导入保存了词条时，词典页会刷新。页面和命令行都会拒绝超过 8 MB 的文件。用法见 docs/dictionary-import.md。
 - **首页的活跃日历**（#4360）：在“今天”下面，按天显示最近约五个月使用 Voxt 的情况，用主题色深浅表示当天结果多少，打开时从左到右依次亮起。旁边是 Voxt 一共为你写了多少字、你每分钟说多少字，以及连续使用的天数。鼠标移到某一天上可以看到日期和次数，箭头可以往前翻。第一次启动时会根据已有的历史补齐以前的天数。只统计完成的结果，不含试用；关闭历史时不计数。每天的次数、字数和说话时长（不含文字）和历史分开保存：历史的自动清理和“清除历史”不会删除它们，只有“清除全部内容”才会。
 
 #### 变更
 
+- **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
+- **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
 - **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
-- **模型回退开关的说明更简短**（#4377）：语言模型页的开关改名为“出错时改用本机其他模型”，说明改成三句短话。
+- **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。
 - **改写回答的“复制”只剩图标，放在气泡右侧**（#4377）：鼠标移到回答上时，气泡右边只显示复制图标，不再盖住回答的第一行；名称在提示里。
 - **首页“最近结果”去掉“在历史中打开”提示**（#4377）：点一行仍会打开历史；鼠标移上去的高亮和区块的“打开历史页”按钮已经说明了这一点，而这个提示会盖住上一行。
 - **说明更短、更好读**（#4377）：翻译页和目标语言、隐私里的截图和复制图片开关、新手引导的改写一步、上传大小上限、等待语言模型的时间和提示词示例，都只用一两句话说清要点；细节写在 docs/settings.md。
+- **菜单栏的最近结果标明“复制”，点击后提示**（#2967）：“最近结果”下的条目现在显示“复制：…”，一看就知道点击会复制这条结果，点击后提示“已复制”；复制失败此前已有提示。会话结束时的自动复制不提示。
+
+- **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
+- **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
+- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
+- **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
+- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
 
 #### 修复
 
+- **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。录音和自动插入失败后回落到卡片时，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
+- **改写和翻译能读到只含图片的块级选区**：在网页编辑器（Chrome 里的 Lark 文档）里只选中一个图片块，发给语言模型的内容不再只是一个 U+FFFC 字符。Chrome 把这样的选区经无障碍接口报成对象替代字符，Voxt 以前把它当成选中的文字，不再尝试复制；现在和全白的读取结果一样按没读到处理，改用 ⌘C 复制。
+- **翻译接受保留中文输入标签的回答**：有效译文外保留 `<指令>` 标签时，不再把标签当成未翻译的中文内容；标签原样保留在回答中。
+- **重置外观或全部设置时，历史详情宽度也一起恢复**（#4421）：把历史详情从默认的 290 DIP 调宽之后，“重置外观”和“重置所有设置”原来要重启才恢复默认宽度，现在立即回到默认。
+- **会议和文件转录稿遵循中文简繁偏好**：主语言选简体中文或繁体中文时，分段转写、无流式实时转写、会后重转和导入文件转写都按所选简繁输出。提示词和词典回显抑制、麦克风与系统声音回声比较也能识别跨简繁的同一文本。
+- **“检查更新”又能找到新版本了**：Voxt 2.1.1 和 2.1.2 去读更新的地址上一直没有内容，所以“检查更新”总是显示已是最新。现在 Voxt 从它的 GitHub Release 读更新，并在 app 里安装。还在用 2.1.2 或更早版本的话，请从 Release 页面手动下载一次这个版本，之后的版本就能在 app 里更新。
 - **少了几处一闪而过的画面，“运行检查”读的是当前权限**：“设置 → 诊断与关于”里的“运行检查”会等权限读完再出结果，不再用上一次读到的。打开会议时如果很快读完，不再闪出“加载中…”；“设置 → 音频”里的“刷新麦克风列表”也不再在每次打开时变灰一下。
 - **引导文案更短**：试用步骤里的快捷键提示不再说“开始”按钮现在就能用；最后一步的分区改叫“快捷键”，副标题改成邀请你去试试 Voxt。
 - **录音时按快捷键不再偶尔没反应**：录音过程中大约每二十五次按键有一次不起作用，录音会一直持续到下一次按键。原因是录音浮窗每次刷新时 Voxt 都把快捷键重新发给辅助进程，辅助进程在这期间报来的按键被当成旧配置的按键丢掉了。现在只在快捷键有变化时才发送。
+- **系统静音时会议音量表继续更新**（#4198）：Mac 不再提供系统音频缓冲区时，波形会回到静音状态，已有的持续静音提醒也能正常触发。
+- **会议说明怎样启用说话人标签**（#4394）：说话语言设置现在写明，按说话人 1–4 分开需要安装 MOSS-Transcribe-Diarize 并明确选择中文或英文，覆盖自动语言提示为空或不受支持的会议。
 - **改写从按下快捷键到最后一次追问只有一张卡片**（#4375）：改写卡片不再先换成屏幕边缘的预览条、再换成另一张结果卡片。识别语音和语言模型处理时它一直留在屏幕上，并说明正在做什么；结果直接写在这张卡片里、输入框的上方，标题栏有“插入”和“复制”。输入框一直在卡片底部：在里面打字按 Enter 就是追问（不用录音），也可以按改写快捷键说出来，对话在上方滚动。卡片高度固定，宽度跟随改写的卡片大小（包括“充满”），角上有切换大小的按钮。只打字不说话也可以发送。关掉改写的“显示卡片”时，结果插入后卡片关闭。发送失败后再次发送，卡片同样留着。
 - **卡片可以拖动，也能被别的窗口盖住；只有预览置顶**：改写变成一张卡片（#4375）之后，改写卡片拖不动，而且和所有答案卡片一样浮在所有 App 的窗口之上。现在和答案卡片一样，按住改写卡片的空白处或标题栏就能拖动；换卡片大小和追问时留在拖到的位置，并始终留在屏幕内，下次打开回到原来的位置。答案卡片和改写卡片不再置顶：别的 App 的窗口可以盖住它们。卡片出现时和每次有新答案时回到最前；每按一次改写快捷键（打开、结束录音发送、追问），改写卡片都会回到最前，和点它一下一样。录音时的浮窗胶囊和实时文字、会议浮窗是预览，仍然置顶。
 - **卡片和别的 App 的窗口一样：改写卡片不再被微信盖住，Rectangle 也能移动卡片**：卡片会留在你按快捷键时所在的 App 下面，因为 macOS 会把不在前台的 App 的窗口放在前台 App 的窗口下面；Rectangle 这类窗口管理器移动的也是那个 App 的窗口，因为 Voxt 从来不会到前台。现在每按一次改写快捷键，改写卡片都会立刻浮到所有窗口之上，Voxt 读完你选中的文字后就到前台，卡片是它的窗口；转录、翻译、改写的答案卡片在出现时和每次有新答案时也一样。之后卡片就是普通窗口：你点别的 App，那个 App 会盖住它；Rectangle 的快捷键移动的是它。卡片出现时你已经去了别的 App，它就留在后面，不抢前台。预览（录音胶囊、实时文字、会议浮窗）仍然浮在其他窗口之上，出现时不抢前台，但也是普通窗口：点一下，Rectangle 就能移动它。关掉卡片时，前台还给你原来所在的 App。
 - **预览里的按钮不再一直高亮，提示也不再盖住实时文字**：卡片和预览改成普通窗口之后，只有 Voxt 在前台时才跟踪鼠标。你在别的 App 里听写时，上次 Voxt 在前台时鼠标停过的按钮（比如“用识别原文”）会一直高亮，它的提示“不等语言模型，直接插入识别原文”盖住实时文字的第一行，鼠标根本不在那里；真把鼠标移上去反而没有反应。现在不管哪个 App 在前台都跟踪鼠标：只有鼠标停在按钮上时才出现提示。
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
+- **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片太大，不再静默丢弃，也会把超限图片与读不出来的文件或图片区分开。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
-- **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
+- **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
 
 ## [2.1.2] - 2026-11-19
 

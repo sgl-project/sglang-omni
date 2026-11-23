@@ -245,9 +245,11 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						}
 					})
 				})
-				keycap(context, "Enter")
-				ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()
-				ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				if state.EnterSends {
+					keycap(context, "Enter")
+					ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()
+					ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				}
 				keycap(context, "Esc")
 				ui.Text(context, i18n.T("close")).FontSize(11).TextColor(ovText2).SingleLine()
 			})
@@ -323,7 +325,7 @@ func boxTextEditor(context *ui.Context, index int, text *string, state rewriteBo
 	}
 	textArea.OnTextKey(func(key ui.TextKey) bool {
 		switch {
-		case key.Key == ui.KeyEnter && key.Mods == 0:
+		case key.Key == ui.KeyEnter && key.Mods == 0 && state.EnterSends:
 			changed()
 			actions.send()
 			return true

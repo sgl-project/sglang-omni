@@ -65,6 +65,9 @@ type shellState struct {
 	paletteSavePending      bool
 	transparencySavePending bool
 	transparencyRevision    atomic.Uint64
+	// historyWidthRevision invalidates a detail-width save still in
+	// flight when the look or every setting is reset.
+	historyWidthRevision atomic.Uint64
 
 	logsState     // shell_logs_controller.go
 	navState      // shell_nav_controller.go
@@ -242,7 +245,7 @@ func (a *app) shellModel(now time.Time) *shellViewState {
 		Transparent:   a.prefs.Appearance.Theme == settings.ThemeTransparent,
 		Still:         a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts:        a.toasts,
-		Nav:           a.navModel(), Notices: a.noticesModel(now),
+		Nav:           a.navModel(), Notices: a.noticesModel(),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
@@ -283,7 +286,7 @@ func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
-	now := time.Now()
+	now := a.now()
 	model := a.shellModel(now)
 	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {
