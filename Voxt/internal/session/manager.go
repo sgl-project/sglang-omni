@@ -126,6 +126,7 @@ func New(cfg Config) *Manager {
 	def(&cfg.LLMStall, DefaultLLMStall)
 	def(&cfg.LLMPerChar, DefaultLLMPerChar)
 	def(&cfg.LLMTimeout, DefaultLLMTimeout)
+	def(&cfg.EarlyCleanWait, DefaultEarlyCleanWait)
 	def(&cfg.WriteTimeout, DefaultWriteTimeout)
 	def(&cfg.ReadTimeout, DefaultReadTimeout)
 	def(&cfg.RewriteReadTimeout, DefaultRewriteReadTimeout)
