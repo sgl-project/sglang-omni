@@ -31,12 +31,16 @@ def make_runner(
 
 
 def make_scheduled_request(
-    *, mask_leading_silence: bool, generated_frames: int
+    *,
+    mask_leading_silence: bool,
+    generated_frames: int,
+    inflight_frame: bool = False,
 ) -> types.SimpleNamespace:
     return types.SimpleNamespace(
         data=types.SimpleNamespace(
             mask_leading_silence=mask_leading_silence,
             output_codes=[torch.zeros(16)] * generated_frames,
+            inflight_feedback=torch.zeros(2) if inflight_frame else None,
         )
     )
 
@@ -131,6 +135,28 @@ def test_qwen3_tts_holds_codec_eos_until_the_second_frame() -> None:
 
     assert torch.isneginf(logits[:2, codec_eos]).all()
     assert torch.equal(logits[2, codec_eos], original[2, codec_eos])
+
+
+def test_qwen3_tts_counts_the_inflight_frame_toward_the_eos_hold() -> None:
+    codec_eos = 2150
+    runner = make_runner(vocab_size=3072, codec_eos_token_id=codec_eos)
+    requests = [
+        make_scheduled_request(
+            mask_leading_silence=False, generated_frames=1, inflight_frame=False
+        ),
+        make_scheduled_request(
+            mask_leading_silence=False, generated_frames=1, inflight_frame=True
+        ),
+    ]
+    logits = torch.randn(len(requests), 6144)
+    original = logits.clone()
+
+    runner.apply_codec_suppress_tokens(
+        types.SimpleNamespace(next_token_logits=logits), requests
+    )
+
+    assert torch.isneginf(logits[0, codec_eos])
+    assert torch.equal(logits[1, codec_eos], original[1, codec_eos])
 
 
 @pytest.mark.accelerator

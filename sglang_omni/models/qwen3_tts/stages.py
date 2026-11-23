@@ -416,6 +416,7 @@ def create_sglang_tts_engine_executor(
         DEFAULT_QWEN3_TTS_REFERENCE_ENCODER_BUCKET_FRAMES
     ),
     leading_silence_mask_frames: int = DEFAULT_LEADING_SILENCE_MASK_FRAMES,
+    enable_async_decode: bool | None = None,
 ) -> OmniScheduler[Qwen3TTSSGLangRequestData]:
     from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
 
@@ -427,6 +428,7 @@ def create_sglang_tts_engine_executor(
             reference_encoder_cuda_graph_bucket_frames
         ),
         leading_silence_mask_frames=leading_silence_mask_frames,
+        enable_async_decode=enable_async_decode,
     ).build(
         model_path,
         device=device,

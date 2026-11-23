@@ -242,6 +242,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
         leading_silence_mask_frames: int = (
             qwen3_stages.DEFAULT_LEADING_SILENCE_MASK_FRAMES
         ),
+        enable_async_decode: bool | None = None,
     ) -> None:
         self.attn_implementation = attn_implementation
         self.prefill_coalesce_requests = prefill_coalesce_requests
@@ -250,6 +251,11 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             reference_encoder_cuda_graph_bucket_frames
         )
         self.leading_silence_mask_frames = leading_silence_mask_frames
+        self.enable_async_decode = (
+            current_platform.enable_tts_async_decode()
+            if enable_async_decode is None
+            else enable_async_decode
+        )
         self.silence_codec_ids: torch.Tensor | None = None
         self.wrapper: Qwen3TTSModel | None = None
         self.stream_output_builder: (
@@ -553,6 +559,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder[Qwen3TTSSGLangRequestData]):
             "prefill_coalesce_requests": self.prefill_coalesce_requests,
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
             "should_run_top_priority_stream": current_platform.is_cuda(),
+            "enable_async_decode": self.enable_async_decode,
         }
 
     def make_abort_callback(self) -> Callable[[str], None]:

@@ -4,8 +4,8 @@
 The layer 0 token id is the only value the host reads from a step, so its
 pinned copy is enqueued before the predictor and the finalize wait returns
 while the predictor still runs. The code and feedback rows keep coming from a
-snapshot taken behind the predictor. The runner is sync only: its collect has
-no launch and resolve halves, so it never takes the lookahead path.
+snapshot taken behind the predictor. The one-step-ahead path is covered in
+test_step_ahead_decode.py.
 """
 
 from __future__ import annotations
@@ -138,20 +138,34 @@ def test_a_middle_prefill_chunk_does_not_advance_its_generation_step():
     assert runner.finalize_skip_rids(SimpleNamespace(requests=requests)) == {"r1"}
 
 
-def test_lookahead_is_never_eligible():
+def test_lookahead_admits_repetition_penalty_but_not_additive_history_terms():
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
-    history_free = SimpleNamespace(
-        sampling_params=SimpleNamespace(
-            repetition_penalty=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
-            min_new_tokens=0,
-        ),
-        custom_logit_processor=None,
-    )
 
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[history_free])) is False
+    def request(**overrides):
+        params = {
+            "repetition_penalty": 1.05,
+            "frequency_penalty": 0.0,
+            "presence_penalty": 0.0,
+            "min_new_tokens": 0,
+        }
+        params.update(overrides)
+        return SimpleNamespace(
+            sampling_params=SimpleNamespace(**params), custom_logit_processor=None
+        )
+
+    assert runner.lookahead_eligible(SimpleNamespace(reqs=[request()])) is True
     assert runner.lookahead_eligible(SimpleNamespace(reqs=[])) is False
+    assert runner.lookahead_eligible(None) is False
+    for blocked in (
+        {"frequency_penalty": 0.5},
+        {"presence_penalty": 0.5},
+        {"min_new_tokens": 2},
+    ):
+        batch = SimpleNamespace(reqs=[request(), request(**blocked)])
+        assert runner.lookahead_eligible(batch) is False
+    custom = request()
+    custom.custom_logit_processor = object()
+    assert runner.lookahead_eligible(SimpleNamespace(reqs=[custom])) is False
 
 
 @pytest.mark.accelerator

@@ -72,6 +72,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def enable_talker_graph(self) -> bool:
         return True
 
+    def enable_tts_async_decode(self) -> bool:
+        return True
+
     def enable_tts_vocoder_fast_path(self) -> bool:
         return False
 
