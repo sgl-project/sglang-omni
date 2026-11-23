@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -409,7 +410,7 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "going on with the text the live session had: %v", err)
 		res = asr.Result{Text: salvaged}
 	}
-	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
+	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text)), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
 	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" && r.typedOnly() {
@@ -516,4 +517,14 @@ func (r *run) typedOnly() bool {
 	}
 	typed, _, err := cfg.BoxInput(r.ctx)
 	return err == nil && strings.TrimSpace(typed) != ""
+}
+
+// inScript writes recognised text in the Chinese script of dictation
+// (SpeechScript); other text stays as it is.
+func (r *run) inScript(text string) string {
+	var reads []string
+	if r.m.cfg.Languages != nil {
+		reads = r.m.cfg.Languages()
+	}
+	return lang.RenderChineseScript(text, SpeechScript(r.settings, r.m.cfg.Locale(), reads))
 }

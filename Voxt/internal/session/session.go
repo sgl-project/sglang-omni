@@ -389,6 +389,10 @@ type Config struct {
 	// language, for a main language left to follow it.
 	Settings func() settings.Settings
 	Locale   func() string
+	// Languages lists the languages the user reads, most preferred first,
+	// as the system orders them (nil: none), for the Chinese script of
+	// dictation (SpeechScript).
+	Languages func() []string
 	// Scene is app enhancement (nil: none).
 	Scene *SceneConfig
 	// Self is VoxtNew's pid and Activate brings an app back to the front

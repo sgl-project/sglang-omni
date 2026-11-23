@@ -222,13 +222,14 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
-		Notes:    lib.store.Notes(),
-		Settings: st.Get,
-		Locale:   i18n.Locale,
-		Scene:    a.sceneConfig(), // appenhance.go
-		Self:     os.Getpid(),
-		Activate: func(pid int) bool { ok, _ := activateTarget(pid); return ok },
-		OnChange: func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
+		Notes:     lib.store.Notes(),
+		Settings:  st.Get,
+		Locale:    i18n.Locale,
+		Languages: readingLanguages, // settings_locale.go
+		Scene:     a.sceneConfig(),  // appenhance.go
+		Self:      os.Getpid(),
+		Activate:  func(pid int) bool { ok, _ := activateTarget(pid); return ok },
+		OnChange:  func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
 		Log: func(level, msg string) {
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: sessionSource, Message: msg})
 		},
