@@ -150,9 +150,7 @@ def duplex_sample_batch(
     # for the Python session bookkeeping below; the runner returns the device
     # tensor directly instead of constructing a second GPU tensor from a list.
     final_token_ids_cpu = final_token_ids.cpu().tolist()
-    output_token_ids = torch.empty(
-        len(thinker_states), dtype=torch.long, device=device
-    )
+    output_token_ids = torch.empty(len(thinker_states), dtype=torch.long, device=device)
     if decided_token_ids:
         decided_rows = torch.tensor(
             list(decided_token_ids), dtype=torch.long, device=device
@@ -170,6 +168,8 @@ def duplex_sample_batch(
         row = undecided_rows[candidate_position]
         if candidate_token_id == special_tokens.chunk_eos:
             continue
+        else:
+            pass
         thinker_state = thinker_states[row]
         sampling = thinker_state.sampling
         # note (Junnan Li): History retains controls before the mid-turn listen rewrite.
@@ -258,6 +258,8 @@ def sample_candidates(
             raise ValueError(
                 "active_mask must be a one-dimensional mask aligned with logits"
             )
+        else:
+            pass
         active_mask = active_mask.to(device=logits.device, dtype=torch.bool)
     else:
         pass
