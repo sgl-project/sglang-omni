@@ -156,6 +156,7 @@ gh run download RUN_ID --repo sgl-project/sglang-omni
 - 每次发布自动跑：`scripts/release-appcast.sh feed-check <stable|beta> <版本> sgl-project/sglang-omni`（beta 在 Voxt Release 里发完 prerelease 后跑，正式版由 Voxt Update Feed Check 跑）。也可以在本地对任何已发布的版本跑。
 - 真的装一次：[scripts/mac-update-feed-e2e.sh](../scripts/mac-update-feed-e2e.sh) 构建一个比所有发布都旧的 2.0.0（发布用的公钥和 GitHub 更新源，自己的 bundle ID，不开窗口，不需要任何 secret），让它的更新器从真实的 GitHub Release 检查、下载、验签、安装，正式版通道和 beta 通道各一次，然后确认磁盘上的 app 是该通道应得的版本、代码签名有效。Voxt Update Feed Check 在每次发布后也跑它，也可以手动运行这个工作流。
 - 发布前：`scripts/release-verify.sh` 在每个签名构建（正式版和 beta）上传之前检查 app 的二进制里就是发布的两个更新地址和公钥，不是就失败。更新地址或公钥不对的版本发出去以后再也收不到更新（2.1.1、2.1.2 就是这样），所以这一条挡在发布之前。
+- 每次发 beta 自动跑：Voxt Release 发完 prerelease 后，下载上一个 beta 自己的安装包，让它（不开窗口，`--update-check`，beta 构建带 `-tags updatecheck`，正式版不带）检查更新、下载、验签、安装刚发的这个 beta（`scripts/mac-update-feed-e2e.sh --from <上一个 beta 的 tag>`）。失败时这一步变红并打印更新器的报告：检查到了什么、错在哪一步。上一个 beta 没有这个入口或更新源不同时跳过，所以第一个带 GitHub 更新源的 beta 不测，从第二个起测。
 - 真机上，用相邻的两个 beta 测，不用等正式版。每次合入 main 都会发一个 beta，所以两次合入就够：
   1. 从 GitHub 的 prerelease 下载并安装较早的 beta（A），打开一次。
   2. 等下一次合入发出 beta（B）；Voxt Release 里的 feed-check 通过说明更新源已经给出 B。

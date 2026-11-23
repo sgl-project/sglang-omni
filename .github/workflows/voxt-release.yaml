@@ -239,6 +239,9 @@ jobs:
           fi
           if [[ "$IS_BETA" == "true" ]]; then
             args+=(--runtimes "$RUNTIMES")
+            # A beta can run its update check without a window (update_check.go), so that the next beta's run
+            # can let this one update itself (scripts/mac-update-feed-e2e.sh --from). Releases do not have it.
+            export GOFLAGS="${GOFLAGS:-} -tags=updatecheck"
           else
             :
           fi
@@ -347,6 +350,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/release-appcast.sh feed-check beta "$VERSION" "$GITHUB_REPOSITORY"
+
+      # The app users have, not a test build: the beta before this one, from its own release, checks for
+      # updates, downloads this beta, verifies and installs it. A failure here means installed betas cannot
+      # update, and the next beta has to fix it.
+      - name: The previous beta updates itself to this beta
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prev="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
+            --jq '[.[] | select(.isPrerelease and (.tagName | startswith("voxt-v")) and .tagName != "voxt-v" + env.VERSION)] | sort_by(.createdAt) | reverse | .[0].tagName // ""')"
+          if [[ -n "$prev" ]]; then
+            scripts/mac-update-feed-e2e.sh --from "$prev" "$GITHUB_REPOSITORY"
+          else
+            echo "no earlier beta to update from"
+          fi
 
       - name: Create the draft release
         if: env.IS_RELEASE == 'true'

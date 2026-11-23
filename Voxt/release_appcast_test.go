@@ -175,6 +175,16 @@ func TestPublishingChecksTheFeed(t *testing.T) {
 	if publish < 0 || check < publish {
 		t.Error("Voxt Release must check the beta feed after it publishes the prerelease")
 	}
+	// The beta before it then updates itself, which needs betas built with
+	// the update check.
+	for _, want := range []string{
+		`export GOFLAGS="${GOFLAGS:-} -tags=updatecheck"`,
+		`scripts/mac-update-feed-e2e.sh --from "$prev" "$GITHUB_REPOSITORY"`,
+	} {
+		if !strings.Contains(release, want) {
+			t.Errorf("Voxt Release lacks %q", want)
+		}
+	}
 	published := read("voxt-update-feed-check.yaml")
 	for _, want := range []string{
 		"release:\n    types: [published]",

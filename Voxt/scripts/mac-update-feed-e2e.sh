@@ -14,11 +14,22 @@
 # bundle ID and directory, like scripts/mac-update-e2e.sh: no window, no
 # helper started, no settings read. KEEP=1 keeps build/update-feed-e2e.
 #
-#   scripts/mac-update-feed-e2e.sh [OWNER/REPO]
+# With --from TAG it builds nothing: the published beta TAG itself, from
+# its release's archive, updates to the newest beta (the release workflow
+# after each beta: the app users have, not a test build). Betas are built
+# with -tags updatecheck for this; a beta without it, or with another
+# feed, is skipped. Only in CI: it runs the app under its real bundle ID.
+#
+#   scripts/mac-update-feed-e2e.sh [--from TAG] [OWNER/REPO]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+FROM=""
+if [[ "${1:-}" == --from ]]; then
+  FROM="${2:?--from TAG}"
+  shift 2
+fi
 REPO="${1:-sgl-project/sglang-omni}"
 ID=dev.hehehai.voxtnew.updtest
 V0=2.0.0
@@ -39,10 +50,12 @@ check() { # check "what" command...: one line, ok or FAIL
 }
 cleanup() {
   local rc=$?
-  for f in mygo.json helper/Support/Info.plist; do
-    [[ -f "$WORK/orig/$f" ]] && cp "$WORK/orig/$f" "$f"
-  done
-  rm -rf resources/darwin-arm64
+  if [[ -z "$FROM" ]]; then
+    for f in mygo.json helper/Support/Info.plist; do
+      [[ -f "$WORK/orig/$f" ]] && cp "$WORK/orig/$f" "$f"
+    done
+    rm -rf resources/darwin-arm64
+  fi
   if [[ "${KEEP:-0}" != 1 ]]; then
     rm -rf "$WORK"
   fi
@@ -51,6 +64,19 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "$WORK"
+if [[ -n "$FROM" ]]; then
+  [[ -n "${CI:-}" ]] || { echo "--from runs the published app under its real bundle ID: only in CI" >&2; exit 1; }
+  V0="${FROM#voxt-v}"
+  echo "== the published $V0"
+  mkdir -p "$WORK/out/darwin-arm64"
+  gh release download "$FROM" --repo "$REPO" --pattern '*-darwin-arm64.tar.gz' --dir "$WORK"
+  tar -xzf "$WORK/"*-darwin-arm64.tar.gz -C "$WORK/out/darwin-arm64"
+  bin="$WORK/out/darwin-arm64/Voxt.app/Contents/MacOS/Voxt"
+  if ! grep -aqF -- "--update-beta" "$bin" || ! grep -aqF "$(scripts/release-appcast.sh feed-url beta)" "$bin"; then
+    echo "== $FROM has no update check or another feed: skipped"
+    exit 0
+  fi
+else
 mkdir -p "$WORK/orig/helper/Support"
 cp mygo.json "$WORK/orig/"
 cp helper/Support/Info.plist "$WORK/orig/helper/Support/"
@@ -67,6 +93,7 @@ scripts/build-helper.sh >/dev/null
 GOFLAGS="${GOFLAGS:-} -tags=updatecheck" MYGO_UPDATER_PRIVATE_KEY="" \
   go tool mygo build -platform darwin/arm64 -skip-dmg -o "$WORK/out" >"$WORK/build.log" 2>&1 ||
   { tail -30 "$WORK/build.log" >&2; exit 1; }
+fi
 
 curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" >"$WORK/releases.json"
 # offered CHANNEL: the version the channel's feed must offer.
@@ -99,10 +126,11 @@ update() {
   check "its signature verifies (deep, strict)" codesign --verify --deep --strict "$app"
   check "nothing left next to the app" test -z "$(find "$WORK/inst-$channel" -maxdepth 1 -name '.Voxt.app.*' -print)"
 }
-update stable off
+[[ -n "$FROM" ]] || update stable off
 update beta on
 
 if (( FAILS > 0 )); then
+  cat "$WORK"/report-*.json >&2 || true
   echo "== $FAILS checks failed" >&2
   exit 1
 fi
