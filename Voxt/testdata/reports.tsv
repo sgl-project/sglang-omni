@@ -23,6 +23,7 @@ report	fix	symptom	level	check
 #3918	#3928	With Show in the Dock off, Voxt can enter the Dock before the launch-time setting is applied	L	TestMainAppliesDockBeforeReady
 #3950	#3952	A local server's Model menu does not list the models the server has	L	TestOllamaModelMenuListsServer
 #3981	#3992	The live meeting transcript repeats a phrase in a loop	L	TestCollapseLoops
+#3981	#4542	The final meeting transcript repeats a hallucinated phrase in a loop	L	TestFinalPassCollapsesRepeatedText
 #3982	#3994	A meeting's microphone track repeats speech from the system track in the saved transcript	L	TestFinalizeDropsMicEcho
 #3982	#3994	A meeting's microphone track repeats speech from the system track in the live transcript	L	TestCommitSegmentDropsLiveEcho
 #3983	#3995	A meeting stream's rotation sends the first ten minutes again	L	TestLiveRotateFinalDoesNotRepeat
