@@ -47,7 +47,7 @@ type insightsViewState struct {
 }
 
 func buildInsightsViewState(translator *i18n.Translator, log activity.Log, now time.Time) insightsViewState {
-	stats := log.Stats(now)
+	stats, longest := log.Stats(now), insightsLongest(log)
 	var chars, active int
 	var audio time.Duration
 	for _, day := range log.Days {
@@ -75,7 +75,7 @@ func buildInsightsViewState(translator *i18n.Translator, log activity.Log, now t
 		Days: []insightsStatViewState{
 			{Parts: []insightsPart{{groupDigits(active), translator.N(active, "day", "days")}}, Label: translator.T("Active days")},
 			{Parts: []insightsPart{{groupDigits(stats.Streak), translator.N(stats.Streak, "day", "days")}}, Label: translator.T("Current streak")},
-			{Parts: []insightsPart{{groupDigits(insightsLongest(log)), translator.N(insightsLongest(log), "day", "days")}}, Label: translator.T("Longest streak")},
+			{Parts: []insightsPart{{groupDigits(longest), translator.N(longest, "day", "days")}}, Label: translator.T("Longest streak")},
 		},
 	}
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())

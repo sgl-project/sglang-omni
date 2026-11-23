@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"image"
 	"image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -79,6 +82,102 @@ func TestShareCardTakesItsTry(t *testing.T) {
 	a.closeShare()
 	if a.share.open || a.tryPlace(store.KindTranscribe, proto.App{PID: os.Getpid()}) == placeShare {
 		t.Error("the card still takes shortcuts once closed")
+	}
+}
+
+// TestShareCardShortcutsOnHome: a shortcut pressed with the card open on
+// Home records into the card, and closing the card cancels that try. The
+// card shows only on Home, so a card left open takes no shortcut on
+// another page.
+func TestShareCardShortcutsOnHome(t *testing.T) {
+	a, tt := pageTester(t, "/home")
+	readyModels(a)
+	drain := queuePosts(a)
+	a.openShare()
+	frames(tt)
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
+	drain()
+	frames(tt)
+	if a.sess.ID == "" || !a.sess.Try || a.share.tryID != a.sess.ID {
+		t.Fatalf("the shortcut did not start the card's try: %+v, the card's try %q", a.sess, a.share.tryID)
+	}
+	a.closeShare()
+	drain()
+	frames(tt)
+	if a.sess.State.Live() {
+		t.Errorf("closing the card left its try %s", a.sess.State)
+	}
+	a.openShare()
+	a.navigate("/history")
+	if got := a.tryPlace(store.KindRewrite, *selfFront()); got == placeShare {
+		t.Error("the card, not shown off Home, takes the Rewrite shortcut")
+	}
+	a.navigate("/rewrite")
+	if got := a.tryPlace(store.KindRewrite, *selfFront()); got != placeFeature {
+		t.Errorf("Rewrite's page with the card left open: %v, want its own try", got)
+	}
+	a.navigate("/home")
+	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeShare {
+		t.Errorf("back on Home: %v, want the card", got)
+	}
+}
+
+// TestShareWardrobeKeepsSixty: putting on a drawn hat past
+// shareWardrobeMax drops the oldest, on disk and in the wardrobe.
+func TestShareWardrobeKeepsSixty(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	dir := a.hatsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := range shareWardrobeMax {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%019d.png", i+1)), []byte("old"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.openShare()
+	a.openStudio()
+	a.studioPoint(150, -100, true)
+	a.studioWear()
+	got := readWardrobe(dir)
+	if len(got) != shareWardrobeMax || got[0] != a.share.hat || slices.Contains(got, fmt.Sprintf("%019d.png", 1)) {
+		t.Errorf("wardrobe on disk after a 61st hat: %d hats, first %q", len(got), got[0])
+	}
+	if !slices.Equal(a.share.wardrobe, got) {
+		t.Errorf("the wardrobe shown differs from the one on disk: %d vs %d hats", len(a.share.wardrobe), len(got))
+	}
+}
+
+// TestShareImportPicture: an imported picture goes on the board once it
+// is decoded; one too large to read leaves the board and says so.
+func TestShareImportPicture(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	dir := t.TempDir()
+	write := func(name string, w, h int) string {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, w, h))); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	small, huge := write("small.png", 40, 30), write("huge.png", sharePictureSide+1, 1)
+	defer func(old func(*app, func(string))) { chooseHatPicture = old }(chooseHatPicture)
+	pick := small
+	chooseHatPicture = func(_ *app, then func(string)) { then(pick) }
+	a.openShare()
+	a.openStudio()
+	a.studioImport()
+	if st := a.share.studio; st.base != "picture:"+small || a.shareBitmap(st.base) == nil {
+		t.Fatalf("the picture is not on the board: %q", st.base)
+	}
+	pick = huge
+	a.studioImport()
+	if st := a.share.studio; st.base != "picture:"+small || len(a.toasts) == 0 {
+		t.Errorf("a picture too large: board %q, toasts %q", st.base, a.toasts)
 	}
 }
 

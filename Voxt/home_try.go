@@ -47,7 +47,8 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	if a.settingsOpen || a.textFocused() {
 		return placeNone
 	}
-	if a.share.open && a.share.studio == nil {
+	// The card shows only on Home: off it, a card left open takes nothing.
+	if a.share.open && a.share.studio == nil && a.router.Path() == "/home" {
 		return placeShare
 	}
 	switch a.router.Path() {

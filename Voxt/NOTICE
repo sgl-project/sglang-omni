@@ -67,6 +67,13 @@ Solar icon set
   included, converted to Go source in internal/icons/solar_gen.go
   (internal/icons/gen); their shapes are unchanged.
 
+Tabler Icons
+  Some of the share card's and the hat studio's marks in
+  internal/icons/share.go (shuffle, back, eraser, undo, clear, import a
+  picture, record) are outline icons from Tabler Icons 3.19.0
+  (https://tabler.io/icons), Copyright (c) 2020-2024 Paweł Kuna, MIT
+  (LICENSES/Tabler-Icons.txt), some redrawn slightly.
+
 Language data
   internal/lang/languages.tsv and aliases.tsv are built by
   internal/lang/gen from:

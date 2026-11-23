@@ -54,6 +54,7 @@ type shareKeep struct {
 	// decoded hats and pictures, by reference.
 	wardrobe []string
 	bitmaps  map[string]*sharePicture
+	loading  map[string]bool // read off the main thread now
 	// insights is the insights card (insights_controller.go).
 	insights insightsShare
 }
@@ -179,6 +180,9 @@ func (a *app) shareDialog(c *uiContext) {
 func (a *app) copyShare() {
 	state := a.shareModel(a.now())
 	state.Studio = nil
+	if a.share.hat != "" {
+		a.shareBitmapNow("hat:" + a.share.hat)
+	}
 	if err := copyPicture(renderShareCard(&state, a)); err != nil {
 		log.Printf("share: copy the card: %v", err)
 		a.toast(i18n.T("Could not copy the picture."))
@@ -195,26 +199,92 @@ func copyPicture(img image.Image) error {
 	return shareClipboard(buf.Bytes())
 }
 
-// shareBitmap decodes a drawn hat or an imported picture once.
+// shareBitmap is a drawn hat or an imported picture, read and decoded off
+// the main thread: nil until it is ready (the window redraws then), and
+// nil for good when it cannot be read.
 func (a *app) shareBitmap(ref string) *sharePicture {
 	s := &a.share
 	if bm, ok := s.bitmaps[ref]; ok {
 		return bm
 	}
-	var path string
-	if name, ok := strings.CutPrefix(ref, "hat:"); ok && a.hatsDir() != "" {
-		path = filepath.Join(a.hatsDir(), filepath.Base(name))
-	} else if p, ok := strings.CutPrefix(ref, "picture:"); ok {
-		path = p
+	if s.loading[ref] {
+		return nil
 	}
-	var bm *sharePicture
-	if data, err := os.ReadFile(path); err == nil && path != "" {
-		bm, _ = decodeSharePicture(data)
+	if s.loading == nil {
+		s.loading = map[string]bool{}
 	}
+	s.loading[ref] = true
+	path := a.sharePicturePath(ref)
+	a.async(func() {
+		bm := loadSharePicture(path)
+		a.post(func() {
+			delete(s.loading, ref)
+			s.keepBitmap(ref, bm)
+		})
+	})
+	return s.bitmaps[ref] // tests: async and post ran at once
+}
+
+// shareBitmapNow is shareBitmap for Copy and Put on, which render at once.
+func (a *app) shareBitmapNow(ref string) *sharePicture {
+	if bm, ok := a.share.bitmaps[ref]; ok {
+		return bm
+	}
+	path := a.sharePicturePath(ref)
+	if path == "" {
+		return nil
+	}
+	bm := loadSharePicture(path)
+	a.share.keepBitmap(ref, bm)
+	return bm
+}
+
+func (s *shareKeep) keepBitmap(ref string, bm *sharePicture) {
 	if s.bitmaps == nil {
 		s.bitmaps = map[string]*sharePicture{}
 	}
 	s.bitmaps[ref] = bm
+}
+
+func (a *app) sharePicturePath(ref string) string {
+	if name, ok := strings.CutPrefix(ref, "hat:"); ok && a.hatsDir() != "" {
+		return filepath.Join(a.hatsDir(), filepath.Base(name))
+	}
+	if p, ok := strings.CutPrefix(ref, "picture:"); ok {
+		return p
+	}
+	return ""
+}
+
+// A picture the card reads stays under these: a drawn hat is far smaller,
+// and a photo from a phone fits.
+const (
+	sharePictureBytes = 40 << 20
+	sharePictureSide  = 8192
+)
+
+// loadSharePicture reads and decodes a picture, nil when it cannot or it
+// is too large. It runs off the main thread.
+func loadSharePicture(path string) *sharePicture {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > sharePictureBytes {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width > sharePictureSide || cfg.Height > sharePictureSide {
+		return nil
+	}
+	bm, err := decodeSharePicture(data)
+	if err != nil {
+		return nil
+	}
 	return bm
 }
 

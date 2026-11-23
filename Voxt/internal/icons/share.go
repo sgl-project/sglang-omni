@@ -3,8 +3,10 @@ package icons
 import "github.com/egoist/mygo/ui"
 
 // The share card's and the hat studio's marks (share_card.go,
-// share_studio.go), drawn for VoxtNew as the mockup draws them: 24-unit
-// strokes in the text's color, the same in both variants.
+// share_studio.go) as the mockup draws them: 24-unit strokes in the
+// text's color, the same in both variants. Shuffle, back, eraser, undo,
+// clear, import and the mic are Tabler Icons' outline icons (MIT, see
+// NOTICE), some redrawn slightly; the others were drawn for VoxtNew.
 
 func stroke(name, width, body string) Icon {
 	s := parse(`<g fill="none" stroke="currentColor" stroke-width="` + width + `" stroke-linecap="round" stroke-linejoin="round">` + body + `</g>`)

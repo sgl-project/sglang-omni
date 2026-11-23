@@ -162,16 +162,27 @@ func (a *app) studioClear() {
 	st.base, st.strokes = "", nil
 }
 
-// studioImport puts a picture on the board to draw over.
+// studioImport puts a picture on the board to draw over, once it is read
+// and decoded off the main thread.
 func (a *app) studioImport() {
 	chooseHatPicture(a, func(path string) {
-		st := a.share.studio
-		if st == nil {
-			return
-		}
-		st.keep()
-		st.base, st.strokes, st.closet = "picture:"+path, nil, false
-		delete(a.share.bitmaps, st.base) // read it afresh
+		a.async(func() {
+			bm := loadSharePicture(path)
+			a.post(func() {
+				st := a.share.studio
+				if st == nil {
+					return
+				}
+				if bm == nil {
+					a.toast(i18n.T("Could not open the picture."))
+					return
+				}
+				ref := "picture:" + path
+				a.share.keepBitmap(ref, bm) // read afresh, as it is now
+				st.keep()
+				st.base, st.strokes, st.closet = ref, nil, false
+			})
+		})
 	})
 }
 
@@ -219,7 +230,7 @@ func (a *app) studioWear() {
 			a.toast(i18n.T("Could not save the hat."))
 			return
 		}
-		s.wardrobe = append([]string{name}, s.wardrobe...)
+		s.wardrobe = readWardrobe(a.hatsDir()) // the new hat first, without the dropped ones
 		s.wearRef("hat:" + name)
 	}
 	s.studio = nil
@@ -236,6 +247,7 @@ func (a *app) saveHat(base string, strokes []shareStroke) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
+	a.shareBitmapNow(base) // the board's base, should it be still on its way
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, renderHatPicture(base, strokes, a)); err != nil {
 		return "", err

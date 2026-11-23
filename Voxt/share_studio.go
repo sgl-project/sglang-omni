@@ -10,6 +10,7 @@ package main
 
 import (
 	"image"
+	"math"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -170,20 +171,9 @@ func studioPathLength(at func(x, y float32) (float32, float32)) float32 {
 	var length float32
 	for i := 1; i < len(pts); i++ {
 		dx, dy := pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]
-		length += float32(sqrt32(dx*dx + dy*dy))
+		length += float32(math.Hypot(float64(dx), float64(dy)))
 	}
 	return length
-}
-
-func sqrt32(v float32) float32 {
-	if v <= 0 {
-		return 0
-	}
-	x := v
-	for range 20 {
-		x = (x + v/x) / 2
-	}
-	return x
 }
 
 // studioBase draws what the drawing starts from: a built-in hat, a drawn
