@@ -50,6 +50,7 @@
   "Import from Voxt 1.x…": "从旧版 Voxt 导入…",
   "Dictionary (CSV, text or Voxt 1.x export)": "词典（CSV、文本或旧版 Voxt 导出的文件）",
   "Could not import %s: it is not a CSV or text list of terms, or a Voxt 1.x dictionary export.": "无法导入 %s：它不是 CSV 或文本格式的词条列表，也不是旧版 Voxt 导出的词典。",
+  "the file is larger than %d MB": "文件超过 %d MB",
   "| Standard spelling | Correction mapping | Condition |\n|---|---|---|\n| 101; I-80 | `one oh one` → 101 | Bay Area highways |\n| Roth | `wrath` → Roth | retirement accounts |\n| NVDA | — | tickers, all caps |": "| 标准写法 | 纠正映射 | 条件 |\n|---|---|---|\n| 101; I-80 | `幺零幺` → 101 | 湾区高速公路 |\n| Roth | `罗斯` → Roth | 退休账户 |\n| NVDA | — | 股票代码，全大写 |",
   "Added to the dictionary: %s": "已加入词典：%s",
   "Already in the dictionary: %s": "词典里已经有：%s",

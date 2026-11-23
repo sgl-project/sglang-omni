@@ -93,11 +93,12 @@ def create_sglang_moss_transcribe_diarize_executor(
     enable_async_decode: bool | None = None,
     enable_plain_fallback: bool = False,
     async_decode_min_batch_size: int = 1,
+    prefill_drain_below_batch_size: int | None = None,
     prefill_coalesce_requests: int = 4,
     prefill_coalesce_wait_ms: float = 12.0,
     prefill_coalesce_when_idle: bool = True,
     prefill_coalesce_requires_pending_builds: bool = True,
-    prefill_coalesce_after_builds_during_decode: bool = True,
+    prefill_coalesce_after_builds_during_decode: bool | None = None,
     encoder_chunk_buckets: list[int] | None = None,
     encoder_torch_compile: bool = False,
     encoder_max_batch_size: int = 2,
@@ -106,6 +107,7 @@ def create_sglang_moss_transcribe_diarize_executor(
     # the encoder feed, more oversubscribe the CPU.
     request_build_max_workers: int = 8,
     request_build_max_pending: int | None = 16,
+    early_request_builds: bool | None = None,
     stream_emit_interval_s: float = 0.05,
     server_args_overrides: Mapping[str, object] | None = None,
 ):
@@ -130,6 +132,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         enable_async_decode=enable_async_decode,
         enable_plain_fallback=enable_plain_fallback,
         async_decode_min_batch_size=async_decode_min_batch_size,
+        prefill_drain_below_batch_size=prefill_drain_below_batch_size,
         encoder_chunk_buckets=buckets,
         encoder_torch_compile=encoder_torch_compile,
         encoder_max_batch_size=encoder_max_batch_size,
@@ -145,6 +148,7 @@ def create_sglang_moss_transcribe_diarize_executor(
         ),
         request_build_max_workers=request_build_max_workers,
         request_build_max_pending=request_build_max_pending,
+        early_request_builds=early_request_builds,
         stream_emit_interval_s=stream_emit_interval_s,
     )
     try:

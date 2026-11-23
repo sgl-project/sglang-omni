@@ -152,6 +152,12 @@ func (r *run) write(raw, selection string) {
 			}
 		}
 	}
+	if kind == store.KindRewrite && raw == "" && r.typed != "" {
+		// Nothing said: the typed text is the instruction, in the request,
+		// the card's conversation and the history.
+		raw, r.typed = r.typed, ""
+		r.m.update(r, func(s *Snapshot) { s.Raw = raw })
+	}
 	if r.svc.LLM == nil {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)
 		return

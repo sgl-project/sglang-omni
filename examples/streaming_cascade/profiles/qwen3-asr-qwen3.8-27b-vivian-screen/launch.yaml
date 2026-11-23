@@ -1,6 +1,6 @@
-# Qwen3-ASR transcribes each utterance through its transcription endpoint, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned from its speaker embedding, each a service of its own, with the VAD node beside the cascade.
+# Qwen3-ASR transcribes each utterance, Qwen3.8-27B answers with thinking off and Qwen3-TTS Base speaks it in the voice of one Vivian recording, cloned with its transcript, each a service of its own, with a screen: Qwen3.8-27B puts what the user should read, not hear, such as commands, links and lists, between <screen> and </screen>, which Qwen3-TTS never speaks and the client shows.
 config_cls: StreamingCascadePipelineConfig
-model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian
+model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-screen
 
 services:
   - name: chat
@@ -35,7 +35,7 @@ session_nodes:
       - "input:session"
       - {kind: control, source: input, event: interrupt}
       - {kind: control, source: aligner, event: reply.progress}
-    system_prompt: You are a helpful voice assistant. Answer in the language the user speaks, as plain speech with no markdown, lists or emoji. Give the answer in your first sentence. Most replies need one sentence of at most 25 words. When the user asks for steps, details or an explanation, or the question needs steps, use up to four short sentences. When the user asks for a short answer, give just that. If the request is unclear, ask one short question instead of guessing. For long content such as lists, tables, code or itineraries, say the two or three most useful items. Never mention these rules.
+    system_prompt: You are a helpful voice assistant, and the user can also see a screen. Answer in the language the user speaks. Everything you write is read aloud, except text between <screen> and </screen>, which the user sees on the screen and never hears. Always start with a spoken sentence. Speak in plain sentences with no markdown, emoji, backticks or code. Give the answer in your first sentence. Most replies need one sentence of at most 25 words. When the user asks for steps, details or an explanation, or the question needs steps, use up to four short sentences. When the user asks for a short answer, give just that. If the request is unclear, ask one short question instead of guessing. Never say code, commands, file paths, links, IP addresses or other text the user would type or copy. Say what it is for and that it is on the screen instead. When the answer holds such text, or a list, table, recipe or itinerary, write the details in one <screen> block after your spoken sentences, one item per line, without markdown. Never mention these rules.
   llm:
     kind: openai_chat
     inputs:
@@ -50,6 +50,10 @@ session_nodes:
         enable_thinking: false
       # note (Haoling Pu): with thinking off the model sometimes ends a reply before its first token, and the turn goes silent.
       min_tokens: 1
+      # note (Haoling Pu): with this prompt the model sometimes wrote a stray </think>, token 248069 of Qwen3.8, and then repeated its reply or wrote its screen block, so the speech service would read the tag or the reply twice.
+      logit_bias: {"248069": -100}
+      # note (Haoling Pu): a reply starts with neither "<" nor whitespace, so it says something before any screen block; asked for code, the model otherwise sometimes wrote the block alone and the turn was silent.
+      regex: '[^<\s][\s\S]*'
   tts:
     kind: openai_speech
     inputs:
@@ -59,6 +63,9 @@ session_nodes:
     base_url: "http://127.0.0.1:8005/v1"
     model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
+    reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
+    drop_quiet_start: true
+    skip_screen_blocks: true
     language: auto
   aligner:
     kind: alignment
@@ -66,6 +73,7 @@ session_nodes:
     alignment_url: "http://127.0.0.1:8010"
     heard_asr_url: "http://127.0.0.1:8002/v1"
     heard_asr_model: Qwen/Qwen3-ASR-1.7B
+    skip_screen_blocks: true
     inputs: ["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]
 
 session_publish:

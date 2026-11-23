@@ -1,25 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pipeline registration and backbone configuration contracts."""
 
+import json
+from collections.abc import Iterable
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
 import torch
+from safetensors.torch import save_file
 from sglang.srt.configs.model_config import ModelConfig
-from transformers import Qwen3Config
+from torch import nn
+from transformers import AutoConfig, Qwen3Config
 
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_args
-from sglang_omni.models.ming3_asr import stages
+from sglang_omni.models.ming3_asr import mtp, stages
 from sglang_omni.models.ming3_asr.config import (
     Ming3ASRFactoryArgs,
     Ming3ASRPipelineConfig,
 )
+from sglang_omni.models.ming3_asr.mtp import Ming3ASRMTP
 from sglang_omni.models.ming3_asr.stages import Ming3ASRConfig, create_thinker_executor
 from sglang_omni.models.model_capabilities import get_model_capabilities
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.modules.ming_audio.thinker import Ming3AudioMTP
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.serve.openai_errors import generation_error_status_code
 
@@ -127,6 +134,27 @@ def two_stage_document(
     }
 
 
+def test_checkpoint_config_loads_from_a_hub_model_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "config.json").write_text('{"text_config": {"hidden_size": 64}}')
+    hub_lookup = MagicMock(return_value=str(tmp_path / "config.json"))
+    monkeypatch.setattr(stages, "cached_file", hub_lookup)
+
+    configuration = stages.load_checkpoint_config("inclusionAI/Ming-3.0-asr-tiny")
+
+    assert configuration == {"text_config": {"hidden_size": 64}}
+    hub_lookup.assert_called_once_with("inclusionAI/Ming-3.0-asr-tiny", "config.json")
+
+
+def test_checkpoint_config_loads_from_a_local_directory(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text('{"text_config": {"hidden_size": 64}}')
+
+    assert stages.load_checkpoint_config(str(tmp_path)) == {
+        "text_config": {"hidden_size": 64}
+    }
+
+
 def test_two_stage_configuration_loads_pre_lm_knobs() -> None:
     config = Ming3ASRPipelineConfig.model_validate(two_stage_document())
     assert [stage.name for stage in config.stages] == ["preprocessing", "thinker"]
@@ -221,6 +249,37 @@ def test_backbone_config_flattens_text_config() -> None:
     assert explicit_config.norm_topk_prob is False
 
 
+@pytest.fixture
+def mock_thinker_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        stages,
+        "load_checkpoint_config",
+        MagicMock(
+            return_value={
+                "audio_config": {},
+                "text_config": {"hidden_size": 64, "eos_token_id": 7},
+            }
+        ),
+    )
+    for name in (
+        "AudioEncoderConfig",
+        "Ming3AudioEncoder",
+        "Ming3ASRPreLMEncoderService",
+        "build_sglang_server_args",
+        "AutoConfig",
+        "PreTrainedTokenizerFast",
+        "Ming3AudioModelRunner",
+        "Ming3ASRStreamOutputBuilder",
+        "OmniScheduler",
+    ):
+        monkeypatch.setattr(stages, name, MagicMock())
+    monkeypatch.setattr(stages.ModelRegistry, "models", {})
+    infrastructure = MagicMock(return_value=tuple(MagicMock() for _ in range(5)))
+    infrastructure.return_value[-1].vocab_size = 16
+    monkeypatch.setattr(stages, "create_sglang_infrastructure", infrastructure)
+
+
+@pytest.mark.usefixtures("mock_thinker_runtime")
 def test_dspark_checkpoint_lives_until_stage_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -244,35 +303,6 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     monkeypatch.setattr(
         stages, "materialize_draft_checkpoint", MagicMock(return_value=checkpoint)
     )
-    monkeypatch.setattr(
-        stages,
-        "load_checkpoint_config",
-        MagicMock(
-            return_value={
-                "audio_config": {},
-                "text_config": {"hidden_size": 64, "eos_token_id": 7},
-            }
-        ),
-    )
-    for name in (
-        "AudioEncoderConfig",
-        "Ming3AudioEncoder",
-        "AutoConfig",
-        "ModelRegistry",
-        "PreTrainedTokenizerFast",
-        "Ming3AudioModelRunner",
-        "Ming3ASRStreamOutputBuilder",
-        "OmniScheduler",
-    ):
-        monkeypatch.setattr(stages, name, MagicMock())
-    encoder_service = MagicMock()
-    monkeypatch.setattr(stages, "Ming3ASRPreLMEncoderService", encoder_service)
-    server_arguments = MagicMock()
-    monkeypatch.setattr(stages, "build_sglang_server_args", server_arguments)
-    infrastructure = MagicMock(return_value=tuple(MagicMock() for _ in range(5)))
-    infrastructure.return_value[-1].vocab_size = 16
-    monkeypatch.setattr(stages, "create_sglang_infrastructure", infrastructure)
-
     manager = ConfigManager(Ming3ASRPipelineConfig(model_path="target-checkpoint"))
     config = manager.merge_config(
         manager.parse_extra_args(
@@ -286,7 +316,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     )
     factory_arguments = resolve_stage_factory_args(config.stages[1], config)
     scheduler = create_thinker_executor(**factory_arguments)
-    overrides = server_arguments.call_args.kwargs
+    overrides = stages.build_sglang_server_args.call_args.kwargs
     draft_config = ModelConfig(
         overrides["speculative_draft_model_path"],
         model_override_args=overrides.get("json_model_override_args", "{}"),
@@ -308,7 +338,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     with pytest.raises(ValueError, match="requires temperature=0") as rejected:
         stages.OmniScheduler.call_args.kwargs["request_builder"](payload)
     assert generation_error_status_code(RuntimeError(str(rejected.value))) == 400
-    encoder_service.return_value.encode.assert_not_called()
+    stages.Ming3ASRPreLMEncoderService.return_value.encode.assert_not_called()
     payload.data["features"] = []
     payload.request.params = {}
     greedy_request = stages.OmniScheduler.call_args.kwargs["request_builder"](payload)
@@ -316,7 +346,7 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
 
     scheduler.shutdown_callback()
     assert not checkpoint_path.exists()
-    encoder_service.return_value.close.assert_called_once_with()
+    stages.Ming3ASRPreLMEncoderService.return_value.close.assert_called_once_with()
 
 
 def test_dspark_startup_failure_releases_adapted_checkpoint(
@@ -331,6 +361,9 @@ def test_dspark_startup_failure_releases_adapted_checkpoint(
     )
     monkeypatch.setattr(
         stages, "materialize_draft_checkpoint", MagicMock(return_value=checkpoint)
+    )
+    monkeypatch.setattr(
+        stages, "cached_file", MagicMock(side_effect=FileNotFoundError("config.json"))
     )
     manager = ConfigManager(
         Ming3ASRPipelineConfig(model_path="missing-target-checkpoint")
@@ -349,3 +382,156 @@ def test_dspark_startup_failure_releases_adapted_checkpoint(
     with pytest.raises(FileNotFoundError):
         create_thinker_executor(**factory_arguments)
     assert not checkpoint_path.exists()
+
+
+@pytest.mark.usefixtures("mock_thinker_runtime")
+@pytest.mark.parametrize("draft_path", [None, "target-checkpoint", "another/asr-mtp"])
+def test_nextn_uses_target_checkpoint_with_asr_draft(
+    draft_path: str | None, tmp_path: Path
+) -> None:
+    pipeline = Ming3ASRPipelineConfig(model_path="target-checkpoint")
+    arguments = resolve_stage_factory_args(pipeline.stage_named("thinker"), pipeline)
+    engine = {"speculative_algorithm": "NEXTN", "revision": "target-revision"}
+    if draft_path is not None:
+        engine["speculative_draft_model_path"] = draft_path
+    if draft_path == "another/asr-mtp":
+        engine["speculative_draft_model_revision"] = "draft-revision"
+    arguments.update(device="cpu", server_args_overrides=engine)
+    create_thinker_executor(**arguments)
+    resolved = stages.build_sglang_server_args.call_args.kwargs
+    assert resolved["speculative_draft_model_path"] == pipeline.model_path
+    assert resolved["speculative_draft_model_revision"] == "target-revision"
+    draft_class = stages.ModelRegistry.models["BailingMoeForCausalLMNextN"]
+    if draft_path == "another/asr-mtp":
+        assert draft_class is Ming3ASRMTP
+        AutoConfig.register(Ming3ASRConfig.model_type, Ming3ASRConfig, exist_ok=True)
+        (tmp_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": Ming3ASRConfig.model_type,
+                    "text_config": {
+                        "short_conv_kernel_size": 4,
+                        "num_nextn_predict_layers": 1,
+                    },
+                }
+            )
+        )
+        config = ModelConfig(
+            str(tmp_path),
+            is_draft_model=True,
+            speculative_algorithm="EAGLE",
+            model_override_args=resolved["json_model_override_args"],
+        ).hf_config
+        assert config.architectures == ["BailingMoeForCausalLMNextN"]
+        assert config.mtp_weights_path == draft_path
+        assert config.mtp_weights_revision == "draft-revision"
+    else:
+        assert draft_class is Ming3AudioMTP
+    assert stages.create_sglang_infrastructure.call_args.kwargs[
+        "supports_speculative_decoding"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_eagle_topk": 4},
+            "speculative_eagle_topk=4",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "json_model_override_args": '{"architectures": ["OtherModel"]}',
+            },
+            "architectures=.*OtherModel",
+        ),
+        ({"speculative_algorithm": "EAGLE3"}, "DSPARK and NEXTN"),
+    ],
+)
+def test_unsupported_speculative_configuration_is_rejected(
+    overrides: dict[str, str | int], error: str
+) -> None:
+    pipeline = Ming3ASRPipelineConfig(model_path="unused-target")
+    arguments = resolve_stage_factory_args(pipeline.stage_named("thinker"), pipeline)
+    arguments.update(device="cpu", server_args_overrides=overrides)
+    with pytest.raises(ValueError, match=error):
+        create_thinker_executor(**arguments)
+
+
+@pytest.mark.usefixtures("mock_thinker_runtime")
+def test_invalid_sampling_parameters_return_bad_request() -> None:
+    pipeline = Ming3ASRPipelineConfig(model_path="target-checkpoint")
+    arguments = resolve_stage_factory_args(pipeline.stage_named("thinker"), pipeline)
+    arguments["device"] = "cpu"
+    create_thinker_executor(**arguments)
+    payload = StagePayload(
+        request_id="invalid-temperature",
+        request=OmniRequest(inputs=None, params={"temperature": float("inf")}),
+        data={"features": []},
+    )
+
+    with pytest.raises(ValueError, match="temperature") as rejected:
+        stages.OmniScheduler.call_args.kwargs["request_builder"](payload)
+    assert generation_error_status_code(RuntimeError(str(rejected.value))) == 400
+
+
+def test_asr_mtp_loads_fine_tuned_prediction_weights_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ASR draft replaces the prediction block and retains shared verifier weights."""
+    prediction_name = "model.layers.24.eh_proj.weight"
+    fine_tuned = torch.full((2, 4), 3.0)
+    checkpoint = tmp_path / "model.safetensors"
+    save_file({prediction_name: fine_tuned}, checkpoint)
+    download = Mock(return_value=str(checkpoint))
+    monkeypatch.setattr(mtp, "cached_file", download)
+    shared = {
+        "model.word_embeddings.weight": torch.ones(4, 2),
+        "lm_head.weight": torch.ones(4, 2),
+        "model.layers.23.input_layernorm.weight": torch.ones(2),
+    }
+    loaded: dict[str, torch.Tensor] = {}
+
+    def load_native(
+        self: Ming3AudioMTP, weights: Iterable[tuple[str, torch.Tensor]]
+    ) -> None:
+        loaded.update(weights)
+
+    monkeypatch.setattr(Ming3AudioMTP, "load_weights", load_native)
+    draft = Ming3ASRMTP.__new__(Ming3ASRMTP)
+    nn.Module.__init__(draft)
+    draft.config = SimpleNamespace(
+        num_hidden_layers=24,
+        mtp_weights_path="another/asr-mtp",
+        mtp_weights_revision="draft-revision",
+    )
+    draft.load_weights(iter([*shared.items(), (prediction_name, torch.zeros(2, 4))]))
+    assert set(loaded) == {*shared, prediction_name}
+    assert all(loaded[name] is weight for name, weight in shared.items())
+    torch.testing.assert_close(loaded[prediction_name], fine_tuned)
+    download.assert_called_once_with(
+        "another/asr-mtp",
+        "model.safetensors",
+        revision="draft-revision",
+    )
+
+
+def test_asr_mtp_rejects_unused_local_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    projection = "model.layers.24.eh_proj.weight"
+    save_file(
+        {projection: torch.ones(1), "model.layers.24.extra.weight": torch.ones(1)},
+        tmp_path / "model.safetensors",
+    )
+    monkeypatch.setattr(
+        Ming3AudioMTP, "load_weights", lambda self, weights: dict(weights)
+    )
+    draft = Ming3ASRMTP.__new__(Ming3ASRMTP)
+    nn.Module.__init__(draft)
+    draft.config = SimpleNamespace(
+        num_hidden_layers=24, mtp_weights_path=str(tmp_path), mtp_weights_revision=None
+    )
+    with pytest.raises(ValueError, match="model.layers.24.extra.weight"):
+        draft.load_weights([(projection, torch.zeros(1))])

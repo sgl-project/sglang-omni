@@ -36,24 +36,17 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 
 func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	a, _, tt := newTestApp(t)
-	a.startOpening()
+	a.version = "2.1.1"
+	a.startOpening(false)
 	a.maybeOnboard()
 	frames(tt)
 	if a.openingStarted.IsZero() || has(tt, "Get started") {
 		t.Fatal("the first launch did not show the opening before the guide")
 	}
-	if !a.lib.settings.Get().Setup.OpeningShown || a.prefs.Setup.Done {
-		t.Fatal("the opening did not persist independently of guide completion")
-	}
-	a.openingStarted = time.Now().Add(-openingDuration)
+	a.openingStarted = time.Now().Add(-a.openingLength())
 	frames(tt)
 	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
 		t.Fatal("the opening did not finish at the setup guide")
-	}
-	a.prefs = a.lib.settings.Get()
-	a.startOpening()
-	if !a.openingStarted.IsZero() {
-		t.Fatal("an unfinished guide replayed the opening")
 	}
 	a.closeOnboarding()
 	a.openOnboarding()
@@ -63,20 +56,26 @@ func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	}
 }
 
-func TestOpeningSkipsExistingSetupsAndReducedMotion(t *testing.T) {
-	for _, mode := range []string{"existing", "app-reduced-motion", "system-reduced-motion"} {
+func TestOpeningSkipsReducedMotion(t *testing.T) {
+	for _, mode := range []string{"app-reduced-motion", "system-reduced-motion"} {
 		t.Run(mode, func(t *testing.T) {
 			a, _, tt := newTestApp(t)
+			a.version = "2.1.1"
 			a.updateSettings(func(s *settings.Settings) {
-				s.Setup.Done = mode == "existing"
 				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
 			})
 			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
-			a.startOpening()
+			a.startOpening(false)
 			a.maybeOnboard()
 			frames(tt)
-			if !a.openingStarted.IsZero() || (mode != "existing" && !has(tt, "Get started")) {
-				t.Fatal("an existing setup or reduced motion did not skip the opening")
+			if !a.openingStarted.IsZero() || !has(tt, "Get started") {
+				t.Fatal("reduced motion did not skip the opening")
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = false })
+			tt.SetPreferences(ui.Preferences{})
+			frames(tt)
+			if !a.openingStarted.IsZero() {
+				t.Fatal("turning reduced motion off played the opening while the app runs")
 			}
 		})
 	}
@@ -157,6 +156,9 @@ func TestOnboardingSteps(t *testing.T) {
 	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
+	if !has(tt, "In Settings → Language models, choose Ollama, LM Studio, oMLX, or an API service. Paste any required key into API key, then select Test connection.") {
+		t.Fatalf("models: language model API guidance missing from %q", tt.Texts())
+	}
 	click(t, tt, "Skip this step")
 	if a.ob.step != obTranscribe || !has(tt, "Try Transcribe") || !has(tt, "Skip this step") {
 		t.Fatalf("transcribe: step %d %q", a.ob.step, tt.Texts())
@@ -181,7 +183,7 @@ func TestOnboardingSteps(t *testing.T) {
 	}
 	a.obGo(obMore)
 	frames(tt)
-	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
+	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
 		if !has(tt, s) {
 			t.Errorf("more: no %q in %q", s, tt.Texts())
 		}
@@ -210,6 +212,44 @@ func TestOnboardingSteps(t *testing.T) {
 	frames(tt)
 	if a.ob.open {
 		t.Error("Escape left it open")
+	}
+}
+
+func TestOnboardingHeaderBackNavigation(t *testing.T) {
+	a, tt := obTester(t)
+	click(t, tt, "Get started")
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the Permissions header could not return to Welcome")
+	}
+	click(t, tt, "Get started")
+	click(t, tt, "Models")
+	if a.ob.step != obPermissions {
+		t.Fatal("the header skipped ahead to an unreached step")
+	}
+	a.ob.passed[obTranscribe] = true
+	a.ob.tries[obTranscribe] = "completed-transcription"
+	a.obGo(obMore)
+	frames(tt)
+	click(t, tt, "Permissions")
+	if a.ob.step != obPermissions || !has(tt, "Microphone") || !a.ob.passed[obTranscribe] || a.ob.tries[obTranscribe] != "completed-transcription" {
+		t.Fatal("returning to an earlier step lost guide progress")
+	}
+	a.obGo(obRewrite)
+	a.ob.tries[obRewrite] = "active-rewrite"
+	for _, state := range []session.State{session.Recording, session.Composing} {
+		a.sess = obSnap(a, "active-rewrite", store.KindRewrite, state)
+		frames(tt)
+		click(t, tt, "Welcome")
+		if a.ob.step != obRewrite || a.sess.State != state {
+			t.Fatal("header navigation interrupted an active try")
+		}
+	}
+	a.sess.State = session.Done
+	frames(tt)
+	click(t, tt, "Welcome")
+	if a.ob.step != obWelcome || !has(tt, "Get started") {
+		t.Fatal("the header stayed disabled after the try finished")
 	}
 }
 
@@ -383,7 +423,7 @@ func TestOnboardingStepsOneLine(t *testing.T) {
 				if !ok1 || !ok2 || !ok3 {
 					t.Fatalf("%s %v: steps or × not found in %q", lang, size, tt.Texts())
 				}
-				if math.Abs(float64(first.Y-last.Y)) > 1 || last.X+last.W > x.X {
+				if math.Abs(float64(first.Y+first.H/2-last.Y-last.H/2)) > 1 || last.X+last.W > x.X {
 					t.Errorf("%s %v step %d: %q at %+v, %q at %+v, × at %+v", lang, size, step, titles[0], first, titles[len(titles)-1], last, x)
 				}
 			}
@@ -398,7 +438,7 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 		obPermissions: "Voxt needs the microphone to hear you",
 		obTranscribe:  "Transcribe writes down what you say",
 		obTranslate:   "Translate turns the selected text",
-		obRewrite:     "Outside this guide, the Rewrite shortcut opens a card with the microphone on: speak what to do, add text or images, then press Enter to send or Esc to close.",
+		obRewrite:     "Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.",
 	} {
 		a.obGo(step)
 		if !has(tt, want) {
@@ -407,12 +447,11 @@ func TestOnboardingStepsExplainTheFeature(t *testing.T) {
 	}
 }
 
+// TestOnboardingRewriteGuidanceMatchesTryFlow: the guide's Try records in
+// the guide, without the Rewrite card a shortcut opens.
 func TestOnboardingRewriteGuidanceMatchesTryFlow(t *testing.T) {
-	a, tt := obTester(t)
+	a, _ := obTester(t)
 	a.obGo(obRewrite)
-	if !has(tt, "Outside this guide, the Rewrite shortcut opens a card") {
-		t.Fatalf("the guidance does not distinguish normal Rewrite from the guide: %q", tt.Texts())
-	}
 	a.obTry("")
 	if a.box.open {
 		t.Fatal("the onboarding Try opened the normal Rewrite input box")

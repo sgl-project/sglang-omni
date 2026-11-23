@@ -93,10 +93,10 @@ func TestResolverSwitch(t *testing.T) {
 		wantMain, wantBack string
 	}{
 		{"off", store.KindRewrite, false, "", "", "deepseek", ""},
-		{"rewrite skips the external API", store.KindRewrite, true, "", "", "deepseek", "custom"},
-		{"transcribe skips the external API", store.KindTranscribe, true, "", "", "deepseek", "custom"},
-		{"the next one does not open", store.KindRewrite, true, "", "custom", "deepseek", "ollama"},
-		{"the model does not open", store.KindRewrite, true, "", "deepseek", "custom", ""},
+		{"rewrite uses the next configured API", store.KindRewrite, true, "", "", "deepseek", "openai"},
+		{"transcribe uses the next configured API", store.KindTranscribe, true, "", "", "deepseek", "openai"},
+		{"the next one does not open", store.KindRewrite, true, "", "openai", "deepseek", "custom"},
+		{"the model does not open", store.KindRewrite, true, "", "deepseek", "openai", ""},
 		{"translate's own external fallback first", store.KindTranslate, true, "openai", "", "deepseek", "openai"},
 		{"translate's fallback does not open", store.KindTranslate, true, "openai", "openai", "deepseek", "custom"},
 	} {
@@ -118,10 +118,9 @@ func TestResolverSwitch(t *testing.T) {
 	}
 }
 
-// TestResolverSwitchKeepsTextOnTheMac: with only external APIs besides
-// the feature's own model, the switch finds no fallback, so a failure
-// never sends the text to a provider the feature did not choose.
-func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
+// TestResolverSwitchUsesRemoteAPI: with no local server after the chosen
+// model, the switch uses the next configured external API.
+func TestResolverSwitchUsesRemoteAPI(t *testing.T) {
 	models := []local.Model{{Kind: local.LLM, ID: "ollama"}, {Kind: local.LLM, ID: "deepseek"}, {Kind: local.LLM, ID: "openai"}}
 	s := settings.Defaults()
 	s.Models.LLMSwitch = true
@@ -131,8 +130,8 @@ func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.LLMInfo.ID != "ollama" || svc.Fallback != nil {
-		t.Errorf("model %q, fallback %q; want ollama and none: Transcribe's text would go to an external API it did not choose", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+	if svc.LLMInfo.ID != "ollama" || svc.FallbackInfo.ID != "deepseek" || svc.Fallback == nil {
+		t.Errorf("model %q, fallback %q; want ollama and deepseek", svc.LLMInfo.ID, svc.FallbackInfo.ID)
 	}
 }
 
@@ -231,25 +230,25 @@ func TestResolverWithoutSpeech(t *testing.T) {
 
 // TestReturnFinishQueuedStateChange: a Return the helper still reports as
 // Finish from the old configuration (its new one is on its way) stops
-// nothing once the setting is off or the recording is not a plain
-// Transcribe one.
+// nothing once the setting is off or the recording is a note's; another
+// feature's recording it stops, as Return finishes every feature's.
 func TestReturnFinishQueuedStateChange(t *testing.T) {
 	a := &app{sess: session.Snapshot{State: session.Recording, Kind: store.KindTranscribe}}
 	a.prefs = settings.Defaults()
-	a.prefs.Features.Transcribe.ReturnFinishes = true
+	a.prefs.Features.ReturnFinishes = true
 	cfg := a.hotkeyPlan().Configure(true)
 	if !slices.ContainsFunc(cfg.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" }) {
 		t.Fatal("finish was not configured")
 	}
 	e := proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap}
-	a.prefs.Features.Transcribe.ReturnFinishes = false
+	a.prefs.Features.ReturnFinishes = false
 	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
 		t.Errorf("opt-out event stopped the session: %+v", d)
 	}
 	a.sess.Kind = store.KindTranslate
-	a.prefs.Features.Transcribe.ReturnFinishes = true
-	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.None {
-		t.Errorf("event from the old Transcribe configuration stopped Translate: %+v", d)
+	a.prefs.Features.ReturnFinishes = true
+	if d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature(), a.returnFinishes()); d.Action != hotkey.Stop {
+		t.Errorf("Return did not stop a Translate recording: %+v", d)
 	}
 	a.sess.Kind = store.KindTranscribe
 	a.sess.Note = true
@@ -258,8 +257,9 @@ func TestReturnFinishQueuedStateChange(t *testing.T) {
 	}
 }
 
-// TestReturnFinishPlanScope: the helper gets Return only for a Transcribe
-// recording with the setting on, never for another feature or idle work.
+// TestReturnFinishPlanScope: the helper gets Return for a Transcribe,
+// Translate or Rewrite recording with Settings → Shortcuts' switch on,
+// never for a note or idle work.
 // With Paste last on Return, its tap routes to Stop in the same cases and
 // nowhere else: opted out, or another feature's session, Return waits.
 func TestReturnFinishPlanScope(t *testing.T) {
@@ -275,14 +275,15 @@ func TestReturnFinishPlanScope(t *testing.T) {
 		{name: "setting off", state: session.Recording, kind: store.KindTranscribe, want: false},
 		{name: "idle", state: session.Idle, kind: store.KindTranscribe, on: true, want: false},
 		{name: "recognizing", state: session.Recognizing, kind: store.KindTranscribe, on: true, want: false},
-		{name: "Translate", state: session.Recording, kind: store.KindTranslate, on: true, want: false},
-		{name: "Rewrite", state: session.Recording, kind: store.KindRewrite, on: true, want: false},
+		{name: "Translate", state: session.Recording, kind: store.KindTranslate, on: true, want: true},
+		{name: "Rewrite", state: session.Recording, kind: store.KindRewrite, on: true, want: true},
+		{name: "Translate, setting off", state: session.Recording, kind: store.KindTranslate, want: false},
 		{name: "note", state: session.Recording, kind: store.KindTranscribe, note: true, on: true, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &app{sess: session.Snapshot{State: tc.state, Kind: tc.kind, Note: tc.note}}
 			a.prefs = settings.Defaults()
-			a.prefs.Features.Transcribe.ReturnFinishes = tc.on
+			a.prefs.Features.ReturnFinishes = tc.on
 			cfg := a.hotkeyPlan().Configure(tc.state.Live())
 			got := slices.ContainsFunc(cfg.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == "finish" })
 			if got != tc.want {
