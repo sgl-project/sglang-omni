@@ -114,6 +114,78 @@ func TestVoxt2FeedChannels(t *testing.T) {
 	}
 }
 
+// TestVoxt2FeedOffers: after a release is published, feed-offers names the
+// release the installed apps resolve their feed to, as MyGo patch 0021
+// does, and fails when that is not the release just published.
+func TestVoxt2FeedOffers(t *testing.T) {
+	releases := `[
+		{"tag_name": "voxt-v2.1.3-beta.20261122.102", "draft": false, "prerelease": true},
+		{"tag_name": "v0.3.0", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.2.0", "draft": true, "prerelease": false},
+		{"tag_name": "voxt-v2.1.2", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.1.3-beta.20261122.9", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.10", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.1.9", "draft": false, "prerelease": false}
+	]`
+	for _, c := range []struct{ channel, version string }{
+		{"stable", "2.1.10"}, // numbers, not text: 2.1.10 is above 2.1.9 and 2.1.2
+		{"beta", "2.1.10"},   // a release above every beta is the beta channel's too
+	} {
+		out, err := runReleaseAppcast(t, releases, "feed-offers", c.channel, c.version)
+		if err != nil || out != "voxt-v"+c.version+"\n" {
+			t.Errorf("feed-offers %s %s: %q, %v", c.channel, c.version, out, err)
+		}
+	}
+	betas := `[
+		{"tag_name": "voxt-v2.1.3-beta.20261122.9", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.3-beta.20261122.102", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.2", "draft": false, "prerelease": false}
+	]`
+	if out, err := runReleaseAppcast(t, betas, "feed-offers", "beta", "2.1.3-beta.20261122.102"); err != nil {
+		t.Errorf("the newest beta: %q, %v", out, err)
+	}
+	// What went wrong with 2.1.1 and 2.1.2: published, and the feed did not name them.
+	for _, c := range []struct{ name, in, channel, version string }{
+		{"a beta is not on the stable channel", betas, "stable", "2.1.3-beta.20261122.102"},
+		{"an older beta", betas, "beta", "2.1.3-beta.20261122.9"},
+		{"a draft", releases, "stable", "2.2.0"},
+		{"no Voxt release", `[{"tag_name": "v0.3.0", "draft": false, "prerelease": false}]`, "stable", "2.1.3"},
+	} {
+		if out, err := runReleaseAppcast(t, c.in, "feed-offers", c.channel, c.version); err == nil {
+			t.Errorf("%s: feed-offers %s %s printed %q", c.name, c.channel, c.version, out)
+		}
+	}
+}
+
+// TestPublishingChecksTheFeed: both ways a Voxt 2 update reaches installed
+// apps run feed-check right after: a beta in Voxt Release, once its
+// prerelease exists, and a release when it is published.
+func TestPublishingChecksTheFeed(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile("../.github/workflows/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	release := read("voxt-release.yaml")
+	publish := strings.Index(release, "- name: Publish the beta as a prerelease")
+	check := strings.Index(release, `scripts/release-appcast.sh feed-check beta "$VERSION" "$GITHUB_REPOSITORY"`)
+	if publish < 0 || check < publish {
+		t.Error("Voxt Release must check the beta feed after it publishes the prerelease")
+	}
+	published := read("voxt-update-feed-check.yaml")
+	for _, want := range []string{
+		"release:\n    types: [published]",
+		"startsWith(github.event.release.tag_name, 'voxt-v')",
+		`scripts/release-appcast.sh feed-check "$channel" "$version" "$GITHUB_REPOSITORY"`,
+	} {
+		if !strings.Contains(published, want) {
+			t.Errorf("Voxt Update Feed Check lacks %q", want)
+		}
+	}
+}
+
 func TestVoxt2GitHubManifest(t *testing.T) {
 	manifest := `{"version":"2.1.1","url":"https://voxt.actnow.dev/updates/voxt2/voxt-2.1.1-darwin-arm64.tar.gz","size":123,"signature":"signed","deltas":[{"from":"2.1.0","url":"https://voxt.actnow.dev/updates/voxt2/voxt-2.1.0-to-2.1.1-darwin-arm64.delta","size":12,"signature":"delta"}],"previous":[{"version":"2.1.0","url":"https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.0/voxt-2.1.0-darwin-arm64.tar.gz","size":100,"signature":"old"}]}`
 	out, err := runReleaseAppcast(t, manifest, "github-manifest", "2.1.1", "sgl-project/sglang-omni")

@@ -340,6 +340,14 @@ jobs:
                 gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
               done
 
+      # Installed betas read their updates from these prereleases (scripts/release-appcast.sh feed-check):
+      # fail here when the one just published is not what their feed resolves to, or its files do not download.
+      - name: Check that the beta feed offers this beta
+        if: env.IS_BETA == 'true' && env.IS_SIGNED == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release-appcast.sh feed-check beta "$VERSION" "$GITHUB_REPOSITORY"
+
       - name: Create the draft release
         if: env.IS_RELEASE == 'true'
         env:

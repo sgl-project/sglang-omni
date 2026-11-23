@@ -17,7 +17,7 @@ import (
 //
 //	https://github.com/<owner>/<repo>/releases/download/<prefix>{version}/update-<target>.json
 //
-// and ResolveFeed finds the newest release tagged <prefix> through the
+// and ResolveFeed finds the highest version tagged <prefix> through the
 // GitHub API. The beta channel of such a feed (updates.prereleases) names
 // the manifest under beta/,
 //
@@ -53,10 +53,10 @@ func TaggedFeed(repo, prefix, name string) string {
 }
 
 // ResolveFeed returns the URL of the manifest that feed names: feed itself,
-// or for a feed of tagged releases (TaggedFeed) the manifest of the newest
-// release with the tag's prefix that is neither a draft nor a prerelease,
-// as the GitHub API lists them, newest first; for its beta channel, the
-// manifest of the highest version tagged prefix, prerelease or not.
+// or for a feed of tagged releases (TaggedFeed) the manifest of the highest
+// version with the tag's prefix that is neither a draft nor a prerelease;
+// for its beta channel, of the highest version tagged prefix, prerelease
+// or not.
 func ResolveFeed(ctx context.Context, feed string, get Getter) (string, error) {
 	if !strings.Contains(feed, VersionPlaceholder) {
 		return feed, nil
@@ -95,9 +95,9 @@ func parseTaggedFeed(feed string) (repo, prefix string, err error) {
 	return parts[0] + "/" + parts[1], prefix, nil
 }
 
-// latestTagged returns the tag of the newest release of repo tagged
-// prefix that is neither a draft nor a prerelease; with pre, the tag of
-// the highest version among it and the prereleases listed before it.
+// latestTagged returns the tag of the highest version among the releases
+// of repo tagged prefix that are neither drafts nor prereleases, on the
+// first page of the list that has one; with pre, prereleases count too.
 func latestTagged(ctx context.Context, get Getter, repo, prefix string, pre bool) (string, error) {
 	best := ""
 	for page := 1; page <= maxReleasePages; page++ {
@@ -113,11 +113,10 @@ func latestTagged(ctx context.Context, get Getter, repo, prefix string, pre bool
 			if best == "" || Compare(strings.TrimPrefix(r.TagName, prefix), strings.TrimPrefix(best, prefix)) > 0 {
 				best = r.TagName
 			}
-			if !r.Prerelease {
-				return best, nil
-			}
 		}
-		if len(releases) < releasesPerPage {
+		// The highest version of the page, not its first: a fix for an
+		// older line published after a newer release is listed above it.
+		if best != "" || len(releases) < releasesPerPage {
 			break
 		}
 	}
