@@ -27,7 +27,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Consistent Voxt icons and compact meeting controls** (#4172): the menu bar, Transcribe, Shortcuts, audio settings and the meeting level meter use the same Voxt microphone. The Meetings page has its own conversation icon, and its overlay controls are aligned and compact.
 - **Easier setup navigation** (#4172): clicking an earlier setup step's heading returns to it without losing progress. Home numbers the remaining setup steps and omits the shortcut hint while Accessibility is itself a step.
-- **The opening plays once per app version** (#4172): it appears after an update, but not on a same-version restart or when Reduce Motion is on.
+- **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
 
@@ -79,7 +79,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **统一 Voxt 图标并精简会议控制区**（#4172）：菜单栏、转录、快捷键、音频设置和会议音量表使用同一个 Voxt 麦克风图标。会议使用独立的对话图标，会议浮窗控制按钮对齐且更紧凑。
 - **新手引导更容易返回前面的步骤**（#4172）：点击之前步骤的标题即可返回，并保留进度。首页为剩余设置步骤编号；辅助功能本身是待完成步骤时，不再重复显示快捷键提示。
-- **每个版本只播放一次开场**（#4172）：更新后会播放开场，同一版本重启不会重复播放；开启“减少动态效果”时跳过。
+- **每次启动都播放开场**：退出 Voxt 后再打开，都会播放开场。Voxt 运行时重新打开窗口、登录时在菜单栏启动，或开启“减少动态效果”时不播放。
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
