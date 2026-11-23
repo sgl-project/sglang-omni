@@ -507,6 +507,10 @@ def encode_audio(
         )
         if encoder_sample_rate < sample_rate and arr.size:
             encoder_audio = soxr.resample(arr.T, sample_rate, encoder_sample_rate).T
+            if not encoder_audio.size:
+                encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
+            else:
+                pass
         else:
             encoder_audio = resample_linear(arr, sample_rate, encoder_sample_rate)
         encoded_sample_rate = (

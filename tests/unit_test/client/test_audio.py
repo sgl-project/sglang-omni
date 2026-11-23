@@ -433,3 +433,17 @@ def test_opus_automatic_downsampling_filters_aliases_and_preserves_stereo():
     alias = spectrum[np.argmin(np.abs(frequencies - 11000))]
     signal = spectrum[np.argmin(np.abs(frequencies - 1000))]
     assert alias / signal < 0.02
+
+
+def test_opus_automatic_downsampling_preserves_one_sample():
+    """A short nonempty input must produce decodable Opus audio."""
+    encoded = encode_audio(
+        np.array([0.5], dtype=np.float32),
+        response_format="opus",
+        sample_rate=192000,
+        allow_format_fallback=False,
+    )
+    decoded_rate, decoded = decode_audio(encoded.audio_bytes)
+    assert encoded.mime_type == FORMAT_MIME_TYPES["opus"]
+    assert decoded_rate == encoded.sample_rate == 48000
+    assert decoded.size > 0
