@@ -36,7 +36,7 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 	t := c.Theme()
 	badge := func(permission permissionRowViewState) {
 		if !permission.Known {
-			statusMark(c, icons.InfoCircle, tok(t).Text2, permission.Status).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
+			statusMark(c, icons.InfoCircle, tok(t).Text2, permission.Status).Tooltip(permission.Tip)
 		} else if permission.Allowed {
 			statusMark(c, icons.CheckCircle, t.Success, permission.Status)
 		} else {
@@ -110,5 +110,6 @@ func permissionRows(c *ui.Context, state permissionsViewState, actions permissio
 		if secondaryIconButton(c.Key("perm-recheck"), icons.Refresh, i18n.T("Check again")).Label(i18n.T("Check again")).Clicked() {
 			actions.recheckPermissions()
 		}
+		infoTip(c.Key("perm-note"), i18n.T("After changing a permission, you may need to reopen Voxt."))
 	})
 }

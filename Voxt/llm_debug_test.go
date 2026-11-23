@@ -98,7 +98,7 @@ func TestLLMDebugButtonsFit(t *testing.T) {
 // Open Language models (#3781). Esc in an open menu closes only the menu.
 func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
-	a, _, _ := newTestApp(t)
+	a, _, tt := newTestApp(t)
 	a.updateSettings(func(s *settings.Settings) {
 		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
 		s.Features.Transcribe.Prompt = "Transcribe saved"
@@ -106,6 +106,9 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	})
 	a.readUnreadKeys()
 	a.navigate(llmDebugPath)
+	if !has(tt, "Nothing is saved until you click Use this prompt.") {
+		t.Error("the page does not say when the edited prompt is saved")
+	}
 	model := a.llmDebugModel()
 	if model.SavedPrompt != "Transcribe saved" || model.Edited {
 		t.Fatalf("initial prompt %q, edited %v", model.SavedPrompt, model.Edited)
@@ -117,6 +120,23 @@ func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
 	}
 	if len(model.PresetStates) != 3 || model.PresetStates[0].SavedPrompt != "Transcribe saved" || model.PresetStates[2].SavedPrompt != "Rewrite saved" {
 		t.Fatalf("preset prompts %+v", model.PresetStates)
+	}
+	a.llmDbg.prompt = "Rewrite draft"
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	a.llmDbg.prompt = "Transcribe draft"
+	a.llmDbg.preset = "Rewrite"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Rewrite saved" || !model.Edited || a.llmDbg.prompt != "Rewrite draft" {
+		t.Fatalf("rewrite draft was not preserved: %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	a.llmDbg.preset = "Transcribe"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe saved" || !model.Edited || a.llmDbg.prompt != "Transcribe draft" {
+		t.Fatalf("transcribe draft was not preserved: %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe saved" || a.prefs.Features.Rewrite.Prompt != "Rewrite saved" {
+		t.Fatal("switching presets saved a draft")
 	}
 }
 

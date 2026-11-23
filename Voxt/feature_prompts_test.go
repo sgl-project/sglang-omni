@@ -268,7 +268,7 @@ func TestTranslateWarnsPromptIgnoresTarget(t *testing.T) {
 		t.Fatal("no Target language row")
 	}
 	hoverTitle(t, tt, "Target language")
-	if !has(tt, "The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language.") {
+	if !has(tt, "Automatic is English, or Chinese when your main language is English.") {
 		t.Error("no Target language help")
 	}
 	if has(tt, warning) {

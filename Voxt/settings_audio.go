@@ -37,7 +37,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 		sectionTitleText(c, i18n.T("Microphones"))
 		ui.Spacer(c)
-		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!state.HelperReady || state.DevicesLoading).Clicked() {
+		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!state.HelperReady).Clicked() {
 			actions.loadDevices()
 		}
 	})
@@ -114,7 +114,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 			actions.setLiveResult(local.liveResult)
 		}
 	})
-	settingRow(c, "audio-upload", i18n.T("Upload size limit"), i18n.T("For speech services that take the whole recording (OpenAI, Doubao): a longer recording goes in pieces of at most this size. 0 uses the service's own limit: 25 MB for OpenAI, 100 MB for Doubao."), func() {
+	settingRow(c, "audio-upload", i18n.T("Upload size limit"), i18n.T("A longer recording is uploaded in pieces of at most this size. 0 uses the service's own limit."), func() {
 		if numberInput(c.Key("audio-upload-mb"), &local.uploadMB, 0, 100, 1, numOpts{Label: i18n.T("Upload size limit in MB")}) {
 			actions.setUploadMB(local.uploadMB)
 		}
@@ -142,7 +142,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 func deviceName(c *ui.Context, name, notes string, inUse, present bool) {
 	t := c.Theme()
 	k := tok(t)
-	ic, col := icons.MicrophoneLarge, k.Text3
+	ic, col := icons.VoxtMicrophone, k.Text3
 	if inUse {
 		ic, col = icons.CheckCircle, k.Accent
 	}

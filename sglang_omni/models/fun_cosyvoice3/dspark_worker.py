@@ -23,7 +23,7 @@ from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import PPProxyTensors
 from sglang.srt.model_executor.pool_configurator import MemoryPoolConfig
 from sglang.srt.models.dspark import BaseDSparkMarkovHead
-from sglang.srt.runtime_context import get_parallel
+from sglang.srt.runtime_context import get_exec, get_parallel
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
@@ -56,6 +56,7 @@ from sglang_omni.models.fun_cosyvoice3.dspark_sampling import (
     exact_accept,
     sample_draft_block,
 )
+from sglang_omni.models.fun_cosyvoice3.exact_draft_graph import ExactDraftGraphSampler
 from sglang_omni.models.fun_cosyvoice3.model_runner import COSYVOICE3_RAS_WINDOW_SIZE
 from sglang_omni.models.fun_cosyvoice3.sglang_model import TOTAL_VOCAB_SIZE
 from sglang_omni.sampling.seed import SAMPLING_SEED_MASK, derive_sampling_seed
@@ -410,6 +411,12 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             kv_injector=self._kv_injector,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             tp_sync=self._tp_sync,  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         )
+        assert (
+            self._sampling_accept_graph is None
+        )  # noqa: leading-underscore  # the inherited graph must not bypass exact verification
+        assert (
+            self._verify_epilogue is None
+        )  # noqa: leading-underscore  # an inherited epilogue would read draft tokens from its own buffer
         self._verify_executor = (
             self.exact_verify_executor
         )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
@@ -517,9 +524,16 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
 
     def _maybe_build_draft_sampler(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         self,
-    ) -> None:
-        """The folded in-graph sampler would skip the mirrored Markov head."""
-        return None
+    ) -> ExactDraftGraphSampler:
+        """Capture the exact sampler in every draft graph."""
+        return ExactDraftGraphSampler(
+            draft_model=self.draft_model,
+            gamma=self.gamma,
+            max_batch_size=max(get_exec().graph.cuda_graph_config.decode.bs),
+            device=self.device,
+            draft_noise=self._proposer.noise,  # noqa: leading-underscore  # inherited proposer
+            tp_sync=self._tp_sync,  # noqa: leading-underscore  # inherited synchronization context
+        )
 
     def forward_batch_generation(
         self,
@@ -552,6 +566,15 @@ class FunCosyVoice3DSparkWorker(DSparkWorkerV2):
             )
             self.draft_model.markov_head.sampling_state = state.draft
             self.exact_verify_executor.step_state = state
+            draft_sampler = (
+                self._draft_sampler
+            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            # A batch above every captured graph size runs eager and reads no staged buffer.
+            if draft_sampler is None or len(batch.reqs) > draft_sampler.max_bs:
+                pass
+            else:
+                # note (yaourt): committed history changes every step, while the proposer restages only when the sampling tensors are rebound.
+                draft_sampler.stage_step_state(state.draft)
         else:
             pass
         return super().forward_batch_generation(

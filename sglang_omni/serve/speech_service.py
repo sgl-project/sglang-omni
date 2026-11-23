@@ -17,7 +17,10 @@ import torch
 from pydantic import AliasChoices, BaseModel, ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
-from sglang_omni.client.audio import audio_encoding_unavailable_reason
+from sglang_omni.client.audio import (
+    audio_encoding_unavailable_reason,
+    audio_output_sample_rate_error,
+)
 from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, CustomVoiceConfig
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -340,6 +343,7 @@ class SpeechRequestValidator:
         updates: SpeechRequestUpdates = {}
         stream = request.stream or request.stream_format == "sse"
         response_format = normalize_response_format(request.response_format)
+        validate_output_sample_rate(request.sample_rate, response_format)
         if stream and response_format not in ("pcm", "wav"):
             raise bad_request(
                 "Streaming requires response_format='pcm' or 'wav'",
@@ -753,6 +757,7 @@ class SpeechRequestValidator:
                 response_format=prepared.request.response_format,
                 speed=self.resolve_encode_speed(prepared.request),
                 allow_format_fallback=False,
+                output_sample_rate=prepared.request.sample_rate,
             )
         except ClientError as exc:
             raise speech_generation_error(exc) from exc
@@ -762,6 +767,7 @@ class SpeechRequestValidator:
             audio_data=base64.b64encode(result.audio_bytes).decode("ascii"),
             format=result.format,
             media_type=result.mime_type,
+            sample_rate=result.sample_rate,
             finish_reason=result.finish_reason,
             text=result.text,
         )
@@ -855,6 +861,7 @@ class SpeechRequestValidator:
 
     def validate_batch_defaults(self, batch: CreateSpeechBatchRequest) -> None:
         response_format = normalize_response_format(batch.response_format)
+        validate_output_sample_rate(batch.sample_rate, response_format)
         self.validate_encoder_dependency(response_format)
         if not TTS_SPEED_MIN <= float(batch.speed) <= TTS_SPEED_MAX:
             raise bad_request(
@@ -974,6 +981,7 @@ class SpeechRequestValidator:
             else:
                 pass
         for field_name in (
+            "sample_rate",
             "max_new_tokens",
             "initial_codec_chunk_frames",
             "token_count",
@@ -1365,6 +1373,14 @@ def media_reference_from_descriptor(descriptor: dict[str, str]) -> str:
     else:
         pass
     return f"data:{descriptor['media_type']};base64,{descriptor['data']}"
+
+
+def validate_output_sample_rate(sample_rate: int | None, response_format: str) -> None:
+    sample_rate_error = audio_output_sample_rate_error(response_format, sample_rate)
+    if sample_rate_error is not None:
+        raise bad_request(sample_rate_error, param="sample_rate")
+    else:
+        pass
 
 
 def normalize_response_format(value: str) -> str:

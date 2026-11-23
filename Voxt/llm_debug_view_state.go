@@ -130,7 +130,7 @@ func llmDebugStateForLocal(state llmDebugViewState, local *llmDebugUI) llmDebugV
 			continue
 		}
 		if local.filled != local.preset {
-			local.prompt, local.filled = preset.SavedPrompt, local.preset
+			local.fillPreset(local.preset, preset.SavedPrompt)
 			state.Result = nil
 		}
 		state.SavedPrompt = preset.SavedPrompt
