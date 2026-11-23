@@ -192,6 +192,17 @@ func TestLLMDebugUneditedPresetReadsLatestSavedPrompt(t *testing.T) {
 	if a.prefs.Features.Transcribe.Prompt != "Transcribe newest" {
 		t.Fatal("reading the return-to-saved preset overwrote the newer saved prompt")
 	}
+
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Prompt = "Transcribe same-preset save"
+	})
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe same-preset save" || model.Edited || a.llmDbg.prompt != "Transcribe same-preset save" {
+		t.Fatalf("the unchanged preset kept a stale prompt: model %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if a.prefs.Features.Transcribe.Prompt != "Transcribe same-preset save" {
+		t.Fatal("reading the unchanged preset overwrote the newer saved prompt")
+	}
 }
 
 func TestLLMDebugCloses(t *testing.T) {

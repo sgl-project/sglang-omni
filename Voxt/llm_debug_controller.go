@@ -200,9 +200,10 @@ func (a *app) prepareLLMDebug() {
 	if !slices.Contains(titles, u.preset) {
 		u.preset = titles[0]
 	}
-	if u.filled != u.preset {
-		p := presets[slices.Index(titles, u.preset)]
-		u.fillPreset(u.preset, a.savedPrompt(p))
+	p := presets[slices.Index(titles, u.preset)]
+	saved := a.savedPrompt(p)
+	if u.filled != u.preset || u.saved != saved {
+		u.fillPreset(u.preset, saved)
 		u.res = nil
 	}
 }

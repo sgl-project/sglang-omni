@@ -136,7 +136,7 @@ func llmDebugStateForLocal(state llmDebugViewState, local *llmDebugUI) llmDebugV
 		if preset.Title != local.preset {
 			continue
 		}
-		if local.filled != local.preset {
+		if local.filled != local.preset || local.saved != preset.SavedPrompt {
 			local.fillPreset(local.preset, preset.SavedPrompt)
 			state.Result = nil
 		}

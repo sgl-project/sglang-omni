@@ -157,7 +157,7 @@ func TestRemoteDemoActionControls(t *testing.T) {
 }
 
 // TestRemoteDemoFixturePreservesEditedPresetDrafts drives the same fixture
-// state path as the debug page and checks that switching presets saves nothing.
+// state path as the debug page and checks preset switches and saved-prompt updates.
 func TestRemoteDemoFixturePreservesEditedPresetDrafts(t *testing.T) {
 	host, err := loadMeetingDemoHost("testdata/meeting")
 	if err != nil {
@@ -181,6 +181,17 @@ func TestRemoteDemoFixturePreservesEditedPresetDrafts(t *testing.T) {
 	state = host.remoteDebugState()
 	if local.prompt != "Rewrite edited draft" || state.Form.Prompt != local.prompt || !state.Edited {
 		t.Fatalf("Rewrite lost its edited draft: %+v", local)
+	}
+	local.prompt = remoteDebugSavedPrompt(host)
+	_ = host.remoteDebugState()
+	for i, preset := range host.current().state.RemoteDebug.PresetStates {
+		if preset.Title == local.preset {
+			host.current().state.RemoteDebug.PresetStates[i].SavedPrompt = "Fixture newer saved prompt · Rewrite"
+		}
+	}
+	state = host.remoteDebugState()
+	if local.prompt != "Fixture newer saved prompt · Rewrite" || state.Form.Prompt != local.prompt || state.Edited {
+		t.Fatalf("the unchanged fixture preset kept a stale prompt: %+v", local)
 	}
 	if len(host.calls) != 0 {
 		t.Fatalf("switching presets triggered actions: %q", host.calls)
