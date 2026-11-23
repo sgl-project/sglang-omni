@@ -21,6 +21,8 @@ func TestImport(t *testing.T) {
 			[]Snippet{{Trigger: "我的邮箱", Text: "a@b.c"}}, 0, false},
 		{"incomplete items", `[{"name":"only a trigger"},{"text":"only text"},{"name":"...","text":"x"},{"name":"ok","text":"fine"}]`,
 			[]Snippet{{Trigger: "ok", Text: "fine"}}, 3, false},
+		{"a Chinese trigger too short", `[{"name":"地址","text":"x"},{"name":"我的地址","text":"y"}]`,
+			[]Snippet{{Trigger: "我的地址", Text: "y"}}, 1, false},
 		{"not snippets", `{"terms":[]}`, nil, 0, true},
 		{"not JSON", `trigger,text`, nil, 0, true},
 	} {

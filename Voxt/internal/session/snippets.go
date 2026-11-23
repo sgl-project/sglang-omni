@@ -25,15 +25,15 @@ func (r *run) insertSnippet(text string) bool {
 // their snippets, after the language model, so that it cannot change
 // them. text is what the model was given, unmarked: the model got its
 // triggers marked (transcribeInput), and a mark it kept is its snippet
-// even where it changed the words inside (snippet.Restore).
+// even where it changed the words inside (snippet.Restore). Only the
+// triggers said are replaced: one the model wrote itself ("my mail" made
+// "my email") stays as written.
 func (r *run) expandSnippets(text, result string) string {
-	if len(r.snippets) == 0 {
+	_, said := snippet.Mark(text, r.snippets)
+	if len(said) == 0 {
 		return result
 	}
-	expanded := snippet.Expand(result, r.snippets) // nothing marked: the model's text is its own
-	if _, marked := snippet.Mark(text, r.snippets); len(marked) > 0 {
-		expanded = snippet.Restore(result, marked, r.snippets)
-	}
+	expanded := snippet.Restore(result, said, said)
 	if expanded != result {
 		r.logf("info", "snippets replaced their triggers: %s", r.logText(expanded))
 	}
@@ -44,10 +44,15 @@ func (r *run) expandSnippets(text, result string) string {
 // their snippets, so the card shows no marks; parts are what the model
 // was given (a draft of text without marks is left as it is).
 func (r *run) draftSnippets(draft string, parts []compose.Part) string {
+	var said []snippet.Snippet
 	for _, p := range parts {
 		if strings.Contains(p.Text, snippet.Open) {
-			return snippet.Restore(draft, nil, r.snippets)
+			_, s := snippet.Mark(snippet.Unmark(p.Text), r.snippets)
+			said = append(said, s...)
 		}
 	}
-	return draft
+	if len(said) == 0 {
+		return draft
+	}
+	return snippet.Restore(draft, nil, said)
 }

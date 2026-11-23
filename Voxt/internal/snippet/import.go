@@ -18,8 +18,8 @@ var ErrNotSnippets = errors.New("not a list of snippets")
 // Import reads snippets from a JSON file: a list of objects, or Voxt's
 // own {"snippets": [...]}. An object's trigger is its "trigger",
 // "keyword" or "name" (Wispr Flow's), its text its "text", "expansion",
-// "content" or "snippet". Items without both, or over the limits, are
-// skipped and counted.
+// "content" or "snippet". Items without both, over the limits or with a
+// Chinese trigger under MinWordless characters are skipped and counted.
 func Import(data []byte) (out []Snippet, skipped int, err error) {
 	if len(data) > MaxImportBytes {
 		return nil, 0, ErrNotSnippets
@@ -39,7 +39,7 @@ func Import(data []byte) (out []Snippet, skipped int, err error) {
 			Trigger: strings.TrimSpace(field(item, "trigger", "keyword", "name")),
 			Text:    strings.TrimRight(strings.ReplaceAll(field(item, "text", "expansion", "content", "snippet"), "\r\n", "\n"), " \r\n"),
 		}
-		if i >= MaxImportItems || len(normalize(s.Trigger)) == 0 || strings.TrimSpace(s.Text) == "" ||
+		if key := normalize(s.Trigger); i >= MaxImportItems || len(key) == 0 || tooShort(key) || strings.TrimSpace(s.Text) == "" ||
 			len([]rune(s.Trigger)) > MaxTrigger || len([]rune(s.Text)) > MaxText {
 			skipped++
 			continue
