@@ -8,7 +8,9 @@ VoxtNew is a Go app on MyGo (native UI, no cgo) with one small Swift helper proc
 
 ## 1. Package map
 
-On a new setup, `opening.go` shows the black opening animation once before the existing setup guide. `settings.Setup.OpeningShown` is persisted separately from guide completion, so restarting an unfinished guide does not replay it; completed setups and reduced-motion preferences skip it. The opening artwork uses the centered microphone with orange and peach stars and the official SGLang-Omni logo in its attribution.
+Smaller interface icons use the star-free microphone in `internal/icons/voxt-microphone.svg`, inheriting the surrounding text color; the menu bar uses its template PNG at the existing 18 pt size and keeps the recording dot. The setup guide's header returns to earlier steps without clearing settings or completed tries, with navigation disabled during a guide try. Notification cards no longer show their creation time on hover, where it covered the sidebar navigation.
+
+On the first launch of each app version, `opening_controller.go` starts the black opening animation that `opening.go` draws, including after an upgrade. `settings.Setup.OpeningShown` and `OpeningVersion` are persisted separately from guide completion, so restarting the same version or reopening the guide does not replay it. A completed setup returns to the main interface after the opening; a new setup continues to the existing guide. App and system reduced-motion preferences skip the opening and mark the version as seen. The opening artwork uses the centered microphone with orange and peach stars and the official SGLang-Omni logo in its attribution.
 
 ```
 github.com/sgl-project/sglang-omni/Voxt
@@ -26,7 +28,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── logs/             log ring + rotated files
 │   ├── notify/           the notification centre (kept in the store's documents)
 │   ├── activity/         Home's activity calendar: results, characters and speech time per day (document activity:days)  (leaf)
-│   ├── lang/             the language table, 652 languages                                     (leaf)
+│   ├── lang/             the language table and Simplified/Traditional Chinese conversion       (leaf)
 │   ├── permission/       Microphone, Accessibility and Speech Recognition (purego on darwin;
 │   │                     Fake for tests); system audio is asked for through the helper    (leaf)
 │   ├── macx/             activating an app again before a paste (purego on darwin); the       (leaf)
@@ -100,6 +102,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     long speech in pieces (Pieces, BuildParts, JoinParts)
 │   ├── deliver/          the insert transaction: textio.focus, then textio.paste or the answer card
 │   ├── historyapi/       other programs reading the history: the exported fields (Row), its renderers, the Unix-socket server and client (`Voxt history`, docs/history-access.md)  (store)
+│   ├── dictapi/          `Voxt dictionary import`: the command sends a file to the running app over a Unix socket; the app merges it as Dictionary → Import… does and answers with counts
 │   ├── hotkey/           the shortcuts' grammar, bindings for hotkey.configure and the Carbon
 │   │                     fallback, conflict checks, routing an event to an action
 │   ├── appctx/           app enhancement: groups (document appctx:rules), URL rules and their
@@ -305,7 +308,7 @@ While a session is live (or the answer card shows) the bindings go to the helper
 | `historyViewState`, `historySettingsViewState`, `historyAccessViewState`; `historyActions`, `historySettingsActions`, `historyAccessActions`; `a.historyChanged()` | history_view_state.go, history_settings_view_state.go, history_access_view_state.go (builders); history_actions.go (intents); history_controller.go, history_settings_controller.go, history_export_controller.go, history_retry.go, history_access_controller.go (implementations) | pages.go, Home's recent-entry menu, Settings → Privacy, and the fixture demo; session_link.go after an entry is kept or changed |
 | `appEnhancementViewState`; `appEnhancementActions`; `a.aeBook` (`ruleBook`: the groups for sessions, goroutine-safe), `a.aeRules` + `a.setRules(r)`, `a.sceneConfig()`, `a.frontChanged(app)`, `a.refreshPreview(force)`; `appEnhancementIconSource` | appenhance_view_state.go (builder), appenhance_actions.go (intents), appenhance_controller.go (page actions and app-list reads), appenhance.go (session and preview wiring), appicons_controller.go (icon reads) | pages.go and the fixture demo; session_link.go (the manager's Scene), helperlink.go (app.activated) |
 | `uitext.SourceTextFor(translator, source, pattern)` | internal/uitext (history.go) | App enhancement's preview |
-| `dictionaryViewState`, `dictionaryNotesViewState`, `notesViewState`; `dictionaryActions`, `notesActions`; `a.loadDict()`, `a.loadNotes()` | dictionary_view_state.go, dictionary_notes_state.go, notes_view_state.go (builders); dictionary_actions.go (intents); dictionary_controller.go, dictionary_notes_controller.go, dictionary_scan_controller.go, dictionary_suggest_controller.go, dictionary_transfer.go, notes_controller.go (implementations) | pages.go and the fixture demo; selection, correction learning, legacy import, and completed note sessions refresh the controllers |
+| `dictionaryViewState`, `dictionaryNotesViewState`, `notesViewState`; `dictionaryActions`, `notesActions`; `a.loadDict()`, `a.loadNotes()` | dictionary_view_state.go, dictionary_notes_state.go, notes_view_state.go (builders); dictionary_actions.go (intents); dictionary_controller.go, dictionary_notes_controller.go, dictionary_scan_controller.go, dictionary_suggest_controller.go, dictionary_transfer.go, dictionary_import.go, dictionary_socket.go, dictionary_profiles_controller.go, notes_controller.go (implementations) | pages.go and the fixture demo; selection, correction learning, legacy import, and completed note sessions refresh the controllers |
 | `permissionsViewState`; `permissionsActions`; `a.permSys` (`permission.System`), `a.recheckPermissions()`, `a.askPermission(which, then)` | permissions_view_state.go (builder), permissions.go (view and intents), permissions_controller.go (implementation) | Settings → Permissions, Diagnostics, Home, the setup guide |
 | `tryCardViewState`; `tryCardActions`; `a.tryCard(c, tryOpts)`, `a.tryIntro(feature)`, `a.startTry(kind)`, `a.startSessionID(req)` (the id, to tell a try from another session) | try_view_state.go (builder); try_actions.go (intents); try_controller.go; pages.go (`a.tryCard`); session_control.go | the feature pages, Home, the setup guide, and the fixture demo |
 | `homeViewState`, `homeReadinessViewState`; `homeActions`; `a.prepareHomePage()`, `a.homePageModel(now)`, `a.homeChanged()`, `readHome`; `a.tryPlace(kind, target)`, `a.tryStarted` | home_view_state.go, home_readiness_state.go (builders); home_actions.go (intents); home_controller.go (history, readiness, actions); home_try.go (try places) | pages.go and the fixture demo; session_hotkeys.go (`hotkeyFired`); events.go after history changes |

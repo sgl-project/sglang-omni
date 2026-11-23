@@ -1,18 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch SGLang's chat server with a qwen3_coder tool call parser that streams string arguments.
+"""Launch SGLang's chat server with a qwen3_coder tool call parser that streams string arguments and reads a call a continued assistant message opened.
 
 Run it in place of python -m sglang.launch_server, with the same arguments.
 """
 
 import json
 import runpy
+from collections.abc import AsyncIterator
 
-from sglang.srt.entrypoints.openai.protocol import Tool
+from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest, Tool
+from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from sglang.srt.function_call.core_types import StreamingParseResult, ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
+from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
 
 STRING_TYPES = frozenset({"string", "str", "text", "varchar", "char"})
+TOOL_CALL_START = "<tool_call>"
+TOOL_CALL_END = "</tool_call>"
+# SGLang's own streamed tool call parsing, before main replaces it with stream_continued_call.
+SGLANG_TOOL_CALL_STREAM = (
+    OpenAIServingChat._process_tool_call_stream  # noqa: leading-underscore
+)
 
 
 def json_string_body(text: str) -> str:
@@ -236,8 +245,55 @@ class StreamingQwen3CoderDetector(Qwen3CoderDetector):
         return self.advance(length)
 
 
+async def stream_continued_call(
+    serving_chat: OpenAIServingChat,
+    index: int,
+    delta: str,
+    parser_dict: dict[int, FunctionCallParser | JsonArrayParser],
+    content: dict[str, object],
+    request: ChatCompletionRequest,
+    has_tool_calls: dict[int, bool],
+    created: int,
+    continuous_usage_stats: bool = False,
+    flush: bool = False,
+) -> AsyncIterator[str]:
+    """SGLang's streamed tool call parsing, which first reads the call that a continued assistant message opened and left open, so the completion streams as that call's arguments rather than as text; the cascade's openai_chat node sends such a message with required_call_opening."""
+    final_message = request.messages[-1]
+    opening = ""
+    # Note (wenyao): SGLang 0.5.23 shows the prompt only to response-template parsers, so the qwen3_coder detector gets the opening in front of the first delta instead.
+    if (
+        index not in parser_dict
+        and request.continue_final_message
+        and final_message.role == "assistant"
+        and isinstance(final_message.content, str)
+    ):
+        call_start = final_message.content.rfind(TOOL_CALL_START)
+        if call_start != -1 and TOOL_CALL_END not in final_message.content[call_start:]:
+            opening = final_message.content[call_start:]
+        else:
+            pass
+    else:
+        pass
+    async for chunk in SGLANG_TOOL_CALL_STREAM(
+        serving_chat,
+        index,
+        opening + delta,
+        parser_dict,
+        content,
+        request,
+        has_tool_calls,
+        created,
+        continuous_usage_stats,
+        flush,
+    ):
+        yield chunk
+
+
 def main() -> None:
     FunctionCallParser.ToolCallParserEnum["qwen3_coder"] = StreamingQwen3CoderDetector
+    OpenAIServingChat._process_tool_call_stream = (  # noqa: leading-underscore
+        stream_continued_call
+    )
     runpy.run_module("sglang.launch_server", run_name="__main__", alter_sys=True)
 
 

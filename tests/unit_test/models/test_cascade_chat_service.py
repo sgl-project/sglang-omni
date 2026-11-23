@@ -3,14 +3,18 @@
 
 import json
 import random
+import runpy
+from types import SimpleNamespace
 
 import pytest
-from sglang.srt.entrypoints.openai.protocol import Function, Tool
+from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest, Function, Tool
+from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
 
 from sglang_omni.models.streaming_cascade.chat_service import (
     StreamingQwen3CoderDetector,
+    main,
 )
 
 TOOLS = [
@@ -151,3 +155,87 @@ def test_a_call_the_token_budget_cut_keeps_the_text_written_so_far():
 def test_the_parser_name_stays_qwen3_coder():
     assert "qwen3_coder" in FunctionCallParser.ToolCallParserEnum
     assert issubclass(StreamingQwen3CoderDetector, Qwen3CoderDetector)
+
+
+OPENING = "<tool_call>\n<function=tts_start>\n<parameter=text>\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_message", "is_continued", "completion", "reply", "calls"),
+    [
+        (
+            OPENING,
+            True,
+            ["Hello", " world.", "\n</parameter>\n</function>\n</tool_call>"],
+            "",
+            [("tts_start", {"text": "Hello world."})],
+        ),
+        (call("tts_start", [("text", "Hi.")]), True, [" More."], " More.", []),
+        (OPENING, False, ["Hi."], "Hi.", []),
+    ],
+)
+async def test_a_completion_continues_the_call_its_assistant_message_left_open(
+    monkeypatch: pytest.MonkeyPatch,
+    final_message: str,
+    is_continued: bool,
+    completion: list[str],
+    reply: str,
+    calls: list[tuple[str, dict[str, str]]],
+):
+    """SGLang streamed a completion that continued an assistant message ending in a call's opening as text, the call's closing tags included, so the dialog would have spoken them."""
+    # main patches SGLang and then serves; the patches are undone after the test, and nothing is served.
+    monkeypatch.setitem(
+        FunctionCallParser.ToolCallParserEnum, "qwen3_coder", Qwen3CoderDetector
+    )
+    monkeypatch.setattr(
+        OpenAIServingChat,
+        "_process_tool_call_stream",
+        OpenAIServingChat._process_tool_call_stream,  # noqa: leading-underscore
+    )
+    monkeypatch.setattr(
+        runpy, "run_module", lambda module_name, run_name, alter_sys: None
+    )
+    main()
+    serving_chat = OpenAIServingChat.__new__(OpenAIServingChat)
+    serving_chat.tool_call_parser = "qwen3_coder"
+    serving_chat.tokenizer_manager = SimpleNamespace(tokenizer=None)
+    request = ChatCompletionRequest(
+        model="m",
+        messages=[
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": final_message},
+        ],
+        tools=TOOLS,
+        tool_choice="auto",
+        stream=True,
+        continue_final_message=is_continued,
+    )
+    parser_dict = {}
+    streamed_reply = ""
+    names: dict[int, str] = {}
+    arguments: dict[int, str] = {}
+    for position, piece in enumerate(completion, start=1):
+        events = serving_chat._process_tool_call_stream(  # noqa: leading-underscore
+            0,
+            piece,
+            parser_dict,
+            {"meta_info": {"id": "chatcmpl-test"}},
+            request,
+            {},
+            created=0,
+            flush=position == len(completion),
+        )
+        async for event in events:
+            delta = json.loads(event.removeprefix("data: "))["choices"][0]["delta"]
+            streamed_reply += delta.get("content") or ""
+            for tool_call in delta.get("tool_calls") or []:
+                index = tool_call["index"]
+                names[index] = tool_call["function"]["name"] or names.get(index, "")
+                arguments[index] = arguments.get(index, "") + (
+                    tool_call["function"]["arguments"] or ""
+                )
+    assert streamed_reply == reply
+    assert [
+        (names[index], json.loads(arguments[index])) for index in sorted(names)
+    ] == calls

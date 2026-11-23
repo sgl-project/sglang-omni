@@ -7,24 +7,21 @@
       "severity": "error",
       "title": "Third card",
       "body": "Before both.",
-      "action_label": "打开",
-      "time_hint": "1月2日 07:04"
+      "action_label": "打开"
     },
     {
       "id": "fixture-2",
       "severity": "warning",
       "title": "Second card",
       "body": "Before that.",
-      "action_label": "打开",
-      "time_hint": "1月2日 07:04"
+      "action_label": "打开"
     },
     {
       "id": "fixture-1",
       "severity": "info",
       "title": "First card",
       "body": "The newest thing that happened.",
-      "action_label": "打开",
-      "time_hint": "1月2日 07:04"
+      "action_label": "打开"
     }
   ]
 }

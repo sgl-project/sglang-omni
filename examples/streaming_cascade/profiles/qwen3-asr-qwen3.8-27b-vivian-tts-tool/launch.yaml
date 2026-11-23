@@ -49,6 +49,8 @@ session_nodes:
     base_url: "http://127.0.0.1:8003/v1"
     model: Qwen/Qwen3.8-27B
     max_tokens: 512
+    # What qwen3_coder writes before the text of a tts_start call: the model continues it, so decoding starts at the text, and the chat service reads it back as the call.
+    required_call_opening: "<tool_call>\n<function=tts_start>\n<parameter=text>\n"
     tools:
       - name: tts_start
         description: Say text aloud to the user, who hears nothing else you write. Returns when the speech has ended.

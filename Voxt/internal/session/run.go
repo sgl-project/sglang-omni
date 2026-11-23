@@ -261,10 +261,13 @@ func (r *run) resolve(speech bool) {
 	done := make(chan svcResult, 1)
 	r.svcDone = done
 	go func() {
-		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
+		svc, err := r.resolveServices(speech)
 		var terms []store.Term
 		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 			terms, _ = cfg.Glossary(r.ctx)
+		}
+		if r.ctx.Err() != nil {
+			return
 		}
 		done <- svcResult{svc, terms, err}
 	}()
