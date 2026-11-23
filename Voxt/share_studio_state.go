@@ -30,9 +30,8 @@ type shareStroke struct {
 }
 
 type shareStudioViewState struct {
-	// Base is under the strokes: "outfit:<key>" (a built-in hat),
-	// "hat:<name>" (a drawn one) or "picture:<path>" (an imported
-	// picture); "" for none.
+	// Base is under the strokes: "outfit:<key>" (a built-in hat) or
+	// "hat:<name>" (a drawn one); "" for none.
 	Base    string        `json:"base,omitempty"`
 	Strokes []shareStroke `json:"strokes,omitempty"`
 	Color   string        `json:"color"`

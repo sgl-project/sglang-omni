@@ -10,8 +10,8 @@ type shareActions interface {
 	// prompt or its mic); stopShareTry ends the recording.
 	startShareTry()
 	stopShareTry()
-	// shareBitmap is a drawn hat ("hat:<name>") or an imported picture
-	// ("picture:<path>"), nil when it cannot be read.
+	// shareBitmap is a drawn hat ("hat:<name>"), nil until it is read
+	// and when it cannot be.
 	shareBitmap(ref string) *sharePicture
 
 	openStudio()
@@ -22,7 +22,6 @@ type shareActions interface {
 	studioEraser()
 	studioUndo()
 	studioClear()
-	studioImport()
 	studioPeek()
 	studioCloset(open bool)
 	studioLoad(item string)

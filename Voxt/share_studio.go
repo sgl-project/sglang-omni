@@ -6,7 +6,7 @@ package main
 // small Voxt wearing the drawing on the card's background instead, and
 // back. On the right the kit, centred: a palette strip whose colors run
 // into each other, the brushes in the chosen color, the eraser, undo,
-// clear, import and the wardrobe, then × and the hat that puts it on.
+// clear and the wardrobe, then × and the hat that puts it on.
 
 import (
 	"image"
@@ -176,8 +176,8 @@ func studioPathLength(at func(x, y float32) (float32, float32)) float32 {
 	return length
 }
 
-// studioBase draws what the drawing starts from: a built-in hat, a drawn
-// one or an imported picture.
+// studioBase draws what the drawing starts from: a built-in hat or a
+// drawn one.
 func studioBase(c *ui.Context, base string, actions shareActions, at func(x, y float32) (float32, float32), scale float32) {
 	switch {
 	case len(base) > len("outfit:") && base[:len("outfit:")] == "outfit:":
@@ -268,7 +268,6 @@ func studioKit(c *ui.Context, state *shareCardViewState, studio *shareStudioView
 				{"studio-eraser", icons.ShareEraser, i18n.T("Eraser"), studio.Erasing, actions.studioEraser},
 				{"studio-undo", icons.ShareUndo, i18n.T("Undo"), false, actions.studioUndo},
 				{"studio-clear", icons.ShareClear, i18n.T("Clear"), false, actions.studioClear},
-				{"studio-import", icons.ShareImport, i18n.T("Import a hat picture"), false, actions.studioImport},
 				{"studio-closet", icons.ShareWardrobe, i18n.T("Wardrobe"), false, func() { actions.studioCloset(true) }},
 			}
 			for _, tool := range tools {

@@ -46,8 +46,8 @@ var (
 	shareWordmark    = sync.OnceValue(func() *ui.Bitmap { b, _ := ui.DecodeBitmap(shareWordmarkPNG); return b })
 )
 
-// sharePicture is a drawn hat or an imported picture, decoded by the
-// controller (share_controller.go) with decodeSharePicture.
+// sharePicture is a drawn hat, read by loadHat (share_controller.go)
+// with decodeSharePicture.
 type sharePicture = ui.Bitmap
 
 var decodeSharePicture = ui.DecodeBitmap

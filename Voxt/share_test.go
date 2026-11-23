@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"image"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -145,39 +144,6 @@ func TestShareWardrobeKeepsSixty(t *testing.T) {
 	}
 	if !slices.Equal(a.share.wardrobe, got) {
 		t.Errorf("the wardrobe shown differs from the one on disk: %d vs %d hats", len(a.share.wardrobe), len(got))
-	}
-}
-
-// TestShareImportPicture: an imported picture goes on the board once it
-// is decoded; one too large to read leaves the board and says so.
-func TestShareImportPicture(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	dir := t.TempDir()
-	write := func(name string, w, h int) string {
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, image.NewNRGBA(image.Rect(0, 0, w, h))); err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	small, huge := write("small.png", 40, 30), write("huge.png", sharePictureSide+1, 1)
-	defer func(old func(*app, func(string))) { chooseHatPicture = old }(chooseHatPicture)
-	pick := small
-	chooseHatPicture = func(_ *app, then func(string)) { then(pick) }
-	a.openShare()
-	a.openStudio()
-	a.studioImport()
-	if st := a.share.studio; st.base != "picture:"+small || a.shareBitmap(st.base) == nil {
-		t.Fatalf("the picture is not on the board: %q", st.base)
-	}
-	pick = huge
-	a.studioImport()
-	if st := a.share.studio; st.base != "picture:"+small || len(a.toasts) == 0 {
-		t.Errorf("a picture too large: board %q, toasts %q", st.base, a.toasts)
 	}
 }
 

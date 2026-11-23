@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/png"
 	"log"
@@ -199,9 +200,9 @@ func copyPicture(img image.Image) error {
 	return shareClipboard(buf.Bytes())
 }
 
-// shareBitmap is a drawn hat or an imported picture, read and decoded off
-// the main thread: nil until it is ready (the window redraws then), and
-// nil for good when it cannot be read.
+// shareBitmap is a drawn hat, read and decoded off the main thread: nil
+// until it is ready (the window redraws then), and nil for good when it
+// cannot be read.
 func (a *app) shareBitmap(ref string) *sharePicture {
 	s := &a.share
 	if bm, ok := s.bitmaps[ref]; ok {
@@ -214,9 +215,9 @@ func (a *app) shareBitmap(ref string) *sharePicture {
 		s.loading = map[string]bool{}
 	}
 	s.loading[ref] = true
-	path := a.sharePicturePath(ref)
+	path := a.hatPath(ref)
 	a.async(func() {
-		bm := loadSharePicture(path)
+		bm, _ := loadHat(path)
 		a.post(func() {
 			delete(s.loading, ref)
 			s.keepBitmap(ref, bm)
@@ -230,11 +231,11 @@ func (a *app) shareBitmapNow(ref string) *sharePicture {
 	if bm, ok := a.share.bitmaps[ref]; ok {
 		return bm
 	}
-	path := a.sharePicturePath(ref)
+	path := a.hatPath(ref)
 	if path == "" {
 		return nil
 	}
-	bm := loadSharePicture(path)
+	bm, _ := loadHat(path)
 	a.share.keepBitmap(ref, bm)
 	return bm
 }
@@ -246,46 +247,35 @@ func (s *shareKeep) keepBitmap(ref string, bm *sharePicture) {
 	s.bitmaps[ref] = bm
 }
 
-func (a *app) sharePicturePath(ref string) string {
+// hatPath is the file of a drawn hat ("hat:<name>"), "" for anything else.
+func (a *app) hatPath(ref string) string {
 	if name, ok := strings.CutPrefix(ref, "hat:"); ok && a.hatsDir() != "" {
 		return filepath.Join(a.hatsDir(), filepath.Base(name))
-	}
-	if p, ok := strings.CutPrefix(ref, "picture:"); ok {
-		return p
 	}
 	return ""
 }
 
-// A picture the card reads stays under these: a drawn hat is far smaller,
-// and a photo from a phone fits.
-const (
-	sharePictureBytes = 40 << 20
-	sharePictureSide  = 8192
-)
+// shareHatSideMax bounds a file in the hats folder: Put on saves the hat's
+// box at 2× (660×540), so anything far larger is not a hat Voxt saved.
+const shareHatSideMax = 2048
 
-// loadSharePicture reads and decodes a picture, nil when it cannot or it
-// is too large. It runs off the main thread.
-func loadSharePicture(path string) *sharePicture {
+// loadHat reads and decodes a drawn hat. It runs off the main thread.
+func loadHat(path string) (*sharePicture, error) {
 	if path == "" {
-		return nil
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Size() > sharePictureBytes {
-		return nil
+		return nil, os.ErrNotExist
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil || cfg.Width > sharePictureSide || cfg.Height > sharePictureSide {
-		return nil
-	}
-	bm, err := decodeSharePicture(data)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return bm
+	if cfg.Width > shareHatSideMax || cfg.Height > shareHatSideMax {
+		return nil, fmt.Errorf("%s is %d×%d, not a drawn hat", filepath.Base(path), cfg.Width, cfg.Height)
+	}
+	return decodeSharePicture(data)
 }
 
 // hatsDir is where drawn hats are kept, "" without a library (tests).

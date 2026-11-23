@@ -1,8 +1,7 @@
 package main
 
 // The hat studio's controller (share_studio.go): the strokes and their
-// undo steps, the pen's color and size, the eraser, imports, the
-// wardrobe, and Put on, which renders the board to a PNG in the library's
+// undo steps, the pen's color and size, the eraser, the wardrobe, and Put on, which renders the board to a PNG in the library's
 // "hats" folder and puts it on the card's Voxt.
 
 import (
@@ -13,9 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 
-	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
@@ -34,19 +31,6 @@ type studioKeep struct {
 type shareBoard struct {
 	base    string
 	strokes []shareStroke
-}
-
-// chooseHatPicture asks for a picture to start a hat from; tests replace
-// it.
-var chooseHatPicture = func(a *app, then func(string)) {
-	go func() {
-		files, err := mygo.Dialog.Open(mygo.OpenDialogOptions{Parent: a.win, Title: i18n.T("Import a hat picture"),
-			Filters: []mygo.FileFilter{{Name: i18n.T("Pictures"), Extensions: []string{"png", "jpg", "jpeg", "webp", "gif"}}}})
-		if err != nil || len(files) == 0 {
-			return
-		}
-		a.post(func() { then(files[0]) })
-	}()
 }
 
 func (s *shareKeep) studioView() *shareStudioViewState {
@@ -162,30 +146,6 @@ func (a *app) studioClear() {
 	st.base, st.strokes = "", nil
 }
 
-// studioImport puts a picture on the board to draw over, once it is read
-// and decoded off the main thread.
-func (a *app) studioImport() {
-	chooseHatPicture(a, func(path string) {
-		a.async(func() {
-			bm := loadSharePicture(path)
-			a.post(func() {
-				st := a.share.studio
-				if st == nil {
-					return
-				}
-				if bm == nil {
-					a.toast(i18n.T("Could not open the picture."))
-					return
-				}
-				ref := "picture:" + path
-				a.share.keepBitmap(ref, bm) // read afresh, as it is now
-				st.keep()
-				st.base, st.strokes, st.closet = ref, nil, false
-			})
-		})
-	})
-}
-
 func (a *app) studioPeek() {
 	if st := a.share.studio; st != nil {
 		st.peek = !st.peek
@@ -212,8 +172,8 @@ func (a *app) studioLoad(item string) {
 }
 
 // studioWear puts the board's hat on the card's Voxt: a built-in or a
-// wardrobe hat left as it is goes on as itself; anything drawn or
-// imported is saved as a new hat in the wardrobe first.
+// wardrobe hat left as it is goes on as itself; anything drawn is saved
+// as a new hat in the wardrobe first.
 func (a *app) studioWear() {
 	s := &a.share
 	st := s.studio
@@ -221,7 +181,7 @@ func (a *app) studioWear() {
 		return
 	}
 	switch {
-	case len(st.strokes) == 0 && !strings.HasPrefix(st.base, "picture:"):
+	case len(st.strokes) == 0:
 		s.wearRef(st.base)
 	default:
 		name, err := a.saveHat(st.base, st.strokes)

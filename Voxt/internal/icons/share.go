@@ -5,8 +5,8 @@ import "github.com/egoist/mygo/ui"
 // The share card's and the hat studio's marks (share_card.go,
 // share_studio.go) as the mockup draws them: 24-unit strokes in the
 // text's color, the same in both variants. Shuffle, back, eraser, undo,
-// clear, import and the mic are Tabler Icons' outline icons (MIT, see
-// NOTICE), some redrawn slightly; the others were drawn for VoxtNew.
+// clear and the mic are Tabler Icons' outline icons (MIT, see NOTICE),
+// some redrawn slightly; the others were drawn for VoxtNew.
 
 func stroke(name, width, body string) Icon {
 	s := parse(`<g fill="none" stroke="currentColor" stroke-width="` + width + `" stroke-linecap="round" stroke-linejoin="round">` + body + `</g>`)
@@ -25,7 +25,6 @@ var (
 	ShareEraser   = stroke("eraser", "1.9", `<path d="M19 20H8.5l-4.2-4.3a1 1 0 0 1 0-1.4l9.6-9.6a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4L12 19.5"/><path d="M18 13.3L11.7 7"/>`)
 	ShareUndo     = stroke("undo", "1.9", `<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>`)
 	ShareClear    = stroke("clear", "1.9", `<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/>`)
-	ShareImport   = stroke("import", "1.9", `<path d="M15 8h.01"/><path d="M12.5 21H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v6.5"/><path d="M3 16l5-5c.928-.893 2.072-.893 3 0l4 4"/><path d="M14 14l1-1c.67-.644 1.45-.824 2.182-.54"/><path d="M16 19h6M19 16v6"/>`)
 	ShareWardrobe = stroke("wardrobe", "1.9", `<rect x="5" y="3" width="14" height="16.5" rx="2"/><path d="M12 3v16.5"/><path d="M10 10.5v2M14 10.5v2"/><path d="M7.5 19.5V21M16.5 19.5V21"/>`)
 	ShareClose    = stroke("close", "2.2", `<path d="M7 7l10 10M17 7L7 17"/>`)
 	ShareBack     = stroke("back", "2", `<path d="M15 6l-6 6l6 6"/>`)
