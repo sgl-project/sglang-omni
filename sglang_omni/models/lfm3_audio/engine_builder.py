@@ -93,7 +93,7 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
 
     def generation_defaults(self, *, dtype: str) -> GenerationDefaults:
         return {
-            "max_running_requests": 8,
+            "max_running_requests": 64,
             "dtype": dtype,
             "disable_cuda_graph": False,
             "disable_overlap_schedule": True,

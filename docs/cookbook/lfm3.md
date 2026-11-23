@@ -91,17 +91,17 @@ Speech frames are drawn by one of two samplers, set with `speech_sampler` under 
 
 With `seeded`, each request's speech state lives on the GPU, so the next decode step launches before the host reads the last one (`enable_async_decode`, on by default).
 
-SeedTTS EN (1088 samples), LFM3-Omni-2B, one H200:
+SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100:
 
 | Concurrency | Sampler | WER | Latency p50 | RTF | Throughput |
 |---|---|---|---|---|---|
-| 8 | eager | 0.92% | 2.58 s | 0.59 | 3.1 req/s |
-| 8 | exact | 0.94% | 1.14 s | 0.26 | 7.0 req/s |
-| 8 | seeded | 1.03% | 0.66 s | 0.15 | 12.0 req/s |
-| 32 | exact | 0.96% | 3.66 s | 0.84 | 8.6 req/s |
-| 32 | seeded | 0.98% | 1.36 s | 0.32 | 22.9 req/s |
+| 8 | exact | 0.89% | 0.95 s | 0.22 | 8.4 req/s |
+| 8 | seeded | 0.87% | 0.58 s | 0.14 | 13.5 req/s |
+| 32 | exact | 0.95% | 3.01 s | 0.69 | 10.5 req/s |
+| 32 | seeded | 0.89% | 1.01 s | 0.23 | 31.0 req/s |
+| 64 | seeded | 0.90% | 1.51 s | 0.35 | 41.3 req/s |
 
-Raise `--generation.engine.max_running_requests` (default 8) for higher concurrency.
+LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32. The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`).
 
 ## Limitations
 
