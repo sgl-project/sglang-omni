@@ -27,7 +27,7 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 		})
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		cardAttachView(context, card, local)
-		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, actions, local, onMeasured)
+		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)
 		if card.Message != "" {
 			ui.Row(context).Height(layout.CardMsgH).Shrink(0).Margin(layout.CardMsgGap, 0, 0, 0).Padding(0, layout.CardSizeBtn+layout.CardSizeBtnInset-layout.CardPadX+layout.CardHeadGap, 0, 0).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -153,6 +153,17 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		actions.toggleThinkMenu()
 	}
 	if !card.Failed {
+		cardInsertCopy(context, card, actions)
+	}
+	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
+		actions.closeAnswer()
+	}
+}
+
+// cardInsertCopy are the answer's Insert and Copy buttons (the answer
+// card's header, and the Rewrite card's).
+func cardInsertCopy(context *ui.Context, card *sessionCardViewState, actions sessionOverlayActions) {
+	{
 		if cardIconButton(context.Key("ov-card-insert"), i18n.T("Insert"), card.InsertTooltip, icons.Pen, card.CanInsert) {
 			actions.insertAnswer()
 		}
@@ -166,9 +177,6 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		if cardIconButton(context.Key("ov-card-copy"), copyLabel, copyTip, copyIcon, card.CanCopy) {
 			actions.copyAnswer()
 		}
-	}
-	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
-		actions.closeAnswer()
 	}
 }
 
@@ -284,13 +292,16 @@ func cardWave(context *ui.Context, levels []float64, recording, heard, motion bo
 	})
 }
 
-func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
+func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState, bodyHeight float32, width int, scrolls bool, faceAlpha float32, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	if cardInputOriginal(context, card, local, bodyHeight) {
 		return
 	}
 	if !card.Conversation && !card.Failed && bodyHeight > 0 && sessionCardBlockCount(card) > 0 {
 		block := sessionCardBlockAt(card, 0)
 		request := newSessionOverlayPreviewRequest(context, sessionID, card, block, -1, ovCardText, bodyHeight, width)
+		// The page is as translucent as the card's face, over the same
+		// material: an opaque page drew a darker box (#3836 feedback).
+		request.background = tok(context.Theme()).OverlayFace.Alpha(faceAlpha)
 		if actions.overlayTranscriptResult(context.Key("ov-transcript"), request) {
 			return
 		}
@@ -313,13 +324,26 @@ func cardBody(context *ui.Context, sessionID string, card *sessionCardViewState,
 	} else if follow && scroll.Y >= scroll.MaxY-2 {
 		scroll.Y = math.MaxFloat32
 	}
-	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, 0, 0, 0).TrackScroll(scroll).Children(func() {
+	blocks := func() {
+		// The scroller's room is in the card's padding, right of the text.
 		ui.Column(context).Padding(0, layout.CardInset, 0, 0).Children(func() {
 			for index := 0; index < sessionCardBlockCount(card); index++ {
 				cardBlockView(context.Key(index), sessionID, card, sessionCardBlockAt(card, index), index, width, actions, local, onMeasured)
 			}
 		})
-	})
+	}
+	if !scrolls {
+		// The card grows to its text until the screen's room runs out
+		// (overlay_size.go): text past a body with room is a frame the
+		// card has not grown to yet. The body clips it there instead of
+		// scrolling, which flashed the scroll bar under the pointer and,
+		// following the end, moved the text a line up and back each time
+		// the card grew (#3836 feedback).
+		scroll.X, scroll.Y, scroll.MaxX, scroll.MaxY = 0, 0, 0, 0
+		ui.Column(context.Key("ov-card-clip")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).ClipY().Children(blocks)
+		return
+	}
+	ui.Scroll(context.Key("ov-card-body")).Height(bodyHeight).Shrink(0).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0).TrackScroll(scroll).Children(blocks)
 }
 
 func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
@@ -352,8 +376,9 @@ func cardBlockView(context *ui.Context, sessionID string, card *sessionCardViewS
 
 // cardBubbleView is a conversation's turn (Voxt's
 // RewriteConversationBubble): the user's input fits its text on the right,
-// up to 340 wide in the small card; an answer takes that width and shows
-// Copy under the pointer.
+// up to 340 wide in the small card; an answer takes that width and, under
+// the pointer, shows a Copy icon right of it, in the room the bubble
+// leaves, so the icon never covers the text.
 func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardViewState, block sessionCardBlock, index int, gap float32, width int, actions sessionOverlayActions, local sessionOverlayLocal, onMeasured func([]sessionOverlayMeasurement)) {
 	text, title, quote := sessionCardBlockText(block, width)
 	justify := ui.Start
@@ -376,13 +401,15 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		quoteWidth, _ := context.MeasureText(0, quote.span())
 		text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, text.wrap)
 	}
-	ui.Row(context).Justify(justify).Margin(gap, 0, 0, 0).Children(func() {
+	row := ui.Row(context).Justify(justify).AlignItems(ui.Start).Gap(bubbleCopyGap).Margin(gap, 0, 0, 0)
+	// The whole row, so the pointer can move from the answer to its Copy.
+	hover := !block.User && !block.Live && row.Hovered()
+	row.Children(func() {
 		column := ui.Column(context.Key("bubble")).Width(text.wrap+2*layout.BubblePadX).Shrink(0).Padding(layout.BubblePadY-layout.Border, layout.BubblePadX-layout.Border).Gap(layout.BubbleTitleGap).
 			Radius(layout.BubbleRadius).Background(background).Border(1, line)
 		if block.User {
 			column.AlignItems(ui.End)
 		}
-		hover := !block.User && !block.Live && column.Hovered()
 		column.Children(func() {
 			if block.Title != "" {
 				ui.Text(context, block.Title).FontSize(layout.BubbleTitleSize).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, titleAlpha)).SingleLine().Ellipsis("…").MaxWidth(text.wrap)
@@ -405,25 +432,32 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 			if block.Quote != "" {
 				cardQuoteView(context, block, quote.size, text.wrap, actions)
 			}
-			if hover {
-				copied := local.Overlay.bubbleCopied == block.Text
-				label, icon := i18n.T("Copy"), icons.Copy
-				if copied {
-					label, icon = i18n.T("Copied"), icons.CopyCheck
-				}
-				copyButton := ui.ButtonBase(context.Key("copy")).Absolute().Top(8).Right(8).Height(22).Padding(0, 8-layout.Border).Radius(11).
-					Background(ui.RGBA(0, 0, 0, 0.74)).Border(1, ui.RGBA(255, 255, 255, 0.12)).Label(label)
-				if copyButton.Children(func() {
-					ui.Row(context).Gap(4).AlignItems(ui.Center).Children(func() {
-						ui.Icon(context, icon.Linear).Size(12, 12).TextColor(ui.RGBA(255, 255, 255, 0.94))
-						ui.Text(context, label).FontSize(10).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.94)).SingleLine()
-					})
-				}).Clicked() {
-					actions.copyBubble(block)
-				}
-			}
 		})
+		if hover {
+			bubbleCopyButton(context, block, local, actions)
+		}
 	})
+}
+
+// bubbleCopyGap is the room between an answer bubble and its Copy icon.
+const bubbleCopyGap = 6
+
+// bubbleCopyButton is an answer bubble's Copy: an icon only, its name in
+// the tooltip; a check while the answer is the one just copied.
+func bubbleCopyButton(context *ui.Context, block sessionCardBlock, local sessionOverlayLocal, actions sessionOverlayActions) {
+	label, icon := i18n.T("Copy"), icons.Copy
+	if local.Overlay.bubbleCopied == block.Text {
+		label, icon = i18n.T("Copied"), icons.CopyCheck
+	}
+	button := ui.ButtonBase(context.Key("copy")).Size(24, 24).Shrink(0).Radius(12).
+		Background(ui.RGBA(0, 0, 0, 0.74)).Border(1, ui.RGBA(255, 255, 255, 0.12)).Label(label).Tooltip(label)
+	if button.Children(func() {
+		ui.Row(context).Grow(1).Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+			ui.Icon(context, icon.Linear).Size(13, 13).TextColor(ui.RGBA(255, 255, 255, 0.94))
+		})
+	}).Clicked() {
+		actions.copyBubble(block)
+	}
 }
 
 // cardQuoteView is a follow-up's selection under its instruction, as wide

@@ -157,8 +157,8 @@ func TestRewriteFollowUpSelectionEscape(t *testing.T) {
 	a.pump("the follow-up's selection", func() bool {
 		return a.sess.ID != before && a.sess.State == session.Recording && a.sess.Selection == chatB
 	})
-	if v := a.cachedCard(); len(cardBubblesForTest(v)) != 3 || !cardBubblesForTest(v)[2].live || cardBubblesForTest(v)[2].quote != chatB {
-		t.Errorf("while it records %+v", cardBubblesForTest(v))
+	if v := a.boxViewState(); !a.box.shown || v.Selection != chatB || !v.Conversation {
+		t.Errorf("while it records: box shown %v, %q", a.box.shown, v.Selection)
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the cancel", func() bool { return a.sess.State == session.Cancelled })
@@ -197,20 +197,20 @@ func TestRewriteShortcutFollowUpSelection(t *testing.T) {
 }
 
 // TestRewriteFollowUpSelectionRetry: the model fails on a follow-up with
-// text selected: Try again asks it again in the conversation, with that
-// text, and the card keeps the earlier turns.
+// text selected: the input card keeps the error, Enter asks it again in
+// the conversation, with that text, and the card keeps the earlier turns.
 func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 	chat := &fakeChat{text: "one"}
 	a, tr, path := rewriteSelecting(t, chat, chatA, "summarize")
 	selectNow(t, path, chatB)
 	chat.set("", 503)
 	a.recordFollowUp(t, tr, "add the new messages")
-	if a.answer.problem == nil || len(a.answer.turns) != 1 || a.answer.input.Selection != chatB {
-		t.Fatalf("after the failure %+v", a.answer)
+	if !a.box.shown || a.box.err == "" || !a.boxHoldsCard(a.overlayModeNow()) || len(a.answer.turns) != 1 || a.box.selection != chatB {
+		t.Fatalf("after the failure: box %v %q, overlay %s, card %+v", a.box.shown, a.box.err, a.overlayModeNow(), a.answer)
 	}
 	chat.set("two", 0)
 	failed := a.sess.ID
-	a.retryAnswer("")
+	a.boxSend()
 	a.pump("the retry", func() bool { return a.sess.ID != failed && a.sess.State.Ended() })
 	msgs := chatMessages(chat.requests()[2])
 	if len(msgs) != 4 || !strings.Contains(msgs[1][1], chatA) || msgs[3][1] != "<selected_text>\n"+chatB+"\n</selected_text>\n\n<instruction>\nadd the new messages\n</instruction>" {

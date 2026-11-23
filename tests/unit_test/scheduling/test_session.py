@@ -652,6 +652,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.backlogged_request_build_payloads = deque()
+    scheduler.early_request_builds = False
     scheduler.waiting_queue = []
     scheduler.mark_running_request_aborted.return_value = False
     scheduler.mark_request_finished_immediately.return_value = []
