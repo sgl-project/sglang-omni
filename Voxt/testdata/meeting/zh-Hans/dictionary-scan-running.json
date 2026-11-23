@@ -52,7 +52,7 @@
     "scan": {
       "stage": "running",
       "model_name": "Fixture model",
-      "body": "已读 12/24 · 3 条建议",
+      "body": "已扫描 12/24 · 3 条建议",
       "warning": "",
       "error_code": "",
       "can_start": false,

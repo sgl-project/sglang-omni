@@ -10,7 +10,7 @@
       "kind": "",
       "title": "转录",
       "working_label": "识别中…",
-      "live_text": "快到上传大小上限：Voxt 会分段发送录音",
+      "live_text": "录音接近上传上限，将分段上传",
       "elapsed_text": "13:20",
       "levels": [
         0.35,

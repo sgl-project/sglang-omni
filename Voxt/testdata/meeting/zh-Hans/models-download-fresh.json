@@ -13,7 +13,7 @@
             "default": false,
             "installed": false,
             "size_text": "需下载 712.8 MB",
-            "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
+            "about": "更快、更省内存，适合安静环境、吐字清楚时使用。",
             "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
             "tags": [
               "本地",
@@ -27,7 +27,7 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",

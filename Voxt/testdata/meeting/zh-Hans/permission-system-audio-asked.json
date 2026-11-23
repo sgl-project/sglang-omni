@@ -29,7 +29,7 @@
       "ask_required": false,
       "microphone": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -38,7 +38,7 @@
       },
       "access": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -47,7 +47,7 @@
       },
       "speech": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -62,7 +62,7 @@
         "can_open": true,
         "ask_action": "systemAudio",
         "ask_tooltip": "把 Voxt 加入系统设置中的列表",
-        "tip": "如果你在 macOS 弹窗里点了允许，就已经开启。没有弹窗说明 macOS 之前问过，请在系统设置里查看。"
+        "tip": "在 macOS 弹窗里点了允许就已开启。没有弹窗说明 macOS 之前问过，请在系统设置里查看。"
       }
     },
     "footer": {

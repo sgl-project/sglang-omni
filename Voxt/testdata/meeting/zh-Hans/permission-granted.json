@@ -29,7 +29,7 @@
       "ask_required": false,
       "microphone": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -38,7 +38,7 @@
       },
       "access": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -47,7 +47,7 @@
       },
       "speech": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,

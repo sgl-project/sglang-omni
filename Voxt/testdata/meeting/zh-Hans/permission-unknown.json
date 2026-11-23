@@ -38,7 +38,7 @@
       },
       "access": {
         "code": "denied",
-        "text": "未允许",
+        "text": "未授权",
         "ok": false,
         "can_ask": true,
         "can_open": true,

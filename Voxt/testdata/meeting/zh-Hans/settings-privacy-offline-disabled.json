@@ -78,7 +78,7 @@
         "ask": false,
         "list_open": false,
         "show_last_read": false,
-        "last_read": "还没有读取记录",
+        "last_read": "还没有访问记录",
         "command": "",
         "read_lines": null
       }

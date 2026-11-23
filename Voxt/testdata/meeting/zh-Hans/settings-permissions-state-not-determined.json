@@ -67,7 +67,7 @@
       "microphone": {
         "permission_id": "microphone",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        "status": "还没请求",
+        "status": "待授权",
         "allowed": false,
         "known": true,
         "ask": true,
@@ -76,7 +76,7 @@
       "accessibility": {
         "permission_id": "accessibility",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "status": "未允许",
+        "status": "未授权",
         "allowed": false,
         "known": true,
         "ask": true,

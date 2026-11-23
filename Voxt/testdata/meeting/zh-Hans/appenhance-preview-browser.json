@@ -56,7 +56,7 @@
         {
           "name": "APP_NAME",
           "token": "{{APP_NAME}}",
-          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+          "tooltip": "前台 App（匹配到应用增强分组时才有），以及这个分组适用的功能。"
         }
       ],
       "apps": [
@@ -81,19 +81,19 @@
             "value": "Return"
           },
           {
-            "label": "⌘回车",
+            "label": "⌘Return",
             "value": "Command+Return"
           },
           {
-            "label": "⇧回车",
+            "label": "⇧Return",
             "value": "Shift+Return"
           },
           {
-            "label": "⌃回车",
+            "label": "⌃Return",
             "value": "Control+Return"
           },
           {
-            "label": "⌥回车",
+            "label": "⌥Return",
             "value": "Option+Return"
           },
           {
@@ -125,7 +125,7 @@
       "address_path": "/",
       "matched": true,
       "match_source": "browserApp",
-      "match_text": "命中“Browser work”，按浏览器",
+      "match_text": "匹配“Browser work”，按浏览器",
       "can_refresh": true,
       "add_app": false,
       "add_site": true,

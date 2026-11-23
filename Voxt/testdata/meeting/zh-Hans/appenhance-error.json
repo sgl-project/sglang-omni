@@ -73,7 +73,7 @@
         {
           "name": "APP_NAME",
           "token": "{{APP_NAME}}",
-          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+          "tooltip": "前台 App（匹配到应用增强分组时才有），以及这个分组适用的功能。"
         }
       ],
       "apps": [
@@ -105,19 +105,19 @@
             "value": "Return"
           },
           {
-            "label": "⌘回车",
+            "label": "⌘Return",
             "value": "Command+Return"
           },
           {
-            "label": "⇧回车",
+            "label": "⇧Return",
             "value": "Shift+Return"
           },
           {
-            "label": "⌃回车",
+            "label": "⌃Return",
             "value": "Control+Return"
           },
           {
-            "label": "⌥回车",
+            "label": "⌥Return",
             "value": "Option+Return"
           },
           {
@@ -146,7 +146,7 @@
       "address_status": "none",
       "matched": true,
       "match_source": "app",
-      "match_text": "命中“Team chat”，按 App",
+      "match_text": "匹配“Team chat”，按 App",
       "can_refresh": true,
       "add_app": false,
       "add_site": false

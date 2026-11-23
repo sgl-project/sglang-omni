@@ -47,8 +47,8 @@
     ],
     "detail": {
       "id": "history-problem-asr",
-      "error_text": "已完成，但有问题：完整识别失败，用了实时识别的文字。",
-      "error_detail": "完整识别失败，用了实时识别的文字。",
+      "error_text": "已完成，但有问题：整段识别失败，已改用实时文字。",
+      "error_detail": "整段识别失败，已改用实时文字。",
       "error_warning": true,
       "can_reveal": false,
       "retry": {
@@ -117,7 +117,7 @@
           "facts": [
             {
               "label": "录音",
-              "value": "7.5 s，送去识别 2.5 s",
+              "value": "7.5 s，实际识别 2.5 s",
               "empty": false
             },
             {
