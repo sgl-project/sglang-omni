@@ -4,6 +4,8 @@ package main
 // (banner, notice).
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
@@ -156,4 +158,24 @@ func notice(c *ui.Context, key string, kind noticeKind, text, more string, actio
 			onClose()
 		}
 	}).Shrink(0)
+}
+
+// loadingDelay is how long a read runs before its "Loading…" shows: a
+// quicker one shows nothing in between, not a line that flashes for a
+// frame.
+const loadingDelay = 300 * time.Millisecond
+
+// loadingShows reports whether a loading line shows now. since holds when
+// the loading began (set on the first call); a redraw comes when the delay
+// ends.
+func loadingShows(c *ui.Context, since *time.Time) bool {
+	now := c.Now()
+	if since.IsZero() {
+		*since = now
+	}
+	if left := loadingDelay - now.Sub(*since); left > 0 {
+		c.After(left)
+		return false
+	}
+	return true
 }
