@@ -532,9 +532,8 @@ func testOldPCMIsolation(t *testing.T, failFinal bool, nextMode meeting.Mode) {
 		t.Fatal("old PCM did not reach the old transcriber")
 	}
 	interrupted := make(chan struct{}, 1)
-	cancelSubscribe := func() {}
 	if failFinal {
-		cancelSubscribe = m.Subscribe(func(s meeting.Snapshot) {
+		m.Subscribe(func(s meeting.Snapshot) {
 			if s.State == meeting.StateInterrupted {
 				select {
 				case interrupted <- struct{}{}:
@@ -559,7 +558,6 @@ func testOldPCMIsolation(t *testing.T, failFinal bool, nextMode meeting.Mode) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("meeting A's final pass did not fail")
 		}
-		cancelSubscribe()
 		settingsMu.Lock()
 		noFinalPass = true
 		settingsMu.Unlock()
