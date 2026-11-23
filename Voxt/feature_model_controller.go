@@ -44,8 +44,8 @@ func (a *app) featureModelStatusKey(feature string) string {
 }
 
 // featureModelStatus is the model feature's picker of kind stands for:
-// the one chosen (id), else the one Automatic uses, else the recommended
-// speech model.
+// the one chosen (id), else the one Automatic uses, else the guide's
+// recommended speech model (obSpeech, gated on the main language).
 func (a *app) featureModelStatus(kind local.Kind, feature, id string) featureModelStatusInput {
 	if id == "" {
 		if model, ok := a.featureModel(kind, feature); ok {
@@ -60,7 +60,7 @@ func (a *app) featureModelStatus(kind local.Kind, feature, id string) featureMod
 				return ok
 			})
 			if !configured && !hasInstalledCatalogModel {
-				id = models.ASRAccurate
+				id = a.obSpeech()
 			}
 		}
 	}
@@ -123,6 +123,22 @@ func (a *app) featureEndWordModel() *featureEndWordViewState {
 	model, ok := a.featureModel(local.ASR, hotkey.Transcribe)
 	input := featureEndWordStateInput{Current: a.prefs.Features.EndWord, Streaming: ok && model.Stream, Local: &a.fui(hotkey.Transcribe).endWord}
 	return buildFeatureEndWordViewState(i18n.CurrentTranslator(), input)
+}
+
+// featurePackDownloads is the feature pages' actions: downloading the
+// recommended speech model beside a feature's picker fetches its
+// catalogue draft too, as the guide's pack does, so Faster transcription
+// is on from the first download (#4069). Another model's download stays
+// the model alone, as on the Speech models page.
+type featurePackDownloads struct{ *app }
+
+func (actions featurePackDownloads) downloadModel(id string) {
+	actions.app.downloadModel(id)
+	if id == actions.obSpeech() {
+		if mod, ok := models.Lookup(id); ok && mod.Draft != "" {
+			actions.app.downloadModel(mod.Draft)
+		}
+	}
 }
 
 func (a *app) openFeatureSpeechModels() {

@@ -45,6 +45,7 @@ report	fix	symptom	level	check
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
 #4067	#4069	A meeting on Automatic opens MOSS-Transcribe-Diarize for a main language it cannot recognise	L	TestMeetingTrackASRLanguageGate
 #4067	#4069	The setup guide offers no download when only the recommended pack's draft is missing, so Faster transcription never starts	L	TestGuidePackDraftLeft
+#4067	#4069	A fresh install's Transcribe and Translate pages recommend Qwen3-ASR instead of MOSS-Transcribe-Diarize, and the inline download leaves Faster transcription without its draft	L	TestFeatureModelRecommendedDownload
 #4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
 #4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
 #4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
