@@ -22,7 +22,7 @@
     "mode_hint": "麦克风与系统音频",
     "finishing_text": "正在结束会议…",
     "problem_key": "meeting.system.silent",
-    "problem_text": "如果别人说话时这里没有文字，请在“系统设置 → 隐私与安全性 → 屏幕与系统音频录制”里允许 Voxt。",
+    "problem_text": "如果别人说话时这里没有文字，请在“系统设置 → 隐私与安全性 → 录屏与系统录音”里允许 Voxt。",
     "show_microphone": true,
     "show_system": true,
     "microphone_levels": [

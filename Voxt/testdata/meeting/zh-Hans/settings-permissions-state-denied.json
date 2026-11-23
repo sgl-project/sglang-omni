@@ -67,7 +67,7 @@
       "microphone": {
         "permission_id": "microphone",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        "status": "未允许",
+        "status": "未授权",
         "allowed": false,
         "known": true,
         "ask": false,
@@ -76,7 +76,7 @@
       "accessibility": {
         "permission_id": "accessibility",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "status": "未允许",
+        "status": "未授权",
         "allowed": false,
         "known": true,
         "ask": true,
@@ -88,14 +88,14 @@
         "status": "未知",
         "allowed": false,
         "known": false,
-        "tip": "macOS 不让 App 读取这项权限，请在系统设置里查看。",
+        "tip": "请在系统设置中查看是否已开启。",
         "ask": true,
         "open": true
       },
       "speech_recognition": {
         "permission_id": "speechRecognition",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
-        "status": "未允许",
+        "status": "未授权",
         "allowed": false,
         "known": true,
         "ask": false,

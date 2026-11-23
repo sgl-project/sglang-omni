@@ -10,7 +10,7 @@
       "kind": "",
       "title": "转录",
       "working_label": "识别中…",
-      "waiting_label": "正在加载语音识别模型…",
+      "waiting_label": "正在载入语音识别模型…",
       "elapsed_text": "0:02",
       "levels": [
         0.35,

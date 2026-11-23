@@ -22,7 +22,7 @@
     "mode_hint": "麦克风与系统音频",
     "finishing_text": "正在结束会议…",
     "problem_key": "meeting.helper.old",
-    "problem_text": "录制系统音频需要新版的 Voxt 辅助进程。请更新 Voxt，或只录制麦克风。",
+    "problem_text": "录制系统音频需要新版的 Voxt 辅助程序。请更新 Voxt，或只录制麦克风。",
     "show_microphone": true,
     "show_system": true,
     "microphone_levels": [

@@ -14,12 +14,12 @@
     "missing": [
       {
         "key": "home-helper",
-        "title": "辅助进程",
+        "title": "辅助程序",
         "ok": false,
         "warn": false,
-        "text": "辅助进程意外停止",
+        "text": "辅助程序意外停止",
         "kind": "error",
-        "action": "重启辅助进程",
+        "action": "重启辅助程序",
         "fix": "restart-helper"
       }
     ],
@@ -49,7 +49,7 @@
         "title": "麦克风",
         "ok": true,
         "warn": false,
-        "text": "已允许",
+        "text": "已授权",
         "kind": "",
         "action": "",
         "fix": ""
@@ -59,7 +59,7 @@
         "title": "辅助功能",
         "ok": true,
         "warn": false,
-        "text": "已允许",
+        "text": "已授权",
         "kind": "",
         "action": "",
         "fix": ""

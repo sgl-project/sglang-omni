@@ -72,7 +72,7 @@
         {
           "name": "APP_NAME",
           "token": "{{APP_NAME}}",
-          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+          "tooltip": "前台 App（匹配到应用增强分组时才有），以及这个分组适用的功能。"
         }
       ],
       "apps": [
@@ -104,19 +104,19 @@
             "value": "Return"
           },
           {
-            "label": "⌘回车",
+            "label": "⌘Return",
             "value": "Command+Return"
           },
           {
-            "label": "⇧回车",
+            "label": "⇧Return",
             "value": "Shift+Return"
           },
           {
-            "label": "⌃回车",
+            "label": "⌃Return",
             "value": "Control+Return"
           },
           {
-            "label": "⌥回车",
+            "label": "⌥Return",
             "value": "Option+Return"
           },
           {
@@ -142,11 +142,11 @@
       "has_bundle_id": true,
       "front_text": "前台：Google Chrome",
       "browser": true,
-      "address": "辅助进程没有运行，无法读取网址。",
+      "address": "辅助程序没有运行，无法读取网址。",
       "address_status": "helper-stopped",
       "matched": false,
       "match_source": "global",
-      "match_text": "没有命中任何分组，只用各功能自己的规则。",
+      "match_text": "没有匹配到任何分组，只用各功能自己的规则。",
       "can_refresh": true,
       "add_app": true,
       "add_app_label": "把 Google Chrome 加入“Team chat”",

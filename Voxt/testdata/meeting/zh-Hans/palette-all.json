@@ -144,7 +144,7 @@
       {
         "id": "helper-restart",
         "group": "显示",
-        "title": "重启辅助进程"
+        "title": "重启辅助程序"
       },
       {
         "id": "check-updates",

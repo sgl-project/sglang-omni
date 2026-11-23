@@ -102,7 +102,7 @@
           "page_title": "转录",
           "icon": "transcribe",
           "key_text": "右 ⌥",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null
@@ -115,7 +115,7 @@
           "page_title": "翻译",
           "icon": "translate",
           "key_text": "右 ⌥ ⇧",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null
@@ -128,7 +128,7 @@
           "page_title": "改写",
           "icon": "rewrite",
           "key_text": "⌃ 右 ⌥",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null
@@ -141,7 +141,7 @@
           "page_title": "转录",
           "icon": "paste",
           "key_text": "⌃⌥V",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": false,
           "problems": null
@@ -154,7 +154,7 @@
           "page_title": "转录",
           "icon": "cancel",
           "key_text": "Esc",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null
@@ -167,7 +167,7 @@
           "page_title": "笔记",
           "icon": "note",
           "key_text": "右 ⌘",
-          "trigger_text": "点按",
+          "trigger_text": "单击",
           "has_shortcut": true,
           "needs_accessibility": true,
           "problems": null

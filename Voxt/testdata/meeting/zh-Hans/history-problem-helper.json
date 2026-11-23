@@ -19,7 +19,7 @@
     "rows": [
       {
         "id": "history-problem-helper",
-        "title": "辅助进程已停止，请稍后再试。",
+        "title": "辅助程序已停止，请稍后再试。",
         "failed_title": true,
         "meta": "5 分钟前 · Notes · 0:08",
         "selected": true,
@@ -47,8 +47,8 @@
     ],
     "detail": {
       "id": "history-problem-helper",
-      "error_text": "失败：辅助进程已停止，请稍后再试。",
-      "error_detail": "辅助进程已停止，请稍后再试。",
+      "error_text": "失败：辅助程序已停止，请稍后再试。",
+      "error_detail": "辅助程序已停止，请稍后再试。",
       "error_warning": false,
       "can_reveal": false,
       "retry": {
@@ -117,7 +117,7 @@
           "facts": [
             {
               "label": "录音",
-              "value": "7.5 s，送去识别 2.5 s",
+              "value": "7.5 s，实际识别 2.5 s",
               "empty": false
             },
             {

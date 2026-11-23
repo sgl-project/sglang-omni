@@ -37,9 +37,9 @@
       "can_think": false
     },
     "notice": {
-      "text": "辅助进程已停止，请稍后再试。",
+      "text": "辅助程序已停止，请稍后再试。",
       "action": "helper",
-      "action_label": "重启辅助进程",
+      "action_label": "重启辅助程序",
       "tone": "error"
     }
   },

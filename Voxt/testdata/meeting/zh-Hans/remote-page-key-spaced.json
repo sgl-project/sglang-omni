@@ -59,7 +59,7 @@
               "configured": true,
               "status": "success",
               "status_text": "就绪",
-              "key_text": "密钥里有空格",
+              "key_text": "API Key 里有空格",
               "key_status": "warning",
               "test": {
                 "state": "success",

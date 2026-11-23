@@ -131,8 +131,8 @@ func TestReturnFinishesSetting(t *testing.T) {
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	frames(tt)
-	scrollToText(tt, "按回车结束录音")
-	if !has(tt, "按回车结束录音") {
+	scrollToText(tt, "按 Return 结束录音")
+	if !has(tt, "按 Return 结束录音") {
 		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }

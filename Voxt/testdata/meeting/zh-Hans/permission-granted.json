@@ -29,7 +29,7 @@
       "ask_required": false,
       "microphone": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -38,16 +38,16 @@
       },
       "access": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
         "ask_action": "accessibility",
-        "ask_tooltip": "把 Voxt 加入系统设置中的列表"
+        "ask_tooltip": "把 Voxt 加到系统设置里，再打开它的开关"
       },
       "speech": {
         "code": "granted",
-        "text": "已允许",
+        "text": "已授权",
         "ok": true,
         "can_ask": false,
         "can_open": false,
@@ -61,8 +61,8 @@
         "can_ask": true,
         "can_open": true,
         "ask_action": "systemAudio",
-        "ask_tooltip": "把 Voxt 加入系统设置中的列表",
-        "tip": "macOS 不让 App 读取这项权限，请在系统设置里查看。"
+        "ask_tooltip": "把 Voxt 加到系统设置里，再打开它的开关",
+        "tip": "请在系统设置中查看是否已开启。"
       }
     },
     "footer": {

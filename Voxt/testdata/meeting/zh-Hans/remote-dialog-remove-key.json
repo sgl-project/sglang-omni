@@ -12,8 +12,8 @@
     "has_key_url": true,
     "key": {
       "info": "本机上的服务可不填。保存在这台 Mac 的钥匙串里。",
-      "placeholder": "粘贴密钥",
-      "warning": "保存时会移除已保存的密钥。",
+      "placeholder": "粘贴 API Key",
+      "warning": "保存时会移除已保存的 API Key。",
       "has_saved": false
     },
     "endpoint": {
@@ -41,7 +41,7 @@
           "value": "on"
         },
         {
-          "title": "推理强度",
+          "title": "思考强度",
           "value": "effort"
         },
         {
@@ -113,7 +113,7 @@
           "value": "responses"
         }
       ],
-      "service_default": "服务默认",
+      "service_default": "服务商默认",
       "show_temperature": true,
       "show_top_p": true,
       "show_top_k": true,
