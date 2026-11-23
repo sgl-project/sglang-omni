@@ -1,8 +1,12 @@
 """Drive the /v1/audio/speech endpoint over the fixed SeedTTS English order.
 
 Fixed order, fixed public seed, fixed concurrency; warmup requests are not
-recorded. Latency is client-side full-response time. Peak HBM usage is polled
-from npu-smi during the timed phase.
+recorded. Latency is client-side full-response time. Throughput is reported
+twice: once over attempted requests and once over requests that produced a
+valid WAV, so a run that silently drops or corrupts responses cannot look
+faster than it is. Peak HBM usage is polled from npu-smi during the timed
+phase; MB values require npu-smi to report the device capacity, otherwise the
+percentage is reported on its own.
 """
 
 from __future__ import annotations
@@ -21,19 +25,31 @@ import soundfile as sf
 
 
 def poll_memory(device_index: int, wrapper: str, npu_smi: str, stop, samples):
-    cmd = [wrapper, npu_smi, "info", "-t", "usages", "-i", str(device_index)]
+    cmd = []
+    if wrapper:
+        cmd.append(wrapper)
+    cmd.extend([npu_smi, "info", "-t", "usages", "-i", str(device_index)])
     while not stop.is_set():
         try:
             out = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10
             ).stdout
+            capacity_mb = None
             rate = None
             for line in out.splitlines():
-                if "HBM Usage Rate(%)" in line:
-                    rate = float(line.split(":")[-1].strip())
+                if "HBM Capacity(MB)" in line:
+                    try:
+                        capacity_mb = float(line.split(":")[-1].strip())
+                    except ValueError:
+                        pass
+                elif "HBM Usage Rate(%)" in line:
+                    try:
+                        rate = float(line.split(":")[-1].strip())
+                    except ValueError:
+                        pass
             if rate is not None:
-                samples.append((time.perf_counter(), rate))
-        except Exception:
+                samples.append((time.perf_counter(), rate, capacity_mb))
+        except Exception:  # noqa: BLE001 - polling must never abort the run
             pass
         stop.wait(1.0)
 
@@ -41,7 +57,7 @@ def poll_memory(device_index: int, wrapper: str, npu_smi: str, stop, samples):
 def wav_duration(path: pathlib.Path) -> float | None:
     try:
         return sf.info(str(path)).duration
-    except Exception:
+    except Exception:  # noqa: BLE001 - invalid WAV is a recorded failure
         return None
 
 
@@ -70,6 +86,18 @@ async def fetch(session, url, payload, sem):
         }
 
 
+def latency_stats(values: list[float]) -> dict | None:
+    if not values:
+        return None
+    lat = np.asarray(values)
+    return {
+        "mean": round(float(lat.mean()), 4),
+        "p50": round(float(np.percentile(lat, 50)), 4),
+        "p95": round(float(np.percentile(lat, 95)), 4),
+        "max": round(float(lat.max()), 4),
+    }
+
+
 async def run(args) -> dict:
     rows = json.loads(pathlib.Path(args.manifest).read_text())
     if args.limit:
@@ -83,10 +111,10 @@ async def run(args) -> dict:
     connector = aiohttp.TCPConnector(limit=args.concurrency + 4)
 
     stop = threading.Event()
-    mem_samples: list[tuple[float, float]] = []
+    mem_samples: list[tuple[float, float, float | None]] = []
     mem_thread = threading.Thread(
         target=poll_memory,
-        args=(args.device_index, args.wrapper, args.npu_smi, stop, mem_samples),
+        args=(args.device_index, args.npu_smi_wrapper, args.npu_smi, stop, mem_samples),
         daemon=True,
     )
     mem_thread.start()
@@ -124,25 +152,40 @@ async def run(args) -> dict:
     mem_thread.join(timeout=5)
 
     records = []
-    latencies = []
+    ok_latencies = []
+    attempted_latencies = []
     audio_seconds = 0.0
     failures = []
     for row, res in zip(rows, results):
         index = row["index"]
         wav_path = out_dir / f"{index:05d}_{row['sample_id']}.wav"
-        ok = res["status"] == 200 and res["body"][:4] == b"RIFF"
+        http_ok = res["status"] == 200
+        is_riff = res["body"][:4] == b"RIFF"
         duration = None
-        if ok:
+        reason = None
+        if not http_ok:
+            reason = "http_error"
+        elif not is_riff:
+            reason = "invalid_wav_header"
+        else:
             wav_path.write_bytes(res["body"])
             duration = wav_duration(wav_path)
-            audio_seconds += duration or 0.0
-        if res["status"] == 200:
-            latencies.append(res["latency_s"])
-        else:
+            if duration is None:
+                reason = "unreadable_wav"
+        ok = http_ok and is_riff and duration is not None
+        if ok:
+            audio_seconds += duration
+        if http_ok:
+            attempted_latencies.append(res["latency_s"])
+            if ok:
+                ok_latencies.append(res["latency_s"])
+        if not ok:
             failures.append(
                 {
                     "index": index,
+                    "sample_id": row["sample_id"],
                     "status": res["status"],
+                    "reason": reason,
                     "error": res["error"],
                     "body": res["body"][:500].decode("utf-8", "replace"),
                 }
@@ -153,6 +196,7 @@ async def run(args) -> dict:
                 "sample_id": row["sample_id"],
                 "status": res["status"],
                 "ok": ok,
+                "reason": reason,
                 "latency_s": round(res["latency_s"], 4),
                 "wav_s": duration,
                 "bytes": len(res["body"]),
@@ -161,13 +205,22 @@ async def run(args) -> dict:
             }
         )
 
-    timed_peak = [
-        rate
-        for stamp, rate in mem_samples
+    timed_mem = [
+        (rate, capacity_mb)
+        for stamp, rate, capacity_mb in mem_samples
         if timed_start <= stamp <= timed_end
     ]
-    lat = np.asarray(latencies) if latencies else np.asarray([0.0])
+    timed_rates = [rate for rate, _ in timed_mem]
+    timed_mb = [
+        capacity_mb * rate / 100
+        for rate, capacity_mb in timed_mem
+        if capacity_mb is not None
+    ]
+
+    num_ok = sum(1 for record in records if record["ok"])
+    num_http_200 = sum(1 for record in records if record["status"] == 200)
     wall = timed_end - timed_start
+    success = num_ok == len(rows)
     summary = {
         "run_id": args.run_id,
         "started_at": args.started_at,
@@ -177,26 +230,27 @@ async def run(args) -> dict:
         "concurrency": args.concurrency,
         "warmup": args.warmup,
         "num_requests": len(rows),
-        "num_ok": int(sum(r["ok"] for r in records)),
-        "num_http_200": len(latencies),
+        "num_ok": num_ok,
+        "num_http_200": num_http_200,
+        "num_failed": len(failures),
+        "success": success,
         "wall_s": round(wall, 3),
-        "throughput_rps": round(len(rows) / wall, 4) if wall > 0 else None,
-        "latency_s": {
-            "mean": round(float(lat.mean()), 4),
-            "p50": round(float(np.percentile(lat, 50)), 4),
-            "p95": round(float(np.percentile(lat, 95)), 4),
-            "max": round(float(lat.max()), 4),
-        },
+        "successful_throughput_rps": round(num_ok / wall, 4) if wall > 0 else None,
+        "attempted_throughput_rps": round(len(rows) / wall, 4) if wall > 0 else None,
+        "latency_s": latency_stats(ok_latencies),
+        "attempted_latency_s": latency_stats(attempted_latencies),
         "generated_audio_s": round(audio_seconds, 2),
         "audio_rtf": round(wall / audio_seconds, 4) if audio_seconds else None,
-        "hbm_peak_percent": max(timed_peak) if timed_peak else None,
-        "hbm_peak_mb": round(65536 * max(timed_peak) / 100) if timed_peak else None,
+        "hbm_peak_percent": max(timed_rates) if timed_rates else None,
+        "hbm_peak_mb": round(max(timed_mb)) if timed_mb else None,
         "failures": failures,
         "records": records,
     }
     if args.warmup:
         summary["warmup_ok"] = sum(
-            1 for res in warmup_results if res["status"] == 200
+            1
+            for res in warmup_results
+            if res["status"] == 200 and res["body"][:4] == b"RIFF"
         )
     pathlib.Path(out_dir / "summary.json").write_text(json.dumps(summary, indent=1))
     return summary
@@ -205,7 +259,7 @@ async def run(args) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--manifest", default="/root/work/bench/en_manifest.json")
+    parser.add_argument("--manifest", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--model", default="MOSS-TTS-v1.5")
     parser.add_argument("--seed", type=int, default=1234)
@@ -214,8 +268,12 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--device-index", type=int, default=0)
-    parser.add_argument("--wrapper", default="/tmp/e31-stack/native")
-    parser.add_argument("--npu-smi", default="/usr/local/bin/npu-smi")
+    parser.add_argument("--npu-smi", default="npu-smi")
+    parser.add_argument(
+        "--npu-smi-wrapper",
+        default="",
+        help="optional wrapper prefix for npu-smi (e.g. an env launcher)",
+    )
     parser.add_argument("--run-id", default="run")
     parser.add_argument("--extra", type=json.loads, default={})
     args = parser.parse_args()
@@ -223,6 +281,7 @@ def main() -> None:
 
     summary = asyncio.run(run(args))
     print(json.dumps({k: v for k, v in summary.items() if k != "records"}, indent=1))
+    raise SystemExit(0 if summary["success"] else 1)
 
 
 if __name__ == "__main__":

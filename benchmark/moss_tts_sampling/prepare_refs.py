@@ -17,12 +17,9 @@ import soundfile as sf
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--parquet",
-        default="/root/models/seed-tts-eval-arrow/data/en-00000-of-00001.parquet",
-    )
-    parser.add_argument("--out-dir", default="/root/work/bench/refs")
-    parser.add_argument("--manifest", default="/root/work/bench/en_manifest.json")
+    parser.add_argument("--parquet", required=True)
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--manifest", required=True)
     args = parser.parse_args()
 
     out_dir = pathlib.Path(args.out_dir)
