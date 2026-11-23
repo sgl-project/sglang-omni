@@ -210,7 +210,9 @@ add_executable(moss_transcribe_diarize_server src/moss/moss_transcribe_diarize_s
 target_link_libraries(moss_transcribe_diarize_server PRIVATE moss_asr asr_service)
 add_executable(moss_transcribe tools/moss_transcribe.cpp)
 target_link_libraries(moss_transcribe PRIVATE moss_asr)
-set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
+add_executable(moss_model_test EXCLUDE_FROM_ALL tests/moss_model_test.cpp)
+target_link_libraries(moss_model_test PRIVATE moss_asr)
+set_target_properties(moss_transcribe_diarize_server moss_transcribe moss_model_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
