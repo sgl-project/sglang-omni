@@ -471,6 +471,14 @@ target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+# Checks the shared DFlash draft's cache bookkeeping on small checkpoints
+# (tests/test_dflash_cache.py); built only on request and never installed.
+add_executable(dflash_cache_probe EXCLUDE_FROM_ALL tests/dflash_cache_probe.cpp)
+target_link_libraries(dflash_cache_probe PRIVATE common)
+target_compile_options(dflash_cache_probe PRIVATE -Wall -Wextra)
+set_target_properties(dflash_cache_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)

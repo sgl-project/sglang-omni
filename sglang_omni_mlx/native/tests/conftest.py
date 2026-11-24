@@ -3,7 +3,8 @@
 
 NATIVE_STUB_SERVER is the stub_server binary; NATIVE_RUNTIME_BIN is an
 installed runtime's bin directory; NATIVE_MING3_MTP_PROBE is the
-ming3_mtp_probe binary.
+ming3_mtp_probe binary; NATIVE_DFLASH_CACHE_PROBE is the dflash_cache_probe
+binary.
 """
 
 from __future__ import annotations
@@ -24,6 +25,11 @@ def stub_server_binary() -> Path:
 @pytest.fixture(scope="session")
 def ming3_mtp_probe_binary() -> Path:
     return Path(os.environ["NATIVE_MING3_MTP_PROBE"])
+
+
+@pytest.fixture(scope="session")
+def dflash_cache_probe_binary() -> Path:
+    return Path(os.environ["NATIVE_DFLASH_CACHE_PROBE"])
 
 
 @pytest.fixture(scope="session")
