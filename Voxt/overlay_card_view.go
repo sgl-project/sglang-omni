@@ -105,7 +105,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
 	if card.Conversation {
-		cardWave(context, card.Levels[:], card.Recording, card.Heard, animation.Motion, animation.Phase)
+		cardWave(context, waveBars(card.Levels[:], animation.Wave), card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
 		if !sessionCardLanguageCapsule(card) {
@@ -273,9 +273,8 @@ func cardLanguage(context *ui.Context, card *sessionCardViewState, actions sessi
 	})
 }
 
-func cardWave(context *ui.Context, levels []float64, recording, heard, motion bool, phase float64) {
+func cardWave(context *ui.Context, bars layout.Wave, recording, heard, motion bool, phase float64) {
 	const scaleX, scaleY = 0.84, 0.82
-	bars := layout.WaveBars(levels)
 	quiet := [...]float32{3.2, 3.9, 4.6, 5.1, 4.2, 3.5, 4.4, 4.9}
 	label := i18n.T("Input level")
 	ui.Row(context.Key("ov-card-wave")).Width(layout.CardWaveW).Height(layout.CardIcon).Shrink(0).Gap(layout.WaveBarGap * scaleX).AlignItems(ui.Center).Label(label).Children(func() {

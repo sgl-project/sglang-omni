@@ -9,12 +9,21 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 )
 
+// waveBars are the waveform's bars for levels: the gliding ones while it
+// moves (layout.WavePlay), else the levels' own (layout.WaveBars).
+func waveBars(levels []float64, gliding *layout.Wave) layout.Wave {
+	if gliding != nil {
+		return *gliding
+	}
+	return layout.WaveBars(levels)
+}
+
 // waveform draws the input levels as 16 rounded bars, newest on the
 // right, in the waveform's slot (layout.WaveSlotW, layout.RowH), centred (Voxt's):
-// smoothed (layout.WaveBars), and, where it is quiet, breathing a little about
+// smoothed (waveBars), and, where it is quiet, breathing a little about
 // their least height while look moves. Dim until the first audio.
 func waveform(c *ui.Context, levels []float64, heard bool, look pillLook) {
-	bars := layout.WaveBars(levels)
+	bars := waveBars(levels, look.wave)
 	ui.Row(c.Key("ov-wave")).Width(layout.WaveSlotW).Height(layout.RowH).Shrink(0).Center().Children(func() {
 		ui.Row(c).Width(layout.WaveW).Height(layout.RowH).Shrink(0).Gap(layout.WaveBarGap).AlignItems(ui.Center).Label(i18n.T("Input level")).Children(func() {
 			for i, v := range bars {

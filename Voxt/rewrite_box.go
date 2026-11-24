@@ -133,6 +133,7 @@ type rewriteBoxViewState struct {
 	Levels            [session.Bars]float64
 	Motion            bool
 	Phase             float64
+	Wave              *[session.Bars]float64 // the gliding bars (overlayWave)
 	Radius            float32
 	Alpha             float32
 	Palette           string
