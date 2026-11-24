@@ -85,6 +85,28 @@ func TestAsPlace(t *testing.T) {
 	}
 }
 
+// TestVoxGuard: "Vox", how Whisper writes Voxt, becomes Voxt but for Vox
+// Media, a vox pop, a Vox amplifier or vox.com; a user who keeps "Vox"
+// in the dictionary keeps it everywhere.
+func TestVoxGuard(t *testing.T) {
+	for in, want := range map[string]string{
+		"Vox的听写功能越来越好用了":                    "Voxt的听写功能越来越好用了",
+		"Open Vox and start talking.":       "Open Voxt and start talking.",
+		"Restart vox after the update":      "Restart Voxt after the update",
+		"A piece by Vox Media.":             "A piece by Vox Media.",
+		"We ran a vox pop outside.":         "We ran a vox pop outside.",
+		"He plays a Vox AC30 and VOX amps.": "He plays a Vox AC30 and VOX amps.",
+		"See vox.com for it":                "See vox.com for it",
+	} {
+		if got := ReplaceWithBuiltin(in, nil); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+	if got := ReplaceWithBuiltin("Open Vox", []store.Term{{Term: "Vox", Enabled: true}}); got != "Open Vox" {
+		t.Errorf("the user's Vox: %q", got)
+	}
+}
+
 // TestBuiltinHints: the built-in hints come after the user's, without
 // a term the user has or turned off (ignoring case).
 func TestBuiltinHints(t *testing.T) {

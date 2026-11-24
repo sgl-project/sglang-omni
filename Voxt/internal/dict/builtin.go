@@ -21,6 +21,9 @@ type builtinTerm struct {
 	// where, for a name made of ordinary words, says where they are the
 	// name (asPlace); there only they are written as spelled.
 	where func(before, after string) bool
+	// guarded are aliases that are also a name of their own ("Vox"),
+	// replaced only where their guard says they are not that name.
+	guarded map[string]func(before, after string) bool
 	// hint: sent to the speech model after the user's terms (BuiltinHints).
 	hint bool
 }
@@ -35,14 +38,15 @@ var sglangAliases = []string{"SG Lang", "SG-Lang", "S.G.Lang", "S.G. Lang", "S. 
 // users say often. Aliases are what speech recognition wrote for a name
 // (Whisper Large v3 Turbo on macOS voices, docs/eval.md "Built-in
 // vocabulary (11-23)"), never an ordinary word, term or name ("cloud"
-// for Claude, "Quinn" for Qwen, "Vox" for Voxt, "QDA" for CUDA,
-// "Gamini" for Gemini), so that a sentence without the name stays as
-// said. The rest only get their spelling back. It is not in the store:
-// the user's dictionary stays theirs.
+// for Claude, "Quinn" for Qwen, "QDA" for CUDA, "Gamini" for Gemini),
+// so that a sentence without the name stays as said. "Vox", Whisper's
+// usual spelling of Voxt, is the one name kept, guarded (notVoxBrand).
+// The rest only get their spelling back. It is not in the store: the
+// user's dictionary stays theirs.
 var builtin = append([]builtinTerm{
 	{term: "SGLang-Omni", aliases: append([]string{"SGLang Omni", "SGLOMNI"}, suffixed(sglangAliases, " Omni")...), spelled: true},
 	{term: "SGLang", aliases: sglangAliases, spelled: true, hint: true},
-	{term: "Voxt", aliases: []string{"Vox T", "Voxed", "Voist", "沃克斯特"}, spelled: true, hint: true},
+	{term: "Voxt", aliases: []string{"Vox", "Vox T", "Voxed", "Voist", "沃克斯特"}, spelled: true, hint: true, guarded: map[string]func(string, string) bool{"Vox": notVoxBrand}},
 	{term: "Qwen", aliases: []string{"Quen", "QEN"}, spelled: true},
 	{term: "DeepSeek", aliases: []string{"Deep Seek", "DeepSeq", "Deep Sick", "DeepSick", "DeepSig"}, spelled: true, hint: true},
 	{term: "ChatGPT", aliases: []string{"Chat GPT", "ChatsGPT", "ChadGPT", "Chad GPT", "ChatGTT"}, spelled: true},
@@ -122,15 +126,16 @@ func BuiltinHints(terms []store.Term) []string {
 // term the user turned off is left out; one the user has keeps the
 // user's spelling and gains the built-in aliases.
 func ReplaceWithBuiltin(text string, terms []store.Term) string {
-	all, spelled := withBuiltin(terms)
-	text, _ = matchText(text, all, false, spelled, len(terms))
+	all, rules := withBuiltin(terms)
+	rules.from = len(terms)
+	text, _ = matchText(text, all, false, rules)
 	return text
 }
 
 // withBuiltin is terms followed by the built-in terms they leave (see
 // ReplaceWithBuiltin), and the built-in terms written as spelled in any
 // case.
-func withBuiltin(terms []store.Term) ([]store.Term, map[string]casing) {
+func withBuiltin(terms []store.Term) ([]store.Term, builtinRules) {
 	words := map[string]bool{}      // the user's terms and aliases
 	spelling := map[string]string{} // an enabled term, as the user writes it
 	off := map[string]bool{}        // a term the user turned off
@@ -147,7 +152,7 @@ func withBuiltin(terms []store.Term) ([]store.Term, map[string]casing) {
 		}
 	}
 	out := append([]store.Term(nil), terms...)
-	spelled := map[string]casing{}
+	rules := builtinRules{casing: map[string]casing{}, guarded: map[string]func(string, string) bool{}}
 	for _, b := range builtin {
 		key := strings.ToLower(b.term)
 		user := spelling[key]
@@ -158,6 +163,9 @@ func withBuiltin(terms []store.Term) ([]store.Term, map[string]casing) {
 		for _, a := range b.aliases {
 			if !words[strings.ToLower(a)] {
 				aliases = append(aliases, a)
+				if g := b.guarded[a]; g != nil {
+					rules.guarded[strings.ToLower(a)] = g
+				}
 			}
 		}
 		switch {
@@ -168,11 +176,11 @@ func withBuiltin(terms []store.Term) ([]store.Term, map[string]casing) {
 		default:
 			out = append(out, store.Term{Term: b.term, Aliases: aliases, Enabled: true})
 			if b.spelled {
-				spelled[b.term] = casing{b.where}
+				rules.casing[b.term] = casing{b.where}
 			}
 		}
 	}
-	return out, spelled
+	return out, rules
 }
 
 // casing is a built-in term matchText writes as spelled where it finds
@@ -200,4 +208,29 @@ func asPlace(before, after string) bool {
 	}
 	prev := strings.ToLower(b[strings.LastIndexFunc(b, unicode.IsSpace)+1:])
 	return slices.Contains([]string{"on", "to", "from", "at", "in", "into", "onto", "via"}, prev)
+}
+
+// builtinRules are how matchText treats the built-in terms, from index
+// from on: their casing, and the aliases that are a name of their own,
+// replaced only where guarded (by lower case) says.
+type builtinRules struct {
+	from    int
+	casing  map[string]casing
+	guarded map[string]func(before, after string) bool
+}
+
+// voxBrand are the words after "Vox" that make it Vox Media, a vox pop or
+// a Vox amplifier, not Voxt.
+var voxBrand = []string{"media", "news", "pop", "pops", "populi", "amp", "amps", "amplifier", "amplifiers", "ac15", "ac30", "humana"}
+
+// notVoxBrand: "Vox" is Voxt unless a word of voxBrand follows it
+// ("Vox Media", "vox pop", "a Vox AC30"); "vox.com" is a token and stays
+// anyway (inToken).
+func notVoxBrand(_, after string) bool {
+	next := strings.TrimLeftFunc(after, unicode.IsSpace)
+	end := strings.IndexFunc(next, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	if end < 0 {
+		end = len(next)
+	}
+	return !slices.Contains(voxBrand, strings.ToLower(next[:end]))
 }

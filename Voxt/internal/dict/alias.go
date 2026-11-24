@@ -23,7 +23,7 @@ type Span struct {
 // changes its own output no further). An alias two terms share goes to
 // the first.
 func Replace(text string, terms []store.Term) string {
-	text, _ = matchText(text, terms, false, nil, len(terms))
+	text, _ = matchText(text, terms, false, builtinRules{from: len(terms)})
 	return text
 }
 
@@ -31,7 +31,7 @@ func Replace(text string, terms []store.Term) string {
 // same matching and overlap rules as Replace. Its spans are byte ranges
 // in text, with the longest match at each place from left to right.
 func HighlightSpans(text string, terms []store.Term) []Span {
-	_, spans := matchText(text, terms, true, nil, len(terms))
+	_, spans := matchText(text, terms, true, builtinRules{from: len(terms)})
 	return spans
 }
 
@@ -41,16 +41,17 @@ func HighlightSpans(text string, terms []store.Term) []Span {
 // spelled where it is found in another case ("Github" for GitHub), except
 // one word all in lower or all in upper case: that is how code, files and
 // addresses write it (config.json, OPENAI_API_KEY), and it stays. Terms
-// from index builtin on are the built-in words': a match of theirs inside
-// a longer token (inToken: X-Api-Key, Github.com, Support/SGLang Omni/)
-// stays as written too.
-func matchText(text string, terms []store.Term, highlight bool, spelled map[string]casing, builtin int) (string, []Span) {
+// from index rules.from on are the built-in words': a match of theirs
+// inside a longer token (inToken: X-Api-Key, Github.com, Support/SGLang
+// Omni/) stays as written, and so does one where its rule says it is not
+// the name (rules.guarded, casing's where).
+func matchText(text string, terms []store.Term, highlight bool, rules builtinRules) (string, []Span) {
 	type pattern struct {
 		words   []string                        // the alias (or term), split at its spaces
 		term    string                          // "" for a term itself: kept as written
 		size    int                             // characters, for the longest first
 		spell   string                          // a term in spelled: written so, unless oneCaseWord
-		where   func(before, after string) bool // spelled's where
+		where   func(before, after string) bool // where it is the name (nil: everywhere)
 		builtin bool                            // a built-in word's: not inside a token
 	}
 	var patterns []pattern
@@ -58,11 +59,15 @@ func matchText(text string, terms []store.Term, highlight bool, spelled map[stri
 	add := func(s, term string) {
 		words := strings.Fields(s)
 		if len(words) > 0 {
-			patterns = append(patterns, pattern{words: words, term: term, size: utf8.RuneCountInString(strings.Join(words, " ")), builtin: fromBuiltin})
+			p := pattern{words: words, term: term, size: utf8.RuneCountInString(strings.Join(words, " ")), builtin: fromBuiltin}
+			if fromBuiltin && term != "" {
+				p.where = rules.guarded[strings.ToLower(s)]
+			}
+			patterns = append(patterns, p)
 		}
 	}
 	for k, t := range terms {
-		fromBuiltin = k >= builtin
+		fromBuiltin = k >= rules.from
 		term := strings.TrimSpace(t.Term)
 		if !t.Enabled || term == "" {
 			continue
@@ -74,7 +79,7 @@ func matchText(text string, terms []store.Term, highlight bool, spelled map[stri
 				replaced = true
 			}
 		}
-		sp, spell := spelled[term]
+		sp, spell := rules.casing[term]
 		if replaced || highlight || spell {
 			add(term, "")
 			if spell && !highlight {
@@ -104,7 +109,9 @@ func matchText(text string, terms []store.Term, highlight bool, spelled map[stri
 					spans = append(spans, Span{Start: i, End: i + n})
 				} else if p.builtin && inToken(text, i, i+n) {
 					b.WriteString(text[i : i+n])
-				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) && (p.where == nil || p.where(text[:i], text[i+n:])) {
+				} else if p.where != nil && !p.where(text[:i], text[i+n:]) {
+					b.WriteString(text[i : i+n])
+				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) {
 					b.WriteString(p.spell)
 				} else if p.term == "" {
 					b.WriteString(text[i : i+n])
