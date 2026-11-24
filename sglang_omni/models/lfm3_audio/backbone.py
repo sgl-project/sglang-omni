@@ -254,40 +254,48 @@ class Lfm3ShortConv(nn.Module):
         query_start_loc: torch.Tensor,
         has_initial_state: torch.Tensor,
     ) -> torch.Tensor:
-        """Per-request causal depthwise conv over the cached state followed by the request's B * x."""
-        kernel_size = self.conv_kernel
-        channels = self.hidden_size_per_partition
-        weight = self.conv_weight.to(gated_inputs.dtype).unsqueeze(1)
-        bias = (
-            self.conv_bias.to(gated_inputs.dtype)
-            if self.conv_bias is not None
-            else None
+        """Causal depthwise conv of every request at once, without a host sync.
+
+        Each request's segment is its cached state (zeros without a prefix) followed by its B * x, all segments laid end to end; one conv over the whole layout gives every token's output, and a segment's last kernel - 1 values are the request's new state.
+        """
+        state_width = self.conv_kernel - 1
+        device = gated_inputs.device
+        dtype = gated_inputs.dtype
+        num_requests = cache_indices.shape[0]
+        num_tokens = gated_inputs.shape[0]
+        token_starts = query_start_loc.long()
+        rows = torch.arange(num_requests, device=device)
+        lanes = torch.arange(state_width, device=device)
+        # A request's segment starts state_width places later for every segment before it.
+        segment_starts = token_starts[:-1] + rows * state_width
+        token_rows = torch.searchsorted(
+            token_starts[1:], torch.arange(num_tokens, device=device), right=True
         )
-        token_starts = query_start_loc.tolist()
-        state_slots = cache_indices.tolist()
-        continues_state = has_initial_state.tolist()
-        channel_major_inputs = gated_inputs.transpose(0, 1)
-        outputs: list[torch.Tensor] = []
-        for row, state_slot in enumerate(state_slots):
-            start, end = token_starts[row], token_starts[row + 1]
-            if start == end:
-                continue
-            elif continues_state[row]:
-                state = conv_state[state_slot].to(gated_inputs.dtype)
-            else:
-                state = gated_inputs.new_zeros(channels, kernel_size - 1)
-            window = torch.cat([state, channel_major_inputs[:, start:end]], dim=-1)
-            outputs.append(
-                F.conv1d(window.unsqueeze(0), weight, bias=bias, groups=channels)[0]
-            )
-            conv_state[state_slot] = window[:, -(kernel_size - 1) :].to(
-                conv_state.dtype
-            )
-        if not outputs:
-            return gated_inputs.new_zeros(0, channels)
-        else:
-            pass
-        return torch.cat(outputs, dim=-1).transpose(0, 1)
+        token_positions = (
+            torch.arange(num_tokens, device=device) + (token_rows + 1) * state_width
+        )
+        states = conv_state[cache_indices].to(dtype)
+        states = torch.where(has_initial_state[:, None, None], states, 0)
+        layout = gated_inputs.new_empty(
+            num_tokens + num_requests * state_width, gated_inputs.shape[1]
+        )
+        layout[(segment_starts[:, None] + lanes).flatten()] = states.transpose(
+            1, 2
+        ).flatten(0, 1)
+        layout[token_positions] = gated_inputs
+        conv_outputs = F.conv1d(
+            layout.transpose(0, 1).unsqueeze(0),
+            self.conv_weight.to(dtype).unsqueeze(1),
+            bias=None if self.conv_bias is None else self.conv_bias.to(dtype),
+            groups=gated_inputs.shape[1],
+        )[0]
+        segment_ends = token_starts[1:] + (rows + 1) * state_width
+        conv_state[cache_indices] = (
+            layout[segment_ends[:, None] - state_width + lanes]
+            .transpose(1, 2)
+            .to(conv_state.dtype)
+        )
+        return conv_outputs[:, token_positions - state_width].transpose(0, 1)
 
     def forward(
         self, hidden_states: torch.Tensor, forward_batch: ForwardBatch
