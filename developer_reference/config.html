@@ -758,8 +758,9 @@ the entry. <code class="docutils literal notranslate"><span class="pre">sgl-omni
 source is merged, so the model path and TP size that launch decide it: only
 for that entry’s model path, with or without an <code class="docutils literal notranslate"><span class="pre">&#64;&lt;revision&gt;</span></code> pin, or a
 Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
-<code class="docutils literal notranslate"><span class="pre">tp_size</span></code> 1 that does not set <code class="docutils literal notranslate"><span class="pre">disable_speculative_decoding</span></code>. Like the TP
-derivation, it fills only the <code class="docutils literal notranslate"><span class="pre">speculative_*</span></code> keys no source set.
+<code class="docutils literal notranslate"><span class="pre">tp_size</span></code> 1 that sets neither <code class="docutils literal notranslate"><span class="pre">disable_speculative_decoding</span></code> nor a
+<code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> other than the entry’s. Like the TP derivation, it
+fills only the <code class="docutils literal notranslate"><span class="pre">speculative_*</span></code> keys no source set.
 <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">config</span> <span class="pre">resolve</span></code> shows these keys and the engine block as written,
 and the pinned revision is added when the stage’s server args are built.
 <code class="docutils literal notranslate"><span class="pre">tests/unit_test/speculative/test_draft_registry.py</span></code> checks these rules, so a

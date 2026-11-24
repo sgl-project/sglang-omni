@@ -639,12 +639,20 @@ For Intel GPUs, follow the <a class="reference internal" href="../other_platform
 </section>
 <section id="dspark-decoding">
 <h2>DSpark decoding<a class="headerlink" href="#dspark-decoding" title="Link to this heading">#</a></h2>
-<p>To enable <a class="reference external" href="https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark">DSpark</a>, set <code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> to <code class="docutils literal notranslate"><span class="pre">DSPARK</span></code>. The registry pins the draft revision automatically. Greedy and sampled requests (<code class="docutils literal notranslate"><span class="pre">temperature</span></code> above 0) and <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> all run under the draft:</p>
+<p>On one CUDA GPU, Ming-3.0-asr-tiny serves with its <a class="reference external" href="https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark">DSpark</a> draft by default, at the revision <code class="docutils literal notranslate"><span class="pre">sglang_omni/speculative/draft_registry.py</span></code> pins. Greedy and sampled requests (<code class="docutils literal notranslate"><span class="pre">temperature</span></code> above 0) and <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code> all run under the draft. The model path that launches, from <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> or a config file, decides it: the draft is on for <code class="docutils literal notranslate"><span class="pre">inclusionAI/Ming-3.0-asr-tiny</span></code> and for a local directory whose path has <code class="docutils literal notranslate"><span class="pre">models--inclusionAI--Ming-3.0-asr-tiny</span></code> as one of its components, as every Hugging Face cache snapshot of it does, such as <code class="docutils literal notranslate"><span class="pre">/models/models--inclusionAI--Ming-3.0-asr-tiny/</span></code>. A local copy whose path has no such component serves without the draft, and so do Intel GPUs and other platforms. A <code class="docutils literal notranslate"><span class="pre">speculative_algorithm</span></code> other than <code class="docutils literal notranslate"><span class="pre">DSPARK</span></code>, such as <code class="docutils literal notranslate"><span class="pre">NEXTN</span></code> for <a class="reference internal" href="#mtp-decoding"><span class="std std-ref">MTP</span></a>, replaces the DSpark draft.</p>
+<p>Ming’s stages load <code class="docutils literal notranslate"><span class="pre">--model-path</span></code> as a repo ID or a directory, so <code class="docutils literal notranslate"><span class="pre">inclusionAI/Ming-3.0-asr-tiny&#64;&lt;revision&gt;</span></code> does not start. To pin the target, download that revision and serve its snapshot directory, which keeps the draft on:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MODEL_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>
+<span class="w">  </span>hf<span class="w"> </span>download<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--revision<span class="w"> </span>ac95e7b1678c08ea6f4a2581a051e432ed63e9b7<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--quiet
+<span class="k">)</span><span class="s2">"</span>
+sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny
+</pre></div>
+</div>
+<p>To serve without the draft, add <code class="docutils literal notranslate"><span class="pre">--thinker.engine.disable_speculative_decoding</span> <span class="pre">true</span></code>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>inclusionAI/Ming-3.0-asr-tiny<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--thinker.engine.speculative_algorithm<span class="w"> </span>DSPARK<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--thinker.engine.speculative_draft_model_path<span class="w"> </span>wirybeaver/Ming-3.0-asr-tiny-dspark<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--dspark-use-greedy-draft<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--ragged-verify-mode<span class="w"> </span>static
+<span class="w">  </span>--thinker.engine.disable_speculative_decoding<span class="w"> </span><span class="nb">true</span>
 </pre></div>
 </div>
 </section>
