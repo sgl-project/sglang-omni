@@ -16,7 +16,7 @@ from sglang_omni.models.turn_detection.node import (
 )
 from sglang_omni.models.vad.node import SESSION_PORTS as VAD_PORTS
 from sglang_omni.models.vad.node import VAD_STAGE, VADStageConfig, vad_stage
-from sglang_omni.proto.session import SessionLimits
+from sglang_omni.proto.session import SessionLimits, parse_input
 from sglang_omni.proto.streams import SESSION_UNIT_MS, SessionPorts
 
 REALTIME_OPERATION_TIMEOUT_S = 300
@@ -128,6 +128,23 @@ class AudioSessionPipelineConfig(PipelineConfig):
 
     @model_validator(mode="after")
     def check_graph(self) -> "AudioSessionPipelineConfig":
+        for node in self.session_nodes.values():
+            if TURN_DETECTION_STAGE not in node.stages:
+                continue
+            else:
+                pass
+            if any(
+                parse_input(entry if isinstance(entry, str) else entry.source)[0]
+                == VAD_STAGE
+                for entry in node.inputs
+            ):
+                raise ValueError(
+                    "the split vad -> turn_detection graph is unsupported; "
+                    "remove the vad stage input and let turn_detection read "
+                    "input:pcm16 and input:session directly"
+                )
+            else:
+                pass
         self.session_graph()
         return self
 

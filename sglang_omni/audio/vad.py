@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import numpy as np
 import torch
+
+from sglang_omni.proto.session import TimedChunk
+from sglang_omni.proto.streams import PCM16
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,38 @@ class VADEvent:
 class Emit:
     event_type: str
     sample_offset: int
+
+
+@dataclass(frozen=True)
+class VADProcessResult:
+    events: tuple[Emit, ...]
+    completed_frame_end_sample: int
+
+
+@dataclass(frozen=True)
+class TimedSpeechBoundary:
+    started: bool
+    t_ms: float
+
+
+@dataclass(frozen=True)
+class VADSessionAppend:
+    boundaries: tuple[TimedSpeechBoundary, ...]
+    completed_frame_end_ms: float | None
+
+
+class SpeechDetector(Protocol):
+    config: VADConfig
+    is_speech: bool
+    last_speech_offset: int
+
+    def process_with_progress(self, pcm_bytes: bytes) -> VADProcessResult: ...
+
+    def reset(self) -> None: ...
+
+
+class SpeechDetectorFactory(Protocol):
+    def __call__(self, config: VADConfig) -> SpeechDetector: ...
 
 
 class SpeechProbabilityModel(Protocol):
@@ -281,6 +316,13 @@ class StreamingVAD:
 
         return emits
 
+    def process_with_progress(self, pcm_bytes: bytes) -> VADProcessResult:
+        events = self.process(pcm_bytes)
+        return VADProcessResult(
+            events=tuple(events),
+            completed_frame_end_sample=self.samples_consumed,
+        )
+
     def infer(self, frame: np.ndarray) -> float:
         with torch.inference_mode():
             tensor = torch.from_numpy(frame).unsqueeze(0)
@@ -299,6 +341,93 @@ class StreamingVAD:
             self.vad_model.reset_states()  # type: ignore[union-attr]
         else:
             pass
+
+
+class SileroSpeechDetector(StreamingVAD):
+    """A named Silero detector for stage factories and scripted substitutes."""
+
+
+@dataclass
+class VADSessionState:
+    detector: SpeechDetector
+    is_enabled: bool = True
+    origin_ms: float | None = None
+    completed_frame_end_sample: int = 0
+
+    @property
+    def completed_frame_end_ms(self) -> float | None:
+        if self.origin_ms is None:
+            return None
+        else:
+            return (
+                self.origin_ms
+                + self.completed_frame_end_sample * 1000 / VAD_SAMPLE_RATE
+            )
+
+    def boundary_ms(self, sample_offset: int) -> float:
+        assert self.origin_ms is not None
+        return self.origin_ms + sample_offset * 1000 / VAD_SAMPLE_RATE
+
+    def append_audio(self, chunk: TimedChunk) -> VADSessionAppend:
+        if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
+            raise ValueError("audio must be 16 kHz mono pcm16 bytes")
+        elif len(chunk.payload) % 2:
+            raise ValueError("pcm16 audio must contain whole samples")
+        elif not chunk.payload or not self.is_enabled:
+            return VADSessionAppend(
+                boundaries=(),
+                completed_frame_end_ms=self.completed_frame_end_ms,
+            )
+        else:
+            pass
+        if self.origin_ms is None:
+            self.origin_ms = chunk.t_start_ms
+        else:
+            pass
+        result = self.detector.process_with_progress(chunk.payload)
+        self.completed_frame_end_sample = result.completed_frame_end_sample
+        return VADSessionAppend(
+            boundaries=tuple(
+                TimedSpeechBoundary(
+                    started=event.event_type == VADEvent.SPEECH_STARTED,
+                    t_ms=self.boundary_ms(event.sample_offset),
+                )
+                for event in result.events
+            ),
+            completed_frame_end_ms=self.completed_frame_end_ms,
+        )
+
+    def reset(self) -> None:
+        self.detector.reset()
+        self.origin_ms = None
+        self.completed_frame_end_sample = 0
+
+
+TURN_DETECTION_FIELDS = ("threshold", "prefix_padding_ms", "silence_duration_ms")
+
+
+def turn_detection_vad_config(
+    config: VADConfig, settings: Mapping[str, object]
+) -> VADConfig:
+    """Apply VAD fields from a realtime turn_detection setting."""
+    turn_detection = settings.get("turn_detection")
+    if turn_detection is None:
+        return config
+    elif not isinstance(turn_detection, Mapping):
+        raise ValueError("turn_detection must be an object")
+    else:
+        return replace(
+            config,
+            **{
+                field: turn_detection[field]
+                for field in TURN_DETECTION_FIELDS
+                if turn_detection.get(field) is not None
+                and not (
+                    field == "silence_duration_ms"
+                    and turn_detection.get("type") == "semantic_vad"
+                )
+            },
+        )
 
 
 def power_db(power: float) -> float:

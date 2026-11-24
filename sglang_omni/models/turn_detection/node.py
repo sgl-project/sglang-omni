@@ -13,6 +13,7 @@ from sglang_omni.proto.streams import (
     CONFIGURE,
     PCM16,
     SEMANTIC_VAD,
+    SERVER_VAD,
     SESSION_INPUT_SAMPLE_RATE_HZ,
     SESSION_UNIT_MS,
     AudioPort,
@@ -29,7 +30,7 @@ SESSION_PORTS = SessionPorts(
     unit_ms=SESSION_UNIT_MS,
     controls=frozenset({COMMIT, CONFIGURE}),
     hot_settings=frozenset({"turn_detection"}),
-    turn_detection_types=(SEMANTIC_VAD,),
+    turn_detection_types=(SERVER_VAD, SEMANTIC_VAD),
 )
 
 
@@ -39,6 +40,10 @@ class TurnDetectionFactoryArgs(FactoryArgs):
     model_path: str = SMART_TURN_MODEL_REPO
     "The Smart Turn ONNX file, its directory, or the Hugging Face repository holding it."
     eagerness: Literal["low", "medium", "high"] = "medium"
+    threshold: float | None = Field(default=None, ge=0, le=1)
+    prefix_padding_ms: int | None = Field(default=None, ge=0)
+    silence_duration_ms: int | None = Field(default=800, ge=0)
+    background_margin_db: float | None = Field(default=6.0, ge=0)
     max_open_sessions: int | None = Field(default=None, ge=1)
     max_concurrency: int | None = Field(default=None, ge=1)
 

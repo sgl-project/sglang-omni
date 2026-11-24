@@ -6,7 +6,7 @@ import threading
 import numpy as np
 import pytest
 
-from sglang_omni.audio.vad import VADConfig
+from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, Emit, VADConfig, VADProcessResult
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.vad.node import (
     SESSION_PORTS,
@@ -44,17 +44,32 @@ class ScriptedDetector:
         self.is_speech = False
         self.last_speech_offset = 0
         self.resets = 0
+        self.samples_consumed = 0
+        self.partial_samples = 0
 
-    def boundaries(self, pcm):
+    def process_with_progress(self, pcm_bytes):
+        self.partial_samples += len(pcm_bytes) // 2
+        completed_frames = self.partial_samples // VAD_FRAME_SAMPLES
+        self.partial_samples %= VAD_FRAME_SAMPLES
+        self.samples_consumed += completed_frames * VAD_FRAME_SAMPLES
         found = self.script.pop(0)
+        events = []
         for started, offset in found:
             self.is_speech = started
             self.last_speech_offset = offset
-        return found
+            events.append(
+                Emit(
+                    "speech_started" if started else "speech_stopped",
+                    offset,
+                )
+            )
+        return VADProcessResult(tuple(events), self.samples_consumed)
 
     def reset(self):
         self.resets += 1
         self.is_speech = False
+        self.samples_consumed = 0
+        self.partial_samples = 0
 
 
 class Node:

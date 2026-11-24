@@ -18,7 +18,6 @@ from sglang_omni.proto.streams import (
 )
 
 VAD_STAGE = "vad"
-TURN_DETECTION_FIELDS = ("threshold", "prefix_padding_ms", "silence_duration_ms")
 SESSION_PORTS = SessionPorts(
     input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
     output=None,
