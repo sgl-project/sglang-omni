@@ -58,13 +58,15 @@ final class Mic: @unchecked Sendable {
     }
 
     /// The users now; while listening, every process's input is followed.
+    /// Only a process that records is asked who it is: most of the dozens
+    /// Core Audio lists do not, and each bundle id is a round trip.
     private func read() -> MicUsers {
         let ids = Self.processes()
         if lock.withLock({ listening }) { follow(ids) }
-        return micUsers(ids.map { id in
+        let recording = ids.filter { Self.number($0, kAudioProcessPropertyIsRunningInput) == 1 }
+        return micUsers(recording.map { id in
             AudioProcess(pid: Int32(bitPattern: Self.number(id, kAudioProcessPropertyPID) ?? 0),
-                         bundleId: stringProperty(id, kAudioProcessPropertyBundleID),
-                         input: Self.number(id, kAudioProcessPropertyIsRunningInput) == 1)
+                         bundleId: stringProperty(id, kAudioProcessPropertyBundleID), input: true)
         }, ownPIDs: own)
     }
 
