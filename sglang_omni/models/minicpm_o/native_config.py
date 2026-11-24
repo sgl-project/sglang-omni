@@ -122,6 +122,8 @@ class MiniCPMODuplexSpeech(BaseModel):
     n_timesteps: int = Field(default=5, ge=1)
     enable_chunk_cuda_graph: bool = True
     "Replay the flow's chunk loop from CUDA graphs captured at startup; false decodes every chunk eagerly."
+    enable_hift_cuda_graph: bool = False
+    "Replay the vocoder's HiFT decode body from CUDA graphs captured at startup, at the streaming shapes; false decodes it eagerly. A forward wider than the captured rows decodes eagerly."
     # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
     gather_window_ms: float = Field(default=FORWARD_FLOOR_MS / 2, ge=0)
     "How long an idle speech stage waits for other sessions' units to decode them together; 0 decodes what is ready."
@@ -201,6 +203,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 )
                 kwargs["n_timesteps"] = self.speech.n_timesteps
                 kwargs["enable_chunk_cuda_graph"] = self.speech.enable_chunk_cuda_graph
+                kwargs["enable_hift_cuda_graph"] = self.speech.enable_hift_cuda_graph
                 kwargs["gather_window_ms"] = self.speech.gather_window_ms
             else:
                 pass

@@ -69,6 +69,7 @@ sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 5 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `speech.enable_chunk_cuda_graph` | `true` | Replay the voice decoder's flow from the CUDA graphs described below; `false` decodes every chunk eagerly and skips their capture at startup |
+| `speech.enable_hift_cuda_graph` | `false` | Replay the voice decoder's HiFT body from CUDA graphs captured at startup, at the streaming row and frame shapes; a ragged turn tail pads to the next frame bucket, and a forward wider than the captured rows decodes eagerly |
 | `speech.gather_window_ms` | 22.5 | How long an idle speech stage waits for the other conversations' next second so it can decode them together; the wait ends once every open conversation has one. `0` decodes what is ready |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
 | `sampling` | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py` | Default sampling when a session does not set its own; `--sampling.<field>` changes one, such as `--sampling.temperature 0.5` |

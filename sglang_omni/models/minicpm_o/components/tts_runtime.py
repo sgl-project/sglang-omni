@@ -10,12 +10,17 @@ import numpy as np
 import torch
 
 from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
+from sglang_omni.models.minicpm_o.components.token2wav.flow import (
+    CausalMaskedDiffWithXvec,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.vocoder import (
+    MEL_CACHE_FRAMES,
     SILENCE_TOKEN_ID,
     SpeakerPrompt,
     StreamCaches,
     StreamChunk,
     Token2Wav,
+    hift_batch_rows,
 )
 from sglang_omni.proto.session import ResourceUsage
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
@@ -26,6 +31,33 @@ CODEC_CHUNK_SIZE = 25
 FORWARD_CACHE_COPIES = 2
 # note (Junnan Li): A graph replays a chunk forward's kernels in one launch, but wider forwards gain little and each graphed stream holds a static attention window.
 CHUNK_GRAPH_MAX_STREAMS = 8
+# A ragged turn tail pads its HiFT decode body graph up to this many mel frames.
+HIFT_FRAME_BUCKET = 16
+
+
+def streaming_hift_capture_shapes(
+    max_open_sessions: int, flow: CausalMaskedDiffWithXvec
+) -> tuple[tuple[int, int], ...]:
+    """The (rows, mel frames) the duplex speech stage decodes, as HiFT body graph shapes.
+
+    A session count pads to one of the row buckets HiFT batches already round to, up
+    to as many streams as the flow chunk graphs capture; a wider forward decodes its
+    body eagerly. A steady chunk hits its frame shape exactly, a ragged turn tail
+    pads to the next bucket, and the longest chunk a turn's lookahead can decode has
+    its own shape.
+    """
+    steady_frames = MEL_CACHE_FRAMES + CODEC_CHUNK_SIZE * flow.up_rate
+    longest_frames = (
+        MEL_CACHE_FRAMES
+        + (CODEC_CHUNK_SIZE + flow.pre_lookahead_len - 1) * flow.up_rate
+    )
+    frame_counts = {steady_frames, longest_frames}
+    frame_counts.update(range(HIFT_FRAME_BUCKET, longest_frames + 1, HIFT_FRAME_BUCKET))
+    widest_rows = min(CHUNK_GRAPH_MAX_STREAMS, max_open_sessions)
+    row_counts = {hift_batch_rows(rows) for rows in range(1, widest_rows + 1)}
+    return tuple(
+        (rows, frames) for rows in sorted(row_counts) for frames in sorted(frame_counts)
+    )
 
 
 def clone_caches(caches: StreamCaches) -> StreamCaches:

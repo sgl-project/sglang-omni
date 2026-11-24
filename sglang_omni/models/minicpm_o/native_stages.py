@@ -37,6 +37,7 @@ from sglang_omni.models.minicpm_o.components.streaming_perception import (
 from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
+    streaming_hift_capture_shapes,
 )
 from sglang_omni.models.minicpm_o.config import CODE2WAV_DECODE_STREAM_PRIORITY
 from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
@@ -580,8 +581,10 @@ def create_speech_scheduler(
     n_timesteps: int = DEFAULT_SPEECH_SETTINGS.n_timesteps,
     enable_chunk_cuda_graph: bool = DEFAULT_SPEECH_SETTINGS.enable_chunk_cuda_graph,
     gather_window_ms: float = DEFAULT_SPEECH_SETTINGS.gather_window_ms,
+    enable_hift_cuda_graph: bool = DEFAULT_SPEECH_SETTINGS.enable_hift_cuda_graph,
 ) -> SessionScheduler:
-    device = str(resolve_concrete_device(device, gpu_id))
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    device = str(resolved_device)
     # note (Junnan Li): Sessions stream one reference each, so the batched-offline options stay off.
     codec = MiniCPMOCode2Wav(
         model_path,
@@ -600,6 +603,12 @@ def create_speech_scheduler(
         decode_stream_priority=CODE2WAV_DECODE_STREAM_PRIORITY,
         enable_flow_block_compile=False,
     )
+    if enable_hift_cuda_graph and resolved_device.type == "cuda":
+        codec.capture_hift_body_graphs(
+            streaming_hift_capture_shapes(max_open_sessions, codec.token2wav.flow)
+        )
+    else:
+        pass
     runtime = MiniCPMOVocoderRuntime(
         codec,
         max_state_bytes_per_session=max_state_bytes_per_session,

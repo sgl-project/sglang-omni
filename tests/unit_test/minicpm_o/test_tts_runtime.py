@@ -13,6 +13,7 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
     CODEC_CHUNK_SIZE,
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
+    streaming_hift_capture_shapes,
 )
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
@@ -161,3 +162,44 @@ def test_turn_reset_restores_untouched_prompt_caches() -> None:
         )
     )
     assert state.caches[0]["estimator_attention_cache"].sum() == 0
+
+
+def test_streaming_hift_capture_shapes() -> None:
+    """The HiFT body graph shapes cover every padded row bucket and the steady, bucketed and longest frames a streaming decode runs."""
+    # MEL_CACHE_FRAMES 8 + 25 tokens * up_rate 2 = the steady 58 frames; the
+    # lookahead tail reaches 62; ragged tails pad to the 16-frame buckets.
+    flow = SimpleNamespace(up_rate=2, pre_lookahead_len=3)
+
+    shapes = streaming_hift_capture_shapes(6, flow)
+
+    assert shapes == (
+        (1, 16),
+        (1, 32),
+        (1, 48),
+        (1, 58),
+        (1, 62),
+        (2, 16),
+        (2, 32),
+        (2, 48),
+        (2, 58),
+        (2, 62),
+        (4, 16),
+        (4, 32),
+        (4, 48),
+        (4, 58),
+        (4, 62),
+        (8, 16),
+        (8, 32),
+        (8, 48),
+        (8, 58),
+        (8, 62),
+    )
+
+
+def test_streaming_hift_capture_shapes_cap_the_row_buckets() -> None:
+    """Beyond the flow chunk graphs' stream count, wider forwards decode the body eagerly, so the row buckets stop there."""
+    flow = SimpleNamespace(up_rate=2, pre_lookahead_len=3)
+
+    assert streaming_hift_capture_shapes(48, flow) == streaming_hift_capture_shapes(
+        8, flow
+    )
