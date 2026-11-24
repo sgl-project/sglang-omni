@@ -14,7 +14,7 @@ from sglang_omni.audio.semantic_vad import (
     end_of_turn_probability,
 )
 from sglang_omni.audio.smart_turn import SmartTurnEOU
-from sglang_omni.audio.vad import VADConfig
+from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, VADConfig
 from sglang_omni.models.turn_detection.node import SMART_TURN_MODEL_REPO
 from sglang_omni.models.vad.session import (
     DetectorFactory,
@@ -44,6 +44,15 @@ from sglang_omni.scheduling.session import (
 )
 
 TurnDetectionMode = Literal["server_vad", "semantic_vad"] | None
+
+
+def timeline_sample_at_time_ms(time_ms: float, origin_ms: float | None) -> int:
+    if origin_ms is None:
+        return round(time_ms * SESSION_INPUT_SAMPLE_RATE_HZ / 1000)
+    else:
+        return round(origin_ms * SESSION_INPUT_SAMPLE_RATE_HZ / 1000) + round(
+            (time_ms - origin_ms) * SESSION_INPUT_SAMPLE_RATE_HZ / 1000
+        )
 
 
 def turn_detection_policy(
@@ -132,26 +141,8 @@ class TurnDetectionHooks(SessionHooks):
     ) -> StagePayload:
         session = self.sessions[context.session_identity]
         chunk_control_type = control_type(chunk)
-        boundaries: list[tuple[bool, float]] | None = None
         if chunk.modality == AUDIO:
-            boundaries = self.append_audio(session, chunk)
-            for started, boundary_time_ms in boundaries:
-                self.append_boundary(session, started, boundary_time_ms, context)
-            if (
-                chunk.eos
-                and session.mode is not None
-                and session.detector_session.detector.is_speech
-            ):
-                self.append_boundary(
-                    session,
-                    False,
-                    session.detector_session.boundary_ms(
-                        session.detector_session.detector.last_speech_offset
-                    ),
-                    context,
-                )
-            else:
-                pass
+            self.append_audio(session, chunk, context)
         elif chunk_control_type == COMMIT:
             self.reset_after_commit(session)
         elif chunk_control_type == CONFIGURE:
@@ -162,74 +153,192 @@ class TurnDetectionHooks(SessionHooks):
             raise ValueError("expected pcm16 audio or a session control")
 
         if chunk.eos and session.mode is not None and session.is_open:
-            self.end_turn(session, context)
-        elif (
-            boundaries is not None
-            and session.mode in (SERVER_VAD, SEMANTIC_VAD)
-            and session.is_open
-            and session.pause_start_ms is not None
-            and session.detector_session.completed_frame_end_ms is not None
-        ):
-            decision_horizon_ms = min(
-                session.audio_received_end_ms,
-                session.detector_session.completed_frame_end_ms,
-            )
-            if (
-                decision_horizon_ms - session.pause_start_ms
-                >= session.required_silence_ms
-            ):
-                self.end_turn(session, context)
+            if session.detector_session.detector.is_speech:
+                session.pause_start_ms = session.detector_session.boundary_ms(
+                    session.detector_session.detector.last_speech_offset
+                )
             else:
                 pass
+            self.end_turn(session, context)
         else:
             pass
         payload.data = {"accepted": True}
         return payload
 
     def append_audio(
-        self, session: TurnSession, chunk: TimedChunk
-    ) -> list[tuple[bool, float]]:
+        self, session: TurnSession, chunk: TimedChunk, context: SessionContext
+    ) -> None:
         expected_start_sample = (
             session.audio_received_sample_count
             if session.detector_session.is_enabled
             and session.detector_session.origin_ms is not None
             else None
         )
-        boundaries = session.detector_session.process_audio(
+        sample_count = session.detector_session.validate_audio_chunk(
             chunk,
             expected_start_sample=expected_start_sample,
             require_duration_match=True,
         )
-        if chunk.payload:
+        if sample_count == 0:
+            return
+        elif not session.detector_session.is_enabled:
+            session.audio_received_end_ms = chunk.t_start_ms + chunk.duration_ms
+            self.append_audio_history(session, chunk)
+        else:
             assert isinstance(chunk.payload, bytes)
-            received_sample_count = len(chunk.payload) // 2
-            if session.detector_session.is_enabled:
+            byte_offset = 0
+            while byte_offset < len(chunk.payload):
+                partial_sample_count = (
+                    session.audio_received_sample_count
+                    - session.detector_session.detector.samples_consumed
+                )
+                slice_sample_count = min(
+                    VAD_FRAME_SAMPLES - partial_sample_count,
+                    sample_count - byte_offset // 2,
+                )
+                assert slice_sample_count > 0
+                start_byte = byte_offset
+                end_byte = start_byte + slice_sample_count * 2
+                pcm_slice = chunk.payload[start_byte:end_byte]
+                consumed_before = session.detector_session.detector.samples_consumed
+                boundaries = session.detector_session.process_pcm(pcm_slice)
+                session.audio_received_sample_count += slice_sample_count
                 assert session.detector_session.origin_ms is not None
-                session.audio_received_sample_count += received_sample_count
                 session.audio_received_end_ms = (
                     session.detector_session.origin_ms
                     + session.audio_received_sample_count
                     * 1000
                     / SESSION_INPUT_SAMPLE_RATE_HZ
                 )
-            else:
-                session.audio_received_end_ms = chunk.t_start_ms + chunk.duration_ms
-            self.append_audio_history(session, chunk)
-        else:
-            pass
-        return boundaries
+                self.append_audio_history(
+                    session,
+                    TimedChunk(
+                        AUDIO,
+                        chunk.t_start_ms
+                        + byte_offset // 2 * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                        slice_sample_count * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                        chunk.seq,
+                        pcm_slice,
+                        format=chunk.format,
+                        turn=chunk.turn,
+                    ),
+                )
+                byte_offset = end_byte
+                if session.detector_session.detector.samples_consumed > consumed_before:
+                    for started, boundary_time_ms in boundaries:
+                        self.append_boundary(
+                            session, started, boundary_time_ms, context
+                        )
+                    if (
+                        session.mode in (SERVER_VAD, SEMANTIC_VAD)
+                        and session.is_open
+                        and session.pause_start_ms is not None
+                    ):
+                        origin_sample = timeline_sample_at_time_ms(
+                            session.detector_session.origin_ms,
+                            session.detector_session.origin_ms,
+                        )
+                        completed_frame_end_sample = (
+                            origin_sample
+                            + session.detector_session.detector.samples_consumed
+                        )
+                        pause_start_sample = timeline_sample_at_time_ms(
+                            session.pause_start_ms,
+                            session.detector_session.origin_ms,
+                        )
+                        deadline_sample = pause_start_sample + (
+                            session.required_silence_ms
+                            * SESSION_INPUT_SAMPLE_RATE_HZ
+                            // 1000
+                        )
+                        if completed_frame_end_sample >= deadline_sample:
+                            self.end_turn(session, context)
+                        else:
+                            pass
+                    else:
+                        pass
+                else:
+                    pass
 
     def append_audio_history(self, session: TurnSession, chunk: TimedChunk) -> None:
         session.audio_history.append(chunk)
-        history_start_ms = (
-            session.audio_received_end_ms
-            - SemanticVADConfig.max_utterance_seconds * 1000
+        assert isinstance(chunk.payload, bytes)
+        history_end_sample = (
+            timeline_sample_at_time_ms(
+                chunk.t_start_ms, session.detector_session.origin_ms
+            )
+            + len(chunk.payload) // 2
         )
-        while (
-            session.audio_history[0].t_start_ms + session.audio_history[0].duration_ms
-            <= history_start_ms
-        ):
-            session.audio_history.popleft()
+        history_start_sample = history_end_sample - (
+            SemanticVADConfig.max_utterance_seconds * SESSION_INPUT_SAMPLE_RATE_HZ
+        )
+        while session.audio_history:
+            first_chunk = session.audio_history[0]
+            assert isinstance(first_chunk.payload, bytes)
+            first_start_sample = timeline_sample_at_time_ms(
+                first_chunk.t_start_ms, session.detector_session.origin_ms
+            )
+            first_end_sample = first_start_sample + len(first_chunk.payload) // 2
+            if first_end_sample <= history_start_sample:
+                session.audio_history.popleft()
+            elif first_start_sample < history_start_sample:
+                first_payload_offset = (history_start_sample - first_start_sample) * 2
+                first_payload = first_chunk.payload[first_payload_offset:]
+                origin_ms = session.detector_session.origin_ms
+                if origin_ms is None:
+                    first_start_ms = (
+                        history_start_sample * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+                    )
+                else:
+                    origin_sample = timeline_sample_at_time_ms(origin_ms, origin_ms)
+                    first_start_ms = (
+                        origin_ms
+                        + (history_start_sample - origin_sample)
+                        * 1000
+                        / SESSION_INPUT_SAMPLE_RATE_HZ
+                    )
+                session.audio_history[0] = TimedChunk(
+                    AUDIO,
+                    first_start_ms,
+                    len(first_payload) // 2 * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                    first_chunk.seq,
+                    first_payload,
+                    format=first_chunk.format,
+                    eos=first_chunk.eos,
+                    turn=first_chunk.turn,
+                )
+                break
+            else:
+                break
+
+    def utterance_pcm_at_frame_end(self, session: TurnSession) -> bytes:
+        origin_ms = session.detector_session.origin_ms
+        assert origin_ms is not None
+        frame_end_sample = (
+            timeline_sample_at_time_ms(origin_ms, origin_ms)
+            + session.detector_session.detector.samples_consumed
+        )
+        window_start_sample = max(
+            timeline_sample_at_time_ms(session.turn_start_ms, origin_ms),
+            frame_end_sample
+            - SemanticVADConfig.max_utterance_seconds * SESSION_INPUT_SAMPLE_RATE_HZ,
+        )
+        pcm_fragments: list[bytes] = []
+        for audio_chunk in session.audio_history:
+            assert isinstance(audio_chunk.payload, bytes)
+            chunk_start_sample = timeline_sample_at_time_ms(
+                audio_chunk.t_start_ms, origin_ms
+            )
+            chunk_end_sample = chunk_start_sample + len(audio_chunk.payload) // 2
+            fragment_start_sample = max(window_start_sample, chunk_start_sample)
+            fragment_end_sample = min(frame_end_sample, chunk_end_sample)
+            if fragment_start_sample < fragment_end_sample:
+                start_byte = (fragment_start_sample - chunk_start_sample) * 2
+                end_byte = (fragment_end_sample - chunk_start_sample) * 2
+                pcm_fragments.append(audio_chunk.payload[start_byte:end_byte])
+            else:
+                pass
+        return b"".join(pcm_fragments)
 
     def append_boundary(
         self, session: TurnSession, started: bool, t_ms: float, context: SessionContext
@@ -255,14 +364,11 @@ class TurnDetectionHooks(SessionHooks):
             session.clear_pause()
         elif session.mode == SEMANTIC_VAD and session.is_open:
             session.pause_start_ms = t_ms
-            utterance = b"".join(
-                audio.payload
-                for audio in session.audio_history
-                if audio.t_start_ms + audio.duration_ms > session.turn_start_ms
-            )
             assert session.policy is not None
             session.pause_probability = end_of_turn_probability(
-                self.eou_model, utterance, session.policy.max_utterance_seconds
+                self.eou_model,
+                self.utterance_pcm_at_frame_end(session),
+                session.policy.max_utterance_seconds,
             )
             session.required_silence_ms = session.policy.required_silence_ms(
                 session.pause_probability

@@ -13,7 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from sglang_omni.audio.segmentation import UtteranceSegmenter
+from sglang_omni.audio.segmentation import (
+    EMPTY_UTTERANCE,
+    FINISH_UTTERANCE,
+    OPEN_UTTERANCE,
+    UtteranceSegmenter,
+)
 from sglang_omni.audio.semantic_vad import SemanticVADConfig
 from sglang_omni.audio.smart_turn import SmartTurnEOU
 from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, StreamingVAD, VADConfig
@@ -34,7 +39,7 @@ from sglang_omni.models.turn_detection.session import (
     create_scheduler as create_turn_scheduler,
 )
 from sglang_omni.models.vad.node import vad_stage
-from sglang_omni.models.vad.session import SileroSpeechDetector
+from sglang_omni.models.vad.session import SileroSpeechDetector, VADHooks
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SessionGraph,
@@ -56,7 +61,11 @@ from sglang_omni.proto.streams import (
     TURN_STARTED,
     control_type,
 )
-from sglang_omni.scheduling.session import SessionContext, SessionScheduler
+from sglang_omni.scheduling.session import (
+    SessionContext,
+    SessionHooks,
+    SessionScheduler,
+)
 from sglang_omni.serve.realtime.session_bridge import capabilities_of
 from tests.unit_test.fixtures.cascade_fakes import build, drain
 from tests.unit_test.fixtures.session_outputs import control_chunk
@@ -69,36 +78,49 @@ PROFILE_PATH = (
 SERVER_PROFILE_PATH = "examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml"
 
 
-@pytest.fixture(autouse=True)
-def deterministic_silero(monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_silero_module() -> types.ModuleType:
     silero_module = types.ModuleType("silero_vad")
 
     def load_silero_vad(*, onnx: bool) -> object:
         assert onnx
         return object()
 
-    def infer(self: StreamingVAD, frame: np.ndarray) -> float:
-        return float(np.any(frame))
-
     silero_module.load_silero_vad = load_silero_vad
-    monkeypatch.setitem(sys.modules, "silero_vad", silero_module)
-    monkeypatch.setattr(StreamingVAD, "infer", infer)
+    return silero_module
+
+
+def deterministic_speech_probability(
+    detector: StreamingVAD, frame: np.ndarray
+) -> float:
+    return float(np.any(frame))
+
+
+@pytest.fixture(autouse=True)
+def deterministic_silero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "silero_vad", fake_silero_module())
+    monkeypatch.setattr(StreamingVAD, "infer", deterministic_speech_probability)
 
 
 class FakeEndOfTurn:
     def __init__(self, probabilities: Sequence[float]) -> None:
         self.probabilities = deque(probabilities)
         self.scored_seconds: list[float] = []
+        self.scored_pcm: list[bytes] = []
 
     def predict(self, audio: np.ndarray, sample_rate: int) -> float:
         assert sample_rate == SAMPLE_RATE_HZ
         assert audio.dtype == np.float32
         self.scored_seconds.append(audio.size / sample_rate)
+        self.scored_pcm.append(np.rint(audio * 32768).astype("<i2").tobytes())
         return self.probabilities.popleft()
 
 
 def pcm_samples(speech: bool, sample_count: int) -> bytes:
     amplitude = 12000 if speech else 0
+    return np.full(sample_count, amplitude, dtype="<i2").tobytes()
+
+
+def pcm_amplitude(amplitude: int, sample_count: int) -> bytes:
     return np.full(sample_count, amplitude, dtype="<i2").tobytes()
 
 
@@ -190,25 +212,74 @@ class Node:
         ]
 
 
-def test_completed_vad_frames_order_resumption_before_the_silence_deadline() -> None:
-    for resumed in (True, False):
-        node = Node([0.85], eagerness="high")
-        node.frames(0, [True] * 29)
-        node.frames(928, [False] * 8)
-        assert node.boundaries() == [(SPEECH_STARTED, 0)]
-        assert node.session.pause_start_ms == 928
-        assert node.session.required_silence_ms == 320
-        assert node.session.detector_session.completed_frame_end_ms == 1184
+def replay_partitioned_audio(pcm: bytes, partition_samples: Sequence[int]) -> Node:
+    node = Node([0.1, 0.99], eagerness="high")
+    total_samples = len(pcm) // 2
+    sample_offset = 0
+    partition_index = 0
+    while sample_offset < total_samples:
+        sample_count = min(
+            partition_samples[partition_index % len(partition_samples)],
+            total_samples - sample_offset,
+        )
+        start_byte = sample_offset * 2
+        end_byte = (sample_offset + sample_count) * 2
+        node.audio(
+            sample_offset * 1000 / SAMPLE_RATE_HZ,
+            pcm[start_byte:end_byte],
+            eos=sample_offset + sample_count == total_samples,
+        )
+        sample_offset += sample_count
+        partition_index += 1
+    return node
 
-        final_fragment = [False, False, True] if resumed else [False, False]
-        node.frames(1184, final_fragment)
-        if resumed:
-            assert node.boundaries() == [(SPEECH_STARTED, 0)]
-        else:
-            assert node.boundaries() == [
-                (SPEECH_STARTED, 0),
-                (SPEECH_STOPPED, 928),
-            ]
+
+@pytest.mark.parametrize("resume_in_deadline_frame", [False, True])
+def test_resumption_before_or_in_the_deadline_frame_keeps_the_turn_open(
+    resume_in_deadline_frame: bool,
+) -> None:
+    node = Node([0.85], eagerness="high")
+    node.frames(0, [True] * 29)
+    node.frames(928, [False] * 8)
+    assert node.session.pause_start_ms == 928
+    assert node.session.required_silence_ms == 320
+
+    if resume_in_deadline_frame:
+        node.frames(1184, [False])
+        node.frames(1216, [True])
+    else:
+        node.frames(1184, [True])
+    assert node.boundaries() == [(SPEECH_STARTED, 0)]
+    assert node.session.is_open
+
+
+def test_deadline_commits_before_later_resumption_inside_one_200_ms_append() -> None:
+    node = Node([0.85], eagerness="high")
+    node.frames(0, [True] * 29)
+    node.frames(928, [False] * 8)
+    silence_and_resumption = pcm_frames([False] * 2 + [True] * 4) + pcm_samples(
+        True, 128
+    )
+    node.audio(1184, silence_and_resumption, eos=True)
+    assert len(silence_and_resumption) // 2 == 200 * 16
+    assert node.boundaries() == [
+        (SPEECH_STARTED, 0),
+        (SPEECH_STOPPED, 928),
+        (SPEECH_STARTED, 1248),
+        (SPEECH_STOPPED, 1376),
+    ]
+    assert len(node.model.scored_pcm) == 1
+
+
+def test_no_resumption_commits_once_at_the_first_frame_reaching_the_deadline() -> None:
+    node = Node([0.85], eagerness="high")
+    node.frames(0, [True] * 29)
+    node.frames(928, [False] * 8)
+    node.frames(1184, [False] * 2)
+    assert node.boundaries() == [
+        (SPEECH_STARTED, 0),
+        (SPEECH_STOPPED, 928),
+    ]
 
 
 def test_partial_and_empty_pcm_do_not_advance_the_vad_deadline() -> None:
@@ -228,12 +299,35 @@ def test_partial_and_empty_pcm_do_not_advance_the_vad_deadline() -> None:
 
 
 def test_multiple_boundaries_in_one_append_are_consumed_in_order() -> None:
-    node = Node([0.1, 0.99], eagerness="high")
-    node.frames(0, [True] * 6 + [False] * 5 + [True] * 2 + [False] * 5)
-    assert node.boundaries() == [(SPEECH_STARTED, 0)]
-    assert node.model.scored_seconds == [0.576, 0.576]
-    node.frames(576, [False] * 2)
-    assert node.boundaries() == [(SPEECH_STARTED, 0), (SPEECH_STOPPED, 416)]
+    pcm = pcm_frames([True] * 6 + [False] * 5 + [True] * 2 + [False] * 7)
+    total_samples = len(pcm) // 2
+    expected_scores = [
+        pcm_frames([True] * 6 + [False] * 5),
+        pcm_frames([True] * 6 + [False] * 5 + [True] * 2 + [False] * 5),
+    ]
+    partitions = (
+        (VAD_FRAME_SAMPLES,),
+        (80 * 16,),
+        (200 * 16,),
+        (1, 511, 13, 1000, 2048, 7),
+        (total_samples,),
+    )
+    expected_boundaries = [(SPEECH_STARTED, 0), (SPEECH_STOPPED, 416)]
+
+    for partition in partitions:
+        node = replay_partitioned_audio(pcm, partition)
+        assert node.boundaries() == expected_boundaries
+        assert [
+            (event_type, round(time_ms * SAMPLE_RATE_HZ / 1000))
+            for event_type, time_ms in node.boundaries()
+        ] == [(SPEECH_STARTED, 0), (SPEECH_STOPPED, 416 * SAMPLE_RATE_HZ)]
+        assert (
+            sum(event_type == SPEECH_STARTED for event_type, _ in node.boundaries())
+            == 1
+        )
+        assert node.model.scored_seconds == [0.352, 0.576]
+        assert node.model.scored_pcm == expected_scores
+        assert not node.session.is_open
 
 
 def test_semantic_history_remains_bounded_to_eight_seconds() -> None:
@@ -243,7 +337,43 @@ def test_semantic_history_remains_bounded_to_eight_seconds() -> None:
     node.audio(12000, pcm_samples(False, 200 * 16))
     node.audio(12200, pcm_samples(False, 24 * 16))
     assert node.model.scored_seconds == [SemanticVADConfig.max_utterance_seconds]
+    assert node.model.scored_pcm == [pcm_frames([True] * 245 + [False] * 5)]
     assert node.boundaries()[-1] == (SPEECH_STOPPED, 12000)
+
+
+def test_candidate_scoring_slices_audio_before_the_reported_turn_start() -> None:
+    node = Node(
+        [0.85],
+        eagerness="high",
+        vad_config=VADConfig(
+            prefix_padding_ms=100,
+            silence_duration_ms=160,
+            background_margin_db=None,
+        ),
+    )
+    node.frames(0, [False] * 20 + [True] * 80 + [False] * 5)
+    expected_pcm = pcm_samples(False, 100 * 16) + pcm_frames([True] * 80 + [False] * 5)
+    assert node.boundaries() == [(SPEECH_STARTED, 540)]
+    assert node.model.scored_pcm == [expected_pcm]
+
+
+def test_large_append_scores_only_its_candidate_frame_and_slices_the_eight_second_window() -> (
+    None
+):
+    node = Node([0.85], eagerness="high")
+    node.frames(0, [True] * 320)
+    node.audio(
+        10240,
+        pcm_frames([False] * 11 + [True] * 2),
+        eos=True,
+    )
+    assert node.model.scored_pcm == [pcm_frames([True] * 245 + [False] * 5)]
+    assert node.boundaries() == [
+        (SPEECH_STARTED, 0),
+        (SPEECH_STOPPED, 10240),
+        (SPEECH_STARTED, 10592),
+        (SPEECH_STOPPED, 10656),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -305,6 +435,72 @@ def test_server_vad_passes_through_boundaries_without_smart_turn_scoring() -> No
     node.frames(96, [False] * 5)
     assert node.boundaries() == [(SPEECH_STARTED, 0), (SPEECH_STOPPED, 96)]
     assert node.model.scored_seconds == []
+
+
+def test_server_vad_matches_standalone_vad_across_append_partitions() -> None:
+    pcm = pcm_frames([True] * 6 + [False] * 7 + [True] * 4 + [False] * 8)
+    total_samples = len(pcm) // 2
+    config = VADConfig(
+        prefix_padding_ms=0,
+        silence_duration_ms=160,
+        background_margin_db=None,
+    )
+    partitions = (
+        (VAD_FRAME_SAMPLES,),
+        (80 * 16,),
+        (200 * 16,),
+        (1, 511, 13, 1000, 2048, 7),
+        (total_samples,),
+    )
+    expected = [
+        (SPEECH_STARTED, 0),
+        (SPEECH_STOPPED, 192),
+        (SPEECH_STARTED, 416),
+        (SPEECH_STOPPED, 544),
+    ]
+
+    for partition_index, partition in enumerate(partitions):
+        fused = Node(mode=SERVER_VAD, vad_config=config)
+        standalone_hooks = VADHooks(config, SileroSpeechDetector)
+        standalone_identity = SessionIdentity(f"standalone-{partition_index}")
+        standalone_outputs: list[TimedChunk] = []
+        standalone_context = SessionContext(
+            session_identity=standalone_identity,
+            cancelled=threading.Event(),
+            emit=standalone_outputs.append,
+        )
+        standalone_hooks.open(standalone_identity, OmniRequest(None))
+        sample_offset = 0
+        partition_offset = 0
+        while sample_offset < total_samples:
+            sample_count = min(
+                partition[partition_offset % len(partition)],
+                total_samples - sample_offset,
+            )
+            start_byte = sample_offset * 2
+            end_byte = (sample_offset + sample_count) * 2
+            chunk = audio_chunk(
+                sample_offset * 1000 / SAMPLE_RATE_HZ,
+                pcm[start_byte:end_byte],
+                partition_offset,
+                eos=sample_offset + sample_count == total_samples,
+            )
+            fused.append(chunk)
+            standalone_hooks.append(
+                chunk,
+                StagePayload("input", OmniRequest(None), None),
+                standalone_context,
+            )
+            sample_offset += sample_count
+            partition_offset += 1
+        standalone_boundaries = [
+            (chunk.payload["type"], chunk.payload["t_ms"])
+            for chunk in standalone_outputs
+        ]
+        assert fused.boundaries() == expected
+        assert standalone_boundaries == expected
+        assert fused.model.scored_pcm == []
+        standalone_hooks.close(standalone_identity)
 
 
 def test_client_vad_overrides_apply_without_changing_semantic_candidate_silence() -> (
@@ -699,86 +895,183 @@ def test_the_qwen_dialog_queues_a_held_pause_as_one_turn() -> None:
     ]
 
 
-class BoundaryDetector:
-    """Append-scripted boundaries for the multi-process Session Graph regression."""
+class CapturingRecognizerHooks(SessionHooks):
+    def __init__(self, name: str, events: Queue[object]) -> None:
+        self.name = name
+        self.events = events
+        self.segmenters: dict[SessionIdentity, UtteranceSegmenter] = {}
+        self.utterances: dict[SessionIdentity, bytearray | None] = {}
 
-    def __init__(
-        self, append_boundaries: Sequence[Sequence[tuple[bool, int]]], config: VADConfig
-    ) -> None:
-        self.config = config
-        self.append_boundaries = [list(boundaries) for boundaries in append_boundaries]
-        self.samples_consumed = 0
-        self.is_speech = False
-        self.last_speech_offset = 0
+    def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
+        self.segmenters[session_identity] = UtteranceSegmenter()
+        self.utterances[session_identity] = None
 
-    def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]:
-        self.samples_consumed += len(pcm) // 2
-        boundaries = self.append_boundaries.pop(0)
-        for started, sample_offset in boundaries:
-            self.is_speech = started
-            if started:
-                self.last_speech_offset = self.samples_consumed
+    def close(self, session_identity: SessionIdentity) -> None:
+        del self.segmenters[session_identity]
+        del self.utterances[session_identity]
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        event_type = control_type(chunk)
+        if chunk.modality == AUDIO:
+            assert isinstance(chunk.payload, bytes)
+            self.events.put(
+                (
+                    "recognizer_delivery",
+                    self.name,
+                    "audio",
+                    chunk.t_start_ms,
+                    chunk.duration_ms,
+                    chunk.payload,
+                )
+            )
+        elif event_type in (SPEECH_STARTED, SPEECH_STOPPED):
+            self.events.put(
+                (
+                    "recognizer_delivery",
+                    self.name,
+                    "control",
+                    event_type,
+                    chunk.t_start_ms,
+                )
+            )
+        else:
+            pass
+        segmenter = self.segmenters[context.session_identity]
+        actions = segmenter.step(chunk)
+        if chunk.eos:
+            actions.extend(segmenter.finish())
+        else:
+            pass
+        for action in actions:
+            if action == OPEN_UTTERANCE:
+                self.utterances[context.session_identity] = bytearray()
+            elif action == FINISH_UTTERANCE:
+                utterance = self.utterances[context.session_identity]
+                assert utterance is not None
+                self.events.put(("recognizer_utterance", self.name, bytes(utterance)))
+                self.utterances[context.session_identity] = None
+            elif action == EMPTY_UTTERANCE:
+                self.events.put(("recognizer_utterance", self.name, b""))
             else:
-                pass
-        return boundaries
+                assert isinstance(action, TimedChunk)
+                utterance = self.utterances[context.session_identity]
+                assert utterance is not None and isinstance(action.payload, bytes)
+                utterance.extend(action.payload)
+        if chunk.eos:
+            self.events.put(("recognizer_complete", self.name))
+        else:
+            pass
+        payload.data = {"accepted": True}
+        return payload
 
-    def reset(self) -> None:
-        self.samples_consumed = 0
-        self.is_speech = False
-        self.last_speech_offset = 0
+
+class CapturingDialogHooks(QwenInputHooks):
+    def __init__(self, events: Queue[object]) -> None:
+        super().__init__(
+            max_utterance_seconds=8,
+            max_queued_turns=4,
+            max_utterance_frames=4,
+        )
+        self.events = events
+
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        state = self.states[context.session_identity]
+        turn_count = state.turn_count
+        payload = super().append(chunk, payload, context)
+        if state.turn_count > turn_count:
+            if state.waiting and state.waiting[-1].turn == state.turn_count:
+                utterance_pcm = state.waiting[-1].pcm
+            elif (
+                state.answering is not None and state.answering.turn == state.turn_count
+            ):
+                utterance_pcm = state.answering.pcm
+            else:
+                raise AssertionError("completed dialog utterance was not retained")
+            self.events.put(("dialog_utterance", "dialog", utterance_pcm))
+        else:
+            pass
+        if chunk.eos:
+            self.events.put(("dialog_complete", "dialog"))
+        else:
+            pass
+        return payload
 
 
-def create_graph_scheduler(
-    name: str,
-    events: Queue[object],
-    append_boundaries: Sequence[Sequence[tuple[bool, int]]],
-) -> SessionScheduler:
-    def new_detector(config: VADConfig) -> BoundaryDetector:
-        return BoundaryDetector(append_boundaries, config)
-
+def create_graph_turn_scheduler(name: str, events: Queue[object]) -> SessionScheduler:
+    sys.modules["silero_vad"] = fake_silero_module()
+    StreamingVAD.infer = deterministic_speech_probability
+    events.put(("scheduler_ready", name))
     return SessionScheduler(
         TurnDetectionHooks(
-            FakeEndOfTurn([0.85, 0.99]),
+            FakeEndOfTurn([0.85]),
             "high",
-            VADConfig(prefix_padding_ms=0, silence_duration_ms=160),
-            new_detector,
+            VADConfig(
+                prefix_padding_ms=0,
+                silence_duration_ms=160,
+                background_margin_db=None,
+            ),
+            SileroSpeechDetector,
         )
     )
 
 
+def create_graph_recognizer_scheduler(
+    name: str, events: Queue[object]
+) -> SessionScheduler:
+    return SessionScheduler(CapturingRecognizerHooks(name, events))
+
+
+def create_graph_dialog_scheduler(name: str, events: Queue[object]) -> SessionScheduler:
+    assert name == "dialog"
+    return SessionScheduler(CapturingDialogHooks(events))
+
+
 @pytest.mark.asyncio
-async def test_session_graph_orders_resumption_and_drains_final_eos(
+async def test_session_graph_delivers_resumed_pcm_to_second_recognizer_and_dialog_utterance(
     tmp_path: Path,
 ) -> None:
-    append_boundaries = (
-        ((True, 0), (False, 928 * 16)),
-        ((True, 1248 * 16),),
-        ((False, 1280 * 16),),
-        (),
-    )
     graph = SessionGraph(
         nodes={
             "turn_detection": SessionNode(
                 stages=("turn_detection",),
                 inputs=("input:pcm16", "input:session"),
-            )
+            ),
+            "recognizer": SessionNode(
+                stages=("recognizer",),
+                inputs=("input:pcm16", "turn_detection:session"),
+            ),
+            "dialog": SessionNode(
+                stages=("dialog",),
+                inputs=("input:pcm16", "turn_detection:session"),
+            ),
         },
         publish={"turn_detection": ("session",)},
     )
     async with pipeline(
         tmp_path,
-        names=["turn_detection"],
-        factories={"turn_detection": f"{__name__}.create_graph_scheduler"},
-        factory_kwargs={"append_boundaries": append_boundaries},
-    ) as (coordinator, _, _):
+        names=["turn_detection", "recognizer", "dialog"],
+        factories={
+            "turn_detection": f"{__name__}.create_graph_turn_scheduler",
+            "recognizer": f"{__name__}.create_graph_recognizer_scheduler",
+            "dialog": f"{__name__}.create_graph_dialog_scheduler",
+        },
+    ) as (coordinator, events, _):
         coordinator.session_graph = graph
         identity = await coordinator.open_session(OmniRequest(None, {}))
         outputs = coordinator.session_outputs(identity)
+        first_speech = pcm_amplitude(7000, 28 * VAD_FRAME_SAMPLES)
+        silence = pcm_frames([False] * 6)
+        resumed_speech = pcm_amplitude(24000, VAD_FRAME_SAMPLES + 128)
+        resume_append = pcm_frames([False] * 5) + resumed_speech
         chunks = (
-            audio_chunk(400, bytes(1184 * 32), 0),
-            audio_chunk(1584, bytes(96 * 32), 1),
-            audio_chunk(1680, bytes(256 * 32), 2),
-            audio_chunk(1936, b"", 3, eos=True),
+            audio_chunk(0, first_speech, 0),
+            audio_chunk(896, silence, 1),
+            audio_chunk(1088, resume_append, 2),
+            audio_chunk(1288, b"", 3, eos=True),
         )
         for chunk in chunks:
             await coordinator.append_session(identity, chunk)
@@ -791,18 +1084,90 @@ async def test_session_graph_orders_resumption_and_drains_final_eos(
                 break
             else:
                 pass
-        boundaries = [
+        assert [
             (item.payload["type"], item.payload["t_ms"])
             for item in received
             if item.kind == "data"
+        ] == [
+            (SPEECH_STARTED, 0),
+            (SPEECH_STOPPED, 896),
+            (SPEECH_STARTED, 1248),
+            (SPEECH_STOPPED, 1280),
         ]
-        assert boundaries == [(SPEECH_STARTED, 400), (SPEECH_STOPPED, 1680)]
         assert [item.input_seq for item in received if item.kind == "input_done"] == [
             0,
             1,
             2,
             3,
         ]
+        delivered_events = []
+        completed_stages: set[str] = set()
+        while completed_stages != {"recognizer", "dialog"}:
+            event = events.get(timeout=5)
+            delivered_events.append(event)
+            if event[0] in ("recognizer_complete", "dialog_complete"):
+                completed_stages.add(event[1])
+            else:
+                pass
+        recognizer_pcm = [
+            event[2] for event in delivered_events if event[0] == "recognizer_utterance"
+        ]
+        dialog_pcm = [
+            event[2] for event in delivered_events if event[0] == "dialog_utterance"
+        ]
+        recognizer_delivery = [
+            event
+            for event in delivered_events
+            if event[0] == "recognizer_delivery" and event[1] == "recognizer"
+        ]
+        delivery_order = [
+            (
+                ("audio", event[3], event[4])
+                if event[2] == "audio"
+                else ("control", event[3], event[4])
+            )
+            for event in recognizer_delivery
+        ]
+        large_audio_index = next(
+            index
+            for index, event in enumerate(recognizer_delivery)
+            if event[2] == "audio" and event[3] == 1088
+        )
+        stop_index = next(
+            index
+            for index, event in enumerate(recognizer_delivery)
+            if (
+                event[2] == "control" and event[3] == SPEECH_STOPPED and event[4] == 896
+            )
+        )
+        resume_index = next(
+            index
+            for index, event in enumerate(recognizer_delivery)
+            if (
+                event[2] == "control"
+                and event[3] == SPEECH_STARTED
+                and event[4] == 1248
+            )
+        )
+        assert len(recognizer_pcm) == 2
+        assert len(dialog_pcm) == 2
+        assert large_audio_index < stop_index < resume_index, delivery_order
+        assert (
+            resumed_speech not in recognizer_pcm[0]
+            and resumed_speech in recognizer_pcm[1]
+            and resumed_speech not in dialog_pcm[0]
+            and resumed_speech in dialog_pcm[1]
+        ), {
+            "delivery_order": delivery_order,
+            "recognizer_samples": [len(utterance) // 2 for utterance in recognizer_pcm],
+            "dialog_samples": [len(utterance) // 2 for utterance in dialog_pcm],
+            "recognizer_has_resume": [
+                resumed_speech in utterance for utterance in recognizer_pcm
+            ],
+            "dialog_has_resume": [
+                resumed_speech in utterance for utterance in dialog_pcm
+            ],
+        }
         await coordinator.close_session(identity)
 
 

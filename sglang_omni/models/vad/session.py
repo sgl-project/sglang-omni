@@ -116,6 +116,24 @@ class DetectorSession:
         expected_start_sample: int | None = None,
         require_duration_match: bool = False,
     ) -> list[tuple[bool, float]]:
+        self.validate_audio_chunk(
+            chunk,
+            expected_start_sample=expected_start_sample,
+            require_duration_match=require_duration_match,
+        )
+        if not chunk.payload or not self.is_enabled:
+            return []
+        else:
+            assert isinstance(chunk.payload, bytes)
+            return self.process_pcm(chunk.payload)
+
+    def validate_audio_chunk(
+        self,
+        chunk: TimedChunk,
+        *,
+        expected_start_sample: int | None = None,
+        require_duration_match: bool = False,
+    ) -> int:
         if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
             raise ValueError("audio must be 16 kHz mono pcm16 bytes")
         elif len(chunk.payload) % 2:
@@ -154,15 +172,21 @@ class DetectorSession:
         else:
             pass
         if not chunk.payload or not self.is_enabled:
-            return []
+            return sample_count
         elif self.origin_ms is None:
             self.origin_ms = chunk.t_start_ms
         else:
             pass
-        return [
-            (started, self.boundary_ms(sample_offset))
-            for started, sample_offset in self.detector.boundaries(chunk.payload)
-        ]
+        return sample_count
+
+    def process_pcm(self, pcm: bytes) -> list[tuple[bool, float]]:
+        if not pcm or not self.is_enabled:
+            return []
+        else:
+            return [
+                (started, self.boundary_ms(sample_offset))
+                for started, sample_offset in self.detector.boundaries(pcm)
+            ]
 
     def reset(self) -> None:
         self.detector.reset()
