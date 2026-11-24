@@ -34,6 +34,13 @@ var (
 	ShareHatBold = stroke("hat-bold", "2", `<path d="M7 16V7.2A1.7 1.7 0 0 1 8.7 5.5h6.6A1.7 1.7 0 0 1 17 7.2V16"/><path d="M7 12.6h10"/><path d="M3.5 16.5c2.4 1.3 5.2 2 8.5 2s6.1-.7 8.5-2"/>`)
 )
 
+// ShareLinkedIn names LinkedIn on the insights cards' button that posts
+// there: the letters "in", drawn for VoxtNew, in the text's color.
+var ShareLinkedIn = func() Icon {
+	s := parse(`<g fill="currentColor"><circle cx="6.6" cy="6.5" r="1.9"/><rect x="5" y="9.8" width="3.2" height="9.2" rx=".4"/><path d="M10.6 9.8h3v1.4c.6-1 1.8-1.7 3.3-1.7c2.6 0 3.6 1.7 3.6 4.3V19h-3.2v-4.6c0-1.2-.4-2-1.6-2c-1.3 0-2 .9-2 2.2V19h-3.1z"/></g>`)
+	return Icon{Name: "share-linkedin", Linear: s, Bold: s}
+}()
+
 // ShareStar is the logo's star, a four-pointed one of the mockup's
 // curves, in the text's color: the card's orange and peach ones.
 var ShareStar = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="130" height="130" viewBox="0 0 130 130"><path fill="currentColor" d="M65 0Q65 65 130 65Q65 65 65 130Q65 65 0 65Q65 65 65 0Z"/></svg>`))

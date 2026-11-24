@@ -33,6 +33,13 @@ type shareActions interface {
 type insightsActions interface {
 	openInsightsShare()
 	closeInsightsShare()
+	// turnInsightsShare shows the next card (1) or the one before (-1);
+	// showInsightsShare the card of a dot.
+	turnInsightsShare(by int)
+	showInsightsShare(card int)
 	shuffleInsightsShare()
 	copyInsightsShare()
+	saveInsightsShare()
+	// postInsightsShare copies the card and opens LinkedIn's new post.
+	postInsightsShare()
 }

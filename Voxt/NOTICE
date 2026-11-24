@@ -74,6 +74,15 @@ Tabler Icons
   Copyright (c) 2020-2024 Paweł Kuna, MIT (LICENSES/Tabler-Icons.txt),
   some redrawn slightly.
 
+Insights cards
+  The paper behind some of the insights cards
+  (assets/share/paper-grain.jpg) is the fibre pattern of a sheet of
+  colored paper from the author's own background pictures, given to this
+  project under its licence. The "in" on the cards' Share to LinkedIn
+  button (internal/icons/share.go) was drawn for VoxtNew; LinkedIn is a
+  trademark of LinkedIn Corporation, named only to say where the button
+  posts.
+
 Lucide
   The rabbit and the turtle at the ends of Settings → Appearance's
   opening speed (internal/icons/opening.go) are Lucide's icons
