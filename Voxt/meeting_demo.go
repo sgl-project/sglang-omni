@@ -198,6 +198,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.dictionaryUI.query = state.Query
 		host.dictionaryUI.tab = state.Tab
 		host.dictionaryUI.scanOpen = state.ScanOpen
+		host.dictionaryUI.settingsOpen = state.SettingsOpen
 		host.dictionaryUI.notes = speechContextState{text: state.NotesText, seen: state.NotesText}
 		host.dictionaryUI.notesQuery = state.NotesQuery
 		host.dictionaryUI.notesFind.cur = state.NotesFindCurrent

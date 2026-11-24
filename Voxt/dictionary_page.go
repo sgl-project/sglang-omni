@@ -1,8 +1,13 @@
 package main
 
-// The Dictionary page (/dictionary): profiles, terms, personal Markdown,
-// suggestions, and the history scan. Controllers own storage, settings,
-// files, and models.
+// The Dictionary page (/dictionary): one column, as Snippets. The header
+// holds the active profile (with more than one), the settings, the more
+// menu and Add term; under it a line says what the page is for, then the
+// two views (terms, the personal dictionary) and their search, the
+// suggestions waiting for a click, and the terms in a card. The switches
+// that decide where terms go live in the settings dialog
+// (dictionary_settings.go). Controllers own storage, settings, files and
+// models.
 
 import (
 	"strings"
@@ -17,7 +22,7 @@ type dictionaryLocalUI struct {
 	query          string
 	find           finder
 	listUI         ui.ListState
-	guideOpen      bool
+	settingsOpen   bool
 	editOpen       bool
 	edit           termEdit
 	editWas        termEdit
@@ -46,23 +51,48 @@ type termEdit struct {
 	profile       string // the profile the term was opened in: a switch must not retarget Save/Delete
 }
 
+// dictRowH is a term row's height: one height for rows of one line and of
+// two, so the list is as tall as its rows and its card ends under the last.
+const dictRowH = 48
+
 func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
 	t := c.Theme()
-	widePageHeader(c, i18n.T("Dictionary"), func() {
-		if state.CountLabel != "" {
-			caption(c, state.CountLabel).SingleLine()
+	dictionaryHeader(c, state, actions, local)
+	ui.Column(c).FillWidth().MaxWidth(px(t, pageMaxW)).AlignSelf(ui.Center).Grow(1).MinHeight(0).
+		Padding(0, px(t, sp6), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
+		subtitle := i18n.T("Add the names and jargon you say, spelled as they should be written.")
+		if local.tab == dictNotesTab {
+			subtitle = i18n.T("Rules for the language model in Markdown, such as when a spelling applies.")
 		}
-		on := state.Enabled
-		status := i18n.T("Off")
-		if on {
-			status = i18n.T("On")
+		ui.Text(c, subtitle).TextColor(tok(t).Text2).Shrink(0)
+		if local.tab == dictNotesTab {
+			matches := findFolded(local.notes.text, local.notesQuery)
+			dictToolbar(c, local, func() {
+				local.notesFind.count(c, local.notesQuery, len(matches))
+				local.notesFind.field(c, "dict-notes-find", &local.notesQuery, i18n.T("Find in the personal dictionary"), px(t, 260)).Label(i18n.T("Search personal dictionary"))
+			})
+			dictionaryNotesView(c, &state.Notes, actions, local, matches)
+		} else {
+			dictionaryTermsView(c, state, actions, local)
 		}
-		caption(c, status).SingleLine()
-		if ui.Switch(c.Key("dict-on"), &on).Label(i18n.T("Use the dictionary")).Tooltip(i18n.T("Use the dictionary")).Changed() {
-			actions.setDictionaryEnabled(on)
-		}
-		if ui.Button(c.Key("dict-scan"), i18n.T("Scan history…")).Disabled(!state.CanScan).Clicked() {
-			actions.openDictionaryScan()
+	})
+	termDialog(c, actions, local)
+	scanDialog(c, &state.Scan, actions, local)
+	dictSettingsDialog(c, state, actions, local)
+	dictionaryProfileDialogs(c, state, actions, local)
+}
+
+// dictionaryHeader is the title, the profile picker beside it (only with
+// more than one profile: one is just the dictionary), and on the right
+// the settings, the more menu and the page's one primary action.
+func dictionaryHeader(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
+	var byTitle func()
+	if len(state.Profiles) > 1 {
+		byTitle = func() { dictionaryProfilePicker(c, state, actions, local) }
+	}
+	centeredPageHeaderBy(c, pageMaxW, i18n.T("Dictionary"), byTitle, func() {
+		if iconButton(c.Key("dict-settings"), icons.Settings, i18n.T("Dictionary settings")).Clicked() {
+			local.settingsOpen = true
 		}
 		moreMenu(c.Key("dict-more"), "", func(menu *ui.Menu) {
 			if menu.Item(i18n.T("Import…")).Chosen() {
@@ -77,97 +107,83 @@ func dictionaryPage(c *ui.Context, state *dictionaryViewState, actions dictionar
 			if menu.Item(i18n.T("Export as text…")).Chosen() {
 				actions.exportTerms("txt")
 			}
+			if len(state.Profiles) <= 1 {
+				menu.Separator()
+				if menu.Item(i18n.T("New profile…")).Chosen() {
+					actions.openDictionaryProfileEdit("")
+				}
+			}
 		})
 		if primaryIconButton(c.Key("dict-add"), icons.Add, i18n.T("Add term")).Clicked() {
 			actions.openDictionaryTerm("")
 		}
 	})
-	pageBody(c).Children(func() {
-		ui.Row(c).Padding(px(t, sp1), px(t, sp6), 0).Shrink(0).Children(func() {
-			segmentedFit(c.Key("dict-tab"), &local.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view"))
-		})
-		if local.tab == dictNotesTab {
-			dictionaryNotesView(c, &state.Notes, actions, local)
-			return
-		}
-		hits := findHits(state.ListFor, len(state.Terms), func(index int) []string { return termTexts(state.Terms[index]) })
-		if local.find.advance(hits[len(state.Terms)]) {
-			row, _ := rowOf(hits, local.find.cur)
-			local.listUI.ScrollIntoView(row)
-		}
-		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
-			dictionaryProfileBar(c, state, actions, local)
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				if local.find.field(c, "dict-search", &local.query, i18n.T("Search terms"), px(t, 320)).Label(i18n.T("Search dictionary")).Changed() {
-					actions.searchDictionary(local.query)
-				}
-				local.find.count(c, state.ListFor, hits[len(state.Terms)])
-				dictSwitches(c, state, actions)
-			})
-			if !state.CanScan {
-				ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
-					caption(c, i18n.T("Choose a language model for Transcribe first")).SingleLine().MinWidth(0).Shrink(1)
-					if ghostButton(c.Key("dict-scan-model"), i18n.T("Open Transcribe")).Clicked() {
-						actions.openDictionaryTranscribe()
-					}
-				})
-			}
-			dictGuide(c, state, local)
-			if !state.Enabled {
-				notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", nil, nil)
-			}
-			if state.Error != "" {
-				notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), state.Error, func() {
-					if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
-						actions.loadDict()
-					}
-				}, nil)
-			}
-		})
-		suggestionsSection(c, state, actions, local)
-		current, currentAt := rowOf(hits, local.find.cur)
-		ui.Column(c).Grow(1).MinHeight(0).Children(func() {
-			switch {
-			case !state.Read:
-			case len(state.Terms) == 0:
-				dictEmpty(c, state, actions)
-			default:
-				ui.List(c.Key("dict-list"), &local.listUI, len(state.Terms)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
-					ItemKey(func(index int) any { return state.Terms[index].ID }).Rows(func(row ui.ListRow) {
-					at := -1
-					if row.Index == current {
-						at = currentAt
-					}
-					termRow(c, state.Terms[row.Index], state.ListFor, at, actions)
-				})
-			}
-		})
-	})
-	termDialog(c, actions, local)
-	scanDialog(c, &state.Scan, actions, local)
-	dictionaryProfileDialogs(c, state, actions, local)
 }
 
-func dictSwitches(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {
+// dictToolbar is the views on the left and, on the right, what trailing
+// adds: the view's count and search.
+func dictToolbar(c *ui.Context, local *dictionaryLocalUI, trailing func()) {
 	t := c.Theme()
-	off := !state.Enabled
-	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
-		hints := state.ASRHints
-		if ui.Checkbox(c.Key("dict-hints"), &hints, i18n.T("Speech hints")).Disabled(off).
-			Tooltip(i18n.T("Terms go to the speech model as words to expect.")).Changed() {
-			actions.setDictionaryASRHints(hints)
+	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Shrink(0).Children(func() {
+		segmentedFit(c.Key("dict-tab"), &local.tab, i18n.T("Terms"), i18n.T("Personal dictionary")).Label(i18n.T("Dictionary view")).Shrink(0)
+		ui.Spacer(c)
+		trailing()
+	})
+}
+
+func dictionaryTermsView(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
+	t := c.Theme()
+	k := tok(t)
+	hits := findHits(state.ListFor, len(state.Terms), func(index int) []string { return termTexts(state.Terms[index]) })
+	if local.find.advance(hits[len(state.Terms)]) {
+		row, _ := rowOf(hits, local.find.cur)
+		local.listUI.ScrollIntoView(row)
+	}
+	dictToolbar(c, local, func() {
+		if strings.TrimSpace(state.ListFor) == "" && state.CountLabel != "" {
+			caption(c, state.CountLabel).TextColor(k.Text3).SingleLine().Shrink(0)
 		}
-		glossary := state.Glossary
-		if ui.Checkbox(c.Key("dict-glossary"), &glossary, i18n.T("Glossary for the language model")).Disabled(off).
-			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
-			actions.setDictionaryGlossary(glossary)
-		}
-		learnOn := state.Learn
-		if ui.Checkbox(c.Key("dict-learn"), &learnOn, i18n.T("Learn from my corrections")).Disabled(off).
-			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds)).Changed() {
-			actions.setDictionaryLearn(learnOn)
+		local.find.count(c, state.ListFor, hits[len(state.Terms)])
+		if local.find.field(c, "dict-search", &local.query, i18n.T("Search terms"), px(t, 260)).Label(i18n.T("Search dictionary")).Changed() {
+			actions.searchDictionary(local.query)
 		}
 	})
+	if !state.Enabled {
+		notice(c, "dict-off", noticeInfo, i18n.T("The dictionary is off, so its terms are not used."), "", func() {
+			if ghostButton(c.Key("dict-turn-on"), i18n.T("Turn on")).Label(i18n.T("Turn on the dictionary")).Clicked() {
+				actions.setDictionaryEnabled(true)
+			}
+		}, nil)
+	}
+	if state.Error != "" {
+		notice(c, "dict-err", noticeError, i18n.T("Could not read the dictionary."), state.Error, func() {
+			if ghostButton(c.Key("dict-retry"), i18n.T("Try again")).Clicked() {
+				actions.loadDict()
+			}
+		}, nil)
+	}
+	suggestionsSection(c, state, actions, local)
+	switch {
+	case !state.Read:
+	case len(state.Terms) == 0:
+		dictEmpty(c, state, actions)
+	default:
+		current, currentAt := rowOf(hits, local.find.cur)
+		inset := px(t, sp1)
+		// The card is as tall as its rows and shrinks with the window;
+		// then the list scrolls inside it.
+		card(c.Key("dict-card")).Padding(0).Gap(0).Shrink(1).MinHeight(0).Children(func() {
+			ui.List(c.Key("dict-list"), &local.listUI, len(state.Terms)).Height(float32(len(state.Terms))*px(t, dictRowH) + 2*inset).
+				Shrink(1).MinHeight(0).Padding(inset).
+				ItemKey(func(index int) any { return state.Terms[index].ID }).Rows(func(row ui.ListRow) {
+				at := -1
+				if row.Index == current {
+					at = currentAt
+				}
+				termRow(c, state.Terms[row.Index], state.ListFor, at, actions)
+			})
+		})
+	}
 }
 
 func dictEmpty(c *ui.Context, state *dictionaryViewState, actions dictionaryActions) {
@@ -179,62 +195,88 @@ func dictEmpty(c *ui.Context, state *dictionaryViewState, actions dictionaryActi
 		})
 		return
 	}
-	emptyState(c, dictionaryIcon, i18n.T("Names and terms you use"),
-		i18n.T("Add the names and jargon you say, spelled as they should be written."), func() {
-			if ghostIconButton(c.Key("dict-empty-add"), icons.Add, i18n.T("Add term")).Clicked() {
-				actions.openDictionaryTerm("")
-			}
-			if ghostIconButton(c.Key("dict-empty-import"), icons.Import, i18n.T("Import…")).Label(i18n.T("Import terms")).Clicked() {
-				actions.importTerms()
-			}
-		})
+	emptyState(c, dictionaryIcon, i18n.T("No terms yet"), "", func() {
+		if ghostIconButton(c.Key("dict-empty-add"), icons.Add, i18n.T("Add term")).Clicked() {
+			actions.openDictionaryTerm("")
+		}
+		if ghostIconButton(c.Key("dict-empty-import"), icons.Import, i18n.T("Import…")).Label(i18n.T("Import terms")).Clicked() {
+			actions.importTerms()
+		}
+	})
 }
 
 func termTexts(term dictionaryTermViewState) []string {
 	return []string{term.Term, term.AliasesText, term.Note}
 }
 
+// termRow is a term as written and, under it, what speech recognition
+// may write instead and the note; a click edits it. Its switch is on the
+// right, as a setting's; Delete shows under the pointer, and its place is
+// kept when it hides, so the switch does not move.
 func termRow(c *ui.Context, term dictionaryTermViewState, query string, at int, actions dictionaryActions) {
 	t := c.Theme()
-	colors := tok(t)
+	k := tok(t)
 	texts := termTexts(term)
 	termMatches, aliasMatches := len(findFolded(texts[0], query)), len(findFolded(texts[1], query))
-	row := ui.Row(c.Key("term-"+term.ID)).Padding(px(t, 6), px(t, sp2)).Margin(0, px(t, sp4)).Radius(px(t, radiusControl)).
+	r := ui.Row(c.Key("term-"+term.ID)).Height(px(t, dictRowH)).Padding(0, px(t, sp3)).Radius(px(t, radiusControl)).
 		Gap(px(t, sp2)).AlignItems(ui.Center)
-	if row.Hovered() {
-		row.Background(colors.Hover)
+	hover := r.Hovered()
+	if hover {
+		r.Background(k.Hover)
 	}
-	row.Children(func() {
+	r.Children(func() {
+		open := ui.ButtonBase(c.Key("open")).Grow(1).MinWidth(0).AlignSelf(ui.Stretch).AlignItems(ui.Center).Label(i18n.T("Edit %s", term.Term))
+		if open.Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
+				text := markedText(c, term.Term, query, curIn(at, 0)).SingleLine().Ellipsis("…").MinWidth(0)
+				if !term.Enabled {
+					text.TextColor(k.Text3)
+				}
+				if line, label := termDetail(k, term, query, at, termMatches, aliasMatches); len(line) > 0 {
+					ui.RichText(c, line...).Label(label).Tooltip(label).FontSize(px(t, fsCaption)).TextColor(k.Text2).
+						SingleLine().Ellipsis("…").MinWidth(0)
+				}
+			})
+		}).Clicked() {
+			actions.openDictionaryTerm(term.ID)
+		}
+		ui.Row(c).Width(px(t, snippetIcon)).Shrink(0).AlignItems(ui.Center).Children(func() {
+			if hover && iconButtonSized(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete"), snippetIcon, 14).Label(i18n.T("Delete %s", term.Term)).Clicked() {
+				actions.deleteDictionaryTerm(term.ID, term.Term, "")
+			}
+		})
 		on := term.Enabled
 		ui.Switch(c.Key("on"), &on).Label(i18n.T("Use %s", term.Term)).OnChange(func() {
 			actions.setDictionaryTermEnabled(term.ID, on)
 		})
-		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
-			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				text := markedText(c, term.Term, query, curIn(at, 0)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-				if !term.Enabled {
-					text.TextColor(colors.Text3)
-				}
-				if term.AliasesText != "" {
-					heard := i18n.T("heard as %s", texts[1])
-					before, after, _ := strings.Cut(i18n.T("heard as %s", "\x00"), "\x00")
-					spans := append([]ui.Span{{Text: before}}, markSpans(colors.Danger, ui.Span{}, texts[1], query, curIn(at, termMatches))...)
-					ui.RichText(c, append(spans, ui.Span{Text: after})...).Label(heard).Tooltip(heard).
-						FontSize(px(t, fsCaption)).TextColor(colors.Text2).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
-				}
-			})
-			if term.Note != "" {
-				markedText(c, term.Note, query, curIn(at, termMatches+aliasMatches)).Tooltip(term.Note).
-					FontSize(px(t, fsCaption)).TextColor(colors.Text3).SingleLine().Ellipsis("…").MinWidth(0)
-			}
-		})
-		if iconButton(c.Key("edit"), icons.Pen2, i18n.T("Edit %s", term.Term)).Clicked() {
-			actions.openDictionaryTerm(term.ID)
-		}
-		if iconButton(c.Key("delete"), icons.TrashBinMinimalistic, i18n.T("Delete %s", term.Term)).Clicked() {
-			actions.deleteDictionaryTerm(term.ID, term.Term, "")
-		}
 	})
+}
+
+// termDetail is a term's second line: "heard as …" in the secondary grey,
+// then " · " and the note in the tertiary one, with the search's marks;
+// empty for a term with neither.
+func termDetail(k *tokens, term dictionaryTermViewState, query string, at, termMatches, aliasMatches int) ([]ui.Span, string) {
+	var spans []ui.Span
+	var label []string
+	if term.AliasesText != "" {
+		heard := i18n.T("heard as %s", term.AliasesText)
+		before, after, _ := strings.Cut(i18n.T("heard as %s", "\x00"), "\x00")
+		spans = append(spans, ui.Span{Text: before})
+		spans = append(spans, markSpans(k.Danger, ui.Span{}, term.AliasesText, query, curIn(at, termMatches))...)
+		spans = append(spans, ui.Span{Text: after})
+		label = append(label, heard)
+	}
+	if term.Note != "" {
+		faint := ui.Span{Color: k.Text3}
+		if len(spans) > 0 {
+			dot := faint
+			dot.Text = "  ·  "
+			spans = append(spans, dot)
+		}
+		spans = append(spans, markSpans(k.Danger, faint, term.Note, query, curIn(at, termMatches+aliasMatches))...)
+		label = append(label, term.Note)
+	}
+	return spans, strings.Join(label, " · ")
 }
 
 func termDialog(c *ui.Context, actions dictionaryActions, local *dictionaryLocalUI) {
@@ -257,7 +299,7 @@ func termDialog(c *ui.Context, actions dictionaryActions, local *dictionaryLocal
 				actions.submitTerm()
 			}
 		})
-		fieldInfo(c, i18n.T("Aliases"), i18n.T("Wrong spellings to replace, separated by commas: Vox T, 沃克斯特."), func() {
+		fieldInfo(c, i18n.T("Heard as"), i18n.T("Wrong spellings to replace, separated by commas: Vox T, 沃克斯特."), func() {
 			ui.TextInput(c.Key("term-aliases"), &edit.aliases).Label(i18n.T("Aliases of the term")).Placeholder(i18n.T("Vox T, 沃克斯特"))
 		})
 		fieldInfo(c, i18n.T("Note"), i18n.T("Only for you, never sent."), func() {
