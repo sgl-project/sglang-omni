@@ -116,11 +116,9 @@ def create_talker_scheduler(
 
     output_proc = SGLangOutputProcessor()
     model_runner = MiniCPMOTalkerModelRunner(model_worker, output_proc)
-    if session_mode:
-        # note (0xtoward): a session's units replay host history, so it keeps the host sampler.
-        pass
-    else:
-        model_runner.enable_device_sampling()
+    # note (0xtoward): the slot state reads each unit's own history, which a
+    # session resets at the unit's prefill, so sessions sample on the device too.
+    model_runner.enable_device_sampling()
 
     tokenizer = get_tokenizer(model_config.model_path, trust_remote_code=True)
     request_builder, result_adapter = make_talker_scheduler_adapters(

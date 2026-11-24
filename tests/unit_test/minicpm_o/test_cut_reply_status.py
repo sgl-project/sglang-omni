@@ -97,7 +97,7 @@ def run_talker(units: list[Unit]) -> list[Spoken]:
             masks_chunk_boundary_eos = request_data.talker_model_inputs[
                 "masks_chunk_boundary_eos"
             ]
-            min_new_tokens = request_data.req.sampling_params.min_new_tokens
+            min_new_tokens = request_data.talker_model_inputs["min_new_tokens"]
             request_data.output_ids = list(range(unit.committed_tokens))
             adapter.result(IDENTITY, request_data)
         spoken.append(
