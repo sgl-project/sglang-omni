@@ -648,3 +648,44 @@ func TestModelCardsLineUp(t *testing.T) {
 		}
 	}
 }
+
+// TestModelCardsManualTestDoc keeps the manual checks on the simplified rows
+// and sends language and family guidance to their rendered hover targets.
+func TestModelCardsManualTestDoc(t *testing.T) {
+	doc, err := os.ReadFile("docs/manual-test.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(doc)
+	_, rows, ok := strings.Cut(text, "**1.5 本地模型页**")
+	if !ok {
+		t.Fatal("manual test 1.5 is missing")
+	}
+	rows, _, _ = strings.Cut(rows, "**1.5b ")
+	for _, want := range []string{"名字的悬停提示写支持的语言", "没装的是“需下载 x”，装好的是“已安装”和“占用 x”"} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("manual test 1.5 lacks %q", want)
+		}
+	}
+	for _, stale := range []string{"擅长什么", "语言（地球图标）"} {
+		if strings.Contains(rows, stale) {
+			t.Errorf("manual test 1.5 still expects removed row content %q", stale)
+		}
+	}
+
+	_, family, ok := strings.Cut(text, "**1.5b ")
+	if !ok {
+		t.Fatal("manual test 1.5b is missing")
+	}
+	family, _, _ = strings.Cut(family, "**1.6 ")
+	for _, want := range []string{"大小的悬停提示写“与 AudioSmith 共用”", "大小的悬停提示写“由 Dicta 安装”", "大小的悬停提示写“正在由 AudioSmith 下载…”"} {
+		if !strings.Contains(family, want) {
+			t.Errorf("manual test 1.5b lacks size-hover guidance %q", want)
+		}
+	}
+	for _, stale := range []string{"卡片写“与 AudioSmith 共用”", "卡片写“正在由 AudioSmith 下载…”"} {
+		if strings.Contains(family, stale) {
+			t.Errorf("manual test 1.5b still expects visible family text %q", stale)
+		}
+	}
+}

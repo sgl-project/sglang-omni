@@ -117,7 +117,7 @@
   2. 把其余的模型装进来：在每张“需下载”的卡片上点“下载”，等进度条走满。
   3. 看每张卡片；在“快速语言模型”上点“删除”，先点“取消”，再点一次“删除”并确认。然后点“下载”把它装回来。
 - **应看到**：
-  - 两节：“语音识别”和“语言模型”。推荐的两个带“默认”标签。每张卡片有名字、擅长什么、语言（地球图标）和大小：没装的是“需下载 x”，装好的是“已安装”和“占用 x”。
+  - 两节：“语音识别”和“语言模型”。推荐的两个带“默认”标签。每张卡片有名字、大小和操作；名字的悬停提示写支持的语言。没装的是“需下载 x”，装好的是“已安装”和“占用 x”。
   - Silero（声音检测）不单独列出。
   - 删除前弹出确认：“删除快速语言模型？”“将释放 1.7 GB。之后可以重新下载。”取消什么都不删；确认后卡片回到“需下载 1.7 GB”，文件夹不见了。
   - 设置 → 存储 的“模型文件夹”一行是 `~/Library/Application Support/SGLang Omni/models`；没装别的 ActNow app 时只有 Voxt 用这个文件夹，所以不写“由使用这个模型库的所有 app 共用”（和别的 app 用同一个模型文件夹时才写，见 1.5b）。下面“仅 Voxt”和“与使用这个模型库的其他 app 共享”两项加起来和装的模型对得上；没有装别的 ActNow app 时只有一行“Voxt 使用”；“网络…”对话框里也没有“应用于使用这个模型库的所有 app”那一行。
@@ -132,10 +132,10 @@
   4. 让 AudioSmith 开始下载一个 Voxt 也有的模型，同时看 Voxt 的本地模型页；下载时在 Voxt 里删除它。
   5. 本地模型页右上角点“网络…”：选“自定义”，填 `ftp://x` 点“保存”；改成 `http://127.0.0.1:7897` 保存；再打开，点“只给这个 app 单独设置”，选“不使用代理”保存。终端里 `open voxtnew://models/network`。
 - **应看到**：
-  - 第 1 步后卡片写“与 AudioSmith 共用”。装了 Dicta 的 Qwen3 4B / Gemma 4 E4B 时，语言模型里多一张“由 Dicta 安装”的卡片，只有“使用它”，没有“下载”。
+  - 第 1 步后卡片大小的悬停提示写“与 AudioSmith 共用”。装了 Dicta 的 Qwen3 4B / Gemma 4 E4B 时，语言模型里多一张卡片，大小的悬停提示写“由 Dicta 安装”，只有“使用它”，没有“下载”。
   - 第 2 步弹“从 Voxt 移除“快速语音识别”？”“AudioSmith 也在使用这个模型，文件（712.8 MB）会保留在这台 Mac 上。”；移除后提示文件为 AudioSmith 保留，`ls ~/Library/Application\ Support/ActNow/models/hub/models--mlx-community--Qwen3-ASR-0.6B-4bit/snapshots/` 还在。
   - 第 3 步再确认一次“AudioSmith 再次使用时需要重新下载（712.8 MB）。”；删除后文件夹不见了，AudioSmith 的模型页显示“已在 Voxt 中删除 · 重新下载”。
-  - 第 4 步卡片写“正在由 AudioSmith 下载…”，“下载”按钮是灰的，下完后自动变成“已安装”；下载时删除提示“AudioSmith 正在下载或使用这个模型，请稍后再试。”。
+  - 第 4 步卡片大小的悬停提示写“正在由 AudioSmith 下载…”，“下载”按钮是灰的，下完后自动变成“已安装”；下载时删除提示“AudioSmith 正在下载或使用这个模型，请稍后再试。”。
   - 第 5 步：`ftp://x` 不保存，提示要以 http://、https:// 或 socks5:// 开头；保存后 AudioSmith 的代理设置也变了（跟随家族）；单独设置后行下写“只有 Voxt 用这个设置。”，AudioSmith 的不变；深链打开本地模型页和这个对话框。
 - **不对时看**：`cat ~/Library/Application\ Support/ActNow/models/claims/*.json`（谁声明了哪个模型）、`~/Library/Application\ Support/ActNow/models/removed.json`（墓碑）、`~/Library/Application\ Support/ActNow/settings.json`（家族的代理和下载源）。
 
