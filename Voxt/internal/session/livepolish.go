@@ -29,11 +29,12 @@ import (
 // a sentence to it, so that a list or a correction across its sentences is
 // cleaned as at Stop. A block that is full is kept (committed), and the
 // next one goes with the end of the cleaned text before it
-// (compose.Input.Before, liveContext), as does the text left at Stop. When
-// text is left, the last settings.Transcribe.RecleanSentences sentences of
-// what is reused are cleaned again with it, a committed block's too, so
-// that what was said last can correct them ("Tuesday. No, make it
-// Thursday."). A dictation that is a snippet's trigger alone is never sent
+// (compose.Input.Before, liveContext), as does the text left at Stop. A
+// clean-up of a stretch takes the stretch for the whole dictation, so its
+// last sentences are the least sure: when text is left at Stop, the last
+// settings.Transcribe.RecleanSentences sentences of the cleaned text reused
+// go back to the model with it, so that what was said last can still
+// correct them ("Tuesday. No, make it Thursday."). A dictation that is a snippet's trigger alone is never sent
 // (insertSnippet types the snippet), and a request that fails ends the live
 // clean-up: Stop cleans the whole text, as without it.
 //
@@ -71,9 +72,6 @@ type liveResult struct {
 	thinkOff bool // note (luojiaxuan): asked with thinking off (chars under the service's ThinkingOffUnder)
 	epoch    int
 	usage    llm.Usage
-	// note (luojiaxuan): prefixes are a committed block's clean-ups of shorter stretches of
-	// it, which Stop can back up to (finish).
-	prefixes []liveResult
 }
 
 // note (luojiaxuan): liveFlight is the request under way: done closes when it ends, ok when
@@ -192,13 +190,7 @@ func (lp *livePolish) next() (liveResult, bool) {
 		if !full {
 			return liveResult{}, false
 		}
-		block := lp.done[i]
-		for _, d := range lp.done {
-			if len(d.src) < len(block.src) && strings.HasPrefix(block.src, d.src) {
-				block.prefixes = append(block.prefixes, d)
-			}
-		}
-		lp.blocks, lp.done = append(lp.blocks, block), nil
+		lp.blocks, lp.done = append(lp.blocks, lp.done[i]), nil
 		lp.epoch++
 		lp.cond.Broadcast()
 	}

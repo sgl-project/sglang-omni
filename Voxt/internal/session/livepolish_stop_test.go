@@ -30,32 +30,31 @@ func speakLive(t *testing.T, r *run, sentences []string) {
 	}
 }
 
-// note (luojiaxuan): TestLivePolishBacksUpOverWhatWasSaidAfter: when the
-// text left at Stop is several sentences, the sentence before them is
-// cleaned again with them all the same: a correction in the first of them
-// reaches it.
-func TestLivePolishBacksUpOverWhatWasSaidAfter(t *testing.T) {
+// note (luojiaxuan): TestLivePolishRedoesWhatWasSaidBefore: when the text
+// left at Stop is several sentences, the cleaned sentence before them goes
+// back to the model with them all the same: a correction in the first of
+// them reaches it.
+func TestLivePolishRedoesWhatWasSaidBefore(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearLive("Meet Tuesday. No,")
 	waitLive(t, r, "Meet Tuesday.")
-	full := "Meet Tuesday. No, Thursday. Send the invite."
-	got, _, err := r.cleanUpFirst(full)
+	got, _, err := r.cleanUpFirst("Meet Tuesday. No, Thursday. Send the invite.")
 	if err != nil {
 		t.Fatal(err)
 	}
+	asked := "[Meet Tuesday.] No, Thursday. Send the invite."
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if user := last[len(last)-1].Content; user != compose.UserMessage(full) || got != "["+full+"]" {
-		t.Errorf("after Stop %q gave %q, want the whole text cleaned again", user, got)
+	if user := last[len(last)-1].Content; user != compose.UserMessage(asked) || got != "["+asked+"]" {
+		t.Errorf("after Stop %q gave %q, want the cleaned sentence asked again with the rest", user, got)
 	}
 }
 
-// note (luojiaxuan): TestLivePolishBacksUpIntoABlock: right after a block was
-// committed, the sentence cleaned again with the text left at Stop is the
-// block's last: Stop goes back to the block's clean-up of its first four
-// sentences.
-func TestLivePolishBacksUpIntoABlock(t *testing.T) {
+// note (luojiaxuan): TestLivePolishRedoesAcrossABlock: right after a block
+// was committed, the cleaned sentence asked again with the text left at Stop
+// is the block's last, the rest of the block the context.
+func TestLivePolishRedoesAcrossABlock(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
 	s := liveSentences(5)
@@ -63,18 +62,18 @@ func TestLivePolishBacksUpIntoABlock(t *testing.T) {
 	first := strings.Join(s, " ")
 	r.hearLive(first + " Thursday, no")
 	waitLiveFor(t, r, "a committed block", func(lp *livePolish) bool { return len(lp.blocks) == 1 })
-	full := first + " Thursday, no, Friday."
-	got, _, err := r.cleanUpFirst(full)
+	got, _, err := r.cleanUpFirst(first + " Thursday, no, Friday.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	four := strings.Join(s[:4], " ")
+	four := "[" + strings.Join(s[:4], " ")
+	asked := s[4] + "] Thursday, no, Friday."
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if user := last[len(last)-1].Content; user != compose.BeforeMessage("["+four+"]", s[4]+" Thursday, no, Friday.") {
+	if user := last[len(last)-1].Content; user != compose.BeforeMessage(four, asked) {
 		t.Errorf("the request after Stop is %q, want the block's last sentence with the rest", user)
 	}
-	if want := "[" + four + "] [" + s[4] + " Thursday, no, Friday.]"; got != want {
+	if want := four + " [" + asked + "]"; got != want {
 		t.Errorf("result %q, want %q", got, want)
 	}
 }

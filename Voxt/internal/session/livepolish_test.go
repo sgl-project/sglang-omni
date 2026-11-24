@@ -174,9 +174,10 @@ func TestLivePolishCleansOnlyTheTail(t *testing.T) {
 	}
 }
 
-// note (luojiaxuan): TestLivePolishCleansTheLastSentenceAgain: by default the sentence before
-// the text left at Stop is cleaned again with it, after the clean-up of the
-// text before that sentence, so that a correction said last reaches it.
+// note (luojiaxuan): TestLivePolishCleansTheLastSentenceAgain: by default
+// the last sentence of the cleaned text goes back to the model with the
+// text left at Stop, so that a correction said last reaches it; the cleaned
+// text before it is the context.
 func TestLivePolishCleansTheLastSentenceAgain(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
@@ -189,13 +190,13 @@ func TestLivePolishCleansTheLastSentenceAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "[Book the room.] [Let's meet Tuesday. No, make it Thursday.]"; got != want {
+	if want := "[Book the room. [Let's meet Tuesday.] No, make it Thursday.]"; got != want {
 		t.Errorf("result %q, want %q", got, want)
 	}
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if user := last[len(last)-1].Content; user != compose.BeforeMessage("[Book the room.]", "Let's meet Tuesday. No, make it Thursday.") {
-		t.Errorf("the request after Stop is %q, want the last two sentences after the first", user)
+	if user := last[len(last)-1].Content; user != compose.BeforeMessage("[Book the room.", "Let's meet Tuesday.] No, make it Thursday.") {
+		t.Errorf("the request after Stop is %q, want the last cleaned sentence with the rest", user)
 	}
 }
 

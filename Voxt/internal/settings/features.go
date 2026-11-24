@@ -113,10 +113,10 @@ type Transcribe struct {
 	// session's live and early clean-ups), the Transcribe page's "Clean up
 	// while you speak".
 	CleanAfterStop bool `json:"cleanAfterStop,omitempty"`
-	// note (luojiaxuan): RecleanSentences is how many whole sentences before the text left at
-	// Stop the live clean-up cleans again with it, so that what was said
-	// last can correct them; 0: only the text left
-	// (DefaultRecleanSentences, no page).
+	// note (luojiaxuan): RecleanSentences is how many sentences of the text
+	// the live clean-up cleaned go back to the model with the text left at
+	// Stop, so that what was said last can correct them; 0: only the text
+	// left (DefaultRecleanSentences, no page).
 	RecleanSentences int `json:"recleanSentences"`
 }
 
