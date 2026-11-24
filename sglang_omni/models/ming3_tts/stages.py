@@ -64,9 +64,9 @@ from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.bootstrap import create_sglang_infrastructure
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
-    falls_back_to_breakable_prefill,
     get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
+    prefill_graph_fallback,
 )
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.reference_encoder import (
@@ -634,7 +634,8 @@ def create_tts_engine_executor(
     if (
         defaults_full_prefill
         and get_prefill_cuda_graph_backend(server_args) == CudaGraphBackend.FULL
-        and falls_back_to_breakable_prefill(server_args, "Ming 3 TTS")
+        and prefill_graph_fallback(server_args, "Ming 3 TTS", supports_breakable=True)
+        is not None
     ):
         overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
         server_args = build_sglang_server_args(
