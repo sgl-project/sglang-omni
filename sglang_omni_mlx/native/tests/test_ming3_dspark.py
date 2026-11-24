@@ -28,7 +28,7 @@ AUDIO_HIDDEN = 32
 MARKOV_RANK = HIDDEN
 # The draft cannot propose the last two target ids.
 DRAFT_VOCABULARY = VOCABULARY - 2
-BLOCK_SIZE = 4
+BLOCK_SIZE = 8
 
 
 class ProbeRow(TypedDict):
@@ -44,7 +44,9 @@ class ProbeRow(TypedDict):
 Tensors = dict[str, tuple[list[int], list[float]]]
 
 
-def write_target(directory: Path, generator: random.Random) -> Tensors:
+def write_target(
+    directory: Path, generator: random.Random, layer_deviation: float
+) -> Tensors:
     directory.mkdir()
     text = {
         "hidden_size": HIDDEN,
@@ -108,7 +110,7 @@ def write_target(directory: Path, generator: random.Random) -> Tensors:
     )
     tensors: Tensors = {}
 
-    def normal(name: str, *shape: int, deviation: float = LAYER_DEVIATION) -> None:
+    def normal(name: str, *shape: int, deviation: float = layer_deviation) -> None:
         tensors[name] = (
             list(shape),
             [generator.gauss(0, deviation) for _ in range(math.prod(shape))],
@@ -120,8 +122,9 @@ def write_target(directory: Path, generator: random.Random) -> Tensors:
     projection = HEADS * HEAD_DIMENSION
     normal("model.word_embeddings.weight", VOCABULARY, HIDDEN, deviation=1)
     normal("lm_head.weight", VOCABULARY, HIDDEN, deviation=1)
-    # A zero stop row leaves the stop token unlikely, so requests run long.
-    tensors["lm_head.weight"][1][-HIDDEN:] = [0.0] * HIDDEN
+    # Zero rows leave the stop token unlikely, so requests run long, and the
+    # mask token too, which the draft cannot propose.
+    tensors["lm_head.weight"][1][-2 * HIDDEN :] = [0.0] * 2 * HIDDEN
     constant("model.norm.weight", 1, HIDDEN)
     normal("model.audio.conv1.weight", AUDIO_HIDDEN, 3, 128)
     normal("model.audio.conv2.weight", AUDIO_HIDDEN, 3, AUDIO_HIDDEN)
@@ -190,7 +193,13 @@ def write_target(directory: Path, generator: random.Random) -> Tensors:
     return tensors
 
 
-def write_draft(directory: Path, generator: random.Random, target: Tensors) -> None:
+def write_draft(
+    directory: Path,
+    generator: random.Random,
+    target: Tensors,
+    layer_deviation: float,
+    markov_sign: float,
+) -> None:
     directory.mkdir()
     (directory / "config.json").write_text(
         json.dumps(
@@ -223,7 +232,7 @@ def write_draft(directory: Path, generator: random.Random, target: Tensors) -> N
     def normal(name: str, *shape: int) -> None:
         tensors[name] = (
             list(shape),
-            [generator.gauss(0, LAYER_DEVIATION) for _ in range(math.prod(shape))],
+            [generator.gauss(0, layer_deviation) for _ in range(math.prod(shape))],
         )
 
     def constant(name: str, value: float, *shape: int) -> None:
@@ -247,32 +256,53 @@ def write_draft(directory: Path, generator: random.Random, target: Tensors) -> N
     normal("lm_head.weight", DRAFT_VOCABULARY, HIDDEN)
     # Draft id j is target id j, so d2t holds zero offsets.
     constant("d2t", 0, DRAFT_VOCABULARY)
-    # w2(w1[previous]) reproduces the target's logits of the previous token's
-    # embedding, the successor the small target layers mostly keep.
+    # w2(w1[previous]) is markov_sign times the target's logits of the previous
+    # token's embedding, the successor the small target layers mostly keep: a
+    # sign of 1 drafts that successor, -1 the target's least likely token.
     tensors["markov_head.markov_w1.weight"] = target["model.word_embeddings.weight"]
     shape, values = target["lm_head.weight"]
     tensors["markov_head.markov_w2.weight"] = (
         [DRAFT_VOCABULARY, shape[1]],
-        values[: DRAFT_VOCABULARY * shape[1]],
+        [markov_sign * value for value in values[: DRAFT_VOCABULARY * shape[1]]],
     )
     write_safetensors(directory / "model.safetensors", tensors)
 
 
-@pytest.fixture
-def checkpoints(tmp_path: Path) -> tuple[Path, Path]:
+def probe(
+    probe_binary: Path,
+    directory: Path,
+    *,
+    layer_deviation: float,
+    markov_sign: float,
+    draft_policy: str,
+) -> list[ProbeRow]:
+    """Rows of a probe run, which fails if drafted decoding leaves plain's."""
     generator = random.Random(3)
-    target = write_target(tmp_path / "target", generator)
-    write_draft(tmp_path / "draft", generator, target)
-    return tmp_path / "target", tmp_path / "draft"
-
-
-def test_dspark_matches_plain_across_budgets_and_ngram_bans(
-    ming3_dspark_probe_binary: Path, checkpoints: tuple[Path, Path]
-) -> None:
-    rows: list[ProbeRow] = json.loads(
+    target = write_target(directory / "target", generator, layer_deviation)
+    write_draft(directory / "draft", generator, target, layer_deviation, markov_sign)
+    return json.loads(
         subprocess.check_output(
-            [str(ming3_dspark_probe_binary), *map(str, checkpoints)], text=True
+            [
+                str(probe_binary),
+                str(directory / "target"),
+                str(directory / "draft"),
+                draft_policy,
+            ],
+            text=True,
         )
+    )
+
+
+@pytest.mark.parametrize("draft_policy", ["fixed", "adaptive"])
+def test_dspark_matches_plain_across_budgets_and_ngram_bans(
+    ming3_dspark_probe_binary: Path, tmp_path: Path, draft_policy: str
+) -> None:
+    rows = probe(
+        ming3_dspark_probe_binary,
+        tmp_path,
+        layer_deviation=LAYER_DEVIATION,
+        markov_sign=1,
+        draft_policy=draft_policy,
     )
     assert all(len(row["token_ids"]) <= row["budget"] for row in rows)
     accepted = sum(row["accepted_token_count"] for row in rows)
@@ -287,3 +317,49 @@ def test_dspark_matches_plain_across_budgets_and_ngram_bans(
     assert longest[2] != longest[0]
     bigrams = list(zip(longest[2], longest[2][1:]))
     assert len(set(bigrams)) == len(bigrams)
+
+
+def test_adaptive_backoff_resumes_a_draft_faster_than_plain(
+    ming3_dspark_probe_binary: Path, tmp_path: Path
+) -> None:
+    """Without layers the target and the draft are the same successor table.
+
+    Every block is accepted, so the plain probe after round 9 resumes
+    speculation, whose context then needs the probe's positions; the decoder
+    refuses to draft from a context that does not cover the target's.
+    """
+    rows = probe(
+        ming3_dspark_probe_binary,
+        tmp_path,
+        layer_deviation=0,
+        markov_sign=1,
+        draft_policy="adaptive",
+    )
+    # The ngram bans redirect the target where the draft cannot follow.
+    [longest] = [
+        row for row in rows if row["budget"] == 256 and row["no_repeat_ngram_size"] == 0
+    ]
+    assert len(longest["token_ids"]) == 256
+    assert longest["accepted_token_count"] == longest["proposed_token_count"]
+    assert longest["verify_round_count"] > 9
+
+
+def test_adaptive_backoff_stops_a_draft_slower_than_plain(
+    ming3_dspark_probe_binary: Path, tmp_path: Path
+) -> None:
+    """A draft of the target's least likely tokens is never accepted, so a
+    plain probe ends speculation and plain decoding finishes the request."""
+    rows = probe(
+        ming3_dspark_probe_binary,
+        tmp_path,
+        layer_deviation=LAYER_DEVIATION,
+        markov_sign=-1,
+        draft_policy="adaptive",
+    )
+    [longest] = [
+        row for row in rows if row["budget"] == 256 and row["no_repeat_ngram_size"] == 0
+    ]
+    assert len(longest["token_ids"]) == 256
+    assert longest["accepted_token_count"] == 0
+    # Each round commits one token, so drafting to the end would take 255.
+    assert longest["verify_round_count"] < 64

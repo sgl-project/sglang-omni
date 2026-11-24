@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Ming ASR's greedy decoding, plain or verifying a DSpark draft's blocks.
 #include <algorithm>
+#include <chrono>
+#include <iostream>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
+#include "common/draft_backoff.h"
 #include "ming3_asr/ming3_asr_transcriber.h"
 
 namespace ming3_asr {
@@ -22,6 +26,7 @@ GreedyDecoding DecodeGreedy(const MingModel &model,
                             const mx::array &embeddings,
                             const std::vector<int> &stop_token_ids,
                             int max_new_tokens, int no_repeat_ngram_size,
+                            omni_common::DraftPolicy draft_policy,
                             const std::atomic<bool> &cancel) {
   GreedyDecoding decoding;
   std::vector<int> &generated_token_ids = decoding.token_ids;
@@ -96,30 +101,38 @@ GreedyDecoding DecodeGreedy(const MingModel &model,
   int anchor_id =
       next_token_id(first_logits, mx::argmax(first_logits).item<int>());
   bool finished = commit(anchor_id);
-  if (draft == nullptr) {
-    while (!finished) {
-      if (cancel.load()) {
-        throw omni_common::GenerationCancelled();
-      } else {
-      }
-      const mx::array logits =
-          mx::reshape(model.LastTokenLogits(model.Forward(
-                          model.EmbedTokens({anchor_id}), cache, cancel)),
-                      {-1});
-      anchor_id = next_token_id(logits, mx::argmax(logits).item<int>());
-      finished = commit(anchor_id);
-    }
-    return decoding;
-  } else {
-  }
-
-  cache.KeepLastRound();
-  omni_common::DraftStatistics &statistics = decoding.draft_statistics;
-  while (!finished) {
+  // One plain step after the uncached anchor, capturing the aux hidden states
+  // of the anchor's position when captured is set.
+  const auto decode_plain_token = [&](std::vector<mx::array> *captured) {
     if (cancel.load()) {
       throw omni_common::GenerationCancelled();
     } else {
     }
+    const mx::array logits = mx::reshape(
+        model.LastTokenLogits(model.Forward(
+            model.EmbedTokens({anchor_id}), cache, cancel,
+            captured != nullptr ? aux_layers : std::vector<int>(), captured)),
+        {-1});
+    anchor_id = next_token_id(logits, mx::argmax(logits).item<int>());
+    finished = commit(anchor_id);
+  };
+
+  if (draft != nullptr) {
+    cache.KeepLastRound();
+  } else {
+  }
+  omni_common::DraftStatistics &statistics = decoding.draft_statistics;
+  omni_common::DraftBackoff backoff;
+  bool is_drafting = draft != nullptr;
+  while (!finished && is_drafting) {
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else if (draft_caches.front().offset() != cache.token_count()) {
+      throw std::logic_error(
+          "the draft's context does not cover the target's positions");
+    } else {
+    }
+    const auto round_started = std::chrono::steady_clock::now();
     const mx::array proposed_ids = draft->ProposeBlock(
         anchor_id, model.EmbedTokens(draft->BlockIds(anchor_id)), draft_caches);
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
@@ -166,13 +179,62 @@ GreedyDecoding DecodeGreedy(const MingModel &model,
     ++statistics.verify_round_count;
     statistics.proposed_token_count += verify_count - 1;
     statistics.accepted_token_count += accepted_count;
-    if (!finished) {
-      // The cache keeps the anchor and the accepted proposals, whose hidden
-      // states become the draft's context.
-      model.Rewind(cache, verify_count - 1 - accepted_count);
-      draft->AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+    if (finished) {
+      break;
     } else {
     }
+    // The cache keeps the anchor and the accepted proposals, whose hidden
+    // states become the draft's context.
+    model.Rewind(cache, verify_count - 1 - accepted_count);
+    draft->AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
+    if (draft_policy == omni_common::DraftPolicy::kFixed) {
+      continue;
+    } else {
+    }
+    backoff.RecordRound(accepted_count + 1,
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - round_started)
+                            .count());
+    if (!backoff.ShouldMeasurePlain() ||
+        max_new_tokens - static_cast<int>(generated_token_ids.size()) <=
+            omni_common::kPlainProbeTokenCount) {
+      continue;
+    } else {
+    }
+    // The probe's positions join the draft's context only if speculation
+    // resumes; the last committed token stays the uncached anchor.
+    std::vector<std::vector<mx::array>> probe_hidden_states;
+    decode_plain_token(&probe_hidden_states.emplace_back());
+    int measured_token_count = 0;
+    const auto probe_started = std::chrono::steady_clock::now();
+    while (!finished &&
+           measured_token_count < omni_common::kPlainProbeTokenCount - 1) {
+      decode_plain_token(&probe_hidden_states.emplace_back());
+      ++measured_token_count;
+    }
+    if (finished) {
+      break;
+    } else {
+    }
+    const double plain_seconds_per_token =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      probe_started)
+            .count() /
+        measured_token_count;
+    if (backoff.ObservePlain(plain_seconds_per_token)) {
+      std::cerr << "DSpark backoff after " << statistics.verify_round_count
+                << " rounds: plain " << plain_seconds_per_token * 1000.0
+                << " ms/token; continuing with target cache\n";
+      draft_caches.clear();
+      is_drafting = false;
+    } else {
+      for (const std::vector<mx::array> &captured : probe_hidden_states) {
+        draft->AppendContext(captured, 1, draft_caches);
+      }
+    }
+  }
+  while (!finished) {
+    decode_plain_token(nullptr);
   }
   return decoding;
 }

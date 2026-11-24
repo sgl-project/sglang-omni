@@ -127,12 +127,14 @@ LanguageCode(const std::optional<std::string> &language) {
 
 MingTranscriber::MingTranscriber(const std::filesystem::path &model_directory,
                                  const std::filesystem::path &draft_directory,
-                                 int draft_quantization_bits)
+                                 int draft_quantization_bits,
+                                 omni_common::DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_tokens_(
           ResolveAudioTokens(tokenizer_, model_.config().audio_token_id)),
       stop_token_ids_(
-          ResolveStopTokenIds(model_directory, tokenizer_, model_.config())) {
+          ResolveStopTokenIds(model_directory, tokenizer_, model_.config())),
+      draft_policy_(draft_policy) {
   if (!draft_directory.empty()) {
     const MingConfig &config = model_.config();
     draft_.emplace(draft_directory, draft_quantization_bits,
@@ -227,7 +229,7 @@ MingTranscriber::Transcribe(const MingRequest &request,
   const GreedyDecoding decoding =
       DecodeGreedy(model_, draft_.has_value() ? &*draft_ : nullptr, embeddings,
                    stop_token_ids_, request.max_new_tokens,
-                   request.no_repeat_ngram_size, cancel);
+                   request.no_repeat_ngram_size, draft_policy_, cancel);
   omni_common::TranscriptionResult result;
   result.finish_reason = decoding.finish_reason;
   result.verify_round_count = decoding.draft_statistics.verify_round_count;

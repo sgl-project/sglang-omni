@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
     std::string model_path;
     std::string draft_model_path;
     int draft_quantization_bits = 0;
+    omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
     ming3_asr::MingOptions options;
     std::vector<std::string> files;
     for (int index = 1; index < argc; ++index) {
@@ -24,7 +25,8 @@ int main(int argc, char **argv) {
         std::cout << "Usage: ming3_asr_transcribe --model-path DIR [--language "
                      "en|zh] "
                      "[--max-new-tokens N] [--draft-model-path DIR] "
-                     "[--draft-bits 4|6|8] file.wav...\n";
+                     "[--draft-bits 4|6|8] [--draft-policy adaptive|fixed] "
+                     "file.wav...\n";
         return 0;
       } else if (argument.starts_with("--")) {
         if (index + 1 >= argc) {
@@ -47,6 +49,8 @@ int main(int argc, char **argv) {
           draft_model_path = value;
         } else if (argument == "--draft-bits") {
           draft_quantization_bits = std::stoi(value);
+        } else if (argument == "--draft-policy") {
+          draft_policy = omni_common::ParseDraftPolicy(value);
         } else {
           throw std::invalid_argument("unknown option " + argument);
         }
@@ -65,8 +69,8 @@ int main(int argc, char **argv) {
     } else {
     }
     const auto load_started = std::chrono::steady_clock::now();
-    const ming3_asr::MingTranscriber transcriber(model_path, draft_model_path,
-                                                 draft_quantization_bits);
+    const ming3_asr::MingTranscriber transcriber(
+        model_path, draft_model_path, draft_quantization_bits, draft_policy);
     const double load_seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       load_started)

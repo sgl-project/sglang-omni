@@ -27,9 +27,6 @@ struct LoadedDraft {
 namespace {
 
 constexpr int kQuantizationGroupSize = 64;
-// note (ZaneZhang-67): warm one useful plain token, then time four pipelined
-// steps.
-constexpr int kPlainProbeTokenCount = 5;
 
 std::string ShapeText(const mx::Shape &shape) {
   std::string text = "[";

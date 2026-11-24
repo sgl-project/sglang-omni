@@ -11,9 +11,10 @@ class MingModelService : public asr_service::ServedModel {
 public:
   MingModelService(const std::filesystem::path &model_directory,
                    const std::filesystem::path &draft_directory,
-                   int draft_quantization_bits)
-      : transcriber_(model_directory, draft_directory,
-                     draft_quantization_bits) {}
+                   int draft_quantization_bits,
+                   omni_common::DraftPolicy draft_policy)
+      : transcriber_(model_directory, draft_directory, draft_quantization_bits,
+                     draft_policy) {}
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -49,11 +50,16 @@ private:
 int main(int argc, char **argv) {
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind kind;
   kind.model_kind = "ming3_asr";
   kind.flags = {
       {"--draft-model-path",
        [&](const std::string &value) { draft_directory = value; }},
+      {"--draft-policy",
+       [&](const std::string &value) {
+         draft_policy = omni_common::ParseDraftPolicy(value);
+       }},
       {"--draft-bits",
        [&](const std::string &value) {
          draft_quantization_bits = std::stoi(value);
@@ -70,7 +76,8 @@ int main(int argc, char **argv) {
   };
   kind.load = [&](const std::filesystem::path &model_directory) {
     return std::make_unique<MingModelService>(model_directory, draft_directory,
-                                              draft_quantization_bits);
+                                              draft_quantization_bits,
+                                              draft_policy);
   };
   return asr_service::Serve(argc, argv, kind);
 }

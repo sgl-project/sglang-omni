@@ -22,12 +22,15 @@ struct GreedyDecoding {
 // Greedy decoding after the prompt embeddings [1, token_count, hidden_size]:
 // a stop token ends the output unemitted, and a positive no_repeat_ngram_size
 // bans any token that would repeat an ngram of that many. A DSpark draft
-// leaves the tokens as they are and verifies a block of them per target pass.
+// leaves the tokens as they are and verifies a block of them per target pass;
+// under DraftPolicy::kAdaptive it backs off to plain decoding as Qwen3-ASR's
+// DFlash decoding does, when plain decoding measures faster.
 GreedyDecoding DecodeGreedy(const MingModel &model,
                             const omni_common::DFlashDraft *draft,
                             const mlx::core::array &embeddings,
                             const std::vector<int> &stop_token_ids,
                             int max_new_tokens, int no_repeat_ngram_size,
+                            omni_common::DraftPolicy draft_policy,
                             const std::atomic<bool> &cancel);
 
 struct MingOptions {
@@ -51,9 +54,10 @@ class MingTranscriber {
 public:
   // An empty draft_directory decodes without a draft; draft_quantization_bits
   // 0 keeps the draft's weights as stored.
-  explicit MingTranscriber(const std::filesystem::path &model_directory,
-                           const std::filesystem::path &draft_directory = {},
-                           int draft_quantization_bits = 0);
+  MingTranscriber(const std::filesystem::path &model_directory,
+                  const std::filesystem::path &draft_directory,
+                  int draft_quantization_bits,
+                  omni_common::DraftPolicy draft_policy);
 
   MingRequest Prepare(std::vector<float> samples,
                       const MingOptions &options) const;
@@ -76,6 +80,7 @@ private:
   AudioTokenLayout audio_tokens_;
   std::vector<int> stop_token_ids_;
   std::optional<omni_common::DFlashDraft> draft_;
+  omni_common::DraftPolicy draft_policy_;
 };
 
 } // namespace ming3_asr

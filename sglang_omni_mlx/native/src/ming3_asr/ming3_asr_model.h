@@ -98,6 +98,8 @@ class MingModel;
 class MingCache {
 public:
   const std::vector<LayerCache> &layers() const { return layers_; }
+  // Positions the cache holds.
+  int token_count() const { return token_count_; }
   // Keeps each later Forward's delta inputs, so MingModel::Rewind can undo
   // its newest positions.
   void KeepLastRound() { keeps_last_round_ = true; }

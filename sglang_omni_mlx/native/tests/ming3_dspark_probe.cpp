@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
-// Decodes a small Ming ASR checkpoint with and without a DSpark draft and
-// prints one JSON row per drafted request; exits 1 if any differs from plain
-// decoding.
+// Decodes a small Ming ASR checkpoint with and without a DSpark draft under
+// one draft policy and prints one JSON row per drafted request; exits 1 if any
+// differs from plain decoding.
 #include <atomic>
 #include <iostream>
 
 #include "ming3_asr/ming3_asr_transcriber.h"
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
+  if (argc != 4) {
     std::cerr << "usage: ming3_dspark_probe CHECKPOINT_DIRECTORY "
-                 "DRAFT_DIRECTORY\n";
+                 "DRAFT_DIRECTORY adaptive|fixed\n";
     return 2;
   } else {
   }
@@ -19,17 +19,19 @@ int main(int argc, char **argv) {
   const omni_common::DFlashDraft draft(
       argv[2], 0,
       {config.hidden_size, config.vocabulary_size, config.layer_count});
+  const omni_common::DraftPolicy draft_policy =
+      omni_common::ParseDraftPolicy(argv[3]);
   const std::atomic<bool> cancel(false);
   const auto embeddings = model.EmbedTokens({1, 2, 3, 4, 5});
   nlohmann::json rows = nlohmann::json::array();
   for (int no_repeat_ngram_size : {0, 2, 3}) {
-    for (int budget : {1, 2, 3, 5, 9, 17, 64}) {
-      const auto plain = ming3_asr::DecodeGreedy(model, nullptr, embeddings,
-                                                 config.eos_token_ids, budget,
-                                                 no_repeat_ngram_size, cancel);
+    for (int budget : {1, 2, 3, 5, 9, 17, 64, 256}) {
+      const auto plain = ming3_asr::DecodeGreedy(
+          model, nullptr, embeddings, config.eos_token_ids, budget,
+          no_repeat_ngram_size, draft_policy, cancel);
       const auto drafted = ming3_asr::DecodeGreedy(
           model, &draft, embeddings, config.eos_token_ids, budget,
-          no_repeat_ngram_size, cancel);
+          no_repeat_ngram_size, draft_policy, cancel);
       if (drafted.token_ids != plain.token_ids ||
           drafted.finish_reason != plain.finish_reason) {
         std::cerr << "DSpark differs from plain at budget " << budget
