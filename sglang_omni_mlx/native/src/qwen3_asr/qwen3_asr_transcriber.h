@@ -73,6 +73,8 @@ struct RefreshReuse {
   std::vector<omni_common::KVCache> caches;
   // The draft's context over them; empty without the draft.
   std::vector<omni_common::KVCache> draft_caches;
+  // The sample of the session's audio the windows start at.
+  long recording_start_sample = 0;
 };
 
 struct BatchRequest {
@@ -113,8 +115,11 @@ public:
   // complete windows, a chunk of the head or a window at a time; false once
   // nothing is left to extend it by. A window recording_reuse has encoded is
   // taken from it, any other is encoded from recording_samples.
+  // recording_samples is the session's audio from recording_start_sample;
+  // windows of another start are dropped.
   bool ExtendFinalPrefill(const RefreshReuse &recording_reuse,
                           const std::vector<float> &recording_samples,
+                          long recording_start_sample,
                           const TranscriptionOptions &options,
                           const std::atomic<bool> &cancel,
                           RefreshReuse &final_reuse) const;

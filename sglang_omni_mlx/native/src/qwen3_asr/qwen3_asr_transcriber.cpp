@@ -330,7 +330,7 @@ Qwen3ASRTranscriber::HeadIds(const TranscriptionOptions &options) const {
 
 bool Qwen3ASRTranscriber::ExtendFinalPrefill(
     const RefreshReuse &recording_reuse,
-    const std::vector<float> &recording_samples,
+    const std::vector<float> &recording_samples, long recording_start_sample,
     const TranscriptionOptions &options, const std::atomic<bool> &cancel,
     RefreshReuse &final_reuse) const {
   if (cancel.load()) {
@@ -369,6 +369,13 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
       cache.Trim(cache.offset() - length);
     }
   };
+  if (final_reuse.recording_start_sample != recording_start_sample) {
+    final_reuse.mel.reset();
+    final_reuse.audio_rows.reset();
+    trim_to(std::min(head_length, final_reuse.caches[0].offset()));
+    final_reuse.recording_start_sample = recording_start_sample;
+  } else {
+  }
   const auto extend = [&](const mx::array &embeddings) {
     if (uses_draft) {
       draft_->Prefill(model_.decoder(), embeddings, final_reuse.caches,
@@ -396,7 +403,10 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
   };
   const int sample_frames =
       static_cast<int>(recording_samples.size()) / omni_common::kHopLength;
-  if (complete_frames_of(sample_frames) <= held_frames) {
+  // note (XXXXRT666): a louder frame raises the log-mel floor, which changes
+  // the windows already held, so they are compared with the audio's mel even
+  // when no window has been completed since.
+  if (held_frames == 0 && complete_frames_of(sample_frames) == 0) {
     return false;
   } else {
   }

@@ -33,9 +33,11 @@ constexpr int kPrefixRollbackTokenCount = 5;
 constexpr double kPrefixedTokensPerNewSecond = 10.0;
 constexpr int kPrefixedTokenSlack = 8;
 constexpr float kSilentPeak = 1e-3f;
-// The recording's start that its Final's prefill takes: Voxt recognises a
-// longer one in pieces while it records, whose Finals reuse nothing.
+// The audio from where its Final starts that a session prefills, and that it
+// keeps for that: Voxt recognises a longer recording in pieces while it
+// records, and the Final that is left starts where the last piece ended.
 constexpr size_t kMaxFinalPrefillSamples = 64 * omni_common::kSampleRate;
+constexpr size_t kMaxFinalRecordingSamples = 128 * omni_common::kSampleRate;
 
 constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
     {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
@@ -120,6 +122,9 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
   } else if (type == "input_audio_buffer.append") {
     Append(message.value("audio", nlohmann::json()));
     return true;
+  } else if (type == "input_audio_buffer.final_start") {
+    StartFinalAt(message.value("start_sample", nlohmann::json()));
+    return true;
   } else if (type == "input_audio_buffer.commit") {
     FinalizeThrough(LockedEndSample());
     return true;
@@ -159,11 +164,14 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
     std::lock_guard<std::mutex> lock(mutex_);
     const long start_sample = EndSample();
     samples_.insert(samples_.end(), appended->begin(), appended->end());
-    if (should_prefill_final_) {
-      const size_t room = kMaxFinalPrefillSamples - recording_samples_.size();
-      recording_samples_.insert(recording_samples_.end(), appended->begin(),
-                                appended->begin() +
-                                    std::min(room, appended->size()));
+    if (should_prefill_final_ && !is_recording_cut_off_) {
+      is_recording_cut_off_ = recording_samples_.size() + appended->size() >
+                              kMaxFinalRecordingSamples;
+      if (!is_recording_cut_off_) {
+        recording_samples_.insert(recording_samples_.end(), appended->begin(),
+                                  appended->end());
+      } else {
+      }
     } else {
     }
     if (!segment_.has_value()) {
@@ -201,6 +209,38 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment_ = std::move(segment);
 }
 
+void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
+  bool is_valid = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (start_sample.is_number_integer()) {
+      const long sample = start_sample.get<long>();
+      is_valid = sample >= final_start_sample_ && sample <= EndSample();
+      if (is_valid) {
+        if (is_recording_cut_off_) {
+          recording_samples_.clear();
+        } else {
+          recording_samples_.erase(
+              recording_samples_.begin(),
+              recording_samples_.begin() +
+                  std::min<size_t>(sample - final_start_sample_,
+                                   recording_samples_.size()));
+        }
+        final_start_sample_ = sample;
+      } else {
+      }
+    } else {
+    }
+  }
+  if (is_valid) {
+    MaybeStartFinalPrefill();
+  } else {
+    SendError("invalid_request_error", "invalid_start_sample",
+              "start_sample must be a sample the session has, from the last "
+              "one on.");
+  }
+}
+
 FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -225,9 +265,10 @@ void RealtimeSession::MaybeStartFinalPrefill() {
     std::lock_guard<std::mutex> lock(mutex_);
     // note (XXXXRT666): without a dictionary a Final of the first segment
     // reuses the previews' keys and values, so the prefill waits for the
-    // second.
-    const bool is_waiting_for_segment =
-        final_context_.empty() && next_segment_id_ < 2;
+    // second, or for a Final that starts later.
+    const bool is_waiting_for_segment = final_context_.empty() &&
+                                        next_segment_id_ < 2 &&
+                                        final_start_sample_ == 0;
     if (!should_prefill_final_ || !has_preview_ || is_prefilling_final_ ||
         is_waiting_for_segment) {
       return;
@@ -251,17 +292,25 @@ void RealtimeSession::MaybeStartFinalPrefill() {
         // Windows a refresh finished since the job was queued count too.
         RefreshReuse recording_reuse;
         std::vector<float> recording_samples;
+        long recording_start_sample = 0;
         if (const std::shared_ptr<RealtimeSession> self = weak_self.lock()) {
           std::lock_guard<std::mutex> lock(self->mutex_);
-          if (self->recording_reuse_ != nullptr) {
+          recording_start_sample = self->final_start_sample_;
+          // The previews' windows are those of the recording's first segment.
+          if (self->recording_reuse_ != nullptr &&
+              recording_start_sample == 0) {
             recording_reuse = *self->recording_reuse_;
           } else {
           }
-          recording_samples = self->recording_samples_;
+          recording_samples.assign(self->recording_samples_.begin(),
+                                   self->recording_samples_.begin() +
+                                       std::min(self->recording_samples_.size(),
+                                                kMaxFinalPrefillSamples));
         } else {
         }
         *has_more = transcriber.ExtendFinalPrefill(
-            recording_reuse, recording_samples, options, cancel, *final_reuse);
+            recording_reuse, recording_samples, recording_start_sample, options,
+            cancel, *final_reuse);
         return TranscriptionResult();
       },
       cancel_,
