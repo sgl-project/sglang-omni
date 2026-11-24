@@ -519,6 +519,42 @@ func TestCleanupSoftDeadlineCancellationSuppressesLateResponse(t *testing.T) {
 	}
 }
 
+func TestCleanupCancellationAfterChoiceBeforeDelivery(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	model := &fakeLLM{text: "cleaned words"}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, cleanupLatencyConfig(clock, false))
+	choiceCommitted := make(chan struct{})
+	resumeOwner := make(chan struct{})
+	var once sync.Once
+	h.m.cfg.Log = func(_, message string) {
+		if strings.Contains(message, "cleanup outcome=cleaned") {
+			once.Do(func() {
+				close(choiceCommitted)
+				<-resumeOwner
+			})
+		}
+	}
+	id := h.start()
+	h.speak(id, 3)
+	select {
+	case <-choiceCommitted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Cleanup outcome was not committed")
+	}
+	h.m.Cancel(id)
+	close(resumeOwner)
+	end := h.rec.waitFor(t, "cancellation before delivery", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
+	entries := h.hist.all()
+	if end.State != Cancelled || end.Result != "" || end.Profile != "" || len(h.text.pastes()) != 0 || len(entries) != 1 || entries[0].Status != store.StatusCancelled || entries[0].Result != "" {
+		t.Fatalf("end %+v, pasted %q, history %+v", end, h.text.pastes(), h.hist.all())
+	}
+	for _, snapshot := range h.rec.all() {
+		if snapshot.ID == id && snapshot.State == Delivering {
+			t.Fatalf("cancelled operation reserved delivery: %+v", snapshot)
+		}
+	}
+}
+
 func TestCleanupSoftDeadlineAppliesOnlyToOrdinaryTranscribe(t *testing.T) {
 	for _, kind := range []store.Kind{store.KindTranslate, store.KindRewrite} {
 		t.Run(string(kind), func(t *testing.T) {

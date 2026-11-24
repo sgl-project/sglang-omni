@@ -140,7 +140,7 @@ func (r *run) cleanupChoiceOpenLocked() bool {
 func (m *Manager) beginTranscribeDelivery(r *run, result string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cur != r || r.ended {
+	if m.cur != r || r.ended || r.cancelled.Load() || r.ctx.Err() != nil {
 		return false
 	}
 	m.snap.State, m.snap.Result, m.snap.CanSkip = Delivering, result, false

@@ -22,6 +22,12 @@ type cleanupOutput struct {
 	generation  uint64
 }
 
+type cleanupRequest struct {
+	generation uint64
+	ctx        context.Context
+	thinking   *llm.Thinking
+}
+
 type cleanupChoice uint8
 
 const (
@@ -164,12 +170,20 @@ func (r *run) transcribe(text string) {
 		r.m.mu.Lock()
 		outcome := r.cleanupOutcome
 		r.m.mu.Unlock()
-		r.m.update(r, func(s *Snapshot) {
+		r.m.updateIf(r, func(s *Snapshot) bool {
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				return false
+			}
 			s.Profile, s.Timings.LLM = output.profile, llmTime
 			if outcome == cleanupOutcomeSoftDeadline || outcome == cleanupOutcomeManualSkip {
 				s.Draft = ""
 			}
+			return true
 		})
+		if r.cancelled.Load() || r.ctx.Err() != nil {
+			r.endCancelled(nil)
+			return
+		}
 		result = output.text
 		switch {
 		case outcome == cleanupOutcomeManualSkip:
@@ -208,11 +222,10 @@ func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
 		output = r.cleanUpFirst(text)
 	}
 	for {
-		if r.askAgain() {
-			r.m.mu.Lock()
-			generation = r.cleanupGeneration
-			r.m.mu.Unlock()
-			output = r.cleanUpOutput(text, r.thinking())
+		if request, ok := r.takeRethink(); ok {
+			generation = request.generation
+			output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
+			output.generation = request.generation
 			continue
 		}
 		if !r.cleanupMayContinue() {
@@ -225,12 +238,17 @@ func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
 		// The fallback joins the re-ask loop: it keeps the level chosen,
 		// and a Rethink while it streams asks it again.
 		if !r.swapFallback(output.err) {
-			if r.askAgain() {
-				continue
-			}
-			return output
+			// A Rethink may have won after useFallback checked eligibility.
+			// Leave it pending for the loop's single generation-capturing path.
+			continue
 		}
-		output = r.cleanUpOutput(text, r.thinking())
+		request, ok := r.currentCleanupRequest()
+		if !ok {
+			continue
+		}
+		generation = request.generation
+		output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
+		output.generation = request.generation
 	}
 }
 
@@ -277,6 +295,10 @@ func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) 
 }
 
 func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
+	return r.cleanUpOutputContext(text, think, r.currentLLMContext())
+}
+
+func (r *run) cleanUpOutputContext(text string, think *llm.Thinking, ctx context.Context) cleanupOutput {
 	parts, err := compose.BuildParts(r.transcribeInput(text))
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
@@ -284,7 +306,7 @@ func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
 	}
-	result, profile, err := r.cleanParts(text, parts, nil, think)
+	result, profile, err := r.cleanPartsContext(text, parts, nil, think, ctx)
 	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
 }
 
@@ -295,15 +317,19 @@ func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
 // could not be composed). think overrides the service's thinking (nil:
 // its setting).
 func (r *run) cleanParts(text string, parts []compose.Part, answers []string, think *llm.Thinking) (string, string, error) {
+	return r.cleanPartsContext(text, parts, answers, think, r.currentLLMContext())
+}
+
+func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
 	var failed error
 	for i := len(answers); i < len(parts); i++ {
 		p := parts[i]
 		if !r.cleanupMayContinue() {
 			return text, p.Profile(), context.DeadlineExceeded
 		}
-		draft := newDrafter(r, parts[:i+1], answers)
+		draft := newDrafter(r, ctx, parts[:i+1], answers)
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
-		resp, err := r.llmChat(r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
+		resp, err := r.llmChatContext(ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
 			return text, p.Profile(), err
@@ -344,8 +370,8 @@ type drafter struct {
 	last    time.Time
 }
 
-func newDrafter(r *run, parts []compose.Part, answers []string) *drafter {
-	return &drafter{r: r, ctx: r.currentLLMContext(), parts: parts, answers: answers[:len(answers):len(answers)]}
+func newDrafter(r *run, ctx context.Context, parts []compose.Part, answers []string) *drafter {
+	return &drafter{r: r, ctx: ctx, parts: parts, answers: answers[:len(answers):len(answers)]}
 }
 
 func (d *drafter) add(delta string) {
@@ -390,25 +416,41 @@ func (d *drafter) done(answers []string) {
 	})
 }
 
-// askAgain says whether Rethink chose another level for the answer under
-// way (and nothing ended it since), and readies its request: a new
-// llmCtx, an empty draft.
-func (r *run) askAgain() bool {
+func (r *run) currentCleanupRequest() (cleanupRequest, bool) {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	if !r.cleanupMayContinueLocked() {
+		return cleanupRequest{}, false
+	}
+	return cleanupRequest{generation: r.cleanupGeneration, ctx: r.llmCtx, thinking: r.think}, true
+}
+
+// takeRethink consumes one pending request-control event and captures all
+// request state under the same lock, so a generation cannot borrow a newer
+// thinking level or a context that belongs to another Rethink.
+func (r *run) takeRethink() (cleanupRequest, bool) {
 	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() {
-		return false
+		return cleanupRequest{}, false
 	}
 	r.m.mu.Lock()
 	if !r.rethink.Load() || r.cancelled.Load() || r.skipped.Load() || r.stopped.Load() || !r.cleanupDecisionOpenLocked() {
 		r.m.mu.Unlock()
-		return false
+		return cleanupRequest{}, false
 	}
 	r.rethink.Store(false)
-	think := r.think
 	r.llmCtx, r.llmStop = context.WithCancel(r.ctx)
+	request := cleanupRequest{generation: r.cleanupGeneration, ctx: r.llmCtx, thinking: r.think}
 	r.m.mu.Unlock()
-	r.logf("info", "asking the language model again at the thinking level chosen: %+v", think)
-	r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
-	return true
+	r.logf("info", "asking the language model again at the thinking level chosen: %+v", request.thinking)
+	return request, true
+}
+
+// askAgain is shared by Translate and Rewrite, which need only the restart
+// side effect. Transcribe uses takeRethink to keep generation and request
+// state together.
+func (r *run) askAgain() bool {
+	_, ok := r.takeRethink()
+	return ok
 }
 
 // thinking is the level the requests ask with: Rethink's, else the

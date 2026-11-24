@@ -346,6 +346,10 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	default:
 		if r.req.Kind == store.KindTranscribe {
 			if !r.m.beginTranscribeDelivery(r, result) {
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(nil)
+					return
+				}
 				// The session finished in the background; keep the result in
 				// its card rather than pasting into the new session's target.
 				dres.Reason = deliver.ReasonCard

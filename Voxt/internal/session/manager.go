@@ -353,6 +353,7 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 			return
 		}
 		s.Thinking, r.think = t, t
+		s.Draft, s.Title = "", ""
 		r.rethink.Store(true)
 		r.cleanupGeneration++
 		r.cleanupCandidate = nil
