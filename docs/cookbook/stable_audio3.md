@@ -33,7 +33,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output house.wav
 ```
 
-`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, from 0.1 to 380 seconds; the default is 120 seconds, as in the official library. `seed` (0 to 2⁶³ − 1) makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error. The model serves only `/v1/audio/speech`; `/generate` and chat requests are refused.
+`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, from 0.1 to 380 seconds; the default is 120 seconds, as in the official library. `seed` (0 to 2⁶³ − 1) makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error. The model serves only the speech endpoints; `/generate` and chat requests are refused with a 400 error.
 
 ## Limitations
 

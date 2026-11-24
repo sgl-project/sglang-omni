@@ -27,21 +27,21 @@ from sglang_omni.models.stable_audio3.model_config import (
     StableAudio3Config,
 )
 
-# note (ruilin): the checkpoint is distilled for 8 ping-pong steps; the official inference also pads every clip by 6 s.
+# note (ruilin): the checkpoint is distilled for 8 ping-pong steps, and its own inference pads every clip by 6 s.
 SAMPLING_STEPS = 8
 HEADROOM_SECONDS = 6.0
 # note (ruilin): on an H200 one more generate call (step launches, prompt encoding, graph binding) costs about as much as 40 s of padded audio; it sets how finely a batch is split.
 GROUP_OVERHEAD_SECONDS = 40.0
 # note (ruilin): the checkpoint's sampling shift has rate 0, so the schedule does not depend on length.
-LOGSNR_START = -6.2
-LOGSNR_END = 2.0
+LOG_SNR_START = -6.2
+LOG_SNR_END = 2.0
 CHECKPOINT_FILENAME = "model.safetensors"
 COMPONENT_PREFIXES = {
     "dit": "model.model.",
     "conditioner": "conditioner.",
     "decoder": "pretransform.model.",
 }
-# The encoder and the bottleneck's encode-side tensors serve audio-to-audio only.
+# note (ruilin): the encoder and the bottleneck's encode-side tensors serve audio-to-audio only.
 UNUSED_PREFIXES = (
     "pretransform.model.encoder.",
     "pretransform.model.bottleneck.scaling_factor",
@@ -60,9 +60,9 @@ class GenerationRequest:
 def sampling_schedule(device: torch.device) -> torch.Tensor:
     """Noise levels from 1 to 0, evenly spaced in log-SNR between the checkpoint's bounds."""
     timesteps = torch.linspace(1, 0, SAMPLING_STEPS + 1, device=device)
-    logsnr_start = torch.tensor(LOGSNR_START, device=device)
-    logsnr = LOGSNR_END - timesteps * (LOGSNR_END - logsnr_start)
-    noise_levels = torch.sigmoid(-logsnr)
+    log_snr_start = torch.tensor(LOG_SNR_START, device=device)
+    log_snr = LOG_SNR_END - timesteps * (LOG_SNR_END - log_snr_start)
+    noise_levels = torch.sigmoid(-log_snr)
     noise_levels = torch.where(
         timesteps <= 0, torch.zeros_like(noise_levels), noise_levels
     )

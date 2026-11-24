@@ -29,7 +29,7 @@ BATCH_BUCKETS = (1, 2, 4, 8)
 LATENT_BUCKET_STEP = 32
 # note (ruilin): on H200 a short-clip DiT step launches about 1700 small kernels with the GPU busy a fifth of the time and stays near 20 ms up to about 2000 tokens, then turns GPU-bound; past that a graph saves about 3 ms and bucket padding can cost more.
 MAX_GRAPH_TOKENS = 2048
-# note (ruilin): a bucket captured mid-serving must not take the memory the decoder and later batches still need; 3 GB is the floor the Fun-ASR encoder graphs use.
+# note (ruilin): a bucket captured mid-serving must not take the memory the decoder and later batches still need; 3 GB is the floor the other model-owned graphs in this repository use.
 MIN_FREE_GB = 3.0
 WARMUP_ITERATIONS = 2
 
@@ -218,9 +218,9 @@ class DiTCudaGraphRunner:
         self.dit: DiffusionTransformer = dit
         self.graph_backend: DeviceGraphBackend = graph_backend
         self.max_batch_size: int = max_batch_size
-        reference = next(dit.parameters())
-        self.device: torch.device = reference.device
-        self.dtype: torch.dtype = reference.dtype
+        reference_parameter = next(dit.parameters())
+        self.device: torch.device = reference_parameter.device
+        self.dtype: torch.dtype = reference_parameter.dtype
         self.num_memory_tokens: int = dit.transformer.memory_tokens.shape[0]
         self.graphs: dict[tuple[int, int], StepGraph] = {}
         self.failed_buckets: set[tuple[int, int]] = set()

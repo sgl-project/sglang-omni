@@ -55,11 +55,11 @@ class Conditioner(nn.Module):
 
     def __init__(self, conditioning: ConditioningSection) -> None:
         super().__init__()
-        prompt, seconds = conditioning.configs
-        self.max_length: int = prompt.config.max_length
+        prompt_section, seconds_section = conditioning.configs
+        self.max_length: int = prompt_section.config.max_length
         self.seconds_range: tuple[float, float] = (
-            seconds.config.min_val,
-            seconds.config.max_val,
+            seconds_section.config.min_val,
+            seconds_section.config.max_val,
         )
         self.conditioners = nn.ModuleDict(
             {

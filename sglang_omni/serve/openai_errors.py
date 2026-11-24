@@ -40,6 +40,7 @@ _BAD_REQUEST_MARKERS = (
     "max_new_tokens must be",
     "Fun-ASR Apple currently requires temperature=0",
     "supports only greedy decoding",
+    "Stable Audio 3 request:",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
     "multimodal_train_inputs",

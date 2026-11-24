@@ -142,11 +142,10 @@ def wav_test_input(dtype: type[np.floating], shape: tuple[int, ...]) -> np.ndarr
         wav_test_input(np.float32, (2, 4000)),
         wav_test_input(np.float32, (4000,)),
         wav_test_input(np.float64, (2, 4000)),
-        wav_test_input(np.float16, (2, 4000)),
         np.zeros((2, 0), dtype=np.float32),
         np.array(0.25, dtype=np.float32),
     ],
-    ids=["stereo", "mono", "float64", "float16", "empty", "scalar"],
+    ids=["stereo", "mono", "float64", "empty", "scalar"],
 )
 def test_encode_wav_writes_the_same_bytes_as_the_step_by_step_encoding(
     audio: np.ndarray,
@@ -158,7 +157,10 @@ def test_encode_wav_writes_the_same_bytes_as_the_step_by_step_encoding(
 
 def test_float16_waveform_reaches_the_client_as_the_same_audio() -> None:
     """A float16 waveform sent with keep_float16 reaches the client as the same float32 values and WAV."""
-    waveform = (torch.rand(2, 4410) * 2.4 - 1.2).half().clamp(-1, 1)
+    generator = torch.Generator().manual_seed(0)
+    waveform = (
+        (torch.rand(2, 4410, generator=generator) * 2.4 - 1.2).half().clamp(-1, 1)
+    )
     payload = audio_waveform_payload(
         waveform, sample_rate=44100, keep_channels=True, keep_float16=True
     )

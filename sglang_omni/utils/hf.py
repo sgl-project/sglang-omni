@@ -319,14 +319,24 @@ def try_resolve_arch_from_zonos3_layout(
 
 def stable_audio3_architecture_from_config(path: str) -> str | None:
     """Stable Audio 3 is the inpainting diffusion layout whose prompt encoder is T5Gemma."""
-    with open(path, encoding="utf-8") as handle:
-        raw = json.load(handle)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        return None
     if not isinstance(raw, dict) or raw.get("model_type") != STABLE_AUDIO3_MODEL_TYPE:
         return None
     else:
         pass
-    conditioners = raw["model"]["conditioning"]["configs"]
-    if any(conditioner["type"] == "t5gemma" for conditioner in conditioners):
+    model = raw.get("model")
+    conditioning = model.get("conditioning") if isinstance(model, dict) else None
+    conditioners = (
+        conditioning.get("configs") if isinstance(conditioning, dict) else None
+    )
+    if isinstance(conditioners, list) and any(
+        isinstance(conditioner, dict) and conditioner.get("type") == "t5gemma"
+        for conditioner in conditioners
+    ):
         return STABLE_AUDIO3_ARCHITECTURE
     else:
         return None

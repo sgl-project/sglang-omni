@@ -23,7 +23,7 @@ ROTARY_BASE = 10000.0
 QK_RMS_NORM_EPS = 1e-6
 FOURIER_MIN_FREQUENCY = 0.5
 FOURIER_MAX_FREQUENCY = 10000.0
-# note (ruilin): the official inference uses this truncated pi, so the angles match it bit for bit.
+# note (ruilin): the checkpoint's own inference uses this truncated pi, so the angles match it bit for bit.
 TRUNCATED_PI = 3.14159265359
 # note (ruilin): differential attention runs its two softmax maps as one call over twice the heads; self-attention projects queries, keys and values plus the second map's queries and keys, cross-attention keys and values plus the second map's keys.
 DIFFERENTIAL_MAPS = 2

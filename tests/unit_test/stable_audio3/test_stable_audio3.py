@@ -36,6 +36,7 @@ from sglang_omni.models.stable_audio3.speech_validation import (
 )
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from tests.unit_test.fixtures.accelerator import require_device_streams
 
@@ -53,12 +54,14 @@ GRAPH_RELATIVE_ERROR_LIMIT = 2e-3
 
 
 def payload_with(
-    params: dict[str, object], metadata: dict[str, object] | None = None
+    params: dict[str, object],
+    metadata: dict[str, object] | None = None,
+    inputs: object = "ambient pads",
 ) -> StagePayload:
     return StagePayload(
         request_id="request",
         request=OmniRequest(
-            inputs="ambient pads",
+            inputs=inputs,
             params=params,
             metadata=(
                 {"task": "tts", "tts_params": {}} if metadata is None else metadata
@@ -80,10 +83,16 @@ def test_request_defaults_to_the_official_duration_and_a_random_seed() -> None:
     assert (state.prompt, state.duration_seconds, state.seed) == ("ambient pads", 30, 7)
 
 
-def test_requests_from_other_endpoints_are_refused() -> None:
-    """A /generate or chat request skips the speech validator, so its seed could overflow inside a batch and fail every request in it."""
-    with pytest.raises(ValueError, match="/v1/audio/speech"):
-        build_state(payload_with({"seed": 2**64}, metadata={}))
+def test_requests_that_skip_the_speech_validator_are_refused() -> None:
+    """A /generate or chat request skips the speech validator, and /generate can carry the speech metadata itself: chat messages became the prompt, and a negative seed reached the batch."""
+    with pytest.raises(ValueError, match="/v1/audio/speech") as error:
+        build_state(payload_with({}, metadata={}))
+    assert is_bad_request_error(error.value)
+    with pytest.raises(ValueError, match="seed"):
+        build_state(payload_with({"seed": -5}))
+    for inputs in ("  ", [{"role": "user", "content": "ambient pads"}]):
+        with pytest.raises(ValueError, match="prompt"):
+            build_state(payload_with({}, inputs=inputs))
 
 
 @pytest.mark.parametrize(

@@ -11,12 +11,26 @@ from sglang_omni.models.stable_audio3.request_builders import GENERATION_STAGE
 PACKAGE = "sglang_omni.models.stable_audio3"
 
 
+class StableAudio3GenerationFactoryArgs(FactoryArgs):
+    enable_cuda_graph: bool = True
+    enable_torch_compile: bool = True
+
+
+class StableAudio3GenerationStageConfig(StageConfig):
+    factory: StableAudio3GenerationFactoryArgs = Field(
+        default_factory=StableAudio3GenerationFactoryArgs
+    )
+
+
 class StableAudio3PipelineConfig(PipelineConfig):
     architecture: ClassVar[str] = "StableAudio3ForConditionalGeneration"
     requires_model_capabilities: ClassVar[bool] = True
     speech_request_validator_factory: ClassVar[str | None] = (
         f"{PACKAGE}.speech_validation.StableAudio3SpeechRequestValidator"
     )
+    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
+        GENERATION_STAGE: StableAudio3GenerationStageConfig,
+    }
     supported_speech_fields: ClassVar[frozenset[str] | None] = frozenset(
         {
             "model",
@@ -37,15 +51,12 @@ class StableAudio3PipelineConfig(PipelineConfig):
                 factory_path=f"{PACKAGE}.stages.create_preprocessing_executor",
                 next=GENERATION_STAGE,
             ),
-            StageConfig(
+            StableAudio3GenerationStageConfig(
                 name=GENERATION_STAGE,
                 process="stable_audio3",
                 factory_path=f"{PACKAGE}.stages.create_generation_executor",
-                factory=FactoryArgs(
-                    max_batch_size=8,
-                    max_batch_wait_ms=5,
-                    enable_cuda_graph=True,
-                    enable_torch_compile=True,
+                factory=StableAudio3GenerationFactoryArgs(
+                    max_batch_size=8, max_batch_wait_ms=5
                 ),
                 gpu=0,
                 terminal=True,
