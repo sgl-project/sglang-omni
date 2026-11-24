@@ -34,6 +34,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def enable_code2wav_graph(self):
         return True
 
+    def dots_tts_tail_graph_batch_buckets(self) -> tuple[int, ...]:
+        return (1, 2, 4, 8, 16)
+
     def enable_dots_tts_patch_graph(self) -> bool:
         return True
 

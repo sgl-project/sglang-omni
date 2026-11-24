@@ -12,6 +12,9 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 import_dots_tts()
 
@@ -555,6 +558,70 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
     assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
     assert not graph.graph_misses
     assert graph.dit_contiguous_view_steps == NFE
+
+
+def test_only_xpu_captures_the_small_batched_tail_buckets() -> None:
+    assert XPUOmniPlatform().dots_tts_tail_graph_batch_buckets() == (1, 2, 4, 8, 16)
+    assert CUDAOmniPlatform().dots_tts_tail_graph_batch_buckets() == ()
+    assert OmniPlatform().dots_tts_tail_graph_batch_buckets() == ()
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="requires XPU")
+@pytest.mark.parametrize("active", [[2], [3, 0, 2, 1]])
+def test_batched_tail_xpu_graph_matches_eager(active: list[int]) -> None:
+    device = torch.device(current_platform.device_type)
+    dtype = torch.bfloat16
+    torch.manual_seed(1234)
+    eager_model = TailModel().eval().to(device=device, dtype=dtype)
+    graph_model = copy.deepcopy(eager_model)
+    torch.manual_seed(9)
+    eager = build_tail(
+        eager_model, slots=4, device=device, dtype=dtype, patch_capacity=33
+    )
+    torch.manual_seed(9)
+    graph = build_tail(
+        graph_model,
+        slots=4,
+        device=device,
+        dtype=dtype,
+        patch_capacity=33,
+        optimize=True,
+    )
+    assert graph.has_captured_graphs
+    for name in (
+        "dit_k",
+        "dit_v",
+        "encoder_k",
+        "encoder_v",
+        "encoder_conv_tail",
+        "window",
+        "all_mods",
+    ):
+        eager_value = getattr(eager, name)
+        eager_value.normal_(0, 0.05)
+        getattr(graph, name).copy_(eager_value)
+    for slot in range(4):
+        eager._fm_seq_len[slot] = graph._fm_seq_len[slot] = (
+            15  # noqa: leading-underscore  # production name
+        )
+        eager.encoder_seq_len[slot] = graph.encoder_seq_len[slot] = 4
+        eager.initialize_slot_rng(slot, 100 + slot)
+        graph.initialize_slot_rng(slot, 100 + slot)
+
+    hidden = torch.randn(len(active), FM_HIDDEN, device=device, dtype=dtype)
+    eager_latent = eager.sample_patches(active, fm_hidden_rows=hidden)
+    graph_latent = graph.sample_patches(active, fm_hidden_rows=hidden)
+    torch.testing.assert_close(graph_latent, eager_latent, rtol=2e-2, atol=2e-2)
+
+    latent = torch.randn(
+        len(active), PATCH_SIZE, LATENT_DIM, device=device, dtype=dtype
+    )
+    eager_feedback = eager.encode_feedback(active, latent)
+    graph_feedback = graph.encode_feedback(active, latent)
+    torch.testing.assert_close(graph_feedback, eager_feedback, rtol=2e-2, atol=2e-2)
+    assert graph.graph_replays == {"meanflow": 1, "semantic_encoder": 1}
+    assert not graph.graph_misses
 
 
 def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(

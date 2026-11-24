@@ -17,6 +17,11 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.device_graph import (
+    DeviceGraphBackend,
+    DeviceGraphPool,
+    ReplayableGraph,
+)
 
 import_dots_tts()
 
@@ -383,7 +388,7 @@ def validate_acoustic_pool_memory(
 
 @dataclass
 class CapturedTailGraph:
-    graph: torch.cuda.CUDAGraph
+    graph: ReplayableGraph
     inputs: dict[str, torch.Tensor]
     output: torch.Tensor
 
@@ -479,14 +484,25 @@ class DotsTtsAcousticTail:
         self.free_slots = list(reversed(range(spec.num_slots)))
         self.meanflow_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
         self.encoder_graphs: dict[tuple[int, int], CapturedTailGraph] = {}
-        self.graph_pool: tuple[int, int] | None = None
-        self.capture_stream: torch.cuda.Stream | None = None
+        self.graph_backend: DeviceGraphBackend | None = None
+        self.graph_pool: DeviceGraphPool | None = None
+        self.capture_stream: torch.Stream | None = None
         self.graph_replays: Counter[str] = Counter()
         self.graph_misses: Counter[str] = Counter()
         self.tail_steps = 0
         self.dit_contiguous_view_steps = 0
-        if optimize and device.type == "cuda":
-            self.capture_cuda_graphs()
+        batch_buckets = (
+            _GRAPH_BATCH_BUCKETS
+            if device.type == "cuda"
+            else current_platform.dots_tts_tail_graph_batch_buckets()
+        )
+        graph_backend = (
+            current_platform.get_device_graph_backend(device)
+            if optimize and batch_buckets
+            else None
+        )
+        if graph_backend is not None:
+            self.capture_device_graphs(graph_backend, batch_buckets)
         else:
             pass
 
@@ -915,7 +931,7 @@ class DotsTtsAcousticTail:
             latent = graph.output.clone()
             self.graph_replays["meanflow"] += 1
             if self.graph_replays["meanflow"] == 1:
-                logger.info("dots.tts batched MeanFlow CUDA graph replay is active")
+                logger.info("dots.tts batched MeanFlow device graph replay is active")
             else:
                 pass
         if direct_kv:
@@ -1128,7 +1144,7 @@ class DotsTtsAcousticTail:
             self.graph_replays["semantic_encoder"] += 1
             if self.graph_replays["semantic_encoder"] == 1:
                 logger.info(
-                    "dots.tts batched semantic-encoder CUDA graph replay is active"
+                    "dots.tts batched semantic-encoder device graph replay is active"
                 )
             else:
                 pass
@@ -1207,9 +1223,11 @@ class DotsTtsAcousticTail:
         return None if bucket is None else graphs[(rows, bucket)]
 
     @torch.no_grad()
-    def capture_cuda_graphs(self) -> None:
+    def capture_device_graphs(
+        self, graph_backend: DeviceGraphBackend, batch_buckets: tuple[int, ...]
+    ) -> None:
         batch_buckets = tuple(
-            batch for batch in _GRAPH_BATCH_BUCKETS if batch <= self.spec.num_slots
+            batch for batch in batch_buckets if batch <= self.spec.num_slots
         )
         context_buckets = tuple(
             patches
@@ -1221,11 +1239,13 @@ class DotsTtsAcousticTail:
         else:
             pass
 
-        current_stream = torch.cuda.current_stream(self.device)
-        self.capture_stream = torch.cuda.Stream(device=self.device)
+        device_module = torch.get_device_module(self.device)
+        current_stream = device_module.current_stream(self.device)
+        self.capture_stream = device_module.Stream(device=self.device)
         self.capture_stream.wait_stream(current_stream)
-        self.graph_pool = torch.cuda.graph_pool_handle()
-        with torch.cuda.stream(self.capture_stream):
+        self.graph_backend = graph_backend
+        self.graph_pool = graph_backend.graph_pool_handle()
+        with device_module.stream(self.capture_stream):
             for batch_size in reversed(batch_buckets):
                 for patches in reversed(context_buckets):
                     self.capture_graph(
@@ -1241,9 +1261,9 @@ class DotsTtsAcousticTail:
                         kind="semantic_encoder",
                     )
         current_stream.wait_stream(self.capture_stream)
-        torch.cuda.synchronize(self.device)
+        device_module.synchronize(self.device)
         logger.info(
-            "dots.tts acoustic-tail CUDA graphs: meanflow=%d semantic_encoder=%d "
+            "dots.tts acoustic-tail device graphs: meanflow=%d semantic_encoder=%d "
             "batch_buckets=%s context_patch_buckets=%s",
             len(self.meanflow_graphs),
             len(self.encoder_graphs),
@@ -1309,23 +1329,26 @@ class DotsTtsAcousticTail:
                 inputs["latent"],
             )
 
-        graph = torch.cuda.CUDAGraph()
+        assert self.graph_backend is not None
+        graph: ReplayableGraph | None = None
         try:
             for _ in range(2):
                 run()
             self.capture_stream.synchronize()
-            with torch.cuda.graph(
-                graph,
+            with self.graph_backend.capture(
                 pool=self.graph_pool,
                 stream=self.capture_stream,
-                capture_error_mode="thread_local",
-            ):
+                thread_local_errors=True,
+            ) as graph:
                 output = run()
             destination[key] = CapturedTailGraph(graph, inputs, output)
         except Exception as exc:
-            graph.reset()
+            if graph is not None:
+                graph.reset()
+            else:
+                pass
             logger.warning(
-                "dots.tts %s CUDA graph capture failed for batch=%d capacity=%d: "
+                "dots.tts %s device graph capture failed for batch=%d capacity=%d: "
                 "%s; using eager fallback",
                 kind,
                 batch_size,
@@ -1337,7 +1360,7 @@ class DotsTtsAcousticTail:
     def backend(self) -> str:
         if self.meanflow_graphs and self.encoder_graphs:
             return (
-                "CUDA graph batched tail with eager fallback "
+                "device graph batched tail with eager fallback "
                 f"(meanflow={len(self.meanflow_graphs)}, "
                 f"semantic_encoder={len(self.encoder_graphs)})"
             )

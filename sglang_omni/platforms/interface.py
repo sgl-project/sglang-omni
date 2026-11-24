@@ -215,6 +215,9 @@ class OmniPlatform(DeviceMixin):
         """Check if current platform captures PersonaPlex's Mimi decode graphs."""
         return self.enable_codec_decode_graph()
 
+    def dots_tts_tail_graph_batch_buckets(self) -> tuple[int, ...]:
+        return ()
+
     def enable_dots_tts_patch_graph(self) -> bool:
         return False
 
