@@ -96,7 +96,7 @@ func TestRecordingMutesOutput(t *testing.T) {
 	if r.muted() {
 		t.Fatal("still muted after the recording")
 	}
-	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"soft-kalimba-start:audible", "soft-kalimba-stop:audible"}) {
 		t.Fatalf("cues %v: the start cue before the mute, the stop cue after it", got)
 	}
 	for _, end := range []session.State{session.Cancelled, session.Failed} {

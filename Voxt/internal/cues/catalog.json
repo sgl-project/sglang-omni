@@ -1,0 +1,299 @@
+{
+  "schema": "actnow.sounds.catalog/1",
+  "version": "2026-11-18",
+  "groups": [
+    {
+      "id": "soft",
+      "name": {
+        "en": "Soft",
+        "zh": "柔和"
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "two-note",
+      "name": {
+        "en": "Two-note",
+        "zh": "双音"
+      },
+      "featured": true
+    },
+    {
+      "id": "soft",
+      "name": {
+        "en": "Soft",
+        "zh": "柔和"
+      },
+      "featured": true
+    },
+    {
+      "id": "wood",
+      "name": {
+        "en": "Wood",
+        "zh": "木质"
+      }
+    }
+  ],
+  "uses": [
+    {
+      "id": "record.start",
+      "name": {
+        "en": "Recording starts",
+        "zh": "开始录音"
+      }
+    },
+    {
+      "id": "record.stop",
+      "name": {
+        "en": "Recording stops",
+        "zh": "结束录音"
+      }
+    }
+  ],
+  "sounds": [
+    {
+      "id": "soft-kalimba-start",
+      "file": "sounds/soft-kalimba-start.wav",
+      "name": {
+        "en": "Kalimba (start)",
+        "zh": "卡林巴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.614,
+      "audible": 0.567,
+      "desc": {
+        "en": "Thumb piano, plucked metal tines",
+        "zh": "拇指琴，拨动金属簧片"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-kalimba-stop",
+      "sha256": "45ac6829fd95b8adf6ce285c3258f06996cea9e75e2241f300d2b93f94f07043"
+    },
+    {
+      "id": "soft-kalimba-stop",
+      "file": "sounds/soft-kalimba-stop.wav",
+      "name": {
+        "en": "Kalimba (stop)",
+        "zh": "卡林巴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.604,
+      "audible": 0.564,
+      "desc": {
+        "en": "Thumb piano, plucked metal tines",
+        "zh": "拇指琴，拨动金属簧片"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-kalimba-start",
+      "sha256": "479c9154e94abe6a75d1e342dfbb323089bad71d9960799004454c6074c14534"
+    },
+    {
+      "id": "soft-wood-start",
+      "file": "sounds/soft-wood-start.wav",
+      "name": {
+        "en": "Wood (start)",
+        "zh": "木琴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft",
+        "wood"
+      ],
+      "duration": 0.562,
+      "audible": 0.516,
+      "desc": {
+        "en": "Soft mallets on wooden bars",
+        "zh": "软槌敲木条"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-wood-stop",
+      "sha256": "13ddfdbc501d8e6e0d7448d72fba100fd78ef2b465db10f1ebaf447fe5c0651d"
+    },
+    {
+      "id": "soft-wood-stop",
+      "file": "sounds/soft-wood-stop.wav",
+      "name": {
+        "en": "Wood (stop)",
+        "zh": "木琴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft",
+        "wood"
+      ],
+      "duration": 0.571,
+      "audible": 0.512,
+      "desc": {
+        "en": "Soft mallets on wooden bars",
+        "zh": "软槌敲木条"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-wood-start",
+      "sha256": "f67f2a1b8f72d3c2308486eb2bae4c919609e48872333b2f57e2b1623e4d04dd"
+    },
+    {
+      "id": "soft-vibes-start",
+      "file": "sounds/soft-vibes-start.wav",
+      "name": {
+        "en": "Vibraphone (start)",
+        "zh": "颤音琴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.661,
+      "audible": 0.627,
+      "desc": {
+        "en": "Yarn mallets, a light shimmer",
+        "zh": "毛线槌，带轻微颤动"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-vibes-stop",
+      "sha256": "f409fbc1a0946cf8bcad256163be932af498c17776d6d2798d6ab16f4380bd65"
+    },
+    {
+      "id": "soft-vibes-stop",
+      "file": "sounds/soft-vibes-stop.wav",
+      "name": {
+        "en": "Vibraphone (stop)",
+        "zh": "颤音琴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.701,
+      "audible": 0.649,
+      "desc": {
+        "en": "Yarn mallets, a light shimmer",
+        "zh": "毛线槌，带轻微颤动"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-vibes-start",
+      "sha256": "387a8b9f40b89107add41b0c795a2fbab54965db3753a4da903afe1fe8bb39d5"
+    },
+    {
+      "id": "soft-musicbox-start",
+      "file": "sounds/soft-musicbox-start.wav",
+      "name": {
+        "en": "Music Box (start)",
+        "zh": "八音盒（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "bright"
+      ],
+      "duration": 0.628,
+      "audible": 0.586,
+      "desc": {
+        "en": "A bright metal comb",
+        "zh": "清亮的金属梳齿"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-musicbox-stop",
+      "sha256": "95c7b7139423efa85d7aeec7fa33461b5cfdeb159c5487afc5d6d7e4c0f7643c"
+    },
+    {
+      "id": "soft-musicbox-stop",
+      "file": "sounds/soft-musicbox-stop.wav",
+      "name": {
+        "en": "Music Box (stop)",
+        "zh": "八音盒（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "bright"
+      ],
+      "duration": 0.608,
+      "audible": 0.575,
+      "desc": {
+        "en": "A bright metal comb",
+        "zh": "清亮的金属梳齿"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-musicbox-start",
+      "sha256": "254729faa45b11f115a6ac82afa7e2206029e0d548ccd5401dcbeff24252a2d7"
+    },
+    {
+      "id": "soft-bowl-start",
+      "file": "sounds/soft-bowl-start.wav",
+      "name": {
+        "en": "Singing Bowl (start)",
+        "zh": "颂钵（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.631,
+      "audible": 0.602,
+      "desc": {
+        "en": "A wooden tap, a metal ring",
+        "zh": "木棒轻敲，有金属共振"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-bowl-stop",
+      "sha256": "a5f9837c31620e68366ad994f4df6866a5dd4cd7d829231efcd4b5cf7271d5e5"
+    },
+    {
+      "id": "soft-bowl-stop",
+      "file": "sounds/soft-bowl-stop.wav",
+      "name": {
+        "en": "Singing Bowl (stop)",
+        "zh": "颂钵（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.713,
+      "audible": 0.669,
+      "desc": {
+        "en": "A wooden tap, a metal ring",
+        "zh": "木棒轻敲，有金属共振"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-bowl-start",
+      "sha256": "4c019e1662457f1c5126632d1bf0d4101ba7e1bbd6c16d00ef93f01bc20d58dd"
+    }
+  ],
+  "notice": "Voxt's two-note cues are original synthesized sounds, part of Voxt (Apache License 2.0)."
+}

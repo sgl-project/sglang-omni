@@ -47,13 +47,14 @@ func (r *soundsRig) takePlays() []string {
 }
 
 // TestSoundSource: Sound offers Built-in, macOS and None. Built-in lists
-// the pairs this build has, Soft (Pebble → Nib) chosen by default; macOS
+// Voxt's own pairs, Kalimba chosen by default, then the family's this
+// build has; macOS
 // has a line per cue with its sound and Try, Pop and Tink until the user
 // picks; None turns the sounds off and hides the rest; Built-in again gives
 // the default pair back.
 func TestSoundSource(t *testing.T) {
 	r := newSoundsRig(t)
-	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
+	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Kalimba", "Thumb piano, plucked metal tines", "Wood", "Vibraphone", "Music Box", "Singing Bowl", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
 		if !has(r.tt, s) {
 			t.Fatalf("no %q: %q", s, firstTexts(r.tt))
 		}
@@ -78,7 +79,7 @@ func TestSoundSource(t *testing.T) {
 		t.Fatalf("None: %+v %q", r.settings.Get().Audio, firstTexts(r.tt))
 	}
 	click(t, r.tt, "Built-in")
-	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "" || s.StopSound != "" || !has(r.tt, "Pebble → Nib") {
+	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "" || s.StopSound != "" || !has(r.tt, "Kalimba") {
 		t.Errorf("Built-in again: %+v", s)
 	}
 }
@@ -156,8 +157,8 @@ func TestSoundsVolume(t *testing.T) {
 func TestSoundsTryAccent(t *testing.T) {
 	r := newSoundsRig(t)
 	r.trySound(startCue)
-	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"pebble"}) {
-		t.Fatal("Try did not play Pebble")
+	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"soft-kalimba-start"}) {
+		t.Fatal("Try did not play Kalimba")
 	}
 	r.ft.advance(previewMin - 1)
 	if r.sounds.previewing == "" {
@@ -168,7 +169,7 @@ func TestSoundsTryAccent(t *testing.T) {
 	if r.sounds.previewing == "" {
 		t.Fatal("the first preview's timer ended the second's accent")
 	}
-	r.ft.advance(previewMin)
+	r.ft.advance(567*time.Millisecond + cueMargin) // Kalimba's audible part and the margin, longer than previewMin
 	frames(r.tt)
 	if r.sounds.previewing != "" {
 		t.Fatal("the accent stayed")
@@ -229,7 +230,7 @@ func TestSoundsWhileRecording(t *testing.T) {
 		t.Fatalf("muted %v, state %s, muting %q, plays %q", r.muted(), r.sess.State, r.muting, plays)
 	}
 	r.feed("s1", session.Recognizing)
-	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"soft-kalimba-start:audible", "soft-kalimba-stop:audible"}) {
 		t.Fatalf("cues %v", got)
 	}
 }

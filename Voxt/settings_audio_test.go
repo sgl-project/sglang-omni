@@ -156,14 +156,14 @@ func TestRecordingCues(t *testing.T) {
 			t.Errorf("%s: %v", tc.name, got)
 		}
 	}
-	// The cues' sounds: the family's defaults, a chosen one, a system
-	// sound, none; a family sound this build lacks plays Voxt's.
+	// The cues' sounds: Voxt's Kalimba by default, a family sound chosen,
+	// a system sound, none; a family sound this build lacks plays Tink.
 	a, _, _ := newTestApp(t)
 	for _, tc := range []struct {
 		start, stop string
 		want        [2]string
 	}{
-		{"", "", [2]string{"pebble", "nib"}},
+		{"", "", [2]string{"soft-kalimba-start", "soft-kalimba-stop"}},
 		{"pebble", "system:Tink", [2]string{"pebble", "Tink"}},
 		{"none", "ghost", [2]string{"", "Tink"}},
 	} {
@@ -195,7 +195,7 @@ func TestSessionSounds(t *testing.T) {
 	a.mute.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []string{"pebble", "nib", "pebble"}; !slices.Equal(cues, want) {
+	if want := []string{"soft-kalimba-start", "soft-kalimba-stop", "soft-kalimba-start"}; !slices.Equal(cues, want) {
 		t.Fatalf("cues %q, want %q", cues, want)
 	}
 	// Other sounds: a system sound to start, a family sound to stop.

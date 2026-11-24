@@ -90,12 +90,62 @@
         "source_id": "built-in",
         "pairs": [
           {
+            "start": "soft-kalimba-start",
+            "stop": "soft-kalimba-stop",
+            "name": "Kalimba",
+            "sounds": "Thumb piano, plucked metal tines",
+            "play_label": "Play Kalimba",
+            "chosen": true,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-wood-start",
+            "stop": "soft-wood-stop",
+            "name": "Wood",
+            "sounds": "Soft mallets on wooden bars",
+            "play_label": "Play Wood",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-vibes-start",
+            "stop": "soft-vibes-stop",
+            "name": "Vibraphone",
+            "sounds": "Yarn mallets, a light shimmer",
+            "play_label": "Play Vibraphone",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-musicbox-start",
+            "stop": "soft-musicbox-stop",
+            "name": "Music Box",
+            "sounds": "A bright metal comb",
+            "play_label": "Play Music Box",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-bowl-start",
+            "stop": "soft-bowl-stop",
+            "name": "Singing Bowl",
+            "sounds": "A wooden tap, a metal ring",
+            "play_label": "Play Singing Bowl",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
             "start": "pebble",
             "stop": "nib",
             "name": "Soft",
             "sounds": "Pebble → Nib",
             "play_label": "Play Soft",
-            "chosen": true,
+            "chosen": false,
             "playing": false,
             "remaining": 0
           },

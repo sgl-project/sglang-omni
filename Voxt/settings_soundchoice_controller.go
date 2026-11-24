@@ -21,10 +21,16 @@ const (
 // soundPair is a start cue and a stop cue that go together.
 type soundPair struct{ key, start, stop string }
 
-// soundPairs are the built-in pairs, softest first: the family's sounds
-// made for the start and the stop of a recording. The first is the
-// events' default.
+// soundPairs are the built-in pairs: Voxt's own cues (internal/cues, the
+// ones users voted for, most votes first), then the family's sounds made
+// for the start and the stop of a recording, softest first. The first is
+// the events' default.
 var soundPairs = []soundPair{
+	{"kalimba", "soft-kalimba-start", "soft-kalimba-stop"},
+	{"wood", "soft-wood-start", "soft-wood-stop"},
+	{"vibes", "soft-vibes-start", "soft-vibes-stop"},
+	{"musicbox", "soft-musicbox-start", "soft-musicbox-stop"},
+	{"bowl", "soft-bowl-start", "soft-bowl-stop"},
 	{"soft", "pebble", "nib"},
 	{"switch", "clasp", "unclasp"},
 	{"clean", "dot", "settle"},
@@ -39,6 +45,16 @@ var systemPair = soundPair{"system", sounds.System("Pop"), sounds.System("Tink")
 // pairNameWithTranslator is a pair's name in the translator's language.
 func pairNameWithTranslator(translator *i18n.Translator, key string) string {
 	switch key {
+	case "kalimba":
+		return translator.T("Kalimba")
+	case "wood":
+		return translator.T("Wood")
+	case "vibes":
+		return translator.T("Vibraphone")
+	case "musicbox":
+		return translator.T("Music Box")
+	case "bowl":
+		return translator.T("Singing Bowl")
 	case "soft":
 		return translator.T("Soft")
 	case "switch":
