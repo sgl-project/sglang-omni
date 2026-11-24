@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
@@ -47,6 +49,7 @@ type livePolish struct {
 	cancel        context.CancelFunc
 	thinkOffUnder int
 	reclean       int // note (luojiaxuan): sentences cleaned again with the text left at Stop
+	llm           LLM // note (luojiaxuan): the session's language model when the live clean-up started: the fallback swap after Stop does not reach the worker
 
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -109,18 +112,26 @@ func (r *run) endLive() {
 	}
 }
 
-// note (luojiaxuan): newLivePolish starts the live clean-up of a Transcribe that cleans up
-// with a language model, unless the user has it wait for Stop
-// (settings.Transcribe.CleanAfterStop) or the glossary depends on the text
-// (more than compose.GlossaryAllUpTo terms: only the whole text picks its
-// terms); nil when it does not run.
+// note (luojiaxuan): newLivePolish starts the live clean-up of a Transcribe
+// that cleans up with a language model; nil when it does not run: the user
+// has it wait for Stop (settings.Transcribe.CleanAfterStop); the glossary
+// depends on the text (more than compose.GlossaryAllUpTo terms: only the
+// whole text picks its terms); a picture goes with the clean-up (each
+// request would send it again, and the card would show it while the user
+// speaks); or the language model is served on this Mac, where its requests
+// would share the GPU with the speech model while the user speaks and
+// beside the Final after Stop.
 func newLivePolish(r *run) *livePolish {
 	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() ||
-		r.svc.LLM == nil || len(r.glossary()) > compose.GlossaryAllUpTo {
+		r.svc.LLM == nil || len(r.glossary()) > compose.GlossaryAllUpTo || r.shot != nil || len(r.req.Images) > 0 {
+		return nil
+	}
+	if r.llmOnThisMac() {
+		r.logf("info", "no clean-up while recording: the language model %s runs on this Mac", r.svc.LLMInfo.ID)
 		return nil
 	}
 	ctx, cancel := context.WithCancel(r.llmCtx)
-	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, thinkOffUnder: r.thinkOffUnder(),
+	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, thinkOffUnder: r.thinkOffUnder(), llm: r.svc.LLM,
 		reclean: max(0, r.settings.Features.Transcribe.RecleanSentences)}
 	lp.cond = sync.NewCond(&lp.mu)
 	go func() {
@@ -132,6 +143,25 @@ func newLivePolish(r *run) *livePolish {
 	}()
 	go lp.work()
 	return lp
+}
+
+// note (luojiaxuan): llmOnThisMac says whether the session's language model
+// is served on this Mac: its address's host is a loopback one (Ollama, LM
+// Studio, a custom server here).
+func (r *run) llmOnThisMac() bool {
+	id, endpoint := r.svc.LLMInfo.ID, ""
+	for _, provider := range r.settings.Providers.LLM {
+		if provider.ID == id {
+			endpoint = provider.Endpoint
+			break
+		}
+	}
+	preset, err := llm.ProviderConfig{ID: id, BaseURL: endpoint}.Resolve()
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(preset.BaseURL)
+	return err == nil && core.IsLoopback(u.Hostname())
 }
 
 // note (luojiaxuan): stop gives the live clean-up up: Stop cleans the whole text.
@@ -273,11 +303,17 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 	}
 	job.parts = parts
 	for _, p := range parts {
+		if err := ctx.Err(); err != nil {
+			return job, err
+		}
 		lp.mu.Lock()
 		lp.asked++
 		lp.mu.Unlock()
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: job.chars}
-		resp, err := r.llmChatContext(ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
+		req := r.m.cfg.llmDeadlines(llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: job.chars},
+			utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout))
+		reqCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+		resp, err := lp.llm.Chat(reqCtx, req) // note (luojiaxuan): no picture and no snapshot change: newLivePolish runs only without a picture
+		cancel()
 		if err != nil {
 			return job, err
 		}

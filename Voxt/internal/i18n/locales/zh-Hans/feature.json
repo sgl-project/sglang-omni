@@ -21,7 +21,7 @@
   "Language model for Translate": "翻译使用的语言模型",
   "Makes lists and paragraphs when you dictate steps or a long text.": "说出步骤或长段内容时，整理成列表和段落。",
   "Clean up while you speak": "边说边整理",
-  "Sends each finished sentence to the language model as you speak, so the text is ready sooner after you stop. When off, nothing is sent until you stop.": "边说边把说完的句子发给语言模型，停止后更快出结果。关闭时，停止录音之前什么都不发送。",
+  "Sends each finished sentence to the language model as you speak, so the text is ready sooner after you stop, at the cost of more requests. Not with a language model on this Mac. When off, nothing is sent until you stop.": "边说边把说完的句子发给语言模型，停止后更快出结果，但请求会更多。本机的语言模型不会这样做。关闭时，停止录音之前什么都不发送。",
   "No language model is set up, so the text is typed as recognised, without clean-up.": "还没设置语言模型，会直接输入识别出的原文，不做整理。",
   "No shortcut yet. Add one to use this feature.": "还没有快捷键，添加一个才能用这个功能。",
   "No shortcut yet. Start from the menu bar, or add one.": "还没有快捷键。可以从菜单栏开始，或者添加一个。",

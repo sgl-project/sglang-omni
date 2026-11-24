@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -21,7 +22,7 @@ type liveLLM struct {
 	mu       sync.Mutex
 	reqs     []llm.Request
 	gates    map[string]chan struct{}
-	stuck    map[string]chan struct{} // note (luojiaxuan): inputs whose request ignores its cancellation until the channel closes
+	stuck    map[string]chan struct{} // note (luojiaxuan): inputs whose request ignores its cancellation until the channel closes, then answers
 	answered chan string
 }
 
@@ -45,9 +46,7 @@ func (m *liveLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	m.mu.Unlock()
 	if stuck != nil {
 		<-stuck
-		return llm.Response{}, ctx.Err()
-	}
-	if gate != nil {
+	} else if gate != nil {
 		select {
 		case <-gate:
 		case <-ctx.Done():
@@ -316,23 +315,37 @@ func TestLivePolishBlocks(t *testing.T) {
 	}
 }
 
-// note (luojiaxuan): TestLivePolishOff: with Clean up while you speak off, nothing goes to the
-// language model before Stop: neither the live text nor the speech model's
-// own stretches.
+// note (luojiaxuan): TestLivePolishOff: nothing goes to the language model
+// before Stop with Clean up while you speak off (neither the live text nor
+// the speech model's own stretches), when a picture goes with the clean-up,
+// or when the language model runs on this Mac.
 func TestLivePolishOff(t *testing.T) {
-	model := newLiveLLM()
-	r := newEarlyUnitRun(t, model, nil)
-	r.settings.Features.Transcribe.CleanAfterStop = true
-	r.hearLive("Hello there.")
-	r.hearPiece("Hello there.")
-	if r.live != nil || r.early != nil || len(model.requests()) != 0 {
-		t.Fatalf("the live clean-up ran with the switch off")
-	}
-	if _, _, err := r.cleanUpFirst("Hello there."); err != nil {
-		t.Fatal(err)
-	}
-	if n := len(model.requests()); n != 1 {
-		t.Errorf("%d requests, want 1 after Stop", n)
+	for _, c := range []struct {
+		name string
+		set  func(r *run)
+	}{
+		{"switch off", func(r *run) { r.settings.Features.Transcribe.CleanAfterStop = true }},
+		{"window picture", func(r *run) { r.shot = func() []byte { return []byte("jpeg") } }},
+		{"model on this Mac", func(r *run) { r.svc.LLMInfo.ID = "ollama" }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			model := newLiveLLM()
+			r := newEarlyUnitRun(t, model, nil)
+			c.set(r)
+			r.hearLive("Hello there.")
+			if c.name == "switch off" {
+				r.hearPiece("Hello there.")
+			}
+			if r.live != nil || r.early != nil || len(model.requests()) != 0 {
+				t.Fatalf("the clean-up ran while recording")
+			}
+			if _, _, err := r.cleanUpFirst("Hello there."); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(model.requests()); n != 1 {
+				t.Errorf("%d requests, want 1 after Stop", n)
+			}
+		})
 	}
 }
 
@@ -460,5 +473,37 @@ func TestLivePolishDoesNotWaitForAStuckRequest(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Stop waited for the stuck request")
+	}
+}
+
+// note (luojiaxuan): TestLivePolishStopsBetweenParts: a clean-up in two parts
+// (two languages) that Stop cancels during its first part never asks the
+// second, even when the first answers after the cancellation.
+func TestLivePolishStopsBetweenParts(t *testing.T) {
+	model := newLiveLLM()
+	stuck := make(chan struct{})
+	model.mu.Lock()
+	model.stuck["Hi there."] = stuck
+	model.mu.Unlock()
+	r := newEarlyUnitRun(t, model, nil)
+	r.settings.Features.Transcribe.RecleanSentences = 0
+	live := "Hi there. 你好。"
+	r.hearLive(live)
+	var flight *liveFlight
+	waitLiveFor(t, r, "the first part's request", func(lp *livePolish) bool { flight = lp.flight; return flight != nil })
+	if _, _, err := r.cleanUpFirst("Hello there, friend. 你好。"); err != nil {
+		t.Fatal(err)
+	}
+	close(stuck)
+	select {
+	case <-flight.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled clean-up did not end")
+	}
+	chars := utf8.RuneCountInString(live)
+	for _, req := range model.requests() {
+		if req.InputChars == chars && inputOf(req) != "Hi there." {
+			t.Errorf("after Stop the live clean-up asked its next part %q", inputOf(req))
+		}
 	}
 }
