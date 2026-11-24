@@ -41,6 +41,9 @@ type earlyClean struct {
 
 var errEarlyCleanDeadline = errors.New("early clean-up finalization deadline exceeded")
 
+// ExperimentalEarlyCleanWait is the former 250 ms bound for controlled experiments.
+const ExperimentalEarlyCleanWait = 250 * time.Millisecond
+
 type segJob struct {
 	sep, replaced string // what joined the stretch to the one before, and the stretch with the dictionary's aliases replaced
 }
@@ -229,10 +232,10 @@ func (e *earlyClean) fail(err error) {
 	e.mu.Unlock()
 }
 
-// drain waits up to EarlyCleanWait for reusable early work and gives its
-// completed prefix and the text after it. If the stable prefix does not
-// match, the whole text is cleaned as without the events. Only the
-// session goroutine calls it, after the stream's reader returned.
+// drain gives the completed prefix and the text after it. A positive
+// EarlyCleanWait bounds reusable work; zero or a negative value waits for
+// the worker as before. An unusable stable prefix is abandoned immediately.
+// Only the session goroutine calls it, after the stream's reader returned.
 func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, ok bool, deadline bool) {
 	defer e.cancel()
 	e.mu.Lock()
@@ -242,7 +245,14 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	}
 	fallback := e.broken || e.covered == "" || !strings.HasPrefix(text, e.covered)
 	e.closed = true
-	cancelWorker := fallback || len(e.segs) < len(e.jobs)-1
+	if fallback {
+		e.finalized = true
+		e.mu.Unlock()
+		e.cond.Broadcast()
+		e.cancel()
+		return nil, nil, "", nil, false, false
+	}
+	cancelWorker := len(e.segs) < len(e.jobs)-1
 	if cancelWorker {
 		e.finalized = true
 	}
@@ -251,28 +261,36 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	if cancelWorker {
 		e.cancel()
 	}
-	timer := time.NewTimer(e.r.m.cfg.EarlyCleanWait)
-	defer timer.Stop()
-	select {
-	case <-e.workerDone:
+	wait := e.r.m.cfg.EarlyCleanWait
+	if wait <= 0 {
+		<-e.workerDone
 		e.mu.Lock()
 		e.finalized = true
 		e.mu.Unlock()
-	case <-timer.C:
-		e.mu.Lock()
-		pending := len(e.segs) < len(e.jobs)
-		if !pending {
-			for _, segment := range e.segs {
-				if !segment.done {
-					pending = true
-					break
+	} else {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-e.workerDone:
+			e.mu.Lock()
+			e.finalized = true
+			e.mu.Unlock()
+		case <-timer.C:
+			e.mu.Lock()
+			pending := len(e.segs) < len(e.jobs)
+			if !pending {
+				for _, segment := range e.segs {
+					if !segment.done {
+						pending = true
+						break
+					}
 				}
 			}
+			deadline = pending
+			e.finalized = true
+			e.mu.Unlock()
+			e.cancel()
 		}
-		deadline = !fallback && pending
-		e.finalized = true
-		e.mu.Unlock()
-		e.cancel()
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

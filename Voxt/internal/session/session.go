@@ -433,9 +433,9 @@ type Config struct {
 	LLMStall   time.Duration // DefaultLLMStall
 	LLMPerChar time.Duration // DefaultLLMPerChar
 	LLMTimeout time.Duration // DefaultLLMTimeout
-	// EarlyCleanWait bounds how long finalization waits for unfinished early clean-up.
-	// Unfinished text goes on as recognised after it.
-	EarlyCleanWait time.Duration // DefaultEarlyCleanWait
+	// EarlyCleanWait opts in when positive; zero or negative disables the
+	// deadline, and New leaves it unset to preserve legacy waiting.
+	EarlyCleanWait time.Duration
 	WriteTimeout   time.Duration // DefaultWriteTimeout
 	ReadTimeout    time.Duration // reading the selection; DefaultReadTimeout
 	// RewriteReadTimeout is Rewrite's: it reads the selection while the
@@ -468,7 +468,6 @@ const (
 	DefaultLLMStall       = 5 * time.Second
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
-	DefaultEarlyCleanWait = 250 * time.Millisecond
 	DefaultWriteTimeout   = 60 * time.Second
 	DefaultReadTimeout    = 1500 * time.Millisecond
 	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's

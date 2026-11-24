@@ -103,7 +103,7 @@ func (r *run) cleanUpFirst(text string) (string, string, error) {
 		if len(parts) > 0 {
 			profile = parts[0].Profile()
 		}
-		return compose.JoinParts(parts, answers) + r.spoken(tail), profile, errors.Join(failed, errEarlyCleanDeadline)
+		return compose.JoinParts(parts, answers) + tail, profile, errors.Join(failed, errEarlyCleanDeadline)
 	}
 	if strings.TrimSpace(tail) == "" {
 		return compose.JoinParts(parts, answers), parts[0].Profile(), failed
