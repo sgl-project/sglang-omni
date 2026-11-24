@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine option handling without model weights or CUDA initialization."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,8 @@ from sglang.srt.model_executor.model_runner_components.weight_updater import (
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
+import sglang_omni.models.nemotron_transcribe.stages as stages
+import sglang_omni.models.weight_loader as weight_loader
 from sglang_omni.models.nemotron_transcribe.config import (
     EncoderCompileMode,
     NemotronTranscribePipelineConfig,
@@ -23,6 +27,7 @@ from sglang_omni.models.nemotron_transcribe.fp8_linear import (
     Fp8Linear,
     attach_fp8_linears,
 )
+from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeMTPDraft
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
@@ -41,6 +46,7 @@ def make_builder(
         compile_perception=compile_perception,
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
+        checkpoint_revision=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -62,6 +68,204 @@ def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["disable_radix_cache"] is True
+
+
+def test_engine_revision_selects_the_checkpoint_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An engine revision used to be dropped, so a pinned MTP launch loaded the latest snapshot."""
+    revision = "c17667641642c4265ff2b7037dd101b7d4567634"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "llm_config": {},
+                "eos_token_id": [11],
+                "perception": {},
+                "pe_encoder_config": {},
+            }
+        )
+    )
+    downloads: list[tuple[str, str | None]] = []
+
+    def download_snapshot(
+        repo_id: str, *, local_files_only: bool, revision: str | None
+    ) -> str:
+        downloads.append((repo_id, revision))
+        return str(tmp_path)
+
+    monkeypatch.setattr(weight_loader, "snapshot_download", download_snapshot)
+    monkeypatch.setattr(
+        stages.NemotronTranscribeEngineBuilder,
+        "build",
+        lambda builder, model_path, **options: builder.resolve_checkpoint(model_path),
+    )
+    factory_options = (
+        NemotronTranscribePipelineConfig(model_path="unused")
+        .stages[0]
+        .factory.model_dump(exclude_none=True)
+    )
+    stages.create_nemotron_transcribe_executor(
+        "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        server_args_overrides={"revision": revision},
+        **factory_options,
+    )
+    assert downloads == [("nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B", revision)]
+
+
+def test_mtp_draft_stays_unregistered_without_speculative_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides: dict[str, object] = {"enable_mixed_chunk": True}
+    builder.adjust_overrides(overrides)
+    assert overrides == {"enable_mixed_chunk": True}
+    assert builder.infra_kwargs() == {}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "num_steps", "num_draft_tokens"),
+    [
+        ({"speculative_algorithm": "NEXTN"}, 3, 4),
+        ({"speculative_algorithm": "EAGLE", "speculative_num_steps": 7}, 7, 8),
+        (
+            {
+                "speculative_algorithm": "nextn",
+                "revision": "c17667641642c4265ff2b7037dd101b7d4567634",
+                "speculative_draft_model_revision": (
+                    "c17667641642c4265ff2b7037dd101b7d4567634"
+                ),
+                "speculative_eagle_topk": 1,
+                "speculative_num_steps": 2,
+                "speculative_num_draft_tokens": 3,
+                "enable_mixed_chunk": False,
+            },
+            2,
+            3,
+        ),
+    ],
+    ids=["defaults", "eagle-alias-with-steps", "explicit-chain"],
+)
+def test_supported_mtp_configurations_serve_the_bundled_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: dict[str, object],
+    num_steps: int,
+    num_draft_tokens: int,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides = dict(requested)
+    builder.adjust_overrides(overrides)
+    assert overrides["speculative_draft_model_path"] == "/checkpoints/nemotron"
+    assert overrides["speculative_draft_model_revision"] is None
+    assert overrides["speculative_eagle_topk"] == 1
+    assert overrides["speculative_num_steps"] == num_steps
+    assert overrides["speculative_num_draft_tokens"] == num_draft_tokens
+    assert overrides["enable_mixed_chunk"] is False
+    assert builder.infra_kwargs() == {"supports_speculative_decoding": True}
+    assert (
+        engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
+        is NemotronTranscribeMTPDraft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, "set speculative_algorithm NEXTN"),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_draft_model_path": "org/external-draft",
+            },
+            "leave speculative_draft_model_path unset",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "revision": "target-revision",
+                "speculative_draft_model_revision": "draft-revision",
+            },
+            "set revision instead",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_eagle_topk": 4},
+            "speculative_eagle_topk must be 1, got 4",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_steps": 0},
+            "positive integer, got 0",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_num_steps": 3,
+                "speculative_num_draft_tokens": 8,
+            },
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_draft_tokens": 8},
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_multi_layer_eagle": True},
+            "enable_multi_layer_eagle is unsupported",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_mixed_chunk": True},
+            "enable_mixed_chunk off",
+        ),
+    ],
+    ids=[
+        "separate-draft-algorithm",
+        "external-draft",
+        "draft-revision",
+        "topk",
+        "steps",
+        "draft-tokens",
+        "draft-tokens-against-default-steps",
+        "multi-layer",
+        "mixed-chunk",
+    ],
+)
+def test_unsupported_mtp_configurations_name_the_setting_to_change(
+    monkeypatch: pytest.MonkeyPatch, requested: dict[str, object], message: str
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(dict(requested))
+    assert builder.infra_kwargs() == {}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
 
 
 def test_decoder_compilation_has_an_actionable_error() -> None:
