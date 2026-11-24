@@ -97,11 +97,19 @@ func TestModelsMemory(t *testing.T) {
 	if ps := a.omniRT.Processes(); len(ps) != 1 || ps[0].PID != pid {
 		t.Fatalf("processes %+v, loaded pid %d", ps, pid)
 	}
+	frames(tt)
+	englishRows := tt.Texts()
+	i18n.SetLocale("zh-Hans")
+	frames(tt)
+	chineseRows := tt.Texts()
+	i18n.SetLocale("en")
+	frames(tt)
+
 	pm.set(pid, 1536<<20)
 	timers.advance(memPoll)
 	frames(tt)
-	if has(tt, "Loaded · 1.5 GB in memory") {
-		t.Errorf("memory returned to the simplified rows: %v %q", a.modelMem, tt.Texts())
+	if got := tt.Texts(); !slices.Equal(got, englishRows) {
+		t.Errorf("memory changed the simplified rows: before %q, after %q", englishRows, got)
 	}
 	if len(a.modelMem) != 1 {
 		t.Errorf("memory %v", a.modelMem)
@@ -114,15 +122,13 @@ func TestModelsMemory(t *testing.T) {
 	pm.set(pid, 1<<30)
 	timers.advance(memPoll)
 	frames(tt)
-	if a.modelMem[models.ASRFast] != 1<<30 || has(tt, "Loaded") || has(tt, "1.0 GB in memory") {
-		t.Errorf("second measurement: %v %q", a.modelMem, tt.Texts())
+	if got := tt.Texts(); a.modelMem[models.ASRFast] != 1<<30 || !slices.Equal(got, englishRows) {
+		t.Errorf("second measurement: %v, before %q, after %q", a.modelMem, englishRows, got)
 	}
 	i18n.SetLocale("zh-Hans")
 	frames(tt)
-	for _, text := range []string{"已载入", "已载入 · 占用内存 1.0 GB", "占用内存 1.0 GB"} {
-		if has(tt, text) {
-			t.Errorf("Chinese memory text returned to the simplified rows: %q", tt.Texts())
-		}
+	if got := tt.Texts(); !slices.Equal(got, chineseRows) {
+		t.Errorf("memory changed the Chinese simplified rows: before %q, after %q", chineseRows, got)
 	}
 
 	// Another page stops the ticks; the next visit measures at once.
