@@ -83,6 +83,8 @@ class MiniCPMODuplexSampling(BaseModel):
     repetition_penalty: float = Field(default=1.05, ge=1)
     listen_prob_scale: float = Field(default=1.0, ge=0)
     force_listen_count: int = Field(default=3, ge=0)
+    quiet_unit_gain_limit: float = Field(default=1.0, ge=1)
+    "Scale a unit of input that stands above the session's noise floor up toward the level of normal speech, by at most this factor; 1 leaves the input as it arrives."
     max_new_tokens_per_unit: int = Field(default=20, ge=1)
     repetition_window_size: int = Field(default=512, ge=1)
     talker_temperature: float = Field(default=0.8, ge=0, le=2)

@@ -87,6 +87,7 @@ class SamplingConfig(TypedDict, total=False):
     listen_prob_scale: Annotated[float, Field(ge=0)]
     greedy: bool
     force_listen_count: Annotated[int, Field(ge=0)]
+    quiet_unit_gain_limit: Annotated[float, Field(ge=1)]
     max_new_tokens_per_unit: Annotated[int, Field(ge=1)]
     repetition_window_size: Annotated[int, Field(ge=1)]
     talker_temperature: Annotated[float, Field(ge=0, le=2)]
