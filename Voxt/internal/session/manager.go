@@ -288,10 +288,13 @@ func (m *Manager) Cancel(id string) {
 	m.mu.Lock()
 	r, snap := m.find(id)
 	ok := r != nil && snap.State.Live()
-	m.mu.Unlock()
 	if ok {
 		r.cancelled.Store(true)
+	}
+	m.mu.Unlock()
+	if ok {
 		r.cancel()
+		r.finalizeEarlyCleanup()
 	}
 }
 
@@ -301,7 +304,7 @@ func (m *Manager) Cancel(id string) {
 func (m *Manager) SkipLLM(id string) {
 	m.mu.Lock()
 	r, snap := m.find(id)
-	if r != nil && snap.State == Composing && snap.CanSkip {
+	if r != nil && snap.State == Composing && snap.CanSkip && r.cleanupChoice == cleanupUndecided {
 		r.skipped.Store(true)
 		r.llmStop()
 		select {
@@ -339,7 +342,7 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 		return
 	}
 	m.update(r, func(s *Snapshot) {
-		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() {
+		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() || r.cleanupChoice != cleanupUndecided || !r.cleanupDecisionOpenLocked() {
 			return
 		}
 		s.Thinking, r.think = t, t
@@ -431,6 +434,82 @@ func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
 	}
 	m.mu.Unlock()
 	return false
+}
+
+func (m *Manager) setCleanupDeadline(r *run, deadline time.Time) {
+	m.mu.Lock()
+	if !r.ended && r.cleanupDeadline.IsZero() {
+		r.cleanupDeadline = deadline
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) chooseCleanup(r *run, choice cleanupChoice) cleanupChoice {
+	m.mu.Lock()
+	if r.cancelled.Load() || r.ctx.Err() != nil || r.ended {
+		m.mu.Unlock()
+		return cleanupCancelled
+	}
+	if r.cleanupChoice != cleanupUndecided {
+		choice := r.cleanupChoice
+		m.mu.Unlock()
+		return choice
+	}
+	var snap *Snapshot
+	if m.cur == r {
+		snap = &m.snap
+	} else if m.bg == r {
+		snap = &r.own
+	} else {
+		m.mu.Unlock()
+		return cleanupCancelled
+	}
+	if choice == cleanupComplete && !r.cleanupDeadline.IsZero() && !r.now().Before(r.cleanupDeadline) {
+		choice = cleanupRaw
+	}
+	if r.skipped.Load() {
+		choice = cleanupRaw
+	}
+	if choice == cleanupComplete && r.rethink.Load() {
+		m.mu.Unlock()
+		return cleanupRetry
+	}
+	if !r.cleanupChoiceOpenLocked() || (choice != cleanupComplete && choice != cleanupRaw) {
+		m.mu.Unlock()
+		return cleanupCancelled
+	}
+	r.cleanupChoice = choice
+	var stop context.CancelFunc
+	snap.CanSkip = false
+	if choice == cleanupRaw {
+		r.skipped.Store(true)
+		snap.Draft = ""
+		stop = r.llmStop
+	}
+	m.rev++
+	snap.Rev = m.rev
+	s := snap.clone()
+	if m.bg == r {
+		m.backgroundPub.enqueue(publication{snapshot: s})
+	} else {
+		m.foregroundPub.enqueue(publication{snapshot: s})
+	}
+	m.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if choice == cleanupRaw {
+		r.finalizeEarlyCleanup()
+	}
+	return choice
+}
+
+func (r *run) cleanupDecisionOpenLocked() bool {
+	return r.cleanupChoiceOpenLocked() && (r.cleanupDeadline.IsZero() || r.now().Before(r.cleanupDeadline))
+}
+
+func (r *run) cleanupChoiceOpenLocked() bool {
+	return !r.ended && r.cleanupChoice == cleanupUndecided
 }
 
 // end makes r's session end in state st (once). Before the end is

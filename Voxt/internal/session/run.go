@@ -44,6 +44,10 @@ type run struct {
 	stopped  atomic.Bool
 	rethink  atomic.Bool
 	skipWake chan struct{}
+	// cleanupChoice and cleanupDeadline are guarded by m.mu. The choice
+	// closes the Skip/Rethink/fallback race once the owner selects output.
+	cleanupChoice   cleanupChoice
+	cleanupDeadline time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -103,11 +107,9 @@ type run struct {
 	// svcResolved is closed when the session's services are resolved
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
 	svcResolved chan struct{}
-	// early cleans the stretches the speech model finalised while the
-	// recording went on (asr.EventPiece), so Stop leaves only the tail
-	// (earlyclean.go); the Once makes it on the first stretch or use.
-	earlyOnce sync.Once
-	early     *earlyClean
+	// early cleans finalized speech stretches before Stop (earlyclean.go).
+	earlyMu sync.Mutex
+	early   *earlyClean
 }
 
 type capResult struct {

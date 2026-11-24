@@ -144,7 +144,9 @@ func cleanupLatencyConfig(clock *softDeadlineClock, autoFallback bool) func(*Con
 	return func(config *Config, settings *settings.Settings) {
 		config.Now = clock.Now
 		config.AfterFunc = clock.AfterFunc
-		config.CleanupLatency = CleanupLatencyPolicy{SoftDeadline: CandidateCleanupSoftDeadline, AutoFallback: autoFallback}
+		if autoFallback {
+			config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: CandidateCleanupSoftDeadline}
+		}
 		settings.Features.Transcribe.Enhance = true
 	}
 }
@@ -247,6 +249,19 @@ func TestCleanupSoftDeadlineStartsAtStopAcrossASRDelay(t *testing.T) {
 	}
 	model.Release()
 	waitCleanupSignal(t, model.returned, "cancelled cleanup response")
+}
+
+func TestCleanupSoftDeadlineExpiredDuringASRDoesNotStartCleanup(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	model := &fakeLLM{text: "cleanup must not start"}
+	provider := &clockAdvancingFile{fakeFile: fakeFile{text: "spoken words"}, clock: clock, delay: CandidateCleanupSoftDeadline + time.Millisecond}
+	h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
+	id := h.start()
+	h.speak(id, 3)
+	end := h.rec.waitFor(t, "raw result after late ASR", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
+	if end.Result != "spoken words" || len(model.requests()) != 0 || clock.timerCount() != 0 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "spoken words" {
+		t.Fatalf("end %+v, requests %d, timers %d, pasted %q", end, len(model.requests()), clock.timerCount(), h.text.pastes())
+	}
 }
 
 type clockAdvancingFile struct {
@@ -427,6 +442,29 @@ func TestCleanupSoftDeadlineManualSkipAndDisabledPolicy(t *testing.T) {
 			t.Fatalf("end %+v, pasted %q", end, h.text.pastes())
 		}
 	})
+
+	t.Run("non-positive value disables automatic fallback", func(t *testing.T) {
+		clock := newSoftDeadlineClock()
+		model := newCleanupGateLLM("", "", "cleaned result")
+		h := newHarness(t, &fakeFile{text: "spoken words"}, model, func(config *Config, settings *settings.Settings) {
+			config.Now, config.AfterFunc = clock.Now, clock.AfterFunc
+			config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: -time.Second}
+			settings.Features.Transcribe.Enhance = true
+		})
+		id := h.start()
+		h.speak(id, 3)
+		waitCleanupRequest(t, model, "cleanup request")
+		clock.Advance(CandidateCleanupSoftDeadline + time.Second)
+		if clock.timerCount() != 0 {
+			t.Fatalf("non-positive policy scheduled %d timers", clock.timerCount())
+		}
+		model.Release()
+		waitCleanupSignal(t, model.returned, "cleanup response")
+		end := h.rec.wait(t)
+		if end.Result != "cleaned result" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "cleaned result" {
+			t.Fatalf("end %+v, pasted %q", end, h.text.pastes())
+		}
+	})
 }
 
 func TestCleanupSoftDeadlineNoRawTranscriptDoesNotFabricateResult(t *testing.T) {
@@ -486,7 +524,7 @@ func TestCleanupSoftDeadlineAppliesOnlyToOrdinaryTranscribe(t *testing.T) {
 			clock := newSoftDeadlineClock()
 			h := newHarness(t, &fakeFile{text: "spoken words"}, &fakeLLM{hang: true}, func(config *Config, settings *settings.Settings) {
 				config.Now, config.AfterFunc = clock.Now, clock.AfterFunc
-				config.CleanupLatency = CleanupLatencyPolicy{SoftDeadline: CandidateCleanupSoftDeadline, AutoFallback: true}
+				config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: CandidateCleanupSoftDeadline}
 				config.Select = &fakeSelector{text: "selected text"}
 			})
 			id, err := h.m.Start(StartRequest{Kind: kind, Target: slack})
@@ -555,7 +593,11 @@ func TestEarlyCleanupExceedingSoftDeadlineUsesRaw(t *testing.T) {
 	}
 	model.Release()
 	waitCleanupSignal(t, model.returned, "late early cleanup response")
-	waitCleanupSignal(t, model.returned, "cancelled full cleanup response")
+	select {
+	case request := <-model.started:
+		t.Fatalf("cleanup started after Raw was committed: %+v", request)
+	default:
+	}
 }
 
 func TestEarlyCleanupPrefixMismatchUsesSameSoftDeadline(t *testing.T) {
@@ -617,7 +659,11 @@ func TestEarlyCleanupCancelledBeforeDeadlineCannotDeliver(t *testing.T) {
 	}
 	model.Release()
 	waitCleanupSignal(t, model.returned, "cancelled early cleanup")
-	waitCleanupSignal(t, model.returned, "cancelled whole-text cleanup")
+	select {
+	case request := <-model.started:
+		t.Fatalf("cleanup started after Cancel: %+v", request)
+	default:
+	}
 	for _, snapshot := range h.rec.all() {
 		if snapshot.ID == id && snapshot.State == Cancelled && snapshot.Result != "" {
 			t.Fatalf("cancelled early cleanup acquired a result: %+v", snapshot)

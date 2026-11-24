@@ -317,6 +317,61 @@ func TestEarlyCleanThinkingCountsReplacedText(t *testing.T) {
 	}
 }
 
+func TestEarlyCleanMatchingTextBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		tail   string
+	}{
+		{"English spaces", "hello world.", " Next sentence."},
+		{"Chinese without spaces", "今天下午开会，讨论发布计划。", "然后确认时间。"},
+		{"mixed Chinese and English", "今天 review the API, 然后提交。", "Please send the notes."},
+		{"punctuation boundaries", "Version 1.2: ship it—today!", " (after QA)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "clean"}
+			r := newEarlyUnitRun(t, model, nil)
+			r.hearPiece(tc.prefix)
+			waitEarly(t, model, 1)
+
+			parts, answers, tail, _, _, ok := r.earlyCleanup().drain(tc.prefix + tc.tail)
+			if !ok || len(parts) == 0 || len(answers) != len(parts) || tail != tc.tail {
+				t.Fatalf("drain ok=%t, parts=%d, answers=%d, tail=%q; want matching prefix and tail %q", ok, len(parts), len(answers), tail, tc.tail)
+			}
+		})
+	}
+}
+
+func TestEarlyCleanChainedAliasesAreNormalizedOnce(t *testing.T) {
+	terms := []store.Term{
+		{Term: "Alpha", Aliases: []string{"source"}, Enabled: true},
+		{Term: "Beta", Aliases: []string{"Alpha"}, Enabled: true},
+	}
+	raw := "Say source, then stop."
+	model := &fakeLLM{text: "cleaned once"}
+	h := newHarness(t, &fakeStreamer{final: raw, pieces: []string{raw}}, model, func(config *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+		s.Dictionary.Enabled = true
+		config.Glossary = func(context.Context) ([]store.Term, error) { return terms, nil }
+	})
+	id := h.start()
+	waitEarly(t, model, 1)
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	reqs := model.requests()
+	if end.Result != "cleaned once" || len(reqs) != 1 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "cleaned once" {
+		t.Fatalf("end %+v, requests %d, pasted %q", end, len(reqs), h.text.pastes())
+	}
+	var requestText strings.Builder
+	for _, message := range reqs[0].Messages {
+		requestText.WriteString(message.Content)
+		requestText.WriteByte('\n')
+	}
+	if !strings.Contains(requestText.String(), "Say Alpha, then stop.") || strings.Contains(requestText.String(), "Say Beta, then stop.") {
+		t.Fatalf("cleanup normalized the chained aliases more than once: %q", requestText.String())
+	}
+}
+
 func TestEarlyCleanLargeGlossary(t *testing.T) {
 	terms := make([]store.Term, 31)
 	for i := range terms {
@@ -541,14 +596,14 @@ func TestEarlyCleanDrainSkipAndRethink(t *testing.T) {
 			tc.act(h.m, id)
 			model.waitFinished(t, 0)
 			if tc.name == "rethink" {
-				model.waitStarted(t, 2)
-				model.finish(t, 2)
+				model.waitStarted(t, 1)
+				model.finish(t, 1)
 			}
 			end := h.rec.wait(t)
 			if tc.name == "skip" && end.Result != "one tail" {
 				t.Errorf("skip end %+v, want the raw transcript", end)
 			}
-			if tc.name == "rethink" && (end.Result != "整理三。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
+			if tc.name == "rethink" && (end.Result != "整理二。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
 				t.Errorf("rethink end %+v", end)
 			}
 		})

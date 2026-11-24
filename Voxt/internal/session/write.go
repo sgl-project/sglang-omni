@@ -305,7 +305,13 @@ func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, err
 // used-up plan is, so moving to another paid service without asking
 // would spend it unseen.
 func (r *run) useFallback(err error) bool {
-	return err != nil && r.svc.Fallback != nil && r.ctx.Err() == nil && !r.skipped.Load() && !r.stopped.Load() && !r.rethink.Load() && llm.Code(err) != llm.CodeUsageLimit
+	if err == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || llm.Code(err) == llm.CodeUsageLimit {
+		return false
+	}
+	r.m.mu.Lock()
+	canFallback := r.cleanupDecisionOpenLocked() && r.svc.Fallback != nil
+	r.m.mu.Unlock()
+	return canFallback
 }
 
 // swapFallback makes the fallback the session's model: later requests,
@@ -314,7 +320,7 @@ func (r *run) useFallback(err error) bool {
 func (r *run) swapFallback(err error) bool {
 	var failed, fallback Model
 	swapped := r.m.updateIf(r, func(s *Snapshot) bool {
-		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || r.svc.Fallback == nil {
+		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || !r.cleanupDecisionOpenLocked() || r.svc.Fallback == nil {
 			return false
 		}
 		failed, fallback = r.svc.LLMInfo, r.svc.FallbackInfo

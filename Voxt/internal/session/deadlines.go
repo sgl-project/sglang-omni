@@ -12,8 +12,8 @@ import (
 
 // CleanupLatencyPolicy optionally allows ordinary Transcribe to fall back to raw text after Stop.
 type CleanupLatencyPolicy struct {
-	SoftDeadline time.Duration
-	AutoFallback bool
+	// A non-positive value disables automatic fallback.
+	AutoFallbackAfter time.Duration
 }
 
 // CandidateCleanupSoftDeadline is a test candidate, not a default.
@@ -53,10 +53,32 @@ func TimedOut(err error) bool {
 // own (only those, the user's own), else the picture the user copied,
 // else the window's.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
-	return r.llmChatContext(r.llmCtx, req)
+	return r.llmChatContext(r.currentLLMContext(), req)
+}
+
+func (r *run) currentLLMContext() context.Context {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.llmCtx
 }
 
 func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
+	r.m.mu.Lock()
+	client, choice, deadlineAt := r.svc.LLM, r.cleanupChoice, r.cleanupDeadline
+	r.m.mu.Unlock()
+	if choice != cleanupUndecided {
+		return llm.Response{}, context.Canceled
+	}
+	if client == nil {
+		return llm.Response{}, errors.New("no language model is ready")
+	}
+	if !deadlineAt.IsZero() {
+		remaining := deadlineAt.Sub(r.now())
+		if remaining <= 0 {
+			return llm.Response{}, context.DeadlineExceeded
+		}
+		req.Timeout = min(req.Timeout, remaining)
+	}
 	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
 	hint := ""
@@ -79,7 +101,7 @@ func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Respo
 	if hint != "" {
 		r.m.update(r, func(s *Snapshot) { s.ImageHint = hint })
 	}
-	resp, err := r.svc.LLM.Chat(ctx, req)
+	resp, err := client.Chat(ctx, req)
 	if err == nil && resp.ImagesDropped && hint != "" {
 		// The model answered from the text alone: the card must not
 		// claim a picture went with the request.

@@ -56,7 +56,10 @@ type segResult struct {
 }
 
 func newEarlyClean(r *run) *earlyClean {
-	ctx, cancel := context.WithCancel(r.llmCtx)
+	r.m.mu.Lock()
+	llmCtx := r.llmCtx
+	r.m.mu.Unlock()
+	ctx, cancel := context.WithCancel(llmCtx)
 	e := &earlyClean{r: r, workerDone: make(chan struct{}), ctx: ctx, cancel: cancel}
 	e.cond = sync.NewCond(&e.mu)
 	go func() {
@@ -66,6 +69,24 @@ func newEarlyClean(r *run) *earlyClean {
 		e.mu.Unlock()
 	}()
 	return e
+}
+
+func (r *run) earlyCleanup() *earlyClean {
+	r.earlyMu.Lock()
+	defer r.earlyMu.Unlock()
+	if r.early == nil {
+		r.early = newEarlyClean(r)
+	}
+	return r.early
+}
+
+func (r *run) finalizeEarlyCleanup() {
+	r.earlyMu.Lock()
+	e := r.early
+	r.earlyMu.Unlock()
+	if e != nil {
+		e.finalize()
+	}
 }
 
 // stop gives the early clean-up up (the whole text is cleaned at Stop,
@@ -79,6 +100,15 @@ func (e *earlyClean) stop() {
 	e.cancel()
 }
 
+func (e *earlyClean) finalize() {
+	e.mu.Lock()
+	e.finalized = true
+	e.closed = true
+	e.cancel()
+	e.cond.Broadcast()
+	e.mu.Unlock()
+}
+
 // hearPiece takes the final text so far of a recording that finalises
 // stretches while it continues (asr.EventPiece): the stretch since the
 // last event goes to the early clean-up (Transcribe with the clean-up
@@ -87,8 +117,7 @@ func (r *run) hearPiece(stable string) {
 	if r.req.Kind != store.KindTranscribe || !r.transcribeCleanup() {
 		return
 	}
-	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
-	r.early.add(stable)
+	r.earlyCleanup().add(stable)
 }
 
 // add queues the stretch the text grew by since the last event. The
@@ -99,6 +128,9 @@ func (r *run) hearPiece(stable string) {
 func (e *earlyClean) add(stable string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.finalized || e.closed || e.ctx.Err() != nil {
+		return
+	}
 	if e.broken || !strings.HasPrefix(stable, e.stable) {
 		e.broken = true
 		e.cancel()
@@ -134,7 +166,10 @@ func (e *earlyClean) work() {
 	case <-r.ctx.Done():
 		return
 	}
-	if r.svc.LLM == nil {
+	r.m.mu.Lock()
+	client, llmInfo := r.svc.LLM, r.svc.LLMInfo
+	r.m.mu.Unlock()
+	if client == nil {
 		return // no clean-up at all: the text goes on as recognised
 	}
 	// Later text can add terms to a large glossary, so only whole-text
@@ -145,7 +180,7 @@ func (e *earlyClean) work() {
 	}
 	thinkOffUnder := 0
 	for _, provider := range r.settings.Providers.LLM {
-		if provider.ID == r.svc.LLMInfo.ID {
+		if provider.ID == llmInfo.ID {
 			thinkOffUnder = provider.Generation.ThinkingOffUnder
 			break
 		}
@@ -202,6 +237,9 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 			e.mu.Unlock()
 		}
 		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: chars}
+		if !r.cleanupMayContinue() {
+			return
+		}
 		resp, err := r.llmChatContext(e.ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
 		if e.ctx.Err() != nil {
 			return

@@ -415,7 +415,7 @@ type Config struct {
 	NewID func() string
 	// AfterFunc schedules a callback; the returned function stops it.
 	AfterFunc func(time.Duration, func()) func() bool
-	// CleanupLatency is opt-in; its zero value preserves the current wait.
+	// CleanupLatency is opt-in; non-positive thresholds preserve the current wait.
 	CleanupLatency CleanupLatencyPolicy
 
 	// Limits (0: the defaults).
