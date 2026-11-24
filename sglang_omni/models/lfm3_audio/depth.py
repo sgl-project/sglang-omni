@@ -23,7 +23,7 @@ from transformers.generation.logits_process import (
     TopKLogitsWarper,
 )
 
-from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_fused
+from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
 
 class SpeechSampler(str, Enum):

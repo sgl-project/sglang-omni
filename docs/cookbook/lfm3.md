@@ -90,19 +90,19 @@ Speech frames are drawn by one of two samplers, set with `speech_sampler` under 
 
 With `seeded`, each request's speech state lives on the GPU, so the next decode step launches before the host reads the last one (`enable_async_decode`, on by default).
 
-SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100, without prefill coalescing:
+SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100, with the default config (`seeded` rows: mean of two runs):
 
 | Concurrency | Sampler | WER | Latency p50 | RTF | Throughput |
 |---|---|---|---|---|---|
-| 8 | exact | 0.89% | 0.95 s | 0.22 | 8.4 req/s |
-| 8 | seeded | 0.87% | 0.58 s | 0.14 | 13.5 req/s |
-| 32 | exact | 0.95% | 3.01 s | 0.69 | 10.5 req/s |
-| 32 | seeded | 0.89% | 1.01 s | 0.23 | 31.0 req/s |
-| 64 | seeded | 0.90% | 1.51 s | 0.35 | 41.3 req/s |
+| 8 | exact | 0.93% | 0.97 s | 0.22 | 8.2 req/s |
+| 8 | seeded | 0.91% | 0.62 s | 0.14 | 12.8 req/s |
+| 32 | exact | 0.90% | 2.67 s | 0.61 | 11.7 req/s |
+| 32 | seeded | 0.97% | 0.92 s | 0.21 | 33.9 req/s |
+| 64 | seeded | 0.94% | 1.36 s | 0.32 | 45.7 req/s |
 
-LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32.
+LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32 (measured before prefill coalescing).
 
-The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). By default new requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves 46.3 req/s (p50 1.33 s) instead of 40.5, and at 8 it costs about 3% (13.1 req/s). `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` under `stages.generation.factory` change it; `prefill_coalesce_requests: 0` turns it off.
+The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). New requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves about 46 instead of 40 req/s, and at 8 it costs about 3%. `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` under `stages.generation.factory` change it; `prefill_coalesce_requests: 0` turns it off.
 
 ## Limitations
 
