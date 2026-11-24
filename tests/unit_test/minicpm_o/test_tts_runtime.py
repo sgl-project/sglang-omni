@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Vocoder sessions: shared per-voice stream caches, turn resets and failed opens."""
 
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +15,10 @@ from sglang_omni.models.minicpm_o.components.tts_runtime import (
     MiniCPMOVocoderRuntime,
     SynthesisRequest,
 )
+from sglang_omni.models.minicpm_o.native_stages import SpeechHooks
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.proto.session import SessionIdentity, TimedChunk
+from sglang_omni.scheduling.session import SessionAppend, SessionContext
 from sglang_omni.scheduling.speaker_cache import estimate_cache_bytes
 
 PRE_LOOKAHEAD = 3
@@ -161,3 +166,73 @@ def test_turn_reset_restores_untouched_prompt_caches() -> None:
         )
     )
     assert state.caches[0]["estimator_attention_cache"].sum() == 0
+
+
+@pytest.mark.parametrize("stream_decode_chunks", [False, True])
+def test_speech_unit_pcm_and_final_markers(
+    stream_decode_chunks: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = MiniCPMOVocoderRuntime(
+        FakeCode2Wav(), max_state_bytes_per_session=1 << 30, max_open_sessions=2
+    )
+    hooks = SpeechHooks(
+        runtime,
+        b"voice",
+        gather_window_ms=0,
+        stream_decode_chunks=stream_decode_chunks,
+    )
+    session_identity = SessionIdentity("session")
+    request = OmniRequest(inputs=None)
+    hooks.open(session_identity, request)
+
+    stream_batch = Mock(wraps=runtime.token2wav.stream_batch)
+    monkeypatch.setattr(runtime.token2wav, "stream_batch", stream_batch)
+    outputs: list[tuple[TimedChunk, int]] = []
+
+    def emit(chunk: TimedChunk) -> None:
+        outputs.append((chunk, stream_batch.call_count))
+
+    payload = StagePayload(
+        request_id="unit",
+        request=request,
+        data={
+            "ends_previous_turn": False,
+            "end_of_turn": True,
+            "codec_tokens": [1] * (2 * CODEC_CHUNK_SIZE),
+            "speech_turn_start": False,
+            "text": "hello",
+            "is_speech_cut": True,
+            "is_listen": False,
+        },
+    )
+    append = SessionAppend(
+        chunk=TimedChunk("audio", 0, 1000, 1, None, eos=True),
+        payload=payload,
+        context=SessionContext(
+            session_identity=session_identity, cancelled=Event(), emit=emit
+        ),
+    )
+
+    assert hooks.append_batch([append]) == [payload]
+    assert payload.data is None
+    assert [round_count for _, round_count in outputs] == (
+        [1, 2, 3] if stream_decode_chunks else [3]
+    )
+    chunks = [chunk for chunk, _ in outputs]
+    assert b"".join(chunk.payload["pcm"] for chunk in chunks) == bytes(600)
+    assert "".join(chunk.payload["text"] for chunk in chunks) == "hello"
+    assert [chunk.seq for chunk in chunks] == [1] * len(chunks)
+    assert all(chunk.turn == 0 for chunk in chunks)
+    assert sum(chunk.duration_ms for chunk in chunks) == pytest.approx(12.5)
+    assert chunks[0].t_start_ms == 0
+    for previous, current in zip(chunks, chunks[1:]):
+        assert current.t_start_ms == pytest.approx(
+            previous.t_start_ms + previous.duration_ms
+        )
+        assert not previous.eos
+        assert not previous.payload["end_of_turn"]
+        assert not previous.payload["is_speech_cut"]
+    assert chunks[-1].eos
+    assert chunks[-1].payload["end_of_turn"]
+    assert chunks[-1].payload["is_speech_cut"]
+    assert not runtime.sessions["session"].has_pending_turn

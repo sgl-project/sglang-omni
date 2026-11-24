@@ -123,6 +123,10 @@ class MiniCPMODuplexSpeech(BaseModel):
     enable_chunk_cuda_graph: bool = True
     "Replay the flow's chunk loop from CUDA graphs captured at startup; false decodes every chunk eagerly."
     # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
+    stream_decode_chunks: bool = False
+    """Deliver playable PCM before the final decode round of a speech unit."""
+    deliver_partial_audio: bool = False
+    """Publish audio to realtime clients before an input unit finishes."""
     gather_window_ms: float = Field(default=FORWARD_FLOOR_MS / 2, ge=0)
     "How long an idle speech stage waits for other sessions' units to decode them together; 0 decodes what is ready."
 
@@ -202,6 +206,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                 kwargs["n_timesteps"] = self.speech.n_timesteps
                 kwargs["enable_chunk_cuda_graph"] = self.speech.enable_chunk_cuda_graph
                 kwargs["gather_window_ms"] = self.speech.gather_window_ms
+                kwargs["stream_decode_chunks"] = self.speech.stream_decode_chunks
             else:
                 pass
             return kwargs

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -121,11 +121,14 @@ class MiniCPMOVocoderRuntime:
         return state
 
     def synthesize_batch(
-        self, requests: list[SynthesisRequest]
+        self,
+        requests: list[SynthesisRequest],
+        *,
+        emit_audio_chunk: Callable[[int, bytes], None] | None = None,
     ) -> Iterator[tuple[int, np.ndarray | None]]:
         """Synthesize one unit of each of several distinct sessions, round by round.
 
-        Yields each request's index and waveform as soon as its last chunk is decoded.
+        With a callback, sends nonfinal PCM immediately and yields the final waveform.
         """
         states = [self.sessions[request.session_id] for request in requests]
         plans: list[list[tuple[list[int], bool]]] = []
@@ -187,10 +190,15 @@ class MiniCPMOVocoderRuntime:
                     ]
                 )
                 for index, (pcm, caches) in zip(forward_indices, decoded, strict=True):
-                    pcm_chunks[index].append(pcm)
                     states[index].caches = caches
-                    if round_index == len(plans[index]) - 1:
+                    round_count = len(plans[index])
+                    if round_index == round_count - 1:
+                        pcm_chunks[index].append(pcm)
                         yield index, finish(index)
+                    elif emit_audio_chunk is None:
+                        pcm_chunks[index].append(pcm)
+                    elif pcm:
+                        emit_audio_chunk(index, pcm)
                     else:
                         pass
 

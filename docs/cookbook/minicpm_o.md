@@ -79,6 +79,8 @@ Those pixel options do not bound the initial native-resolution allocation.
 
 MiniCPM-o 4.5 also serves live full-duplex voice and video calls on `/v1/realtime`. Launching, settings, the browser demo, the protocol and benchmarking are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-minicpm-o).
 
+Set `--speech.stream_decode_chunks true --speech.deliver_partial_audio true` with the session variant to let realtime clients receive synthesized audio before the input unit finishes. Both options default to false. Early audio may already have reached the client if the rest of the unit fails.
+
 ## Realtime-Venus
 
 [Realtime-Venus](https://huggingface.co/inclusionAI/Realtime-Venus) is a pair of MiniCPM-o 4.5 fine-tunes from inclusionAI: Realtime-Venus-Omni for audio-visual full-duplex calls and Realtime-Venus-Audio for audio-only chat and calls. Both keep the MiniCPM-o weight layout and serve with the commands on this page.
