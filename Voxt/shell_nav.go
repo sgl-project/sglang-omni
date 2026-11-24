@@ -270,15 +270,8 @@ func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 						} else {
 							item.TextColor(k.G[8])
 						}
-						if p.Badge != "" || p.Testing {
-							item.Children(func() {
-								if p.Testing {
-									ui.Text(c, i18n.T("Testing")).FontSize(px(t, fsMicro)).FontWeight(400).TextColor(k.Text2).SingleLine()
-								}
-								if p.Badge != "" {
-									ui.Badge(c, p.Badge)
-								}
-							})
+						if p.Badge != "" {
+							item.Children(func() { ui.Badge(c, p.Badge) })
 						}
 					}
 				}

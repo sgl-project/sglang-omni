@@ -113,21 +113,3 @@ func TestStartHidden(t *testing.T) {
 		t.Error("a window that would not come back")
 	}
 }
-
-// TestSnippetsTesting: the sidebar says Snippets is still being tested,
-// in small text on its item only.
-func TestSnippetsTesting(t *testing.T) {
-	nav := buildNavViewState(i18n.NewTranslator("en"), navViewStateInput{Current: "/home"})
-	for _, g := range nav.Groups {
-		for _, p := range g.Pages {
-			if p.Testing != (p.Path == "/snippets") {
-				t.Errorf("%s: testing %v", p.Path, p.Testing)
-			}
-		}
-	}
-	_, _, tt := newTestApp(t)
-	frames(tt)
-	if !has(tt, "Testing") {
-		t.Error("the sidebar does not say Testing")
-	}
-}

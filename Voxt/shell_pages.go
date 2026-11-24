@@ -47,10 +47,6 @@ var navGroups = []navGroup{
 	}},
 }
 
-// testingPages are features still being tested: their sidebar items say
-// "Testing" in small text after the title.
-var testingPages = map[string]bool{"/snippets": true}
-
 // settingsPath opens the settings dialog (navigate), at the section shown
 // last.
 const settingsPath = "/settings"

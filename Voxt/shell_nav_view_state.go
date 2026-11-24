@@ -14,10 +14,9 @@ import (
 type navPageViewState struct {
 	Path     string `json:"path"`
 	Title    string `json:"title"`
-	Keys     string `json:"keys,omitempty"`    // its shortcut for the tooltip, "⌘1"
-	Badge    string `json:"badge,omitempty"`   // a count or state after the title
-	Testing  bool   `json:"testing,omitempty"` // "Testing" in small text after the title
-	Selected bool   `json:"selected"`          // the router shows it (the rail's rule)
+	Keys     string `json:"keys,omitempty"`  // its shortcut for the tooltip, "⌘1"
+	Badge    string `json:"badge,omitempty"` // a count or state after the title
+	Selected bool   `json:"selected"`        // the router shows it (the rail's rule)
 }
 
 // navGroupViewState is one section of the sidebar; the first has no
@@ -109,7 +108,6 @@ func buildNavViewState(translator *i18n.Translator, input navViewStateInput) nav
 				Title:    pageTitleFor(translator, p.path),
 				Keys:     pageKeys(p.path),
 				Badge:    input.Badges[p.path],
-				Testing:  testingPages[p.path],
 				Selected: !input.SettingsOpen && input.Current == p.path,
 			})
 		}
