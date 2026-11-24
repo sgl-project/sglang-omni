@@ -14,6 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Remote language models with a key: the Model menu lists the service's models** (#4568): the menu of OpenAI, Anthropic and the other services with a key showed only the names built into Voxt, so a newer model had to be typed under "Other model…". With a key typed or saved, Voxt now asks the service which models it has and lists the ones that chat, the newest first. With no key, or no answer, the menu is the built-in list, which also gains the current OpenAI and Anthropic models.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
@@ -32,6 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **带 key 的远程语言模型：“模型”菜单列出服务商现有的模型**（#4568）：OpenAI、Anthropic 等带 key 的服务，菜单里以前只有 Voxt 内置的几个名字，新模型要在“其他模型…”里手打。现在只要输入或保存了 key，Voxt 会向服务商要模型列表，只留能聊天的模型，新的排在前面。没有 key 或没拿到列表时，菜单还是内置的名字；内置列表也补上了 OpenAI 和 Anthropic 现在的模型。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 
 #### 修复
