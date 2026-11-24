@@ -120,6 +120,22 @@ sgl-omni serve \
 
 This configuration selects Ascend attention with 128-token pages, eager Thinker decode and Talker graph replay. Wait for `/health` before opening a WebSocket session.
 
+#### Ascend validation
+
+On November 24, 2026, the Full-Duplex-Bench v1.0 run used all 727 recordings with VoiceChat commit `fca77f42d0eb352054b883ac3a96139b1100f9ab` and the SGLang v0.5.23 backport `42ece9a87014387a0291e178e0832fecf427937e`. Each session ran on one 64 GiB Ascend910_9362, with physical cards 10 and 11 recording separate groups. Metrics include audio delivery and playout.
+
+| Metric | Ascend result |
+| --- | ---: |
+| Takes the turn during a synthetic pause | 4.4% (6/137) |
+| Takes the turn during a natural pause | 31.9% (69/216) |
+| Takes the turn after the user finishes | 79.8% (95/119) |
+| Mean latency on successful turns | 1.722 s |
+| Responds after interruption | 99.5% (199/200) |
+| Mean response latency after interruption | 3.233 s |
+| Response relevance after interruption | 4.146/5 (local Qwen3.8-27B judge, 199 scored) |
+
+The 55 backchannel samples had a mean frequency of 0.0517 and a mean TOR of 0.2909. The model unit suite reported 247 passed and 70 skipped, with CUDA-only cases among the skips. Offline and realtime smoke tests passed for both supplied recordings, including 514 and 376 realtime audio units respectively.
+
 ## Offline request parameters
 
 | Parameter | Effect |
