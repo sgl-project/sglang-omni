@@ -89,9 +89,9 @@ func TestHomeDemoHidesFeatureTry(t *testing.T) {
 	}
 }
 
-// TestLookingBackNumbersWhole: Looking back's cards never cut a number or
-// its unit. In a window too narrow for them the row wraps or a card takes
-// more of it: "226 characters a minute" was "2… characters a min…".
+// TestLookingBackNumbersWhole: Looking back's cards never cut a number,
+// its unit or its label ("226 characters a minute" was "2… characters a
+// min…"), and they go four in a row while they fit, else two by two.
 func TestLookingBackNumbersWhole(t *testing.T) {
 	host, err := loadMeetingDemoHost("testdata/meeting")
 	if err != nil {
@@ -110,10 +110,38 @@ func TestLookingBackNumbersWhole(t *testing.T) {
 		return n.W, u.W
 	}
 	number, unit := widths() // the demo's own window: room for all four
-	for _, width := range []int{560, 627, 735} {
-		tester.SetSize(width, 700)
+	label := func() float32 {
+		t.Helper()
+		l, ok := tester.Find("Time spoken")
+		if !ok {
+			t.Fatalf("label cut: %q", tester.Texts())
+		}
+		return l.W
+	}
+	whole := label()
+	// rows is how many rows the four cards take, by their numbers' tops.
+	rows := func() int {
+		t.Helper()
+		tops := map[float32]bool{}
+		for _, text := range []string{"2,220", "47", "226", "9"} {
+			r, ok := tester.Find(text)
+			if !ok {
+				t.Fatalf("no %q: %q", text, tester.Texts())
+			}
+			tops[r.Y] = true
+		}
+		return len(tops)
+	}
+	for _, test := range []struct{ width, rows int }{{400, 2}, {480, 2}, {560, 2}, {627, 2}, {700, 1}, {735, 1}} {
+		tester.SetSize(test.width, 700)
 		if n, u := widths(); n < number-1 || u < unit-1 { // a pixel of rounding
-			t.Errorf("%d wide: the speed is %.0f and its unit %.0f wide, want %.0f and %.0f", width, n, u, number, unit)
+			t.Errorf("%d wide: the speed is %.0f and its unit %.0f wide, want %.0f and %.0f", test.width, n, u, number, unit)
+		}
+		if l := label(); l < whole-1 {
+			t.Errorf("%d wide: Time spoken is %.0f wide, want %.0f", test.width, l, whole)
+		}
+		if got := rows(); got != test.rows {
+			t.Errorf("%d wide: the cards take %d rows, want %d", test.width, got, test.rows)
 		}
 	}
 }

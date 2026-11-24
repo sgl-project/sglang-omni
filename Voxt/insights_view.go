@@ -94,7 +94,7 @@ func homeInsightsSection(c *ui.Context, state *homeViewState, actions homeAction
 						for i, stat := range pair {
 							fillCard(c.Key(i)).Gap(px(t, 2)).Grow(1).Padding(px(t, sp3), px(t, sp4)).Children(func() {
 								insightsParts(c, stat.Parts, px(t, fsTitle), px(t, fsCaption), k.Text, k.Text2)
-								ui.Text(c, stat.Label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().NoWrap()
+								ui.Text(c, stat.Label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().NoWrap().AlignSelf(ui.Start)
 							})
 						}
 					})
