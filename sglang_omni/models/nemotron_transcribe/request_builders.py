@@ -236,6 +236,7 @@ def make_scheduler_adapters(
                     "prompt_tokens": len(data.prompt_token_ids or []),
                     "completion_tokens": len(output_ids),
                 },
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

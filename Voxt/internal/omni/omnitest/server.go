@@ -234,11 +234,13 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		b, _ := json.Marshal(v)
 		_ = c.Write(ctx, websocket.MessageText, b)
 	}
-	samples, next, language, prompt := 0, 1600, "", ""
+	samples, next, language := 0, 1600, ""
+	fields := map[string]string{}
 	segs := 0
 	stalled := false
 	defer func() {
-		record(o, Record{Event: "live", Host: r.Host, Samples: samples, Fields: map[string]string{"language": language, "prompt": prompt}})
+		fields["language"] = language
+		record(o, Record{Event: "live", Host: r.Host, Samples: samples, Fields: fields})
 		// The runtime forwards stderr to its log: a test can wait for
 		// the session's end instead of polling the record file.
 		fmt.Fprintf(os.Stderr, "live session ended: %d samples\n", samples)
@@ -253,16 +255,21 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var ev struct {
-			Type    string         `json:"type"`
-			Audio   string         `json:"audio"`
-			Session map[string]any `json:"session"`
+			Type        string         `json:"type"`
+			Audio       string         `json:"audio"`
+			StartSample int            `json:"start_sample"`
+			Session     map[string]any `json:"session"`
 		}
 		_ = json.Unmarshal(b, &ev)
 		switch ev.Type {
 		case "session.update":
 			language, _ = ev.Session["language"].(string)
-			prompt, _ = ev.Session["prompt"].(string)
-			send(map[string]any{"type": "transcription_session.updated"})
+			for _, k := range []string{"prompt", "final_prompt"} {
+				if v, ok := ev.Session[k].(string); ok {
+					fields[k] = v
+				}
+			}
+			send(map[string]any{"type": "transcription_session.updated", "session_id": "fake-session"})
 			stalled = o.LiveStall
 		case "input_audio_buffer.append":
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)
@@ -283,6 +290,12 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 				segs++
 				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
+		case "input_audio_buffer.final_start":
+			start := strconv.Itoa(ev.StartSample)
+			if fields["final_start"] != "" {
+				start = fields["final_start"] + "," + start
+			}
+			fields["final_start"] = start
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":

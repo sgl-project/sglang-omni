@@ -210,6 +210,22 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
                 commit, cancel, policy, caches, draft_caches);
 }
 
+void DFlashDraft::Prefill(const Qwen3Decoder &target,
+                          const mx::array &embeddings,
+                          std::vector<KVCache> &caches,
+                          std::vector<KVCache> &draft_caches) const {
+  std::vector<mx::array> aux_hidden_states;
+  const mx::array hidden =
+      target.Forward(embeddings, caches, aux_layers_, &aux_hidden_states);
+  AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+  std::vector<mx::array> evaluated = {hidden};
+  for (const KVCache &cache : draft_caches) {
+    const auto arrays = cache.Arrays();
+    evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
+  }
+  mx::eval(evaluated);
+}
+
 DraftStatistics DFlashDraft::Decode(
     const Qwen3Decoder &target, const mx::array &embeddings,
     const std::vector<int> &guessed_ids, int max_new_tokens,
