@@ -26,19 +26,31 @@ jobs:
     runs-on: [self-hosted, h100]
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the protected host launcher
+        uses: actions/checkout@v4
         with:
+          repository: sgl-project/sglang-omni
+          ref: main
+          path: control
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Checkout code under test
+        uses: actions/checkout@v4
+        with:
+          path: subject
           persist-credentials: false
 
       - name: Run CPU partitions
+        working-directory: control
         shell: bash
-        run: bash .github/scripts/run_cpu_shards.sh 6
+        run: GITHUB_WORKSPACE="$GITHUB_WORKSPACE/subject" bash .github/scripts/run_cpu_shards.sh 6
 
-      - name: Remove remaining containers from this job
-        if: always()
+      - name: Collect and remove remaining CPU partitions
+        if: always() && hashFiles('control/.github/scripts/collect_cpu_shards.sh') != ''
+        working-directory: control
         shell: bash
-        run: |
-          docker ps -aq --filter "label=omni.cpu-job=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" | xargs -r docker rm -f
+        run: bash .github/scripts/collect_cpu_shards.sh
 
       - name: Upload partition logs
         if: always()

@@ -3,17 +3,23 @@ set -euo pipefail
 partition=$1
 count=$2
 shift 2
+source /ci-source/.github/scripts/pin_to_ci_cpuset.sh
+repository=${GITHUB_REPOSITORY##*/}
+workspace="/__w/$repository/$repository"
+mkdir -p "$workspace"
+cd "$workspace"
 # The runner checkout is read-only; pytest and its child processes get a private tree.
 git -c safe.directory=/ci-source clone -q --no-local /ci-source .
 test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 export OMNI_CI_STAGE_LABEL="unit-test-$partition" RUNNER_TEMP=/tmp/omni-runner
+# Note (0xtoward): CUDA-linked packages still need the image libraries when no GPU is mapped.
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/usr/local/cuda/compat"
 export HOME=/github/home HF_HOME=/github/home/.cache/huggingface
 export XDG_CACHE_HOME="$OMNI_CI_HOME/.cache" UV_CACHE_DIR=/data/omni-ci/uv-cache
 export SGLANG_CACHE_DIR=/data/omni-ci/sglang-cache SGLANG_JIT_CACHE_DIR=/data/omni-ci/sglang-cache/jit
 export FLASHINFER_WORKSPACE_BASE=/root FLASHINFER_JIT_DEBUG=0 SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0
 export HF_HUB_DISABLE_XET=0 HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
 export OMNI_CI_PYTHON="$OMNI_CI_HOME/omni/bin/python" PYTHONPATH="$PWD"
-source .github/scripts/pin_to_ci_cpuset.sh
 bash .github/scripts/validate_omni_ci_home.sh
 ln -sfn "$OMNI_CI_HOME/omni" omni
 if ! bash .github/scripts/validate_omni_env_reusable.sh omni; then
@@ -23,6 +29,7 @@ fi
 export SGLANG_OMNI_ROUTER_BIN
 SGLANG_OMNI_ROUTER_BIN=$(bash .github/scripts/prepare_rust_router.sh path)
 source omni/bin/activate
+python -c 'import torch; assert torch.cuda.device_count() == 0'
 exec timeout --kill-after=15s 30m bash .github/scripts/run_flaky_pytest.sh \
     pytest "$@" -v -m "not benchmark and not accelerator" -x \
     -p scripts.ci.utils.pytest_partition --auto-partition-id "$partition" \

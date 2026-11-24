@@ -12,7 +12,7 @@ prefix="omni-cpu-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$prefix"
 label="omni.cpu-job=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
 image=hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
 
-masks=$(python3 - "$count" <<'PY'
+masks=$(python3 -I - "$count" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -46,38 +46,47 @@ PY
 )
 mapfile -t masks <<< "$masks"
 names=()
-cleanup() {
-    if (( ${#names[@]} )); then
-        docker rm -f "${names[@]}" >/dev/null || echo "::warning::check CPU container cleanup"
-    fi
-}
-trap cleanup EXIT
+collector="$(cd "$(dirname "$0")" && pwd)/collect_cpu_shards.sh"
+trap 'rc=$?; bash "$collector" || rc=1; exit "$rc"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# note (0xtoward): some rootless runners do not delegate the cpuset controller.
+container_cpuset=false
+if docker run --rm --name "$prefix-probe" --label "$label" --label omni.cpu-shard=probe --cpuset-cpus "${masks[0]}" \
+    --env NVIDIA_VISIBLE_DEVICES=void --entrypoint python3 "$image" \
+    -I -c 'import os, sys; sys.exit(os.sched_getaffinity(0) != set(map(int, sys.argv[1].split(","))))' "${masks[0]}"; then
+    container_cpuset=true
+else
+    docker rm -f "$prefix-probe" >/dev/null 2>&1 || true
+    echo "Container cpuset unavailable; pinning the entry process with taskset."
+fi
 
 for ((i=0; i<count; i++)); do
     name="$prefix-$i"
     names+=("$name")
-    docker create --name "$name" --label "$label" \
+    limits=()
+    if [[ $container_cpuset == true ]]; then
+        limits=(--cpuset-cpus "${masks[i]}")
+    fi
+    docker create "${limits[@]}" --name "$name" --label "$label" --label "omni.cpu-shard=$i" \
         --volume "$workspace:/ci-source:ro" --volume /data/omni-ci:/data/omni-ci \
         --volume /data/cache/huggingface:/github/home/.cache/huggingface \
         --volume /data/cache/huggingface:/root/.cache/huggingface --volume /dev/shm:/dev/shm \
-        --env NVIDIA_VISIBLE_DEVICES --env CUDA_VISIBLE_DEVICES= --env OMNI_CI_HOME \
-        --env "OMNI_CI_CPUSET=${masks[i]}" --env GITHUB_ACTIONS --env GITHUB_SHA \
-        --workdir "/__w/${GITHUB_REPOSITORY##*/}/${GITHUB_REPOSITORY##*/}" \
-        --entrypoint bash "$image" /ci-source/.github/scripts/run_cpu_shard.sh "$i" "$count" "$@" >/dev/null
+        --env NVIDIA_VISIBLE_DEVICES=void --env CUDA_VISIBLE_DEVICES= --env OMNI_CI_HOME \
+        --env "OMNI_CI_CPUSET=${masks[i]}" --env GITHUB_ACTIONS --env GITHUB_SHA --env GITHUB_REPOSITORY \
+        --entrypoint taskset "$image" -c "${masks[i]}" bash /ci-source/.github/scripts/run_cpu_shard.sh "$i" "$count" "$@" >/dev/null
     echo "shard $i CPUs ${masks[i]} container $name"
 done
 docker start "${names[@]}"
 result=0
 for i in "${!names[@]}"; do
-    docker wait "${names[i]}" > "$logs/$i.exit" &
+    docker wait "${names[i]}" > "$logs/.wait-$i" &
     wait "$!"
-    rc=$(<"$logs/$i.exit")
-    docker logs "${names[i]}" > "$logs/$i.log" 2>&1
+    rc=$(<"$logs/.wait-$i")
     echo "shard $i exited $rc"
     if [[ $rc != 0 ]]; then
-        tail -n 60 "$logs/$i.log"
+        docker logs --tail 60 "${names[i]}"
         result=1
     fi
 done

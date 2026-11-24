@@ -343,7 +343,7 @@ jobs:
     needs: setup
     if: >-
       needs.setup.result == 'success'
-    uses: ./.github/workflows/test.yaml
+    uses: sgl-project/sglang-omni/.github/workflows/test.yaml@main
     with:
       omni_ci_home: >-
         ${{ github.event_name == 'pull_request'
