@@ -429,15 +429,12 @@ type Config struct {
 	// LLMTimeout for a piece of Transcribe's clean-up and WriteTimeout
 	// for Translate's and Rewrite's answer (behavior.md 5.5,
 	// llmDeadlines).
-	LLMBase    time.Duration // DefaultLLMBase
-	LLMStall   time.Duration // DefaultLLMStall
-	LLMPerChar time.Duration // DefaultLLMPerChar
-	LLMTimeout time.Duration // DefaultLLMTimeout
-	// EarlyCleanWait opts in when positive; zero or negative disables the
-	// deadline, and New leaves it unset to preserve legacy waiting.
-	EarlyCleanWait time.Duration
-	WriteTimeout   time.Duration // DefaultWriteTimeout
-	ReadTimeout    time.Duration // reading the selection; DefaultReadTimeout
+	LLMBase      time.Duration // DefaultLLMBase
+	LLMStall     time.Duration // DefaultLLMStall
+	LLMPerChar   time.Duration // DefaultLLMPerChar
+	LLMTimeout   time.Duration // DefaultLLMTimeout
+	WriteTimeout time.Duration // DefaultWriteTimeout
+	ReadTimeout  time.Duration // reading the selection; DefaultReadTimeout
 	// RewriteReadTimeout is Rewrite's: it reads the selection while the
 	// user speaks, so a long one (a page of a web editor read through
 	// Accessibility's text markers) may take longer without delaying

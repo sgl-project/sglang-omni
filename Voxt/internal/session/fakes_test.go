@@ -217,7 +217,6 @@ type fakeStreamer struct {
 	openWait time.Duration // Open takes this long
 	openGate chan struct{} // Open waits for it to close (nil: no wait)
 	silent   bool          // no partials
-	finalAt  func(time.Time)
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
@@ -325,9 +324,6 @@ func (s *fakeStream) Finish() error {
 	case s.f.finalErr != nil:
 		s.emit(asr.Event{Kind: asr.EventError, Err: s.f.finalErr})
 	default:
-		if s.f.finalAt != nil {
-			s.f.finalAt(time.Now())
-		}
 		s.emit(asr.Event{Kind: asr.EventFinal, Text: s.f.final, Result: asr.Result{Text: s.f.final, Model: "fake-stream"}})
 	}
 	return nil

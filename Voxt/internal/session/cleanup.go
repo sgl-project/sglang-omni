@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -65,9 +64,6 @@ func (r *run) transcribe(text string) {
 		case r.skipped.Load():
 			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
 			result = text
-		case errors.Is(err, errEarlyCleanDeadline):
-			r.logf("warning", "early clean-up exceeded its %v finalization deadline; unfinished text goes on as recognised", r.m.cfg.EarlyCleanWait)
-			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
 		case err != nil:
 			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 			problem = &Problem{Code: ProblemLLM, Err: err, Degraded: true}
@@ -91,19 +87,12 @@ func (r *run) transcribe(text string) {
 // whole text instead.
 func (r *run) cleanUpFirst(text string) (string, string, error) {
 	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
-	parts, answers, tail, failed, ok, deadline := r.early.drain(text)
+	parts, answers, tail, failed, ok := r.early.drain(text)
 	if !ok {
 		return r.cleanUp(text, nil)
 	}
 	if len(answers) > 0 {
 		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
-	}
-	if deadline {
-		profile := ""
-		if len(parts) > 0 {
-			profile = parts[0].Profile()
-		}
-		return compose.JoinParts(parts, answers) + tail, profile, errors.Join(failed, errEarlyCleanDeadline)
 	}
 	if strings.TrimSpace(tail) == "" {
 		return compose.JoinParts(parts, answers), parts[0].Profile(), failed

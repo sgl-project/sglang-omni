@@ -430,6 +430,7 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	if result != "fallback" {
 		t.Errorf("result %q, want the whole-text fallback", result)
 	}
+	waitEarlyWorker(t, r)
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	if !errors.Is(model.secondErr, context.Canceled) {
@@ -476,7 +477,7 @@ func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	r.early.mu.Unlock()
 	close(model.secondRelease)
 	waitEarlyWorker(t, r)
-	parts, answers, tail, _, ok, _ := r.early.drain(full)
+	parts, answers, tail, _, ok := r.early.drain(full)
 	if !ok || len(parts) != 1 || len(answers) != 1 || answers[0] != "early one" {
 		t.Fatalf("early parts = %d, answers = %q, ok = %v; want only the completed first job", len(parts), answers, ok)
 	}

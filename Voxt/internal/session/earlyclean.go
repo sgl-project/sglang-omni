@@ -2,10 +2,8 @@ package session
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -36,13 +34,8 @@ type earlyClean struct {
 	failed    error // the first request's failure
 	broken    bool  // an event did not extend the text so far: give up
 	closed    bool  // the recording ended: no more stretches
-	finalized bool  // drain took its snapshot: the worker may no longer publish
+	finalized bool  // the worker may no longer publish
 }
-
-var errEarlyCleanDeadline = errors.New("early clean-up finalization deadline exceeded")
-
-// ExperimentalEarlyCleanWait is the former 250 ms bound for controlled experiments.
-const ExperimentalEarlyCleanWait = 250 * time.Millisecond
 
 type segJob struct {
 	sep, replaced string // what joined the stretch to the one before, and the stretch with the dictionary's aliases replaced
@@ -77,7 +70,9 @@ func newEarlyClean(r *run) *earlyClean {
 // as without the events) and wakes the worker.
 func (e *earlyClean) stop() {
 	e.mu.Lock()
-	e.broken = true
+	if !e.finalized {
+		e.broken = true
+	}
 	e.mu.Unlock()
 	e.cancel()
 }
@@ -232,25 +227,24 @@ func (e *earlyClean) fail(err error) {
 	e.mu.Unlock()
 }
 
-// drain gives the completed prefix and the text after it. A positive
-// EarlyCleanWait bounds reusable work; zero or a negative value waits for
-// the worker as before. An unusable stable prefix is abandoned immediately.
+// drain gives the completed prefix and the text after it. An incompatible
+// prefix is abandoned immediately; matching work keeps the normal wait.
 // Only the session goroutine calls it, after the stream's reader returned.
-func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, ok bool, deadline bool) {
+func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string, tail string, failed error, ok bool) {
 	defer e.cancel()
 	e.mu.Lock()
 	if len(e.jobs) == 0 {
 		e.mu.Unlock()
-		return nil, nil, "", nil, false, false
+		return nil, nil, "", nil, false
 	}
 	fallback := e.broken || e.covered == "" || !strings.HasPrefix(text, e.covered)
 	e.closed = true
 	if fallback {
 		e.finalized = true
 		e.mu.Unlock()
-		e.cond.Broadcast()
 		e.cancel()
-		return nil, nil, "", nil, false, false
+		e.cond.Broadcast()
+		return nil, nil, "", nil, false
 	}
 	cancelWorker := len(e.segs) < len(e.jobs)-1
 	if cancelWorker {
@@ -261,41 +255,12 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	if cancelWorker {
 		e.cancel()
 	}
-	wait := e.r.m.cfg.EarlyCleanWait
-	if wait <= 0 {
-		<-e.workerDone
-		e.mu.Lock()
-		e.finalized = true
-		e.mu.Unlock()
-	} else {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		select {
-		case <-e.workerDone:
-			e.mu.Lock()
-			e.finalized = true
-			e.mu.Unlock()
-		case <-timer.C:
-			e.mu.Lock()
-			pending := len(e.segs) < len(e.jobs)
-			if !pending {
-				for _, segment := range e.segs {
-					if !segment.done {
-						pending = true
-						break
-					}
-				}
-			}
-			deadline = pending
-			e.finalized = true
-			e.mu.Unlock()
-			e.cancel()
-		}
-	}
+	<-e.workerDone
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.finalized = true
 	if fallback || e.broken {
-		return nil, nil, "", nil, false, deadline
+		return nil, nil, "", nil, false
 	}
 	covered := ""
 	for _, segment := range e.segs {
@@ -308,10 +273,10 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	}
 	if !strings.HasPrefix(text, covered) {
 		e.r.logf("debug", "early clean-up does not apply: %d stretches, %d covered characters, text %d characters", len(e.segs), len([]rune(covered)), len([]rune(text)))
-		return nil, nil, "", nil, false, deadline
+		return nil, nil, "", nil, false
 	}
-	if covered == "" && !deadline {
-		return nil, nil, "", nil, false, false
+	if covered == "" {
+		return nil, nil, "", nil, false
 	}
-	return parts, answers, text[len(covered):], e.failed, true, deadline
+	return parts, answers, text[len(covered):], e.failed, true
 }
