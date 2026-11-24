@@ -17,14 +17,25 @@ Send one audio file to `POST /v1/audio/transcriptions`. The examples below use `
 
 ## DSpark decoding
 
-To enable [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark), set `speculative_algorithm` to `DSPARK` and use `temperature=0`. The registry pins the draft revision automatically:
+On one CUDA GPU, Ming-3.0-asr-tiny serves with its [DSpark](https://huggingface.co/wirybeaver/Ming-3.0-asr-tiny-dspark) draft by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. Greedy and sampled requests (`temperature` above 0) and `repetition_penalty` all run under the draft. The model path that launches, from `--model-path` or a config file, decides it: the draft is on for `inclusionAI/Ming-3.0-asr-tiny` and for a local directory whose path has `models--inclusionAI--Ming-3.0-asr-tiny` as one of its components, as every Hugging Face cache snapshot of it does, such as `/models/models--inclusionAI--Ming-3.0-asr-tiny/`. A local copy whose path has no such component serves without the draft, and so do Intel GPUs and other platforms. A `speculative_algorithm` other than `DSPARK`, such as `NEXTN` for [MTP](#mtp-decoding), replaces the DSpark draft.
+
+Ming's stages load `--model-path` as a repo ID or a directory, so `inclusionAI/Ming-3.0-asr-tiny@<revision>` does not start. To pin the target, download that revision and serve its snapshot directory, which keeps the draft on:
+
+```bash
+MODEL_PATH="$(
+  hf download inclusionAI/Ming-3.0-asr-tiny \
+    --revision ac95e7b1678c08ea6f4a2581a051e432ed63e9b7 \
+    --quiet
+)"
+sgl-omni serve --model-path "${MODEL_PATH}" \
+  --model-name inclusionAI/Ming-3.0-asr-tiny
+```
+
+To serve without the draft, add `--thinker.engine.disable_speculative_decoding true`:
 
 ```bash
 sgl-omni serve --model-path inclusionAI/Ming-3.0-asr-tiny \
-  --thinker.engine.speculative_algorithm DSPARK \
-  --thinker.engine.speculative_draft_model_path wirybeaver/Ming-3.0-asr-tiny-dspark \
-  --dspark-use-greedy-draft true \
-  --ragged-verify-mode static
+  --thinker.engine.disable_speculative_decoding true
 ```
 
 ## Transcription

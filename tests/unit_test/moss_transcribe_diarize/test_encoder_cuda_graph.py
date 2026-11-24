@@ -33,7 +33,7 @@ pytestmark = pytest.mark.accelerator
 
 DEVICE = resolve_concrete_device(None, 0)
 DEVICE_MODULE = (
-    torch.get_device_module(DEVICE) if DEVICE.type in ("cuda", "xpu") else None
+    torch.get_device_module(DEVICE) if DEVICE.type in ("cuda", "xpu", "npu") else None
 )
 GRAPH_BACKEND = (
     current_platform.get_device_graph_backend(DEVICE)
@@ -139,7 +139,7 @@ def encoder_bundle():
     """sglang WhisperEncoder built from the MOSS-TD checkpoint. sglang's encoder
     uses TP-parallel layers, so a TP=1 group must exist before construction."""
     if not HAS_DEVICE_GRAPH:
-        pytest.skip("needs CUDA or XPU graph support")
+        pytest.skip("needs CUDA, XPU or NPU graph support")
     else:
         pass
     snaps = glob.glob(CKPT_GLOB)
@@ -322,7 +322,10 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "-s"]))
 
 
-@pytest.mark.skipif(not HAS_DEVICE_GRAPH, reason="needs device graphs")
+@pytest.mark.skipif(
+    not HAS_DEVICE_GRAPH or DEVICE.type != "cuda",
+    reason="needs CUDA device graphs",
+)
 @pytest.mark.parametrize("chunk_count", [1, 3, 5])
 def test_host_chunks_match_reference_graph_and_keep_consumed_output(
     encoder_bundle: tuple[WhisperEncoder, int, WhisperEncoderCudaGraphRunner],

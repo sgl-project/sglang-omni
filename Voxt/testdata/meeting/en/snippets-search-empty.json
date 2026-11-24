@@ -1,0 +1,13 @@
+{
+  "name": "snippets-search-empty",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [],
+    "total": 3,
+    "order": 0
+  },
+  "snippets_ui": {
+    "query": "nothing"
+  }
+}
