@@ -153,7 +153,7 @@ func TestAcceptNewTermHasNoAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(terms) != 1 || terms[0].Term != "Claude Code" || len(terms[0].Aliases) != 0 || !terms[0].Enabled || terms[0].ID == "" || terms[0].CreatedAt.IsZero() || saved.ID != terms[0].ID {
+	if len(terms) != 3 || terms[0].Term != "Claude Code" || len(terms[0].Aliases) != 0 || !terms[0].Enabled || terms[0].ID == "" || terms[0].CreatedAt.IsZero() || saved.ID != terms[0].ID {
 		t.Fatalf("saved %+v, terms %+v", saved, terms)
 	}
 	if got := pendingTerms(t, b); !slices.Equal(got, []string{"Ghostty"}) {
@@ -163,9 +163,9 @@ func TestAcceptNewTermHasNoAliases(t *testing.T) {
 
 func TestAcceptKnownTermMerges(t *testing.T) {
 	b, st, _ := newBook(t)
-	putTerm(t, st, store.Term{ID: "1", Term: "Voxt", Aliases: []string{"Vox T"}, Enabled: true})
-	s := Suggestion{Term: "VOXT", Source: FromEdit}
-	saved, err := b.Accept(context.Background(), s.Key(), store.Term{Term: "VOXT", Aliases: []string{"Box T"}, Enabled: true})
+	putTerm(t, st, store.Term{ID: "1", Term: "Ghostty", Aliases: []string{"Ghost T"}, Enabled: true})
+	s := Suggestion{Term: "GHOSTTY", Source: FromEdit}
+	saved, err := b.Accept(context.Background(), s.Key(), store.Term{Term: "GHOSTTY", Aliases: []string{"Goat T"}, Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestAcceptKnownTermMerges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(terms) != 1 || terms[0].ID != "1" || terms[0].Term != "Voxt" || !slices.Equal(terms[0].Aliases, []string{"Vox T", "Box T"}) || saved.ID != "1" {
+	if len(terms) != 3 || terms[0].ID != "1" || terms[0].Term != "Ghostty" || !slices.Equal(terms[0].Aliases, []string{"Ghost T", "Goat T"}) || saved.ID != "1" {
 		t.Fatalf("saved %+v, terms %+v", saved, terms)
 	}
 }

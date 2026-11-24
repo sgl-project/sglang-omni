@@ -26,9 +26,10 @@ PREFS="$DATA/Library/Preferences/$LEGACY_ID" # defaults(1) takes it without .pli
 VOXT_DIR="$DATA/Library/Application Support/Voxt" # 1.x's voxt.sqlite and Logs/
 BETA_APPCAST=https://voxt.actnow.dev/updates/beta/appcast.xml
 # What Voxt 1.16.3 wrote after three terms were added (the rows only in its
-# WAL); TestSmokeLegacy expects the same line from it.
+# WAL); they join the two a fresh dictionary starts with. TestSmokeLegacy
+# expects the same line from it.
 FIXTURE=testdata/legacy/real
-WANT_IMPORT="smoke: legacy import: 3 terms, 0 history entries"
+WANT_IMPORT="smoke: legacy import: 5 terms, 0 history entries"
 
 row() { printf '| %s | %s | %s |\n' "$1" "$2" "${3//|/\\|}" >> "$OUT/results.md"; }
 pass() { row "$1" "✅" "$2"; echo "PASS $1: $2"; }

@@ -54,7 +54,7 @@ func TestSelectionToDictionary(t *testing.T) {
 	a.pump("added", notice("Added to the dictionary: Ghostty"))
 	a.pump("there already", notice("Already in the dictionary: Ghostty"))
 	terms, err := a.lib.store.Dictionary().List(context.Background(), "")
-	if err != nil || len(terms) != 1 || terms[0].Term != "Ghostty" || !terms[0].Enabled {
+	if err != nil || len(terms) != 3 || terms[0].Term != "Ghostty" || !terms[0].Enabled {
 		t.Fatalf("terms %+v %v", terms, err)
 	}
 	if recorded || a.sess.ID != "" || len(a.history()) != 0 {
@@ -84,7 +84,7 @@ func TestSelectionNotATermRecords(t *testing.T) {
 				s.Dictionary.Enabled = !c.off
 			}, keys)
 			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
-			if terms, _ := a.lib.store.Dictionary().List(context.Background(), ""); len(terms) != 0 || a.sess.Kind != store.KindTranscribe {
+			if terms, _ := a.lib.store.Dictionary().List(context.Background(), ""); len(terms) != 2 || a.sess.Kind != store.KindTranscribe {
 				t.Errorf("terms %+v, session %s", terms, a.sess.Kind)
 			}
 		})

@@ -22,7 +22,7 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if err != nil || len(profiles) != 2 || profiles[1].Name != "Work" || !profiles[0].Active {
 		t.Fatalf("created profiles %+v, %v; state %+v; view %q", profiles, err, a.dictProfiles, firstTexts(tt))
 	}
-	if got := terms(t, a); len(got) != 5 || !has(tt, "Work") {
+	if got := terms(t, a); len(got) != 7 || !has(tt, "Work") {
 		t.Fatalf("creating changed the active dictionary: %+v", got)
 	}
 	click(t, tt, "Work")
@@ -54,7 +54,7 @@ func TestDictionaryProfileControls(t *testing.T) {
 	}
 	click(t, tt, "Delete")
 	profiles, _ = a.lib.store.Dictionary().Profiles(context.Background())
-	if len(profiles) != 1 || !profiles[0].Active || len(terms(t, a)) != 5 {
+	if len(profiles) != 1 || !profiles[0].Active || len(terms(t, a)) != 7 {
 		t.Errorf("delete did not restore Default: %+v", profiles)
 	}
 	click(t, tt, "Profile actions")
@@ -137,7 +137,7 @@ func TestDictionaryTermDialogStaysInItsProfile(t *testing.T) {
 	if err := repo.ActivateProfile(context.Background(), "default"); err != nil {
 		t.Fatal(err)
 	}
-	if got := terms(t, a); len(got) != 1 || got[0].Term != "AlphaTwo" {
+	if got := terms(t, a); len(got) != 3 || got[0].Term != "AlphaTwo" {
 		t.Fatalf("the save did not update Default: %+v", got)
 	}
 
@@ -152,7 +152,7 @@ func TestDictionaryTermDialogStaysInItsProfile(t *testing.T) {
 	if err := repo.ActivateProfile(context.Background(), "default"); err != nil {
 		t.Fatal(err)
 	}
-	if got := terms(t, a); len(got) != 0 {
+	if got := terms(t, a); len(got) != 2 {
 		t.Fatalf("the delete missed Default's term: %+v", got)
 	}
 }

@@ -353,6 +353,12 @@ func TestClearHistoryCompactionFails(t *testing.T) {
 func TestDictionary(t *testing.T) {
 	s := openTest(t, t.TempDir())
 	d := s.Dictionary()
+	// A fresh Default dictionary knows the two project names (#4543).
+	seeded, err := d.List(ctx, "")
+	if err != nil || len(seeded) != 2 || seeded[0].Term != "SGLang" || !seeded[0].Enabled || seeded[1].Term != "Voxt" || !seeded[1].Enabled ||
+		seeded[0].CreatedAt.IsZero() || !seeded[0].UpdatedAt.Equal(seeded[0].CreatedAt) {
+		t.Fatalf("fresh dictionary %+v, %v", seeded, err)
+	}
 	t0 := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
 	for _, term := range []store.Term{
 		{ID: "1", Term: " VoxtNew ", Aliases: []string{"vox tunew", "vox tunew", " "}, Enabled: true, CreatedAt: t0},
@@ -389,13 +395,13 @@ func TestDictionary(t *testing.T) {
 		}
 		return strings.Join(out, ",")
 	}
-	if got := names(""); got != "Kubernetes,VoxtNew,豆包" {
+	if got := names(""); got != "Kubernetes,SGLang,Voxt,VoxtNew,豆包" {
 		t.Errorf("all: %q", got)
 	}
 	if got := names("k8s"); got != "Kubernetes" {
 		t.Errorf("by alias: %q", got)
 	}
-	if got := names("VOX"); got != "VoxtNew" {
+	if got := names("VOX"); got != "Voxt,VoxtNew" {
 		t.Errorf("ignoring case: %q", got)
 	}
 	if err := d.Delete(ctx, "2", ""); err != nil {
@@ -404,7 +410,7 @@ func TestDictionary(t *testing.T) {
 	if err := d.Delete(ctx, "2", ""); !errors.Is(err, core.ErrNotFound) {
 		t.Errorf("deleted twice: %v", err)
 	}
-	if st, _ := s.Stats(ctx); st.Dictionary != 2 {
+	if st, _ := s.Stats(ctx); st.Dictionary != 4 {
 		t.Errorf("stats %+v", st)
 	}
 }
@@ -416,7 +422,7 @@ func TestDictionaryProfiles(t *testing.T) {
 	if err != nil || len(profiles) != 1 || profiles[0].ID != "default" || profiles[0].Name != "Default" || !profiles[0].Active {
 		t.Fatalf("initial profiles %+v, %v", profiles, err)
 	}
-	if err := d.Put(ctx, store.Term{ID: "default-term", Term: "Voxt", Note: "default", Enabled: true}); err != nil {
+	if err := d.Put(ctx, store.Term{ID: "default-term", Term: "Kubernetes", Note: "default", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.CreateProfile(ctx, store.DictionaryProfile{ID: "work", Name: " Work "}); err != nil {
@@ -447,7 +453,7 @@ func TestDictionaryProfiles(t *testing.T) {
 	if err := d.ActivateProfile(ctx, "default"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+	if got, _ := d.List(ctx, ""); len(got) != 3 || got[0].ID != "default-term" {
 		t.Errorf("Default's terms changed: %+v", got)
 	}
 	if err := d.RenameProfile(ctx, "work", "Office"); err != nil {
@@ -478,10 +484,10 @@ func TestDictionaryProfiles(t *testing.T) {
 	if len(profiles) != 1 || !profiles[0].Active {
 		t.Errorf("after deleting active %+v", profiles)
 	}
-	if got, _ := d.List(ctx, ""); len(got) != 1 || got[0].ID != "default-term" {
+	if got, _ := d.List(ctx, ""); len(got) != 3 || got[0].ID != "default-term" {
 		t.Errorf("terms after deleting active %+v", got)
 	}
-	if stats, _ := s.Stats(ctx); stats.Dictionary != 1 {
+	if stats, _ := s.Stats(ctx); stats.Dictionary != 3 {
 		t.Errorf("deleted profile left its terms behind: %+v", stats)
 	}
 	if err := d.DeleteProfile(ctx, "default"); !errors.Is(err, core.ErrInvalid) {

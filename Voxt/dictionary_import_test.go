@@ -17,7 +17,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
 )
 
-// importStore is a real store in a temporary folder with one term, llm.
+// importStore is a real store in a temporary folder with one term, llm,
+// beside the two a fresh dictionary starts with.
 func importStore(t *testing.T) store.Dictionary {
 	t.Helper()
 	ctx := context.Background()
@@ -55,7 +56,7 @@ func TestImportDataMergesAsThePageDoes(t *testing.T) {
 	if err != nil || dry != (dictapi.Result{Added: 1, Updated: 1, Skipped: 1}) {
 		t.Fatalf("dry run %+v %v", dry, err)
 	}
-	if got := termsByName(t, repo); len(got) != 1 {
+	if got := termsByName(t, repo); len(got) != 3 {
 		t.Fatalf("a dry run saved terms: %v", got)
 	}
 
@@ -112,7 +113,7 @@ func TestPageImportRefusesOversizeFile(t *testing.T) {
 		t.Fatalf("oversize import toast %q, want the size limit", got)
 	}
 	got := terms(t, a)
-	if len(got) != 1 || got[0].Term != "at-limit" {
+	if len(got) != 3 || got[0].Term != "at-limit" {
 		t.Fatalf("imports at and over the limit saved %v, want only at-limit", got)
 	}
 
@@ -146,7 +147,7 @@ func TestImportDataConcurrent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := termsByName(t, repo); len(got) != 3 {
+	if got := termsByName(t, repo); len(got) != 5 {
 		t.Fatalf("terms %v, want llm, carbon and Sol once each", got)
 	}
 }
@@ -476,7 +477,7 @@ func TestCommandImportedRefreshesOnlyWhenItSaved(t *testing.T) {
 		if got := len(a.toasts) > 0; got != c.toast {
 			t.Errorf("%+v %v: toast %v, want %v", c.res, c.err, got, c.toast)
 		}
-		if got := len(a.dv.list) == 1; got != c.refresh {
+		if got := len(a.dv.list) == 3; got != c.refresh {
 			t.Errorf("%+v %v: refreshed %v, want %v", c.res, c.err, got, c.refresh)
 		}
 	}
@@ -505,7 +506,7 @@ func TestCommandImportRefreshesTheOpenPage(t *testing.T) {
 	seedTerms(t, a)
 	a.loadDict()
 	frames(tt)
-	if !has(tt, "5 terms") {
+	if !has(tt, "7 terms") {
 		t.Fatalf("before: %q", firstTexts(tt))
 	}
 	ctx := context.Background()
@@ -514,7 +515,7 @@ func TestCommandImportRefreshesTheOpenPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(tt)
-	if !has(tt, "5 terms") || has(tt, "Sol") {
+	if !has(tt, "7 terms") || has(tt, "Sol") {
 		t.Errorf("a dry run changed the page: %q", firstTexts(tt))
 	}
 	a.toasts = nil
@@ -522,7 +523,7 @@ func TestCommandImportRefreshesTheOpenPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	frames(tt)
-	if !has(tt, "6 terms") || !has(tt, "Sol") {
+	if !has(tt, "8 terms") || !has(tt, "Sol") {
 		t.Errorf("after the import: %q", firstTexts(tt))
 	}
 	if !strings.Contains(strings.Join(a.toasts, "\n"), "Imported: 1 new, 0 updated.") && !has(tt, "Imported: 1 new, 0 updated.") {

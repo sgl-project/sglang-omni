@@ -87,7 +87,7 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		dict, asrHint bool
 		want          []string
 	}{
-		{"on", true, true, []string{"Voxt", "Typeless"}},
+		{"on", true, true, []string{"Voxt", "Typeless", "SGLang"}},
 		{"dictionary off", false, true, nil},
 		{"hints off", true, false, nil},
 	} {
@@ -97,8 +97,8 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		a.prefs.Dictionary.SpeechContext = "A Zoom call about Voxt"
 		now := time.Now()
 		for _, tm := range []store.Term{
-			{ID: "1", Term: "Typeless", Enabled: true, UpdatedAt: now},
-			{ID: "2", Term: "Voxt", Enabled: true, UpdatedAt: now.Add(time.Second)},
+			{ID: "1", Term: "Typeless", Enabled: true, UpdatedAt: now.Add(time.Second)},
+			{ID: "voxt", Term: "Voxt", Enabled: true, UpdatedAt: now.Add(2 * time.Second)},
 			{ID: "3", Term: "Disabled", Enabled: false, UpdatedAt: now},
 		} {
 			if err := a.lib.store.Dictionary().Put(context.Background(), tm); err != nil {

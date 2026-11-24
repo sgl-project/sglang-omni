@@ -80,7 +80,7 @@ func TestSuggestionsAddThenRowGoes(t *testing.T) {
 	}
 	clickControl(t, tt, "把 Claude Code 加入词典")
 	ts := terms(t, a)
-	if len(ts) != 1 || ts[0].Term != "Claude Code" || len(ts[0].Aliases) != 0 {
+	if len(ts) != 3 || ts[0].Term != "Claude Code" || len(ts[0].Aliases) != 0 {
 		t.Fatalf("terms %+v", ts)
 	}
 	labels = tt.AccessLabels()
@@ -119,7 +119,7 @@ func TestSuggestionEditOpensDialogAndSaveAccepts(t *testing.T) {
 	tt.Type("Cloud Code")
 	click(t, tt, "保存")
 	ts := terms(t, a)
-	if len(ts) != 1 || ts[0].Term != "Claude Code" || !slices.Equal(ts[0].Aliases, []string{"Cloud Code"}) || a.dictUI.editOpen {
+	if len(ts) != 3 || ts[0].Term != "Claude Code" || !slices.Equal(ts[0].Aliases, []string{"Cloud Code"}) || a.dictUI.editOpen {
 		t.Fatalf("terms %+v open %v", ts, a.dictUI.editOpen)
 	}
 	if !hasExact(tt, "1") || slices.Contains(tt.AccessLabels(), "忽略 Claude Code") {

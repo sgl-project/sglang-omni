@@ -18,6 +18,7 @@ import (
 
 func TestPromptSaveUsesFullSystem(t *testing.T) {
 	a, tt := pageTester(t, "/translate")
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = false })
 	click(t, tt, "Your rules")
 	click(t, tt, "System prompt for Translate")
 	custom := "CUSTOM PROMPT LINE"
@@ -386,7 +387,7 @@ func TestPreviewIsTheWholePrompt(t *testing.T) {
 		tt.SetSize(windowWidth, 9000)
 		notes := "| Roth | `wrath` → Roth | 中文 retirement |"
 		a.updateSettings(func(s *settings.Settings) {
-			s.Dictionary.Enabled, s.Dictionary.Notes = true, notes
+			s.Dictionary.Enabled, s.Dictionary.Glossary, s.Dictionary.Notes = true, false, notes
 			s.Features.Transcribe.Enhance = true
 		})
 		click(t, tt, "Your rules")

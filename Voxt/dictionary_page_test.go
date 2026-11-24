@@ -68,6 +68,12 @@ func terms(t *testing.T, a *app) []store.Term {
 
 func TestDictionaryAddEditDelete(t *testing.T) {
 	a, tt := dictTester(t)
+	// A fresh dictionary lists Voxt and SGLang (#4543); without them the page is empty.
+	if !has(tt, "2 terms") || !has(tt, "Voxt") || !has(tt, "SGLang") {
+		t.Fatalf("fresh list: %q", firstTexts(tt))
+	}
+	click(t, tt, "Delete Voxt")
+	click(t, tt, "Delete SGLang")
 	if !has(tt, "Names and terms you use") {
 		t.Fatalf("no empty state: %q", firstTexts(tt))
 	}
@@ -158,7 +164,7 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	seedTerms(t, a)
 	a.loadDict()
 	frames(tt)
-	if !has(tt, "5 terms") || !has(tt, "豆包") {
+	if !has(tt, "7 terms") || !has(tt, "豆包") {
 		t.Fatalf("list %q", firstTexts(tt))
 	}
 	click(t, tt, "Search dictionary")
@@ -195,7 +201,7 @@ func TestDictionaryImportExport(t *testing.T) {
 	a.importTerms()
 	frames(tt)
 	ts := terms(t, a)
-	if len(ts) != 6 {
+	if len(ts) != 8 {
 		t.Fatalf("terms %+v", ts)
 	}
 	if !strings.Contains(strings.Join(a.toasts, "\n"), "Imported: 1 new, 1 updated, 1 rows skipped.") && !has(tt, "Imported: 1 new, 1 updated, 1 rows skipped.") {
@@ -383,7 +389,7 @@ func TestDictionaryPageModelAppliesCompletedRead(t *testing.T) {
 	}
 	drainPosts(posts)
 	model = a.dictionaryPageModel()
-	if model.Loading || len(model.Terms) != 5 {
+	if model.Loading || len(model.Terms) != 7 {
 		t.Fatalf("completed model: loading %t, rows %d", model.Loading, len(model.Terms))
 	}
 }

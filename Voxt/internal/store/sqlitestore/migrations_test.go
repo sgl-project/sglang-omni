@@ -12,26 +12,27 @@ import (
 // enforces: the embedded files are consecutive from 1. Migrations 9 and 10
 // are the notes app name and the history reopen, shared with the notes and
 // history changes byte for byte; 11 is the dictionary profiles, 12 is
-// the Rewrite input box's typed text and 13 indexes that text for search.
+// the Rewrite input box's typed text, 13 indexes that text for search and
+// 14 seeds a fresh Default dictionary.
 func TestMigrationNumbering(t *testing.T) {
 	for i, m := range migrations {
 		if m.version != i+1 {
 			t.Fatalf("migration %d is missing", i+1)
 		}
 	}
-	if Version() != 13 {
-		t.Fatalf("schema version %d, want 13", Version())
+	if Version() != 14 {
+		t.Fatalf("schema version %d, want 14", Version())
 	}
 }
 
 // TestCombinedUpgrade opens a database at each schema the merged tree can
 // meet — 8 (before the notes, history and profile changes), 9 (notes app
 // name), 10 (plus history reopen), 11 (dictionary profiles) — and migrates
-// it to 13: every change's columns land and the old dictionary's terms move
-// into the active Default profile. A typed Rewrite saved at 12 joins the
-// search index.
+// it to 14: every change's columns land, the old dictionary's terms move
+// into the active Default profile and the seed leaves a dictionary with a
+// term alone. A typed Rewrite saved at 12 joins the search index.
 func TestCombinedUpgrade(t *testing.T) {
-	for _, from := range []int{8, 9, 10, 11, 12} {
+	for _, from := range []int{8, 9, 10, 11, 12, 13} {
 		t.Run(strconv.Itoa(from), func(t *testing.T) {
 			saved := migrations
 			t.Cleanup(func() { migrations = saved })

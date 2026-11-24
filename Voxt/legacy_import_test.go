@@ -332,8 +332,8 @@ func TestLegacyModelRoots(t *testing.T) {
 func TestSmokeLegacy(t *testing.T) {
 	t.Setenv("VOXTNEW_SMOKE_LEGACY", "1")
 	for _, c := range []struct{ fixture, want string }{
-		{"real", "smoke: legacy import: 3 terms, 0 history entries"},
-		{"hist", "smoke: legacy import: 1 terms, 3 history entries"},
+		{"real", "smoke: legacy import: 5 terms, 0 history entries"},
+		{"hist", "smoke: legacy import: 3 terms, 3 history entries"},
 		{"", "is not readable without asking"},
 	} {
 		home := t.TempDir()

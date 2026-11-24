@@ -2,7 +2,7 @@
 
 A dictionary profile is a named set of dictionary entries. Use different profiles for different situations, such as work and home. Transcribe, Translate, and Rewrite use only the active profile's entries for speech hints, alias replacement, and the language model glossary.
 
-Voxt moves an existing dictionary into the active Default profile. Its entries keep their terms, aliases, notes, switches, and timestamps.
+Voxt moves an existing dictionary into the active Default profile. Its entries keep their terms, aliases, notes, switches, and timestamps. A new Voxt's Default profile starts with Voxt and SGLang as enabled entries.
 
 The Dictionary page can create, rename, delete, and switch profiles. The active profile is selected on the page. Deleting the active profile selects a remaining one. Voxt does not delete the last profile.
 
