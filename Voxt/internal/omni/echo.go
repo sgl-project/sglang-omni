@@ -18,7 +18,8 @@ const (
 // echoTail finds the context's terms Qwen3-ASR may have echoed at the
 // end of a request's text (behavior.md 3.6a): after the last sentence (or
 // as the whole text), a sentence made only of terms, with list marks
-// between them. Speech that ends with a term does not match ("我们用
+// between them; once two come in the context's order, the item before
+// them may be one misspelt (mangledTerm). Speech that ends with a term does not match ("我们用
 // Omni。"): the term is not a sentence of its own. It returns where the
 // sentence starts, its terms, and whether it is certainly an echo: at
 // least two terms, in the context's order. cut < 0: none. A text the
@@ -55,12 +56,17 @@ func echoTail(text string, terms []string, cutOff bool) (cut int, found []string
 	}
 	var idx []int // indexes in terms, from the end
 	start := pos
+	mangled := false
 	for {
 		best, bestStart := -1, 0
 		for i, k := range keys {
 			if s, ok := matchBack(folded, pos, k); ok && (best < 0 || len(k) > len(keys[best])) {
 				best, bestStart = i, s
 			}
+		}
+		if best < 0 && !mangled && len(idx) >= 2 && descending(idx) {
+			best, bestStart = mangledTerm(rs, folded, pos, keys, idx[len(idx)-1])
+			mangled = best >= 0
 		}
 		if best < 0 {
 			break
@@ -95,6 +101,80 @@ func echoTail(text string, terms []string, cutOff bool) (cut int, found []string
 		originalEnd = sourceEnds[c-1]
 	}
 	return len(string(originalRunes[:originalEnd])), found, certain
+}
+
+// itemMarks end an item of an echoed list. Unlike listMarks a space does
+// not: a misspelt term may hold one ("S Lang").
+const itemMarks = ",，、;；/\n"
+
+// mangledTerm is the term an echo misspelt, as Qwen3-ASR wrote the hint
+// SGLang "S Lang" before four hints spelled right (eval.md "Built-in
+// vocabulary"): the list item that ends at end, when its letters and
+// digits are at most a third of a term's (at least one) from those of
+// one of the terms before the one at index next in the context. It
+// returns the term's index and where the item starts; -1: none.
+func mangledTerm(rs, folded []rune, end int, keys [][]rune, next int) (int, int) {
+	from := end
+	for from > 0 && !strings.ContainsRune(itemMarks+sentenceEnds, rs[from-1]) {
+		from--
+	}
+	for from < end && unicode.IsSpace(rs[from]) {
+		from++
+	}
+	item := letters(folded[from:end])
+	if len(item) == 0 {
+		return -1, 0
+	}
+	for i := next - 1; i >= 0; i-- {
+		k := letters(keys[i])
+		if levenshtein(item, k) <= max(1, len(k)/3) {
+			return i, from
+		}
+	}
+	return -1, 0
+}
+
+// descending: idx, the terms found from the end, come in the context's
+// order.
+func descending(idx []int) bool {
+	for i := 1; i < len(idx); i++ {
+		if idx[i] >= idx[i-1] {
+			return false
+		}
+	}
+	return true
+}
+
+// letters is rs's letters and digits.
+func letters(rs []rune) []rune {
+	var out []rune
+	for _, r := range rs {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// levenshtein is the edit distance between a and b.
+func levenshtein(a, b []rune) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := range a {
+		cur := make([]int, len(b)+1)
+		cur[0] = i + 1
+		for j := range b {
+			cost := 1
+			if a[i] == b[j] {
+				cost = 0
+			}
+			cur[j+1] = min(prev[j+1]+1, cur[j]+1, prev[j]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // spokenTokens counts text's words: a Chinese, Japanese or Korean

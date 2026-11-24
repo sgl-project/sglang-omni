@@ -52,6 +52,39 @@ func TestEchoTail(t *testing.T) {
 	}
 }
 
+// TestEchoTailMisspelt: Qwen3-ASR echoed the built-in hints after 4.5 s
+// of silence with the first one misspelt (eval.md "Built-in
+// vocabulary"); after two terms in order, one item before them may be a
+// near spelling of an earlier term. Speech before the terms, a far
+// spelling, one term or terms out of order are not echoes.
+func TestEchoTailMisspelt(t *testing.T) {
+	terms := []string{"SGLang", "Voxt", "DeepSeek", "API key", "Claude Code"}
+	all := []string{"SGLang", "Voxt", "DeepSeek", "API key", "Claude Code"}
+	for _, c := range []struct {
+		text, kept string
+		found      []string
+		certain    bool
+	}{
+		{"S Lang, Voxt, DeepSeek, API key, Claude Code.", "", all, true},
+		{"好的。S Lang, Voxt, DeepSeek, API key, Claude Code.", "好的。", all, true},
+		{"SG Lan，Voxt，DeepSeek，API key，Claude Code。", "", all, true},
+		{"Let's go. Voxt, DeepSek, API key, Claude Code.", "Let's go.", []string{"Voxt", "DeepSeek", "API key", "Claude Code"}, true},
+		{"我们说 S Lang, Voxt, DeepSeek.", "我们说 S Lang, Voxt, DeepSeek.", nil, false},
+		{"Hello, Voxt, DeepSeek, API key, Claude Code.", "Hello, Voxt, DeepSeek, API key, Claude Code.", nil, false},
+		{"S Lang, Claude Code.", "S Lang, Claude Code.", nil, false},
+		{"S Lang, Claude Code, API key.", "S Lang, Claude Code, API key.", nil, false},
+	} {
+		cut, found, certain := echoTail(c.text, terms, false)
+		kept := c.text
+		if cut >= 0 {
+			kept = c.text[:cut]
+		}
+		if strings.TrimSpace(kept) != c.kept || !slices.Equal(found, c.found) || certain != c.certain {
+			t.Errorf("echoTail(%q) = %q, %v, %v; want %q, %v, %v", c.text, kept, found, certain, c.kept, c.found, c.certain)
+		}
+	}
+}
+
 func TestEchoTailAcrossChineseScripts(t *testing.T) {
 	terms := []string{"语音识别", "会议转写"}
 	text := "好的。語音識別，會議轉寫。"

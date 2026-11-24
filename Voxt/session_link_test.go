@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -41,6 +42,26 @@ func (f llmShelf) LLM(_ context.Context, id string) (local.Chat, local.Model, er
 		return nil, m, errors.New("no key in the Keychain")
 	}
 	return &llm.Client{Backend: &fakeChat{}}, m, nil
+}
+
+// asrShelf opens any speech model as installed.
+type asrShelf struct{ local.NotInstalled }
+
+func (asrShelf) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	return &fakeTranscriptions{}, local.Model{Kind: local.ASR, ID: id}, nil
+}
+
+// TestResolverBuiltinHints: the built-in words' hints go only to the
+// default Qwen3-ASR, the model they were measured on.
+func TestResolverBuiltinHints(t *testing.T) {
+	s := settings.Defaults()
+	for id, want := range map[string]bool{models.ASRAccurate: true, models.ASRFast: false, models.ASRQwen6bit: false, models.ASRWhisperTurbo: false, "openai": false} {
+		s.Features.Transcribe.ASR = id
+		svc, err := resolver(asrShelf{})(context.Background(), store.KindTranscribe, s, true)
+		if err != nil || svc.ASRInfo.ID != id || svc.BuiltinHints != want {
+			t.Errorf("%s: model %q, built-in hints %v, want %v (%v)", id, svc.ASRInfo.ID, svc.BuiltinHints, want, err)
+		}
+	}
 }
 
 // TestResolverFallback: Translate's fallback model is opened beside its

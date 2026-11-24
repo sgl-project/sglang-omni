@@ -19,30 +19,33 @@ type builtinTerm struct {
 	hint bool
 }
 
-// sglangAliases are what speech recognition writes for SGLang.
-var sglangAliases = []string{"SG Lang", "SG-Lang", "S.G.Lang", "SGLand", "SGLAN", "SG LAN", "SGLONG", "SG Long", "S G Long", "SG狼"}
+// sglangAliases are what speech recognition writes for SGLang (Whisper,
+// and Qwen3-ASR without the hint: "S. G. Lang", "S G狼").
+var sglangAliases = []string{"SG Lang", "SG-Lang", "S.G.Lang", "S.G. Lang", "S. G. Lang", "SGLand", "SG Land", "S G Land", "SGLAN", "SG LAN",
+	"SGLONG", "SG Long", "S G Long", "SGLUNG", "SG狼", "S G狼", "S G 龙"}
 
 // builtin is the vocabulary every install starts with: Voxt, the
 // repository it is made in, and AI, developer and product names its
 // users say often. Aliases are what speech recognition wrote for a name
 // (Whisper Large v3 Turbo on macOS voices, docs/eval.md "Built-in
-// vocabulary (11-23)"), never an ordinary word or name ("cloud" for
-// Claude, "Quinn" for Qwen), so that a sentence without the name stays
-// as said. The rest only get their spelling back. It is not in the
-// store: the user's dictionary stays theirs.
+// vocabulary (11-23)"), never an ordinary word, term or name ("cloud"
+// for Claude, "Quinn" for Qwen, "Vox" for Voxt, "QDA" for CUDA,
+// "Gamini" for Gemini), so that a sentence without the name stays as
+// said. The rest only get their spelling back. It is not in the store:
+// the user's dictionary stays theirs.
 var builtin = append([]builtinTerm{
 	{term: "SGLang-Omni", aliases: append([]string{"SGLang Omni", "SGLOMNI"}, suffixed(sglangAliases, " Omni")...), spelled: true},
 	{term: "SGLang", aliases: sglangAliases, spelled: true, hint: true},
-	{term: "Voxt", aliases: []string{"Vox T", "Vox", "Voxed", "Voist", "沃克斯特"}, spelled: true, hint: true},
+	{term: "Voxt", aliases: []string{"Vox T", "Voxed", "Voist", "沃克斯特"}, spelled: true, hint: true},
 	{term: "Qwen", aliases: []string{"Quen", "QEN"}, spelled: true},
 	{term: "DeepSeek", aliases: []string{"Deep Seek", "DeepSeq", "Deep Sick", "DeepSick", "DeepSig"}, spelled: true, hint: true},
 	{term: "ChatGPT", aliases: []string{"Chat GPT", "ChatsGPT", "ChadGPT", "Chad GPT", "ChatGTT"}, spelled: true},
 	{term: "OpenAI", aliases: []string{"OpenEye"}, spelled: true},
 	{term: "GitHub", aliases: []string{"Jithub"}, spelled: true},
 	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}, spelled: true},
-	{term: "CUDA", aliases: []string{"QDA"}, spelled: true},
-	{term: "API key", aliases: []string{"APIQ"}, hint: true},
-	{term: "Gemini", aliases: []string{"Geminar", "Gamini"}},
+	{term: "CUDA", spelled: true},
+	{term: "API key", aliases: []string{"APIQ", "APIT", "API T", "APIP"}, hint: true},
+	{term: "Gemini", aliases: []string{"Geminar"}},
 	{term: "Claude Code", spelled: true, hint: true},
 	{term: "MCP", aliases: lettersOf("MCP"), spelled: true},
 	{term: "LLM", aliases: lettersOf("LLM"), spelled: true},
@@ -114,7 +117,7 @@ func BuiltinHints(terms []store.Term) []string {
 // user's spelling and gains the built-in aliases.
 func ReplaceWithBuiltin(text string, terms []store.Term) string {
 	all, spelled := withBuiltin(terms)
-	text, _ = matchText(text, all, false, spelled)
+	text, _ = matchText(text, all, false, spelled, len(terms))
 	return text
 }
 

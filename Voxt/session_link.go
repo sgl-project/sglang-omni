@@ -34,6 +34,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -253,6 +254,8 @@ func resolver(lm local.Services) session.Resolver {
 			switch {
 			case err == nil:
 				svc.ASR, svc.ASRInfo = p, sessionModel(m)
+				// The built-in hints were measured on the default model only.
+				svc.BuiltinHints = m.ID == models.ASRAccurate
 			case !errors.Is(err, local.ErrNotInstalled):
 				return svc, err
 			}

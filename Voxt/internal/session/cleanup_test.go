@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -88,6 +89,43 @@ func TestBuiltinVocabulary(t *testing.T) {
 			}
 			if strings.Join(lit, ",") != c.lit {
 				t.Errorf("highlighted %q, want %q", lit, c.lit)
+			}
+		})
+	}
+}
+
+// TestBuiltinHints: the speech model gets the built-in words' hints
+// after the user's terms only when it is the model they were measured on
+// (Services.BuiltinHints) and the dictionary, its speech-model hints and
+// the built-in words are on; a remote service gets the user's alone.
+func TestBuiltinHints(t *testing.T) {
+	for _, c := range []struct {
+		name                     string
+		model, asrHints, builtin bool
+		want                     string
+	}{
+		{"measured model", true, true, true, "VoxtNew,SGLang,Voxt,DeepSeek,API key,Claude Code"},
+		{"another model", false, true, true, "VoxtNew"},
+		{"built-in words off", true, true, false, "VoxtNew"},
+		{"hints off", true, false, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeFile{text: "好的"}
+			h := newHarness(t, f, nil, func(cfg *Config, s *settings.Settings) {
+				resolve := cfg.Resolve
+				cfg.Resolve = func(ctx context.Context, kind Kind, st settings.Settings, speech bool) (Services, error) {
+					svc, err := resolve(ctx, kind, st, speech)
+					svc.BuiltinHints = c.model
+					return svc, err
+				}
+				s.Dictionary.ASRHints, s.Dictionary.BuiltinOff = c.asrHints, !c.builtin
+			})
+			h.speak(h.start(), 5)
+			h.rec.wait(t)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if got := strings.Join(f.hints, ","); got != c.want {
+				t.Errorf("hints %q, want %q", got, c.want)
 			}
 		})
 	}

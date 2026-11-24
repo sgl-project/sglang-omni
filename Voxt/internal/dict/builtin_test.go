@@ -12,8 +12,8 @@ import (
 // TestReplaceWithBuiltin: with no dictionary the built-in aliases become
 // their terms and a spelled name gets its case back, unless it is one
 // word all in one case (a package, an address or a variable) or also a
-// word (cursor). The
-// user's terms win: their alias or word stays, a term they turned off is
+// word (cursor), or joined to another word in a token (X-Github-Id,
+// a path). The user's terms win: their alias or word stays, a term they turned off is
 // left alone, and a term they have keeps their spelling with the
 // built-in aliases.
 func TestReplaceWithBuiltin(t *testing.T) {
@@ -37,6 +37,8 @@ func TestReplaceWithBuiltin(t *testing.T) {
 		{"one case stays", nil, "pip install sglang from github.com with GITHUB_TOKEN, GitHub", "pip install sglang from github.com with GITHUB_TOKEN, GitHub"},
 		{"two words in one case", nil, "on sg lang and SG LANG, on hugging face", "on SGLang and SGLang, on Hugging Face"},
 		{"whole words only", nil, "Voxel and Voxes stay", "Voxel and Voxes stay"},
+		{"inside a token", nil, "X-Github-Id, Github.com/x, Support/SG Lang/models, Github's", "X-Github-Id, Github.com/x, Support/SG Lang/models, GitHub's"},
+		{"the user's alias inside a token", []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}}, "x-aura link, X-Github", "x-VoxtNew, X-Github"},
 		{"the user's word", []store.Term{{Term: "Vox", Enabled: true}}, "Vox and Voxed", "Vox and Voxt"},
 		{"the user's alias", []store.Term{{Term: "Vox Media", Aliases: []string{"vox"}, Enabled: true}}, "vox", "Vox Media"},
 		{"the user's word, turned off", []store.Term{{Term: "Vox", Enabled: false}}, "Vox and Voxed", "Vox and Voxt"},
