@@ -561,7 +561,7 @@ class WhisperForConditionalGeneration(nn.Module):
             else:
                 pass
             features.append(torch.cat(item_features, dim=0))
-            encoder_lens.append(int(forward_batch.encoder_lens[index].item()))
+            encoder_lens.append(int(forward_batch.encoder_lens_cpu[index]))
 
         if not features:
             return None, None
@@ -585,7 +585,7 @@ class WhisperForConditionalGeneration(nn.Module):
                 continue
             else:
                 pass
-            encoder_len = int(forward_batch.encoder_lens[index].item())
+            encoder_len = int(forward_batch.encoder_lens_cpu[index])
             for item in mm_input.mm_items:
                 embedding = item.precomputed_embeddings
                 if embedding is None:
