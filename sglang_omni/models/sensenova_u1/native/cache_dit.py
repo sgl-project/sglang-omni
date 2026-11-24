@@ -108,15 +108,6 @@ class CacheDitMountKey:
     separate_cfg: bool
 
 
-def register_cache_dit_spec() -> None:
-    _CUSTOM_BLOCK_ADAPTER_SPECS.setdefault(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        SenseNovaGenerationBlocks.__name__,
-        CustomBlockAdapterSpec(
-            blocks_attr="blocks", forward_pattern=ForwardPattern.Pattern_3
-        ),
-    )
-
-
 def environment_cache_dit_params() -> dict[str, JsonValue]:
     """Return the server's DBCache settings under their request key names."""
     return {
@@ -337,7 +328,12 @@ class SenseNovaCacheDit:
             config.Bn_compute_blocks,
             decoder.config.num_hidden_layers,
         )
-        register_cache_dit_spec()
+        _CUSTOM_BLOCK_ADAPTER_SPECS.setdefault(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+            SenseNovaGenerationBlocks.__name__,
+            CustomBlockAdapterSpec(
+                blocks_attr="blocks", forward_pattern=ForwardPattern.Pattern_3
+            ),
+        )
         if self.view is None:
             self.view = SenseNovaGenerationBlocks(
                 decoder.layers[: decoder.config.num_hidden_layers]

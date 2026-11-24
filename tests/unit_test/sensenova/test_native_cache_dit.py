@@ -1,8 +1,9 @@
 """Exercise SenseNova Cache-DiT switching, overrides and mount lifecycle on CPU."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Protocol
 from unittest.mock import Mock
 
 import pytest
@@ -19,6 +20,9 @@ from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
 )
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
+from transformers.cache_utils import Cache
+from transformers.processing_utils import Unpack
+from transformers.utils import TransformersKwargs
 
 from sglang_omni.models.sensenova_u1.native import cache_dit as sensenova_cache_dit
 from sglang_omni.models.sensenova_u1.native import pipeline as sensenova_pipeline
@@ -68,6 +72,16 @@ CACHE_DIT_VARIABLES = (
 )
 
 
+class StageFactory(Protocol):
+    def __call__(self) -> SenseNovaU1GenerationStage: ...
+
+
+class Unpatchify(Protocol):
+    def __call__(
+        self, latents: torch.Tensor, patch_size: int, height: int, width: int
+    ) -> torch.Tensor: ...
+
+
 @pytest.fixture(autouse=True)
 def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     for variable in CACHE_DIT_VARIABLES:
@@ -96,7 +110,7 @@ def release(stage: SenseNovaU1GenerationStage) -> None:
 
 
 @pytest.fixture
-def new_stage() -> Iterator[Callable[[], SenseNovaU1GenerationStage]]:
+def new_stage() -> Iterator[StageFactory]:
     """Build tiny stages and unmount them at teardown.
 
     cache-dit 1.3.0 allows one transformer-only mount per process at a time.
@@ -159,10 +173,35 @@ def view_calls(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     def counted_forward(
         view: sensenova_cache_dit.SenseNovaGenerationBlocks,
         hidden_states: torch.Tensor,
-        **kwargs: object,
+        *,
+        image_gen_indicators: torch.Tensor,
+        exist_non_image_gen_tokens: bool,
+        exist_image_gen_tokens: bool,
+        indexes: torch.LongTensor | None,
+        attention_mask: torch.Tensor | None,
+        position_ids: torch.LongTensor | None,
+        past_key_values: Cache | None,
+        use_cache: bool | None,
+        cache_position: torch.LongTensor | None,
+        update_cache: bool,
+        **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
-        calls.append(bool(kwargs["update_cache"]))
-        return view_forward(view, hidden_states, **kwargs)
+        calls.append(update_cache)
+        return view_forward(
+            view,
+            hidden_states,
+            image_gen_indicators=image_gen_indicators,
+            exist_non_image_gen_tokens=exist_non_image_gen_tokens,
+            exist_image_gen_tokens=exist_image_gen_tokens,
+            indexes=indexes,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            update_cache=update_cache,
+            **kwargs,
+        )
 
     monkeypatch.setattr(
         sensenova_cache_dit.SenseNovaGenerationBlocks, "forward", counted_forward
@@ -182,7 +221,7 @@ def view_calls(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
 )
 def test_mounted_cache_runs_only_denoising_steps_and_keeps_output(
     monkeypatch: pytest.MonkeyPatch,
-    new_stage: Callable[[], SenseNovaU1GenerationStage],
+    new_stage: StageFactory,
     request_options: dict[str, float | bool | tuple[str, ...]],
     branch_count: int,
 ) -> None:
@@ -210,7 +249,7 @@ def test_mounted_cache_runs_only_denoising_steps_and_keeps_output(
 
 def test_mount_follows_each_request(
     monkeypatch: pytest.MonkeyPatch,
-    new_stage: Callable[[], SenseNovaU1GenerationStage],
+    new_stage: StageFactory,
 ) -> None:
     """Same settings refresh; new settings or guidance branches remount; a disabled request unmounts."""
     mounts = Mock(wraps=sensenova_cache_dit.enable_cache_on_transformer)
@@ -287,7 +326,7 @@ def test_mount_follows_each_request(
 
 def raise_after_unpatchify_calls(
     stage: SenseNovaU1GenerationStage, completed_calls: int
-) -> Callable[[torch.Tensor, int, int, int], torch.Tensor]:
+) -> Unpatchify:
     unpatchify = stage.model.unpatchify
     calls = [0]
 
@@ -314,19 +353,37 @@ def raise_after_unpatchify_calls(
         pytest.param([{"fail_after_steps": 2}], id="failed-before"),
     ],
 )
+@pytest.mark.parametrize(
+    "later_options",
+    [
+        pytest.param({}, id="later-t2i"),
+        pytest.param({"edit": True}, id="later-edit"),
+        pytest.param(
+            {"prompts": ("a red apple", "a blue sky")}, id="later-two-prompts"
+        ),
+    ],
+)
 def test_cached_request_matches_a_fresh_stage(
     monkeypatch: pytest.MonkeyPatch,
-    new_stage: Callable[[], SenseNovaU1GenerationStage],
+    new_stage: StageFactory,
     earlier_requests: list[dict[str, JsonValue]],
+    later_options: dict[str, bool | tuple[str, ...]],
 ) -> None:
-    """Cache state from earlier, changed, or failed requests must not reach the next request."""
+    """Cache state from earlier, changed, or failed requests must not reach the next request.
+
+    The cached run must differ from an uncached one, so a mount that silently stops caching fails here.
+    """
     reference_stage = new_stage()
     fresh = generate(
         reference_stage,
-        generation_request(enable_cache_dit=True, cache_dit_params=CACHE_EVERY_STEP),
+        generation_request(
+            enable_cache_dit=True, cache_dit_params=CACHE_EVERY_STEP, **later_options
+        ),
     )
     release(reference_stage)
-    uncached = generate(new_stage(), generation_request(enable_cache_dit=False))
+    uncached = generate(
+        new_stage(), generation_request(enable_cache_dit=False, **later_options)
+    )
     assert not torch.equal(fresh, uncached)
     stage = new_stage()
     for options in earlier_requests:
@@ -346,7 +403,9 @@ def test_cached_request_matches_a_fresh_stage(
                     generate(stage, request)
     later = generate(
         stage,
-        generation_request(enable_cache_dit=True, cache_dit_params=CACHE_EVERY_STEP),
+        generation_request(
+            enable_cache_dit=True, cache_dit_params=CACHE_EVERY_STEP, **later_options
+        ),
     )
     assert torch.equal(later, fresh)
 
@@ -381,7 +440,7 @@ def test_request_switch_overrides_server_switch(
 
 def test_request_settings_override_server_settings_per_key(
     monkeypatch: pytest.MonkeyPatch,
-    new_stage: Callable[[], SenseNovaU1GenerationStage],
+    new_stage: StageFactory,
 ) -> None:
     monkeypatch.setenv("SGLANG_CACHE_DIT_RDT", "0.3")
     monkeypatch.setenv("SGLANG_CACHE_DIT_WARMUP", "2")
