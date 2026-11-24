@@ -25,8 +25,8 @@ const (
 // (degrees, 0 to the right), how far (DIPs) and how large (DIPs), in the
 // logo's orange and peach by turns.
 var shareSparkleStars = [...][3]float32{
-	{-90, 26, 9}, {-30, 30, 6}, {20, 26, 8}, {75, 22, 5},
-	{130, 26, 7}, {180, 30, 6}, {-140, 24, 8},
+	{-95, 34, 12}, {-45, 46, 8}, {-5, 52, 11}, {35, 40, 7},
+	{80, 30, 9}, {140, 42, 8}, {185, 50, 11}, {-140, 40, 9},
 }
 
 type shareSparkle struct {
@@ -105,7 +105,8 @@ func shareSparkleBurst(c *ui.Context, t *ui.Theme, fly float32) {
 			if i%2 == 1 {
 				color = sharePeach
 			}
-			ui.Icon(c.Key(i), icons.ShareStar).Absolute().Left(d*float32(math.Cos(a))-s/2).Top(d*float32(math.Sin(a))-s/2).
+			// Wider than tall: Home's Share sits near the window's top.
+			ui.Icon(c.Key(i), icons.ShareStar).Absolute().Left(d*float32(math.Cos(a))-s/2).Top(.6*d*float32(math.Sin(a))-s/2).
 				Size(s, s).TextColor(color).Scale(grow, grow).Opacity(min(1, 2*(1-fly)))
 		}
 	})
