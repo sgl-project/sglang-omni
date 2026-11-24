@@ -131,6 +131,9 @@ class FishS2ProEngineBuilder(TtsEngineBuilder[request_builders.S2ProSGLangReques
             pass
 
         sm_version = get_visible_gpu_sm_version(self.gpu_id)
+        # SM89 consumer cards (24 GB) keep the higher default for opt-in
+        # high-memory hosts; use examples/configs/s2pro_tts_rtx4090.yaml for the
+        # #1243-validated concurrency-4 / Graph-cap-4 envelope.
         return {
             "max_running_requests": 64,
             "disable_cuda_graph": False,
