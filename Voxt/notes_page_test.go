@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,7 +27,7 @@ func TestNotesPage(t *testing.T) {
 	if a.shownPath() != "/notes" {
 		t.Fatalf("went to %s", a.shownPath())
 	}
-	if !has(tt, "No notes yet") || !has(tt, "Press Right ⌘ in any app, speak, and press it again.") {
+	if !has(tt, "No notes yet") || !has(tt, "Press Right ⌘, speak, and press it again.") {
 		t.Errorf("empty: %q", firstTexts(tt))
 	}
 	repo := a.lib.store.Notes()
@@ -176,7 +177,7 @@ func TestNotesPageAsksForAShortcut(t *testing.T) {
 		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: settings.DefaultNote, Trigger: settings.TriggerTap}}
 	})
 	frames(tt)
-	if has(tt, "Press Right ⌘ in any app, speak, and press it again.") || !has(tt, "No notes yet") {
+	if has(tt, "Press Right ⌘, speak, and press it again.") || !has(tt, "No notes yet") {
 		t.Errorf("taken: %q", firstTexts(tt))
 	}
 }
@@ -239,5 +240,65 @@ func TestNotesPageModelTracksShortcutConflicts(t *testing.T) {
 	})
 	if problems := a.notesPageModel(time.Now()).Shortcut.Problems; len(problems) != 0 {
 		t.Fatalf("removed conflict remains %q", problems)
+	}
+}
+
+// TestNotesBanner: the page opens with its introduction, which says what
+// notes are for and has Record a note; Close puts it away for good, and
+// the button moves to the page's header, where it reads Stop and save
+// while a note records.
+func TestNotesBanner(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1200)
+	a.navigate("/notes")
+	frames(tt)
+	// How many times the page says how to record a note.
+	hints := func() (count int) {
+		for _, text := range tt.Texts() {
+			if strings.Contains(text, "It's saved here, not typed.") {
+				count++
+			}
+		}
+		return count
+	}
+	if !has(tt, "Say it. Keep it.") || !has(tt, "Record a note") || has(tt, "Stop and save") || hints() != 1 {
+		t.Errorf("first visit: %q", firstTexts(tt))
+	}
+	a.sess = session.Snapshot{ID: "note", Note: true, State: session.Recording, StartedAt: time.Now()}
+	frames(tt)
+	if !has(tt, "Stop and save") || has(tt, "Record a note") {
+		t.Errorf("recording from the banner: %q", firstTexts(tt))
+	}
+	a.sess.Note = false // a dictation is not the page's to stop
+	if a.notesPageModel(time.Now()).Recording {
+		t.Error("a dictation counted as a note")
+	}
+	a.sess = session.Snapshot{}
+	click(t, tt, "Close the introduction")
+	if !a.prefs.Setup.NotesIntroDone || has(tt, "Say it. Keep it.") {
+		t.Fatalf("closed: done %t, %q", a.prefs.Setup.NotesIntroDone, firstTexts(tt))
+	}
+	// The page says how by itself now, and still records.
+	if !has(tt, "Record a note") || hints() != 1 {
+		t.Errorf("after the introduction: %q", firstTexts(tt))
+	}
+	a.sess = session.Snapshot{ID: "note", Note: true, State: session.Recording, StartedAt: time.Now()}
+	frames(tt)
+	if !has(tt, "Stop and save") {
+		t.Errorf("recording from the header: %q", firstTexts(tt))
+	}
+}
+
+// TestNotesBannerGoesWithTheFirstNote: a note saved puts the introduction
+// away, as its Close does.
+func TestNotesBannerGoesWithTheFirstNote(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 1200)
+	a.navigate("/notes")
+	frames(tt)
+	a.sessionEnded(session.Snapshot{ID: "s1", Kind: store.KindTranscribe, State: session.Done, Note: true, Result: "buy milk"})
+	frames(tt)
+	if !a.prefs.Setup.NotesIntroDone || has(tt, "Say it. Keep it.") {
+		t.Errorf("after a note: done %t, %q", a.prefs.Setup.NotesIntroDone, firstTexts(tt))
 	}
 }

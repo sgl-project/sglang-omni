@@ -59,13 +59,17 @@ type notesShortcutViewState struct {
 }
 
 type notesViewState struct {
-	Read       bool                   `json:"read"`
-	Loading    bool                   `json:"loading"`
-	Error      string                 `json:"error"`
-	CountLabel string                 `json:"count_label"`
-	Rows       []notesRowViewState    `json:"rows"`
-	Edit       notesEditViewState     `json:"edit"`
-	Shortcut   notesShortcutViewState `json:"shortcut"`
+	Read       bool                `json:"read"`
+	Loading    bool                `json:"loading"`
+	Error      string              `json:"error"`
+	CountLabel string              `json:"count_label"`
+	Rows       []notesRowViewState `json:"rows"`
+	// Recording: a note is being recorded, and the button that records
+	// one stops it. Banner: the page's introduction still shows.
+	Recording bool                   `json:"recording"`
+	Banner    bool                   `json:"banner"`
+	Edit      notesEditViewState     `json:"edit"`
+	Shortcut  notesShortcutViewState `json:"shortcut"`
 }
 
 type notesShortcutStateInput struct {
@@ -90,10 +94,12 @@ type notesViewStateInput struct {
 	UsedBy        []string
 	Editing       notesShortcutStateInput
 	Edit          notesEditViewState
+	Recording     bool
+	Banner        bool
 }
 
 func buildNotesViewState(translator *i18n.Translator, input notesViewStateInput) notesViewState {
-	state := notesViewState{Read: input.Read, Loading: input.Loading, Error: input.Error, Edit: input.Edit}
+	state := notesViewState{Read: input.Read, Loading: input.Loading, Error: input.Error, Edit: input.Edit, Recording: input.Recording, Banner: input.Banner}
 	if len(input.Notes) > 0 {
 		state.CountLabel = translator.N(len(input.Notes), "%d note", "%d notes", len(input.Notes))
 	}
@@ -125,7 +131,7 @@ func buildNotesShortcutViewState(translator *i18n.Translator, input notesViewSta
 			state.Selection = translator.T("Off")
 		}
 	}
-	state.EmptyHint = translator.T("Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.")
+	state.EmptyHint = translator.T("Pick a shortcut, then press it in any app and speak. It's saved here, not typed.")
 	state.Problems = uitext.HotkeyProblemsFor(translator, input.Features, hotkey.Note)[0]
 	for _, problem := range hotkey.Check(input.Features) {
 		if problem.Feature == hotkey.Note || problem.Code == hotkey.ProblemConflict && problem.Other == hotkey.Note {
@@ -136,7 +142,7 @@ func buildNotesShortcutViewState(translator *i18n.Translator, input notesViewSta
 		}
 	}
 	if current != "" && len(state.Problems) == 0 {
-		state.EmptyHint = translator.T("Press %s in any app, speak, and press it again. What you say is saved here instead of typed.", uitext.HotkeyTextFor(translator, current))
+		state.EmptyHint = translator.T("Press %s, speak, and press it again. It's saved here, not typed.", uitext.HotkeyTextFor(translator, current))
 	}
 	state.Options = notesKeyOptionsFor(translator, current)
 	editing := input.Editing

@@ -26,6 +26,8 @@
         "delete_text": "Delete buy milk"
       }
     ],
+    "recording": false,
+    "banner": false,
     "edit": {
       "id": "",
       "draft": "",
@@ -96,7 +98,7 @@
       ],
       "system_codes": null,
       "used_by": null,
-      "empty_hint": "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.",
+      "empty_hint": "Pick a shortcut, then press it in any app and speak. It's saved here, not typed.",
       "set_hint": false,
       "helper_records": false,
       "selection": "NotAKey",

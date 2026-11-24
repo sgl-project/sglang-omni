@@ -171,6 +171,9 @@ func notesFixtureScenarios() []meetingFixtureScenario {
 	add("notes-loading", func(input *notesViewStateInput) { input.Read, input.Loading = false, true })
 	add("notes-empty", func(input *notesViewStateInput) { input.Notes = nil })
 	add("notes-normal", func(input *notesViewStateInput) {})
+	add("notes-banner", func(input *notesViewStateInput) { input.Notes, input.Banner = nil, true })
+	add("notes-banner-recording", func(input *notesViewStateInput) { input.Banner, input.Recording = true, true })
+	add("notes-recording", func(input *notesViewStateInput) { input.Recording = true })
 	add("notes-error", func(input *notesViewStateInput) { input.Error = "fixture read failed" })
 	add("notes-edit", func(input *notesViewStateInput) {
 		input.Edit = notesEditViewState{ID: "note-2", Draft: "call Ana tomorrow"}

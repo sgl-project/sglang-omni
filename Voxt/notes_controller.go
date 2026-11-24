@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
@@ -43,6 +44,8 @@ type notesViewCacheKey struct {
 	editing       notesShortcutStateInput
 	usedBy        string
 	edit          notesEditViewState
+	recording     bool
+	banner        bool
 }
 
 func (a *app) loadNotes() {
@@ -98,12 +101,15 @@ func (a *app) notesPageModel(now time.Time) notesViewState {
 		seq: a.nv.seq, locale: i18n.Locale(), loading: a.nv.loading, problems: strings.Join(problems, "\x00"),
 		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset,
 		keys: current, helperRecords: a.helperRecordsKeys(), editing: editing, usedBy: strings.Join(usedBy, "\x00"),
-		edit: notesEditViewState{ID: local.editID, Draft: local.draft, Saving: local.saving},
+		edit:      notesEditViewState{ID: local.editID, Draft: local.draft, Saving: local.saving},
+		recording: a.sess.Note && a.sess.State == session.Recording,
+		banner:    !a.prefs.Setup.NotesIntroDone,
 	}
 	if key != a.nv.viewKey {
 		a.nv.view = buildNotesViewState(i18n.CurrentTranslator(), notesViewStateInput{
 			Notes: a.nv.list, Read: a.nv.read, Loading: a.nv.loading, Error: a.nv.err,
 			Features: a.prefs.Features, Now: now, HelperRecords: key.helperRecords, UsedBy: usedBy, Editing: editing, Edit: key.edit,
+			Recording: key.recording, Banner: key.banner,
 		})
 		a.nv.viewKey = key
 	}
@@ -111,6 +117,28 @@ func (a *app) notesPageModel(now time.Time) notesViewState {
 }
 
 func (a *app) copyNote(text string) { a.copyFeatureText(text) }
+
+// closeNotesBanner puts the page's introduction away for good: its Close,
+// and the first note saved while it showed (sessionEnded).
+func (a *app) closeNotesBanner() {
+	if !a.prefs.Setup.NotesIntroDone {
+		a.updateSettings(func(s *settings.Settings) { s.Setup.NotesIntroDone = true })
+	}
+}
+
+// toggleNoteRecording is Record a note, on the banner and then in the
+// page's header: it starts a note as the note's shortcut does, and stops
+// the one that records.
+func (a *app) toggleNoteRecording() {
+	switch {
+	case a.sess.State == session.Recording:
+		if a.sess.Note {
+			a.stopSession()
+		}
+	case !a.sess.State.Live() || a.answerBackgroundable():
+		a.startSession(session.StartRequest{Kind: store.KindTranscribe, Note: true})
+	}
+}
 
 // saveNoteEdit saves text as the note id, keeping its time and source app.
 func (a *app) saveNoteEdit(id, text string) {

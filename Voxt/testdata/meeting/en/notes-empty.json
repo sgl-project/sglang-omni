@@ -7,6 +7,8 @@
     "error": "",
     "count_label": "",
     "rows": [],
+    "recording": false,
+    "banner": false,
     "edit": {
       "id": "",
       "draft": "",
@@ -69,7 +71,7 @@
       "problem_codes": null,
       "system_codes": null,
       "used_by": null,
-      "empty_hint": "Press Right ⌘ in any app, speak, and press it again. What you say is saved here instead of typed.",
+      "empty_hint": "Press Right ⌘, speak, and press it again. It's saved here, not typed.",
       "set_hint": false,
       "helper_records": false,
       "selection": "Right ⌘",
