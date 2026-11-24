@@ -247,10 +247,13 @@ func (r *run) listen() (string, bool) {
 		case <-endPause:
 			endPause = nil
 			r.logf("info", "the end word was said last: stopping the recording")
-			r.stopOnce.Do(func() { close(r.stop) })
+			r.stopRecording()
 		case <-stopCh:
 			stopCh, heard, endPause = nil, nil, nil
-			at := r.now()
+			at := r.stoppedAt()
+			if at.IsZero() {
+				at = r.recordStopAt(r.now())
+			}
 			r.m.update(r, func(s *Snapshot) { s.State, s.StoppedAt = Recognizing, at })
 			go func() {
 				ctx, cancel := context.WithTimeout(r.ctx, cfg.StopGrace)
@@ -265,6 +268,7 @@ func (r *run) listen() (string, bool) {
 			capCancel()
 		case c := <-capDone:
 			recordDone, captured = true, c
+			r.recordStopAt(r.now())
 			close(r.recorded)
 		}
 	}

@@ -27,6 +27,7 @@ type meetingDemoHost struct {
 	pageUI                meetingsLocalUI
 	overlayUI             meetingOverlayLocalUI
 	historyUI             historyLocalUI
+	insightsClosed        bool // Home's Looking back, folded in the demo
 	historySettingsUI     historySettingsLocalUI
 	historyAccessUI       historyAccessLocalUI
 	updatesUI             updatesLocalUI
@@ -142,6 +143,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	if fixture.state.Overlay != nil {
 		host.overlayUI.collapsed = fixture.state.Overlay.Collapsed
 	}
+	host.insightsClosed = fixture.state.Home != nil && fixture.state.Home.InsightsClosed
 	host.historyUI = historyLocalUI{}
 	if fixture.state.History != nil {
 		host.historyUI.tab = len(store.Kinds)
@@ -196,6 +198,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.dictionaryUI.query = state.Query
 		host.dictionaryUI.tab = state.Tab
 		host.dictionaryUI.scanOpen = state.ScanOpen
+		host.dictionaryUI.settingsOpen = state.SettingsOpen
 		host.dictionaryUI.notes = speechContextState{text: state.NotesText, seen: state.NotesText}
 		host.dictionaryUI.notesQuery = state.NotesQuery
 		host.dictionaryUI.notesFind.cur = state.NotesFindCurrent
@@ -509,13 +512,27 @@ func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
 }
 
-func (host *meetingDemoHost) activityBack()         { host.record("activityBack") }
-func (host *meetingDemoHost) openShare()            { host.record("openShare") }
-func (host *meetingDemoHost) openInsightsShare()    { host.record("openInsightsShare") }
+func (host *meetingDemoHost) activityBack()      { host.record("activityBack") }
+func (host *meetingDemoHost) openShare()         { host.record("openShare") }
+func (host *meetingDemoHost) openInsightsShare() { host.record("openInsightsShare") }
+func (host *meetingDemoHost) setInsightsClosed(closed bool) {
+	host.insightsClosed = closed
+	host.record("setInsightsClosed %t", closed)
+}
 func (host *meetingDemoHost) closeInsightsShare()   { host.record("closeInsightsShare") }
 func (host *meetingDemoHost) shuffleInsightsShare() { host.record("shuffleInsightsShare") }
 func (host *meetingDemoHost) copyInsightsShare()    { host.record("copyInsightsShare") }
-func (host *meetingDemoHost) activityForward()      { host.record("activityForward") }
+func (host *meetingDemoHost) saveInsightsShare()    { host.record("saveInsightsShare") }
+func (host *meetingDemoHost) postInsightsShare(site string) {
+	host.record("postInsightsShare %s", site)
+}
+func (host *meetingDemoHost) turnInsightsShare(by int) {
+	host.record("turnInsightsShare %d", by)
+}
+func (host *meetingDemoHost) showInsightsShare(card int) {
+	host.record("showInsightsShare %d", card)
+}
+func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
 
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
