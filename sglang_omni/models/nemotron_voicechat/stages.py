@@ -123,7 +123,7 @@ def create_perception_executor(
     ]
     # note (Junnan Li): a bucket captured on its first batch would stall live requests, so every bucket captures before serving.
     for perception_stream in perception_streams:
-        if enable_cuda_graph and perception_stream.device.type == "cuda":
+        if enable_cuda_graph and perception_stream.device.type in ("cuda", "npu"):
             perception_stream.push(
                 torch.zeros(
                     perception_stream.batch_size,
