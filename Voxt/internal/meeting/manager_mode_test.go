@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -261,12 +262,19 @@ func TestDiscardWhileEnding(t *testing.T) {
 	if r.mic.running() != 0 || r.sys.running() != 0 {
 		t.Errorf("%d microphone and %d system captures still open", r.mic.running(), r.sys.running())
 	}
-	close(release)
-	for deadline := time.Now().Add(5 * time.Second); r.m.Current().State == meeting.StateFinishing; {
-		if time.Now().After(deadline) {
-			t.Fatal("the final pass did not end")
+	ended := make(chan struct{})
+	var once sync.Once
+	stop := r.m.Subscribe(func(s meeting.Snapshot) {
+		if s.State != meeting.StateFinishing {
+			once.Do(func() { close(ended) })
 		}
-		time.Sleep(10 * time.Millisecond)
+	})
+	defer stop()
+	close(release)
+	select {
+	case <-ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the final pass did not end")
 	}
 }
 
