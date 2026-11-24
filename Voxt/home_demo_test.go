@@ -26,6 +26,9 @@ func TestHomeDemoActionControls(t *testing.T) {
 		{name: "shortcut settings", fixture: "en/home-shortcut-missing", steps: historySteps("Shortcut: Open Transcribe"), want: []string{"fixHomeReadiness transcribe"}},
 		{name: "helper restart", fixture: "en/home-helper-stopped", steps: historySteps("Helper: Restart helper"), want: []string{"fixHomeReadiness restart-helper"}},
 		{name: "app relaunch", fixture: "en/home-helper-reason-updated", steps: historySteps("Helper: Restart Voxt"), want: []string{"fixHomeReadiness relaunch"}},
+		{name: "fold looking back", fixture: "en/home-looking-back", steps: historySteps("Looking back"), want: []string{"setInsightsClosed true"}},
+		{name: "open looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Looking back"), want: []string{"setInsightsClosed false"}},
+		{name: "share folded looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Share a look back"), want: []string{"openInsightsShare"}},
 		{name: "open recent", fixture: "en/home-normal", steps: historySteps("Weekly plan"), want: []string{"openHomeRecent home-transcribe"}},
 		{name: "inline copy", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Copy: Weekly plan", click: true}}, want: []string{"copyHomeRecent home-transcribe"}},
 		{name: "menu copy", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Copy", menu: true}}, want: []string{`copyHistoryText "Weekly plan\nI'll send the new agenda tonight."`}},
@@ -83,5 +86,34 @@ func TestHomeDemoHidesFeatureTry(t *testing.T) {
 	tester := newMeetingDemoTester(t, host)
 	if tester.HasText("Try it") {
 		t.Fatal("the feature-owned Try card leaked into the Home demo")
+	}
+}
+
+// TestLookingBackNumbersWhole: Looking back's cards never cut a number or
+// its unit. In a window too narrow for them the row wraps or a card takes
+// more of it: "226 characters a minute" was "2… characters a min…".
+func TestLookingBackNumbersWhole(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/home-looking-back")
+	tester := newMeetingDemoTester(t, host)
+	widths := func() (number, unit float32) {
+		t.Helper()
+		frames(tester)
+		n, ok := tester.Find("226")
+		u, ok2 := tester.Find("characters a minute")
+		if !ok || !ok2 {
+			t.Fatalf("no speed card: %q", tester.Texts())
+		}
+		return n.W, u.W
+	}
+	number, unit := widths() // the demo's own window: room for all four
+	for _, width := range []int{560, 627, 735} {
+		tester.SetSize(width, 700)
+		if n, u := widths(); n < number-1 || u < unit-1 { // a pixel of rounding
+			t.Errorf("%d wide: the speed is %.0f and its unit %.0f wide, want %.0f and %.0f", width, n, u, number, unit)
+		}
 	}
 }

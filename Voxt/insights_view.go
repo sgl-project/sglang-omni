@@ -37,6 +37,12 @@ func renderInsightsCard(state *insightsCardViewState) image.Image {
 }
 
 // homeInsightsSection is the four totals under their title and Share.
+// The title folds the totals away and opens them again
+// (settings.Appearance.LookingBackClosed keeps the choice); its arrow
+// shows only under the pointer or with the keyboard's focus, as
+// Appearance's Color row and the sidebar's sections do. Share stays
+// on the title's row either way: the card it opens has the totals, and
+// the row does not move as the section folds.
 func homeInsightsSection(c *ui.Context, state *homeViewState, actions homeActions) {
 	ins := state.Insights
 	if !state.KeepHistory || ins == nil {
@@ -44,33 +50,53 @@ func homeInsightsSection(c *ui.Context, state *homeViewState, actions homeAction
 	}
 	t := c.Theme()
 	k := tok(t)
+	open := !state.InsightsClosed
+	var parts ui.CollapsibleParts
 	ui.Row(c.Key("insights-title")).Gap(px(t, sp2)).AlignItems(ui.Center).Margin(px(t, sp2), 0, 0, 0).Children(func() {
-		sectionTitleText(c, i18n.T("Looking back")).Grow(1)
+		title := i18n.T("Looking back")
+		parts = ui.CollapsibleBase(c.Key("insights-fold"), &open)
+		fold := parts.Trigger.Gap(px(t, sp1)).AlignItems(ui.Center).Radius(px(t, radiusControl)).Label(title)
+		fold.Children(func() {
+			sectionTitleText(c, title).SingleLine()
+			arrow := ui.Icon(c, icons.AltArrowRight.Linear).Size(px(t, 12), px(t, 12)).TextColor(k.Text2).Rotate(90 * parts.Progress())
+			if !fold.Hovered() && !fold.FocusVisible() {
+				arrow.Opacity(0) // its room stays, so the title does not move
+			}
+		})
+		if fold.Changed() {
+			actions.setInsightsClosed(!state.InsightsClosed)
+		}
+		ui.Spacer(c)
 		if quietButton(c.Key("insights-share"), icons.Share, i18n.T("Share")).Label(i18n.T("Share a look back")).Clicked() {
 			actions.openInsightsShare()
 		}
 	})
-	ui.Row(c.Key("home-insights")).Wrap().Gap(px(t, sp3)).Children(func() {
-		for i, stat := range ins.Stats {
-			fillCard(c.Key(i)).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).MinWidth(px(t, 120)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
-				insightsParts(c, stat.Parts, px(t, fsTitle), px(t, fsCaption), k.Text, k.Text2)
-				ui.Text(c, stat.Label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
-			})
-		}
+	parts.Panel(func() {
+		ui.Row(c.Key("home-insights")).Wrap().Gap(px(t, sp3)).Children(func() {
+			for i, stat := range ins.Stats {
+				// No minimum width of its own: a card is at least as wide as
+				// its number and unit, so the row wraps before it cuts them.
+				fillCard(c.Key(i)).Gap(px(t, 2)).Grow(1).Basis(px(t, 140)).Padding(px(t, sp3), px(t, sp4)).Children(func() {
+					insightsParts(c, stat.Parts, px(t, fsTitle), px(t, fsCaption), k.Text, k.Text2)
+					ui.Text(c, stat.Label).FontSize(px(t, fsCaption)).TextColor(k.Text2).SingleLine().Ellipsis("…").MinWidth(0)
+				})
+			}
+		})
 	})
 }
 
 // insightsParts is a number and its unit, then the next: "2 hours 34
-// minutes", the numbers large.
+// minutes", the numbers large. They are never cut (NoWrap): what holds
+// them is at least as wide as they are.
 func insightsParts(c *ui.Context, parts []insightsPart, size, unitSize float32, ink, unitInk ui.Color) {
 	ui.Row(c.Key("parts")).Gap(4).AlignItems(ui.End).Children(func() {
 		for i, part := range parts {
-			ui.Text(c, part.Value).FontSize(size).FontWeight(600).TextColor(ink).FontFeatures("tnum").SingleLine()
+			ui.Text(c, part.Value).FontSize(size).FontWeight(600).TextColor(ink).FontFeatures("tnum").SingleLine().NoWrap()
 			margin := float32(10)
 			if i == len(parts)-1 {
 				margin = 0
 			}
-			ui.Text(c, part.Unit).FontSize(unitSize).FontWeight(500).TextColor(unitInk).SingleLine().Margin(0, margin, size*0.14, 0)
+			ui.Text(c, part.Unit).FontSize(unitSize).FontWeight(500).TextColor(unitInk).SingleLine().NoWrap().Margin(0, margin, size*0.14, 0)
 		}
 	})
 }
