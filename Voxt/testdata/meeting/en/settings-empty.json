@@ -120,26 +120,6 @@
             "remaining": 0
           },
           {
-            "start": "soft-musicbox-start",
-            "stop": "soft-musicbox-stop",
-            "name": "Music Box",
-            "sounds": "A bright metal comb",
-            "play_label": "Play Music Box",
-            "chosen": false,
-            "playing": false,
-            "remaining": 0
-          },
-          {
-            "start": "soft-bowl-start",
-            "stop": "soft-bowl-stop",
-            "name": "Singing Bowl",
-            "sounds": "A wooden tap, a metal ring",
-            "play_label": "Play Singing Bowl",
-            "chosen": false,
-            "playing": false,
-            "remaining": 0
-          },
-          {
             "start": "pebble",
             "stop": "nib",
             "name": "Soft",

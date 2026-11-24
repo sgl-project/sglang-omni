@@ -14,7 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **The recording sounds are Kalimba now** (#4582): two soft plucked notes, rising as a recording starts and falling as it stops, in place of Pebble and Nib. It was the most liked of the soft sounds friends tried. Settings → Audio → Sound → Built-in also lists Wood, Vibraphone, Music Box and Singing Bowl, the next most liked, before the pairs it had. These sounds are Voxt's own, so every build has them. A sound you chose before stays.
+- **The recording sounds are Kalimba now** (#4582): two soft plucked notes, rising as a recording starts and falling as it stops, in place of Pebble and Nib. It was the most liked of the soft sounds friends tried. Settings → Audio → Sound → Built-in also lists Wood and Vibraphone, the next most liked, before the pairs it had. These sounds are Voxt's own, so every build has them. A sound you chose before stays.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
@@ -33,7 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **录音提示音换成卡林巴**（#4582）：两个轻柔的拨片音，开始录音时上行，停止时下行，替换原来的卵石和笔尖。这是朋友们试听的柔和音效里最受欢迎的一组。设置 → 音频 → 音效 → 自带里还多了票数紧随其后的木琴、颤音琴、八音盒和颂钵，排在原来几组前面。这些声音是 Voxt 自己的，所有版本都有。以前选过的声音保持不变。
+- **录音提示音换成卡林巴**（#4582）：两个轻柔的拨片音，开始录音时上行，停止时下行，替换原来的卵石和笔尖。这是朋友们试听的柔和音效里最受欢迎的一组。设置 → 音频 → 音效 → 自带里还多了票数紧随其后的木琴和颤音琴，排在原来几组前面。这些声音是 Voxt 自己的，所有版本都有。以前选过的声音保持不变。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 
 #### 修复

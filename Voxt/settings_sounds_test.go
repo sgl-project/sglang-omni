@@ -54,7 +54,7 @@ func (r *soundsRig) takePlays() []string {
 // the default pair back.
 func TestSoundSource(t *testing.T) {
 	r := newSoundsRig(t)
-	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Kalimba", "Thumb piano, plucked metal tines", "Wood", "Vibraphone", "Music Box", "Singing Bowl", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
+	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Kalimba", "Thumb piano, plucked metal tines", "Wood", "Vibraphone", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
 		if !has(r.tt, s) {
 			t.Fatalf("no %q: %q", s, firstTexts(r.tt))
 		}
