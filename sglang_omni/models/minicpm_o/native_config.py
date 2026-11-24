@@ -120,6 +120,7 @@ class MiniCPMODuplexSpeech(BaseModel):
     enable_dit_torch_compile: bool = False
     enable_hift_torch_compile: bool = False
     n_timesteps: int = Field(default=5, ge=1)
+    enable_fused_qkv: bool = False
     enable_chunk_cuda_graph: bool = True
     "Replay the flow's chunk loop from CUDA graphs captured at startup; false decodes every chunk eagerly."
     # note (Junnan Li): Units that wait for another session's unit wait at most half the forward that unit would otherwise run alone.
@@ -200,6 +201,7 @@ class MiniCPMODuplexPipelineConfig(PipelineConfig):
                     self.speech.enable_hift_torch_compile
                 )
                 kwargs["n_timesteps"] = self.speech.n_timesteps
+                kwargs["enable_fused_qkv"] = self.speech.enable_fused_qkv
                 kwargs["enable_chunk_cuda_graph"] = self.speech.enable_chunk_cuda_graph
                 kwargs["gather_window_ms"] = self.speech.gather_window_ms
             else:

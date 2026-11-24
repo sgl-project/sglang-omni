@@ -239,3 +239,44 @@ def test_streaming_attention_keeps_its_key_value_history_in_the_flow_dtype(
 
     assert state.history.dtype == dtype, "the streaming history keeps the flow dtype"
     assert state.history.shape[2] == 6, "the history holds both chunks"
+
+
+@pytest.mark.parametrize("batch_rows", [1, 4])
+@pytest.mark.parametrize("qkv_bias", [False, True])
+def test_fused_streaming_qkv_preserves_attention_and_cache(
+    batch_rows: int, qkv_bias: bool
+) -> None:
+    torch.manual_seed(0)
+    separate = Attention(
+        dim=64, num_heads=2, head_dim=32, qkv_bias=qkv_bias, qk_norm=True
+    )
+    separate.eval()
+    fused = copy.deepcopy(separate)
+    fused.enable_fused_qkv()
+    assert fused.state_dict().keys() == separate.state_dict().keys()
+    prompt = torch.randn(batch_rows, 7, 64)
+    chunk = torch.randn(batch_rows, 5, 64)
+
+    with torch.inference_mode():
+        expected_prompt, separate_state = separate(prompt, None, state=AttentionState())
+        actual_prompt, fused_state = fused(prompt, None, state=AttentionState())
+        torch.testing.assert_close(actual_prompt, expected_prompt)
+        assert separate_state is not None and fused_state is not None
+        assert separate_state.history is not None and fused_state.history is not None
+        torch.testing.assert_close(fused_state.history, separate_state.history)
+
+        separate_window = torch.cat(
+            (
+                separate_state.history.new_zeros(batch_rows, 2, 5, 64),
+                separate_state.history,
+            ),
+            dim=2,
+        )
+        fused_window = separate_window.clone()
+        mask = torch.ones(batch_rows, 5, 12, dtype=torch.bool)
+        mask[0, :, -2:] = False
+        expected, _ = separate(chunk, mask, window=separate_window)
+        actual, _ = fused(chunk, mask, window=fused_window)
+
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(fused_window, separate_window)
