@@ -14,6 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+- **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
 
 ### Fixed
 
@@ -31,6 +32,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+- **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
 
 #### 修复
 
