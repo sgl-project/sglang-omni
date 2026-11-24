@@ -42,6 +42,17 @@ enum class FinalStftFrame { kDropped, kKept };
 mlx::core::array LogMel(const std::vector<float> &samples,
                         FinalStftFrame final_frame);
 
+struct LogMelOptions {
+  bool drop_final_frame;
+  bool pad_short_audio;
+};
+
+// 16 kHz mono samples, a float32 [kFftSize] window and [kFftSize / 2 + 1,
+// mel_bins] filters produce float32 [mel_bins, frames].
+mlx::core::array LogMel(const std::vector<float> &samples,
+                        const mlx::core::array &window,
+                        const mlx::core::array &filters, LogMelOptions options);
+
 // Whisper's fixed 30 s encoder window.
 inline constexpr int kWhisperWindowSampleCount = 30 * kSampleRate;
 

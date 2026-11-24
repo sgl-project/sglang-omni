@@ -1,4 +1,18 @@
 {
+  "mlx-community/Ming-3.0-asr-tiny-4bit": {
+    "revision": "89acb1a5f240a15119f175065ba8e2356f59d7a1",
+    "files": {
+      "config.json": "216e5b0502ec36203abb34f18ea37d3233e76ce8484a955a3b036f42bc24460e",
+      "generation_config.json": "da85e6f967c54b0e4c5a0653c6135e8d01e2c459fdc5c8c15ca7bf600a860f86",
+      "model.safetensors.index.json": "990c1feb06b9481286e3983748fdcc6af0a5f683be1809472b6838f829929df2",
+      "preprocessor_config.json": "2ab8ff5b5b58b9033f72e285f0db54882cc11685eeea4cb9a2da226a207bb25e",
+      "special_tokens_map.json": "8c383d444e75b12f2643b4695bece7f3dd1d43725d8a26deeb019aa40a8f891d",
+      "tokenizer.json": "e4f5fe09e7484071da5fa93cfb82f7db15c0ebf9b6ee9821599c5a997563ee96",
+      "tokenizer_config.json": "4ee1398783bc0e3a395d2a0efa3a851aa9b51a3bb3187c4c294c38b6af42f419",
+      "model-00001-of-00002.safetensors": "cdd615b05b3def6f05fa685a10573f2738b7d74ce78d213a62ab74f6c4dab76c",
+      "model-00002-of-00002.safetensors": "99b923f145e0b5c7b6e56be402e163e9fecdc013ce82bfaf0be9b8a891f92f4f"
+    }
+  },
   "mlx-community/whisper-large-v3-turbo": {
     "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
     "files": {

@@ -385,6 +385,37 @@ mx::array Checkpoint::Linear(const mx::array &x,
   }
 }
 
+mx::array Checkpoint::SwiGlu(const mx::array &hidden_states,
+                             const std::string &weight_prefix) const {
+  const auto gate_projection =
+      Linear(hidden_states, weight_prefix + ".gate_proj");
+  const auto up_projection = Linear(hidden_states, weight_prefix + ".up_proj");
+  return Linear(mx::multiply(Silu(gate_projection), up_projection),
+                weight_prefix + ".down_proj");
+}
+
+mx::array Checkpoint::GatherLinear(const mx::array &input,
+                                   const std::string &prefix,
+                                   const mx::array &expert_indices,
+                                   bool sorted_expert_indices) const {
+  if (Has(prefix + ".scales")) {
+    const std::optional<mx::array> biases =
+        Has(prefix + ".biases")
+            ? std::optional<mx::array>(Weight(prefix + ".biases"))
+            : std::nullopt;
+    const QuantizationConfig &quantization = Quantization(prefix);
+    return mx::gather_qmm(input, Weight(prefix + ".weight"),
+                          Weight(prefix + ".scales"), biases, std::nullopt,
+                          expert_indices, true, quantization.group_size,
+                          quantization.bits, quantization.mode, std::nullopt,
+                          sorted_expert_indices);
+  } else {
+    return mx::gather_mm(input,
+                         mx::swapaxes(Weight(prefix + ".weight"), -1, -2),
+                         std::nullopt, expert_indices, sorted_expert_indices);
+  }
+}
+
 mx::array Checkpoint::Conv1d(const mx::array &x, const std::string &prefix,
                              int stride, int padding, int dilation,
                              int groups) const {
