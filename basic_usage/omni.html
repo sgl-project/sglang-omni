@@ -610,11 +610,13 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#general-usage">General Usage</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#text-output">Text Output</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#media-input">Media Input</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#video-decoding">Video Decoding</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-and-text-input">Image and Text Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-and-image-input">Audio and Image Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#video-and-audio-input">Video and Audio Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-output">Speech Output</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-streaming-latency">Speech Streaming Latency</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-interaction">Realtime Interaction</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -623,6 +625,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#turn-detection-and-interruption">Turn detection and interruption</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-and-concurrency">Memory and Concurrency</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-readiness">Server Readiness</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
@@ -745,6 +748,11 @@
 <p>Media parts keep their message and their position in it across conversation turns. Any other part type is rejected with a 400. The optional <code class="docutils literal notranslate"><span class="pre">detail</span></code> field does not override the model’s image preprocessing settings.</p>
 <p>Where top-level media land in the prompt depends on the model. Qwen3-Omni places them after the parts of the final user message, MiniCPM-o before that message’s text, and Ming-Omni in the first user message. Use content parts when the position of each item matters.</p>
 <p>When every part of the question comes from audio, video, or image input, set <code class="docutils literal notranslate"><span class="pre">&quot;content&quot;:</span> <span class="pre">&quot;&quot;</span></code> on the user message. Leaving a text question in <code class="docutils literal notranslate"><span class="pre">content</span></code> alongside the media makes the model read both.</p>
+</section>
+<section id="video-decoding">
+<h3>Video Decoding<a class="headerlink" href="#video-decoding" title="Link to this heading">#</a></h3>
+<p>The following thread allocation applies to pipelines using the shared video loader and automatic CPU-based budget, including Qwen3-Omni. Available preprocessing factory options depend on the model.</p>
+<p>Each preprocessing worker decodes a request’s videos on parallel decoders that share min(16, the stage’s CPUs divided by its workers) FFmpeg threads, split evenly among the request’s videos. Set <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.video_decode_threads</span> <span class="pre">N</span></code> to choose that count. A value at or below the video reader’s own threads (<code class="docutils literal notranslate"><span class="pre">TORCHCODEC_NUM_THREADS</span></code>, 8 by default) decodes each video on the reader alone.</p>
 </section>
 <section id="image-and-text-input">
 <h3>Image and Text Input<a class="headerlink" href="#image-and-text-input" title="Link to this heading">#</a></h3>
@@ -910,6 +918,11 @@
 </pre></div>
 </div>
 </section>
+<section id="speech-streaming-latency">
+<h3>Speech Streaming Latency<a class="headerlink" href="#speech-streaming-latency" title="Link to this heading">#</a></h3>
+<p>Speech can arrive in chunks so playback can begin before the whole answer is ready. First-audio latency is the wait before the first playable chunk arrives; it is different from the time needed to finish the entire reply.</p>
+<p>Smaller chunks can let playback begin sooner, while larger chunks can reduce transfer and processing overhead. The result depends on the model, audio decoder, server load, and network. Start with the model defaults and measure with your expected traffic before tuning. See <a class="reference internal" href="../cookbook/qwen3_omni.html#speech-chunking-and-first-audio-latency"><span class="std std-ref">Qwen3-Omni speech chunking</span></a> for its settings.</p>
+</section>
 </section>
 <section id="realtime-interaction">
 <h2>Realtime Interaction<a class="headerlink" href="#realtime-interaction" title="Link to this heading">#</a></h2>
@@ -938,9 +951,38 @@
 <p>Turn-based sessions may use client commits, <code class="docutils literal notranslate"><span class="pre">server_vad</span></code>, or semantic VAD when the deployment provides it. For barge-in, stop queued playback and ignore later audio deltas for the canceled response. If the listener heard only part of the reply, send the model-specific truncate event so conversation history matches what was played.</p>
 </section>
 </section>
+<section id="memory-and-concurrency">
+<h2>Memory and Concurrency<a class="headerlink" href="#memory-and-concurrency" title="Link to this heading">#</a></h2>
+<p>The examples below use Qwen3-Omni. For other pipelines, choose the checkpoint and stage names from the model cookbook.</p>
+<p>By default, leave <code class="docutils literal notranslate"><span class="pre">mem_fraction_static</span></code> unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.88
+</pre></div>
+</div>
+<p>Use per-stage flags when the thinker and talker need different budgets:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>Qwen/Qwen3-Omni-30B-A3B-Instruct<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--thinker.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.88<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--talker_ar.engine.mem_fraction_static<span class="w"> </span><span class="m">0</span>.88
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span></code> applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than <code class="docutils literal notranslate"><span class="pre">0</span></code> and less than <code class="docutils literal notranslate"><span class="pre">1</span></code>.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">engine.max_running_requests</span></code> on a stage to control how many requests it admits concurrently. Stage names and default limits depend on the pipeline; see the model cookbook for defaults and YAML examples.</p>
+<p>The same stage setting can be supplied through a pipeline YAML file. For example, a pipeline with a thinker stage can set its concurrency limit as follows:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">thinker</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">max_running_requests</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16</span>
+</pre></div>
+</div>
+</section>
 <section id="server-readiness">
 <h2>Server Readiness<a class="headerlink" href="#server-readiness" title="Link to this heading">#</a></h2>
-<p>Startup warmup depends on the pipeline and realtime deployment. A configured warmup must finish before <code class="docutils literal notranslate"><span class="pre">/health</span></code> reports ready; a pipeline without request warmup can become ready without exercising its chat path. See <a class="reference internal" href="../cookbook/qwen3_omni.html#server-readiness"><span class="std std-ref">Qwen3-Omni Server Readiness</span></a> for its synthetic multimodal requests, timeout, and skip option. Readiness does not guarantee that every input shape has been warmed up.</p>
+<p>Startup warmup depends on the pipeline and realtime deployment. When a pipeline configures request warmup, the server sends its warmup request once per replica of its most replicated process, sequentially, before reporting ready. <code class="docutils literal notranslate"><span class="pre">/health</span></code> returns HTTP 503 with status <code class="docutils literal notranslate"><span class="pre">starting</span></code> until warmup has passed through every stage; a failed warmup stops startup. <code class="docutils literal notranslate"><span class="pre">SGLANG_OMNI_WARMUP_TIMEOUT</span></code> bounds each warmup request in seconds (default 600), and <code class="docutils literal notranslate"><span class="pre">--skip-server-warmup</span></code> reports ready without running these requests.</p>
+<p>A pipeline without request warmup can become ready without exercising its chat path. Warmup covers only the configured request shapes; video input, larger batches, or other shapes can still compile kernel variants on first use. See <a class="reference internal" href="../cookbook/qwen3_omni.html#server-readiness"><span class="std std-ref">Qwen3-Omni Server Readiness</span></a> for its synthetic multimodal request.</p>
 </section>
 <section id="request-parameters">
 <h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
@@ -1156,11 +1198,13 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#general-usage">General Usage</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#text-output">Text Output</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#media-input">Media Input</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#video-decoding">Video Decoding</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#image-and-text-input">Image and Text Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#audio-and-image-input">Audio and Image Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#video-and-audio-input">Video and Audio Input</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-output">Speech Output</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-streaming-latency">Speech Streaming Latency</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#realtime-interaction">Realtime Interaction</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -1169,6 +1213,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#turn-detection-and-interruption">Turn detection and interruption</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-and-concurrency">Memory and Concurrency</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-readiness">Server Readiness</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
