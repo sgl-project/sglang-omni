@@ -131,6 +131,7 @@
   "Recordings kept with the history": "历史中保存的录音",
   "In use": "正在使用",
   "Reduce motion": "减弱动态效果",
+  "Play the opening at start": "启动时播放开场动画",
   "Refresh microphones": "刷新麦克风列表",
   "Remove it": "删除",
   "Report a bug": "反馈 Bug",
@@ -270,5 +271,10 @@
   "Reset color": "恢复默认颜色",
   "Transparent": "透明",
   "Window transparency": "窗口透明度",
-  "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。"
+  "With both on, the copied image goes, not the screenshot.": "两个都打开时，发送复制的图片，不发送截图。",
+  "%s second": "%s 秒",
+  "%s seconds": "%s 秒",
+  "Opening speed": "开场动画速度",
+  "Slower": "更慢",
+  "Faster": "更快"
 }

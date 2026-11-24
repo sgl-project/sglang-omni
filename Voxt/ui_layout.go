@@ -60,10 +60,22 @@ func pageBody(c *ui.Context) ui.Element {
 // centeredPageHeader is a page's header whose title and trailing line up
 // with content at most maxW DIPs wide in the middle of the page.
 func centeredPageHeader(c *ui.Context, maxW float32, title string, trailing func()) {
+	centeredPageHeaderBy(c, maxW, title, nil, trailing)
+}
+
+// centeredPageHeaderBy is centeredPageHeader with byTitle drawn right of
+// the title, before the space that pushes trailing to the right.
+func centeredPageHeaderBy(c *ui.Context, maxW float32, title string, byTitle, trailing func()) {
 	t := c.Theme()
 	ui.Row(c).Height(titleBarHeight).Shrink(0).AlignItems(ui.Stretch).Justify(ui.Center).Padding(0, 0, 0, headerInset).DragWindow().Children(func() {
 		ui.Row(c).Grow(1).MaxWidth(px(t, maxW)).AlignItems(ui.Center).Padding(0, px(t, sp6)).Gap(px(t, sp2)).Children(func() {
-			ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0).Grow(1)
+			titleView := ui.Text(c, title).FontSize(px(t, fsTitle)).FontWeight(600).SingleLine().Ellipsis("…").MinWidth(0)
+			if byTitle == nil {
+				titleView.Grow(1)
+			} else {
+				byTitle()
+				ui.Spacer(c)
+			}
 			if trailing != nil {
 				trailing()
 			}

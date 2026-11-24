@@ -466,5 +466,10 @@
   "This file type is not supported: %s": "不支持这种文件类型：%s",
   "This file has no text: %s": "文件中没有文字：%s",
   "Skipped %d PDF page beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面",
-  "Skipped %d PDF pages beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面"
+  "Skipped %d PDF pages beyond the 4-image limit": "超过 4 张图片的上限，已跳过 %d 个 PDF 页面",
+  "character": "字",
+  "characters": "字",
+  "characters a minute": "字/分钟",
+  "Undo": "撤销",
+  "Share": "分享"
 }

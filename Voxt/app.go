@@ -79,6 +79,7 @@ type app struct {
 	appIconsState
 	dictionaryState
 	homeState
+	shareState // share_controller.go: the share card and its hat studio
 	onboardingState
 	scPromptState
 	audioState
