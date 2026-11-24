@@ -23,6 +23,9 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		layers = append(layers, layer)
 	}
 	add("custom", strings.TrimSpace(Render(full, vars, flags)))
+	if in.Task == Transcribe && in.Snippets {
+		add("snippets", render("snippets", nil))
+	}
 	if in.Task == Transcribe && in.Cleanup {
 		cleanup := render("cleanup", nil)
 		heading := strings.SplitN(cleanup, "\n", 2)[0]

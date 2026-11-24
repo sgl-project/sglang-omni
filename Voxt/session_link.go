@@ -219,9 +219,11 @@ func (a *app) openSessions() {
 		BoxReview:         a.boxShare.waitForReview,
 		Resolve:           resolver(lm),
 		History:           lib.store.History(),
+		Languages:         readingLanguages, // settings_locale.go
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
+		Snippets: snippetsReader(lib.store.Documents()),
 		Notes:    lib.store.Notes(),
 		Settings: st.Get,
 		Locale:   i18n.Locale,

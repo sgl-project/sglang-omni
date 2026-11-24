@@ -102,11 +102,14 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.windowTransparency` | integer | `8` | 5–15 percent (clamped), used by `transparent` | Theme |
 | `appearance.scale` | number | `1` | `0.9`, `1`, `1.1`, `1.25` (snapped to the nearest) | Interface size |
 | `appearance.reduceMotion` | bool | `false` | | Reduce motion |
+| `appearance.opening` | bool | `true` | | Play the opening at start (shown off and resting while Reduce motion is on, which skips the opening; the saved choice comes back when it is off) |
+| `appearance.openingMillis` | integer | `2000` | 3000, 2000, 1000 | Opening speed: a slider of three stops from the turtle (the opening in 3 s) to the rabbit (1 s), along the same timeline; the row shows only while Play the opening at start is on and Reduce motion is off |
 | `appearance.rail` | bool | `false` | `true` shows the sidebar as icons only | Sidebar |
 | `appearance.railChosen` | bool | `false` | the user chose names and icons | Sidebar |
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
 | `appearance.historyDetailWidth` | number | `0` | 0 (default) or 290–350 (clamped) | Dragging the edge of History's detail panel |
 | `appearance.closedSections` | array of strings | `[]` | sidebar sections the user closed | The sidebar's section headers |
+| `appearance.lookingBackClosed` | bool | `false` | `true` folds Looking back to its title row | Home's Looking back title |
 
 ### Privacy (Settings → Privacy)
 
@@ -326,8 +329,6 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 |---|---|---|
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
-| `setup.openingShown` | bool | The first-use opening was shown |
-| `setup.openingVersion` | string | The app version whose opening was last shown; a newer version plays it once |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |

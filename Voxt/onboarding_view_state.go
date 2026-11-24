@@ -353,7 +353,7 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Subtitle = translator.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.")
 	default:
 		state.Title = translator.T("More to explore")
-		state.Subtitle = translator.T("Voxt is ready. Two more things make it yours.")
+		state.Subtitle = translator.T("Go try Voxt. Two more things make it yours.")
 	}
 	if input.Step == obWelcome {
 		state.Welcome = &onboardingWelcomeViewState{LegacyAvailable: input.LegacyAvailable}
