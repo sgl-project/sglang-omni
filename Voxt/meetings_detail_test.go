@@ -316,3 +316,31 @@ func waitLoadingLine(tester *ui.Tester, want string) {
 		frames(tester)
 	}
 }
+
+// Transcribe again shows only for a finished meeting that still has its
+// recording (by default it is deleted once transcribed: the item then
+// had nothing to work on), and the menu only with an item in it.
+func TestMeetingDetailReprocessNeedsRecording(t *testing.T) {
+	translator := i18n.NewTranslator("en")
+	for _, tc := range []struct {
+		name               string
+		status             store.MeetingStatus
+		audio              string
+		llm                bool
+		reprocess, more    bool
+		continueProcessing bool
+	}{
+		{"finished, recording deleted", store.MeetingDone, "", true, false, true, false},
+		{"finished, recording deleted, no language model", store.MeetingDone, "", false, false, false, false},
+		{"finished, recording kept", store.MeetingDone, "m1", false, true, true, false},
+		{"interrupted, recording kept", store.MeetingInterrupted, "m1", false, false, true, true},
+	} {
+		state := buildMeetingDetailViewState(translator, meetingDetailStateInput{
+			Meeting: store.Meeting{ID: "m1", Status: tc.status, Mode: store.MeetingModeMeeting, Audio: tc.audio}, CanUseLLM: tc.llm,
+		})
+		if state.CanReprocess != tc.reprocess || state.ShowMore != tc.more || state.CanContinue != tc.continueProcessing {
+			t.Errorf("%s: reprocess %v, menu %v, continue %v; want %v, %v, %v", tc.name,
+				state.CanReprocess, state.ShowMore, state.CanContinue, tc.reprocess, tc.more, tc.continueProcessing)
+		}
+	}
+}

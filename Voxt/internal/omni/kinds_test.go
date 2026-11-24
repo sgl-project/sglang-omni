@@ -258,6 +258,8 @@ func TestMossLive(t *testing.T) {
 	f.rt.Close()
 	if l := f.records("live"); len(l) != 1 || l[0].Fields["prompt"] != want || l[0].Fields["language"] != "en" {
 		t.Errorf("live %+v", l)
+	} else if _, ok := l[0].Fields["final_prompt"]; ok {
+		t.Errorf("MOSS got a final_prompt: %+v", l[0])
 	}
 }
 
