@@ -38,6 +38,10 @@ struct TranscriptionResult {
   int accepted_draft_token_count = 0;
   // Ordered text of each window in a multi-window Whisper request.
   std::vector<std::string> window_texts;
+  // Audio tokens a live session had already encoded.
+  int reused_audio_token_count = 0;
+  // Prompt tokens a live session had already computed.
+  int reused_prompt_token_count = 0;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,

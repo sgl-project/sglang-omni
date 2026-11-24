@@ -4,7 +4,9 @@
 // /v1/realtime), silero_vad (vad_service.h's API, no transcriptions) or
 // sortformer (sortformer_service.h's API, no transcriptions).
 #include <limits>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -50,6 +52,14 @@ public:
       throw std::invalid_argument("repetition_penalty must be positive");
     } else {
     }
+    const auto guessed_text = asr_service::TextField(form, "guessed_text");
+    if (guessed_text.has_value()) {
+      // note (XXXXRT666): a live preview already has most of the text; only
+      // the part greedy decoding also writes is kept.
+      options.guessed_token_ids =
+          transcriber_.RetainedPrefix(*guessed_text, 0).prefix_ids;
+    } else {
+    }
     options.stop_at_end_of_text = omni_common::FormFlag(
         asr_service::TextField(form, "stop_at_end_of_text"));
     const auto stop_on_token_loop =
@@ -71,7 +81,21 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    if (transcriber_.CanBatch(options)) {
+    const qwen3_asr::FinalReuse final_reuse = TakeFinalReuse(
+        asr_service::TextField(form, "realtime_session").value_or(""),
+        options.context);
+    if (final_reuse.reuse != nullptr) {
+      return [this, final_reuse, samples = std::move(samples),
+              options = std::move(options)](const std::atomic<bool> &cancel) {
+        // note (XXXXRT666): a copy the refreshes keep using shares the
+        // buffers, so the decode copies them; one taken for the Final does
+        // not.
+        qwen3_asr::RefreshReuse reuse = final_reuse.is_taken
+                                            ? std::move(*final_reuse.reuse)
+                                            : *final_reuse.reuse;
+        return transcriber_.Transcribe(samples, options, cancel, &reuse);
+      };
+    } else if (transcriber_.CanBatch(options)) {
       return qwen3_asr::BatchableTranscription{
           &transcriber_, std::move(samples), std::move(options)};
     } else {
@@ -86,16 +110,37 @@ public:
                    omni_server::TranscriptionWorker &worker) override {
     realtime_sessions_ = [this,
                           &worker](qwen3_asr::RealtimeSession::Sender sender) {
-      return std::make_shared<qwen3_asr::RealtimeSession>(
+      const auto session = std::make_shared<qwen3_asr::RealtimeSession>(
           worker, transcriber_, realtime_, std::move(sender));
+      std::lock_guard<std::mutex> lock(live_sessions_mutex_);
+      std::erase_if(live_sessions_,
+                    [](const auto &entry) { return entry.second.expired(); });
+      live_sessions_[session->session_id()] = session;
+      return session;
     };
     asr_service::AddRealtimeHandler(context, realtime_sessions_);
   }
 
 private:
+  // What the live session of this id holds for a Final with this prompt, null
+  // when it is not open.
+  qwen3_asr::FinalReuse
+  TakeFinalReuse(const std::string &session_id,
+                 const std::optional<std::string> &context) const {
+    std::lock_guard<std::mutex> lock(live_sessions_mutex_);
+    const auto entry = live_sessions_.find(session_id);
+    const std::shared_ptr<qwen3_asr::RealtimeSession> session =
+        entry != live_sessions_.end() ? entry->second.lock() : nullptr;
+    return session != nullptr ? session->TakeFinalReuse(context)
+                              : qwen3_asr::FinalReuse();
+  }
+
   qwen3_asr::Qwen3ASRTranscriber transcriber_;
   const qwen3_asr::RealtimeSettings realtime_;
   asr_service::RealtimeFactory realtime_sessions_;
+  mutable std::mutex live_sessions_mutex_;
+  std::map<std::string, std::weak_ptr<qwen3_asr::RealtimeSession>>
+      live_sessions_;
 };
 
 class SileroVADModel : public asr_service::ServedModel {
