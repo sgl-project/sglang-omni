@@ -2563,19 +2563,20 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     )
     request_data = SimpleNamespace(return_logprob=return_logprob)
 
-    error = scheduler.speculative_request_error(request, request_data)
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        error = scheduler.speculative_request_error(request, request_data)
 
-    if refused_option is None:
-        assert error is None
-    else:
-        assert refused_option in error
-        assert_refusal_is_a_caller_error(error)
-    scheduler.model_runner.speculative_ignores_request_seed = False
-    assert (scheduler.speculative_request_error(request, request_data) is None) == (
-        refused_option in (None, "seed")
-    ), "only a runner whose verify ignores the seed refuses it"
-    scheduler.draft_worker = None
-    assert scheduler.speculative_request_error(request, request_data) is None
+        if refused_option is None:
+            assert error is None
+        else:
+            assert refused_option in error
+            assert_refusal_is_a_caller_error(error)
+        scheduler.model_runner.speculative_ignores_request_seed = False
+        assert (scheduler.speculative_request_error(request, request_data) is None) == (
+            refused_option in (None, "seed")
+        ), "only a runner whose verify ignores the seed refuses it"
+        scheduler.draft_worker = None
+        assert scheduler.speculative_request_error(request, request_data) is None
 
 
 @pytest.mark.parametrize(
