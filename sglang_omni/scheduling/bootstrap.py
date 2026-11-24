@@ -54,6 +54,40 @@ class InfrastructureOptions(TypedDict, total=False):
     should_run_top_priority_stream: bool
 
 
+_BYTES_PER_MIB = 1024.0**2
+
+
+def attention_backend_selection_reason(
+    server_args: SGLangServerArgsForDiagnostics,
+    gpu_id: int,
+) -> str:
+    """Explain why the effective attention backends were chosen."""
+    sm_version = get_visible_gpu_sm_version(gpu_id)
+    architecture = gpu_architecture_for_sm(sm_version)
+    cfg = resolved_view(server_args)
+    requested = cfg.attention_backend
+    prefill_attention_backend, decode_attention_backend = attention_backends_of(cfg)
+    if requested in (None, "auto"):
+        return (
+            f"auto-selected prefill={prefill_attention_backend} "
+            f"decode={decode_attention_backend} for SM{sm_version} ({architecture})"
+        )
+    else:
+        pass
+    if (
+        requested == prefill_attention_backend
+        and requested == decode_attention_backend
+    ):
+        return f"explicit user override attention_backend={requested}"
+    else:
+        pass
+    return (
+        f"explicit attention_backend={requested} resolved to "
+        f"prefill={prefill_attention_backend} decode={decode_attention_backend} "
+        f"on SM{sm_version} ({architecture})"
+    )
+
+
 def describe_sglang_runtime_configuration(
     server_args: SGLangServerArgsForDiagnostics,
     gpu_id: int,
@@ -61,14 +95,142 @@ def describe_sglang_runtime_configuration(
     sm_version = get_visible_gpu_sm_version(gpu_id)
     cfg = resolved_view(server_args)
     prefill_attention_backend, decode_attention_backend = attention_backends_of(cfg)
+    cuda_graph_disabled = _server_args_flag(server_args, "disable_cuda_graph")
+    enable_torch_compile = _server_args_flag(server_args, "enable_torch_compile")
+    selection_reason = attention_backend_selection_reason(server_args, gpu_id)
     return (
         f"SGLang runtime configuration: gpu_id={gpu_id}, sm={sm_version}, "
         f"architecture={gpu_architecture_for_sm(sm_version)}, "
         f"attention_backend={cfg.attention_backend}, "
         f"decode_attention_backend={decode_attention_backend}, "
         f"prefill_attention_backend={prefill_attention_backend}, "
-        f"sampling_backend={cfg.sampling_backend}"
+        f"sampling_backend={cfg.sampling_backend}, "
+        f"disable_cuda_graph={cuda_graph_disabled}, "
+        f"enable_torch_compile={enable_torch_compile}, "
+        f"attention_backend_selection={selection_reason}"
     )
+
+
+def report_sglang_memory_phase(phase: str, gpu_id: int) -> str:
+    """Format and log GPU memory after a bootstrap phase."""
+    if not torch.cuda.is_available():
+        message = f"gpu memory [{phase}]: cuda unavailable"
+        logger.info(message)
+        return message
+    else:
+        pass
+    device = torch.device("cuda", gpu_id)
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    allocated_bytes = torch.cuda.memory_allocated(device)
+    reserved_bytes = torch.cuda.memory_reserved(device)
+    message = (
+        f"gpu memory [{phase}]: "
+        f"free={free_bytes / _BYTES_PER_MIB:.1f}/"
+        f"{total_bytes / _BYTES_PER_MIB:.1f}MiB "
+        f"torch_allocated={allocated_bytes / _BYTES_PER_MIB:.1f}MiB "
+        f"torch_reserved={reserved_bytes / _BYTES_PER_MIB:.1f}MiB"
+    )
+    logger.info(message)
+    return message
+
+
+def _server_args_flag(server_args: object, name: str, default: bool = False) -> bool:
+    """Read a boolean ServerArgs field without requiring a full ServerArgs fixture."""
+    try:
+        return bool(getattr(resolved_view(server_args), name))
+    except AttributeError:
+        return bool(getattr(server_args, name, default))
+
+
+def _decode_cuda_graph_bs(server_args: object) -> list[int]:
+    try:
+        cfg = resolved_view(server_args)
+        return list(cfg.cuda_graph_config.decode.bs or [])
+    except AttributeError:
+        return list(getattr(server_args, "cuda_graph_bs", None) or [])
+
+
+def _shrink_decode_cuda_graph_buckets(server_args: "ServerArgs") -> list[int] | None:
+    """Halve the decode CUDA Graph capture ladder; return the new buckets or None."""
+    current_bs = _decode_cuda_graph_bs(server_args)
+    if len(current_bs) <= 1:
+        return None
+    else:
+        pass
+    reduced = [bs for bs in current_bs if bs <= max(current_bs) // 2]
+    if not reduced:
+        reduced = [1]
+    else:
+        pass
+    if reduced == current_bs:
+        return None
+    else:
+        pass
+    override_server_args(
+        server_args,
+        "sglang_omni.cuda_graph_oom_fallback",
+        cuda_graph_bs=reduced,
+        cuda_graph_max_bs=max(reduced),
+    )
+    return reduced
+
+
+def init_sglang_cuda_graphs_with_bounded_fallback(
+    model_worker: "ModelWorker",
+    server_args: "ServerArgs",
+) -> str | None:
+    """Capture CUDA Graphs, shrinking buckets then falling back to eager on OOM.
+
+    Returns a human-readable fallback reason when capture was reduced or disabled.
+    """
+    if _server_args_flag(server_args, "disable_cuda_graph"):
+        init_sglang_cuda_graphs(model_worker)
+        return None
+    else:
+        pass
+
+    attempts = 0
+    while attempts < 3:
+        attempts += 1
+        try:
+            init_sglang_cuda_graphs(model_worker)
+            if attempts == 1:
+                return None
+            else:
+                pass
+            reason = (
+                "CUDA Graph capture succeeded after shrinking decode buckets "
+                f"to {_decode_cuda_graph_bs(server_args)}"
+            )
+            logger.warning(reason)
+            return reason
+        except torch.cuda.OutOfMemoryError as exc:
+            torch.cuda.empty_cache()
+            reduced = _shrink_decode_cuda_graph_buckets(server_args)
+            if reduced is None:
+                break
+            else:
+                pass
+            logger.warning(
+                "CUDA Graph capture OOM (%s); retrying with cuda_graph_bs=%s",
+                exc,
+                reduced,
+            )
+
+    override_server_args(
+        server_args,
+        "sglang_omni.cuda_graph_oom_fallback",
+        disable_cuda_graph=True,
+    )
+    torch.cuda.empty_cache()
+    init_sglang_cuda_graphs(model_worker)
+    reason = (
+        "CUDA Graph capture exhausted memory after bounded bucket shrinks; "
+        "falling back to eager decode (disable_cuda_graph=True). "
+        "Lower max_running_requests, cuda_graph_max_bs, or mem_fraction_static."
+    )
+    logger.warning(reason)
+    return reason
 
 
 def init_sglang_cuda_graphs(
@@ -180,6 +342,7 @@ def create_sglang_infrastructure(
         gpu_id=gpu_id,
         tp_rank=tp_rank,
     )
+    report_sglang_memory_phase("after_weight_loading", gpu_id)
 
     model_runner = model_worker.model_runner
     if (
@@ -257,8 +420,11 @@ def create_sglang_infrastructure(
         model_worker.speculative_target_worker = target_worker
         model_worker.speculative_worker = speculative_worker
 
+    report_sglang_memory_phase("after_static_allocation", gpu_id)
+
     if not defer_cuda_graph_capture:
-        init_sglang_cuda_graphs(model_worker)
+        init_sglang_cuda_graphs_with_bounded_fallback(model_worker, server_args)
+        report_sglang_memory_phase("after_cuda_graph_capture", gpu_id)
     else:
         pass
 

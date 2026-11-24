@@ -476,3 +476,107 @@ def test_create_sglang_infrastructure_consumes_scoped_kv_budget(
     captured.clear()
     bootstrap.create_sglang_infrastructure(server_args, 0)
     assert captured["kv_cache_bytes"] is None
+
+
+def test_attention_backend_selection_reason_reports_auto_and_explicit(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(bootstrap, "get_visible_gpu_sm_version", lambda _gpu_id: 89)
+
+    class FakeCfg:
+        attention_backend = None
+        prefill_attention_backend = None
+        decode_attention_backend = None
+        sampling_backend = "pytorch"
+        disable_cuda_graph = False
+        enable_torch_compile = False
+
+    monkeypatch.setattr(
+        bootstrap,
+        "resolved_view",
+        lambda _server_args: FakeCfg(),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "attention_backends_of",
+        lambda _cfg: ("flashinfer", "flashinfer"),
+    )
+
+    auto_reason = bootstrap.attention_backend_selection_reason(object(), 0)
+    assert "auto-selected" in auto_reason
+    assert "flashinfer" in auto_reason
+    assert "SM89" in auto_reason
+
+    FakeCfg.attention_backend = "triton"
+    monkeypatch.setattr(
+        bootstrap,
+        "attention_backends_of",
+        lambda _cfg: ("triton", "triton"),
+    )
+    explicit_reason = bootstrap.attention_backend_selection_reason(object(), 0)
+    assert "explicit user override" in explicit_reason
+
+    message = bootstrap.describe_sglang_runtime_configuration(object(), 0)
+    assert "disable_cuda_graph=False" in message
+    assert "enable_torch_compile=False" in message
+    assert "attention_backend_selection=" in message
+
+
+def test_report_sglang_memory_phase_without_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(bootstrap.torch.cuda, "is_available", lambda: False)
+    message = bootstrap.report_sglang_memory_phase("after_weight_loading", 0)
+    assert "cuda unavailable" in message
+
+
+def test_bounded_cuda_graph_fallback_disables_graphs_after_oom(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeDecodeConfig:
+        bs = [1, 2, 4, 8]
+
+    class FakeCudaGraphConfig:
+        decode = FakeDecodeConfig()
+
+    class FakeCfg:
+        disable_cuda_graph = False
+        cuda_graph_config = FakeCudaGraphConfig()
+
+    server_args = SimpleNamespace()
+    overrides: list[dict[str, object]] = []
+
+    def fake_resolved_view(_server_args):
+        return FakeCfg()
+
+    def fake_override(_server_args, _source, **fields):
+        overrides.append(fields)
+        if fields.get("disable_cuda_graph"):
+            FakeCfg.disable_cuda_graph = True
+        else:
+            pass
+        if "cuda_graph_bs" in fields:
+            FakeDecodeConfig.bs = list(fields["cuda_graph_bs"])
+        else:
+            pass
+
+    def fake_init(_model_worker):
+        calls.append("init")
+        if FakeCfg.disable_cuda_graph:
+            return
+        else:
+            pass
+        raise bootstrap.torch.cuda.OutOfMemoryError("simulated graph OOM")
+
+    monkeypatch.setattr(bootstrap, "resolved_view", fake_resolved_view)
+    monkeypatch.setattr(bootstrap, "override_server_args", fake_override)
+    monkeypatch.setattr(bootstrap, "init_sglang_cuda_graphs", fake_init)
+    monkeypatch.setattr(bootstrap.torch.cuda, "empty_cache", lambda: None)
+
+    reason = bootstrap.init_sglang_cuda_graphs_with_bounded_fallback(
+        object(),
+        server_args,
+    )
+
+    assert reason is not None
+    assert "eager" in reason.lower() or "disable_cuda_graph" in reason
+    assert any(item.get("disable_cuda_graph") is True for item in overrides)
+    assert len(calls) >= 2

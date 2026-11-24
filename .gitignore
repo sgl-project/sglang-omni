@@ -15,6 +15,9 @@ venv/
 env/
 /omni
 
+# Private local lab notes / unpublished consumer-GPU drafts
+.local/
+
 # IDE
 .idea/
 .vscode/
