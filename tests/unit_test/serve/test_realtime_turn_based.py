@@ -105,6 +105,15 @@ def test_turn_based_grants_server_vad_and_native_keeps_its_contract():
         Capabilities(interaction="pipelined")  # type: ignore[arg-type]
 
 
+def test_the_granted_capabilities_say_whether_the_reply_audio_skips_screen_blocks():
+    _, granted = negotiate(TURN_BASED, {})
+    assert granted["skips_screen_blocks"] is False
+    screen_ports = PORTS.with_node(replace(PORTS, skips_screen_blocks=True))
+    assert screen_ports.skips_screen_blocks
+    _, granted = negotiate(capabilities_of(screen_ports), {})
+    assert granted["skips_screen_blocks"] is True
+
+
 def test_the_ports_hot_settings_decide_which_fields_a_later_update_may_change():
     opening = {
         "instructions": "Be brief.",
