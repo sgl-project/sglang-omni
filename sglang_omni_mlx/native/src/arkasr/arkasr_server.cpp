@@ -54,7 +54,7 @@ private:
 int main(int argc, char **argv) {
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
-  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kFixed;
   asr_service::ServedKind kind;
   kind.model_kind = "arkasr";
   kind.flags = {

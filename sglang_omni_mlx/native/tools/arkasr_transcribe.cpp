@@ -24,7 +24,7 @@ int main(int argc, char **argv) {
   std::string model_path;
   std::string draft_model_path;
   int draft_quantization_bits = 0;
-  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kFixed;
   arkasr::ArkOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
