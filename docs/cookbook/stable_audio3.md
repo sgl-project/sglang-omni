@@ -48,3 +48,9 @@ pytest tests/unit_test/stable_audio3 -q
 ```
 
 The CPU tests cover request validation, the official latent lengths and noise schedule, and that batching and length groups leave every request's audio unchanged. On a GPU, one more case checks the compiled blocks and CUDA graphs against eager runs.
+
+```bash
+STABLE_AUDIO3_MODEL_PATH=stabilityai/stable-audio-3-medium pytest tests/test_model/test_stable_audio3.py -q
+```
+
+These tests start a server on the real checkpoint and check the returned lengths, that concurrent requests of mixed lengths return the audio of one request at a time, seeded reproducibility and invalid requests. They are skipped unless `STABLE_AUDIO3_MODEL_PATH` is set.
