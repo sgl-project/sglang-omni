@@ -117,10 +117,11 @@ func TestBuildDefaults(t *testing.T) {
 	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
 		t.Errorf("note %+v", note)
 	}
-	// The session slots, Option with a digit, tapped (#4005).
+	// The session slots, Control+Option with a digit, tapped (#4005).
 	for i, id := range Sessions {
 		b := p.Bindings[3+i]
-		if b.ID != id || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 1 || b.Modifiers[proto.ModOption] != proto.SideAny {
+		if b.ID != id || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 2 ||
+			b.Modifiers[proto.ModOption] != proto.SideAny || b.Modifiers[proto.ModControl] != proto.SideAny {
 			t.Errorf("session %+v", b)
 		}
 	}
@@ -451,7 +452,7 @@ func TestRoute(t *testing.T) {
 		{"session slot switches", ev(Session2, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Session2}},
 		{"session slot waits while recording", ev(Session2, proto.PhaseTrigger), Recording, "", Decision{}},
 		{"session slot waits while busy", ev(Session2, proto.PhaseTrigger), Busy, "", Decision{}},
-		{"session slot waits while composing", ev(Session2, proto.PhaseTrigger), Composing, "", Decision{}},
+		{"session slot switches while composing", ev(Session2, proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Session2}},
 		{"session slot down does nothing", ev(Session2, proto.PhaseDown), Idle, "", Decision{}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {

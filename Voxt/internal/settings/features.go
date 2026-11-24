@@ -23,9 +23,9 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
-	// Sessions switch the session slot (Option+1 … by default; empty
-	// keys: off): Rewrite, Translate and Transcribe then run in that
-	// slot, each keeping its own answer card and conversation (the
+	// Sessions switch the session slot (Control+Option+1 … by default;
+	// empty keys: off): Rewrite, Translate and Transcribe then run in
+	// that slot, each keeping its own answer card and conversation (the
 	// multi-session prototype, #4005). Only taps.
 	Sessions [3]Hotkey `json:"sessions,omitzero"`
 	// ReturnFinishes stops a Transcribe, Translate or Rewrite recording
@@ -179,16 +179,19 @@ func migrateReturnFinishes(data []byte, f *Features) {
 }
 
 const (
-	// DefaultSession1 … DefaultSession3 are the session slots' defaults:
-	// Option with a digit, free in the default set and in macOS, near
-	// the feature keys (the multi-session prototype, #4005).
-	DefaultSession1 = "Option+1"
-	DefaultSession2 = "Option+2"
-	DefaultSession3 = "Option+3"
+	// DefaultSession1 … DefaultSession3 are the session slots' defaults
+	// (the multi-session prototype, #4005): Control+Option with a digit,
+	// free in the default set and unused by macOS; plain Option+digit
+	// would take the characters it types (¡, ™, £ on a US layout) from
+	// every app. ⌃⌥, as Paste the last result's ⌃⌥V.
+	DefaultSession1 = "Control+Option+1"
+	DefaultSession2 = "Control+Option+2"
+	DefaultSession3 = "Control+Option+3"
 )
 
 // migrateSessionKeys gives a document from before the session slots their
-// default shortcuts, unless another shortcut already taps those keys:
+// default shortcuts, unless another shortcut can match the same press
+// (chordOverlaps: "Control+LeftOption+1" takes "Control+Option+1" too):
 // that slot then stays off. Such a document has no sessions key; one that
 // has it is the user's.
 func migrateSessionKeys(data []byte, f *Features) {
@@ -202,8 +205,73 @@ func migrateSessionKeys(data []byte, f *Features) {
 	}
 	defaults := Defaults().Features.Sessions
 	for i, d := range defaults {
-		if tapsKeys(*f, d.Keys) || strings.TrimSpace(f.Note.Keys) == d.Keys {
+		if shortcutTaken(*f, d.Keys) {
 			f.Sessions[i] = Hotkey{}
 		}
 	}
+}
+
+// shortcutTaken reports whether a shortcut in f can match the same press
+// as keys, as hotkey.Check counts a clash.
+func shortcutTaken(f Features, keys string) bool {
+	all := append([]Hotkey{f.PasteLast, f.Cancel, f.Note}, f.Transcribe.Hotkeys...)
+	all = append(append(all, f.Translate.Hotkeys...), f.Rewrite.Hotkeys...)
+	for _, h := range all {
+		if chordOverlaps(h.Keys, keys) {
+			return true
+		}
+	}
+	return false
+}
+
+// chordModifiers maps a modifier's spelling to its family and side (""
+// for either), as internal/hotkey's grammar writes them.
+var chordModifiers = map[string][2]string{
+	"Control": {"control", ""}, "LeftControl": {"control", "left"}, "RightControl": {"control", "right"},
+	"Option": {"option", ""}, "LeftOption": {"option", "left"}, "RightOption": {"option", "right"},
+	"Shift": {"shift", ""}, "LeftShift": {"shift", "left"}, "RightShift": {"shift", "right"},
+	"Command": {"command", ""}, "LeftCommand": {"command", "left"}, "RightCommand": {"command", "right"},
+	"Fn": {"fn", ""},
+}
+
+// chordOverlaps reports whether two shortcut spellings can match the same
+// press, as hotkey.Chord.Overlaps judges a clash: the same key (or both
+// modifier-only) and, per modifier family, sides that meet (either side
+// or the same). It cannot use internal/hotkey, which imports this
+// package.
+func chordOverlaps(a, b string) bool {
+	ka, ma := splitChord(a)
+	kb, mb := splitChord(b)
+	if ma == nil || mb == nil || ka != kb || len(ma) != len(mb) {
+		return false
+	}
+	for fam, sa := range ma {
+		sb, ok := mb[fam]
+		if !ok || sa != sb && sa != "" && sb != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// splitChord splits a spelling ("Control+LeftOption+1") into its key
+// ("1"; "" for a modifier-only chord) and its modifier families with
+// their sides. mods is nil for a spelling this grammar does not know.
+func splitChord(keys string) (key string, mods map[string]string) {
+	parts := strings.Split(keys, "+")
+	mods = map[string]string{}
+	for i, part := range parts {
+		if m, ok := chordModifiers[part]; ok {
+			if _, dup := mods[m[0]]; dup {
+				return "", nil
+			}
+			mods[m[0]] = m[1]
+			continue
+		}
+		if i != len(parts)-1 || part == "" {
+			return "", nil
+		}
+		key = part
+	}
+	return key, mods
 }

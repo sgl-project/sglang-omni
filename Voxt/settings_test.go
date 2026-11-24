@@ -426,19 +426,26 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 }
 
 // TestSessionShortcutsSettings: Settings → Shortcuts' Sessions section
-// lists the three session shortcuts (Option+1 … by default, #4005), in
-// English and Chinese, and they save from the page.
+// lists the three session shortcuts (Control+Option+1 … by default,
+// #4005), in English and Chinese; Change… opens the recorder, whose
+// pressed keys save at once.
 func TestSessionShortcutsSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
-	for _, s := range []string{"Session 1", "Session 2", "Session 3"} {
+	for _, s := range []string{"Session 1", "Session 2", "Session 3", "⌃⌥1"} {
 		if !has(tt, s) {
 			t.Errorf("no %q: %q", s, firstTexts(tt))
 		}
 	}
-	a.setSessionKeys(0, "Option+4")
-	if got := a.settings.Get().Features.Sessions[0].Keys; got != "Option+4" {
-		t.Fatalf("saved %q", got)
+	scrollToText(tt, "Session 1")
+	click(t, tt, "Change…") // Session 1's, the first
+	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
+	frames(tt)
+	if got := a.settings.Get().Features.Sessions[0].Keys; got != "Control+Option+4" {
+		t.Fatalf("the recorder saved %q", got)
+	}
+	if !hasExact(tt, "⌃⌥4") {
+		t.Errorf("the row shows the new keys: %q", firstTexts(tt))
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	frames(tt)

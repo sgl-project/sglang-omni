@@ -61,7 +61,8 @@ type Decision struct {
 //   - Idle: a tap or double tap of a feature's binding starts it; a long
 //     press starts it on "down" and its "up" stops it; PasteLast pastes;
 //     Note starts a note (Decision.Feature Note); a session slot's tap
-//     switches the slot (Decision.Feature session-N).
+//     switches the slot (Decision.Feature session-N, also in Composing:
+//     the streaming answer keeps its own slot).
 //   - Recording: the shortcut that started the session fixed its mode; any
 //     feature's binding only stops (the "common stop"), never switches
 //     mode. A tap fires at once while active; the "up" of the long press
@@ -99,9 +100,10 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, f
 		return Decision{}
 	}
 	if _, isSession := SessionSlot(feature); isSession {
-		// A slot switches only with nothing running: parking or
-		// restoring a card mid-session would mix the sessions' cards.
-		if phase == Idle && e.Phase == proto.PhaseTrigger {
+		// A slot switches only with nothing recording or on its way:
+		// idle, or an answer still streaming (it keeps its own slot
+		// while finishing in the background, #4005).
+		if (phase == Idle || phase == Composing) && e.Phase == proto.PhaseTrigger {
 			return Decision{Action: Start, Feature: feature}
 		}
 		return Decision{}

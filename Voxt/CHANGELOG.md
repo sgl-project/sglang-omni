@@ -6,7 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Sessions (prototype)** (#4005): three session slots, switched with Option+1, Option+2 and Option+3 (rebindable in Settings → Shortcuts). Rewrite, Translate and Transcribe run in the current session, each keeping its own answer card and conversation; the card names its session, and switching back brings its card and conversation back, so a covered Rewrite result is never lost. With no session shortcut pressed, everything works as before.
+- **Sessions (prototype)** (#4005): three session slots, switched with Control+Option+1, Control+Option+2 and Control+Option+3 (rebindable in Settings → Shortcuts). Rewrite, Translate and Transcribe run in the current session, each keeping its own answer card and conversation; the card names its session, and switching back brings its card and conversation back, so a covered Rewrite result is never lost. With no session shortcut pressed, everything works as before.
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
@@ -24,7 +24,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **会话（原型）**（#4005）：三个会话，用 Option+1、Option+2、Option+3 切换（可在设置 → 快捷键里改）。改写、翻译和转录在当前会话里进行，各自保留自己的答案卡片和对话；卡片上标着它属于哪个会话，切回去时卡片和对话一起回来，被遮住的改写结果不会再丢。不按会话快捷键时，一切照旧。
+- **会话（原型）**（#4005）：三个会话，用 Control+Option+1、Control+Option+2、Control+Option+3 切换（可在设置 → 快捷键里改）。改写、翻译和转录在当前会话里进行，各自保留自己的答案卡片和对话；卡片上标着它属于哪个会话，切回去时卡片和对话一起回来，被遮住的改写结果不会再丢。不按会话快捷键时，一切照旧。
 - **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。

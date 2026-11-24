@@ -102,7 +102,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgVisible() && a.bgSess.State.Live() {
 		// The backgrounded answer still streams (the session beside it
 		// ended): stop a partial answer, cancel one with no text yet.
 		if a.cardSnapshot().CanStop() {

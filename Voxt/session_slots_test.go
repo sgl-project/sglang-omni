@@ -3,8 +3,12 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // #4005: the multi-session prototype. The session shortcuts (session-1 …)
@@ -58,6 +62,99 @@ func TestSessionSlotSwitchKeepsConversations(t *testing.T) {
 	// Session 2's card waits in its slot.
 	if p := a.slots[1]; !p.answer.open || p.answer.text != "two" {
 		t.Fatalf("session 2 parked: %+v", p.answer)
+	}
+}
+
+// TestSessionSlotSwitchWhileAnswerStreams: the owner's case (#4005). A
+// Rewrite answer streams in Session 1; Option+2 switches anyway — the
+// answer finishes in the background in Session 1 — and a Transcribe
+// runs in Session 2 beside it. The finished card is Session 1's alone,
+// with its conversation; Session 2 never shows it.
+func TestSessionSlotSwitchWhileAnswerStreams(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, tr := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+		s.Features.Transcribe.Enhance = false // no second, stalled, model request
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+
+	// The switch backgrounds the stream, in Session 1; Session 2 shows
+	// nothing of it.
+	tap(a, "session-2", textEditApp)
+	if a.slot != 1 || a.bgID == "" || !a.bgSess.State.Live() || a.answer.open || a.ov.mode == ovAnswer {
+		t.Fatalf("switched mid-stream: slot=%d bg=%q answer open=%v mode=%s", a.slot, a.bgID, a.answer.open, a.ov.mode)
+	}
+
+	// A Transcribe runs in Session 2 beside the stream (wall 116).
+	startSaying(a, tr, "transcribe/0", textEditApp, "dictated words")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("the transcription's end", func() bool { return a.sess.State.Ended() })
+	if p := a.pasted(); len(p) != 1 || p[0].Text != "dictated words" {
+		t.Fatalf("pasted %+v", p)
+	}
+	if a.answer.open || a.slots[1].answer.open {
+		t.Fatalf("the transcription left a card: %+v / %+v", a.answer, a.slots[1].answer)
+	}
+
+	// Back in Session 1 the stream shows again; stopping it finishes
+	// the card there, with its own conversation (#3886).
+	tap(a, "session-1", textEditApp)
+	a.pump("the stream visible again", func() bool { return a.ov.mode == ovAnswer })
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	a.pump("the answer's end", func() bool { return a.bgID == "" })
+	if c := a.answer; !c.open || c.text != full || c.slot != 0 || len(c.turns) != 1 {
+		t.Fatalf("session 1's card %+v", c)
+	}
+	if v := a.cachedCard(); v.Session != "Session 1" {
+		t.Fatalf("card label %q", v.Session)
+	}
+	if p := a.slots[1]; p.answer.open || p.under.open {
+		t.Fatalf("session 2 was given a card: %+v", p)
+	}
+	a.pump("the history", func() bool { return len(a.history()) == 2 })
+	es := a.history()
+	if es[0].Kind != store.KindTranscribe || es[0].Conversation == es[1].Conversation {
+		t.Fatalf("conversations mixed: %+v", es)
+	}
+}
+
+// TestSessionSlotAnswerFinishesInItsSlot: the streaming answer ends
+// while Session 2 is current: its card waits in Session 1, conversation
+// and all, instead of taking Session 2's place.
+func TestSessionSlotAnswerFinishesInItsSlot(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	tap(a, "session-2", textEditApp)
+	if a.bgID == "" || a.slot != 1 {
+		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
+	}
+	a.mgr.StopLLM(a.bgID) // the answer ends here, kept (#3886)
+	a.pump("the answer's end", func() bool { return a.bgID == "" })
+	if a.answer.open || a.ov.mode == ovAnswer {
+		t.Fatalf("Session 2 shows the card: %+v mode=%s", a.answer, a.ov.mode)
+	}
+	p := a.slots[0]
+	if !p.answer.open || p.answer.text != full || p.answer.slot != 0 || len(p.answer.turns) != 1 {
+		t.Fatalf("parked in session 1: %+v", p.answer)
+	}
+	tap(a, "session-1", textEditApp)
+	if c := a.answer; !c.open || c.text != full || len(c.turns) != 1 {
+		t.Fatalf("restored: %+v", c)
 	}
 }
 

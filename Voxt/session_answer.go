@@ -22,9 +22,10 @@ import (
 
 // openAnswer opens the answer card on an ended session: its result (or
 // why it failed), what it worked on, a Rewrite conversation's turns.
-func (a *app) openAnswer(s session.Snapshot) {
+// slot is the session slot the card belongs to (#4005).
+func (a *app) openAnswer(s session.Snapshot, slot int) {
 	card := answerCard{
-		open: true, id: s.ID, conv: s.ID, kind: s.Kind, slot: a.slot, text: s.Result, title: s.Title, target: s.Target,
+		open: true, id: s.ID, conv: s.ID, kind: s.Kind, slot: slot, text: s.Result, title: s.Title, target: s.Target,
 		highlights: s.Highlights, input: session.TextInput{Raw: s.Raw, Selection: s.Selection, Typed: s.Typed}, lang: s.TargetLanguage, llmID: s.LLM.ID,
 		why: uitext.WhyInCard(s.Delivery, s.Selection != "", s.Target.Name), attach: s.ImageHint,
 	}

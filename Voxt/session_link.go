@@ -54,8 +54,10 @@ type sessionState struct {
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
+	// bgSlot is the session slot it belongs to (#4005).
 	bgID   string
 	bgSess session.Snapshot
+	bgSlot int
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
 	// box is Rewrite's card with the input box (rewrite_box.go): the
@@ -401,10 +403,15 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			switch {
 			case s.ID == a.bgID:
 				// The backgrounded answer's own end: its card opens (and its
-				// conversation merges) as the foreground path's would. A card
-				// that is not its own waits under it: setAside holds only
-				// Rewrite and Translate cards, so a Transcribe card is held
-				// directly.
+				// conversation merges) as the foreground path's would — in
+				// its own session slot when the user switched away meanwhile
+				// (#4005). A card that is not its own waits under it: setAside
+				// holds only Rewrite and Translate cards, so a Transcribe
+				// card is held directly.
+				if !a.bgVisible() {
+					a.parkAnswer(s)
+					break
+				}
 				if a.answer.open && a.followUp == "" {
 					if c := a.answer; c.kind == store.KindTranscribe && c.problem == nil && !c.inserting {
 						a.under, a.answer = c, answerCard{}
@@ -412,14 +419,14 @@ func (a *app) sessionEnded(s session.Snapshot) {
 						a.setAside(false)
 					}
 				}
-				a.openAnswer(s)
+				a.openAnswer(s, a.slot)
 			case a.answer.open && a.answer.id != s.ID && a.bgID != "" &&
 				(a.followUp != "" && a.followUp == a.answer.id || a.answer.redo == a.bgID):
 				// The open card's own answer still streams in the background:
 				// this card waits under it, conversation and redo untouched.
 				saved, followUp := a.answer, a.followUp
 				a.followUp = ""
-				a.openAnswer(s)
+				a.openAnswer(s, a.slot)
 				a.under, a.answer = a.answer, saved
 				a.followUp = followUp
 			case a.answer.open && a.answer.id != s.ID && !(a.followUp != "" && a.followUp == a.answer.id):
@@ -427,9 +434,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 				// one and comes back when it closes, as setAside would have
 				// held it. A follow-up is the card's own: it merges instead.
 				a.setAside(false)
-				a.openAnswer(s)
+				a.openAnswer(s, a.slot)
 			default:
-				a.openAnswer(s)
+				a.openAnswer(s, a.slot)
 			}
 			a.syncHotkeys() // the cancel shortcut closes the card
 		}
