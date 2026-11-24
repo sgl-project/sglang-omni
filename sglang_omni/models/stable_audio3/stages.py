@@ -102,7 +102,7 @@ def create_generation_executor(
 
     def generate(payloads: list[StagePayload]) -> list[StagePayload]:
         states = [load_state(payload, StableAudio3State) for payload in payloads]
-        audio = runtime.generate(
+        audio = runtime.generate_in_length_groups(
             [
                 GenerationRequest(
                     prompt=state.prompt, seconds=state.duration_seconds, seed=state.seed

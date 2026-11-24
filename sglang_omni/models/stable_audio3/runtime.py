@@ -30,6 +30,9 @@ from sglang_omni.models.stable_audio3.model_config import (
 
 SAMPLING_STEPS = 8
 HEADROOM_SECONDS = 6.0
+# note (ruilin): on an H200 one more generate call costs about as much as 40 s of padded audio
+# (sampling-step launches, prompt encoding, graph binding); it sets how finely a batch is split.
+GROUP_OVERHEAD_SECONDS = 40.0
 # note (ruilin): the checkpoint's sampling shift has rate 0, so the schedule does not depend on length.
 LOGSNR_START = -6.2
 LOGSNR_END = 2.0
@@ -63,6 +66,37 @@ def sampling_schedule(device: torch.device) -> torch.Tensor:
     schedule = torch.sigmoid(-logsnr)
     schedule = torch.where(timesteps <= 0, torch.zeros_like(schedule), schedule)
     return torch.where(timesteps >= 1, torch.ones_like(schedule), schedule)
+
+
+def plan_length_groups(
+    latent_lengths: list[int], overhead_latents: int
+) -> list[list[int]]:
+    """Cut a batch, sorted by length, into runs that each pad only to their own longest request.
+
+    The cut minimizes the padded latents plus a fixed overhead per run, so a batch of equal
+    lengths stays whole. Returns indices into ``latent_lengths``.
+    """
+    order = sorted(range(len(latent_lengths)), key=lambda index: latent_lengths[index])
+    best_cost = [0] + [math.inf] * len(order)
+    run_start = [0] * (len(order) + 1)
+    for end in range(1, len(order) + 1):
+        for start in range(end):
+            cost = (
+                best_cost[start]
+                + overhead_latents
+                + (end - start) * latent_lengths[order[end - 1]]
+            )
+            if cost < best_cost[end]:
+                best_cost[end] = cost
+                run_start[end] = start
+            else:
+                pass
+    groups = []
+    end = len(order)
+    while end > 0:
+        groups.append(order[run_start[end] : end])
+        end = run_start[end]
+    return groups[::-1]
 
 
 def load_component(module: nn.Module, archive_path: Path, prefix: str) -> None:
@@ -208,9 +242,29 @@ class StableAudio3Runtime:
             dtype=dtype,
         )
 
+    def generate_in_length_groups(
+        self, requests: list[GenerationRequest]
+    ) -> list[torch.Tensor]:
+        """Like generate, but requests of similar length run together, so a short request is not padded to a long one."""
+        overhead_latents = round(
+            GROUP_OVERHEAD_SECONDS
+            * self.config.sample_rate
+            / self.decoder.downsampling_ratio
+        )
+        groups = plan_length_groups(
+            [self.latent_length(request.seconds) for request in requests],
+            overhead_latents,
+        )
+        audio: dict[int, torch.Tensor] = {}
+        for group in groups:
+            waveforms = self.generate([requests[index] for index in group])
+            for index, waveform in zip(group, waveforms, strict=True):
+                audio[index] = waveform
+        return [audio[index] for index in range(len(requests))]
+
     @torch.inference_mode()
     def generate(self, requests: list[GenerationRequest]) -> list[torch.Tensor]:
-        """Stereo float32 audio per request; each request draws its noise from its own seed, so batching does not change it."""
+        """Stereo audio per request in the decoder's precision; each request draws its noise from its own seed, so batching does not change it."""
         seconds_embedding = self.conditioner.embed_seconds(
             [request.seconds for request in requests]
         )

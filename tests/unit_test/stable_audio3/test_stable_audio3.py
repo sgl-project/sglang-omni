@@ -13,6 +13,7 @@ from transformers import BatchEncoding
 from sglang_omni.client.audio import encode_audio, to_numpy
 from sglang_omni.client.client import Client
 from sglang_omni.client.types import GenerateChunk
+from sglang_omni.models.stable_audio3 import runtime as runtime_module
 from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner
 from sglang_omni.models.stable_audio3.cuda_graphs import (
@@ -29,6 +30,7 @@ from sglang_omni.models.stable_audio3.request_builders import (
 from sglang_omni.models.stable_audio3.runtime import (
     GenerationRequest,
     StableAudio3Runtime,
+    plan_length_groups,
     sampling_schedule,
 )
 from sglang_omni.models.stable_audio3.speech_validation import (
@@ -282,6 +284,39 @@ def test_batching_does_not_change_any_request(runtime: StableAudio3Runtime) -> N
         assert batched_audio.shape == (2, int(request.seconds * 44100))
         assert batched_audio.abs().max() > 0
         assert torch.allclose(batched_audio, single_audio, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("latent_lengths", "groups"),
+    [
+        ([388] * 8, [list(range(8))]),
+        ([250], [[0]]),
+        ([], []),
+        ([1357, 119, 1357, 119], [[1, 3], [0, 2]]),
+        ([119, 248, 4096, 119], [[0, 3, 1], [2]]),
+    ],
+)
+def test_length_groups_split_only_mixed_lengths(
+    latent_lengths: list[int], groups: list[list[int]]
+) -> None:
+    assert plan_length_groups(latent_lengths, overhead_latents=431) == groups
+
+
+def test_grouped_generation_matches_one_batch(
+    runtime: StableAudio3Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Split into length groups, every request still returns its own audio, in order."""
+    requests = [
+        GenerationRequest(prompt="orchestral swell", seconds=20.0, seed=4),
+        GenerationRequest(prompt="lofi", seconds=4.0, seed=3),
+        GenerationRequest(prompt="rain", seconds=4.0, seed=5),
+    ]
+    monkeypatch.setattr(runtime_module, "GROUP_OVERHEAD_SECONDS", 0.0)
+    grouped = runtime.generate_in_length_groups(requests)
+    batched = runtime.generate(requests)
+    for grouped_audio, batched_audio in zip(grouped, batched, strict=True):
+        assert grouped_audio.shape == batched_audio.shape
+        assert torch.allclose(grouped_audio, batched_audio, atol=1e-6)
 
 
 @pytest.mark.parametrize(
