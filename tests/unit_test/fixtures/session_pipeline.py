@@ -22,7 +22,7 @@ from typing import Literal, Protocol, TypeAlias, TypedDict
 
 import pytest
 
-from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, Emit, VADConfig, VADProcessResult
+from sglang_omni.audio.vad import VADConfig
 from sglang_omni.config.schema import (
     REPLICA_SEPARATOR,
     PipelineConfig,
@@ -305,34 +305,23 @@ class LoudnessDetector:
         self.config = config
         self.is_speech = False
         self.last_speech_offset = 0
-        self.samples = 0
-        self.input_samples = 0
+        self.samples_consumed = 0
 
-    def process_with_progress(self, pcm_bytes: bytes) -> VADProcessResult:
-        loud = any(pcm_bytes)
-        events = (
-            []
-            if loud == self.is_speech
-            else [
-                Emit("speech_started" if loud else "speech_stopped", self.input_samples)
-            ]
-        )
+    def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]:
+        loud = any(pcm)
+        found = [] if loud == self.is_speech else [(loud, self.samples_consumed)]
         self.is_speech = loud
-        self.input_samples += len(pcm_bytes) // 2
-        self.samples += (
-            self.input_samples // VAD_FRAME_SAMPLES * VAD_FRAME_SAMPLES - self.samples
-        )
+        self.samples_consumed += len(pcm) // 2
         if loud:
-            self.last_speech_offset = self.samples
+            self.last_speech_offset = self.samples_consumed
         else:
             pass
-        return VADProcessResult(tuple(events), self.samples)
+        return found
 
     def reset(self) -> None:
         self.is_speech = False
         self.last_speech_offset = 0
-        self.samples = 0
-        self.input_samples = 0
+        self.samples_consumed = 0
 
 
 def make_vad_scheduler(name: str, events: Queue[StageEvent]) -> SessionScheduler:

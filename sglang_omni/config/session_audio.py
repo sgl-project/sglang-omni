@@ -16,7 +16,7 @@ from sglang_omni.models.turn_detection.node import (
 )
 from sglang_omni.models.vad.node import SESSION_PORTS as VAD_PORTS
 from sglang_omni.models.vad.node import VAD_STAGE, VADStageConfig, vad_stage
-from sglang_omni.proto.session import SessionLimits, parse_input
+from sglang_omni.proto.session import SessionGraph, SessionLimits
 from sglang_omni.proto.streams import SESSION_UNIT_MS, SessionPorts
 
 REALTIME_OPERATION_TIMEOUT_S = 300
@@ -25,6 +25,29 @@ REALTIME_MAX_PENDING_CHUNKS = 64
 MAX_PENDING_OUTPUT_CHUNKS = 1024
 MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024
 MODEL_PIPELINE_FIELDS = ("placement", "terminal_stages_fn", "env_defaults")
+
+
+def validate_fused_endpoint_graph(graph: SessionGraph) -> None:
+    """Reject data edges from standalone VAD owners into fused endpoints."""
+    vad_owners = {
+        name for name, node in graph.nodes.items() if VAD_STAGE in node.stages
+    }
+    for endpoint in graph.nodes.values():
+        if TURN_DETECTION_STAGE not in endpoint.stages:
+            continue
+        else:
+            pass
+        if vad_owners.intersection(endpoint.edges()):
+            raise ValueError(
+                "the split vad -> turn_detection graph is unsupported: remove "
+                "the separate VAD node from the semantic endpoint path; let "
+                "turn_detection consume input:pcm16 and input:session directly; "
+                "move VAD factory overrides to stages.turn_detection.factory; "
+                "route downstream consumers and session publication through "
+                "turn_detection:session"
+            )
+        else:
+            pass
 
 
 @dataclass(frozen=True)
@@ -128,24 +151,11 @@ class AudioSessionPipelineConfig(PipelineConfig):
 
     @model_validator(mode="after")
     def check_graph(self) -> "AudioSessionPipelineConfig":
-        for node in self.session_nodes.values():
-            if TURN_DETECTION_STAGE not in node.stages:
-                continue
-            else:
-                pass
-            if any(
-                parse_input(entry if isinstance(entry, str) else entry.source)[0]
-                == VAD_STAGE
-                for entry in node.inputs
-            ):
-                raise ValueError(
-                    "the split vad -> turn_detection graph is unsupported; "
-                    "remove the vad stage input and let turn_detection read "
-                    "input:pcm16 and input:session directly"
-                )
-            else:
-                pass
-        self.session_graph()
+        graph = self.session_graph()
+        if graph is not None:
+            validate_fused_endpoint_graph(graph)
+        else:
+            pass
         return self
 
     def model_configs(self) -> list[PipelineConfig]:

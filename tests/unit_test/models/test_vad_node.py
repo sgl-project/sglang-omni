@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """The VAD node of a Session graph: one detector per session, boundaries on the input timeline."""
 
+import sys
 import threading
+import types
 
 import numpy as np
 import pytest
 
-from sglang_omni.audio.vad import VAD_FRAME_SAMPLES, Emit, VADConfig, VADProcessResult
+from sglang_omni.audio.vad import StreamingVAD, VADConfig
 from sglang_omni.config.runtime import resolve_stage_typed_kwargs
 from sglang_omni.models.vad.node import (
     SESSION_PORTS,
@@ -35,6 +37,22 @@ from tests.unit_test.fixtures.session_outputs import control_chunk
 QUIET = bytes(100 * 32)
 
 
+@pytest.fixture(autouse=True)
+def deterministic_silero(monkeypatch: pytest.MonkeyPatch) -> None:
+    silero_module = types.ModuleType("silero_vad")
+
+    def load_silero_vad(*, onnx: bool) -> object:
+        assert onnx
+        return object()
+
+    def infer(self: StreamingVAD, frame: np.ndarray) -> float:
+        return 0.0
+
+    silero_module.load_silero_vad = load_silero_vad
+    monkeypatch.setitem(sys.modules, "silero_vad", silero_module)
+    monkeypatch.setattr(StreamingVAD, "infer", infer)
+
+
 class ScriptedDetector:
     """Boundaries read from a script, one entry per audio chunk."""
 
@@ -45,31 +63,19 @@ class ScriptedDetector:
         self.last_speech_offset = 0
         self.resets = 0
         self.samples_consumed = 0
-        self.partial_samples = 0
 
-    def process_with_progress(self, pcm_bytes):
-        self.partial_samples += len(pcm_bytes) // 2
-        completed_frames = self.partial_samples // VAD_FRAME_SAMPLES
-        self.partial_samples %= VAD_FRAME_SAMPLES
-        self.samples_consumed += completed_frames * VAD_FRAME_SAMPLES
+    def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]:
         found = self.script.pop(0)
-        events = []
         for started, offset in found:
             self.is_speech = started
             self.last_speech_offset = offset
-            events.append(
-                Emit(
-                    "speech_started" if started else "speech_stopped",
-                    offset,
-                )
-            )
-        return VADProcessResult(tuple(events), self.samples_consumed)
+        self.samples_consumed += len(pcm) // 2
+        return found
 
-    def reset(self):
+    def reset(self) -> None:
         self.resets += 1
         self.is_speech = False
         self.samples_consumed = 0
-        self.partial_samples = 0
 
 
 class Node:

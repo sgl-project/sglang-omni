@@ -19,7 +19,11 @@ from sglang_omni.config.schema import (
     SessionNodeConfig,
     StageConfig,
 )
-from sglang_omni.config.session_audio import AudioSessionPipelineConfig, StageGroup
+from sglang_omni.config.session_audio import (
+    AudioSessionPipelineConfig,
+    StageGroup,
+    validate_fused_endpoint_graph,
+)
 from sglang_omni.models.nemotron3_5_asr.config import (
     Nemotron3_5ASRPipelineConfig,
     Nemotron3_5ASRStageConfig,
@@ -679,7 +683,8 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
             self.component_graph()
         else:
             pass
-        self.session_graph()
+        graph = self.session_graph()
+        validate_fused_endpoint_graph(graph)
         return self
 
     def session_graph(self) -> SessionGraph:

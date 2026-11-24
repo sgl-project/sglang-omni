@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The VAD stage: one silero detector per Session, speech boundaries on the input timeline."""
+"""VAD session state and its standalone Session stage."""
 
 from __future__ import annotations
 
-from dataclasses import replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from typing import Protocol
 
-from sglang_omni.audio.vad import (
-    SileroSpeechDetector,
-    SpeechDetectorFactory,
-    VADConfig,
-    VADSessionState,
-    turn_detection_vad_config,
-)
+from sglang_omni.audio.vad import StreamingVAD, VADConfig, VADEvent
+from sglang_omni.models.vad.node import TURN_DETECTION_FIELDS
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -19,7 +16,10 @@ from sglang_omni.proto.streams import (
     COMMIT,
     CONFIGURE,
     CONTROL,
+    PCM16,
+    SEMANTIC_VAD,
     SESSION_CONTROL,
+    SESSION_INPUT_SAMPLE_RATE_HZ,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     control_type,
@@ -33,6 +33,54 @@ from sglang_omni.scheduling.session import (
 )
 
 
+class SpeechDetector(Protocol):
+    """Frame-level detection over 16 kHz PCM; sample offsets reset with the detector."""
+
+    config: VADConfig
+    is_speech: bool
+    last_speech_offset: int
+    samples_consumed: int
+
+    def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]: ...
+
+    def reset(self) -> None: ...
+
+
+class SileroSpeechDetector(StreamingVAD):
+    def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]:
+        return [
+            (emit.event_type == VADEvent.SPEECH_STARTED, emit.sample_offset)
+            for emit in self.process(pcm)
+        ]
+
+
+DetectorFactory = Callable[[VADConfig], SpeechDetector]
+
+
+def turn_detection_config(
+    config: VADConfig, settings: Mapping[str, object]
+) -> VADConfig:
+    """Apply VAD options from a realtime turn_detection setting."""
+    turn_detection = settings.get("turn_detection")
+    if turn_detection is None:
+        return config
+    elif not isinstance(turn_detection, Mapping):
+        raise ValueError("turn_detection must be an object")
+    else:
+        return replace(
+            config,
+            **{
+                field: turn_detection[field]
+                for field in TURN_DETECTION_FIELDS
+                if turn_detection.get(field) is not None
+                and not (
+                    field == "silence_duration_ms"
+                    and turn_detection.get("type") == SEMANTIC_VAD
+                )
+            },
+        )
+
+
 def boundary_chunk(started: bool, t_ms: float) -> TimedChunk:
     return TimedChunk(
         CONTROL,
@@ -44,15 +92,92 @@ def boundary_chunk(started: bool, t_ms: float) -> TimedChunk:
     )
 
 
+@dataclass(kw_only=True)
+class DetectorSession:
+    detector: SpeechDetector
+    is_enabled: bool = True
+    origin_ms: float | None = None
+
+    @property
+    def completed_frame_end_ms(self) -> float | None:
+        if self.origin_ms is None:
+            return None
+        else:
+            return self.boundary_ms(self.detector.samples_consumed)
+
+    def boundary_ms(self, sample_offset: int) -> float:
+        assert self.origin_ms is not None
+        return self.origin_ms + sample_offset * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+
+    def process_audio(
+        self,
+        chunk: TimedChunk,
+        *,
+        expected_start_sample: int | None = None,
+        require_duration_match: bool = False,
+    ) -> list[tuple[bool, float]]:
+        if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
+            raise ValueError("audio must be 16 kHz mono pcm16 bytes")
+        elif len(chunk.payload) % 2:
+            raise ValueError("pcm16 audio must contain whole samples")
+        else:
+            sample_count = len(chunk.payload) // 2
+        if (
+            require_duration_match
+            and chunk.duration_ms != sample_count * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+        ):
+            raise ValueError("audio duration must match its pcm16 sample count")
+        else:
+            pass
+        if (
+            self.is_enabled
+            and sample_count
+            and self.origin_ms is not None
+            and expected_start_sample is not None
+        ):
+            actual_start_sample = round(
+                (chunk.t_start_ms - self.origin_ms)
+                * SESSION_INPUT_SAMPLE_RATE_HZ
+                / 1000
+            )
+            if actual_start_sample != expected_start_sample:
+                expected_start_ms = self.origin_ms + (
+                    expected_start_sample * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+                )
+                raise ValueError(
+                    "fused turn_detection requires contiguous PCM within an enabled "
+                    "detector epoch; expected the next sample at "
+                    f"{expected_start_ms:g} ms, got {chunk.t_start_ms:g} ms"
+                )
+            else:
+                pass
+        else:
+            pass
+        if not chunk.payload or not self.is_enabled:
+            return []
+        elif self.origin_ms is None:
+            self.origin_ms = chunk.t_start_ms
+        else:
+            pass
+        return [
+            (started, self.boundary_ms(sample_offset))
+            for started, sample_offset in self.detector.boundaries(chunk.payload)
+        ]
+
+    def reset(self) -> None:
+        self.detector.reset()
+        self.origin_ms = None
+
+
 class VADHooks(SessionHooks):
-    def __init__(self, config: VADConfig, new_detector: SpeechDetectorFactory) -> None:
+    def __init__(self, config: VADConfig, new_detector: DetectorFactory) -> None:
         self.config = config
         self.new_detector = new_detector
-        self.sessions: dict[SessionIdentity, VADSessionState] = {}
+        self.sessions: dict[SessionIdentity, DetectorSession] = {}
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
-        config = turn_detection_vad_config(self.config, request.params)
-        self.sessions[session_identity] = VADSessionState(
+        config = turn_detection_config(self.config, request.params)
+        self.sessions[session_identity] = DetectorSession(
             detector=self.new_detector(config),
             is_enabled=not (
                 "turn_detection" in request.params
@@ -61,8 +186,7 @@ class VADHooks(SessionHooks):
         )
 
     def close(self, session_identity: SessionIdentity) -> None:
-        session = self.sessions.pop(session_identity)
-        session.reset()
+        del self.sessions[session_identity]
 
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
@@ -70,7 +194,8 @@ class VADHooks(SessionHooks):
         session = self.sessions[context.session_identity]
         chunk_control_type = control_type(chunk)
         if chunk.modality == AUDIO:
-            self.append_audio(session, chunk, context)
+            for started, boundary_time_ms in session.process_audio(chunk):
+                context.emit(boundary_chunk(started, boundary_time_ms))
         elif chunk_control_type == COMMIT:
             session.reset()
         elif chunk_control_type == CONFIGURE:
@@ -80,7 +205,7 @@ class VADHooks(SessionHooks):
                 session.reset()
                 session.is_enabled = False
             else:
-                session.detector.config = turn_detection_vad_config(
+                session.detector.config = turn_detection_config(
                     replace(
                         session.detector.config,
                         silence_duration_ms=self.config.silence_duration_ms,
@@ -102,13 +227,6 @@ class VADHooks(SessionHooks):
             pass
         payload.data = {"accepted": True}
         return payload
-
-    def append_audio(
-        self, session: VADSessionState, chunk: TimedChunk, context: SessionContext
-    ) -> None:
-        result = session.append_audio(chunk)
-        for boundary in result.boundaries:
-            context.emit(boundary_chunk(boundary.started, boundary.t_ms))
 
 
 def create_scheduler(
