@@ -125,7 +125,7 @@ func TestLookingBackNumbersWhole(t *testing.T) {
 	rows := func() int {
 		t.Helper()
 		tops := map[float32]bool{}
-		for _, text := range []string{"2,220", "47", "226", "9"} {
+		for _, text := range []string{"2,220", "42", "226", "9"} {
 			r, ok := tester.Find(text)
 			if !ok {
 				t.Fatalf("no %q: %q", text, tester.Texts())

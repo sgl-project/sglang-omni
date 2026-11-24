@@ -41,6 +41,13 @@ var ShareLinkedIn = func() Icon {
 	return Icon{Name: "share-linkedin", Linear: s, Bold: s}
 }()
 
+// ShareX names X on the insights cards' button that posts there: its
+// mark, a broad stroke crossed by a thin one, drawn for VoxtNew.
+var ShareX = func() Icon {
+	s := parse(`<g fill="currentColor"><path d="M4.2 4h4.6l11 16h-4.6z"/><path d="M17.9 4h2l-6.4 7.3-1.1-1.5zM6.1 20h-2l6.5-7.4 1.1 1.5z"/></g>`)
+	return Icon{Name: "share-x", Linear: s, Bold: s}
+}()
+
 // ShareStar is the logo's star, a four-pointed one of the mockup's
 // curves, in the text's color: the card's orange and peach ones.
 var ShareStar = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="130" height="130" viewBox="0 0 130 130"><path fill="currentColor" d="M65 0Q65 65 130 65Q65 65 65 130Q65 65 0 65Q65 65 65 0Z"/></svg>`))

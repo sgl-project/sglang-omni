@@ -49,7 +49,11 @@ func insightsDeckDialog(c *ui.Context, state *insightsDeckViewState, actions ins
 						actions.turnInsightsShare(1)
 					}
 				})
-				insightsDeckDots(c, state, actions)
+				if state.Posted != "" {
+					insightsDeckPasteHint(c, state.Posted)
+				} else {
+					insightsDeckDots(c, state, actions)
+				}
 				insightsDeckButtons(c, state, actions)
 			})
 		})
@@ -116,7 +120,8 @@ func insightsDeckDots(c *ui.Context, state *insightsDeckViewState, actions insig
 }
 
 // insightsDeckButtons are Another color, then what to do with the card:
-// Copy picture, Save picture and Share to LinkedIn, an icon each.
+// Copy picture, Save picture, Share to LinkedIn and Share to X, an icon
+// each.
 func insightsDeckButtons(c *ui.Context, state *insightsDeckViewState, actions insightsActions) {
 	t := c.Theme()
 	ui.Row(c.Key("buttons")).Height(insightsDeckButton).Gap(10).AlignItems(ui.Center).Children(func() {
@@ -136,7 +141,10 @@ func insightsDeckButtons(c *ui.Context, state *insightsDeckViewState, actions in
 			actions.saveInsightsShare()
 		}
 		if insightsDeckRoundButton(c.Key("linkedin"), icons.ShareLinkedIn, i18n.T("Share to LinkedIn"), false).Clicked() {
-			actions.postInsightsShare()
+			actions.postInsightsShare("linkedin")
+		}
+		if insightsDeckRoundButton(c.Key("x"), icons.ShareX, i18n.T("Share to X"), false).Clicked() {
+			actions.postInsightsShare("x")
 		}
 	})
 }
@@ -164,4 +172,22 @@ func insightsDeckRoundButton(c *ui.Context, ic icons.Icon, label string, main bo
 	}
 	grow := 1 + .1*b.AnimateTo("hot", hot, ui.Snappy)
 	return b.Scale(grow, grow).Children(func() { ui.Icon(c, ic.Linear).Size(18, 18).TextColor(ink) })
+}
+
+// insightsDeckPasteHint says, where the dots were, that the card is on
+// the clipboard for site's post: neither site takes a picture from a
+// link, so the user pastes it there.
+func insightsDeckPasteHint(c *ui.Context, site string) {
+	t := c.Theme()
+	k := tok(t)
+	c.After(500 * time.Millisecond) // the dots come back
+	text := i18n.T("Picture copied. Press ⌘V in your LinkedIn post to paste it.")
+	if site == "x" {
+		text = i18n.T("Picture copied. Press ⌘V in your post on X to paste it.")
+	}
+	ui.Row(c.Key("paste-hint")).Height(26).Gap(6).AlignItems(ui.Center).Margin(9, 0, 11, 0).Padding(0, 12).Radius(13).
+		Background(k.Hover).Children(func() {
+		ui.Icon(c, icons.ShareCopied.Linear).Size(14, 14).TextColor(k.Text2)
+		ui.Text(c, text).FontSize(12).FontWeight(500).TextColor(k.Text).SingleLine()
+	})
 }

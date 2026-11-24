@@ -411,12 +411,27 @@ func TestShareClickThrough(t *testing.T) {
 			t.Errorf("the saved picture is %d×%d (%v), want the card at 3×", config.Width, config.Height, err)
 		}
 	}
+	// LinkedIn and X: the picture is copied, the window says to paste it
+	// where the dots were, and the site opens after a moment.
 	var opened []string
-	defer func(old func(string)) { openInsightsLink = old }(openInsightsLink)
-	openInsightsLink = func(address string) { opened = append(opened, address) }
-	control("Share to LinkedIn")
-	if len(copied) != 3 || !slices.Equal(opened, []string{insightsLinkedInPost}) {
-		t.Errorf("Share to LinkedIn copied %d pictures in all and opened %q", len(copied), opened)
+	defer func(old func(string, time.Duration)) { openInsightsLink = old }(openInsightsLink)
+	openInsightsLink = func(address string, after time.Duration) {
+		if after <= 0 {
+			t.Errorf("%s opens at once, before the window says to paste", address)
+		}
+		opened = append(opened, address)
+	}
+	for i, post := range []struct{ button, site, hint string }{
+		{"Share to LinkedIn", insightsSiteLinkedIn, "Picture copied. Press ⌘V in your LinkedIn post to paste it."},
+		{"Share to X", insightsSiteX, "Picture copied. Press ⌘V in your post on X to paste it."},
+	} {
+		control(post.button)
+		if len(copied) != 3+i || len(opened) != i+1 || opened[i] != insightsSites[post.site] {
+			t.Errorf("%s: %d pictures copied in all, opened %q", post.button, len(copied), opened)
+		}
+		if _, ok := tt.Find(post.hint); !ok {
+			t.Errorf("%s: no hint to paste", post.button)
+		}
 	}
 	tt.ClickAt(4, 4)
 	frames(tt)

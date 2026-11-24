@@ -55,5 +55,7 @@
   "%d active day": "活跃 %d 天",
   "%d active days": "活跃 %d 天",
   "Share to LinkedIn": "分享到 LinkedIn",
-  "Picture copied. Paste it into your post.": "图片已复制，粘贴到帖子里就行。"
+  "Share to X": "分享到 X",
+  "Picture copied. Press ⌘V in your LinkedIn post to paste it.": "图片已复制，在 LinkedIn 帖子里按 ⌘V 粘贴",
+  "Picture copied. Press ⌘V in your post on X to paste it.": "图片已复制，在 X 的帖子里按 ⌘V 粘贴"
 }

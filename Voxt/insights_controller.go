@@ -28,6 +28,9 @@ type insightsShare struct {
 	shownAt  time.Time
 	slide    int
 	copiedAt time.Time
+	// postedTo is the site the card went to (insightsSites), at postedAt.
+	postedTo string
+	postedAt time.Time
 }
 
 // chooseInsightsFile asks where to save a picture named name, then calls
@@ -43,15 +46,32 @@ var chooseInsightsFile = func(a *app, name string, then func(string)) {
 	}()
 }
 
-// insightsLinkedInPost is LinkedIn's page with a new post open. Nothing of
-// the user's goes in the address: the picture travels on the clipboard,
-// for the user to paste.
-const insightsLinkedInPost = "https://www.linkedin.com/feed/?shareActive=true"
+// insightsSites are where a card can be posted: the page with a new post
+// open on each. Nothing of the user's goes in the address: the picture
+// travels on the clipboard, for the user to paste, since neither site
+// takes a picture from a link.
+var insightsSites = map[string]string{
+	insightsSiteLinkedIn: "https://www.linkedin.com/feed/?shareActive=true",
+	insightsSiteX:        "https://x.com/intent/post",
+}
 
-// openInsightsLink opens an address in the user's browser; tests replace
-// it.
-var openInsightsLink = func(address string) {
-	go func() { _ = mygo.Shell.OpenExternal(address) }() // the browser's own error is the user's to see
+const (
+	insightsSiteLinkedIn = "linkedin"
+	insightsSiteX        = "x"
+)
+
+// insightsPostFor is how long the window says the picture waits to be
+// pasted, and insightsPostAfter how long it says so before the site
+// opens and takes the front.
+const (
+	insightsPostFor   = 8 * time.Second
+	insightsPostAfter = 1200 * time.Millisecond
+)
+
+// openInsightsLink opens an address in the user's browser after a
+// while; tests replace it.
+var openInsightsLink = func(address string, after time.Duration) {
+	time.AfterFunc(after, func() { _ = mygo.Shell.OpenExternal(address) }) // the browser's own error is the user's to see
 }
 
 // openInsightsShare opens the cards on the first, each in its own theme.
@@ -120,6 +140,9 @@ func (a *app) insightsModel(now time.Time, still bool) insightsDeckViewState {
 		Card: s.card, Count: len(insightsCardKinds), Face: a.insightsFace(now), Elapsed: now.Sub(s.shownAt), Slide: s.slide,
 		Copied: !s.copiedAt.IsZero() && now.Sub(s.copiedAt) < shareCopiedFor,
 	}
+	if s.postedTo != "" && now.Sub(s.postedAt) < insightsPostFor {
+		state.Posted = s.postedTo
+	}
 	if still || state.Elapsed > insightsSettled {
 		state.Elapsed = insightsSettled
 	}
@@ -172,15 +195,20 @@ func (a *app) saveInsightsShare() {
 	})
 }
 
-// postInsightsShare copies the card shown and opens LinkedIn's new post,
-// where the user pastes it.
-func (a *app) postInsightsShare() {
+// postInsightsShare copies the card shown and, once the window has said
+// to paste it, opens site's new post.
+func (a *app) postInsightsShare(site string) {
+	address, ok := insightsSites[site]
+	if !ok {
+		return
+	}
 	face := a.insightsFace(a.now())
 	if err := copyPicture(renderInsightsCard(&face)); err != nil {
-		log.Printf("share: copy the insights for LinkedIn: %v", err)
+		log.Printf("share: copy the insights for %s: %v", site, err)
 		a.toast(i18n.T("Could not copy the picture."))
 		return
 	}
-	a.toast(i18n.T("Picture copied. Paste it into your post."))
-	openInsightsLink(insightsLinkedInPost)
+	s := &a.share.insights
+	s.postedTo, s.postedAt = site, a.now()
+	openInsightsLink(address, insightsPostAfter)
 }

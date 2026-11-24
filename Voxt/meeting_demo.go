@@ -522,7 +522,9 @@ func (host *meetingDemoHost) closeInsightsShare()   { host.record("closeInsights
 func (host *meetingDemoHost) shuffleInsightsShare() { host.record("shuffleInsightsShare") }
 func (host *meetingDemoHost) copyInsightsShare()    { host.record("copyInsightsShare") }
 func (host *meetingDemoHost) saveInsightsShare()    { host.record("saveInsightsShare") }
-func (host *meetingDemoHost) postInsightsShare()    { host.record("postInsightsShare") }
+func (host *meetingDemoHost) postInsightsShare(site string) {
+	host.record("postInsightsShare %s", site)
+}
 func (host *meetingDemoHost) turnInsightsShare(by int) {
 	host.record("turnInsightsShare %d", by)
 }

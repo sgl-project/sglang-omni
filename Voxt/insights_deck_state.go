@@ -109,6 +109,9 @@ type insightsDeckViewState struct {
 	// the right, 0 when the window opened on it.
 	Slide  int  `json:"slide,omitempty"`
 	Copied bool `json:"copied,omitempty"`
+	// Posted is the site the card was just copied for (insightsSites):
+	// the window says to paste it there.
+	Posted string `json:"posted,omitempty"`
 }
 
 // buildInsightsFace is card kind of the log as of now, in theme.

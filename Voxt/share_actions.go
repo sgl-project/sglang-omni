@@ -40,6 +40,7 @@ type insightsActions interface {
 	shuffleInsightsShare()
 	copyInsightsShare()
 	saveInsightsShare()
-	// postInsightsShare copies the card and opens LinkedIn's new post.
-	postInsightsShare()
+	// postInsightsShare copies the card and opens a new post on site
+	// ("linkedin" or "x").
+	postInsightsShare(site string)
 }
