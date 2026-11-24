@@ -52,9 +52,8 @@ type run struct {
 	cleanupDeadlineNotified bool
 	cleanupGeneration       uint64
 	cleanupWorkerRunning    bool
-	cleanupCandidate        *cleanupCandidate
+	cleanupCandidate        *cleanupOutput
 	cleanupOutput           cleanupOutput
-	cleanupChosenAt         time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -68,11 +67,11 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
-	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
-	// session, so update applies its changes to own (guarded by m.mu) and
-	// passes the draft on.
-	onDraft func(string)
-	own     Snapshot
+	// historyRetry owns a private snapshot instead of a Manager session.
+	// onDraft optionally receives its streaming answer.
+	historyRetry bool
+	onDraft      func(string)
+	own          Snapshot
 
 	svc      Services
 	terms    []store.Term
@@ -346,15 +345,10 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	default:
 		if r.req.Kind == store.KindTranscribe {
 			if !r.m.beginTranscribeDelivery(r, result) {
-				if r.cancelled.Load() || r.ctx.Err() != nil {
-					r.endCancelled(nil)
-					return
-				}
-				// The session finished in the background; keep the result in
-				// its card rather than pasting into the new session's target.
-				dres.Reason = deliver.ReasonCard
-				o.card = deliver.ReasonCard
-				break
+				// Cancellation or loss of the current session slot must not
+				// insert this result into another session's target.
+				r.endCancelled(nil)
+				return
 			}
 		} else {
 			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })

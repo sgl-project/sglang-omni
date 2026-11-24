@@ -16,9 +16,6 @@ type CleanupLatencyPolicy struct {
 	AutoFallbackAfter time.Duration
 }
 
-// CandidateCleanupSoftDeadline is a test candidate, not a default.
-const CandidateCleanupSoftDeadline = 1500 * time.Millisecond
-
 // llmPrefillPerChar is a request's extra time per character of the input
 // before its answer starts: a long selection's prompt takes seconds to
 // read.

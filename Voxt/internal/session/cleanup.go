@@ -49,10 +49,6 @@ const (
 	cleanupOutcomeCancelled    cleanupOutcome = "cancelled"
 )
 
-type cleanupCandidate struct {
-	output cleanupOutput
-}
-
 func (r *run) cleanupMayContinueLocked() bool {
 	return r.cleanupDecisionOpenLocked() && !r.skipped.Load() && !r.cancelled.Load() && !r.rethink.Load()
 }
@@ -87,18 +83,22 @@ func (r *run) transcribe(text string) {
 	var problem *Problem
 	cleanupRequested := r.transcribeCleanup() && r.svc.LLM != nil
 	ordinaryTranscribe := r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+	policy := r.m.cfg.CleanupLatency
+	softDeadline := policy.AutoFallbackAfter > 0 && ordinaryTranscribe
 	if ordinaryTranscribe {
-		r.logf("info", "cleanup requested=%t", cleanupRequested)
+		level := "debug"
+		if softDeadline {
+			level = "info"
+		}
+		r.logf(level, "cleanup requested=%t", cleanupRequested)
 		if !cleanupRequested {
-			r.logf("info", "cleanup outcome=not_requested")
+			r.logf(level, "cleanup outcome=not_requested")
 		}
 	}
 	if cleanupRequested {
 		card := r.settings.Features.Transcribe.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
-		policy := r.m.cfg.CleanupLatency
-		softDeadline := policy.AutoFallbackAfter > 0 && ordinaryTranscribe
 		var deadlineAt time.Time
 		if softDeadline {
 			stopAt := r.stoppedAt()
@@ -450,6 +450,9 @@ func (r *run) takeRethink() (cleanupRequest, bool) {
 // state together.
 func (r *run) askAgain() bool {
 	_, ok := r.takeRethink()
+	if ok {
+		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = "", "" })
+	}
 	return ok
 }
 

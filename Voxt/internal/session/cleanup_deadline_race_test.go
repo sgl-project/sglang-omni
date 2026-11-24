@@ -12,6 +12,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+const cleanupSoftDeadlineTestDuration = 1500 * time.Millisecond
+
 type stagedCleanupLLM struct {
 	started  chan int
 	requests chan llm.Request
@@ -236,12 +238,12 @@ func TestCleanupSoftDeadlineRethinkUsesOriginalBudgetAndFencesLateResponses(t *t
 	id := h.start()
 	h.speak(id, 3)
 	waitStagedCall(t, model, 0)
-	clock.Advance(CandidateCleanupSoftDeadline - time.Nanosecond)
+	clock.Advance(cleanupSoftDeadlineTestDuration - time.Nanosecond)
 	h.m.Rethink(id, &llm.Thinking{Mode: llm.ThinkOn})
 	model.releaseCall(0)
 	waitStagedReturn(t, model, 0)
 	waitStagedCall(t, model, 1)
-	if clock.timerCount() != 1 || clock.timerDelay(0) != CandidateCleanupSoftDeadline {
+	if clock.timerCount() != 1 || clock.timerDelay(0) != cleanupSoftDeadlineTestDuration {
 		t.Fatalf("Rethink reset the deadline: timers %d, delay %v", clock.timerCount(), clock.timerDelay(0))
 	}
 	clock.Advance(time.Nanosecond)
@@ -297,7 +299,7 @@ func TestCleanupConsecutiveRethinksKeepGenerationContextAndThinkingTogether(t *t
 		if request.Thinking == nil || *request.Thinking != *level {
 			t.Fatalf("generation %d thinking = %+v, want %+v", call+2, request.Thinking, level)
 		}
-		if clock.timerCount() != 1 || clock.timerDelay(0) != CandidateCleanupSoftDeadline {
+		if clock.timerCount() != 1 || clock.timerDelay(0) != cleanupSoftDeadlineTestDuration {
 			t.Fatalf("Rethink reset the deadline: timers %d, delay %v", clock.timerCount(), clock.timerDelay(0))
 		}
 	}
@@ -324,7 +326,7 @@ func TestCleanupSoftDeadlineWinsRethinkAtDeadline(t *testing.T) {
 	id := h.start()
 	h.speak(id, 3)
 	waitStagedCall(t, model, 0)
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	h.m.Rethink(id, &llm.Thinking{Mode: llm.ThinkOn})
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw result at deadline", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
@@ -367,7 +369,7 @@ func TestCleanupSoftDeadlineCancellationWhileRethinkIsPending(t *testing.T) {
 
 func TestCleanupRethinkAfterRawCommitCannotReopenDecision(t *testing.T) {
 	manager, r, clock, deadline := cleanupArbiter(t)
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	manager.notifyCleanupDeadline(r)
 	choice, _ := manager.chooseCleanup(r)
 	if choice != cleanupRaw || r.cleanupOutcome != cleanupOutcomeSoftDeadline {
@@ -407,7 +409,7 @@ func TestCleanupLateImageHintCannotPublishAfterRawChoice(t *testing.T) {
 	if before.ImageHint != "window" || before.ImagePreviewKind != "window" {
 		t.Fatalf("request image state %+v", before)
 	}
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	manager.notifyCleanupDeadline(r)
 	choice, _ := manager.chooseCleanup(r)
 	if choice != cleanupRaw {
@@ -442,7 +444,7 @@ func cleanupArbiter(t *testing.T) (*Manager, *run, *softDeadlineClock, time.Time
 	manager.cur = r
 	manager.snap = Snapshot{ID: r.id, Kind: store.KindTranscribe, State: Composing, CanSkip: true}
 	manager.mu.Unlock()
-	deadline := startedAt.Add(CandidateCleanupSoftDeadline)
+	deadline := startedAt.Add(cleanupSoftDeadlineTestDuration)
 	manager.setCleanupDeadline(r, deadline)
 	t.Cleanup(func() {
 		cancel()
@@ -455,7 +457,7 @@ func TestCleanupCandidatePublicationArbitration(t *testing.T) {
 	t.Run("published before deadline wins after owner delay", func(t *testing.T) {
 		manager, r, clock, deadline := cleanupArbiter(t)
 		manager.publishCleanupCandidate(r, cleanupOutput{text: "cleaned", completedAt: deadline.Add(-time.Nanosecond)}, r.cleanupGeneration, deadline.Add(-time.Nanosecond))
-		clock.Advance(CandidateCleanupSoftDeadline + time.Second)
+		clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
 		manager.notifyCleanupDeadline(r)
 		choice, output := manager.chooseCleanup(r)
 		if choice != cleanupComplete || output.text != "cleaned" || r.cleanupOutcome != cleanupOutcomeCleaned {
@@ -467,12 +469,12 @@ func TestCleanupCandidatePublicationArbitration(t *testing.T) {
 		name string
 		at   time.Duration
 	}{
-		{name: "exact deadline", at: CandidateCleanupSoftDeadline},
-		{name: "after deadline", at: CandidateCleanupSoftDeadline + time.Nanosecond},
+		{name: "exact deadline", at: cleanupSoftDeadlineTestDuration},
+		{name: "after deadline", at: cleanupSoftDeadlineTestDuration + time.Nanosecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager, r, clock, deadline := cleanupArbiter(t)
-			at := deadline.Add(tc.at - CandidateCleanupSoftDeadline)
+			at := deadline.Add(tc.at - cleanupSoftDeadlineTestDuration)
 			clock.Advance(tc.at)
 			manager.publishCleanupCandidate(r, cleanupOutput{text: "late", completedAt: at}, r.cleanupGeneration, at)
 			manager.notifyCleanupDeadline(r)
@@ -485,7 +487,7 @@ func TestCleanupCandidatePublicationArbitration(t *testing.T) {
 
 	t.Run("raw commitment is irreversible", func(t *testing.T) {
 		manager, r, clock, deadline := cleanupArbiter(t)
-		clock.Advance(CandidateCleanupSoftDeadline)
+		clock.Advance(cleanupSoftDeadlineTestDuration)
 		manager.notifyCleanupDeadline(r)
 		choice, _ := manager.chooseCleanup(r)
 		if choice != cleanupRaw {
@@ -550,7 +552,7 @@ func TestCleanupCandidatePublicationArbitration(t *testing.T) {
 	t.Run("an expired deadline does not restart Rethink", func(t *testing.T) {
 		manager, r, clock, _ := cleanupArbiter(t)
 		manager.Rethink(r.id, nil)
-		clock.Advance(CandidateCleanupSoftDeadline)
+		clock.Advance(cleanupSoftDeadlineTestDuration)
 		manager.notifyCleanupDeadline(r)
 		choice, _ := manager.chooseCleanup(r)
 		if choice != cleanupRaw || r.cleanupOutcome != cleanupOutcomeSoftDeadline {
@@ -560,7 +562,7 @@ func TestCleanupCandidatePublicationArbitration(t *testing.T) {
 
 	t.Run("delayed timer cannot admit a late result", func(t *testing.T) {
 		manager, r, clock, deadline := cleanupArbiter(t)
-		clock.Advance(CandidateCleanupSoftDeadline)
+		clock.Advance(cleanupSoftDeadlineTestDuration)
 		manager.publishCleanupCandidate(r, cleanupOutput{text: "late", completedAt: deadline}, r.cleanupGeneration, deadline)
 		// No timer notification yet: publication itself is still rejected
 		// by the absolute deadline, and the owner observes expired time.
@@ -592,7 +594,7 @@ func TestCleanupSoftDeadlineExpiredASRFinalReusesOnlyCompleteEarlyCleanup(t *tes
 	t.Run("completed and compatible", func(t *testing.T) {
 		clock := newSoftDeadlineClock()
 		model := &fakeLLM{text: "cleaned while recording"}
-		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"spoken words"}}, clock: clock, delay: CandidateCleanupSoftDeadline + time.Millisecond}
+		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"spoken words"}}, clock: clock, delay: cleanupSoftDeadlineTestDuration + time.Millisecond}
 		h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
 		id := h.start()
 		waitEarly(t, model, 1)
@@ -606,7 +608,7 @@ func TestCleanupSoftDeadlineExpiredASRFinalReusesOnlyCompleteEarlyCleanup(t *tes
 	t.Run("unfinished early prefix", func(t *testing.T) {
 		clock := newSoftDeadlineClock()
 		model := newCleanupGateLLM("", "", "too late")
-		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"spoken words"}}, clock: clock, delay: CandidateCleanupSoftDeadline + time.Millisecond}
+		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"spoken words"}}, clock: clock, delay: cleanupSoftDeadlineTestDuration + time.Millisecond}
 		h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
 		id := h.start()
 		waitCleanupRequest(t, model, "early cleanup request")
@@ -625,7 +627,7 @@ func TestCleanupSoftDeadlineExpiredASRFinalReusesOnlyCompleteEarlyCleanup(t *tes
 	t.Run("incompatible early prefix", func(t *testing.T) {
 		clock := newSoftDeadlineClock()
 		model := &fakeLLM{text: "irrelevant early cleanup"}
-		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"different words"}}, clock: clock, delay: CandidateCleanupSoftDeadline + time.Millisecond}
+		provider := &clockAdvancingStreamer{fakeStreamer: fakeStreamer{final: "spoken words", pieces: []string{"different words"}}, clock: clock, delay: cleanupSoftDeadlineTestDuration + time.Millisecond}
 		h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
 		id := h.start()
 		waitEarly(t, model, 1)

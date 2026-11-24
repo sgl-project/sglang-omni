@@ -38,7 +38,7 @@ func (m *Manager) publishCleanupCandidate(r *run, output cleanupOutput, generati
 	}
 	if eligible {
 		output.generation = generation
-		r.cleanupCandidate = &cleanupCandidate{output: output}
+		r.cleanupCandidate = &output
 	}
 	wakeCleanupLocked(r)
 	m.mu.Unlock()
@@ -59,22 +59,19 @@ func (m *Manager) chooseCleanup(r *run) (cleanupChoice, cleanupOutput) {
 		return choice, output
 	}
 	var snap *Snapshot
-	if m.cur == r {
-		snap = &m.snap
-	} else if m.bg == r {
-		snap = &r.own
-	} else {
+	if m.cur != r {
 		m.mu.Unlock()
 		return cleanupCancelled, cleanupOutput{}
 	}
+	snap = &m.snap
 	choice, outcome := cleanupUndecided, cleanupOutcome("")
 	var output cleanupOutput
 	switch {
 	case r.skipped.Load():
 		choice, outcome = cleanupRaw, cleanupOutcomeManualSkip
-	case r.cleanupCandidate != nil && r.cleanupCandidate.output.generation == r.cleanupGeneration:
+	case r.cleanupCandidate != nil && r.cleanupCandidate.generation == r.cleanupGeneration:
 		choice = cleanupComplete
-		output = r.cleanupCandidate.output
+		output = *r.cleanupCandidate
 		outcome = cleanupOutcomeCleaned
 		if output.err != nil {
 			outcome = cleanupOutcomeLLMError
@@ -98,7 +95,7 @@ func (m *Manager) chooseCleanup(r *run) (cleanupChoice, cleanupOutput) {
 	}
 	chosenAt := r.now()
 	r.cleanupChoice = choice
-	r.cleanupOutcome, r.cleanupOutput, r.cleanupChosenAt = outcome, output, chosenAt
+	r.cleanupOutcome, r.cleanupOutput = outcome, output
 	stop := r.llmStop
 	snap.CanSkip = false
 	if choice == cleanupRaw {
@@ -107,11 +104,7 @@ func (m *Manager) chooseCleanup(r *run) (cleanupChoice, cleanupOutput) {
 	m.rev++
 	snap.Rev = m.rev
 	s := snap.clone()
-	if m.bg == r {
-		m.backgroundPub.enqueue(publication{snapshot: s})
-	} else {
-		m.foregroundPub.enqueue(publication{snapshot: s})
-	}
+	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
 	if stop != nil {
 		stop()
@@ -134,9 +127,8 @@ func (r *run) cleanupChoiceOpenLocked() bool {
 	return !r.ended && r.cleanupChoice == cleanupUndecided
 }
 
-// beginTranscribeDelivery atomically reserves foreground insertion. A
-// backgrounded dictation stays in its recovery card instead of targeting
-// whichever document happens to be focused now.
+// beginTranscribeDelivery atomically reserves foreground insertion while
+// the Transcribe session still owns the current session slot.
 func (m *Manager) beginTranscribeDelivery(r *run, result string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

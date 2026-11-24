@@ -19,13 +19,10 @@ func cleanupLatencyFromEnv() (session.CleanupLatencyPolicy, string) {
 	if !present {
 		return session.CleanupLatencyPolicy{}, ""
 	}
-	return parseCleanupLatency(raw, true)
+	return parseCleanupLatency(raw)
 }
 
-func parseCleanupLatency(raw string, present bool) (session.CleanupLatencyPolicy, string) {
-	if !present {
-		return session.CleanupLatencyPolicy{}, ""
-	}
+func parseCleanupLatency(raw string) (session.CleanupLatencyPolicy, string) {
 	milliseconds, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || milliseconds < 0 || milliseconds > maxCleanupFallbackMS {
 		return session.CleanupLatencyPolicy{}, cleanupFallbackEnvironment + " ignored; expected an integer from 0 to 60000 ms, experiment disabled"

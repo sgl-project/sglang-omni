@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -146,7 +145,7 @@ func cleanupLatencyConfig(clock *softDeadlineClock, autoFallback bool) func(*Con
 		config.Now = clock.Now
 		config.AfterFunc = clock.AfterFunc
 		if autoFallback {
-			config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: CandidateCleanupSoftDeadline}
+			config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: cleanupSoftDeadlineTestDuration}
 		}
 		settings.Features.Transcribe.Enhance = true
 	}
@@ -159,10 +158,10 @@ func TestCleanupSoftDeadlineKeepsCleanupCompletedBeforeDeadline(t *testing.T) {
 	id := h.start()
 	h.speak(id, 3)
 	waitCleanupRequest(t, model, "cleanup request")
-	if clock.timerCount() != 1 || clock.timerDelay(0) != CandidateCleanupSoftDeadline {
+	if clock.timerCount() != 1 || clock.timerDelay(0) != cleanupSoftDeadlineTestDuration {
 		t.Fatalf("timers = %d, delay = %v", clock.timerCount(), clock.timerDelay(0))
 	}
-	clock.Advance(CandidateCleanupSoftDeadline - time.Nanosecond)
+	clock.Advance(cleanupSoftDeadlineTestDuration - time.Nanosecond)
 	model.Release()
 	waitCleanupSignal(t, model.returned, "cleanup response")
 	end := h.rec.wait(t)
@@ -191,7 +190,7 @@ func TestCleanupSoftDeadlineSelectsRawForNoTokenAndLatePartialStream(t *testing.
 					return snapshot.ID == id && snapshot.State == Composing && snapshot.Draft == test.beforeText
 				})
 			}
-			clock.Advance(CandidateCleanupSoftDeadline)
+			clock.Advance(cleanupSoftDeadlineTestDuration)
 			clock.Fire(t, 0)
 			end := h.rec.waitFor(t, "raw fallback", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 			if end.Result != "spoken words" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "spoken words" {
@@ -222,7 +221,7 @@ func TestCleanupSoftDeadlineExactCompletionSelectsRaw(t *testing.T) {
 	id := h.start()
 	h.speak(id, 3)
 	waitCleanupRequest(t, model, "cleanup request")
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	model.Release()
 	waitCleanupSignal(t, model.returned, "cleanup response")
 	end := h.rec.waitFor(t, "raw fallback at the deadline", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
@@ -255,7 +254,7 @@ func TestCleanupSoftDeadlineStartsAtStopAcrossASRDelay(t *testing.T) {
 func TestCleanupSoftDeadlineExpiredDuringASRDoesNotStartCleanup(t *testing.T) {
 	clock := newSoftDeadlineClock()
 	model := &fakeLLM{text: "cleanup must not start"}
-	provider := &clockAdvancingFile{fakeFile: fakeFile{text: "spoken words"}, clock: clock, delay: CandidateCleanupSoftDeadline + time.Millisecond}
+	provider := &clockAdvancingFile{fakeFile: fakeFile{text: "spoken words"}, clock: clock, delay: cleanupSoftDeadlineTestDuration + time.Millisecond}
 	h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
 	id := h.start()
 	h.speak(id, 3)
@@ -288,7 +287,7 @@ func TestCleanupSoftDeadlineDoesNotResetForProviderFallback(t *testing.T) {
 	if clock.timerCount() != 1 || len(primary.requests()) != 1 {
 		t.Fatalf("soft timers = %d, primary requests = %d", clock.timerCount(), len(primary.requests()))
 	}
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw fallback", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	if end.Result != "spoken words" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "spoken words" {
@@ -323,7 +322,7 @@ func TestCleanupSoftDeadlineDoesNotStartProviderFallbackAfterRawSelection(t *tes
 	id := h.start()
 	h.speak(id, 3)
 	waitCleanupSignal(t, primary.started, "primary cleanup request")
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw result", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	beforeLateFailure := len(h.rec.all())
@@ -376,7 +375,7 @@ func TestCleanupSoftDeadlineIncludesProviderRetries(t *testing.T) {
 	if backend.attempts.Load() != 2 || clock.timerCount() != 1 {
 		t.Fatalf("attempts = %d, soft timers = %d", backend.attempts.Load(), clock.timerCount())
 	}
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw fallback", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	if end.Result != "spoken words" || len(h.text.pastes()) != 1 {
@@ -432,7 +431,7 @@ func TestCleanupSoftDeadlineManualSkipAndDisabledPolicy(t *testing.T) {
 		id := h.start()
 		h.speak(id, 3)
 		waitCleanupRequest(t, model, "cleanup request")
-		clock.Advance(CandidateCleanupSoftDeadline + time.Second)
+		clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
 		if clock.timerCount() != 0 {
 			t.Fatalf("zero-value policy scheduled %d timers", clock.timerCount())
 		}
@@ -455,7 +454,7 @@ func TestCleanupSoftDeadlineManualSkipAndDisabledPolicy(t *testing.T) {
 		id := h.start()
 		h.speak(id, 3)
 		waitCleanupRequest(t, model, "cleanup request")
-		clock.Advance(CandidateCleanupSoftDeadline + time.Second)
+		clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
 		if clock.timerCount() != 0 {
 			t.Fatalf("non-positive policy scheduled %d timers", clock.timerCount())
 		}
@@ -487,7 +486,7 @@ func TestCleanupSoftDeadlineDeliveryFailureKeepsRawRecoverable(t *testing.T) {
 	id := h.start()
 	h.speak(id, 3)
 	waitCleanupRequest(t, model, "cleanup request")
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw result after delivery failure", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	entries := h.hist.all()
@@ -526,7 +525,11 @@ func TestCleanupCancellationAfterChoiceBeforeDelivery(t *testing.T) {
 	choiceCommitted := make(chan struct{})
 	resumeOwner := make(chan struct{})
 	var once sync.Once
+	var cancelledOutcomes atomic.Int32
 	h.m.cfg.Log = func(_, message string) {
+		if strings.Contains(message, "cleanup outcome=cancelled") {
+			cancelledOutcomes.Add(1)
+		}
 		if strings.Contains(message, "cleanup outcome=cleaned") {
 			once.Do(func() {
 				close(choiceCommitted)
@@ -548,6 +551,9 @@ func TestCleanupCancellationAfterChoiceBeforeDelivery(t *testing.T) {
 	if end.State != Cancelled || end.Result != "" || end.Profile != "" || len(h.text.pastes()) != 0 || len(entries) != 1 || entries[0].Status != store.StatusCancelled || entries[0].Result != "" {
 		t.Fatalf("end %+v, pasted %q, history %+v", end, h.text.pastes(), h.hist.all())
 	}
+	if cancelledOutcomes.Load() != 0 {
+		t.Fatalf("Cleanup emitted %d contradictory cancellation outcomes after commitment", cancelledOutcomes.Load())
+	}
 	for _, snapshot := range h.rec.all() {
 		if snapshot.ID == id && snapshot.State == Delivering {
 			t.Fatalf("cancelled operation reserved delivery: %+v", snapshot)
@@ -561,7 +567,7 @@ func TestCleanupSoftDeadlineAppliesOnlyToOrdinaryTranscribe(t *testing.T) {
 			clock := newSoftDeadlineClock()
 			h := newHarness(t, &fakeFile{text: "spoken words"}, &fakeLLM{hang: true}, func(config *Config, settings *settings.Settings) {
 				config.Now, config.AfterFunc = clock.Now, clock.AfterFunc
-				config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: CandidateCleanupSoftDeadline}
+				config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: cleanupSoftDeadlineTestDuration}
 				config.Select = &fakeSelector{text: "selected text"}
 			})
 			id, err := h.m.Start(StartRequest{Kind: kind, Target: slack})
@@ -622,7 +628,7 @@ func TestEarlyCleanupExceedingSoftDeadlineUsesRaw(t *testing.T) {
 	waitCleanupRequest(t, model, "early cleanup request")
 	h.speak(id, 5)
 	h.rec.waitFor(t, "composing request", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State == Composing })
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw fallback", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	if end.Result != "spoken words" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "spoken words" {
@@ -650,7 +656,7 @@ func TestEarlyCleanupPrefixMismatchUsesSameSoftDeadline(t *testing.T) {
 	if clock.timerCount() != 1 {
 		t.Fatalf("soft deadline timers = %d", clock.timerCount())
 	}
-	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Advance(cleanupSoftDeadlineTestDuration)
 	clock.Fire(t, 0)
 	end := h.rec.waitFor(t, "raw fallback", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
 	if end.Result != "changed words" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "changed words" {
@@ -706,79 +712,6 @@ func TestEarlyCleanupCancelledBeforeDeadlineCannotDeliver(t *testing.T) {
 			t.Fatalf("cancelled early cleanup acquired a result: %+v", snapshot)
 		}
 	}
-}
-
-func TestCleanupSoftDeadlineOldBackgroundResultCannotContaminateNewDictation(t *testing.T) {
-	clock := newSoftDeadlineClock()
-	model := &firstRequestGateLLM{firstStarted: make(chan struct{}), firstRelease: make(chan struct{}), firstReturned: make(chan struct{})}
-	provider := &sequencedCleanupFile{texts: []string{"first transcript", "second transcript"}}
-	h := newHarness(t, provider, model, cleanupLatencyConfig(clock, true))
-	first, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.speak(first, 3)
-	waitCleanupSignal(t, model.firstStarted, "first cleanup request")
-	if !h.m.Background(first) {
-		t.Fatal("the first cleanup could not background")
-	}
-	second, err := h.m.Start(StartRequest{Kind: store.KindTranscribe, Target: slack})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.rec.waitFor(t, "second session recording", func(snapshot Snapshot) bool { return snapshot.ID == second && snapshot.State == Recording })
-	if clock.timerCount() != 1 {
-		t.Fatalf("timer count %d, want only the stopped dictation's timer", clock.timerCount())
-	}
-	clock.Advance(CandidateCleanupSoftDeadline)
-	clock.Fire(t, 0)
-	firstEnd := h.rec.waitFor(t, "first raw result", func(snapshot Snapshot) bool { return snapshot.ID == first && snapshot.State.Ended() })
-	if firstEnd.Result != "first transcript" || !firstEnd.Card {
-		t.Fatalf("first result %+v", firstEnd)
-	}
-	close(model.firstRelease)
-	waitCleanupSignal(t, model.firstReturned, "late first response")
-	if current := h.m.Current(); current.ID != second || current.State != Recording {
-		t.Fatalf("new recording changed: %+v", current)
-	}
-	if pasted := h.text.pastes(); len(pasted) != 0 {
-		t.Fatalf("background result pasted while the new session was recording: %q", pasted)
-	}
-	h.say(second, 3)
-	secondEnd := h.rec.waitFor(t, "second result", func(snapshot Snapshot) bool { return snapshot.ID == second && snapshot.State.Ended() })
-	if secondEnd.Result != "second cleaned" {
-		t.Fatalf("second result %+v", secondEnd)
-	}
-	if clock.timerCount() != 2 {
-		t.Fatalf("timer count %d, want one per stopped dictation", clock.timerCount())
-	}
-	entries := h.hist.all()
-	if len(entries) != 2 || entries[0].Result != "first transcript" || entries[0].Delivery != string(deliver.ReasonCard) || entries[1].Result != "second cleaned" {
-		t.Fatalf("history was contaminated: %+v", entries)
-	}
-	if pasted := h.text.pastes(); len(pasted) != 1 || !strings.EqualFold(pasted[0], "second cleaned") {
-		t.Fatalf("deliveries %q", pasted)
-	}
-}
-
-type firstRequestGateLLM struct {
-	calls         atomic.Int32
-	firstStarted  chan struct{}
-	firstRelease  chan struct{}
-	firstReturned chan struct{}
-}
-
-func (model *firstRequestGateLLM) Chat(_ context.Context, request llm.Request) (llm.Response, error) {
-	if model.calls.Add(1) > 1 {
-		return llm.Response{Text: "second cleaned"}, nil
-	}
-	close(model.firstStarted)
-	<-model.firstRelease
-	if request.OnDelta != nil {
-		request.OnDelta("late first draft")
-	}
-	close(model.firstReturned)
-	return llm.Response{Text: "late first cleaned"}, nil
 }
 
 type sequencedCleanupFile struct {
