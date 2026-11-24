@@ -1,6 +1,6 @@
 # Conservative single-GPU DFlash profile validated on one RTX 3090 (SM86, 24 GB).
 config_cls: Qwen3ASRPipelineConfig
-name: qwen3-asr-0.6b-dflash
+name: qwen3-asr-0.6b-dflash-rtx3090
 model_path: Qwen/Qwen3-ASR-0.6B
 
 stages:

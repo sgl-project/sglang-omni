@@ -42,7 +42,7 @@ def test_example_config_loads_compiles_and_resolves_every_factory(
 @pytest.mark.parametrize(
     "config_name",
     [
-        "qwen3_asr_0_6b_dflash.yaml",
+        "qwen3_asr_0_6b_dflash_rtx3090.yaml",
         "qwen3_asr_1_7b_dflash.yaml",
     ],
 )

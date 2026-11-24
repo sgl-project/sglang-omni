@@ -272,8 +272,7 @@ def test_each_model_launches_exactly_its_default_on_drafts_and_only_on_cuda(
     """Check CUDA draft defaults without fetching checkpoint metadata."""
     monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
     registry_paths = sorted({draft.model_path for draft in DRAFT_REGISTRY})
-    # A near-miss path stands for a local or sibling checkpoint without a
-    # matching registry entry.
+    # note (Haoling Pu): a near-miss path stands for a local or sibling checkpoint without a matching registry entry.
     model_paths = registry_paths + [
         f"{path}-without-a-draft" for path in registry_paths
     ]

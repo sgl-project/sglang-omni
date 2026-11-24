@@ -438,7 +438,7 @@ Qwen3-ASR-0.6B can opt in to its pinned Apache-2.0 DFlash draft with the memory-
 
 ```bash
 sgl-omni serve \
-  --config examples/configs/qwen3_asr_0_6b_dflash.yaml \
+  --config examples/configs/qwen3_asr_0_6b_dflash_rtx3090.yaml \
   --port 8000
 ```
 
