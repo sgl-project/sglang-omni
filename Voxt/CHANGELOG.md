@@ -14,7 +14,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Live words show dim until they are final**: while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
+- **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 
 ### Fixed
@@ -33,7 +33,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
-- **实时文字先淡后实**：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
+- **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 
 #### 修复
