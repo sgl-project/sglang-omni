@@ -369,22 +369,47 @@ jobs:
       - name: Install CPU test dependencies
         timeout-minutes: 10
         run: |
-          # Note (0xtoward): AWS hosted runners occasionally hit degraded regional EC2 Ubuntu mirrors.
+          # note (0xtoward): rank Ubuntu mirrors with priority:N so apt uses the fastest healthy mirror without load-balancing onto degraded regional EC2 mirrors.
           if [ -f /etc/apt/apt-mirrors.txt ]; then
             default_mirror=$(awk 'NF {print $1; exit}' /etc/apt/apt-mirrors.txt)
-            for mirror in http://azure.archive.ubuntu.com/ubuntu/ http://archive.ubuntu.com/ubuntu/ "$default_mirror"; do
-              mirror="${mirror%/}/"
-              if curl -fsS --max-time 2 -o /dev/null "${mirror}dists/noble/main/binary-amd64/Packages.xz"; then
-                printf '%s\n' "$mirror" http://azure.archive.ubuntu.com/ubuntu/ http://archive.ubuntu.com/ubuntu/ "$default_mirror" \
-                  | awk 'NF && !seen[$0]++' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
-                echo "Using Ubuntu apt mirror: ${mirror}"
+            best_mirror=""
+            best_speed=0
+            candidates=()
+            while IFS= read -r m; do
+              if [ -n "$m" ]; then
+                candidates+=("$m")
+              fi
+            done < <(
+              printf '%s\n' \
+                "$default_mirror" \
+                http://azure.archive.ubuntu.com/ubuntu/ \
+                http://archive.ubuntu.com/ubuntu/ \
+                | awk 'NF {sub(/\/+$/, ""); print $0 "/"}' \
+                | awk '!seen[$0]++'
+            )
+            for mirror in "${candidates[@]}"; do
+              speed=$(curl -4 -fsS --max-time 3 -o /dev/null -w '%{speed_download}' "${mirror}dists/noble/main/binary-amd64/Packages.xz" 2>/dev/null) || speed=0
+              speed_int=${speed%%.*}
+              speed_int=${speed_int:-0}
+              echo "Ubuntu mirror probe: ${mirror} -> ${speed_int} B/s"
+              if [ "$speed_int" -gt "$best_speed" ]; then
+                best_speed=$speed_int
+                best_mirror=$mirror
+              fi
+              if [ "$speed_int" -ge 5000000 ]; then
                 break
               fi
             done
+            if [ -n "$best_mirror" ]; then
+              printf '%s\n' "$best_mirror" "${candidates[@]}" \
+                | awk 'NF && !seen[$0]++ {printf "%s\tpriority:%d\n", $0, ++n}' \
+                | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              echo "Using Ubuntu apt mirror: ${best_mirror} (${best_speed} B/s)"
+            fi
           fi
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 \
+            -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 \
             install -y --no-install-recommends ffmpeg sox
           uv venv --python 3.12
           python3 -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > "$RUNNER_TEMP/omni-overrides.txt"
