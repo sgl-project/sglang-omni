@@ -215,19 +215,35 @@ def sample_candidates(
 ) -> torch.Tensor:
     """Second-stage token per row: argmax for greedy rows, filtered draws grouped by settings."""
     token_ids = torch.argmax(logits, dim=-1)
-    sampled_groups: dict[tuple[float, int, float], list[int]] = {}
+    sampled_groups: dict[tuple[float, int, float, bool], list[int]] = {}
     for row, thinker_state in enumerate(thinker_states):
         sampling = thinker_state.sampling
         if sampling.greedy or sampling.temperature <= 0:
             pass
         else:
             sampled_groups.setdefault(
-                (sampling.temperature, sampling.top_k, sampling.top_p), []
+                (
+                    sampling.temperature,
+                    sampling.top_k,
+                    sampling.top_p,
+                    sampling.enable_compact_top_k,
+                ),
+                [],
             ).append(row)
-    for (temperature, top_k, top_p), group_rows in sampled_groups.items():
+    for settings, group_rows in sampled_groups.items():
+        temperature, top_k, top_p, enable_compact_top_k = settings
         row_index = torch.tensor(group_rows, dtype=torch.long, device=logits.device)
-        filtered_logits = filter_top_k_top_p(
-            logits[row_index] / temperature, top_k=top_k, top_p=top_p
-        )
-        token_ids[row_index] = draw_token_ids(filtered_logits)
+        group_logits = logits[row_index] / temperature
+        if enable_compact_top_k and 0 < top_k < group_logits.shape[-1]:
+            candidates = torch.topk(group_logits, top_k, dim=-1)
+            filtered_logits = filter_top_k_top_p(
+                candidates.values, top_k=-1, top_p=top_p
+            )
+            candidate_positions = draw_token_ids(filtered_logits)
+            token_ids[row_index] = candidates.indices.gather(
+                1, candidate_positions[:, None]
+            ).squeeze(1)
+        else:
+            filtered_logits = filter_top_k_top_p(group_logits, top_k=top_k, top_p=top_p)
+            token_ids[row_index] = draw_token_ids(filtered_logits)
     return token_ids

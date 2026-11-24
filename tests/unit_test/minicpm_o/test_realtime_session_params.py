@@ -547,6 +547,7 @@ async def test_session_overrides_stay_local_to_the_session() -> None:
         greedy=False,
         temperature=0.4,
         top_k=50,
+        enable_compact_top_k=True,
         top_p=0.6,
         repetition_penalty=1.2,
         listen_prob_scale=0.5,

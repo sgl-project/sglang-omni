@@ -1668,10 +1668,17 @@ def test_listen_prob_scale_rescales_the_listen_logit(
     assert sample(runner, logits, [unit_request(state)]) == [expected_token_id]
 
 
-def test_sampled_and_greedy_rows_share_one_step() -> None:
+@pytest.mark.parametrize("enable_compact_top_k", [False, True])
+def test_sampled_and_greedy_rows_share_one_step(enable_compact_top_k: bool) -> None:
     runner = duplex_runner(SPECIAL_TOKENS)
     greedy = session_state()
-    sampled = session_state(greedy=False, temperature=0.7, top_k=20, top_p=0.8)
+    sampled = session_state(
+        greedy=False,
+        temperature=0.7,
+        top_k=20,
+        top_p=0.8,
+        enable_compact_top_k=enable_compact_top_k,
+    )
     closing = session_state(greedy=False, temperature=0.7, top_k=20, top_p=0.8)
     logits = unit_logits(
         {PLAIN_TOKEN_ID: 1.0, OTHER_TOKEN_ID: 0.0},
@@ -1693,9 +1700,18 @@ def test_sampled_and_greedy_rows_share_one_step() -> None:
     ) == ([PLAIN_TOKEN_ID], [OTHER_TOKEN_ID], [])
 
 
-def test_sampled_rows_draw_from_their_filtered_support() -> None:
+@pytest.mark.parametrize("enable_compact_top_k", [False, True])
+def test_sampled_rows_draw_from_their_filtered_support(
+    enable_compact_top_k: bool,
+) -> None:
     runner = duplex_runner(SPECIAL_TOKENS)
-    sampled = session_state(greedy=False, temperature=0.7, top_k=20, top_p=0.8)
+    sampled = session_state(
+        greedy=False,
+        temperature=0.7,
+        top_k=20,
+        top_p=0.8,
+        enable_compact_top_k=enable_compact_top_k,
+    )
     closing = session_state(greedy=False, temperature=0.7, top_k=20, top_p=0.8)
     zero_temperature = session_state(greedy=False, temperature=0.0)
     logits = unit_logits(
@@ -1722,6 +1738,7 @@ DRAW_COUNT = 6000
 FREQUENCY_TOLERANCE = 0.03
 
 
+@pytest.mark.parametrize("enable_compact_top_k", [False, True])
 @pytest.mark.parametrize(
     ("top_p", "expected_frequencies"),
     [
@@ -1734,11 +1751,17 @@ FREQUENCY_TOLERANCE = 0.03
     ids=["softmax", "nucleus-drops-the-tail"],
 )
 def test_sampled_tokens_follow_the_filtered_softmax(
-    top_p: float, expected_frequencies: dict[int, float]
+    top_p: float, expected_frequencies: dict[int, float], enable_compact_top_k: bool
 ) -> None:
     torch.manual_seed(0)
     runner = duplex_runner(SPECIAL_TOKENS)
-    state = session_state(greedy=False, temperature=1.0, top_k=-1, top_p=top_p)
+    state = session_state(
+        greedy=False,
+        temperature=1.0,
+        top_k=3 if enable_compact_top_k else -1,
+        top_p=top_p,
+        enable_compact_top_k=enable_compact_top_k,
+    )
     logits = unit_logits(
         {
             PLAIN_TOKEN_ID: math.log(0.7),
