@@ -67,25 +67,34 @@ mx::array SliceAxis(const mx::array &x, int axis, int begin, int end) {
 
 HaruModel::HaruModel(const std::filesystem::path &model_directory,
                      int quantize_bits)
-    : config_(HaruConfig::FromFile(model_directory / "config.json")),
-      checkpoint_(omni_common::LoadSafetensors(model_directory),
-                  omni_common::ReadJson(model_directory / "config.json")),
+    : HaruModel(model_directory,
+                omni_common::ReadJson(model_directory / "config.json"),
+                quantize_bits) {}
+
+HaruModel::HaruModel(const std::filesystem::path &model_directory,
+                     const nlohmann::json &parameters, int quantize_bits)
+    : config_(HaruConfig::FromDict(parameters)),
+      checkpoint_(omni_common::LoadSafetensors(model_directory), parameters),
       layer_count_(config_.lm.num_layers()),
       rotary_dims_(static_cast<int>(config_.lm.head_dim *
                                     config_.lm.partial_rotary_factor)),
       latent_scale_(
           mx::astype(checkpoint_.Weight("latent_scale"), mx::float32)),
-      latent_bias_(mx::astype(checkpoint_.Weight("latent_bias"), mx::float32)) {
+      latent_bias_(mx::astype(checkpoint_.Weight("latent_bias"), mx::float32)),
+      codec_(checkpoint_, config_.codec), head_(checkpoint_, config_.head) {
+  linear_layers_.reserve(static_cast<size_t>(layer_count_));
+  for (const std::string &kind : config_.lm.layer_types) {
+    linear_layers_.push_back(kind == kLinear);
+  }
   if (quantize_bits == 0) {
     return;
   }
   checkpoint_.QuantizeLinear("lm.embed_tokens", 64, quantize_bits);
   for (int layer = 0; layer < layer_count_; ++layer) {
     const std::string prefix = "lm.layers." + std::to_string(layer);
-    const std::string block = config_.lm.layer_types[layer] == kLinear
-                                  ? prefix + ".linear_attn"
-                                  : prefix + ".self_attn";
-    if (config_.lm.layer_types[layer] == kLinear) {
+    const std::string block =
+        linear_layers_[layer] ? prefix + ".linear_attn" : prefix + ".self_attn";
+    if (linear_layers_[layer]) {
       checkpoint_.QuantizeLinear(block + ".in_proj_qkv", 64, quantize_bits);
       checkpoint_.QuantizeLinear(block + ".in_proj_z", 64, quantize_bits);
       checkpoint_.QuantizeLinear(block + ".in_proj_b", 64, quantize_bits);
@@ -106,7 +115,7 @@ HaruModel::HaruModel(const std::filesystem::path &model_directory,
 std::vector<LayerCache> HaruModel::NewCaches() const {
   std::vector<LayerCache> caches(layer_count_);
   for (int layer = 0; layer < layer_count_; ++layer) {
-    if (config_.lm.layer_types[layer] == kLinear) {
+    if (linear_layers_[layer]) {
       caches[layer].convolution_state = mx::zeros(
           {1, config_.lm.linear_conv_kernel_dim - 1, config_.lm.conv_dim()},
           checkpoint_.Weight("lm.norm.weight").dtype());
@@ -198,9 +207,16 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
       SliceAxis(convolution_input, 1, convolution_input.shape(1) - kept,
                 convolution_input.shape(1)));
   // The checkpoint stores [out, in, kernel]; MLX conv1d takes [out, kernel,
-  // in].
-  const mx::array conv_weight =
-      mx::transpose(checkpoint_.Weight(prefix + ".conv1d.weight"), {0, 2, 1});
+  // in], so transpose once and keep the materialized weight.
+  const std::string weight_name = prefix + ".conv1d.weight";
+  auto found = conv_weights_.find(weight_name);
+  if (found == conv_weights_.end()) {
+    mx::array prepared =
+        mx::transpose(checkpoint_.Weight(weight_name), {0, 2, 1});
+    mx::eval(prepared);
+    found = conv_weights_.emplace(weight_name, std::move(prepared)).first;
+  }
+  const mx::array &conv_weight = found->second;
   const mx::array convolved = omni_common::Silu(
       mx::conv1d(convolution_input, conv_weight, 1, 0, 1, convolution_dim));
 
@@ -297,7 +313,7 @@ mx::array HaruModel::Backbone(const mx::array &embeddings,
     const mx::array normed =
         Fp32Norm(hidden, prefix + ".input_layernorm", config_.lm.rms_norm_eps);
     const mx::array mixed =
-        config_.lm.layer_types[layer] == kLinear
+        linear_layers_[layer]
             ? GatedDeltaLayer(normed, prefix + ".linear_attn", caches[layer])
             : AttentionLayer(normed, prefix + ".self_attn",
                              caches[layer].attention);

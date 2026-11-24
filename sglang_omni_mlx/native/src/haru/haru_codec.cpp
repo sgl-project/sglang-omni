@@ -139,9 +139,16 @@ VibeVoiceCodec::Conv(const mx::array &x, const mx::array &state,
   const mx::array raw = checkpoint_.Weight(prefix + ".weight"); // [out, in, k]
   const int out_ch = raw.shape(0);
   const int in_ch = raw.shape(1);
-  // The model evaluates the conv as a matmul over windows: [out, k * in].
-  const mx::array weight =
-      mx::reshape(mx::transpose(raw, {0, 2, 1}), {out_ch, kernel * in_ch});
+  auto cached = conv_weights_.find(prefix);
+  if (cached == conv_weights_.end()) {
+    // The model evaluates the conv as a matmul over windows: [k * in, out].
+    // Preparing it once keeps the transpose out of the frame loop.
+    mx::array prepared = mx::transpose(
+        mx::reshape(mx::transpose(raw, {0, 2, 1}), {out_ch, kernel * in_ch}));
+    mx::eval(prepared);
+    cached = conv_weights_.emplace(prefix, prepared).first;
+  }
+  const mx::array &weight = cached->second;
 
   mx::array input = x;
   const int tail = x.shape(0) % stride;
@@ -172,8 +179,8 @@ VibeVoiceCodec::Conv(const mx::array &x, const mx::array &state,
         1);
   };
   const mx::array windows = build_windows();
-  const mx::array out = mx::addmm(checkpoint_.Weight(prefix + ".bias"), windows,
-                                  mx::transpose(weight));
+  const mx::array out =
+      mx::addmm(checkpoint_.Weight(prefix + ".bias"), windows, weight);
   const int context_len = kernel - stride;
   const mx::array next =
       mx::slice(context, mx::Shape{context.shape(0) - context_len, 0},
@@ -240,7 +247,7 @@ VibeVoiceCodec::Block(const mx::array &x, const mx::array &state,
         {x.dtype(), state.dtype()}, {dim, steps + kKernel - 1, 1},
         {std::min(dim, 256), 1, 1},
         {{"OutT", x.dtype()}, {"T", steps}, {"C", dim}, {"K", kKernel}},
-        std::nullopt, true, {});
+        std::nullopt, false, {});
     mixed = outputs[0];
     next = outputs[1];
   } else {

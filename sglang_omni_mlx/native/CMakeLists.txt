@@ -110,7 +110,7 @@ add_library(haru STATIC
   src/haru/haru_realtime.cpp)
 target_include_directories(haru PUBLIC src)
 # The reference preparation resamples through audio_resample.
-target_link_libraries(haru PUBLIC common audio_resample)
+target_link_libraries(haru PUBLIC common audio_resample civetweb-c-library)
 target_compile_options(haru PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
 
 add_executable(haru_session_probe tools/haru_session_probe.cpp)
@@ -118,6 +118,8 @@ target_link_libraries(haru_session_probe PRIVATE haru)
 
 add_executable(haru_server src/haru/haru_server.cpp)
 target_link_libraries(haru_server PRIVATE haru asr_service)
+
+install(TARGETS haru_server haru_session_probe RUNTIME DESTINATION bin)
 
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp

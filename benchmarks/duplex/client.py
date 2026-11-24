@@ -8,6 +8,7 @@ import base64
 import contextlib
 import io
 import json
+import os
 import queue
 import threading
 import time
@@ -268,6 +269,27 @@ async def open_trace(trace_path: Path) -> AsyncIterator[io.TextIOWrapper]:
         await TRACE_WRITER.close(trace_file)
 
 
+def native_sampling_from_env() -> dict[str, float]:
+    """Sampling overrides for native protocols, sent in sglang.sampling.
+
+    A native server keeps no sampling state of its own, so a run that needs a
+    fixed seed or greedy decoding sets HARU_SEED / HARU_TOP_K / HARU_TEMPERATURE
+    and every session.update carries them.
+    """
+    sampling: dict[str, float] = {}
+    for name, cast in (
+        ("HARU_SEED", int),
+        ("HARU_TOP_K", int),
+        ("HARU_TEMPERATURE", float),
+    ):
+        value = os.environ.get(name)
+        if value:
+            sampling[name.removeprefix("HARU_").lower()] = cast(value)
+        else:
+            pass
+    return sampling
+
+
 async def run_session(
     url: str,
     pcm: bytes,
@@ -293,6 +315,11 @@ async def run_session(
     configure: dict[str, JsonValue]
     if turn_detection is None:
         configure = {"output_modalities": ["audio"]}
+        sampling = native_sampling_from_env()
+        if sampling:
+            configure["sglang"] = {"sampling": sampling}
+        else:
+            pass
     elif legacy:
         configure = {
             "modalities": ["text", "audio"],

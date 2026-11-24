@@ -5,13 +5,16 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "common/kv_cache.h"
 #include "common/layers.h"
+#include "haru/haru_codec.h"
 #include "haru/haru_config.h"
+#include "haru/haru_head.h"
 #include "mlx/mlx.h"
 
 namespace haru {
@@ -35,7 +38,18 @@ public:
 
   const HaruConfig &config() const { return config_; }
   const omni_common::Checkpoint &checkpoint() const { return checkpoint_; }
+  VibeVoiceCodec &codec() { return codec_; }
+  const VibeVoiceCodec &codec() const { return codec_; }
+  MeanFlowHead &head() { return head_; }
+  const MeanFlowHead &head() const { return head_; }
 
+private:
+  // Reads config.json once: the same parameters feed the typed config and the
+  // checkpoint's layer lookup.
+  HaruModel(const std::filesystem::path &model_directory,
+            const nlohmann::json &parameters, int quantize_bits);
+
+public:
   // Empty per-layer caches for one conversation.
   std::vector<LayerCache> NewCaches() const;
 
@@ -79,9 +93,14 @@ private:
   HaruConfig config_;
   omni_common::Checkpoint checkpoint_;
   int layer_count_;
+  std::vector<bool> linear_layers_; // per layer: Gated DeltaNet or attention
   int rotary_dims_;
   mx::array latent_scale_;
   mx::array latent_bias_;
+  VibeVoiceCodec codec_;
+  MeanFlowHead head_;
+  // conv1d weights already in MLX's [out, kernel, in] layout, built once.
+  mutable std::map<std::string, mx::array> conv_weights_;
 };
 
 } // namespace haru

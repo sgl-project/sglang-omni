@@ -50,9 +50,8 @@ HARU_INPUT_SAMPLE_RATE = 16000
 def haru_server_command(settings: Settings) -> list[str]:
     """The native MLX server, always 8-bit: bf16 weights thrash the swap of a 16 GB Mac.
 
-    HARU_SERVER_BIN names the binary built from sglang_omni_mlx/native; the
-    server takes its sampling defaults from the command line, so the seed
-    comes from HARU_SERVER_SEED.
+    HARU_SERVER_BIN names the binary built from sglang_omni_mlx/native. Sampling
+    travels per session in session.update, so no sampling flag is passed here.
     """
     if settings.reference_audio is None or settings.instructions_file is None:
         raise SystemExit(
@@ -65,19 +64,12 @@ def haru_server_command(settings: Settings) -> list[str]:
             "ERROR: ENGINE=haru needs HARU_SERVER_BIN (the haru_server binary "
             "built from sglang_omni_mlx/native)."
         )
-    sampling: list[str] = []
-    if os.environ.get("HARU_TOP_K"):
-        sampling += ["--top-k", os.environ["HARU_TOP_K"]]
-    if os.environ.get("HARU_TEMPERATURE"):
-        sampling += ["--temperature", os.environ["HARU_TEMPERATURE"]]
     return [
         binary,
         "--model-path",
         str(settings.model_path),
         "--quantize",
         HARU_QUANTIZE_BITS,
-        "--seed",
-        os.environ.get("HARU_SERVER_SEED", "42"),
         "--reference-audio",
         str(settings.reference_audio),
         "--instructions-file",
@@ -86,7 +78,6 @@ def haru_server_command(settings: Settings) -> list[str]:
         str(HARU_INPUT_SAMPLE_RATE),
         "--port",
         str(settings.server_port),
-        *sampling,
     ]
 
 

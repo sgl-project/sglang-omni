@@ -23,7 +23,6 @@ def haru_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
         "SERVER_PORT",
         "JUDGE_PORT",
         "HARU_SERVER_BIN",
-        "HARU_SERVER_SEED",
         "HARU_REFERENCE_AUDIO",
         "HARU_INSTRUCTIONS_FILE",
     ):
@@ -57,7 +56,6 @@ def test_haru_server_command_takes_voice_and_card_from_configuration(
     haru_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HARU_SERVER_BIN", str(haru_env / "haru_server"))
-    monkeypatch.setenv("HARU_SERVER_SEED", "7")
     monkeypatch.setenv("HARU_REFERENCE_AUDIO", str(haru_env / "voice.wav"))
     monkeypatch.setenv("HARU_INSTRUCTIONS_FILE", str(haru_env / "card.txt"))
     command = model_server_command(load_settings("haru-run"))
@@ -65,7 +63,6 @@ def test_haru_server_command_takes_voice_and_card_from_configuration(
     assert command[0] == str(haru_env / "haru_server")
     assert arguments["--model-path"] == str(haru_env / "Haru-4B")
     assert arguments["--quantize"] == "8"
-    assert arguments["--seed"] == "7"
     assert arguments["--input-sample-rate"] == "16000"
     assert arguments["--reference-audio"] == str(haru_env / "voice.wav")
     assert arguments["--instructions-file"] == str(haru_env / "card.txt")

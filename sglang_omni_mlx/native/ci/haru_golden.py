@@ -20,6 +20,8 @@ from typing import TypedDict
 class HaruOutputs(TypedDict):
     tokens: list[int]
     audio_sha256: str
+    turn2_tokens: list[int]
+    turn2_audio_sha256: str
 
 
 def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> HaruOutputs:
@@ -50,6 +52,17 @@ def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> HaruOutp
             for line in lines
             if line.startswith("audio_sha256 ")
         ),
+        "turn2_tokens": [
+            int(value)
+            for line in lines
+            if line.startswith("turn2_tokens ")
+            for value in line.split("turn2_tokens ")[1].split()
+        ],
+        "turn2_audio_sha256": next(
+            line.split("turn2_audio_sha256 ")[1]
+            for line in lines
+            if line.startswith("turn2_audio_sha256 ")
+        ),
     }
 
 
@@ -65,6 +78,7 @@ def check(
     reference_device = device if device in devices else next(iter(devices))
     reference = devices[reference_device]["clips"]
     failures = []
+    identical = 0
     for case_id, want in reference.items():
         actual = results.get(case_id)
         if actual is None:
@@ -73,12 +87,19 @@ def check(
             failures.append(f"`{case_id}` token stream differs")
         elif actual.get("audio_sha256") != want.get("audio_sha256"):
             failures.append(f"`{case_id}` decoded audio differs")
+        elif "turn2_tokens" in want and actual.get("turn2_tokens") != want.get(
+            "turn2_tokens"
+        ):
+            failures.append(f"`{case_id}` second turn token stream differs")
+        elif actual.get("turn2_audio_sha256") != want.get("turn2_audio_sha256"):
+            failures.append(f"`{case_id}` second turn audio differs")
+        else:
+            identical += 1
     failures += [
         f"`{case_id}` has no golden output"
         for case_id in golden["cases"]
         if case_id not in reference
     ]
-    identical = len(reference) - len(failures)
     mode = (
         "exact"
         if device in devices

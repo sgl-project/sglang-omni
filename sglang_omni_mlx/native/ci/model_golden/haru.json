@@ -1,27 +1,34 @@
 {
-  "model": "higurashi-ai/Haru-4B",
-  "kind": "haru",
-  "tool": "haru_session_probe",
-  "cases": {
-    "seed42": {
-      "seed": 42,
-      "quantize": 8
-    }
-  },
-  "devices": {
-    "Apple M4": {
-      "metrics": {},
-      "clips": {
-        "seed42": {
-          "tokens": [
-            40,
-            1683,
-            424,
-            579
-          ],
-          "audio_sha256": "39f6b9f18e2811db6df126f80792bc7b660aea54afaa46155661cd57f3d741f2"
-        }
-      }
-    }
+ "model": "higurashi-ai/Haru-4B",
+ "kind": "haru",
+ "tool": "haru_session_probe",
+ "cases": {
+  "seed42": {
+   "seed": 42,
+   "quantize": 8
   }
+ },
+ "devices": {
+  "Apple M4": {
+   "metrics": {},
+   "clips": {
+    "seed42": {
+     "tokens": [
+      40,
+      1459,
+      914,
+      1366
+     ],
+     "audio_sha256": "5892ed40aacc94df40a95d10843aa32f0c909411888475b16c8dc693effed44b",
+     "turn2_tokens": [
+      13,
+      1049,
+      579,
+      4859
+     ],
+     "turn2_audio_sha256": "030d7749110a7a31b0d213c1d56b25cb5f60595eb86e57096c7109d0247eb9ee"
+    }
+   }
+  }
+ }
 }

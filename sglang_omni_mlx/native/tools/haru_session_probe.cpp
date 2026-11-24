@@ -15,9 +15,7 @@
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "haru/haru_audio.h"
-#include "haru/haru_codec.h"
 #include "haru/haru_config.h"
-#include "haru/haru_head.h"
 #include "haru/haru_model.h"
 #include "haru/haru_session.h"
 
@@ -40,8 +38,6 @@ int main(int argc, char **argv) {
         omni_common::LoadSafetensors(directory),
         omni_common::ReadJson(directory / "config.json"));
     haru::HaruModel model(directory, quantize_bits);
-    haru::VibeVoiceCodec codec(checkpoint, config.codec);
-    haru::MeanFlowHead head(checkpoint, config.head);
     omni_common::Tokenizer tokenizer(directory);
     const auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::steady_clock::now() - load_start)
@@ -50,7 +46,7 @@ int main(int argc, char **argv) {
     const auto infer_start = std::chrono::steady_clock::now();
 
     // A 3 s reference voice at 16 kHz, decoded at 24 kHz through
-    // PrepareReferenceBytes (WAV decode + resample + silence trim).
+    // PrepareReference (WAV decode + resample + silence trim).
     const int ref_samples = 3 * 16000;
     std::vector<float> ref16k(ref_samples);
     for (int i = 0; i < ref_samples; ++i) {
@@ -58,13 +54,13 @@ int main(int argc, char **argv) {
     }
     const std::string wav =
         omni_common::WavBytes(omni_common::Pcm16Bytes(ref16k), 16000);
-    std::vector<float> reference = haru::PrepareReferenceBytes(wav);
+    std::vector<float> reference = haru::PrepareReference(wav);
 
     haru::DuplexConfig session_config;
     session_config.speak_first = true;
     session_config.seed = seed;
     session_config.temperature = 0.0f; // greedy, deterministic
-    haru::DuplexSession session(model, codec, head, tokenizer, session_config);
+    haru::DuplexSession session(model, tokenizer, session_config);
 
     haru::Frame frame = session.Start(
         "You are a friendly voice assistant named Haru.", reference);
@@ -85,6 +81,38 @@ int main(int argc, char **argv) {
       std::cout << "frame " << frame.index << " token " << frame.token
                 << " text \"" << frame.text << "\" done " << frame.done << "\n";
     }
+
+    // A second turn on the same session: a short voiced input followed by
+    // silence, so the golden covers more than the opening frames.
+    std::vector<float> speech(config.frame_samples);
+    for (int i = 0; i < config.frame_samples; ++i) {
+      speech[i] = 0.05f * std::sin(2.0f * 3.14159265f * 180.0f * i /
+                                   static_cast<float>(config.sample_rate));
+    }
+    std::vector<float> turn2_audio;
+    std::string turn2_tokens;
+    for (int i = 0; i < 2; ++i) {
+      frame = session.Step(speech);
+      turn2_audio.insert(turn2_audio.end(), frame.audio.begin(),
+                         frame.audio.end());
+      turn2_tokens += std::to_string(frame.token) + " ";
+    }
+    for (int i = 0; i < 2; ++i) {
+      frame = session.Step(silence);
+      turn2_audio.insert(turn2_audio.end(), frame.audio.begin(),
+                         frame.audio.end());
+      turn2_tokens += std::to_string(frame.token) + " ";
+    }
+    std::cout << "turn2_tokens " << turn2_tokens << "\n";
+    unsigned char turn2_digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(turn2_audio.data(), turn2_audio.size() * sizeof(float),
+              turn2_digest);
+    char turn2_hex[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
+      std::snprintf(turn2_hex + 2 * i, 3, "%02x", turn2_digest[i]);
+    }
+    turn2_hex[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
+    std::cout << "turn2_audio_sha256 " << turn2_hex << "\n";
 
     // A deterministic fingerprint of the decoded audio, for the audio golden.
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];

@@ -5,6 +5,7 @@
 // per-thread), which the server constructs the session against.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -26,7 +27,7 @@ namespace haru {
 // The capabilities object reported in session.updated and, as JSON, by the
 // /v1/realtime/capabilities endpoint. input_sample_rate is the rate clients
 // send audio at.
-nlohmann::json Capabilities(int input_sample_rate);
+nlohmann::json Capabilities(int input_sample_rate, int output_sample_rate);
 
 // Converts the client's 16 kHz audio to the 24 kHz the codec consumes. Filter
 // state is kept across appends so the input is filtered as one signal, and the
@@ -34,16 +35,23 @@ nlohmann::json Capabilities(int input_sample_rate);
 // receipts line up with what the client sent.
 class StreamResampler {
 public:
-  explicit StreamResampler(int input_rate);
+  StreamResampler(int input_rate, int output_rate);
 
   std::vector<float> Process(const std::vector<float> &input);
   // Emits the samples still inside the filter window once the input ended.
   std::vector<float> Flush();
 
 private:
+  struct Phase {
+    // One weight per input offset in [-kResampleHalfTaps, kResampleHalfTaps].
+    std::vector<double> taps;
+  };
+
   std::vector<float> Convert();
 
   int input_rate_;
+  int output_rate_;
+  std::array<Phase, 3> phases_;
   std::vector<float> buffer_;
   int64_t origin_ = 0;
   int64_t input_count_ = 0;
@@ -53,9 +61,7 @@ private:
 // One /v1/realtime socket's full-duplex conversation.
 class HaruRealtimeSession : public omni_server::RealtimeConnection {
 public:
-  HaruRealtimeSession(HaruModel &model, VibeVoiceCodec &codec,
-                      MeanFlowHead &head,
-                      const omni_common::Tokenizer &tokenizer,
+  HaruRealtimeSession(HaruModel &model, const omni_common::Tokenizer &tokenizer,
                       const DuplexConfig &config,
                       omni_server::TranscriptionWorker &worker,
                       std::string system_prompt, std::vector<float> reference,
@@ -68,7 +74,6 @@ private:
   void RunOnWorker(std::function<void()> fn);
   // Applies sglang.sampling from a session.update to this session's config.
   void ApplySampling(const nlohmann::json &sampling);
-  std::vector<float> AppendSamples(const nlohmann::json &message);
   // Steps one 24 kHz frame and records the unit receipt it completes.
   void StepFrame(const std::vector<float> &frame, bool is_padding,
                  std::vector<Frame> &frames);
@@ -82,8 +87,6 @@ private:
                  const nlohmann::json &fields = nlohmann::json::object());
 
   HaruModel &model_;
-  VibeVoiceCodec &codec_;
-  MeanFlowHead &head_;
   const omni_common::Tokenizer &tokenizer_;
   DuplexConfig config_;
   omni_server::TranscriptionWorker &worker_;
@@ -97,7 +100,10 @@ private:
   bool input_ended_ = false;
   bool response_open_ = false;
   bool started_ = false;
+  bool finished_ = false;
   int input_sample_rate_;
+  int model_sample_rate_;
+  int frame_samples_;
   StreamResampler resampler_;
   int64_t accepted_input_samples_ = 0;
   int64_t stepped_frames_ = 0;

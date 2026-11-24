@@ -5,6 +5,7 @@
 // with identical results.
 #pragma once
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,6 +55,8 @@ private:
                                         const std::string &prefix) const;
 
   const omni_common::Checkpoint &checkpoint_;
+  // [kernel * in, out] per conv prefix, built and evaluated once.
+  mutable std::map<std::string, mx::array> conv_weights_;
   CodecConfig config_;
 };
 

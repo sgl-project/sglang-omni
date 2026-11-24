@@ -46,6 +46,7 @@ MODEL_REPO = "higurashi-ai/Haru-4B"
 SAMPLE_RATE = 24000
 FRAME_SAMPLES = 3200
 FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
+FRAME_SECONDS_DEFAULT = FRAME_SECONDS
 EVENT_TIMEOUT_SECONDS = 120
 # Two sessions with one seed must replay the same audio; compare their digests.
 REPEAT_SESSIONS = 2
@@ -132,9 +133,11 @@ def rms(samples: array.array) -> float:
     return math.sqrt(total / len(samples)) / 32768.0
 
 
-def check_drained(drained: dict, accepted_end_ms: float) -> dict[str, bool]:
+def check_drained(
+    drained: dict, accepted_end_ms: float, end_acknowledged: bool
+) -> dict[str, bool]:
     return {
-        "drained_after_end": True,
+        "input_end_is_acknowledged": end_acknowledged,
         "drained_reports_the_same_input": abs(
             float(drained.get("accepted_end_ms", -1)) - accepted_end_ms
         )
@@ -224,6 +227,7 @@ def run_session(
         accepted_end_ms = 0.0
         drained: dict = {}
         done: dict = {}
+        end_acknowledged = False
         while not drained:
             event = json.loads(socket.recv(timeout=EVENT_TIMEOUT_SECONDS))
             kind = event["type"]
@@ -238,7 +242,7 @@ def run_session(
                 accepted_seqs.append(event["seq"])
                 accepted_end_ms = event["accepted_end_ms"]
             elif kind == "sglang.input_audio.ended":
-                session.checks["input_end_is_acknowledged"] = (
+                end_acknowledged = (
                     abs(float(event["accepted_end_ms"]) - frames * FRAME_SECONDS * 1000)
                     < 1e-6
                     and event["tail_policy"] == "pad"
@@ -271,7 +275,9 @@ def run_session(
             done["response"]["status"] == "completed"
             and done["response"]["status_details"]["reason"] == "stop"
         )
-        session.checks.update(check_drained(session.drained, accepted_end_ms))
+        session.checks.update(
+            check_drained(session.drained, accepted_end_ms, end_acknowledged)
+        )
         return session
 
 
@@ -369,6 +375,13 @@ def main() -> None:
     parser.add_argument("--quantize", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--input-sample-rate",
+        type=int,
+        choices=(16000, 24000),
+        default=24000,
+        help="rate of the frames this script sends; FDB's clients use 16000",
+    )
+    parser.add_argument(
         "--frames", type=int, default=24, help="input frames per session"
     )
     parser.add_argument(
@@ -401,6 +414,11 @@ def main() -> None:
     model_directory = (
         arguments.data_root / "models" / arguments.model_repo.replace("/", "_")
     )
+    global SAMPLE_RATE, FRAME_SAMPLES, FRAME_SECONDS
+    SAMPLE_RATE = arguments.input_sample_rate
+    FRAME_SAMPLES = round(SAMPLE_RATE * FRAME_SECONDS_DEFAULT)
+    FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
+    flags += ["--input-sample-rate", str(SAMPLE_RATE)]
     tail = round(arguments.tail_seconds / FRAME_SECONDS)
     server = SupervisedServer(
         arguments.runtime_bin / "haru_server", "haru", model_directory, tuple(flags)

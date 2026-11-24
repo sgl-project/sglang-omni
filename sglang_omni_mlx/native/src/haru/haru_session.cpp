@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "haru/haru_session.h"
 
-#include "haru/haru_quiet.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -65,31 +63,50 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
 }
 
 // The latent of digital silence: the last latent of 16 frames of zeros.
-mx::array SilenceLatent(VibeVoiceCodec &codec, int frame_samples) {
+mx::array SilenceLatent(VibeVoiceCodec &codec, int frame_samples,
+                        int latent_dim) {
   auto state = codec.InitEncoderState();
   const mx::array silence =
       mx::zeros(mx::Shape{16 * frame_samples}, mx::float32);
   const mx::array means = codec.Encode(silence, state);
   mx::eval(means);
-  mx::array result = mx::reshape(
-      mx::slice(means, mx::Shape{15, 0}, mx::Shape{16, 64}), mx::Shape{64});
+  mx::array result =
+      mx::reshape(mx::slice(means, mx::Shape{15, 0}, mx::Shape{16, latent_dim}),
+                  mx::Shape{latent_dim});
   mx::eval(result);
   return result;
 }
 
 } // namespace
 
-DuplexSession::DuplexSession(HaruModel &model, VibeVoiceCodec &codec,
-                             MeanFlowHead &head,
+mx::array ForceTextMask(const HaruConfig &cfg) {
+  const mx::array vocab = mx::arange(0, cfg.lm.vocab_size, mx::int32);
+  const mx::array blocked =
+      mx::full(mx::Shape{cfg.lm.vocab_size},
+               mx::array(-std::numeric_limits<float>::infinity(), mx::float32));
+  mx::array mask =
+      mx::full(mx::Shape{cfg.lm.vocab_size}, mx::array(0.0f, mx::float32));
+  for (int banned : {cfg.pad_token_id, cfg.eop_token_id, cfg.eos_token_id}) {
+    mask = mx::where(mx::equal(vocab, mx::array(banned, mx::int32)), blocked,
+                     mask);
+  }
+  mx::eval(mask);
+  return mask;
+}
+
+DuplexSession::DuplexSession(HaruModel &model,
                              const omni_common::Tokenizer &tokenizer,
                              const DuplexConfig &config)
-    : model_(model), codec_(codec), head_(head), tokenizer_(tokenizer),
-      config_(config), pad_id_(model.config().pad_token_id),
+    : model_(model), codec_(model.codec()), head_(model.head()),
+      tokenizer_(tokenizer), config_(config),
+      pad_id_(model.config().pad_token_id),
       eop_id_(model.config().eop_token_id),
       eos_id_(model.config().eos_token_id),
       silent_ids_(
           mx::array({model.config().pad_token_id, model.config().eop_token_id},
                     mx::int32)),
+      force_text_mask_(ForceTextMask(model.config())),
+      head_dtype_(model.checkpoint().Weight("head.cond_proj.weight").dtype()),
       token_(mx::array(0, mx::int32)),
       latent_(mx::zeros(mx::Shape{1, model.config().latent_dim}, mx::float32)),
       key_(mx::random::key(config.seed >= 0 ? static_cast<uint64_t>(config.seed)
@@ -105,7 +122,6 @@ Frame DuplexSession::Start(const std::string &system_prompt,
                            const std::vector<float> &reference) {
   // MLX prints generated Metal source on stdout while compiling a custom
   // kernel; keep a supervised server's JSON stream and the tools clean.
-  const QuietStdout quiet;
   const auto &cfg = model_.config();
   const int dim = cfg.latent_dim;
 
@@ -148,7 +164,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
   const int n_card = static_cast<int>(card.size());
   const int n_grid = static_cast<int>(grid.size());
 
-  mx::array room_tone = SilenceLatent(codec_, cfg.frame_samples);
+  mx::array room_tone =
+      SilenceLatent(codec_, cfg.frame_samples, cfg.latent_dim);
   if (n_ref > 0) {
     const int frame = cfg.frame_samples;
     const int whole = static_cast<int>(reference.size()) / frame;
@@ -172,7 +189,8 @@ Frame DuplexSession::Start(const std::string &system_prompt,
       mx::eval(room_tone);
     }
   }
-  const mx::array silence = SilenceLatent(codec_, cfg.frame_samples);
+  const mx::array silence =
+      SilenceLatent(codec_, cfg.frame_samples, cfg.latent_dim);
 
   std::vector<float> model_flat(static_cast<size_t>(n) * dim, 0.0f);
   std::vector<float> user_flat(static_cast<size_t>(n) * dim, 0.0f);
@@ -228,7 +246,6 @@ Frame DuplexSession::Start(const std::string &system_prompt,
 
 Frame DuplexSession::Step(const std::vector<float> &user_frame) {
   // The codec compiles a kernel per frame shape on first use; see Start().
-  const QuietStdout quiet;
   const auto &cfg = model_.config();
   const mx::array user_audio = mx::array(
       user_frame.data(), {static_cast<int>(user_frame.size())}, mx::float32);
@@ -246,42 +263,42 @@ Frame DuplexSession::Step(const std::vector<float> &user_frame) {
   return Emit(hidden);
 }
 
-mx::array DuplexSession::PreparedLogits(const mx::array &hidden) {
+mx::array DuplexSession::PreparedLogits(const mx::array &hlast) {
   const auto &cfg = model_.config();
-  const int time = hidden.shape(1);
-  const mx::array hlast =
-      mx::reshape(mx::slice(hidden, mx::Shape{0, time - 1, 0},
-                            mx::Shape{1, time, cfg.hidden_size()}),
-                  mx::Shape{1, cfg.hidden_size()});
   mx::array logits = mx::reshape(model_.Logits(hlast), {cfg.lm.vocab_size});
   const mx::array vocab = mx::arange(0, cfg.lm.vocab_size, mx::int32);
 
   if (config_.dry) {
-    for (const auto &[token, penalty] : DryPenalties(history_, DryConfig{})) {
-      logits = mx::where(mx::equal(vocab, mx::array(token, mx::int32)),
-                         mx::subtract(logits, mx::array(penalty, mx::float32)),
-                         logits);
+    const auto penalties = DryPenalties(history_, DryConfig{});
+    if (!penalties.empty()) {
+      // One scatter instead of a vocab-wide selection per penalized token.
+      std::vector<int32_t> tokens;
+      std::vector<float> amounts;
+      tokens.reserve(penalties.size());
+      amounts.reserve(penalties.size());
+      for (const auto &[token, penalty] : penalties) {
+        tokens.push_back(token);
+        amounts.push_back(-penalty);
+      }
+      const mx::array index = mx::array(
+          tokens.data(), mx::Shape{static_cast<int>(tokens.size())}, mx::int32);
+      const mx::array delta =
+          mx::array(amounts.data(), mx::Shape{static_cast<int>(amounts.size())},
+                    mx::float32);
+      logits = mx::put_along_axis(
+          logits, index, mx::add(mx::take(logits, index, 0), delta), 0);
     }
   }
+  // pad and eop get their values recomputed in float32, in place.
   const mx::array fp32 =
       mx::reshape(model_.LogitsFp32(hlast, silent_ids_), {2});
-  logits = mx::where(mx::equal(vocab, mx::array(pad_id_, mx::int32)),
-                     mx::take(fp32, mx::array(0), 0), logits);
-  logits = mx::where(mx::equal(vocab, mx::array(eop_id_, mx::int32)),
-                     mx::take(fp32, mx::array(1), 0), logits);
-  if (config_.eop_bias != 0.0f) {
-    logits = mx::where(
-        mx::equal(vocab, mx::array(eop_id_, mx::int32)),
-        mx::add(logits, mx::array(config_.eop_bias, mx::float32)), logits);
-  }
+  const mx::array specials =
+      mx::array({static_cast<int32_t>(pad_id_), static_cast<int32_t>(eop_id_)},
+                mx::Shape{2}, mx::int32);
+  logits = mx::put_along_axis(logits, specials, fp32, 0);
   if (force_text_ > 0) {
-    for (int banned : {pad_id_, eop_id_, eos_id_}) {
-      logits = mx::where(mx::equal(vocab, mx::array(banned, mx::int32)),
-                         mx::full(logits.shape(),
-                                  -std::numeric_limits<float>::infinity(),
-                                  mx::float32),
-                         logits);
-    }
+    // One masked add instead of three vocab-wide selections.
+    logits = mx::add(logits, force_text_mask_);
   }
   return logits;
 }
@@ -303,6 +320,9 @@ mx::array DuplexSession::SampleToken(const mx::array &logits) {
     l = mx::take_along_axis(l, order, -1);
     if (indices.has_value()) {
       indices = mx::take_along_axis(*indices, order, -1);
+    } else {
+      // Without a top-k cut the sampled position indexes the sorted order.
+      indices = order;
     }
     const mx::array probs = mx::softmax(l, -1);
     const mx::array keep = mx::less(mx::subtract(mx::cumsum(probs, -1), probs),
@@ -329,7 +349,7 @@ std::string DuplexSession::Detokenize(int token) {
   }
   in_gap_ = false;
   pending_ids_.push_back(token);
-  std::string text = tokenizer_.Decode(pending_ids_, false);
+  std::string text = tokenizer_.Decode(pending_ids_, true);
   const std::string replacement = "\xEF\xBF\xBD";
   if (text.size() >= replacement.size() &&
       text.compare(text.size() - replacement.size(), replacement.size(),
@@ -348,21 +368,21 @@ Frame DuplexSession::Emit(const mx::array &hidden) {
                             mx::Shape{1, time, cfg.hidden_size()}),
                   mx::Shape{1, cfg.hidden_size()});
 
-  const mx::array logits = PreparedLogits(hidden);
+  const mx::array logits = PreparedLogits(hlast);
   const mx::array token = SampleToken(logits);
-  mx::eval(token);
 
   // The head's weights are half precision; a float32 noise would promote every
   // matmul of the velocity network to float32 and cost an order of magnitude.
   const mx::array noise = mx::astype(
       mx::random::normal(mx::Shape{1, cfg.latent_dim}, mx::float32, NextKey()),
-      model_.checkpoint().Weight("head.cond_proj.weight").dtype());
+      head_dtype_);
   const mx::array latent =
       model_.UnscaleLatents(head_.Sample(hlast, noise, config_.guidance_scale));
-  mx::eval(latent);
   const mx::array audio =
       codec_.Decode(mx::reshape(latent, {1, cfg.latent_dim}), decoder_state_);
-  mx::eval(audio);
+  // One synchronisation per frame: the token feeds the next step, the audio is
+  // what the caller sends, and the decode overlaps the eval of the token.
+  mx::eval({token, latent, audio});
 
   token_ = token;
   latent_ = latent;
