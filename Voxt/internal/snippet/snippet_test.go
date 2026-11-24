@@ -204,3 +204,56 @@ func FuzzRestore(f *testing.F) {
 		}
 	})
 }
+
+// A trigger does not run over the end of a sentence: "my." and "Email
+// me" are two sentences, not "my email" (review of #4456). Punctuation
+// inside a sentence, a dot inside a word, still match.
+func TestSentenceEnd(t *testing.T) {
+	for _, tc := range []struct {
+		text, want string
+	}{
+		{"That one is my. Email me later.", "That one is my. Email me later."},
+		{"Is it my? Email me.", "Is it my? Email me."},
+		{"Mine!\nEmail address soon", "Mine!\nEmail address soon"},
+		{"说我的。邮箱发你", "说我的。邮箱发你"},
+		{"Check my email, please.", "Check short@example.com, please."},
+		{"Check my, email address.", "Check ruiling@example.com."},
+	} {
+		if got := Expand(tc.text, list); got != tc.want {
+			t.Errorf("Expand(%q) = %q; want %q", tc.text, got, tc.want)
+		}
+	}
+	if s, ok := Whole("My. Email.", list); ok {
+		t.Errorf("Whole over two sentences = %q", s.ID)
+	}
+	if s, ok := Whole("My email.", list); !ok || s.ID != "4" {
+		t.Errorf("Whole(My email.) = %q, %v", s.ID, ok)
+	}
+	dotted := []Snippet{{ID: "v", Trigger: "v1.2 notes", Text: "NOTES"}}
+	if got := Expand("see v1.2 notes", dotted); got != "see NOTES" {
+		t.Errorf("a dot inside a word: %q", got)
+	}
+}
+
+// Dictation is written in the script the user reads (lang.ChineseScript),
+// so a trigger saved in the other one still matches, both ways.
+func TestChineseScripts(t *testing.T) {
+	simplified := []Snippet{{ID: "s", Trigger: "我的邮箱地址", Text: "S"}}
+	traditional := []Snippet{{ID: "t", Trigger: "我的郵箱地址", Text: "T"}}
+	for _, tc := range []struct {
+		text string
+		list []Snippet
+		want string
+	}{
+		{"發到我的郵箱地址。", simplified, "發到S。"},
+		{"发到我的邮箱地址。", traditional, "发到T。"},
+		{"发到我的邮箱地址。", simplified, "发到S。"},
+	} {
+		if got := Expand(tc.text, tc.list); got != tc.want {
+			t.Errorf("Expand(%q, %s) = %q; want %q", tc.text, tc.list[0].Trigger, got, tc.want)
+		}
+	}
+	if s, ok := Whole("我的郵箱地址", simplified); !ok || s.ID != "s" {
+		t.Errorf("Whole in Traditional = %q, %v", s.ID, ok)
+	}
+}

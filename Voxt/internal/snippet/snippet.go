@@ -8,20 +8,26 @@
 // (dict.Replace), a trigger in a script that puts spaces between words
 // (Latin, Cyrillic…) matches whole words only, and one in Chinese,
 // Japanese or Korean anywhere, so it needs at least MinWordless
-// characters. Only a trigger
+// characters. A trigger does not run over the end of a sentence ("my.
+// Email me" holds no "my email"), and Traditional and Simplified Chinese
+// match each other (lang.CanonicalChinese), as dictation may be written
+// in either. Only a trigger
 // the user said is replaced: one the language model wrote is its own
 // wording. The snippets live in a document of
 // their own (Key).
 //
-// Imports: nothing internal.
+// Imports: lang.
 package snippet
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 )
 
 // Key is the document the snippets are stored under (store.Documents).
@@ -109,6 +115,10 @@ func Whole(text string, snippets []Snippet) (Snippet, bool) {
 	key := string(normalize(text))
 	if key == "" {
 		return Snippet{}, false
+	}
+	runes := []rune(text)
+	if sentenceEnd(runes[slices.IndexFunc(runes, keep) : lastIndex(runes, keep)+1]) {
+		return Snippet{}, false // more than one sentence
 	}
 	for _, s := range snippets {
 		if string(normalize(s.Trigger)) == key {
@@ -245,12 +255,13 @@ func find(text string, snippets []Snippet) ([]rune, []match) {
 	}
 	sort.SliceStable(patterns, func(i, j int) bool { return len(patterns[i].key) > len(patterns[j].key) })
 	runes := []rune(text)
+	folded := foldScript(runes)
 	// The kept characters, folded, and where each is in runes.
 	var kept []rune
 	var at []int
 	for i, r := range runes {
 		if keep(r) {
-			kept, at = append(kept, unicode.ToLower(r)), append(at, i)
+			kept, at = append(kept, unicode.ToLower(folded[i])), append(at, i)
 		}
 	}
 	var found []match
@@ -263,6 +274,9 @@ func find(text string, snippets []Snippet) ([]rune, []match) {
 			start, end := at[k], at[k+len(p.key)-1]+1
 			if p.word && (start > 0 && wordRune(runes[start-1]) || end < len(runes) && wordRune(runes[end])) {
 				continue // inside a longer word
+			}
+			if sentenceEnd(runes[start:end]) {
+				continue // the end of one sentence and the start of the next
 			}
 			found = append(found, match{start, end, p.s})
 			k, matched = k+len(p.key), true
@@ -291,16 +305,58 @@ func rebuild(text string, runes []rune, found []match, with func(match) string) 
 	return b.String()
 }
 
-// normalize is s's letters and digits, lowercase: what a trigger is
-// matched by.
+// normalize is s's letters and digits, lowercase and in Simplified
+// Chinese: what a trigger is matched by.
 func normalize(s string) []rune {
 	var out []rune
-	for _, r := range s {
+	for _, r := range foldScript([]rune(s)) {
 		if keep(r) {
 			out = append(out, unicode.ToLower(r))
 		}
 	}
 	return out
+}
+
+// foldScript is runes with Traditional Chinese characters as Simplified,
+// one for one (lang.CanonicalChinese); other runes stay as they are.
+func foldScript(runes []rune) []rune {
+	if !slices.ContainsFunc(runes, func(r rune) bool { return unicode.Is(unicode.Han, r) }) {
+		return runes
+	}
+	if out := []rune(lang.CanonicalChinese(string(runes))); len(out) == len(runes) {
+		return out
+	}
+	out := slices.Clone(runes) // a phrase changed length: character by character
+	for i, r := range runes {
+		if f := []rune(lang.CanonicalChinese(string(r))); len(f) == 1 {
+			out[i] = f[0]
+		}
+	}
+	return out
+}
+
+// sentenceEnd says whether runes hold the end of a sentence: 。！？, a
+// line break, or . ! ? before a space ("v1.2" and "a.b" go on).
+func sentenceEnd(runes []rune) bool {
+	for i, r := range runes {
+		switch {
+		case strings.ContainsRune("。！？\n", r):
+			return true
+		case strings.ContainsRune(".!?", r) && i+1 < len(runes) && unicode.IsSpace(runes[i+1]):
+			return true
+		}
+	}
+	return false
+}
+
+// lastIndex is the index of the last rune of runes that f accepts, or -1.
+func lastIndex(runes []rune, f func(rune) bool) int {
+	for i := len(runes) - 1; i >= 0; i-- {
+		if f(runes[i]) {
+			return i
+		}
+	}
+	return -1
 }
 
 func keep(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
