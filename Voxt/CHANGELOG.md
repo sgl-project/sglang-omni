@@ -18,7 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **Rewrite stays in your full-screen app**: pressed in an app in full screen, Rewrite switched you to a desktop to show its card. The card now opens over the full-screen app and takes your typing there; inserting the result goes back into that app.
+- **Rewrite stays in your full-screen app** (#4586): pressed in an app in full screen, Rewrite switched you to a desktop to show its card. The card now opens over the full-screen app and takes your typing there; inserting the result goes back into that app.
 - **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
 
 ### 中文
@@ -37,7 +37,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **改写不再把你从全屏 App 切走**：在全屏的 App 里按改写，Voxt 会把你切到一个桌面去显示卡片。现在卡片直接出现在全屏 App 上面，可以在里面打字，插入结果也回到这个 App。
+- **改写不再把你从全屏 App 切走**（#4586）：在全屏的 App 里按改写，Voxt 会把你切到一个桌面去显示卡片。现在卡片直接出现在全屏 App 上面，可以在里面打字，插入结果也回到这个 App。
 - **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
 
 ## [2.1.3] - 2026-11-22
