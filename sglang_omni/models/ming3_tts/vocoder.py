@@ -17,6 +17,7 @@ from sglang_omni.models.ming3_tts.checkpoint import (
     load_audio_vae,
     load_checkpoint_config,
 )
+from sglang_omni.models.ming3_tts.streaming_vocoder import Ming3StreamingVocoder
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -116,9 +117,10 @@ def create_vocoder_executor(
     model_path: str,
     *,
     graph_latent_steps: int = 0,
+    stream_chunk_steps: int = 8,
     device: str | None = None,
     gpu_id: int | None = None,
-) -> SimpleScheduler:
+) -> Ming3StreamingVocoder | SimpleScheduler:
     resolved_device = resolve_concrete_device(device, gpu_id)
     checkpoint = Path(resolve_checkpoint(model_path))
     configuration = load_checkpoint_config(checkpoint)
@@ -177,4 +179,12 @@ def create_vocoder_executor(
         payload.data["finish_reason"] = finish_reason
         return payload
 
-    return SimpleScheduler(decode)
+    if resolved_device.type == "cpu":
+        return SimpleScheduler(decode)
+    else:
+        return Ming3StreamingVocoder(
+            decode,
+            vae=vae,
+            sample_rate=sample_rate,
+            stream_chunk_steps=stream_chunk_steps,
+        )

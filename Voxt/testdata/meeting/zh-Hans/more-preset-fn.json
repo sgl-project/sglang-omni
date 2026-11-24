@@ -1,0 +1,85 @@
+{
+  "name": "more-preset-fn",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 6,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "更多功能",
+    "subtitle": "快去试试 Voxt 吧。下面两项能让它更顺手。",
+    "recording": false,
+    "more": {
+      "preset_options": [
+        {
+          "id": "option",
+          "label": "右 ⌥（默认）"
+        },
+        {
+          "id": "fn",
+          "label": "fn（和 Auralink 相同）"
+        },
+        {
+          "id": "command",
+          "label": "⌘ 组合"
+        },
+        {
+          "id": "mouseMiddle",
+          "label": "鼠标中键 + fn⇧"
+        }
+      ],
+      "preset_selected": "fn（和 Auralink 相同）",
+      "preset_about": "fn：与 Auralink 和很多 Voxt 1.x 的设置一致。注意可能与地球键或输入法冲突。",
+      "preset_warnings": [
+        "Auralink 也用 fn，它运行时，两个 App 都会响应这些键。",
+        "macOS 也可能响应 fn（地球键）。如果有影响，在“系统设置 → 键盘”里把它设为“不执行任何操作”。"
+      ],
+      "shortcuts": [
+        {
+          "title": "转录",
+          "keys": "fn",
+          "problems": null
+        },
+        {
+          "title": "翻译",
+          "keys": "fn ⇧",
+          "problems": null
+        },
+        {
+          "title": "改写",
+          "keys": "fn ⌃",
+          "problems": null
+        },
+        {
+          "title": "粘贴最近结果",
+          "keys": "⌃⌘V",
+          "problems": null
+        }
+      ]
+    },
+    "footer": {
+      "mode": "finish",
+      "busy": false,
+      "back": true,
+      "continue_label": "开始使用 Voxt",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

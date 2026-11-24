@@ -10,6 +10,8 @@ from transformers import WhisperTimeStampLogitsProcessor
 
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampLogitProcessor,
+    apply_timestamp_rules,
+    apply_timestamp_rules_on_device,
 )
 
 EOS_TOKEN_ID = 2
@@ -124,3 +126,46 @@ def test_timestamp_processor_matches_transformers_probability_rule(
         torch.isneginf(sglang_scores[0, :TIMESTAMP_BEGIN_ID]).all().item()
         is timestamp_dominates
     )
+
+
+def test_device_timestamp_rules_match_the_per_row_rules() -> None:
+    """The speculative chain masks every row from three tokens of its history; the result must not differ."""
+    generator = torch.Generator().manual_seed(0)
+    params = {
+        "segment_timestamps": True,
+        "timestamp_begin_id": TIMESTAMP_BEGIN_ID,
+        "no_timestamps_token_id": NO_TIMESTAMPS_TOKEN_ID,
+        "eos_token_id": EOS_TOKEN_ID,
+        "max_initial_timestamp_index": MAX_INITIAL_TIMESTAMP_INDEX,
+    }
+    histories = []
+    for _ in range(400):
+        length = int(torch.randint(1, 6, (1,), generator=generator))
+        histories.append(
+            torch.randint(0, VOCAB_SIZE, (length,), generator=generator).tolist()
+        )
+    logits = torch.randn(len(histories), VOCAB_SIZE, generator=generator) * 3
+    expected = logits.clone()
+    for row, history in enumerate(histories):
+        apply_timestamp_rules(expected[row], history, params)
+
+    actual = logits.clone()
+    apply_timestamp_rules_on_device(
+        actual,
+        last_token=torch.tensor([history[-1] for history in histories]),
+        penultimate_token=torch.tensor(
+            [
+                history[-2] if len(history) > 1 else TIMESTAMP_BEGIN_ID
+                for history in histories
+            ]
+        ),
+        last_timestamp=torch.tensor(
+            [
+                next((t for t in reversed(history) if t >= TIMESTAMP_BEGIN_ID), -1)
+                for history in histories
+            ]
+        ),
+        params=params,
+    )
+
+    torch.testing.assert_close(actual, expected)

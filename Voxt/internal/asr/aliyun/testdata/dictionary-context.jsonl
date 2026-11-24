@@ -1,0 +1,17 @@
+{"@":"note","text":"Messages shaped after Model Studio, Fun-ASR-Realtime server events (help.aliyun.com/zh/model-studio/fun-asr-server-events: task-started, result-generated, task-finished, task-failed examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"@":"wait","for":"start"}
+{"header":{"task_id":"<task-id>","event":"task-started","attributes":{}},"payload":{}}
+{"@":"wait","for":"audio","n":2}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":0,"end_time":null,"text":"","sentence_begin":true,"sentence_end":false,"sentence_id":1,"words":[]}},"usage":null}}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":0,"end_time":null,"text":"你好","heartbeat":false,"sentence_end":false,"sentence_id":1,"words":[]}},"usage":null}}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":0,"end_time":0,"text":"","heartbeat":true,"sentence_end":false,"sentence_id":0,"words":[]}},"usage":null}}
+{"@":"note","text":"An event this client does not know: ignored."}
+{"header":{"task_id":"<task-id>","event":"task-progress","attributes":{}},"payload":{"progress":0.5}}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":170,"end_time":920,"text":"你好，世界。","heartbeat":false,"sentence_end":true,"sentence_id":1,"words":[]}},"usage":{"duration":1}}}
+{"@":"wait","for":"audio","n":6}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":1000,"end_time":null,"text":"我在用","heartbeat":false,"sentence_begin":true,"sentence_end":false,"sentence_id":2,"words":[]}},"usage":null}}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":1000,"end_time":1600,"text":"我在用 Voxt。","heartbeat":false,"sentence_end":true,"sentence_id":2,"words":[]}},"usage":{"duration":2}}}
+{"@":"wait","for":"finish"}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":1700,"end_time":null,"text":"Hello","heartbeat":false,"sentence_begin":true,"sentence_end":false,"sentence_id":3,"words":[]}},"usage":null}}
+{"header":{"task_id":"<task-id>","event":"result-generated","attributes":{}},"payload":{"output":{"sentence":{"begin_time":1700,"end_time":2000,"text":"Hello world.","heartbeat":false,"sentence_end":true,"sentence_id":3,"words":[]}},"usage":{"duration":2}}}
+{"header":{"task_id":"<task-id>","event":"task-finished","attributes":{}},"payload":{"output":{},"usage":null}}

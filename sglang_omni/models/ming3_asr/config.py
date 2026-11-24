@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -24,6 +24,7 @@ class Ming3ASRFactoryArgs(FactoryArgs):
 
     pre_lm_max_batch_size: int | None = Field(default=None, ge=1)
     pre_lm_max_batch_wait_ms: int | None = Field(default=None, ge=0)
+    stream_emit_interval_seconds: float = Field(default=0.05, ge=0, allow_inf_nan=False)
 
 
 class Ming3ASRThinkerStageConfig(EngineStageConfig):
@@ -70,6 +71,8 @@ class Ming3ASRPipelineConfig(PipelineConfig):
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
         "thinker": Ming3ASRThinkerStageConfig,
     }
+    dspark_use_greedy_draft: bool = True
+    ragged_verify_mode: Literal["static", "cap-accept", "compact"] = "static"
     model_path: str
     entry_stage: str = "preprocessing"
     placement: PlacementConfig = Field(
@@ -78,6 +81,23 @@ class Ming3ASRPipelineConfig(PipelineConfig):
         )
     )
     stages: list[StageConfig] = Field(default_factory=default_stages)
+
+    def resolved_stage_env_defaults(self, stage_name: str) -> dict[str, str]:
+        environment = super().resolved_stage_env_defaults(stage_name)
+        if (
+            stage_name == "thinker"
+            and self.stage_named(stage_name)
+            .engine.overrides()
+            .get("speculative_algorithm")
+            == "DSPARK"
+        ):
+            environment.setdefault(
+                "SGLANG_DSPARK_USE_GREEDY_DRAFT", str(int(self.dspark_use_greedy_draft))
+            )
+            environment.setdefault("SGLANG_RAGGED_VERIFY_MODE", self.ragged_verify_mode)
+        else:
+            pass
+        return environment
 
 
 EntryClass = Ming3ASRPipelineConfig

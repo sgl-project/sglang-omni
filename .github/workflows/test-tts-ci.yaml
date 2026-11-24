@@ -3,6 +3,11 @@ name: TTS CI
 on:
   workflow_call:
     inputs:
+      run_serving:
+        description: Run the Higgs serving stress job.
+        type: boolean
+        required: false
+        default: true
       tts_ci_model:
         description: TTS CI model preset selected by the parent omni-ci preflight.
         type: string
@@ -19,19 +24,20 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after ASR CI. Restores omni only.
-# DAG:
-#   stage-1-non-streaming -> stage-2-streaming -> stage-3-consistency
-#     -> stage-4-serving
+# Invoked by omni-ci.yaml after unit tests. Restores omni only.
+# No job waits for another, so all three run side by side. seedtts runs the
+# non-streaming and streaming benchmarks back to back and then checks that
+# their results agree: the check only reads two JSON files, and as its own job
+# it waited for a free H100 runner after both benchmarks.
 # The MPS validation runs separately in test-mps-ci.yaml.
 
 jobs:
-  stage-1-non-streaming:
-    name: stage 1 - non-streaming
+  seedtts:
+    name: SeedTTS voice cloning
     runs-on: [self-hosted, h100]
-    timeout-minutes: 25
+    timeout-minutes: 50
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -44,7 +50,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/omni-setup
+      - id: setup
+        uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
 
@@ -82,11 +89,11 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      - name: Post-stage cleanup
+      - name: Non-streaming post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 1 (non-streaming)
+          stage-label: TTS non-streaming
           artifact-upload-name: tts-generation-budget-nonstream-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
@@ -96,31 +103,10 @@ jobs:
             */wer_results.json
             */similarity_results.json
 
-  stage-2-streaming:
-    name: stage 2 - streaming
-    needs: stage-1-non-streaming
-    if: always() && !cancelled()
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 25
-    container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
+      # The streaming stage still reports its own results when non-streaming
+      # fails, as it did in a separate job.
       - name: Run TTS streaming benchmark stage
+        if: always() && !cancelled() && steps.setup.outcome == 'success'
         shell: bash
         run: |
           source omni/bin/activate
@@ -144,11 +130,11 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      - name: Post-stage cleanup
+      - name: Streaming post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 2 (streaming)
+          stage-label: TTS streaming
           artifact-upload-name: tts-generation-budget-stream-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
@@ -157,14 +143,26 @@ jobs:
             */speed_results.json
             */wer_results.json
 
-  stage-latency:
-    name: stage latency - streaming first audio
-    needs: stage-2-streaming
-    if: always() && !cancelled() && startsWith(inputs.tts_ci_model, 'qwen3-tts')
+      - name: Run consistency check
+        if: always() && !cancelled() && steps.setup.outcome == 'success'
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
+        env:
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
+          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TTS_CONSISTENCY_CONCURRENCY: "16"
+
+  latency:
+    name: streaming first audio
+    if: startsWith(inputs.tts_ci_model, 'qwen3-tts')
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -205,86 +203,29 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: tts-stage-latency-results
+          name: tts-stage-latency-results-attempt-${{ github.run_attempt }}
           path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/**/speed_results.json
           if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 30
-          overwrite: true
 
       - name: Post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage latency (streaming first audio)
+          stage-label: TTS streaming first audio
           artifact-search-root: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
 
-  stage-3-consistency:
-    name: stage 3 - consistency
-    needs: stage-2-streaming
-    if: always() && !cancelled()
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 5
-    container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Download non-streaming speed artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tts-stage-nonstream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-
-      - name: Download streaming speed artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tts-stage-stream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-
-      - name: Run consistency check
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
-        env:
-          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
-          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-          TTS_CONSISTENCY_CONCURRENCY: "16"
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: TTS stage 3 (consistency)
-
-  stage-4-serving:
-    name: stage 4 - serving stress
-    needs: stage-3-consistency
-    if: always() && !cancelled()
+  higgs-serving-stress:
+    name: Higgs serving stress
+    if: inputs.run_serving
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
-      image: hongccc/sglang-omni@sha256:06ed306707bcf3d9e9beb5ba7ce66f09a666cac11c23455ece50c34199c0e985
+      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
         --rm
         -e NVIDIA_VISIBLE_DEVICES
@@ -319,7 +260,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 4 (serving stress)
+          stage-label: TTS Higgs serving stress
           artifact-search-root: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-path-globs: |
@@ -329,7 +270,7 @@ jobs:
             */benchmark_validation.json
             */router_validation.json
             */cleanup_validation.json
-          artifact-upload-name: tts-stage-serving-results
+          artifact-upload-name: tts-stage-serving-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-if-no-files-found: error

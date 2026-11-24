@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-up-to-date",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "You're up to date",
+    "subtitle": "Voxt 2.0.3 is the newest version.",
+    "error_text": "",
+    "notes": "",
+    "download": ""
+  }
+}

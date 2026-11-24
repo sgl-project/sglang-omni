@@ -31,6 +31,10 @@ from sglang_omni.models.minicpm_o.native_config import (
     DEFAULT_SPEECH_STATE_BYTES_PER_SESSION,
 )
 from tests.unit_test.fixtures.accelerator import require_cuda
+from tests.unit_test.fixtures.torch_backend_flags import (  # noqa: F401  # fixture
+    CublasFlagSetter,
+    cublas_flags,
+)
 
 MEL_CHANNELS = 8
 # note (Junnan Li): The silence token that pads every stream is id 4218, so the vocabulary keeps the checkpoint's size.
@@ -141,6 +145,7 @@ def warmed_caches(
 )
 def test_ragged_chunks_match_each_stream_alone(
     monkeypatch: pytest.MonkeyPatch,
+    cublas_flags: CublasFlagSetter,
     device: str,
     is_channels_last: bool,
     lengths: tuple[int, ...],
@@ -148,7 +153,7 @@ def test_ragged_chunks_match_each_stream_alone(
     warmup_chunks: list[int],
 ) -> None:
     monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_tf32", False)
+    cublas_flags("allow_tf32", False)
     flow = tiny_flow()
     if is_channels_last:
         for block in flow.decoder.estimator.blocks:

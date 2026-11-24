@@ -4,8 +4,8 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.models.ming_tts import audio_decode, audio_upsample
-from sglang_omni.models.ming_tts.audio_decode import (
+from sglang_omni.modules.ming_audio import audio_decode, audio_upsample
+from sglang_omni.modules.ming_audio.audio_decode import (
     AudioVAEFixedStreamingStateBank,
     AudioVAEFixedStreamingTransition,
 )

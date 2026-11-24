@@ -62,7 +62,7 @@ mx::array Model::Depth(const mx::array &embeddings) const {
     const mx::array attended = mx::fast::scaled_dot_product_attention(
         project("to_q"), project("to_k"), project("to_v"),
         static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-        "causal");
+        /*window_size=*/-1, "causal");
     hidden = hidden + checkpoint_.Linear(
                           mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                       {2, length, hidden_size}),
@@ -72,8 +72,8 @@ mx::array Model::Depth(const mx::array &embeddings) const {
     hidden =
         hidden +
         checkpoint_.Linear(
-            omni_common::Silu(checkpoint_.Linear(mlp, prefix + ".gate_proj")) *
-                checkpoint_.Linear(mlp, prefix + ".up_proj"),
+            omni_common::Swiglu(checkpoint_.Linear(mlp, prefix + ".gate_proj"),
+                                checkpoint_.Linear(mlp, prefix + ".up_proj")),
             prefix + ".down_proj");
   }
   return checkpoint_.RmsNorm(hidden, "rvq_depth_decoder.norm", epsilon);
@@ -170,7 +170,7 @@ mx::array Model::GenerateFrames(const Request &request,
     // acoustic frame.
     if (frame > 0) {
       frames.push_back(mx::concatenate(hidden_parts, -1));
-      mx::eval(frames.back());
+      mx::async_eval(frames.back());
     } else {
     }
     const mx::array feedback = mx::expand_dims(
@@ -181,7 +181,7 @@ mx::array Model::GenerateFrames(const Request &request,
                       last_hidden.dtype()),
         1);
     last_hidden = forward(feedback);
-    mx::eval(last_hidden);
+    mx::async_eval(last_hidden);
     if (static_cast<int>(frames.size()) >= request.max_frames) {
       break;
     } else {

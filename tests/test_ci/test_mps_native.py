@@ -9,7 +9,7 @@ recovery after a hard kill, the shared daemon across two serve commands, and
 zero residue after teardown. Quality and throughput are out of scope here;
 this file exists so a lifecycle regression fails a machine, not a user.
 
-Not wired into a workflow yet; run manually on a GPU host:
+Included in the MPS CI workflow; run manually on a GPU host with:
     pytest tests/test_ci/test_mps_native.py -v -s -x
 """
 
@@ -137,19 +137,29 @@ def assert_no_residue() -> None:
 
 
 def list_daemon_pids() -> set[int]:
-    # The daemon's cmdline has no path in it (the pipe dir travels via env),
-    # so match /proc environ instead of pgrep -f, which would also match this
-    # test's own wrapper shell.
-    pids: set[int] = set()
-    for environ_file in Path("/proc").glob("[0-9]*/environ"):
+    daemon_process_ids: set[int] = set()
+    pipe_directory_prefix = f"CUDA_MPS_PIPE_DIRECTORY={STATE_ROOT}/".encode()
+    for environment_file in Path("/proc").glob("[0-9]*/environ"):
         try:
-            env = environ_file.read_bytes()
-            cmd = (environ_file.parent / "cmdline").read_bytes()
+            environment = environment_file.read_bytes().split(b"\0")
+            command_arguments = (
+                (environment_file.parent / "cmdline")
+                .read_bytes()
+                .rstrip(b"\0")
+                .split(b"\0")
+            )
         except OSError:
             continue
-        if str(STATE_ROOT).encode() in env and b"cuda-mps-control" in cmd:
-            pids.add(int(environ_file.parent.name))
-    return pids
+        # note(chenye): control queries inherit the pipe environment but omit
+        # daemon mode.
+        if (
+            any(value.startswith(pipe_directory_prefix) for value in environment)
+            and Path(os.fsdecode(command_arguments[0])).name
+            == "nvidia-cuda-mps-control"
+            and command_arguments[1:] == [b"-d"]
+        ):
+            daemon_process_ids.add(int(environment_file.parent.name))
+    return daemon_process_ids
 
 
 @dataclass(frozen=True)
@@ -398,7 +408,11 @@ def test_two_serves_share_one_daemon():
 
         # First leaver must not take the daemon down under the survivor.
         terminate(proc_a)
-        assert list_daemon_pids() == daemons, "daemon died when one owner left"
+        surviving_daemons = list_daemon_pids()
+        assert surviving_daemons == daemons, (
+            f"MPS daemon set changed after serve A exited: "
+            f"before={daemons}, after={surviving_daemons}"
+        )
         request_ok(port_b)
     finally:
         if proc_b is not None:

@@ -252,3 +252,18 @@ def test_character_batches_do_not_share_mutable_values(
         actual_batch, expected_batch, strict=True
     ):
         torch.testing.assert_close(actual_tensor, expected_tensor, rtol=0, atol=0)
+
+
+def test_a_tokens_embedding_does_not_depend_on_its_batch(
+    sparse_runner: NemotronVoiceChatTalkerModelRunner,
+) -> None:
+    # note (Junnan Li): a decode batch shares one encoder call padded to its longest token, so padding must not move a token's row.
+    torch.manual_seed(0)
+    embedding = make_embedding(sparse_runner)
+    token_ids = [0, 100, 5, 70]
+    with torch.inference_mode():
+        batched = embedding(*sparse_runner.char_batch(token_ids))
+        alone = torch.cat(
+            [embedding(*sparse_runner.char_batch([token_id])) for token_id in token_ids]
+        )
+    torch.testing.assert_close(batched, alone)

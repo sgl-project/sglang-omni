@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU-only tests for ThreadedSimpleScheduler abort bookkeeping."""
+"""CPU-only tests for ThreadedSimpleScheduler abort bookkeeping and worker thread names."""
 
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import time
 from concurrent.futures import Future
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Callable, Iterator
 
 import pytest
@@ -370,3 +372,37 @@ def test_dispatch_fn_owns_admission_and_cancellation() -> None:
         with pytest.raises(queue.Empty):
             scheduler.outbox.get(timeout=0.1)
     assert not scheduler.has_tombstone("r5")
+
+
+def test_compute_pool_threads_carry_the_compute_pool_name() -> None:
+    expected_name = "compute-pool_0"
+    names: list[str] = []
+    scheduler = ThreadedSimpleScheduler(
+        lambda payload: names.append(threading.current_thread().name) or payload,
+        max_concurrency=1,
+    )
+    scheduler.inbox.put(request("named", "payload"))
+
+    with running(scheduler):
+        scheduler.outbox.get(timeout=2.0)
+
+    assert names == [expected_name], names
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="comm names live in /proc")
+def test_compute_pool_threads_carry_the_name_in_proc_comm() -> None:
+    expected_name = "compute-pool_0"
+    comms: list[str] = []
+
+    def record_comm(payload: str) -> str:
+        comm = Path(f"/proc/self/task/{threading.get_native_id()}/comm")
+        comms.append(comm.read_text().strip())
+        return payload
+
+    scheduler = ThreadedSimpleScheduler(record_comm, max_concurrency=1)
+    scheduler.inbox.put(request("named", "payload"))
+
+    with running(scheduler):
+        scheduler.outbox.get(timeout=2.0)
+
+    assert comms == [expected_name], comms

@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 from .execution import TalkerExecutionConfig
-from .modules import DiTBlock, FinalLayer, RMSNorm
+from .modules import DiTBlock, FinalLayer, RMSNorm, run_transformer_blocks
 from .rotary import build_rotary_embedding, get_rotary_inputs, validate_rotary_config
 
 #################################################################################
@@ -140,6 +140,7 @@ class DiT(nn.Module):
         else:
             self.spk_embedder = None
         self.hidden_size = hidden_size
+        self.fuse_residual_norm = execution_config.fuse_residual_norm
 
         self.rotary_embed = build_rotary_embedding(
             hidden_size // num_heads,
@@ -222,11 +223,16 @@ class DiT(nn.Module):
         if self.grad_checkpointing:
             for block in self.blocks:
                 x = checkpoint(block, x, None, rope, use_reentrant=True)
+            x = self.final_layer(x)
         else:
-            for block in self.blocks:
-                x = block(x, None, rope)  # (N, T, D)
-        # self.hid_state = x
-        x = self.final_layer(x)  # (N, T, patch_size ** 2 * out_channels)
+            x = run_transformer_blocks(
+                self.blocks,
+                self.final_layer,
+                x,
+                None,
+                rope,
+                fuse_residual_norm=self.fuse_residual_norm,
+            )
         # x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 

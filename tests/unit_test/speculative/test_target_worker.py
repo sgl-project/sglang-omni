@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 import torch
@@ -62,76 +63,85 @@ def test_prefill_hands_the_draft_its_kv_location_plan(
 
 
 class VerifyRunner:
-    def __init__(self, model_worker: SimpleNamespace) -> None:
+    def __init__(
+        self,
+        model_worker: SimpleNamespace,
+        takes_logits_hooks: bool,
+        repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
+    ) -> None:
         self.tp_worker = model_worker
-        self.calls: list[tuple[list[SimpleNamespace], int | torch.Tensor]] = []
+        self.speculative_verify_takes_logits_hooks = takes_logits_hooks
+        self.speculative_repetition_penalty_owner = repetition_penalty_owner
+        self.applied_hooks: list[str] = []
 
     def apply_speculative_verify_logits(
         self,
         logits_output: SimpleNamespace,
         requests: list[SimpleNamespace],
-        rows_per_request: int | torch.Tensor,
+        rows_per_request: int,
     ) -> None:
-        self.calls.append((requests, rows_per_request))
+        self.applied_hooks.append(f"logits hooks, {rows_per_request} rows per request")
+
+    def apply_speculative_repetition_penalty(
+        self,
+        verify_logits: torch.Tensor,
+        verify_batch: SimpleNamespace,
+        requests: list[SimpleNamespace],
+    ) -> None:
+        self.applied_hooks.append(f"repetition penalty on {tuple(verify_logits.shape)}")
 
 
-def verify_target_worker(
-    logits_rows: int,
-) -> tuple[SpeculativeTargetWorker, VerifyRunner]:
-    forward_output = SimpleNamespace(
-        logits_output=SimpleNamespace(next_token_logits=torch.zeros(logits_rows, 4)),
+@pytest.mark.parametrize(
+    (
+        "takes_logits_hooks",
+        "repetition_penalty_owner",
+        "verify_rows",
+        "ragged_verify_layout",
+        "applied_hooks",
+    ),
+    [
+        (True, None, 6, None, ["logits hooks, 3 rows per request"]),
+        (False, "verify_logits", 6, None, ["repetition penalty on (2, 3, 5)"]),
+        (False, "draft_worker", 6, None, []),
+        # A compact verify packs 2 and 3 rows and pads them to a 7-row graph tier.
+        (True, "verify_logits", 7, SimpleNamespace(), []),
+    ],
+)
+def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
+    takes_logits_hooks: bool,
+    repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
+    verify_rows: int,
+    ragged_verify_layout: SimpleNamespace | None,
+    applied_hooks: list[str],
+) -> None:
+    """A runner whose draft worker applies the penalty must not get the shared one too, and the penalty sees one block per request.
+
+    A compact verify takes no hooks: its graph epilogue copies the logits first, so
+    the scheduler admits only requests whose hooks would change nothing.
+    """
+    verify_output = SimpleNamespace(
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(verify_rows, 5)),
         can_run_graph=False,
         expert_distribution_metrics=None,
         routed_experts_output=None,
         indexer_topk_output=None,
     )
     model_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(forward=lambda forward_batch: forward_output),
+        model_runner=SimpleNamespace(forward=lambda forward_batch: verify_output),
         model_config=None,
         device="cpu",
         random_seed=0,
     )
-    target_worker = SpeculativeTargetWorker(model_worker, SpeculativeAlgorithm.DSPARK)
-    runner = VerifyRunner(model_worker)
+    target_worker = SpeculativeTargetWorker(model_worker, SpeculativeAlgorithm.DFLASH)
+    runner = VerifyRunner(model_worker, takes_logits_hooks, repetition_penalty_owner)
     target_worker.attach_runner(runner)
-    target_worker.verify_requests = [
-        SimpleNamespace(request_id="request-a"),
-        SimpleNamespace(request_id="request-b"),
-    ]
-    return target_worker, runner
-
-
-def verify_forward_batch(spec_info: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(
-        spec_info=spec_info,
+    target_worker.verify_requests = [SimpleNamespace(), SimpleNamespace()]
+    verify_batch = SimpleNamespace(
+        apply_deprecated_skip_attn_backend_init=lambda skip_attn_backend_init: None,
         kv_loc_plan=None,
-        apply_deprecated_skip_attn_backend_init=lambda skip: None,
+        spec_info=SimpleNamespace(ragged_verify_layout=ragged_verify_layout),
     )
 
+    target_worker.forward_batch_generation(None, verify_batch, is_verify=True)
 
-def test_a_uniform_verify_hands_the_hooks_an_even_row_split() -> None:
-    target_worker, runner = verify_target_worker(logits_rows=16)
-
-    target_worker.forward_batch_generation(
-        None, forward_batch=verify_forward_batch(SimpleNamespace()), is_verify=True
-    )
-
-    ((requests, rows_per_request),) = runner.calls
-    assert [request.request_id for request in requests] == ["request-a", "request-b"]
-    assert rows_per_request == 8
-
-
-def test_a_compact_verify_hands_the_hooks_its_layout_s_row_counts() -> None:
-    verify_lens = torch.tensor([3, 5], dtype=torch.int32)
-    # Eight packed rows padded to a 13-row tier: no even split exists.
-    target_worker, runner = verify_target_worker(logits_rows=13)
-    spec_info = SimpleNamespace(
-        ragged_verify_layout=SimpleNamespace(verify_lens=verify_lens)
-    )
-
-    target_worker.forward_batch_generation(
-        None, forward_batch=verify_forward_batch(spec_info), is_verify=True
-    )
-
-    ((_, rows_per_request),) = runner.calls
-    assert rows_per_request is verify_lens
+    assert runner.applied_hooks == applied_hooks

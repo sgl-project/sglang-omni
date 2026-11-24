@@ -1,0 +1,91 @@
+{
+  "name": "history-page-normal",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "转录",
+      "翻译",
+      "改写",
+      "全部"
+    ],
+    "count_label": "3 条记录",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [
+      {
+        "id": "history-inserted",
+        "title": "Weekly plan",
+        "failed_title": false,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+        "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": false,
+          "active": false,
+          "label": "重新识别",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": "用保存的录音重新识别，不会插入文字。"
+        },
+        "marks": null
+      },
+      {
+        "id": "history-failed",
+        "title": "speech service failed",
+        "failed_title": true,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": false,
+        "retry": {
+          "available": false,
+          "wanted": true,
+          "active": false,
+          "label": "重试",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": [
+          {
+            "label": "失败",
+            "tooltip": "没有保存录音，无法重试",
+            "tone": "danger"
+          }
+        ]
+      },
+      {
+        "id": "history-cancelled",
+        "title": "没有文字",
+        "failed_title": true,
+        "meta": "5 分钟前 · Notes · 0:08",
+        "selected": false,
+        "copy_text": "",
+        "raw_copy_text": "",
+        "can_reveal": true,
+        "retry": {
+          "available": true,
+          "wanted": true,
+          "active": false,
+          "label": "重试",
+          "disabled": false,
+          "stage": "",
+          "stage_text": "",
+          "tooltip": ""
+        },
+        "marks": null
+      }
+    ]
+  }
+}

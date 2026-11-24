@@ -12,6 +12,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/layers.h"
+#include "common/text.h"
 #include "nlohmann/json.hpp"
 
 namespace omni_common {
@@ -23,35 +25,6 @@ namespace {
 constexpr const char *kQwen2SplitPattern =
     R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N})"
     R"(| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
-
-void AppendUtf8(uint32_t code_point, std::string &out) {
-  if (code_point < 0x80) {
-    out.push_back(static_cast<char>(code_point));
-  } else if (code_point < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (code_point >> 6)));
-    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  } else if (code_point < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (code_point >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (code_point >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((code_point >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((code_point >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (code_point & 0x3F)));
-  }
-}
 
 // Note (Jiaxin Deng): GPT-2's byte-to-unicode table; printable bytes map to
 // themselves, the rest to code points from 256 upward.

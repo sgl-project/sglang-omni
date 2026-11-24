@@ -309,6 +309,7 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
         extra_model_outputs={},
         finish_reason=None,
         weight_version=None,
+        spec_tokens_details=None,
         output_token_logprobs=[],
     )
 
@@ -322,12 +323,15 @@ def test_qwen_apply_thinker_result_preserves_empty_logprob_list() -> None:
 
 def test_qwen_apply_thinker_result_omits_missing_optional_fields() -> None:
     state = Qwen3OmniPipelineState()
-    result = SimpleNamespace(output_ids=[8], extra_model_outputs={})
+    result = SimpleNamespace(
+        output_ids=[8], extra_model_outputs={}, spec_tokens_details=None
+    )
 
     thinker_out = apply_thinker_result(state, stage_name="thinker", result=result)
 
     assert "finish_reason" not in thinker_out
     assert "weight_version" not in thinker_out
+    assert "spec_tokens_details" not in thinker_out
     assert "output_token_logprobs" not in thinker_out
     assert state.thinker_out is thinker_out
     assert state.engine_outputs["thinker"] is thinker_out
@@ -1222,12 +1226,21 @@ def test_qwen_encoder_mem_reserve_routes_as_scheduler_group_value() -> None:
     assert make_stage(merged, "talker_ar").factory.encoder_mem_reserve is None
 
 
-@pytest.mark.parametrize("speech_enabled", [False, True])
-@pytest.mark.parametrize("execution_mode", ["request", "session"])
+@pytest.mark.parametrize(
+    ("speech_enabled", "execution_mode", "has_draft"),
+    [
+        (False, "request", False),
+        (True, "request", False),
+        (False, "session", False),
+        (True, "session", False),
+        (True, "session", True),
+    ],
+)
 def test_qwen_thinker_cuda_graph_capture_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     speech_enabled: bool,
     execution_mode: str,
+    has_draft: bool,
 ) -> None:
     from sglang.srt.arg_groups import model_override_base
     from sglang.srt.utils import hf_transformers_utils
@@ -1286,7 +1299,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         hf_config=SimpleNamespace(thinker_config=object()),
     )
     model_worker = SimpleNamespace(
-        speculative_worker=None,
+        speculative_worker=object() if has_draft else None,
         model_runner=FakeModelRunner(),
         model_config=model_config,
         # Real ModelWorker always carries this; init_sglang_cuda_graphs reads
@@ -1384,11 +1397,16 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     )
     monkeypatch.setattr(bootstrap, "QwenThinkerSessionAdapter", session_adapter)
     scheduler = bootstrap.create_thinker_scheduler(
-        server_args, speech_enabled=speech_enabled, execution_mode=execution_mode
+        server_args,
+        speech_enabled=speech_enabled,
+        execution_mode=execution_mode,
+        enable_async_decode=False,
     )
 
     is_capturing = speech_enabled and execution_mode == "request"
     assert infrastructure_saw_graph_disabled == [False]
+    assert infrastructure_kwargs[0]["enable_async_decode"] is False
+    assert scheduler.enable_async_decode is False
     assert infrastructure_kwargs[0]["defer_cuda_graph_capture"] is is_capturing
     assert infrastructure_saw_return_hidden == [is_capturing]
     assert graph_init_workers == (
@@ -1406,6 +1424,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     assert make_adapters.call_args.kwargs["capture_prompt_hidden_states"] is (
         speech_enabled and execution_mode == "request"
     )
+    assert make_adapters.call_args.kwargs["is_speculative"] is has_draft
     make_stream_builder.assert_called_once_with(
         speech_enabled=speech_enabled,
         prompt_hidden_store=scheduler.model_runner.prompt_hidden_store,
@@ -1422,7 +1441,6 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
             [] if speech_enabled else [(model_worker, output_proc, False)]
         )
         assert getattr(scheduler, "session_adapter", None) is None
-        assert scheduler.enable_async_decode is True
     else:
         assert generic_runner_calls == qwen_runner_calls == []
         session_runner.assert_called_once_with(
@@ -1430,6 +1448,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
         )
         assert scheduler.model_runner is session_runner.return_value
         assert scheduler.session_adapter is session_adapter.return_value
+        assert session_adapter.call_args.kwargs["is_speculative"] is has_draft
         assert session_adapter.return_value.outbox is scheduler.outbox
 
 
@@ -1543,7 +1562,9 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
     )
     monkeypatch.setattr(omni_scheduler, "OmniScheduler", SimpleNamespace)
 
-    scheduler = bootstrap.create_thinker_scheduler(server_args, speech_enabled=True)
+    scheduler = bootstrap.create_thinker_scheduler(
+        server_args, speech_enabled=True, enable_async_decode=False
+    )
 
     assert captured["enable_prefill_input_embeds"] is True
     assert captured["defer_cuda_graph_capture"] is True
@@ -1678,10 +1699,8 @@ def test_qwen_talker_enables_and_attests_breakable_prefill_graphs(
         execution_mode=execution_mode,
         operator_selected_prefill_backend=True,
         enable_partial_start=True,
-        enable_talker_start_topology=True,
     )
     assert scheduler.enable_partial_start is True
-    assert scheduler.enable_talker_start_topology is True
     if execution_mode == "request":
         assert getattr(scheduler, "session_adapter", None) is None
         assert scheduler.request_builder is ordinary_request_builder
@@ -2134,6 +2153,7 @@ def test_qwen_sglang_request_hashes_media_tokens_without_changing_mrope_ids(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     pad_values = req_data.req.omni_model_inputs["pad_values"]
@@ -2190,6 +2210,7 @@ def test_qwen_sglang_request_records_mm_token_positions(
             audio_token_id=audio_token_id,
         ),
         capture_prompt_hidden_states=False,
+        speaks=False,
     )
 
     positions = (

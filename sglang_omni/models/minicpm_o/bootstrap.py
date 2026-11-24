@@ -193,19 +193,12 @@ def create_thinker_scheduler(
         )
     else:
         pass
-    if (
-        speech_enabled
-        and speculative
-        and (
-            cfg.speculative_algorithm not in ("EAGLE3", "DFLASH", "DSPARK")
-            or cfg.speculative_eagle_topk not in (None, 1)
-        )
-    ):
+    if speech_enabled and speculative and cfg.speculative_eagle_topk not in (None, 1):
         # note (0xtoward): the talker rows ride the drafts' layer-capture hooks, and a
         # linear verify block commits its leading rows.
         raise ValueError(
-            "speech output needs an EAGLE3 chain (topk 1), DFLASH or DSPARK draft, got "
-            f"{cfg.speculative_algorithm} topk={cfg.speculative_eagle_topk}"
+            "speech output needs a chain draft, got speculative_eagle_topk="
+            f"{cfg.speculative_eagle_topk}"
         )
     else:
         pass
@@ -237,6 +230,7 @@ def create_thinker_scheduler(
             total_gpu_memory_fraction=total_gpu_memory_fraction,
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
+            enable_async_decode=enable_async_decode,
             before_memory_pool=configure_talker_capture,
         )
         if speech_enabled and speculative:

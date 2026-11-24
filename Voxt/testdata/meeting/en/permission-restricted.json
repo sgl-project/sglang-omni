@@ -1,0 +1,77 @@
+{
+  "name": "permission-restricted",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 1,
+    "step_titles": [
+      "Welcome",
+      "Permissions",
+      "Models",
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "More"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "Permissions",
+    "subtitle": "Voxt needs the microphone to hear you, and Accessibility to type the result where your cursor is. Allow them here, or later in Settings → Permissions.",
+    "recording": false,
+    "permissions": {
+      "ask_required": true,
+      "microphone": {
+        "code": "restricted",
+        "text": "Restricted by your organisation",
+        "ok": false,
+        "can_ask": false,
+        "can_open": true,
+        "ask_action": "microphone",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "denied",
+        "text": "Not allowed",
+        "ok": false,
+        "can_ask": true,
+        "can_open": true,
+        "ask_action": "accessibility",
+        "ask_tooltip": "Adds Voxt to the list in System Settings"
+      },
+      "speech": {
+        "code": "restricted",
+        "text": "Restricted by your organisation",
+        "ok": false,
+        "can_ask": false,
+        "can_open": true,
+        "ask_action": "speechRecognition",
+        "ask_tooltip": ""
+      },
+      "system_audio": {
+        "code": "unknown",
+        "text": "Unknown",
+        "ok": false,
+        "can_ask": true,
+        "can_open": true,
+        "ask_action": "systemAudio",
+        "ask_tooltip": "Adds Voxt to the list in System Settings",
+        "tip": "macOS does not let apps read this permission. Check it in System Settings."
+      }
+    },
+    "footer": {
+      "mode": "next",
+      "busy": false,
+      "back": true,
+      "continue_label": "Continue",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

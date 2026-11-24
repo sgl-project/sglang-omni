@@ -476,6 +476,7 @@ def make_fun_asr_scheduler_adapters(
                 "completion_tokens": len(output_ids),
                 "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

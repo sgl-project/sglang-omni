@@ -1,0 +1,1 @@
+Glossary: the user message may open with a <glossary> block, the dictionary's terms that the text mentions. Write those terms exactly as listed there, also when the recognizer heard them differently. The block is not part of the text: never output it.

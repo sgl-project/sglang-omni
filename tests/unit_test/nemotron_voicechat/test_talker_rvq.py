@@ -99,3 +99,20 @@ def test_generate_codes_does_not_sync_with_host():
     assert codes_TQ.shape == (1, NUM_QUANTIZERS)
     assert int(codes_TQ.min()) >= 0
     assert int(codes_TQ.max()) < CODEBOOK_SIZE
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", pytest.param("cuda", marks=pytest.mark.accelerator)]
+)
+@pytest.mark.parametrize("levels", [1, 7, NUM_QUANTIZERS])
+def test_depth_sum_matches_summing_each_level_with_a_zero_padding_row(device, levels):
+    talker = make_talker().to(device)
+    # note (Junnan Li): CODEBOOK_SIZE is the padding code, so the draw covers it.
+    codes_TQ = torch.randint(0, CODEBOOK_SIZE + 1, (5, NUM_QUANTIZERS), device=device)
+    padded_QCD = torch.nn.functional.pad(talker.rvq_embs, (0, 0, 0, 1))
+    expected_TD = torch.stack(
+        [padded_QCD[level][codes_TQ[:, level]] for level in range(levels)]
+    ).sum(0)
+    torch.testing.assert_close(
+        talker.depth_sum(codes_TQ, levels), expected_TD, rtol=0, atol=0
+    )

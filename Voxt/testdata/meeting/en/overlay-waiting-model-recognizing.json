@@ -1,0 +1,50 @@
+{
+  "name": "overlay-waiting-model-recognizing",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "shot3",
+    "state": "recognizing",
+    "mode": "working",
+    "pill": {
+      "kind": "",
+      "title": "Transcribe",
+      "working_label": "Recognising…",
+      "waiting_label": "Loading the speech model…",
+      "elapsed_text": "0:00",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": true,
+      "waiting": "model",
+      "can_skip": false,
+      "can_think": false
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

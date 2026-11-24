@@ -236,7 +236,9 @@ def create_sglang_infrastructure(
             nccl_port=model_worker.nccl_port,
             target_worker=target_worker,
         )
-        model_runner.alloc_memory_pool()
+        model_runner.alloc_memory_pool(
+            draft_parallel_layout=speculative_worker.draft_parallel_layout
+        )
         if model_runner.token_to_kv_pool.post_capture_active:
             raise ValueError(
                 "speculative decoding does not support post-capture KV sizing"

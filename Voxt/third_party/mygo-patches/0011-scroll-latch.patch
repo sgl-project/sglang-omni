@@ -1,0 +1,179 @@
+MyGo patch 0011 (VoxtNew): a scroll gesture stays with the container it
+started to move.
+
+Each wheel or trackpad event went to the innermost container under the
+pointer that could move. Scrolling a page down, the gesture was taken
+over by a scroll container inside it (VoxtNew's rules field, a text
+area that scrolls past 36 lines) as soon as that came under the
+pointer, and a container at its end handed the gesture on to the page.
+macOS latches a gesture to where it started. Here an event less than
+scrollGap (300 ms) after the one before belongs to the same gesture and
+moves the container the gesture started to move, under the pointer or
+not, and only that one; a later event starts a new gesture under the
+pointer. A container the view no longer builds (another page) does not keep
+the gesture (TestScrollLatches, TestScrollLatchGone).
+
+diff --git a/ui/input.go b/ui/input.go
+index 28f63c8..55e418e 100644
+--- a/ui/input.go
++++ b/ui/input.go
+@@ -420,28 +420,57 @@ func (rt *engine) pointerUp(button, clicks int) {
+ 	rt.requestFrame()
+ }
+ 
++// scrollGap ends a scroll gesture: an event that comes later than this
++// after the one before starts a new gesture, which goes to what is under
++// the pointer. A trackpad's events, momentum included, come every frame;
++// a wheel's notches of one turn well within it.
++const scrollGap = 300 * time.Millisecond
++
+ func (rt *engine) scroll(dx, dy float32, mods Modifiers, precise bool) {
+-	chain := rt.appendHitChain(rt.chain[:0], rt.pointerX, rt.pointerY)
+-	rt.chain = chain[:0]
+-	if h := rt.handler(chain); h != nil && rt.deliver(h, InputEvent{Kind: InputScroll, DX: dx, DY: dy, Mods: mods, Precise: precise}) {
+-		return
++	now := rt.now()
++	latched := rt.scrollLatch
++	if now.Sub(rt.scrollAt) > scrollGap {
++		latched = 0
+ 	}
++	rt.scrollAt = now
+ 	// Shift turns the wheel sideways: down is toward the end, which is
+ 	// to the left right to left.
+ 	sideways := mods&Shift != 0 && dx == 0
+-	if sideways {
+-		dx, dy = dy, 0
++	move := func(s *state) bool {
++		x, y := dx, dy
++		if sideways {
++			x, y = dy, 0
++		}
++		sx, sy := s.vector(rt.pointerX, rt.pointerY, x, y)
++		if sideways && s.rtl {
++			sx = -sx
++		}
++		return scrollBy(s, sx, sy)
++	}
++	// A gesture stays with the container it started to move, as macOS's
++	// do: a scroll container that comes under the pointer while the page
++	// scrolls does not take the rest of the gesture, and the container
++	// does not hand it on when it reaches its end. One the last frame did
++	// not build (another page shows) keeps its state but not the gesture.
++	if s := rt.states[latched]; latched != 0 && s != nil && s.seen == rt.frame && s.pass == rt.pass {
++		if move(s) {
++			rt.requestFrame()
++		}
++		return
++	}
++	rt.scrollLatch = 0
++	chain := rt.appendHitChain(rt.chain[:0], rt.pointerX, rt.pointerY)
++	rt.chain = chain[:0]
++	if h := rt.handler(chain); h != nil && rt.deliver(h, InputEvent{Kind: InputScroll, DX: dx, DY: dy, Mods: mods, Precise: precise}) {
++		return
+ 	}
+ 	for _, id := range chain {
+ 		s := rt.states[id]
+ 		if s == nil {
+ 			continue
+ 		}
+-		sx, sy := s.vector(rt.pointerX, rt.pointerY, dx, dy)
+-		if sideways && s.rtl {
+-			sx = -sx
+-		}
+-		if scrollBy(s, sx, sy) {
++		if move(s) {
++			rt.scrollLatch = id
+ 			rt.requestFrame()
+ 			return
+ 		}
+diff --git a/ui/runtime.go b/ui/runtime.go
+index 779634a..b745ed9 100644
+--- a/ui/runtime.go
++++ b/ui/runtime.go
+@@ -216,7 +216,11 @@ type engine struct {
+ 	pointerIn          bool
+ 	hover              []uint64
+ 	// chain is a buffer for the elements under the pointer.
+-	chain       []uint64
++	chain []uint64
++	// scrollLatch is the container the scroll gesture under way moves (0:
++	// none yet), scrollAt when the gesture's last event came (scroll).
++	scrollLatch uint64
++	scrollAt    time.Time
+ 	pressed     *state
+ 	pressButton int
+ 	// pressClicks is the press's count of clicks, which its release
+diff --git a/ui/scroll_test.go b/ui/scroll_test.go
+index 116ded1..c0ab209 100644
+--- a/ui/scroll_test.go
++++ b/ui/scroll_test.go
+@@ -3,6 +3,7 @@ package ui
+ import (
+ 	"math"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestTrackScroll(t *testing.T) {
+@@ -235,3 +236,61 @@ func TestTabScrollsTheFocusIntoView(t *testing.T) {
+ 		t.Errorf("Tab to a button in a list below the window: it is at %v..%v", button.y, button.y+button.h)
+ 	}
+ }
++
++// TestScrollLatches: a scroll gesture stays with the container it started
++// to move. The page scrolling down goes on when a scroll container inside
++// it comes under the pointer, rather than the inner one taking the rest
++// of the gesture; the inner one takes a gesture that starts over it, once
++// the one before paused for longer than scrollGap.
++func TestScrollLatches(t *testing.T) {
++	var page, inner ScrollState
++	tt := coreNewTester(func(c *context) {
++		coreScroll(c).Fill().TrackScroll(&page).Children(func() {
++			coreBox(c).Height(100).Shrink(0)
++			coreScroll(c).Height(100).Shrink(0).TrackScroll(&inner).Children(func() {
++				coreBox(c).Height(1000).Shrink(0)
++			})
++			coreBox(c).Height(1000).Shrink(0)
++		})
++	}, 200, 200)
++	tt.Move(100, 50)
++	tt.Scroll(100, 50, 0, 60) // over the box above the inner container
++	tt.Scroll(100, 50, 0, 60) // the inner container is under the pointer now
++	if page.Y != 120 || inner.Y != 0 {
++		t.Fatalf("one gesture: the page at %v, the inner container at %v", page.Y, inner.Y)
++	}
++	tt.Advance(time.Second)
++	tt.Scroll(100, 50, 0, 30)
++	if page.Y != 120 || inner.Y != 30 {
++		t.Errorf("a new gesture over the inner container: the page at %v, the inner one at %v", page.Y, inner.Y)
++	}
++	// It stays with the inner container at its end too.
++	tt.Scroll(100, 50, 0, 5000)
++	tt.Scroll(100, 50, 0, 60)
++	if page.Y != 120 {
++		t.Errorf("the inner container at its end handed the gesture to the page, at %v", page.Y)
++	}
++}
++
++// TestScrollLatchGone: a gesture's container that the view no longer
++// builds (another page shows) does not keep the gesture: the next event
++// within scrollGap scrolls what is under the pointer.
++func TestScrollLatchGone(t *testing.T) {
++	var first, second ScrollState
++	showFirst := true
++	tt := coreNewTester(func(c *context) {
++		if showFirst {
++			coreScroll(c).Fill().TrackScroll(&first).Children(func() { coreBox(c).Height(1000).Shrink(0) })
++		} else {
++			coreScroll(c).Fill().TrackScroll(&second).Children(func() { coreBox(c).Height(1000).Shrink(0) })
++		}
++	}, 200, 200)
++	tt.Move(100, 100)
++	tt.Scroll(100, 100, 0, 40)
++	showFirst = false
++	tt.Frame()
++	tt.Scroll(100, 100, 0, 40)
++	if first.Y != 40 || second.Y != 40 {
++		t.Errorf("after the first page went: the first at %v, the second at %v", first.Y, second.Y)
++	}
++}

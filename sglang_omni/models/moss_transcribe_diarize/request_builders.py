@@ -413,6 +413,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     duration_scaled_default: bool = True,
     audio_encoder_service: BatchedAudioEncoderService | None = None,
     enable_trimmed_fbank: bool = True,
+    speculative_reserve_tokens: int = 0,
 ) -> tuple[
     Callable[[StagePayload], MossTranscribeDiarizeRequestData],
     Callable[[MossTranscribeDiarizeRequestData], StagePayload],
@@ -605,6 +606,20 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 )
         else:
             request_max_new_tokens = max_new_tokens
+        if speculative_reserve_tokens > 0:
+            # note (wilsonzheng0327): without a draft the scheduler clamps a budget past the context; with one it would refuse it for leaving no reserve, so every budget leaves that reserve here.
+            request_max_new_tokens = max(
+                1,
+                min(
+                    request_max_new_tokens,
+                    context_length
+                    - 1
+                    - len(padded_input_ids)
+                    - speculative_reserve_tokens,
+                ),
+            )
+        else:
+            pass
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -674,6 +689,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 "usage": {"engine_time_s": engine_time_s},
                 "finish_reason": data.finish_reason,
                 "weight_version": getattr(data, "weight_version", None),
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

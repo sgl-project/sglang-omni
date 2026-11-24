@@ -1,0 +1,55 @@
+{
+  "name": "remote-cards-upload",
+  "kind": "remote-cards",
+  "remote_cards": {
+    "kind": "asr",
+    "groups": [
+      {
+        "key": "remote-asr-mine",
+        "title": "Set up",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "fixture",
+            "account": "asr.fixture",
+            "name": "Fixture service",
+            "model": "fixture-model",
+            "where": "Remote",
+            "configured": true,
+            "status": "success",
+            "status_text": "Ready",
+            "key_text": "••••",
+            "key_status": "neutral",
+            "test": {
+              "state": "success",
+              "text": "412 ms",
+              "long_text": "Connection OK · 412 ms",
+              "tooltip": "412 ms",
+              "long_tooltip": "Connection OK · 412 ms"
+            }
+          }
+        ]
+      },
+      {
+        "key": "remote-asr-online",
+        "title": "Online services",
+        "caption": "A service gets your recordings only for the features you choose it for.",
+        "cards": [
+          {
+            "kind": "asr",
+            "id": "online-speech",
+            "account": "asr.online-speech",
+            "name": "Online speech",
+            "model": "fixture-model",
+            "where": "Remote",
+            "configured": false,
+            "status": "neutral",
+            "status_text": "Not set up",
+            "key_text": "…",
+            "key_status": "neutral"
+          }
+        ]
+      }
+    ]
+  }
+}

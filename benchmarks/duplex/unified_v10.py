@@ -23,6 +23,7 @@ from pydantic import JsonValue
 from silero_vad import get_speech_timestamps, load_silero_vad
 
 from benchmarks.duplex.reference_core import (
+    ASR_END_TOLERANCE_S,
     atomic_write_bytes,
     atomic_write_json,
     read_json,
@@ -250,8 +251,15 @@ def timestamp_problems(
             if not 0 <= time <= window_s
         ]
 
+    word_end_bound_s = seconds(window_s + ASR_END_TOLERANCE_S)
     problems = outside("word start", [start for start, _ in spans])
-    problems += outside("word end", [end for _, end in spans])
+    # note (jeffro): Parakeet times a word end on its 80 ms encoder frame, so a
+    # reply that runs to T can end up to one frame past it.
+    problems += [
+        f"word end {end} is outside [0, {word_end_bound_s}]"
+        for _, end in spans
+        if not 0 <= end <= word_end_bound_s
+    ]
     problems += [
         f"word [{start}, {end}] ends before it starts"
         for start, end in spans

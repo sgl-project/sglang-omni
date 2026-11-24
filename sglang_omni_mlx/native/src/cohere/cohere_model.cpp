@@ -6,6 +6,8 @@
 #include <fstream>
 #include <stdexcept>
 
+#include "common/audio.h"
+#include "common/fastconformer.h"
 #include "common/layers.h"
 #include "common/swift_port.h"
 #include "nlohmann/json.hpp"
@@ -22,10 +24,13 @@ constexpr int kHopLength = 160;
 constexpr float kPreEmphasis = 0.97f;
 constexpr float kLayerNormEpsilon = 1e-5f;
 constexpr float kBatchNormEpsilon = 1e-5f;
+// Note (XXXXRT666): the decoder's layers and lm_head run in 8 bits, quantized
+// at load; the encoder stays in float16, since its products are
+// compute-bound.
+constexpr int kQuantizationBits = 8;
+constexpr int kQuantizationGroupSize = 64;
 constexpr float kNormalizationEpsilon = 1e-5f;
 constexpr int kSubsamplingStride = 2;
-// Note (khazic): the decoder's additive causal mask value.
-constexpr float kMaskedScore = -1e9f;
 
 // The symmetric Hann window of kWindowLength, centered in kFftSize zeros.
 mx::array CenteredHannWindow() {
@@ -45,7 +50,7 @@ mx::array CenteredHannWindow() {
 
 mx::array MelFilters(int mel_bin_count) {
   const std::vector<float> values =
-      swift_port::SlaneyMelFilterBank(kFftSize, mel_bin_count);
+      omni_common::MelFilterBank(mel_bin_count, kFftSize);
   return mx::array(values.data(), {kFftSize / 2 + 1, mel_bin_count},
                    mx::float32);
 }
@@ -89,13 +94,8 @@ mx::array DecoderPositions(int length, int width) {
 }
 
 CohereConfig ReadConfig(const std::filesystem::path &model_directory) {
-  std::ifstream config_stream(model_directory / "config.json");
-  if (!config_stream) {
-    throw std::runtime_error("cannot read config.json in " +
-                             model_directory.string());
-  } else {
-  }
-  const nlohmann::json config = nlohmann::json::parse(config_stream);
+  const nlohmann::json config =
+      omni_common::ReadJson(model_directory / "config.json");
   if (config.contains("quantization") ||
       config.contains("quantization_config")) {
     throw std::runtime_error("quantized Cohere checkpoints are not served");
@@ -122,15 +122,12 @@ mx::array SplitHeads(const mx::array &x, int head_count) {
       {0, 2, 1, 3});
 }
 
-} // namespace
-
-CohereModel::CohereModel(const std::filesystem::path &model_directory)
-    : config_(ReadConfig(model_directory)), hann_window_(CenteredHannWindow()),
-      mel_filters_(MelFilters(config_.mel_bin_count)),
-      relative_position_table_(RelativePositionTable(
-          config_.relative_position_count, config_.encoder_width)),
-      decoder_positions_(DecoderPositions(config_.max_sequence_length,
-                                          config_.decoder_width)) {
+// The checkpoint's weights, renamed and laid out channels-last, with each
+// decoder layer's cross-attention projection split into queries and keys and
+// values.
+omni_common::WeightMap LoadWeights(const std::filesystem::path &model_directory,
+                                   const CohereConfig &config) {
+  omni_common::WeightMap weights;
   std::vector<std::filesystem::path> weight_files;
   for (const auto &entry :
        std::filesystem::directory_iterator(model_directory)) {
@@ -191,89 +188,65 @@ CohereModel::CohereModel(const std::filesystem::path &model_directory)
         }
       } else {
       }
-      weights_.insert_or_assign(name, array);
+      weights.insert_or_assign(name, array);
     }
   }
 
   // Note (Jiaxin Deng): each step needs only the cross-attention queries; the
   // keys and values are projected once per request.
-  const int width = config_.decoder_width;
-  for (int layer = 0; layer < config_.decoder_layer_count; ++layer) {
+  const int width = config.decoder_width;
+  for (int layer = 0; layer < config.decoder_layer_count; ++layer) {
     const std::string prefix =
         "decoder.core.layers." + std::to_string(layer) + ".second_sub_layer";
     for (const char *suffix : {".weight", ".bias"}) {
-      const mx::array fused = Weight(prefix + ".qkv_proj" + suffix);
+      const mx::array fused = weights.at(prefix + ".qkv_proj" + suffix);
       const int columns = fused.ndim() == 2 ? fused.shape(1) : 0;
       const auto rows = [&](int first, int last) {
         return fused.ndim() == 2 ? mx::slice(fused, {first, 0}, {last, columns})
                                  : mx::slice(fused, {first}, {last});
       };
-      weights_.insert_or_assign(prefix + ".query_proj" + suffix,
-                                rows(0, width));
-      weights_.insert_or_assign(prefix + ".key_value_proj" + suffix,
-                                rows(width, 3 * width));
-      weights_.erase(prefix + ".qkv_proj" + suffix);
+      weights.insert_or_assign(prefix + ".query_proj" + suffix, rows(0, width));
+      weights.insert_or_assign(prefix + ".key_value_proj" + suffix,
+                               rows(width, 3 * width));
+      weights.erase(prefix + ".qkv_proj" + suffix);
     }
   }
-
-  std::vector<mx::array> parameters = {
-      hann_window_, mel_filters_, relative_position_table_, decoder_positions_};
-  for (const auto &[name, array] : weights_)
-    parameters.push_back(array);
-  mx::eval(parameters);
+  omni_common::FoldBatchNorms(weights, "batch_norm", kBatchNormEpsilon);
+  return weights;
 }
 
-const mx::array &CohereModel::Weight(const std::string &name) const {
-  const auto found = weights_.find(name);
-  if (found == weights_.end()) {
-    throw std::runtime_error("checkpoint is missing " + name);
-  } else {
-  }
-  return found->second;
-}
+} // namespace
 
-mx::array CohereModel::Linear(const mx::array &x,
-                              const std::string &prefix) const {
-  const auto bias = weights_.find(prefix + ".bias");
-  if (bias == weights_.end()) {
-    return mx::matmul(x, mx::transpose(Weight(prefix + ".weight")));
-  } else {
-    return mx::addmm(bias->second, x,
-                     mx::transpose(Weight(prefix + ".weight")));
-  }
-}
-
-mx::array CohereModel::LayerNorm(const mx::array &x,
-                                 const std::string &prefix) const {
-  return mx::fast::layer_norm(x, Weight(prefix + ".weight"),
-                              Weight(prefix + ".bias"), kLayerNormEpsilon);
-}
-
-mx::array CohereModel::Conv1d(const mx::array &x, const std::string &prefix,
-                              int padding, int groups) const {
-  return mx::add(
-      mx::conv1d(x, Weight(prefix + ".weight"), 1, padding, 1, groups),
-      Weight(prefix + ".bias"));
-}
-
-mx::array CohereModel::Conv2d(const mx::array &x, const std::string &prefix,
-                              int stride, int padding, int groups) const {
-  return mx::add(mx::conv2d(x, Weight(prefix + ".weight"), {stride, stride},
-                            {padding, padding}, {1, 1}, groups),
-                 Weight(prefix + ".bias"));
+CohereModel::CohereModel(const std::filesystem::path &model_directory)
+    : config_(ReadConfig(model_directory)), hann_window_(CenteredHannWindow()),
+      mel_filters_(MelFilters(config_.mel_bin_count)),
+      relative_position_table_(RelativePositionTable(
+          config_.relative_position_count, config_.encoder_width)),
+      decoder_positions_(
+          DecoderPositions(config_.max_sequence_length, config_.decoder_width)),
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          LoadWeights(model_directory, config_), nlohmann::json::object(),
+          kQuantizationGroupSize, [](const std::string &name) {
+            return name.starts_with("decoder.core.layers.") ||
+                           name == "lm_head.weight"
+                       ? kQuantizationBits
+                       : 0;
+          })) {
+  mx::async_eval({hann_window_, mel_filters_, relative_position_table_,
+                  decoder_positions_});
 }
 
 mx::array CohereModel::RelativePositions(int length, mx::Dtype dtype) const {
   // Note (khazic): relative positions from length - 1 down to -(length - 1),
   // from the table built at load, or for longer input a table of its own.
   const mx::array table =
-      mx::astype(length <= config_.relative_position_count
-                     ? relative_position_table_
-                     : RelativePositionTable(length, config_.encoder_width),
-                 dtype);
+      length <= config_.relative_position_count
+          ? relative_position_table_
+          : RelativePositionTable(length, config_.encoder_width);
   const int center = table.shape(1) / 2 + 1;
-  return mx::slice(table, {0, center - length, 0},
-                   {1, center + length - 1, table.shape(2)});
+  return mx::astype(mx::slice(table, {0, center - length, 0},
+                              {1, center + length - 1, table.shape(2)}),
+                    dtype);
 }
 
 mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
@@ -283,54 +256,33 @@ mx::array CohereModel::EncoderSelfAttention(const mx::array &x,
   const int head_count = config_.encoder_head_count;
   const int head_width = config_.encoder_width / head_count;
   const std::vector<mx::array> parts =
-      mx::split(Linear(x, prefix + ".qkv_proj"), 3, -1);
+      mx::split(checkpoint_.Linear(x, prefix + ".qkv_proj"), 3, -1);
   const mx::array queries = SplitHeads(parts[0], head_count);
   const mx::array keys = SplitHeads(parts[1], head_count);
   const mx::array values = SplitHeads(parts[2], head_count);
-  const mx::array projected_positions =
-      SplitHeads(Linear(positions, prefix + ".pos_proj"), head_count);
-  const mx::array content_scores = mx::matmul(
-      mx::add(queries, mx::expand_dims(Weight(prefix + ".pos_bias_u"), {0, 2})),
-      mx::transpose(keys, {0, 1, 3, 2}));
+  const mx::array projected_positions = SplitHeads(
+      checkpoint_.Linear(positions, prefix + ".pos_proj"), head_count);
+  const mx::array content_queries = mx::add(
+      queries,
+      mx::expand_dims(checkpoint_.Weight(prefix + ".pos_bias_u"), {0, 2}));
   mx::array position_scores = mx::matmul(
-      mx::add(queries, mx::expand_dims(Weight(prefix + ".pos_bias_v"), {0, 2})),
+      mx::add(queries, mx::expand_dims(
+                           checkpoint_.Weight(prefix + ".pos_bias_v"), {0, 2})),
       mx::transpose(projected_positions, {0, 1, 3, 2}));
   // Note (khazic): relative shift: row i of [length, 2 * length - 1] scores
   // moves left by length - 1 - i, so column j is relative position j - i.
-  const int length = position_scores.shape(2);
-  position_scores = omni_common::RelativeShift(position_scores);
-  position_scores =
-      mx::slice(position_scores, {0, 0, 0, 0},
-                {batch, head_count, length, content_scores.shape(3)});
   const float scale = std::pow(static_cast<float>(head_width), -0.5f);
-  const mx::array attention =
-      mx::softmax(mx::multiply(mx::add(content_scores, position_scores),
-                               mx::array(scale, content_scores.dtype())),
-                  -1, true);
-  return Linear(
-      mx::reshape(mx::transpose(mx::matmul(attention, values), {0, 2, 1, 3}),
-                  {batch, -1, head_count * head_width}),
-      prefix + ".out_proj");
-}
-
-mx::array CohereModel::EncoderConvolution(const mx::array &x,
-                                          const std::string &prefix) const {
-  const std::vector<mx::array> halves =
-      mx::split(Conv1d(x, prefix + ".pointwise_conv1", 0, 1), 2, -1);
-  mx::array hidden = mx::multiply(halves[0], mx::sigmoid(halves[1]));
-  hidden =
-      Conv1d(hidden, prefix + ".depthwise_conv",
-             (config_.convolution_kernel_size - 1) / 2, config_.encoder_width);
-  // Note (khazic): batch norm with its running statistics; eps takes the
-  // statistics' dtype.
-  const mx::array &variance = Weight(prefix + ".batch_norm.running_var");
-  hidden = mx::multiply(
-      mx::subtract(hidden, Weight(prefix + ".batch_norm.running_mean")),
-      mx::rsqrt(
-          mx::add(variance, mx::array(kBatchNormEpsilon, variance.dtype()))));
-  hidden = mx::add(mx::multiply(Weight(prefix + ".batch_norm.weight"), hidden),
-                   Weight(prefix + ".batch_norm.bias"));
-  return Conv1d(swift_port::Silu(hidden), prefix + ".pointwise_conv2", 0, 1);
+  // The scaled position scores ride in as the additive mask, so the fused
+  // kernel adds them to the content scores before the softmax.
+  position_scores =
+      mx::multiply(omni_common::RelativeShift(position_scores, keys.shape(2)),
+                   mx::array(scale, position_scores.dtype()));
+  const mx::array attended = mx::fast::scaled_dot_product_attention(
+      content_queries, keys, values, scale, /*window_size=*/-1, "array",
+      position_scores);
+  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                        {batch, -1, head_count * head_width}),
+                            prefix + ".out_proj");
 }
 
 mx::array CohereModel::EncoderLayer(const mx::array &x,
@@ -340,26 +292,32 @@ mx::array CohereModel::EncoderLayer(const mx::array &x,
   const mx::array half(0.5f, x.dtype());
   const auto feed_forward = [&](const mx::array &input,
                                 const std::string &name) {
-    return Linear(
-        swift_port::Silu(Linear(input, prefix + "." + name + ".linear1")),
-        prefix + "." + name + ".linear2");
+    return omni_common::ConformerFeedForward(checkpoint_, input,
+                                             prefix + "." + name);
   };
   mx::array hidden = mx::add(
-      x, mx::multiply(half,
-                      feed_forward(LayerNorm(x, prefix + ".norm_feed_forward1"),
-                                   "feed_forward1")));
-  hidden = mx::add(
-      hidden, EncoderSelfAttention(LayerNorm(hidden, prefix + ".norm_self_att"),
-                                   positions, prefix + ".self_attn"));
+      x, mx::multiply(half, feed_forward(checkpoint_.LayerNorm(
+                                             x, prefix + ".norm_feed_forward1",
+                                             kLayerNormEpsilon),
+                                         "feed_forward1")));
   hidden = mx::add(hidden,
-                   EncoderConvolution(LayerNorm(hidden, prefix + ".norm_conv"),
-                                      prefix + ".conv"));
+                   EncoderSelfAttention(
+                       checkpoint_.LayerNorm(hidden, prefix + ".norm_self_att",
+                                             kLayerNormEpsilon),
+                       positions, prefix + ".self_attn"));
+  hidden =
+      mx::add(hidden, omni_common::ConformerConvolution(
+                          checkpoint_,
+                          checkpoint_.LayerNorm(hidden, prefix + ".norm_conv",
+                                                kLayerNormEpsilon),
+                          prefix + ".conv"));
   hidden = mx::add(
-      hidden,
-      mx::multiply(
-          half, feed_forward(LayerNorm(hidden, prefix + ".norm_feed_forward2"),
-                             "feed_forward2")));
-  return LayerNorm(hidden, prefix + ".norm_out");
+      hidden, mx::multiply(
+                  half, feed_forward(checkpoint_.LayerNorm(
+                                         hidden, prefix + ".norm_feed_forward2",
+                                         kLayerNormEpsilon),
+                                     "feed_forward2")));
+  return checkpoint_.LayerNorm(hidden, prefix + ".norm_out", kLayerNormEpsilon);
 }
 
 mx::array CohereModel::Encode(const std::vector<float> &samples) const {
@@ -396,48 +354,56 @@ mx::array CohereModel::Encode(const std::vector<float> &samples) const {
 
   // Note (khazic): subsampling on [batch, frames, mel_bins, 1] images.
   const std::string prefix = "encoder.subsampling.";
-  const int channels = Weight(prefix + "conv0.bias").shape(0);
+  const int channels = checkpoint_.Weight(prefix + "conv0.bias").shape(0);
   // Note (Jiaxin Deng): the encoder and decoder run in the weights' dtype; a
   // float32 input would promote every layer and cast every weight per call.
   mx::array x =
       mx::astype(mx::expand_dims(mx::transpose(features, {0, 2, 1}), -1),
-                 Weight(prefix + "conv0.weight").dtype());
-  x = swift_port::Relu(Conv2d(x, prefix + "conv0", kSubsamplingStride, 1, 1));
-  x = Conv2d(x, prefix + "conv2", kSubsamplingStride, 1, channels);
-  x = swift_port::Relu(Conv2d(x, prefix + "conv3", 1, 0, 1));
-  x = Conv2d(x, prefix + "conv5", kSubsamplingStride, 1, channels);
-  x = swift_port::Relu(Conv2d(x, prefix + "conv6", 1, 0, 1));
+                 checkpoint_.Weight(prefix + "conv0.weight").dtype());
+  x = swift_port::Relu(
+      checkpoint_.Conv2d(x, prefix + "conv0", kSubsamplingStride, 1, 1));
+  x = checkpoint_.Conv2d(x, prefix + "conv2", kSubsamplingStride, 1, channels);
+  x = swift_port::Relu(checkpoint_.Conv2d(x, prefix + "conv3", 1, 0, 1));
+  x = checkpoint_.Conv2d(x, prefix + "conv5", kSubsamplingStride, 1, channels);
+  x = swift_port::Relu(checkpoint_.Conv2d(x, prefix + "conv6", 1, 0, 1));
   x = mx::reshape(mx::transpose(x, {0, 1, 3, 2}),
                   {x.shape(0), x.shape(1), x.shape(3) * x.shape(2)});
-  x = Linear(x, prefix + "out");
+  x = checkpoint_.Linear(x, prefix + "out");
   const mx::array positions = RelativePositions(x.shape(1), x.dtype());
   for (int layer = 0; layer < config_.encoder_layer_count; ++layer) {
     x = EncoderLayer(x, positions, layer);
   }
-  return Linear(x, "bridge_proj");
+  return checkpoint_.Linear(x, "bridge_proj");
 }
 
-mx::array CohereModel::DecoderAttention(
-    const mx::array &queries, const mx::array &keys, const mx::array &values,
-    const std::string &prefix, const std::optional<mx::array> &mask) const {
+mx::array
+CohereModel::DecoderAttention(const mx::array &queries, const mx::array &keys,
+                              const mx::array &values,
+                              const std::string &prefix, bool is_causal,
+                              const std::optional<mx::array> &mask) const {
   const int batch = queries.shape(0);
   const int length = queries.shape(2);
   const float scale = std::pow(
       static_cast<float>(config_.decoder_width / config_.decoder_head_count),
       -0.5f);
   const mx::array attended =
-      mask.has_value() ? mx::fast::scaled_dot_product_attention(
-                             queries, keys, values, scale, "", *mask)
-                       : mx::fast::scaled_dot_product_attention(queries, keys,
-                                                                values, scale);
-  return Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                            {batch, length, config_.decoder_width}),
-                prefix + ".out_proj");
+      mask.has_value()
+          ? mx::fast::scaled_dot_product_attention(queries, keys, values, scale,
+                                                   /*window_size=*/-1, "array",
+                                                   *mask)
+          : mx::fast::scaled_dot_product_attention(queries, keys, values, scale,
+                                                   /*window_size=*/-1,
+                                                   is_causal ? "causal" : "");
+  return checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                        {batch, length, config_.decoder_width}),
+                            prefix + ".out_proj");
 }
 
 mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
                               const mx::array &encoder_states,
+                              const std::optional<mx::array> &encoder_mask,
                               std::vector<DecoderLayerCache> &caches) const {
+  const int rows = token_ids.shape(0);
   const int length = token_ids.shape(1);
   const int width = config_.decoder_width;
   const int head_count = config_.decoder_head_count;
@@ -449,63 +415,59 @@ mx::array CohereModel::Decode(const mx::array &token_ids, int start_position,
                mx::array(position_values.data(), {length}, mx::int32), 0),
       {1, length, width});
   const mx::array &embedding_table =
-      Weight("decoder.embedding.token_embedding.weight");
-  mx::array hidden =
-      LayerNorm(mx::add(mx::take(embedding_table, token_ids, 0),
-                        mx::astype(positions, embedding_table.dtype())),
-                "decoder.embedding.layer_norm");
-  std::optional<mx::array> mask;
-  if (length > 1) {
-    std::vector<int32_t> index_values(length);
-    for (int i = 0; i < length; ++i)
-      index_values[i] = i;
-    const mx::array indices(index_values.data(), {length}, mx::int32);
-    mask = mx::astype(
-        mx::multiply(mx::astype(mx::less(mx::expand_dims(indices, 1),
-                                         mx::expand_dims(indices, 0)),
-                                mx::float32),
-                     mx::array(kMaskedScore)),
-        encoder_states.dtype());
-  } else {
-  }
+      checkpoint_.Weight("decoder.embedding.token_embedding.weight");
+  mx::array hidden = checkpoint_.LayerNorm(
+      mx::add(mx::take(embedding_table, token_ids, 0),
+              mx::astype(positions, embedding_table.dtype())),
+      "decoder.embedding.layer_norm", kLayerNormEpsilon);
   for (int layer = 0; layer < config_.decoder_layer_count; ++layer) {
     const std::string prefix = "decoder.core.layers." + std::to_string(layer);
     DecoderLayerCache &cache = caches[layer];
     const std::vector<mx::array> self_parts =
-        mx::split(Linear(LayerNorm(hidden, prefix + ".layer_norm_1"),
-                         prefix + ".first_sub_layer.qkv_proj"),
+        mx::split(checkpoint_.Linear(
+                      checkpoint_.LayerNorm(hidden, prefix + ".layer_norm_1",
+                                            kLayerNormEpsilon),
+                      prefix + ".first_sub_layer.qkv_proj"),
                   3, -1);
     const auto [keys, values] = cache.self_attention.UpdateAndFetch(
         SplitHeads(self_parts[1], head_count),
         SplitHeads(self_parts[2], head_count));
-    hidden = mx::add(
-        hidden, DecoderAttention(SplitHeads(self_parts[0], head_count), keys,
-                                 values, prefix + ".first_sub_layer", mask));
+    hidden = mx::add(hidden,
+                     DecoderAttention(SplitHeads(self_parts[0], head_count),
+                                      keys, values, prefix + ".first_sub_layer",
+                                      length > 1, std::nullopt));
     if (!cache.cross_keys.has_value()) {
       const std::vector<mx::array> source_parts = mx::split(
-          Linear(encoder_states, prefix + ".second_sub_layer.key_value_proj"),
+          checkpoint_.Linear(encoder_states,
+                             prefix + ".second_sub_layer.key_value_proj"),
           2, -1);
       cache.cross_keys = SplitHeads(source_parts[0], head_count);
       cache.cross_values = SplitHeads(source_parts[1], head_count);
     } else {
     }
-    const mx::array cross_queries =
-        Linear(LayerNorm(hidden, prefix + ".layer_norm_2"),
-               prefix + ".second_sub_layer.query_proj");
-    hidden = mx::add(
-        hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
-                                 *cache.cross_keys, *cache.cross_values,
-                                 prefix + ".second_sub_layer", std::nullopt));
+    const mx::array cross_queries = checkpoint_.Linear(
+        checkpoint_.LayerNorm(hidden, prefix + ".layer_norm_2",
+                              kLayerNormEpsilon),
+        prefix + ".second_sub_layer.query_proj");
     hidden =
-        mx::add(hidden, Linear(swift_port::Relu(Linear(
-                                   LayerNorm(hidden, prefix + ".layer_norm_3"),
-                                   prefix + ".third_sub_layer.dense_in")),
-                               prefix + ".third_sub_layer.dense_out"));
+        mx::add(hidden, DecoderAttention(SplitHeads(cross_queries, head_count),
+                                         *cache.cross_keys, *cache.cross_values,
+                                         prefix + ".second_sub_layer", false,
+                                         encoder_mask));
+    hidden = mx::add(
+        hidden, checkpoint_.Linear(
+                    swift_port::Relu(checkpoint_.Linear(
+                        checkpoint_.LayerNorm(hidden, prefix + ".layer_norm_3",
+                                              kLayerNormEpsilon),
+                        prefix + ".third_sub_layer.dense_in")),
+                    prefix + ".third_sub_layer.dense_out"));
   }
-  hidden = LayerNorm(hidden, "decoder.core.final_layer_norm");
-  const mx::array last = mx::reshape(
-      mx::slice(hidden, {0, length - 1, 0}, {1, length, width}), {width});
-  return Linear(last, "lm_head");
+  hidden = checkpoint_.LayerNorm(hidden, "decoder.core.final_layer_norm",
+                                 kLayerNormEpsilon);
+  const mx::array last =
+      mx::reshape(mx::slice(hidden, {0, length - 1, 0}, {rows, length, width}),
+                  {rows, width});
+  return checkpoint_.Linear(last, "lm_head");
 }
 
 } // namespace cohere_transcribe

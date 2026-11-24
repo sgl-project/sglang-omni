@@ -1,0 +1,1 @@
+Task: return the dictated text, ready to insert, following the rules above.

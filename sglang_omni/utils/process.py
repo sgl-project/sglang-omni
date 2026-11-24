@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Process exit helpers."""
+"""Process exit and thread naming helpers."""
 
 from __future__ import annotations
 
 import atexit
+import ctypes
 import os
 import sys
 import threading
@@ -11,6 +12,7 @@ import traceback
 from contextlib import suppress
 from typing import NoReturn
 
+_PR_SET_NAME = 15
 # note (db-ol): ref counter files of prewarm CUDA IPC shares, which no consumer releases.
 _prewarm_cuda_ipc_handles: list[bytes] = []
 
@@ -84,3 +86,20 @@ def release_cuda_ipc_file() -> None:
         torch.cuda.ipc_collect()
     except Exception:
         traceback.print_exc()
+
+
+def name_native_thread() -> None:
+    """Give the calling thread its Python name in top, nsys and torch traces.
+
+    Linux shows a thread by its comm name of at most 15 bytes, which Python
+    below 3.14 never sets.
+    """
+    if sys.platform != "linux":
+        return
+    else:
+        pass
+    name = threading.current_thread().name.encode()[:15]
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(_PR_SET_NAME, name, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass

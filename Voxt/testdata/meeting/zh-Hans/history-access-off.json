@@ -1,0 +1,14 @@
+{
+  "name": "history-access-off",
+  "kind": "history-access",
+  "history_access": {
+    "on": false,
+    "selection": false,
+    "ask": false,
+    "list_open": false,
+    "show_last_read": false,
+    "last_read": "还没有读取记录",
+    "command": "",
+    "read_lines": null
+  }
+}

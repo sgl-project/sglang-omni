@@ -1,0 +1,221 @@
+{
+  "name": "home-microphone-granted",
+  "kind": "home",
+  "home": {
+    "read": true,
+    "loading": false,
+    "error": "",
+    "keep_history": true,
+    "slogan": {
+      "before": "Press ",
+      "keys": "Right ⌥",
+      "after": " to start"
+    },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "Speech recognition",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "Language model",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "Microphone",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "Accessibility",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "Shortcut",
+        "ok": true,
+        "warn": false,
+        "text": "Right ⌥",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
+    "show_try": false,
+    "try_recording": false,
+    "today": {
+      "count": "7",
+      "count_label": "results",
+      "characters": "12,345",
+      "characters_label": "characters",
+      "kinds": [
+        {
+          "kind": "transcribe",
+          "title": "Transcribe",
+          "count": "4"
+        },
+        {
+          "kind": "translate",
+          "title": "Translate",
+          "count": "2"
+        },
+        {
+          "kind": "rewrite",
+          "title": "Rewrite",
+          "count": "1"
+        }
+      ]
+    },
+    "recent": [
+      {
+        "kind": "transcribe",
+        "kind_title": "Transcribe",
+        "row": {
+          "id": "home-transcribe",
+          "title": "Weekly plan",
+          "failed_title": false,
+          "meta": "5 minutes ago · Notes · 0:08",
+          "selected": false,
+          "copy_text": "Weekly plan\nI'll send the new agenda tonight.",
+          "raw_copy_text": "weekly plan\nI'll send the new agenda tonight",
+          "can_reveal": true,
+          "retry": {
+            "available": true,
+            "wanted": false,
+            "active": false,
+            "label": "Transcribe again",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "Recognise the recording again. Nothing is inserted."
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "translate",
+        "kind_title": "Translate",
+        "row": {
+          "id": "home-translate",
+          "title": "晚上好",
+          "failed_title": false,
+          "meta": "5 minutes ago · Notes · → Simplified Chinese · 0:08",
+          "selected": false,
+          "copy_text": "晚上好",
+          "raw_copy_text": "good evening",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "Transcribe again",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "Recognise the recording again. Nothing is inserted."
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "rewrite",
+        "kind_title": "Rewrite",
+        "row": {
+          "id": "home-rewrite",
+          "title": "A formal answer",
+          "failed_title": false,
+          "meta": "5 minutes ago · Notes · Selection · 0:08",
+          "selected": false,
+          "copy_text": "A formal answer",
+          "raw_copy_text": "Rewrite formally",
+          "can_reveal": true,
+          "retry": {
+            "available": true,
+            "wanted": false,
+            "active": false,
+            "label": "Transcribe again",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "Recognise the recording again. Nothing is inserted."
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "transcribe",
+        "kind_title": "Transcribe",
+        "row": {
+          "id": "home-second",
+          "title": "Second result",
+          "failed_title": false,
+          "meta": "2 hours ago · Notes · 0:08",
+          "selected": false,
+          "copy_text": "Second result",
+          "raw_copy_text": "",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "Transcribe again",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "Recognise the recording again. Nothing is inserted."
+          },
+          "marks": null
+        }
+      },
+      {
+        "kind": "translate",
+        "kind_title": "Translate",
+        "row": {
+          "id": "home-older",
+          "title": "Older result",
+          "failed_title": false,
+          "meta": "Dec 31, 2025 15:04 · Notes · → Simplified Chinese · 0:08",
+          "selected": false,
+          "copy_text": "Older result",
+          "raw_copy_text": "",
+          "can_reveal": false,
+          "retry": {
+            "available": false,
+            "wanted": false,
+            "active": false,
+            "label": "Transcribe again",
+            "disabled": false,
+            "stage": "",
+            "stage_text": "",
+            "tooltip": "Recognise the recording again. Nothing is inserted."
+          },
+          "marks": null
+        }
+      }
+    ],
+    "outfit": "new-year"
+  }
+}

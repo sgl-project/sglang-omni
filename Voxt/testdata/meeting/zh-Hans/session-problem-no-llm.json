@@ -1,0 +1,56 @@
+{
+  "name": "session-problem-no-llm",
+  "kind": "session-overlay",
+  "session": {
+    "revision": 2,
+    "session_id": "session-problem",
+    "state": "failed",
+    "problem_code": "noLLM",
+    "mode": "notice",
+    "pill": {
+      "kind": "",
+      "title": "",
+      "working_label": "",
+      "elapsed_text": "",
+      "levels": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "heard": false,
+      "starting": false,
+      "waiting": "",
+      "can_skip": false,
+      "can_think": false
+    },
+    "notice": {
+      "text": "没有设置语言模型。",
+      "action": "language",
+      "action_label": "打开语言模型页",
+      "tone": "error"
+    }
+  },
+  "session_ui": {
+    "overlay": {
+      "position": "bottom",
+      "opacity": 0.8,
+      "radius": 24,
+      "margin": 96,
+      "show_time": false,
+      "live_lines": false
+    }
+  }
+}

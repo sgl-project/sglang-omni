@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 import torch
@@ -177,6 +178,19 @@ def test_xpu_set_device_accepts_an_index_or_a_device(
     XPUOmniPlatform().set_device(argument)
 
     assert seen == [expected_index]
+
+
+def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_dimension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel = object()
+    rope_module = ModuleType("sgl_kernel.jit.rope")
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, "sgl_kernel.jit.rope", rope_module)
+    platform = XPUOmniPlatform()
+
+    assert platform.get_joint_rope_inplace_kernel(rotary_dimension=128) is kernel
+    assert platform.get_joint_rope_inplace_kernel() is kernel
 
 
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:

@@ -6,7 +6,6 @@ from __future__ import annotations
 import torch
 
 from sglang_omni.models.fishaudio_drama3.tower_tiles import (
-    FUSED_BLOCK_M,
     MIX_BLOCK_N,
     PIPELINE_STAGES,
     QKV_BLOCK_K,
@@ -14,6 +13,7 @@ from sglang_omni.models.fishaudio_drama3.tower_tiles import (
     SplitScratch,
     TowerLayerShape,
     TowerLayerWeights,
+    fused_block_m,
 )
 
 try:
@@ -318,7 +318,7 @@ def norm_qkv_rope_store(
         NORM_TILES=norm_tiles,
         NORM_TILE_BLOCK=triton.next_power_of_2(norm_tiles),
         SPLIT=shape.qkv_split,
-        BLOCK_M=FUSED_BLOCK_M,
+        BLOCK_M=fused_block_m(scaled.shape[0]),
         BLOCK_K=QKV_BLOCK_K,
         num_warps=QKV_WARPS,
         num_stages=PIPELINE_STAGES,

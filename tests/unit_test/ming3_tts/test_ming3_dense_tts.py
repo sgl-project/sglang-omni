@@ -4,6 +4,8 @@
 import json
 from pathlib import Path
 
+import torch
+
 from sglang_omni.config.manager import resolve_config_cls_for_model_path
 from sglang_omni.models.ming3_tts.config import (
     DENSE_ARCHITECTURE,
@@ -17,7 +19,13 @@ from sglang_omni.models.ming3_tts.dense_prompt import (
     DENSE_TOKEN_IDS,
     build_dense_speech_prompt,
 )
+from sglang_omni.models.ming3_tts.model_runner import (
+    Ming3TTSRequestData,
+    build_stream_output,
+)
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import RequestOutput
 from sglang_omni.utils.hf import try_resolve_ming3_dense_tts
 
 TINY_ARCHITECTURE = "LingV3TTSForConditionalGeneration"
@@ -136,3 +144,32 @@ def test_dense_prompt_appends_one_patch_token_per_reference_latent() -> None:
     )
     assert latent_position == len(input_ids) - 3
     assert input_ids[latent_position:] == [DENSE_TOKEN_IDS[AUDIO_PATCH]] * 3
+
+
+def test_dense_stream_excludes_reference_prompt_latents() -> None:
+    """Reference conditioning must not be emitted as part of synthesized audio."""
+    reference_latents = torch.full((12, 64), -1.0)
+    generated_latents = [torch.full((1, 64), float(step)) for step in range(5)]
+    request = Ming3TTSRequestData(
+        stage_payload=StagePayload(
+            "dense", OmniRequest("text", params={"stream": True}), {}
+        ),
+        speaker_embedding=torch.zeros(192),
+        speaker_position=0,
+        sampling_temperature=0.0,
+        noise_generator=torch.Generator(),
+        latent_history=reference_latents[-1:],
+        prompt_rows=reference_latents,
+        latents=generated_latents,
+    )
+    messages = build_stream_output(
+        "dense", request, RequestOutput("dense", finished=True)
+    )
+    assert len(messages) == 5
+    torch.testing.assert_close(
+        torch.cat([message.data for message in messages]), torch.cat(generated_latents)
+    )
+    assert (
+        build_stream_output("dense", request, RequestOutput("dense", finished=True))
+        == []
+    )

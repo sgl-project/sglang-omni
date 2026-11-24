@@ -56,6 +56,9 @@ FUN_ASR_MODEL_PATH = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 DEFAULT_ASR_TRANSCRIBE_CONCURRENCY = 32
 # note (aaron): warmup requests sent before the timed window, per unit of concurrency.
 ASR_WARMUP_MULTIPLIER = 2
+# note (wilsonzheng0327): languages written without spaces between words are scored per character.
+CHARACTER_ERROR_LANGUAGES = frozenset({"zh", "ja", "yue"})
+ASR_LANGUAGES = ("en", *sorted(CHARACTER_ERROR_LANGUAGES))
 
 
 @functools.lru_cache(maxsize=1)
@@ -74,12 +77,12 @@ def _get_en_normalizer():
 
 
 def normalize_text(text: str, lang: str) -> str:
-    if lang == "zh":
+    if lang in CHARACTER_ERROR_LANGUAGES:
         try:
             from zhon.hanzi import punctuation as zh_punct
         except ImportError as exc:
             raise RuntimeError(
-                "Chinese WER requires zhon (zhon.hanzi.punctuation). "
+                "Character error rate requires zhon (zhon.hanzi.punctuation). "
                 "Install pinned deps with uv pip install -e ."
             ) from exc
 
@@ -262,7 +265,7 @@ def load_asr_model(lang: str, device: str, generation_mode: str | None = None):
     """
     mode_suffix = f" for {generation_mode} generation" if generation_mode else ""
     del device
-    if lang not in {"en", "zh"}:
+    if lang not in ASR_LANGUAGES:
         raise ValueError(f"Unsupported language: {lang}")
     raise ValueError(
         "WER transcription requires a running SGLang Omni ASR server"
@@ -282,6 +285,7 @@ def transcribe(asr: dict, wav_path: str, lang: str, device: str) -> str:
 
 def apply_wer(output: SampleOutput, hyp_text: str, lang: str) -> SampleOutput:
     """Fill output with normalized texts and per-sample WER fields."""
+    output.is_transcribed = True
     output.whisper_text = hyp_text
     output.ref_norm = normalize_text(output.target_text, lang)
     output.hyp_norm = normalize_text(hyp_text, lang)
@@ -321,6 +325,7 @@ def make_asr_send_fn(
     lang: str = "en",
     *,
     stream: bool = False,
+    fallback_sample_ids: frozenset[str] = frozenset(),
 ) -> SendFn:
     """Return a send_fn(session, sample) -> RequestResult that transcribes one
     SeedTTS reference clip via the Omni /v1/audio/transcriptions endpoint.
@@ -346,6 +351,8 @@ def make_asr_send_fn(
         form.add_field("model", model_name)
         form.add_field("language", "en" if lang == "en" else lang)
         form.add_field("response_format", "json")
+        if sample.sample_id in fallback_sample_ids:
+            form.add_field("repetition_penalty", "1.2")
         if stream:
             form.add_field("stream", "true")
         form.add_field(
@@ -368,8 +375,13 @@ def make_asr_send_fn(
                     result.is_success = True
                 else:
                     payload = await response.json()
-                    result.text = str(payload.get("text", ""))
-                    result.is_success = True
+                    if not isinstance(payload, dict) or not isinstance(
+                        payload.get("text"), str
+                    ):
+                        raise ValueError("Missing or invalid transcription text")
+                    else:
+                        result.text = payload["text"]
+                        result.is_success = True
         except (
             aiohttp.ClientError,
             asyncio.TimeoutError,
@@ -434,13 +446,25 @@ async def run_asr_transcription(
     request_timeout_s: int = QWEN3_ASR_REQUEST_TIMEOUT_S,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
 ) -> tuple[list[RequestResult], float]:
     """Transcribe samples against a running ASR router at one concurrency.
 
     Returns (outputs, wall_clock_s) via the shared BenchmarkRunner.
     """
     api_url = f"http://{host}:{port}/v1/audio/transcriptions"
-    send_fn = make_asr_send_fn(model_path, api_url, lang=lang, stream=stream)
+    fallback_sample_ids = frozenset(
+        sample.sample_id
+        for index, sample in enumerate(samples)
+        if (index + 1) * fallback_percentage // 100 > index * fallback_percentage // 100
+    )
+    send_fn = make_asr_send_fn(
+        model_path,
+        api_url,
+        lang=lang,
+        stream=stream,
+        fallback_sample_ids=fallback_sample_ids,
+    )
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=concurrency,
@@ -488,6 +512,7 @@ def build_asr_eval_results(
         per_sample.append(
             {
                 "id": output.sample_id,
+                "is_transcribed": output.is_transcribed,
                 "is_success": output.is_success,
                 "wer": output.wer if output.is_success else None,
                 "ref_text": output.target_text,

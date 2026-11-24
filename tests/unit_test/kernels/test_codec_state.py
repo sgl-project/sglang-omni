@@ -6,7 +6,11 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.kernels.codec_state import history_exchange, overlap_exchange
+from sglang_omni.kernels.codec_state import (
+    history_exchange,
+    overlap_exchange,
+    ring_step_rows,
+)
 from sglang_omni.platforms import current_platform
 
 REQUIRES_CUDA = pytest.mark.skipif(
@@ -46,6 +50,50 @@ def overlap_exchange_reference(
         output[:, :overlap_samples] += overlap_pool.index_select(0, slot_index)
     overlap_pool.index_copy_(
         0, slot_index, output[:, emitted_samples : emitted_samples + overlap_samples]
+    )
+
+
+@pytest.mark.accelerator
+@REQUIRES_CUDA
+@pytest.mark.parametrize("fresh_frames", [1, 3, 8])
+@pytest.mark.parametrize("ring_frames", [16, 79])
+def test_ring_step_rows_are_the_rows_of_a_ring_window(
+    fresh_frames: int, ring_frames: int
+) -> None:
+    retained_frames = ring_frames - 8
+    start_positions = torch.tensor(
+        [0, 1, retained_frames, retained_frames + 1, ring_frames, 123_456],
+        device="cuda",
+    )
+    slot_rows = torch.tensor([5, 0, 3, 1, 2, 4], device="cuda") * ring_frames
+    frames = torch.arange(fresh_frames, device="cuda")
+    window_frames = torch.arange(ring_frames, device="cuda")
+    window_starts = (start_positions - retained_frames).clamp(min=0)
+
+    write_rows, rotary_rows, page_table, window_lengths = ring_step_rows(
+        start_positions, slot_rows, fresh_frames, ring_frames, retained_frames
+    )
+
+    torch.testing.assert_close(
+        write_rows,
+        (
+            slot_rows.unsqueeze(1)
+            + (start_positions.unsqueeze(1) + frames) % ring_frames
+        ).reshape(-1),
+    )
+    torch.testing.assert_close(
+        rotary_rows, torch.arange(fresh_frames * 6, device="cuda")
+    )
+    torch.testing.assert_close(
+        page_table,
+        (
+            slot_rows.unsqueeze(1)
+            + (window_starts.unsqueeze(1) + window_frames) % ring_frames
+        ).to(torch.int32),
+    )
+    torch.testing.assert_close(
+        window_lengths,
+        (start_positions - window_starts + fresh_frames).to(torch.int32),
     )
 
 

@@ -450,23 +450,37 @@ class ProfilerStartMessage:
     trace_path_template: str  # e.g. "/tmp/profiles/{run_id}/{stage}/trace"
     event_dir: str | None = None  # Per-stage JSONL event sink dir for request profiling
     enable_torch: bool = True  # When False, only request-level events are captured
+    event_buffer_capacity: int | None = None
 
-    def to_dict(self) -> dict[str, str | bool | None]:
-        return {
+    def to_dict(self) -> dict[str, str | bool | int | None]:
+        message: dict[str, str | bool | int | None] = {
             "type": "profiler_start",
             "run_id": self.run_id,
             "trace_path_template": self.trace_path_template,
             "event_dir": self.event_dir,
             "enable_torch": self.enable_torch,
         }
+        if self.event_buffer_capacity is not None:
+            message["event_buffer_capacity"] = self.event_buffer_capacity
+        else:
+            pass
+        return message
 
     @classmethod
     def from_dict(cls, d: Mapping[str, object]) -> "ProfilerStartMessage":
+        event_buffer_capacity = d.get("event_buffer_capacity")
+        if event_buffer_capacity is not None and (
+            type(event_buffer_capacity) is not int or event_buffer_capacity <= 0
+        ):
+            raise TypeError("event_buffer_capacity must be a positive integer")
+        else:
+            pass
         return cls(
             run_id=d["run_id"],
             trace_path_template=d["trace_path_template"],
             event_dir=d.get("event_dir"),
             enable_torch=bool(d.get("enable_torch", True)),
+            event_buffer_capacity=event_buffer_capacity,
         )
 
 

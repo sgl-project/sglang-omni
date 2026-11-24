@@ -10,7 +10,6 @@ from sglang.kernels.ops.activation import silu_and_mul
 from sglang.kernels.ops.attention.flash_attention import flash_attn_with_kvcache
 from sglang.kernels.ops.attention.flash_attention_v3 import _is_fa3_supported
 from sglang.kernels.ops.attention.rope import apply_rope_inplace_with_kvcache
-from sglang.kernels.ops.layernorm import rmsnorm
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeCode2WavConfig,
@@ -40,6 +39,7 @@ from sglang_omni.models.qwen3_omni.components.incremental_codec import (
     conv_stack_state_layout,
     slot_conv_stack,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.interface import JointRopeInplaceKernel
 from sglang_omni.utils.channels_last_conv import (
     channels_last_conv1d,
@@ -48,6 +48,8 @@ from sglang_omni.utils.channels_last_conv import (
 )
 from sglang_omni.utils.merged_projections import merge_projection_weights
 from sglang_omni.utils.snake_beta import FusedSnakeBeta
+
+rmsnorm = current_platform.get_rmsnorm()
 
 
 def causal_conv(

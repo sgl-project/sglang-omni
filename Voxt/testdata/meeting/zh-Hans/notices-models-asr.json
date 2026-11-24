@@ -1,0 +1,13 @@
+{
+  "name": "notices-models-asr",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/models",
+      "severity": "warning",
+      "title": "没有语音识别模型",
+      "body": "转录、翻译和改写都要靠它听懂你说的话。",
+      "action_label": "打开语音识别模型页"
+    }
+  ]
+}

@@ -75,20 +75,41 @@ class SpeculativeTargetWorker:
             output = self.model_runner.forward(forward_batch=forward_batch)
             requests = self.verify_requests
             logits = output.logits_output.next_token_logits
-            if self.omni_runner is not None and requests and logits is not None:
-                layout = getattr(forward_batch.spec_info, "ragged_verify_layout", None)
-                if layout is None:
-                    assert logits.shape[0] % len(requests) == 0, (
-                        f"{logits.shape[0]} verify rows do not split over "
-                        f"{len(requests)} requests"
-                    )
-                    rows_per_request = logits.shape[0] // len(requests)
-                else:
-                    # note (0xtoward): a compact verify packs each request's rows back to back and pads to its graph tier.
-                    rows_per_request = layout.verify_lens
-                self.omni_runner.apply_speculative_verify_logits(
-                    output.logits_output, requests, rows_per_request
+            # note (wilsonzheng0327): a compact verify's graph epilogue copies the logits
+            # before these hooks would run, so the scheduler admits under it only requests
+            # whose hooks change nothing (speculative_request_error).
+            is_compact_verify = (
+                getattr(forward_batch.spec_info, "ragged_verify_layout", None)
+                is not None
+            )
+            if (
+                self.omni_runner is not None
+                and requests
+                and logits is not None
+                and not is_compact_verify
+            ):
+                assert logits.shape[0] % len(requests) == 0, (
+                    f"{logits.shape[0]} verify rows do not split over "
+                    f"{len(requests)} requests"
                 )
+                rows_per_request = logits.shape[0] // len(requests)
+                if self.omni_runner.speculative_verify_takes_logits_hooks:
+                    self.omni_runner.apply_speculative_verify_logits(
+                        output.logits_output, requests, rows_per_request
+                    )
+                else:
+                    pass
+                if (
+                    self.omni_runner.speculative_repetition_penalty_owner
+                    == "verify_logits"
+                ):
+                    self.omni_runner.apply_speculative_repetition_penalty(
+                        logits.view(len(requests), rows_per_request, -1),
+                        forward_batch,
+                        requests,
+                    )
+                else:
+                    pass
             else:
                 pass
             return GenerationBatchResult(

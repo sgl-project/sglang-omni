@@ -2,6 +2,7 @@
 """Tests for model-agnostic audio decoding."""
 
 import io
+import struct
 
 import av
 import numpy as np
@@ -48,7 +49,9 @@ def test_ogg_vorbis_decodes_as_the_reference_loader() -> None:
     np.testing.assert_array_equal(decoded, libsndfile_mono(data))
 
 
-@pytest.mark.parametrize("subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE"])
+@pytest.mark.parametrize(
+    "subtype", ["PCM_U8", "PCM_16", "PCM_32", "FLOAT", "DOUBLE", "ULAW", "ALAW"]
+)
 def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
     data = encode_audio(tone(2), "WAV", subtype, SAMPLE_RATE)
 
@@ -57,6 +60,19 @@ def test_every_wav_the_parser_read_decodes_unchanged(subtype: str) -> None:
 
     assert sample_rate == parsed_rate == SAMPLE_RATE
     np.testing.assert_array_equal(decoded, parsed)
+
+
+@pytest.mark.parametrize("sample_rate", [0, 2**31])
+def test_a_g711_wav_with_an_unreadable_sample_rate_raises_value_error(
+    sample_rate: int,
+) -> None:
+    """Every caller of the parser falls back on ValueError, so a malformed header must not escape as another error."""
+    data = encode_audio(tone(1), "WAV", "ULAW", SAMPLE_RATE)
+    rate_at = data.index(b"fmt ") + 12
+    malformed = data[:rate_at] + struct.pack("<I", sample_rate) + data[rate_at + 4 :]
+
+    with pytest.raises(ValueError, match="Unreadable G.711 WAV"):
+        parse_wav_bytes(malformed)
 
 
 def test_wav_whose_header_states_no_data_decodes_to_its_end() -> None:

@@ -1,10 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from threading import Event
+
 import pytest
 import torch
 import torch.nn.functional as F
 
-from sglang_omni.models.auk.flow_matching import fuse_hidden_states
+from sglang_omni.models.auk.flow_matching import fuse_hidden_states, integrate
+
+
+def test_cancel_stops_sampling_before_the_next_euler_step() -> None:
+    cancellation = Event()
+    timesteps = []
+
+    def step(t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        timesteps.append(float(t))
+        cancellation.set()
+        return torch.ones_like(y)
+
+    with pytest.raises(InterruptedError, match="sampling cancelled"):
+        integrate(
+            step,
+            torch.zeros(1),
+            torch.tensor([0.0, 0.5, 1.0]),
+            abort_event=cancellation,
+        )
+    assert timesteps == [0.0]
 
 
 def test_fusion_matches_upstream_layerwise_normalization():

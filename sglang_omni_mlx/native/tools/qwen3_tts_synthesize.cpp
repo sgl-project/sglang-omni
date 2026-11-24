@@ -11,6 +11,10 @@
 // --streaming-text feeds one text token per frame and --repetition-window
 // limits the penalty to the last N frames, as mlx-audio does; by default the
 // prompt and sampling are the CUDA server's.
+//
+// --full-precision loads the weights as stored, without load-time
+// quantization.
+
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -19,9 +23,11 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
+#include "common/generation.h"
+#include "common/layers.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_tts/qwen3_tts_model.h"
-#include "voxtral_tts/voxtral_tts_codec.h"
 
 namespace {
 
@@ -51,6 +57,9 @@ int main(int argc, char **argv) {
     const std::string argument = argv[i];
     if (argument == "--streaming-text") {
       streaming_text = true;
+      continue;
+    } else if (argument == "--full-precision") {
+      omni_common::SetLoadTimeQuantization(false);
       continue;
     } else {
     }
@@ -105,7 +114,7 @@ int main(int argc, char **argv) {
     samples.insert(samples.end(), delta.begin(), delta.end());
   };
   const std::atomic<bool> cancel(false);
-  const qwen3_asr::FinishReason finish_reason = model.Generate(
+  const omni_common::FinishReason finish_reason = model.Generate(
       prompt, sampling, max_frames, cancel, [&](const mlx::core::array &codes) {
         const int32_t *values = codes.data<int32_t>();
         frame_codes.push_back(
@@ -118,8 +127,8 @@ int main(int argc, char **argv) {
                                model.speech_decoder().sample_rate();
 
   if (!output_path.empty()) {
-    std::ofstream(output_path, std::ios::binary) << voxtral_tts::WavBytes(
-        voxtral_tts::Pcm16Bytes(samples), model.speech_decoder().sample_rate());
+    std::ofstream(output_path, std::ios::binary) << omni_common::WavBytes(
+        omni_common::Pcm16Bytes(samples), model.speech_decoder().sample_rate());
   } else {
   }
   if (!codes_output_path.empty()) {
@@ -131,7 +140,7 @@ int main(int argc, char **argv) {
   const nlohmann::json line = {
       {"prompt_token_count", model.PromptLength(prompt)},
       {"frame_count", frame_codes.size()},
-      {"finish_reason", qwen3_asr::FinishReasonName(finish_reason)},
+      {"finish_reason", omni_common::FinishReasonName(finish_reason)},
       {"seconds", seconds},
       {"first_audio_seconds", first_audio_seconds.value_or(seconds)},
       {"audio_seconds", audio_seconds},
