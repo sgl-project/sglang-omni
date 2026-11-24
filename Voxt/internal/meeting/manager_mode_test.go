@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,5 +203,102 @@ func TestDiscardWhileRecording(t *testing.T) {
 		if err := r.m.Finish(ctx, next); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// TestDiscardWhileEnding: End pressed while Cancel waits for the captures
+// to stop wins: its final pass has the meeting, whose row and files stay,
+// and Discard says so (review of #4553: Discard lets go of the lock while
+// they stop).
+func TestDiscardWhileEnding(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	r := captureRig{mic: newFakeAudio(nil), sys: newFakeAudio(nil), meetings: db.Meetings(), dir: filepath.Join(root, "meetings")}
+	speech := &seqFileASR{texts: []string{"hello"}}
+	var ending atomic.Bool
+	release := make(chan struct{})
+	r.m = meeting.NewManager(meeting.Config{
+		Mic: r.mic, System: r.sys, Store: r.meetings, Dir: r.dir,
+		Now:       newFakeClock(time.Unix(1_700_000_000, 0)).Now,
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			if ending.Load() { // the final pass: held until the test is done
+				<-release
+				return meeting.TrackASR{}, errors.New("released")
+			}
+			return meeting.TrackASR{Caps: speech.Caps(), File: speech}, nil
+		},
+	})
+	id, err := r.m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeMeeting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var finishErr error
+	r.mic.onStop = func() {
+		ending.Store(true)
+		finishErr = r.m.Finish(ctx, id)
+	}
+	if err := r.m.Discard(ctx, id); err == nil {
+		t.Error("Discard after End: no error")
+	}
+	if finishErr != nil {
+		t.Fatalf("Finish: %v", finishErr)
+	}
+	if got := r.m.Current(); got.State != meeting.StateFinishing || got.ID != id {
+		t.Errorf("after both: state %s, id %q; want the meeting finishing", got.State, got.ID)
+	}
+	if _, _, err := r.meetings.Meeting(ctx, id); err != nil {
+		t.Errorf("the ended meeting's row: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, id)); err != nil {
+		t.Errorf("the ended meeting's folder: %v", err)
+	}
+	if r.mic.running() != 0 || r.sys.running() != 0 {
+		t.Errorf("%d microphone and %d system captures still open", r.mic.running(), r.sys.running())
+	}
+	close(release)
+	for deadline := time.Now().Add(5 * time.Second); r.m.Current().State == meeting.StateFinishing; {
+		if time.Now().After(deadline) {
+			t.Fatal("the final pass did not end")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSetModePausedMeanwhile: a meeting paused while a mode change's new
+// tracks start takes the new mode, as a paused one does (review of
+// #4553: it used to fail with "not active" and keep the old mode).
+func TestSetModePausedMeanwhile(t *testing.T) {
+	ctx := context.Background()
+	r := newCaptureRig(t)
+	id, err := r.m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meeting.SetModeStarted(r.m, func() {
+		if err := r.m.Pause(ctx, id); err != nil {
+			t.Errorf("Pause: %v", err)
+		}
+	})
+	if err := r.m.SetMode(ctx, id, meeting.ModeMeeting); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	meeting.SetModeStarted(r.m, nil)
+	if got := r.m.Current(); got.Mode != meeting.ModeMeeting || got.State != meeting.StatePaused {
+		t.Fatalf("after the change: mode %s, state %s; want meeting, paused", got.Mode, got.State)
+	}
+	if r.mic.running() != 0 || r.sys.running() != 0 {
+		t.Fatalf("paused: %d microphone and %d system captures open", r.mic.running(), r.sys.running())
+	}
+	if err := r.m.Resume(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if r.mic.running() != 1 || r.sys.running() != 1 {
+		t.Fatalf("resumed in Meeting mode: %d microphone and %d system captures open", r.mic.running(), r.sys.running())
 	}
 }

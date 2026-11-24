@@ -42,8 +42,26 @@ func (m *Manager) SetMode(_ context.Context, id string, mode Mode) error {
 			return se
 		}
 	}
+	if m.modeStarted != nil {
+		m.modeStarted()
+	}
 	m.mu.Lock()
-	if m.id != id || m.state != StateRecording { // paused or ended while the tracks started
+	if m.id == id && m.state == StatePaused {
+		// Paused while the tracks started: Pause stopped them, and Resume
+		// starts the new mode's, as when SetMode found it paused.
+		m.dropTracksLocked(added) // lets go of mu while they stop
+		if m.id == id && m.state == StatePaused {
+			m.mode = mode
+			m.snap.Mode = mode
+			s := m.snap
+			m.mu.Unlock()
+			m.notify(s)
+			return nil
+		}
+		m.mu.Unlock() // resumed meanwhile, in the old mode
+		return fmt.Errorf("meeting: not active")
+	}
+	if m.id != id || m.state != StateRecording { // ended while the tracks started
 		m.dropTracksLocked(added)
 		m.mu.Unlock()
 		return fmt.Errorf("meeting: not active")

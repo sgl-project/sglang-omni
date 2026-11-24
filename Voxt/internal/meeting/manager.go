@@ -19,6 +19,10 @@ type Manager struct {
 	cfg Config
 
 	modeMu sync.Mutex // one SetMode at a time: each starts and stops tracks from the mode it found
+	// modeStarted runs when a mode change's new tracks have started, before
+	// it takes mu again (nil but in tests, which pause or end the meeting
+	// there).
+	modeStarted func()
 
 	mu            sync.Mutex
 	id            string
@@ -357,10 +361,21 @@ func (m *Manager) Discard(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return nil
 	}
+	found := m.state
 	m.stopAllTracksLocked() // lets go of mu while the tracks stop
 	if m.id != id {         // ended meanwhile
 		m.mu.Unlock()
 		return ErrNoMeeting
+	}
+	if m.state != found {
+		switch m.state {
+		case StateRecording, StatePaused, StateAsking: // still the user's to cancel
+		default:
+			// End (or Save) came while the tracks stopped: its final pass
+			// has the meeting now, which must not go under it.
+			m.mu.Unlock()
+			return fmt.Errorf("meeting: ended while it was being cancelled")
+		}
 	}
 	if m.archive != nil {
 		_ = m.archive.Close() // an error here is of a file deleted next
