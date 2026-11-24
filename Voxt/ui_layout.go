@@ -41,7 +41,7 @@ func columnPageHeader(c *ui.Context, title string, trailing func()) {
 }
 
 // widePageMaxW is the widest a page of lists and panes (History,
-// Dictionary, Notes, App enhancement) reads: wider, it stays this wide in
+// Meetings, Notes, App enhancement) reads: wider, it stays this wide in
 // the middle of the page (pageBody), its header lined up with it.
 const widePageMaxW = 1120
 
