@@ -103,5 +103,6 @@
   "Open Meeting settings": "打开会议设置",
   "Keep a history is off": "保留历史记录已关闭",
   "Importing a recording saves it with its whole transcript and summary. Turn on Keep a history in Settings → Privacy to import one.": "导入录音会保存完整转录稿和摘要。请先在“设置 → 隐私”里打开“保留历史记录”，然后再导入。",
-  "Open Privacy settings": "打开隐私设置"
+  "Open Privacy settings": "打开隐私设置",
+  "You": "你"
 }

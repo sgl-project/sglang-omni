@@ -24,6 +24,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if appearance := state.Appearance; appearance != nil {
 			host.settingsForm.settingsAppearanceLocalUI = settingsAppearanceLocalUI{
 				theme: appearance.Theme, scale: appearance.Scale, sidebar: appearance.Sidebar, reduceMotion: appearance.ReduceMotion,
+				opening: appearance.Opening, openingSpeed: float64(appearance.OpeningLength),
 			}
 		}
 		if privacy := state.Privacy; privacy != nil {
@@ -43,7 +44,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 			}
 		}
 		if shortcuts := state.Shortcuts; shortcuts != nil {
-			host.settingsForm.strictShortcuts = shortcuts.StrictShortcuts
+			host.settingsForm.strictShortcuts, host.settingsForm.returnFinishes = shortcuts.StrictShortcuts, shortcuts.ReturnFinishes
 		}
 		if overlay := state.Overlay; overlay != nil {
 			host.settingsForm.ovStyle = overlayForm{
@@ -95,6 +96,8 @@ func (host *meetingDemoHost) setSidebarChoice(choice string) {
 	host.record("setSidebarChoice %s", choice)
 }
 func (host *meetingDemoHost) setReduceMotion(on bool) { host.record("setReduceMotion %t", on) }
+func (host *meetingDemoHost) setOpening(on bool)      { host.record("setOpening %t", on) }
+func (host *meetingDemoHost) setOpeningLength(ms int) { host.record("setOpeningLength %d", ms) }
 func (host *meetingDemoHost) setPaletteColor(color string) {
 	host.record("setPaletteColor %s", color)
 }
@@ -155,6 +158,8 @@ func (host *meetingDemoHost) openShortcutFeature(path string) {
 	host.record("openShortcutFeature %s", path)
 }
 func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStrictShortcuts %t", on) }
+
+func (host *meetingDemoHost) setReturnFinishes(on bool) { host.record("setReturnFinishes %t", on) }
 
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {

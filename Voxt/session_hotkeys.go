@@ -227,11 +227,12 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	}
 }
 
-// returnFinishes is whether Return finishes the session: a Transcribe
-// recording (not a note) with the setting on. The plan binds Finish then,
-// and routing reads it for a paste-last tap on the same key.
+// returnFinishes is whether Return finishes the session: a Transcribe,
+// Translate or Rewrite recording (not a note) with Settings → Shortcuts'
+// switch on. The plan binds Finish then, and routing reads it for a
+// paste-last tap on the same key.
 func (a *app) returnFinishes() bool {
-	return a.sess.State == session.Recording && a.sess.Kind == store.KindTranscribe && !a.sess.Note && a.prefs.Features.Transcribe.ReturnFinishes
+	return a.sess.State == session.Recording && !a.sess.Note && a.prefs.Features.ReturnFinishes
 }
 
 // hotkeyPlan is what the settings' shortcuts become.

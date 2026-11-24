@@ -130,7 +130,8 @@
         "custom_label": "Custom…",
         "custom": false,
         "text": "Return"
-      }
+      },
+      "transcribe_cleanup": "default"
     },
     "preview": {
       "app": {
