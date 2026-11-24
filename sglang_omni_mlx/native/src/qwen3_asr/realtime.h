@@ -34,8 +34,19 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
 // Join segment texts, with a space only between two spaced scripts.
 std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 
+// What a session holds of a Final's audio: taken, and no longer extended by
+// the session, or shared with its refreshes.
+struct FinalReuse {
+  std::shared_ptr<RefreshReuse> reuse;
+  bool is_taken = false;
+};
+
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
-// segment length, with preview decodes on a cadence.
+// segment length, with preview decodes on a cadence. A Final's prompt, sent as
+// final_prompt, is prefilled in the background over the recording's complete
+// windows, from the first preview on, so it does not delay it; with an empty
+// one that starts with the second segment, the first's previews having the
+// keys and values already.
 class RealtimeSession : public omni_server::RealtimeConnection {
 public:
   RealtimeSession(omni_server::TranscriptionWorker &worker,
@@ -43,6 +54,10 @@ public:
                   RealtimeSettings settings, Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
+  // What the session holds for a Final of its recording's start with this
+  // prompt: the one prefilled for it, else what its refreshes keep; none is
+  // null.
+  FinalReuse TakeFinalReuse(const std::optional<std::string> &context);
 
 private:
   struct Segment {
@@ -82,6 +97,7 @@ private:
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
   void MaybeStartRefresh();
+  void MaybeStartFinalPrefill();
   void FinalizeThrough(long end_sample);
 
   omni_server::TranscriptionWorker &worker_;
@@ -92,9 +108,23 @@ private:
   std::mutex mutex_;
   std::condition_variable refresh_done_;
   std::optional<std::string> language_;
+  // A Final with the context final_context_ is to be prefilled, until one is
+  // taken.
+  bool should_prefill_final_ = false;
+  // The context the Final will have, and what is prefilled for it.
+  std::string final_context_;
+  std::shared_ptr<RefreshReuse> final_reuse_;
+  // A preview with text was sent; the Final's prefill waits for it.
+  bool has_preview_ = false;
+  bool is_prefilling_final_ = false;
   std::vector<float> samples_;
   long buffer_start_sample_ = 0;
+  // The recording's start, what its Final is prefilled from; samples_ drops
+  // what is committed.
+  std::vector<float> recording_samples_;
   std::optional<Segment> segment_;
+  // The first segment's reuse.
+  std::shared_ptr<RefreshReuse> recording_reuse_;
   int next_segment_id_ = 0;
   std::vector<std::pair<int, std::string>> committed_;
   bool refreshing_ = false;

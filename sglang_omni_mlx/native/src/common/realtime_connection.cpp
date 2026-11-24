@@ -18,10 +18,9 @@ namespace {
 
 constexpr float kPcm16FullScale = 32768.0f;
 
-std::string NewEventId() {
+std::string NewId(std::string id) {
   static thread_local std::mt19937_64 generator{std::random_device{}()};
   static constexpr char kHex[] = "0123456789abcdef";
-  std::string id = "evt_";
   for (int i = 0; i < 32; ++i)
     id.push_back(kHex[generator() % 16]);
   return id;
@@ -30,7 +29,7 @@ std::string NewEventId() {
 } // namespace
 
 RealtimeConnection::RealtimeConnection(Sender sender)
-    : sender_(std::move(sender)) {}
+    : session_id_(NewId("sess_")), sender_(std::move(sender)) {}
 
 void RealtimeConnection::Send(nlohmann::ordered_json event) {
   std::lock_guard<std::mutex> lock(send_mutex_);
@@ -39,7 +38,7 @@ void RealtimeConnection::Send(nlohmann::ordered_json event) {
   } else {
   }
   event_index_ += 1;
-  event["event_id"] = NewEventId();
+  event["event_id"] = NewId("evt_");
   event["event_index"] = event_index_;
   if (!sender_(event.dump())) {
     closed_ = true;
