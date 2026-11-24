@@ -61,6 +61,16 @@ Json DoneEvent(const TranscriptionResult &result,
     if (!result.window_texts.empty()) {
       event["generation_metadata"]["window_texts"] = result.window_texts;
     }
+    if (result.reused_audio_token_count > 0) {
+      event["generation_metadata"]["reused_audio_token_count"] =
+          result.reused_audio_token_count;
+    } else {
+    }
+    if (result.reused_prompt_token_count > 0) {
+      event["generation_metadata"]["reused_prompt_token_count"] =
+          result.reused_prompt_token_count;
+    } else {
+    }
     if (result.verify_round_count > 0) {
       event["generation_metadata"]["verify_round_count"] =
           result.verify_round_count;
