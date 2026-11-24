@@ -107,20 +107,20 @@ type Transcribe struct {
 	Structure bool `json:"structure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
-	// CleanAfterStop sends nothing to the language model while the user
+	// note (luojiaxuan): CleanAfterStop sends nothing to the language model while the user
 	// speaks: the whole clean-up runs after Stop. Off by default: the
 	// clean-up starts on what the speech model has written so far (the
 	// session's live and early clean-ups), the Transcribe page's "Clean up
 	// while you speak".
 	CleanAfterStop bool `json:"cleanAfterStop,omitempty"`
-	// RecleanSentences is how many whole sentences before the text left at
+	// note (luojiaxuan): RecleanSentences is how many whole sentences before the text left at
 	// Stop the live clean-up cleans again with it, so that what was said
 	// last can correct them; 0: only the text left
 	// (DefaultRecleanSentences, no page).
 	RecleanSentences int `json:"recleanSentences"`
 }
 
-// DefaultRecleanSentences is Transcribe.RecleanSentences's default: one
+// note (luojiaxuan): DefaultRecleanSentences is Transcribe.RecleanSentences's default: one
 // sentence, the one a correction said last most often takes back.
 const DefaultRecleanSentences = 1
 

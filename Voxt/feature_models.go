@@ -78,7 +78,8 @@ func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureAct
 		})
 	settingRow(c, "tr-while-speaking", i18n.T("Clean up while you speak"),
 		i18n.T("Sends each finished sentence to the language model as you speak, so the text is ready sooner after you stop. When off, nothing is sent until you stop."), func() {
-			if ui.Switch(c.Key("tr-while-speaking-switch"), &whileSpeaking).Label(i18n.T("Clean up while you speak")).Disabled(!enhance).Changed() {
+			// note (luojiaxuan): editable with the clean-up off too: an app's group can turn the clean-up on for it.
+			if ui.Switch(c.Key("tr-while-speaking-switch"), &whileSpeaking).Label(i18n.T("Clean up while you speak")).Changed() {
 				actions.setFeatureCleanWhileSpeaking(whileSpeaking)
 			}
 		})

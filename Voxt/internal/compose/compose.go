@@ -132,7 +132,7 @@ type Input struct {
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
 	Text string
-	// Before is Transcribe's text said before Text, already cleaned: the
+	// note (luojiaxuan): Before is Transcribe's text said before Text, already cleaned: the
 	// context of a block of a dictation cleaned up while it is spoken
 	// (before.go). "" for none: Text is the whole dictation.
 	Before string

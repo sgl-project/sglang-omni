@@ -2,13 +2,13 @@ package compose
 
 import "strings"
 
-// A dictation cleaned up while it is spoken (the session's live clean-up)
+// note (luojiaxuan): A dictation cleaned up while it is spoken (the session's live clean-up)
 // goes to the model in blocks: the first block alone, as a whole
 // dictation is; a later block with the cleaned text before it as context
 // (Input.Before), so that the model reads what it refers to and the lists
 // it continues, and answers with the block's text only.
 
-// userMessage is in's user message for Transcribe and Translate: its
+// note (luojiaxuan): userMessage is in's user message for Transcribe and Translate: its
 // input, after the cleaned text before it when there is one.
 func userMessage(in Input) string {
 	if in.Task != Transcribe || strings.TrimSpace(in.Before) == "" {
@@ -17,13 +17,13 @@ func userMessage(in Input) string {
 	return BeforeMessage(in.Before, in.Text)
 }
 
-// BeforeMessage is the user message of a block after the first: the
+// note (luojiaxuan): BeforeMessage is the user message of a block after the first: the
 // cleaned text before it, then its input.
 func BeforeMessage(before, text string) string {
 	return wrap("before", before) + "\n\n" + UserMessage(text)
 }
 
-// SentenceEnds are the byte offsets in text where a sentence or a line
+// note (luojiaxuan): SentenceEnds are the byte offsets in text where a sentence or a line
 // ends, after its mark and closing quotes and before the white space
 // after them: where Pieces cuts first. The end of text is one when text
 // ends with a sentence mark. A mark inside a snippet's mark is none.

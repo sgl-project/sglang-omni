@@ -80,8 +80,10 @@ func (e *earlyClean) stop() {
 // hearPiece takes the final text so far of a recording that finalises
 // stretches while it continues (asr.EventPiece): the stretch since the
 // last event goes to the early clean-up (Transcribe with the clean-up
-// on, unless the user has it wait for Stop; the final text repeats these
-// stretches as its prefix).
+// on only; the final text repeats these stretches as its prefix).
+//
+// note (luojiaxuan): not when the user has the clean-up wait for Stop
+// (settings.Transcribe.CleanAfterStop); the live clean-up ends here.
 func (r *run) hearPiece(stable string) {
 	r.endLive()
 	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
@@ -161,7 +163,7 @@ func (e *earlyClean) work() {
 	}
 }
 
-// thinkOffUnder is the session's language model's ThinkingOffUnder: a
+// note (luojiaxuan): thinkOffUnder is the session's language model's ThinkingOffUnder: a
 // clean-up of fewer characters is asked with thinking off.
 func (r *run) thinkOffUnder() int {
 	for _, provider := range r.settings.Providers.LLM {

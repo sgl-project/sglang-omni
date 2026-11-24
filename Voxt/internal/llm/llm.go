@@ -106,7 +106,7 @@ type Usage struct {
 	PromptTokens     int `json:"promptTokens"`
 	CompletionTokens int `json:"completionTokens"`
 	TotalTokens      int `json:"totalTokens"`
-	// CachedTokens are the prompt tokens the service read from its prompt
+	// note (luojiaxuan): CachedTokens are the prompt tokens the service read from its prompt
 	// cache, when it says (OpenAI's prompt_tokens_details); 0 otherwise.
 	CachedTokens int  `json:"cachedTokens,omitempty"`
 	Estimated    bool `json:"estimated,omitempty"`

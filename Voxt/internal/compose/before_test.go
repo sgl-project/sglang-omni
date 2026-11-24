@@ -25,7 +25,7 @@ func TestSentenceEnds(t *testing.T) {
 	}
 }
 
-// TestBefore: a block after the first says what <before> is in the system
+// note (luojiaxuan): TestBefore: a block after the first says what <before> is in the system
 // prompt and sends the cleaned text before it ahead of its input, in both
 // prompt sets and with the user's own prompt; a block without it is the
 // request of a whole dictation, byte for byte.

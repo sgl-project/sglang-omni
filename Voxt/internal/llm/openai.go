@@ -49,7 +49,7 @@ type oaUsage struct {
 	PromptDetails    *tokenDetails `json:"prompt_tokens_details"`
 }
 
-// tokenDetails is a usage's breakdown of the prompt: the part read from
+// note (luojiaxuan): tokenDetails is a usage's breakdown of the prompt: the part read from
 // the service's prompt cache.
 type tokenDetails struct {
 	CachedTokens int `json:"cached_tokens"`
