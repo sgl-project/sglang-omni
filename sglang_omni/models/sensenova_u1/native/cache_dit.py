@@ -106,6 +106,7 @@ class SenseNovaGenerationBlocks(nn.Module):
 class CacheDitMountKey:
     overrides: Hashable
     separate_cfg: bool
+    max_warmup_steps: int
 
 
 def environment_cache_dit_params() -> dict[str, JsonValue]:
@@ -298,6 +299,7 @@ class SenseNovaCacheDit:
             desired_key = CacheDitMountKey(
                 overrides=cache_dit_overrides_key(overrides),
                 separate_cfg=branch_count == SEPARATE_GUIDANCE_BRANCH_COUNT,
+                max_warmup_steps=config.max_warmup_steps,
             )
         else:
             config = None

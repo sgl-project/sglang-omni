@@ -133,6 +133,7 @@ def generation_request(
     *,
     enable_cache_dit: bool | None,
     cache_dit_params: dict[str, JsonValue] | None = None,
+    num_inference_steps: int = STEPS,
     guidance_scale: float = 4.0,
     edit: bool = False,
     prompts: tuple[str, ...] = ("a red apple",),
@@ -142,7 +143,7 @@ def generation_request(
         image_path="reference.png" if edit else None,
         width=64,
         height=64,
-        num_inference_steps=STEPS,
+        num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
         seed=7,
         generator_device="cpu",
@@ -463,6 +464,32 @@ def test_warmup_beyond_the_last_step_is_clamped(
         STEPS,
     ]
     assert torch.equal(images[0], images[1])
+
+
+def test_mount_tracks_effective_warmup_across_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    new_stage: StageFactory,
+) -> None:
+    """A short request must not shorten warmup for the next request."""
+    mounts = Mock(wraps=sensenova_cache_dit.enable_cache_on_transformer)
+    refreshes = Mock(wraps=sensenova_cache_dit.refresh_context_on_transformer)
+    monkeypatch.setattr(sensenova_cache_dit, "enable_cache_on_transformer", mounts)
+    monkeypatch.setattr(
+        sensenova_cache_dit, "refresh_context_on_transformer", refreshes
+    )
+    stage = new_stage()
+    for num_inference_steps in (2, 6, 4, 2):
+        generate(
+            stage,
+            generation_request(
+                enable_cache_dit=True,
+                cache_dit_params={"max_warmup_steps": 4},
+                num_inference_steps=num_inference_steps,
+            ),
+        )
+    mounted_configs = [call.args[1] for call in mounts.call_args_list]
+    assert [config.max_warmup_steps for config in mounted_configs] == [2, 4, 2]
+    assert [call.args[1] for call in refreshes.call_args_list] == [4]
 
 
 @pytest.mark.parametrize("request_switch", ["false", "true", 0, 1])
