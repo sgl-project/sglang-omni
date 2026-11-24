@@ -631,6 +631,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel">Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o-4-5-omni-chat-and-speech-single-xpu">MiniCPM-o 4.5 (omni chat and speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimax-music-3-text-to-music-two-xpus">MiniMax Music 3 (text-to-music, two XPUs)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#yue2-text-to-music-single-xpu">YuE2 (text-to-music, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-omni-omni-chat-and-speech-one-or-two-xpus">Ming-Omni (omni chat and speech, one or two XPUs)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-omni-tts-16-8b-a3b-moe-two-xpus">Ming-Omni-TTS (16.8B-A3B MoE, two XPUs)</a></li>
 </ul>
@@ -1275,6 +1276,29 @@ audio input, and voice cloning.</p>
 </div>
 <p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">rock_1.wav</span></code> to hear the generated music.</p>
 </section>
+<section id="yue2-text-to-music-single-xpu">
+<h3>YuE2 (text-to-music, single XPU)<a class="headerlink" href="#yue2-text-to-music-single-xpu" title="Link to this heading">#</a></h3>
+<p>The AR stage runs the bf16 transformer on the SGLang engine with decode graphs, which capture on XPU and stay on by default, as on CUDA. Cross-process weight sharing reduces a tensor to an IPC handle only on CUDA, so here the acoustic stage loads its own copy of the AR weights instead: both stages together hold about 21 GB of a 24 GB card, so give the model an otherwise-idle card, move the acoustic stage to a second one with <code class="docutils literal notranslate"><span class="pre">--yue2_acoustic.gpu</span> <span class="pre">1</span></code>, or shrink the 65,536-token KV cache with <code class="docutils literal notranslate"><span class="pre">--yue2_ar.engine.max_total_tokens</span></code>. The acoustic stage’s <code class="docutils literal notranslate"><span class="pre">fused_kernels</span></code> option needs sgl-kernel’s CUDA kernels and stays off; <code class="docutils literal notranslate"><span class="pre">fuse_projections</span></code> works.</p>
+<p><strong>Launch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>m-a-p/YuE2-3B<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "m-a-p/YuE2-3B",</span>
+<span class="s1">    "input": "[Verse]\nMorning light is shining through\nEvery road leads back to you",</span>
+<span class="s1">    "instructions": "Gentle acoustic pop, warm female vocals, piano and guitar",</span>
+<span class="s1">    "seed": 42,</span>
+<span class="s1">    "max_new_tokens": 1500</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>song.wav
+</pre></div>
+</div>
+<p><strong>Expected result:</strong> Play <code class="docutils literal notranslate"><span class="pre">song.wav</span></code> to hear the generated song.</p>
+<p>A seed repeats a take byte for byte on one server here, over 12 repeats at the regression suite’s parameters and 14 at a 256-token budget, where one repeat returned a different take of the same length and did not reproduce in 13 further attempts across three cards (<a class="reference external" href="https://github.com/sgl-project/sglang-omni/issues/4576">#4576</a>).</p>
+</section>
 <section id="ming-omni-omni-chat-and-speech-one-or-two-xpus">
 <h3>Ming-Omni (omni chat and speech, one or two XPUs)<a class="headerlink" href="#ming-omni-omni-chat-and-speech-one-or-two-xpus" title="Link to this heading">#</a></h3>
 <p>Ming-flash-omni-2.0’s thinker holds 194 GiB of bf16 weights, so on 24 GB cards it runs TP=1 with
@@ -1351,8 +1375,8 @@ in a graph.</p>
 </div></blockquote>
 <blockquote>
 <div><p>Support status: <strong>Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2,
-Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU</strong>
-(Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
+Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash, dots.tts and YuE2 all serve end-to-end on Intel XPU</strong>
+(Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash, dots.tts and YuE2 single-card;
 Zonos2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
@@ -1434,6 +1458,7 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-omni-30b-a3b-moe-multi-xpu-tensor-parallel">Qwen3-Omni (30B-A3B MoE, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minicpm-o-4-5-omni-chat-and-speech-single-xpu">MiniCPM-o 4.5 (omni chat and speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minimax-music-3-text-to-music-two-xpus">MiniMax Music 3 (text-to-music, two XPUs)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#yue2-text-to-music-single-xpu">YuE2 (text-to-music, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-omni-omni-chat-and-speech-one-or-two-xpus">Ming-Omni (omni chat and speech, one or two XPUs)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-omni-tts-16-8b-a3b-moe-two-xpus">Ming-Omni-TTS (16.8B-A3B MoE, two XPUs)</a></li>
 </ul>

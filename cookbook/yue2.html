@@ -628,7 +628,8 @@
 <p>The YuE2 and YuE2-Vae weights are CC BY-NC 4.0; commercial use is not permitted.</p>
 <section id="start-the-server">
 <h2>Start the server<a class="headerlink" href="#start-the-server" title="Link to this heading">#</a></h2>
-<p>Install SGLang-Omni following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then start one CUDA worker:</p>
+<p>Install SGLang-Omni following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>. For Intel GPUs, follow the <a class="reference internal" href="../other_platforms/installation_xpu.html#yue2-text-to-music-single-xpu"><span class="std std-ref">YuE2 XPU recipe</span></a>.</p>
+<p>Start one CUDA worker:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>m-a-p/YuE2-3B<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
