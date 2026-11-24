@@ -334,9 +334,9 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	// Only the current typed and spoken request at input[0] can request a template.
+	// The current request is also a suffix of the full current input; earlier turns cannot authorize a template.
 	currentRequest := in.Typed + "\n" + in.Instruction
-	answerInputs := []string{currentRequest, in.Text + "\n" + currentRequest}
+	answerInputs := []string{in.Text + "\n" + currentRequest, currentRequest}
 	for _, turn := range in.Previous {
 		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Typed+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
 	}

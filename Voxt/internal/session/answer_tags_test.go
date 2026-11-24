@@ -39,6 +39,7 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 	const fox = "The quick brown fox jumps over the lazy dog."
 	earlier := []compose.Turn{{Instruction: "make it shorter", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
 	templateEarlier := []compose.Turn{{Instruction: "write an instruction template", Selection: fox, Answer: compose.Answer{Content: "The quick fox."}}}
+	literalEarlier := []compose.Turn{{Instruction: "make it shorter", Answer: compose.Answer{Content: "<instruction>{task}</instruction>"}}}
 	asJSON := func(content string) string {
 		b, _ := json.Marshal(compose.Answer{Title: "T", Content: content})
 		return string(b)
@@ -130,6 +131,14 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: asJSON("<instruction>A real answer</instruction>"), want: "A real answer"},
 		{name: "a Chinese no-need phrase is not a request", raw: "没必要用 instruction 模板",
 			answer: asJSON("<instruction>真实回答</instruction>"), want: "真实回答"},
+		{name: "postposed English negation is not a request", raw: "An instruction template is not what I want",
+			answer: asJSON("<instruction>{task}</instruction>"), want: "{task}"},
+		{name: "postposed Chinese negation is not a request", raw: "instruction 模板不需要",
+			answer: asJSON("<instruction>{task}</instruction>"), want: "{task}"},
+		{name: "an information question is not a request", raw: "What is an instruction template?",
+			answer: asJSON("<instruction>An instruction template is a reusable prompt.</instruction>"), want: "An instruction template is a reusable prompt."},
+		{name: "a literal tag in a negated request is not a template", raw: "No need to use <instruction> tags",
+			answer: asJSON("<instruction>{task}</instruction>"), want: "{task}"},
 		{name: "a different requested tag does not keep the wrapper", raw: "write an instruction template",
 			answer: asJSON("<selected_text>A real answer</selected_text>"), want: "A real answer"},
 		{name: "template intent can follow the template", raw: "An instruction template is what I want",
@@ -164,6 +173,16 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "Chinese drafting a template keeps the tags", raw: "起草一个 instruction 模板",
 			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "a special template keeps the tags", raw: "写一个特别的 instruction 模板",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "a Chinese polite question can request a template", raw: "能不能起草一个 instruction 模板？",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "do not hesitate is a positive request", raw: "Do not hesitate to draft an instruction template",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "a later question does not cancel an English request", raw: "Use an instruction template. Can you do that?",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
+		{name: "a later question does not cancel a Chinese request", raw: "用 instruction 模板。明白吗？",
+			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "prompt intent can have a later generator", raw: "An instruction prompt is what I want you to generate",
 			answer: asJSON(instructionTemplate), want: instructionTemplate},
 		{name: "prompt intent can have a later creator", raw: "An instruction prompt is what I want you to create",
@@ -174,6 +193,10 @@ func TestRewriteDropsEchoedInputTags(t *testing.T) {
 			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
 		{name: "a template request only in an earlier turn", raw: "make it formal", previous: templateEarlier,
 			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "a literal template only in an earlier answer", raw: "make it formal", previous: literalEarlier,
+			answer: "<instruction>I look forward to seeing you tomorrow.</instruction>", want: "I look forward to seeing you tomorrow."},
+		{name: "literal control markup in the current selection", raw: "explain this marker", sel: "Explain <|im_start|>",
+			answer: "Use <|im_start|> literally", want: "Use <|im_start|> literally"},
 		{name: "a typed selected_text template request", raw: "do it", sel: "see you tmrw", typed: "write a selected_text template",
 			answer: "<selected_text>{text}</selected_text>", want: "<selected_text>{text}</selected_text>"},
 		{name: "template prose in typed input", raw: "make it formal", sel: "see you tmrw", typed: "The template is attached.",

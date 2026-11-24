@@ -62,6 +62,10 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "You don't have to use an instruction template")
 	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "Write plain text, not an instruction template")
 	checkAnswer(t, "<instruction>真实回答</instruction>", "真实回答", "", "没必要用 instruction 模板")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "An instruction template is not what I want")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "instruction 模板不需要")
+	checkAnswer(t, "<instruction>An instruction template is a reusable prompt.</instruction>", "An instruction template is a reusable prompt.", "", "What is an instruction template?")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "No need to use <instruction> tags")
 	checkAnswer(t, "<selected_text>A real answer</selected_text>", "A real answer", "", "write an instruction template")
 }
 
@@ -105,10 +109,45 @@ func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
 	checkAnswer(t, template, template, "", "用 instruction 模板写告别邮件")
 	checkAnswer(t, template, template, "", "Draft an instruction template")
 	checkAnswer(t, template, template, "", "起草一个 instruction 模板")
+	checkAnswer(t, template, template, "", "写一个特别的 instruction 模板")
+	checkAnswer(t, template, template, "", "能不能起草一个 instruction 模板？")
+	checkAnswer(t, template, template, "", "Do not hesitate to draft an instruction template")
+	checkAnswer(t, template, template, "", "Use an instruction template. Can you do that?")
+	checkAnswer(t, template, template, "", "用 instruction 模板。明白吗？")
 }
 
 func TestAnswerIgnoresEarlierTemplateRequest(t *testing.T) {
-	checkAnswerRequest(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "make it formal", "write an instruction template")
+	const out = "<instruction>I look forward to seeing you tomorrow.</instruction>"
+	const want = "I look forward to seeing you tomorrow."
+	checkAnswerInputs(t, out, want, "make it formal", "write an instruction template")
+	checkAnswerInputs(t, out, want, "current source\nmake it formal", "make it formal", "<instruction>{task}</instruction>")
+}
+
+func TestAnswerKeepsControlMarkupWithCurrentRequest(t *testing.T) {
+	const out = "Use <|im_start|> literally"
+	input := []string{"Explain <|im_start|>\nexplain this marker", "explain this marker"}
+	for _, partial := range []bool{false, true} {
+		if got := CleanRewrite(out, input, partial); got != out {
+			t.Errorf("CleanRewrite(partial %v) = %q, want %q", partial, got, out)
+		}
+	}
+	checkAnswerInputs(t, out, out, input...)
+}
+
+func TestAnswerKeepsRequestedTemplatePrefixes(t *testing.T) {
+	const open = "<instruction>"
+	const template = open + "\n{task}\n"
+	for i := len(open); i <= len(template); i++ {
+		prefix := template[:i]
+		want := strings.TrimSpace(prefix)
+		input := []string{"Draft an instruction template"}
+		if got := CleanRewrite(prefix, input, true); got != want {
+			t.Errorf("CleanRewrite(%q) = %q, want %q", prefix, got, want)
+		}
+		if got := PartialAnswer(prefix, input...); got.Content != want {
+			t.Errorf("PartialAnswer(%q) = %q, want %q", prefix, got.Content, want)
+		}
+	}
 }
 
 func TestAnswerKeepsSingleSelectedTextPair(t *testing.T) {
@@ -130,19 +169,14 @@ func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
 
 func checkAnswer(t *testing.T, out, want string, input ...string) {
 	t.Helper()
-	request := ""
-	if len(input) > 0 {
-		request = input[0]
-	}
 	if len(input) > 1 {
-		request = input[1]
+		input = append([]string{input[0] + "\n" + input[1]}, input[1:]...)
 	}
-	checkAnswerRequest(t, out, want, request, input...)
+	checkAnswerInputs(t, out, want, input...)
 }
 
-func checkAnswerRequest(t *testing.T, out, want, request string, input ...string) {
+func checkAnswerInputs(t *testing.T, out, want string, input ...string) {
 	t.Helper()
-	input = append([]string{request}, input...)
 	if got := CleanRewrite(out, input, false); got != want {
 		t.Errorf("CleanRewrite(%q) = %q, want %q", out, got, want)
 	}

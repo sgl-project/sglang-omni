@@ -520,9 +520,24 @@ func PartialAnswer(text string, input ...string) Answer {
 			return Answer{} // the fence's first line, still coming
 		}
 	}
-	if !strings.HasPrefix(t, "{") {
+	answerObject := func(text string) bool {
+		if !strings.HasPrefix(text, "{") {
+			return false
+		}
+		rest := strings.TrimLeft(text[1:], " \t\r\n")
+		if rest == "" {
+			return true
+		}
+		for _, field := range []string{`"title"`, `"content"`} {
+			if strings.HasPrefix(rest, field) || len(rest) < len(field) && strings.HasPrefix(field, rest) {
+				return true
+			}
+		}
+		return false
+	}
+	if !answerObject(t) {
 		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), true, input...))
-		if !strings.HasPrefix(t, "{") {
+		if !answerObject(t) {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
 	}
