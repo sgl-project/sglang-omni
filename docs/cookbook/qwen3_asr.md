@@ -444,7 +444,7 @@ sgl-omni serve \
 
 The registry pins [`wilsonzheng0327/Qwen3-ASR-0.6B-dflash`](https://huggingface.co/wilsonzheng0327/Qwen3-ASR-0.6B-dflash) at `fbf0ce97e3b76d8cd9f3da1791a8872c3d4c3a45`; an ordinary `--model-path Qwen/Qwen3-ASR-0.6B` launch stays on plain decoding. The profile uses BF16, caps running requests at 16 and gives the stage a 0.65 static memory fraction. Add `--asr.engine.disable_speculative_decoding true` to the command above for the same profile without its draft.
 
-One RTX 3090 (24 GB, SM86), SGLang-Omni `c15bfc80`, SGLang 0.5.23 and PyTorch 2.14.1+cu130 measured the target `Qwen/Qwen3-ASR-0.6B@5eb144179a02acc5e5ba31e748d22b0cf3e303b0` against that draft. The SeedTTS revision was `27f4c1adee83b5b29b7c4b375f6b976324bda308`. Each side ran twice in ABBA order on fresh servers; each leg used one warmup and three measured repeats at every load, unique audio (666 EN clips and 1,010 ZH clips), streamed responses and the prefix cache off. Across all loads, repeats and legs, this produced 140,784 measured requests and 46,928 warmup requests. Loads above 16 queued at the profile's running-request cap.
+One RTX 3090 (24 GB, SM86), SGLang-Omni `c15bfc80`, SGLang 0.5.23 and PyTorch 2.14.1+cu130 measured the target `Qwen/Qwen3-ASR-0.6B@5eb144179a02acc5e5ba31e748d22b0cf3e303b0` against that draft. The SeedTTS revision was `27f4c1adee83b5b29b7c4b375f6b976324bda308`. Each side ran twice in ABBA order on fresh servers; each leg used one warmup and three measured repeats at every load, unique audio (666 EN clips and 1,010 ZH clips), streamed responses and the prefix cache off. Across all loads, repeats and legs, this produced 140,784 measured requests and 46,928 warmup requests.
 
 | concurrency | EN throughput gain | EN p95 latency | EN first output p95 | ZH throughput gain | ZH p95 latency | ZH first output p95 |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -456,7 +456,30 @@ One RTX 3090 (24 GB, SM86), SGLang-Omni `c15bfc80`, SGLang 0.5.23 and PyTorch 2.
 | 32 | 1.74x | -33.6% | -20.0% | 1.62x | -32.8% | -22.4% |
 | 64 | 1.72x | -37.4% | -34.4% | 1.63x | -35.5% | -32.8% |
 
-No request failed. Aggregate English WER was 1.6393% without the draft and 1.6295% with it; aggregate Chinese CER was 1.0135% and 1.0096%. Mean acceptance length was 5.08 on English and 4.38 on Chinese. Peak GPU memory rose from 18,485 to 19,187 MiB on English and from 18,527 to 19,243 MiB on Chinese. Every load completed, and no load from 1 to 16 was worse than plain decoding by the roadmap bounds.
+The c1 within-side throughput spread was:
+
+| workload | A1 / A2 without draft (requests/s) | A gap | B1 / B2 with draft (requests/s) | B gap | mean gain |
+|---|---:|---:|---:|---:|---:|
+| EN | 25.2077 / 25.2847 | 0.31% | 44.9510 / 45.5248 | 1.27% | 1.7919x |
+| ZH | 27.9618 / 27.8936 | 0.24% | 44.6375 / 44.6872 | 0.11% | 1.5992x |
+
+The largest within-side gap anywhere in the two sweeps was 2.08%, on EN plain decoding at c8. The c1 throughput increases were 79.19% on EN and 59.92% on ZH.
+
+The c32 and c64 points set client concurrency above the profile's 16-request running cap. Server logs showed at most 16 running requests, with as many as 16 queued at c32 and 48 at c64. The client measured p95 from immediately before the HTTP POST through response completion. Server admission-queue time is included; time waiting for the benchmark client's own concurrency semaphore is outside the measurement. From c32 to c64, throughput stayed nearly flat while p95 rose with the longer queue. At c32, the steady backlog kept the faster draft side full while plain decoding was already saturated. The server cap remained 16, and the roadmap's not-worse gate ends at c16.
+
+A second clean sweep at `2e35ab6c` repeated the same prompts with the prefix cache on. It used the same ABBA order, loads, repeats and request counts. The cache served 95.20% of prompt tokens in every EN leg and 95.21% in every ZH leg.
+
+| concurrency | EN throughput gain | EN p95 latency | EN first output p95 | ZH throughput gain | ZH p95 latency | ZH first output p95 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1.87x | -38.8% | +0.8% | 1.67x | -34.8% | +0.6% |
+| 2 | 1.93x | -55.6% | -61.6% | 1.72x | -51.8% | -63.8% |
+| 4 | 1.72x | -47.7% | -59.8% | 1.54x | -41.8% | -61.2% |
+| 8 | 1.70x | -44.7% | -48.4% | 1.46x | -37.4% | -51.7% |
+| 16 | 1.45x | -33.5% | -28.9% | 1.30x | -27.8% | -32.6% |
+| 32 | 1.79x | -36.4% | -22.4% | 1.61x | -34.6% | -21.8% |
+| 64 | 1.80x | -38.0% | -36.2% | 1.59x | -32.1% | -27.8% |
+
+No request failed in either sweep. With the prefix cache off, aggregate English WER was 1.6393% without the draft and 1.6295% with it; aggregate Chinese CER was 1.0135% and 1.0096%. With repeated prompts, WER ranged from 1.65% to 1.68% without the draft and 1.61% to 1.66% with it; CER ranged from 1.00% to 1.02% and from 1.00% to 1.01%. Mean acceptance length was 5.08 on English and 4.38 on Chinese. In the prefix-cache-off sweep, peak GPU memory rose from 18,485 to 19,187 MiB on English and from 18,527 to 19,243 MiB on Chinese. Every load completed, and neither prefix-cache mode was worse than plain decoding from c1 to c16 by the roadmap bounds.
 
 Ascend NPU runs separate validated examples and is greedy only; see [Ascend NPU graph execution](#ascend-npu-graph-execution).
 
