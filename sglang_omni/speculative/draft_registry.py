@@ -62,6 +62,15 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         is_default_on=True,
     ),
     PinnedDraft(
+        model_path="Qwen/Qwen3-ASR-0.6B",
+        stage="asr",
+        algorithm="DFLASH",
+        draft_model_path="wilsonzheng0327/Qwen3-ASR-0.6B-dflash",
+        draft_model_revision="fbf0ce97e3b76d8cd9f3da1791a8872c3d4c3a45",
+        engine_settings={"speculative_num_draft_tokens": 8},
+        license="apache-2.0",
+    ),
+    PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
         stage="asr",
         algorithm="DFLASH",

@@ -430,9 +430,33 @@ that qualified limit are rejected.
 
 ## DFlash speculative decoding
 
-On one CUDA GPU, Qwen3-ASR-1.7B serves with its DFlash draft, [`wilsonzheng0327/Qwen3-ASR-1.7B-dflash`](https://huggingface.co/wilsonzheng0327/Qwen3-ASR-1.7B-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `Qwen/Qwen3-ASR-1.7B`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it, such as `${MODEL_PATH}` above. Other platforms serve without the draft, and so do a stage with `tp_size` above 1, any other checkpoint, Qwen3-ASR-0.6B included, and a copy outside the Hugging Face cache. The RTX 4090 and RTX 5090 profiles above turn it off, since they were validated without it.
+On one CUDA GPU, Qwen3-ASR-1.7B serves with its DFlash draft, [`wilsonzheng0327/Qwen3-ASR-1.7B-dflash`](https://huggingface.co/wilsonzheng0327/Qwen3-ASR-1.7B-dflash), by default, at the revision `sglang_omni/speculative/draft_registry.py` pins. This holds when the model path that launches, from `--model-path` or a config file, is `Qwen/Qwen3-ASR-1.7B`, with or without an `@<revision>` pin, or a Hugging Face cache snapshot of it, such as `${MODEL_PATH}` above. The 1.7B default does not apply on other platforms, to a stage with `tp_size` above 1, to another checkpoint, or to a copy outside the Hugging Face cache. Qwen3-ASR-0.6B remains off by default and has the opt-in profile below. The RTX 4090 and RTX 5090 profiles above turn the 1.7B draft off, since they were validated without it.
 
 On one H200 over SeedTTS clips, with streamed responses and the prefix cache off, the draft on its defaults raised throughput 1.72x at 1 concurrent request, 1.42x at 4 and 1.22x at 16 on English clips and 1.58x, 1.38x and 1.17x on Chinese clips. It lowered p95 latency by 22–51% from 1 to 16 concurrent requests, with the same WER and CER. On one H100 over SeedTTS English clips with synchronous scheduling, the draft raised throughput 1.90x at 1 concurrent request, 1.56x at 4 and 1.39x at 16. It lowered p95 latency by 26–42% and the p95 of the first streamed text by 9–26%, with the same WER. With the clips repeated and the prefix cache on, it raised throughput 1.90x, 1.51x and 1.40x.
+
+Qwen3-ASR-0.6B can opt in to its pinned Apache-2.0 DFlash draft with the memory-conservative RTX 3090 profile:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_asr_0_6b_dflash.yaml \
+  --port 8000
+```
+
+The registry pins [`wilsonzheng0327/Qwen3-ASR-0.6B-dflash`](https://huggingface.co/wilsonzheng0327/Qwen3-ASR-0.6B-dflash) at `fbf0ce97e3b76d8cd9f3da1791a8872c3d4c3a45`; an ordinary `--model-path Qwen/Qwen3-ASR-0.6B` launch stays on plain decoding. The profile uses BF16, caps running requests at 16 and gives the stage a 0.65 static memory fraction. Add `--asr.engine.disable_speculative_decoding true` to the command above for the same profile without its draft.
+
+One RTX 3090 (24 GB, SM86), SGLang-Omni `c15bfc80`, SGLang 0.5.23 and PyTorch 2.14.1+cu130 measured the target `Qwen/Qwen3-ASR-0.6B@5eb144179a02acc5e5ba31e748d22b0cf3e303b0` against that draft. The SeedTTS revision was `27f4c1adee83b5b29b7c4b375f6b976324bda308`. Each side ran twice in ABBA order on fresh servers; each leg used one warmup and three measured repeats at every load, unique audio (666 EN clips and 1,010 ZH clips), streamed responses and the prefix cache off. Across all loads, repeats and legs, this produced 140,784 measured requests and 46,928 warmup requests. Loads above 16 queued at the profile's running-request cap.
+
+| concurrency | EN throughput gain | EN p95 latency | EN first output p95 | ZH throughput gain | ZH p95 latency | ZH first output p95 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1.79x | -36.9% | +0.6% | 1.60x | -33.0% | +1.7% |
+| 2 | 1.79x | -52.5% | -57.3% | 1.62x | -47.8% | -57.0% |
+| 4 | 1.59x | -42.2% | -55.6% | 1.40x | -32.5% | -53.0% |
+| 8 | 1.47x | -38.4% | -43.3% | 1.32x | -31.3% | -47.3% |
+| 16 | 1.27x | -27.7% | -25.1% | 1.21x | -24.8% | -34.5% |
+| 32 | 1.74x | -33.6% | -20.0% | 1.62x | -32.8% | -22.4% |
+| 64 | 1.72x | -37.4% | -34.4% | 1.63x | -35.5% | -32.8% |
+
+No request failed. Aggregate English WER was 1.6393% without the draft and 1.6295% with it; aggregate Chinese CER was 1.0135% and 1.0096%. Mean acceptance length was 5.08 on English and 4.38 on Chinese. Peak GPU memory rose from 18,485 to 19,187 MiB on English and from 18,527 to 19,243 MiB on Chinese. Every load completed, and no load from 1 to 16 was worse than plain decoding by the roadmap bounds.
 
 Ascend NPU runs separate validated examples and is greedy only; see [Ascend NPU graph execution](#ascend-npu-graph-execution).
 
