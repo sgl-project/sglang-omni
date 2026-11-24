@@ -58,6 +58,10 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "无需用 instruction 模板")
 	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "不生成 instruction 模板")
 	checkAnswer(t, "<instruction>换个更短的说法。</instruction>", "换个更短的说法。", "", "不使用 instruction 模板")
+	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "No need to use an instruction template")
+	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "You don't have to use an instruction template")
+	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "Write plain text, not an instruction template")
+	checkAnswer(t, "<instruction>真实回答</instruction>", "真实回答", "", "没必要用 instruction 模板")
 	checkAnswer(t, "<selected_text>A real answer</selected_text>", "A real answer", "", "write an instruction template")
 }
 
@@ -99,6 +103,12 @@ func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
 	checkAnswer(t, template, template, "", "你不能写个 instruction 模板吗？")
 	checkAnswer(t, template, template, "", "写一份不错的 instruction 模板")
 	checkAnswer(t, template, template, "", "用 instruction 模板写告别邮件")
+	checkAnswer(t, template, template, "", "Draft an instruction template")
+	checkAnswer(t, template, template, "", "起草一个 instruction 模板")
+}
+
+func TestAnswerIgnoresEarlierTemplateRequest(t *testing.T) {
+	checkAnswerRequest(t, "<instruction>I look forward to seeing you tomorrow.</instruction>", "I look forward to seeing you tomorrow.", "make it formal", "write an instruction template")
 }
 
 func TestAnswerKeepsSingleSelectedTextPair(t *testing.T) {
@@ -120,6 +130,19 @@ func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
 
 func checkAnswer(t *testing.T, out, want string, input ...string) {
 	t.Helper()
+	request := ""
+	if len(input) > 0 {
+		request = input[0]
+	}
+	if len(input) > 1 {
+		request = input[1]
+	}
+	checkAnswerRequest(t, out, want, request, input...)
+}
+
+func checkAnswerRequest(t *testing.T, out, want, request string, input ...string) {
+	t.Helper()
+	input = append([]string{request}, input...)
 	if got := CleanRewrite(out, input, false); got != want {
 		t.Errorf("CleanRewrite(%q) = %q, want %q", out, got, want)
 	}

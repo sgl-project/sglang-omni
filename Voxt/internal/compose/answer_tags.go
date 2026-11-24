@@ -50,11 +50,8 @@ func requestsInputTemplate(input []string, name string) bool {
 	if len(input) == 0 {
 		return false
 	}
-	// A session repeats the current typed and spoken request at input[1], before earlier turns.
+	// Source text and earlier turns follow input[0] and cannot authorize a template.
 	request := input[0]
-	if len(input) > 1 {
-		request = input[1]
-	}
 	splitWords := func(text string) []string {
 		return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
@@ -70,10 +67,9 @@ func requestsInputTemplate(input []string, name string) bool {
 		}
 		return false
 	}
-	englishActions := []string{"write", "create", "generate", "make", "produce", "use", "turn", "give", "show", "output", "return", "provide", "convert", "rewrite", "wrap", "need", "want"}
-	chineseActions := []string{"写", "生成", "创建", "输出", "返回", "给", "用", "改", "按", "做"}
-	chineseDenials := []string{"不要", "不用", "不需要", "不必", "无需", "无须", "勿"}
-	positiveMention, negatedMention := false, false
+	requestWords := splitWords(request)
+	requestNamesFormat := hasWord(requestWords, "tag", "tags", "template", "templates") || strings.Contains(request, "标签") || strings.Contains(request, "模板")
+	question := strings.ContainsAny(request, "?？")
 	clauseRequest := strings.NewReplacer(" and ", ", ", " but ", ", ", " so ", ", ").Replace(strings.ToLower(request))
 	clauses := strings.FieldsFunc(clauseRequest, func(r rune) bool {
 		return r == ',' || r == '，' || r == '.' || r == '。' || r == ';' || r == '；' || r == '!' || r == '！' || r == '?' || r == '？' || r == '\n'
@@ -87,122 +83,36 @@ func requestsInputTemplate(input []string, name string) bool {
 				break
 			}
 		}
-		if nameIndex < 0 || !hasWord(clauseWords, "tag", "tags", "template", "templates", "prompt", "prompts") && !strings.Contains(clause, "标签") && !strings.Contains(clause, "模板") && !strings.Contains(clause, "提示词") {
+		if nameIndex < 0 {
 			continue
 		}
-		negated := false
+		namesFormat := hasWord(clauseWords, "tag", "tags", "template", "templates") || strings.Contains(clause, "标签") || strings.Contains(clause, "模板")
+		namesFormat = namesFormat || len(clauseWords) == 1 && requestNamesFormat
+		namesIndefinitePrompt := nameIndex > 0 && (clauseWords[nameIndex-1] == "a" || clauseWords[nameIndex-1] == "an") && hasWord(clauseWords, "prompt", "prompts")
 		nameAt := strings.Index(clause, name)
+		namesTransformedPrompt := nameAt >= 0 && strings.Contains(clause[:nameAt], "改成") && strings.Contains(clause, "提示词")
+		if !namesFormat && !namesIndefinitePrompt && !namesTransformedPrompt {
+			continue
+		}
+		if nameAt < 0 {
+			continue
+		}
 		prefix := clause[:nameAt]
-		for _, denial := range chineseDenials {
-			negated = negated || strings.Contains(prefix, denial)
-		}
-		for _, action := range chineseActions {
-			for _, denial := range []string{"不", "别", "勿"} {
-				if strings.Contains(prefix, denial+action) && (denial != "别" || !strings.Contains(prefix, "分别"+action)) {
-					negated = true
-				}
+		politeNegativeQuestion := question && (strings.Contains(prefix, "can't you") || strings.Contains(prefix, "couldn't you") || strings.Contains(prefix, "cannot you") || strings.Contains(prefix, "不") && strings.Contains(clause, "吗") && (strings.Contains(clause, "你") || strings.Contains(clause, "您")))
+		negated := false
+		if !politeNegativeQuestion {
+			englishPrefix := strings.NewReplacer("not forget to", "", "n't forget to", "", "not just", "", "n't just", "").Replace(prefix)
+			negated = hasWord(splitWords(englishPrefix), "not", "never", "no") || strings.Contains(englishPrefix, "n't")
+			chinesePrefix := strings.NewReplacer("分别", "", "不错", "", "告别", "").Replace(prefix)
+			for _, denial := range []string{"不要", "不用", "不需要", "不必", "无需", "无须", "没必要", "勿"} {
+				negated = negated || strings.Contains(chinesePrefix, denial)
 			}
+			negated = negated || strings.Contains(chinesePrefix, "不") || strings.Contains(chinesePrefix, "别")
 		}
-		for i := 1; i < nameIndex; i++ {
-			if !hasWord(clauseWords[i:i+1], englishActions...) {
-				continue
-			}
-			previous := clauseWords[i-1]
-			directNegation := previous == "not" || previous == "never" || previous == "t" && i > 1 && strings.HasSuffix(clauseWords[i-2], "n")
-			contractionWithAdverb := i > 2 && clauseWords[i-2] == "t" && strings.HasSuffix(clauseWords[i-3], "n") && (previous == "really" || previous == "actually")
-			if directNegation || contractionWithAdverb || i > 1 && (clauseWords[i-2] == "not" || clauseWords[i-2] == "never") {
-				negated = true
-			}
-		}
-		if negated {
-			negatedMention = true
-		} else {
-			positiveMention = true
-		}
-	}
-	if negatedMention && !positiveMention {
-		return false
-	}
-	words := splitWords(request)
-	named := false
-	for _, word := range words {
-		if word == name {
-			named = true
-			break
-		}
-	}
-	if !named {
-		return false
-	}
-	question := strings.ContainsAny(request, "?？")
-	for _, action := range chineseActions {
-		actionAt := strings.Index(request, action)
-		if actionAt < 0 {
+		if negated || question && !politeNegativeQuestion && (hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要")) {
 			continue
 		}
-		prefix := strings.TrimSuffix(request[:actionAt], "使")
-		negated := strings.HasSuffix(prefix, "不") || strings.HasSuffix(prefix, "别") && !strings.HasSuffix(prefix, "分别")
-		for _, denial := range chineseDenials {
-			negated = negated || strings.HasSuffix(prefix, denial)
-		}
-		if negated || question && action == "用" {
-			continue
-		}
-		rest := request[actionAt+len(action):]
-		if strings.Contains(rest, "标签") || strings.Contains(rest, "模板") {
-			return true
-		}
-		if strings.Contains(rest, "提示词") {
-			promptAt := strings.Index(rest, "提示词")
-			if action == "改" && strings.Contains(rest[:promptAt], "成") {
-				return true
-			}
-			if action != "用" && action != "改" && action != "按" {
-				return true
-			}
-		}
-	}
-	hasAction := func(parts []string, targets ...string) bool {
-		for i, part := range parts {
-			if !hasWord(parts[i:i+1], targets...) {
-				continue
-			}
-			negated := i > 0 && (parts[i-1] == "not" || parts[i-1] == "never") || i > 1 && parts[i-1] == "t" && strings.HasSuffix(parts[i-2], "n")
-			if negated || question && (part == "use" || part == "need" || part == "want") {
-				continue
-			}
-			return true
-		}
-		return false
-	}
-	if hasAction(words, englishActions...) && hasWord(words, "tag", "tags", "template", "templates") {
 		return true
-	}
-	if !hasWord(words, "prompt", "prompts") {
-		return false
-	}
-	// Bare prompt wording counts only for an indefinite request or an explicit transformation.
-	for i, word := range words {
-		if word != name || i == 0 || words[i-1] != "a" && words[i-1] != "an" {
-			continue
-		}
-		for j := 0; j < i; j++ {
-			if words[j] != "into" && words[j] != "as" && words[j] != "to" {
-				continue
-			}
-			if hasAction(words[:j], "turn", "convert", "rewrite") {
-				return true
-			}
-		}
-		if hasAction(words[:i], "turn", "convert", "rewrite") {
-			continue
-		}
-		if hasAction(words[:i], "write", "create", "generate", "make", "produce", "give", "show", "output", "return", "provide") {
-			return true
-		}
-		if hasAction(words, "need", "want") && (!hasWord(words[i+1:], "to") || hasAction(words, "write", "create", "generate", "produce", "give", "show", "output", "return", "provide")) {
-			return true
-		}
 	}
 	return false
 }
