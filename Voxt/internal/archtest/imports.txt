@@ -74,6 +74,7 @@ session settings
 session snippet
 session store
 session vad
+snippet lang
 store/sqlitestore core
 store/sqlitestore store
 uitext appctx
