@@ -568,7 +568,8 @@ def test_attention_keeps_position_bias_under_the_torch_npu_mask_conversion(
         attention_bias=False,
         attention_dropout=0.0,
     )
-    config._attn_implementation = "sdpa"  # noqa: leading-underscore  # Transformers attribute
+    # Transformers selects the attention kernel through a private attribute.
+    config._attn_implementation = "sdpa"  # noqa: leading-underscore
     attention = NemotronAsrStreamingEncoderAttention(config, layer_idx=0).eval()
 
     hidden_states = torch.randn(1, 6, 16)
