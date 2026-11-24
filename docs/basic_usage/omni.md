@@ -91,6 +91,12 @@ Where top-level media land in the prompt depends on the model. Qwen3-Omni places
 
 When every part of the question comes from audio, video, or image input, set `"content": ""` on the user message. Leaving a text question in `content` alongside the media makes the model read both.
 
+### Video Decoding
+
+The following thread allocation applies to pipelines using the shared video loader and automatic CPU-based budget, including Qwen3-Omni. Available preprocessing factory options depend on the model.
+
+Each preprocessing worker decodes a request's videos on parallel decoders that share min(16, the stage's CPUs divided by its workers) FFmpeg threads, split evenly among the request's videos. Set `--preprocessing.factory.video_decode_threads N` to choose that count. A value at or below the video reader's own threads (`TORCHCODEC_NUM_THREADS`, 8 by default) decodes each video on the reader alone.
+
 ### Image and Text Input
 
 The examples below show the curl form. In Python, send the same JSON body as in Text Output and read the answer from `choices[0].message.content`.
@@ -268,6 +274,12 @@ with requests.post(
             pass
 ```
 
+### Speech Streaming Latency
+
+Speech can arrive in chunks so playback can begin before the whole answer is ready. First-audio latency is the wait before the first playable chunk arrives; it is different from the time needed to finish the entire reply.
+
+Smaller chunks can let playback begin sooner, while larger chunks can reduce transfer and processing overhead. The result depends on the model, audio decoder, server load, and network. Start with the model defaults and measure with your expected traffic before tuning. See [Qwen3-Omni speech chunking](../cookbook/qwen3_omni.md#speech-chunking-and-first-audio-latency) for its settings.
+
 ## Realtime Interaction
 
 Realtime interaction is separate from both a completed chat request and an SSE response. The client and server keep a WebSocket session open and exchange input and output events continuously. Model pages document the supported event names, audio formats, and session limits.
@@ -294,9 +306,47 @@ Models that take camera input during a session, such as MiniCPM-o and the Qwen3-
 
 Turn-based sessions may use client commits, `server_vad`, or semantic VAD when the deployment provides it. For barge-in, stop queued playback and ignore later audio deltas for the canceled response. If the listener heard only part of the reply, send the model-specific truncate event so conversation history matches what was played.
 
+## Memory and Concurrency
+
+The examples below use Qwen3-Omni. For other pipelines, choose the checkpoint and stage names from the model cookbook.
+
+By default, leave `mem_fraction_static` unset and let SGLang-Omni auto-size the SGLang AR memory budget. If a specific machine needs manual tuning, you can pin the value globally or per AR stage:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --mem-fraction-static 0.88
+```
+
+Use per-stage flags when the thinker and talker need different budgets:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008 \
+  --thinker.engine.mem_fraction_static 0.88 \
+  --talker_ar.engine.mem_fraction_static 0.88
+```
+
+`--mem-fraction-static` applies to every SGLang engine stage. A dotted per-stage path overrides the global value for that stage. Values must be greater than `0` and less than `1`.
+
+Set `engine.max_running_requests` on a stage to control how many requests it admits concurrently. Stage names and default limits depend on the pipeline; see the model cookbook for defaults and YAML examples.
+
+The same stage setting can be supplied through a pipeline YAML file. For example, a pipeline with a thinker stage can set its concurrency limit as follows:
+
+```yaml
+stages:
+  thinker:
+    engine:
+      max_running_requests: 16
+```
+
 ## Server Readiness
 
-Startup warmup depends on the pipeline and realtime deployment. A configured warmup must finish before `/health` reports ready; a pipeline without request warmup can become ready without exercising its chat path. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic multimodal requests, timeout, and skip option. Readiness does not guarantee that every input shape has been warmed up.
+Startup warmup depends on the pipeline and realtime deployment. When a pipeline configures request warmup, the server sends its warmup request once per replica of its most replicated process, sequentially, before reporting ready. `/health` returns HTTP 503 with status `starting` until warmup has passed through every stage; a failed warmup stops startup. `SGLANG_OMNI_WARMUP_TIMEOUT` bounds each warmup request in seconds (default 600), and `--skip-server-warmup` reports ready without running these requests.
+
+A pipeline without request warmup can become ready without exercising its chat path. Warmup covers only the configured request shapes; video input, larger batches, or other shapes can still compile kernel variants on first use. See [Qwen3-Omni Server Readiness](../cookbook/qwen3_omni.md#server-readiness) for its synthetic multimodal request.
 
 ## Request Parameters
 

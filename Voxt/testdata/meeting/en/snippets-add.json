@@ -1,0 +1,32 @@
+{
+  "name": "snippets-add",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [
+      {
+        "id": "s-sign",
+        "trigger": "sign off",
+        "text": "Best,\nAlex",
+        "preview": "Best, Alex"
+      },
+      {
+        "id": "s-link",
+        "trigger": "my meeting link",
+        "text": "https://zoom.us/j/1234567890",
+        "preview": "https://zoom.us/j/1234567890"
+      },
+      {
+        "id": "s-email",
+        "trigger": "my email",
+        "text": "name@example.com",
+        "preview": "name@example.com"
+      }
+    ],
+    "total": 3,
+    "order": 0
+  },
+  "snippets_ui": {
+    "edit_open": true
+  }
+}

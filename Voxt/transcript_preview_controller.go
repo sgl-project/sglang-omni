@@ -118,7 +118,14 @@ func (p *transcriptPreview) parsed(win *mygo.Window, in transcriptPreviewInput, 
 	}
 	data := transcriptpreview.Update{HTML: markup, Version: p.version, Streaming: in.streaming}
 	if !p.loaded {
-		p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), cssColor(in.background), in.dark), "")
+		// A translucent background is the clip's, under the page:
+		// the page painting it too would darken it.
+		background := cssColor(in.background)
+		_ = p.view.SetBackgroundColor(background) // the face's alpha may have changed
+		if in.background.A < 255 {
+			background = "transparent"
+		}
+		p.view.Page().LoadHTML(transcriptpreview.Page(data, in.size, in.rightPadding, cssColor(in.text), cssColor(in.link), background, in.dark), "")
 		p.loaded = true
 	} else {
 		_ = transcriptUpdate.EmitPage(p.view.Page(), data)

@@ -74,6 +74,21 @@ class DraftDecodeAttention(AttentionBackend):
         )
 
 
+def draft_capture_stream() -> torch.cuda.Stream:
+    """A pool stream for the draft graphs to capture on that is not torch.cuda.graph's default capture stream."""
+    # note (Haoling Pu): the encoder's graphs make the default stream only after the draft graphs capture, so it is made here first.
+    if torch.cuda.graph.default_capture_stream is None:
+        torch.cuda.graph.default_capture_stream = torch.cuda.Stream()
+    else:
+        pass
+    capture_stream = torch.cuda.Stream()
+    # note (Haoling Pu): torch.cuda.Stream() hands out PyTorch's 32 pool streams in turn, so a default stream made earlier comes round again every 32 streams, and the next one differs.
+    if capture_stream == torch.cuda.graph.default_capture_stream:
+        return torch.cuda.Stream()
+    else:
+        return capture_stream
+
+
 class DraftDecodeGraph:
     """The draft decode steps after a greedy round's first draft, recorded as one CUDA graph for batch_size requests.
 

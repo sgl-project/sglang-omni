@@ -81,6 +81,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
 			case "notes":
 				notesPage(c, fixture.state.Notes, host, &host.notesUI)
+			case "snippets":
+				snippetsPage(c, fixture.state.Snippets, host, &host.snipUI)
 			case "remote":
 				local := remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI}
 				ui.Scroll(c.Key("demo-remote")).Grow(1).Children(func() {

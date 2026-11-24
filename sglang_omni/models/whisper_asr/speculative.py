@@ -48,7 +48,10 @@ from sglang.srt.speculative.spec_utils import draft_pp_context
 from torch import nn
 from transformers import WhisperConfig
 
-from sglang_omni.models.whisper_asr.draft_cuda_graph import DraftDecodeGraph
+from sglang_omni.models.whisper_asr.draft_cuda_graph import (
+    DraftDecodeGraph,
+    draft_capture_stream,
+)
 from sglang_omni.models.whisper_asr.sglang_model import (
     LogitsProcessor,
     WhisperDecoderModel,
@@ -556,12 +559,7 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             free_bytes_before, _ = torch.cuda.mem_get_info()
             memory_pool = torch.cuda.graph_pool_handle()
             # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so these graphs take their own.
-            # note (Haoling Pu): torch.cuda.Stream() hands out PyTorch's 32 pool streams in turn, and the encoder's graphs make the default stream only after these capture, so it is made here first and these graphs take the next pool stream.
-            if torch.cuda.graph.default_capture_stream is None:
-                torch.cuda.graph.default_capture_stream = torch.cuda.Stream()
-            else:
-                pass
-            capture_stream = torch.cuda.Stream()
+            capture_stream = draft_capture_stream()
             # note (Haoling Pu): a round holds at most the request pool's rows, so a graph past the first size that holds them all would never replay.
             graph_batch_sizes = DRAFT_GRAPH_BATCH_SIZES[
                 : bisect.bisect_left(

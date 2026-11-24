@@ -6,11 +6,18 @@ import (
 )
 
 // TestFloatingWindowOptions: floating windows never activate VoxtNew
-// (mygo patch 0003), and start hidden above other windows.
+// (mygo patch 0003), and start hidden above other windows. A card's or a
+// preview's is an ordinary window that hovers while another app is in
+// front (patch 0020): tracked only while VoxtNew was active, the
+// preview's Use transcript stayed hovered and its tooltip covered the
+// live text.
 func TestFloatingWindowOptions(t *testing.T) {
 	o := floatingWindowOptions("pill", 220, 48, nil)
 	if !o.NonActivating || !o.AlwaysOnTop || !o.Hidden || !o.SkipTaskbar || !o.Frameless || o.Width != 220 || o.Height != 48 {
 		t.Errorf("options %+v", o)
+	}
+	if card := cardWindowOptions("pill", 220, 48, nil); card.NonActivating || !card.HoverWhileInactive || !card.AlwaysOnTop || !card.Hidden {
+		t.Errorf("card options %+v", card)
 	}
 	// Off macOS nothing can be activated.
 	if runtime.GOOS != "darwin" {

@@ -39,6 +39,7 @@ var navGroups = []navGroup{
 	}},
 	{"Resources", []navPage{
 		{"/dictionary", "Dictionary", dictionaryIcon},
+		{"/snippets", "Snippets", snippetsIcon},
 	}},
 	{"System", []navPage{
 		{"/logs", "Logs", logsIcon},
@@ -131,6 +132,8 @@ func pageTitleFor(translator *i18n.Translator, path string) string {
 		return translator.T("Language models")
 	case "/dictionary":
 		return translator.T("Dictionary")
+	case "/snippets":
+		return translator.T("Snippets")
 	case "/logs":
 		return translator.T("Logs")
 	case settingsPath:
@@ -148,19 +151,20 @@ var movedPaths = map[string]string{
 	"/language-models": remotePath,
 }
 
-// The pages' and the shell's icons (Solar; internal/icons/names.txt).
+// The pages' and shell's icons: the brand microphone and Solar icons.
 var (
 	homeIcon           = icons.Home2
 	historyIcon        = icons.History
-	transcribeIcon     = icons.Microphone3
+	transcribeIcon     = icons.VoxtMicrophone
 	translateIcon      = icons.Global
 	rewriteIcon        = icons.PenNewRound
 	appEnhancementIcon = icons.Target
 	modelsIcon         = icons.Soundwave
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
+	snippetsIcon       = icons.TextSquare
 	notesIcon          = icons.Notes
-	meetingIcon        = icons.MicrophoneLarge
+	meetingIcon        = icons.Dialog
 	permissionsIcon    = icons.ShieldKeyhole
 	logsIcon           = icons.ClipboardList
 	settingsIcon       = icons.Settings

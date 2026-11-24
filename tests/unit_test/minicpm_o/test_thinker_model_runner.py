@@ -527,6 +527,62 @@ def test_thinker_rejects_nonstatic_verify_before_model_loading(
 
 
 @pytest.mark.parametrize(
+    ("algorithm", "is_cuda", "penalty_owner"),
+    [
+        ("DSPARK", True, "verify_logits"),
+        ("DFLASH", True, "verify_logits"),
+        ("EAGLE3", True, None),
+        ("DSPARK", False, None),
+        (None, True, None),
+    ],
+)
+def test_linear_drafts_apply_repetition_penalty_in_verify_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    is_cuda: bool,
+    penalty_owner: str | None,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True,
+        speculative_algorithm=algorithm,
+        speculative_eagle_topk=1,
+    )
+    model_config = SimpleNamespace(model_path="model", vocab_size=8)
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(Mock(), None, None, None, model_config)),
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.get_tokenizer",
+        Mock(return_value=Mock(convert_tokens_to_ids=Mock(return_value=1))),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.thinker_model_runner.MiniCPMOThinkerModelRunner",
+        lambda *args: SimpleNamespace(
+            speculative_repetition_penalty_owner=None, reset_request=None
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.request_builders.make_thinker_scheduler_adapters",
+        Mock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler.OmniScheduler",
+        lambda **kwargs: kwargs["model_runner"],
+    )
+    monkeypatch.setattr(
+        bootstrap_module, "current_platform", SimpleNamespace(is_cuda=lambda: is_cuda)
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        model_runner = bootstrap_module.create_thinker_scheduler(server_args)
+    assert model_runner.speculative_repetition_penalty_owner == penalty_owner
+
+
+@pytest.mark.parametrize(
     ("capture_speech", "prefill_rows"), [(False, 8192), (True, 8192), (True, 8193)]
 )
 def test_speech_capture_copies_the_prefill_ceiling_and_text_capture_stays_empty(

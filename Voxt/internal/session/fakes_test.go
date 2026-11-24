@@ -345,6 +345,7 @@ func (s *fakeStream) Events() <-chan asr.Event { return s.events }
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
 	text string
+	said string // the language it reports (asr.Result.Lang)
 	err  error
 	hang bool
 
@@ -370,7 +371,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
 	}
-	return asr.Result{Text: f.text, Model: "fake-file"}, f.err
+	return asr.Result{Text: f.text, Lang: f.said, Model: "fake-file"}, f.err
 }
 
 // fakeLLM answers chats: text, or texts in turn (the last repeats),

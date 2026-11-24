@@ -12,6 +12,7 @@
 //	       + [Scene]         app enhancement: the app and the group's rules (M5)
 //	       + [Glossary]      the dictionary's terms (a dictionary of up to GlossaryAllUpTo), or the rule for a <glossary> block
 //	       + Output contract only the final text
+//	       + [Example]       Transcribe's clean-up example (with Cleanup)
 //	[user, assistant]        spoken Translate's clean-up example (Example)
 //	user   = [<glossary>…</glossary>]  a larger dictionary's terms that the text mentions
 //	         <input>…</input>
@@ -39,7 +40,7 @@
 // {title, content} for the answer card (ParseAnswer, PartialAnswer);
 // Previous turns make a follow-up.
 //
-// Imports: lang.
+// Imports: lang, snippet.
 package compose
 
 import (
@@ -124,6 +125,9 @@ type Input struct {
 	// already in TargetLanguage (the main language, #4024): the model can
 	// tell languages apart that share a script. "" for none.
 	BackLanguage string
+	// Snippets says that Text holds triggers of the user's snippets,
+	// marked (snippet.Mark): the prompt tells the model to keep them.
+	Snippets bool
 	// Text is the input: the recognised speech (Transcribe, Translate),
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
@@ -290,7 +294,11 @@ func Build(in Input) (Output, error) {
 	add(string(in.Task), render("role-"+string(in.Task), nil))
 	switch in.Task {
 	case Transcribe:
-		add("input", render("input-speech", nil))
+		input := render("input-speech", nil)
+		if in.Snippets {
+			input = strings.TrimSpace(input) + "\n" + render("snippets", nil)
+		}
+		add("input", input)
 		if in.Cleanup {
 			add("cleanup", render("cleanup", nil))
 		}
@@ -355,6 +363,13 @@ func Build(in Input) (Output, error) {
 		add("output", render("output-rewrite", nil))
 	default:
 		add("output", render("output-"+string(in.Task), nil))
+	}
+	if in.Task == Transcribe && in.Cleanup {
+		// note (luojiaxuan): Transcribe's clean-up example closes the system
+		// prompt, in the request's own <input> and <output> form. As an earlier
+		// user and assistant turn, it lets a short dictation read as an
+		// instruction about it (#4228; docs/eval.md).
+		add("example", render("example-transcribe", nil))
 	}
 	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {

@@ -109,7 +109,25 @@
                 "label": "Download",
                 "accessibility_label": "Download Qwen3-ASR 1.7B (6bit)"
               }
-            ]
+            ],
+            "draft": {
+              "model_id": "asr.accurate.draft",
+              "parent_id": "asr.qwen3-6bit",
+              "help": "Uses speculative decoding: a small draft model (725.7 MB) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.",
+              "installed": false,
+              "needs_download": false,
+              "size_text": "725.7 MB on disk",
+              "on": false,
+              "switch_label": "Faster transcription for Qwen3-ASR 1.7B (6bit)",
+              "actions": [
+                {
+                  "kind": "use",
+                  "model_id": "asr.accurate.draft",
+                  "label": "Use it",
+                  "accessibility_label": "Use Qwen3-ASR 1.7B DFlash draft"
+                }
+              ]
+            }
           }
         ]
       },

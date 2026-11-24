@@ -77,6 +77,7 @@ from sglang_omni.admission import (
     AdminDroppedRequestError,
     ContextExhaustedError,
     QueueFullError,
+    SessionCapacityExhaustedError,
 )
 from sglang_omni.model_runner.base import ModelRunner, PendingStep
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -2102,7 +2103,12 @@ class OmniScheduler(Generic[RequestDataT]):
             assert bridge is not None
             capacity_message = bridge.check_session_capacity(req_id)
             if capacity_message is not None:
-                self.emit_request_error(req_id, ValueError(capacity_message))
+                self.emit_request_error(
+                    req_id,
+                    SessionCapacityExhaustedError(
+                        f"{SessionCapacityExhaustedError.CODE}: {capacity_message}"
+                    ),
+                )
                 bridge.release_append_unit(req_id)
                 self.abort(req_id)
                 return
@@ -2461,13 +2467,14 @@ class OmniScheduler(Generic[RequestDataT]):
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
         # penalty once per verify block; logprobs come from the runner's sampler, which
         # speculative decode bypasses, and hidden-state results need the per-request
-        # extend lengths run_speculative_batch leaves unset.
+        # extend lengths run_speculative_batch leaves unset. A greedy request keeps
+        # min_p, since min_p never drops the most likely token.
         unsupported_options = [
             option_name
             for option_name, is_set in (
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
-                ("min_p", sampling_params.min_p > 0.0),
+                ("min_p", sampling_params.min_p > 0.0 and sampling_params.top_k != 1),
                 (
                     "seed",
                     sampling_params.sampling_seed is not None
