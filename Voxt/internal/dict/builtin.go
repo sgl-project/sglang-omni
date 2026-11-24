@@ -1,7 +1,10 @@
 package dict
 
 import (
+	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -15,6 +18,9 @@ type builtinTerm struct {
 	// here (matchText keeps one word all in one case: sglang, VOXT_HOME).
 	// Not for words like Cursor or prompt, nor for a style (API Key).
 	spelled bool
+	// where, for a name made of ordinary words, says where they are the
+	// name (asPlace); there only they are written as spelled.
+	where func(before, after string) bool
 	// hint: sent to the speech model after the user's terms (BuiltinHints).
 	hint bool
 }
@@ -42,7 +48,7 @@ var builtin = append([]builtinTerm{
 	{term: "ChatGPT", aliases: []string{"Chat GPT", "ChatsGPT", "ChadGPT", "Chad GPT", "ChatGTT"}, spelled: true},
 	{term: "OpenAI", aliases: []string{"OpenEye"}, spelled: true},
 	{term: "GitHub", aliases: []string{"Jithub"}, spelled: true},
-	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}},
+	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}, spelled: true, where: asPlace},
 	{term: "CUDA", spelled: true},
 	{term: "API key", aliases: []string{"APIQ", "APIT", "API T", "APIP"}, hint: true},
 	{term: "Gemini", aliases: []string{"Geminar"}},
@@ -124,7 +130,7 @@ func ReplaceWithBuiltin(text string, terms []store.Term) string {
 // withBuiltin is terms followed by the built-in terms they leave (see
 // ReplaceWithBuiltin), and the built-in terms written as spelled in any
 // case.
-func withBuiltin(terms []store.Term) ([]store.Term, map[string]bool) {
+func withBuiltin(terms []store.Term) ([]store.Term, map[string]casing) {
 	words := map[string]bool{}      // the user's terms and aliases
 	spelling := map[string]string{} // an enabled term, as the user writes it
 	off := map[string]bool{}        // a term the user turned off
@@ -141,7 +147,7 @@ func withBuiltin(terms []store.Term) ([]store.Term, map[string]bool) {
 		}
 	}
 	out := append([]store.Term(nil), terms...)
-	spelled := map[string]bool{}
+	spelled := map[string]casing{}
 	for _, b := range builtin {
 		key := strings.ToLower(b.term)
 		user := spelling[key]
@@ -161,8 +167,37 @@ func withBuiltin(terms []store.Term) ([]store.Term, map[string]bool) {
 			out = append(out, store.Term{Term: user, Aliases: aliases, Enabled: true})
 		default:
 			out = append(out, store.Term{Term: b.term, Aliases: aliases, Enabled: true})
-			spelled[b.term] = b.spelled
+			if b.spelled {
+				spelled[b.term] = casing{b.where}
+			}
 		}
 	}
 	return out, spelled
+}
+
+// casing is a built-in term matchText writes as spelled where it finds
+// it in another case: everywhere, or where says (nil: everywhere).
+type casing struct {
+	where func(before, after string) bool
+}
+
+// asPlace says whether words that are also ordinary ("hugging face")
+// stand for the name, between the text before and after them: after a
+// preposition of place ("on", "to", "from"…) or Chinese, or opening a
+// sentence, where the ordinary words would need an article ("the
+// hugging face emoji"); never before "emoji" or "表情".
+func asPlace(before, after string) bool {
+	next := strings.ToLower(strings.TrimLeftFunc(after, unicode.IsSpace))
+	if strings.HasPrefix(next, "emoji") || strings.HasPrefix(next, "emoticon") || strings.HasPrefix(next, "表情") {
+		return false
+	}
+	b := strings.TrimRightFunc(before, unicode.IsSpace)
+	if b == "" {
+		return true
+	}
+	if r, _ := utf8.DecodeLastRuneInString(b); strings.ContainsRune(".!?。！？\n", r) || unicode.Is(unicode.Han, r) {
+		return true
+	}
+	prev := strings.ToLower(b[strings.LastIndexFunc(b, unicode.IsSpace)+1:])
+	return slices.Contains([]string{"on", "to", "from", "at", "in", "into", "onto", "via"}, prev)
 }

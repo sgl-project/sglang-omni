@@ -62,6 +62,29 @@ func TestReplaceWithBuiltin(t *testing.T) {
 	}
 }
 
+// TestAsPlace: Hugging Face is two ordinary words; it is recased only
+// where it stands for the name (after "on", "to", "from"…, after Chinese,
+// opening a sentence), never as the emoji or after an article or adjective.
+func TestAsPlace(t *testing.T) {
+	for in, want := range map[string]string{
+		"The model is on hugging face.":          "The model is on Hugging Face.",
+		"download the weights from hugging face": "download the weights from Hugging Face",
+		"Hugging face has the weights.":          "Hugging Face has the weights.",
+		"好的。hugging face 上有权重":                   "好的。Hugging Face 上有权重",
+		"从hugging face下载":                        "从Hugging Face下载",
+		"Send me the hugging face emoji.":        "Send me the hugging face emoji.",
+		"Click on hugging face emoji.":           "Click on hugging face emoji.",
+		"Hugging face emojis are cute.":          "Hugging face emojis are cute.",
+		"发一个hugging face表情":                      "发一个hugging face表情",
+		"a big hugging face":                     "a big hugging face",
+		"Upload it to Hogging Face.":             "Upload it to Hugging Face.",
+	} {
+		if got := ReplaceWithBuiltin(in, nil); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestBuiltinHints: the built-in hints come after the user's, without
 // a term the user has or turned off (ignoring case).
 func TestBuiltinHints(t *testing.T) {

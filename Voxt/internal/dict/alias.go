@@ -44,13 +44,14 @@ func HighlightSpans(text string, terms []store.Term) []Span {
 // from index builtin on are the built-in words': a match of theirs inside
 // a longer token (inToken: X-Api-Key, Github.com, Support/SGLang Omni/)
 // stays as written too.
-func matchText(text string, terms []store.Term, highlight bool, spelled map[string]bool, builtin int) (string, []Span) {
+func matchText(text string, terms []store.Term, highlight bool, spelled map[string]casing, builtin int) (string, []Span) {
 	type pattern struct {
-		words   []string // the alias (or term), split at its spaces
-		term    string   // "" for a term itself: kept as written
-		size    int      // characters, for the longest first
-		spell   string   // a term in spelled: written so, unless oneCaseWord
-		builtin bool     // a built-in word's: not inside a token
+		words   []string                        // the alias (or term), split at its spaces
+		term    string                          // "" for a term itself: kept as written
+		size    int                             // characters, for the longest first
+		spell   string                          // a term in spelled: written so, unless oneCaseWord
+		where   func(before, after string) bool // spelled's where
+		builtin bool                            // a built-in word's: not inside a token
 	}
 	var patterns []pattern
 	fromBuiltin := false
@@ -73,10 +74,11 @@ func matchText(text string, terms []store.Term, highlight bool, spelled map[stri
 				replaced = true
 			}
 		}
-		if replaced || highlight || spelled[term] {
+		sp, spell := spelled[term]
+		if replaced || highlight || spell {
 			add(term, "")
-			if spelled[term] && !highlight {
-				patterns[len(patterns)-1].spell = term
+			if spell && !highlight {
+				patterns[len(patterns)-1].spell, patterns[len(patterns)-1].where = term, sp.where
 			}
 		}
 	}
@@ -102,7 +104,7 @@ func matchText(text string, terms []store.Term, highlight bool, spelled map[stri
 					spans = append(spans, Span{Start: i, End: i + n})
 				} else if p.builtin && inToken(text, i, i+n) {
 					b.WriteString(text[i : i+n])
-				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) {
+				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) && (p.where == nil || p.where(text[:i], text[i+n:])) {
 					b.WriteString(p.spell)
 				} else if p.term == "" {
 					b.WriteString(text[i : i+n])
