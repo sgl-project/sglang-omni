@@ -68,6 +68,13 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 		col.Justify(ui.Start) // the row stays put as the lines under it grow
 	}
 	col.Children(func() {
+		// After a recording the working row is as wide as the recording's,
+		// centred, so the icon stays where it was: the loader takes the
+		// waveform's slot; when a capsule comes, the feature's name gives
+		// way, and the loader and the capsules take its and the slot's room
+		// (recordingPillRow counts the same).
+		showTime := pillShowsTime(state, look)
+		named, loader := pillRowNamed(c, state)
 		ui.Row(c).Height(layout.RowH).Shrink(0).Gap(layout.Gap).AlignItems(ui.Center).Children(func() {
 			if state.Mode == ovRecording && pill.Starting {
 				startingIcon(c, pill, look)
@@ -76,29 +83,29 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 					ui.Icon(c, overlayKindIcon(pill.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(pill.Title)
 				})
 			}
-			if state.Mode == ovRecording && !pill.Starting {
+			if named {
 				ui.Text(c, pill.Title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
 					Label(i18n.T("Recording mode: %s", pill.Title))
 			}
 			if state.Mode == ovRecording {
 				waveform(c, pill.Levels[:], pill.Heard, look)
-				if look.time {
-					ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
-						ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
-					})
-				}
 			} else {
-				overlayLoader(c, pill.WorkingLabel, look, layout.WaveSlotW)
-			}
-			if pill.SceneText != "" {
-				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
-					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
+				overlayLoader(c, pill.WorkingLabel, look, loader)
 			}
 			if pill.CanSkip {
 				skip = cardCapsule(c.Key("ov-skip"), pill.SkipLabel, pill.SkipTooltip)
 			}
 			if pill.CanThink && pill.ThinkingLabel != "" {
 				thinkClicked = cardCapsule(c.Key("ov-think"), pill.ThinkingLabel, "")
+			}
+			if showTime {
+				ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
+					ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
+				})
+			}
+			if pill.SceneText != "" {
+				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
+					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
 			}
 		})
 		switch {
@@ -122,6 +129,54 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 	if thinkClicked {
 		actions.togglePillThinkMenu()
 	}
+}
+
+// pillShowsTime: the pill shows the recording's time (Overlay.ShowTime)
+// while it records, and after, still at its length, while it works on what
+// was heard (not for a selection, which has none).
+func pillShowsTime(state *sessionOverlayViewState, look pillLook) bool {
+	return look.time && (state.Mode == ovRecording || state.Pill.Heard)
+}
+
+// pillRowNamed is whether the pill's row shows the feature's name, and
+// its loader's slot: the name while it records (but while it starts) and
+// while it works on a recording, unless a capsule shows; then the loader
+// takes what is left of the name's and the waveform slot's room
+// (layout.LoaderSlotW). Without a recording, the working row is the icon,
+// the loader in the waveform's slot and the capsules.
+func pillRowNamed(c *ui.Context, state *sessionOverlayViewState) (bool, float32) {
+	pill := &state.Pill
+	if state.Mode == ovRecording {
+		return !pill.Starting, layout.WaveSlotW
+	}
+	if !pill.Heard {
+		return false, layout.WaveSlotW
+	}
+	width := func(key ovSized) float32 { w, _ := c.MeasureText(0, key.span()); return w }
+	if capsules := pillCapsules(pill, width); capsules > 0 {
+		return false, layout.LoaderSlotW(width(kindTitleText(pill.Title)), capsules)
+	}
+	return true, layout.WaveSlotW
+}
+
+// pillCapsules is how wide the working pill's capsules are together, the
+// Gap between them, each its text (measure) and 10 either side.
+func pillCapsules(pill *sessionPillViewState, measure func(ovSized) float32) float32 {
+	w, n := float32(0), 0
+	add := func(text string) {
+		w += measure(capsuleText(text)) + 2*10
+		n++
+	}
+	if pill.CanSkip {
+		add(pill.SkipLabel)
+	}
+	if pill.CanThink && pill.ThinkingLabel != "" {
+		add(pill.ThinkingLabel)
+	}
+	if n > 1 {
+		w += float32(n-1) * layout.Gap
+	}
+	return w
 }
 
 // startingIcon is the feature's icon while the microphone or the speech
@@ -337,7 +392,7 @@ func (state settingsOverlayPreviewState) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme(state.palette))
-			row, _ := recordingPillRow(&pill.Pill, true, state.ShowTime, 0, func(k ovSized) (float32, bool) {
+			row, _ := recordingPillRow(&pill.Pill, false, state.ShowTime, 0, func(k ovSized) (float32, bool) {
 				width, _ := c.MeasureText(k.wrap, k.span())
 				return width, true
 			})

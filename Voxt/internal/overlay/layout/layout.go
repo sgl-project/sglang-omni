@@ -108,6 +108,18 @@ func Place(wa mygo.Rectangle, o settings.Overlay, w, h int) (int, int) {
 	return x, y
 }
 
+// LoaderDotsW is the working pill's loader: five dots of 5, 4 apart.
+const LoaderDotsW = 5*5 + 4*4
+
+// LoaderSlotW is the loader's slot in the working pill when capsules
+// (capsules DIPs wide, the Gaps between them in) follow it: the room the
+// feature's name (title DIPs wide) and the waveform's slot had in the
+// recording pill, less the capsules', so that the row is as wide as it was;
+// at least the dots.
+func LoaderSlotW(title, capsules float32) float32 {
+	return max(LoaderDotsW, title+WaveSlotW-capsules)
+}
+
 // RowWidth is the width of the pill's row before the recording time: the
 // icon and waveform, then the group's name when one matched (scene DIPs wide,
 // at most SceneMaxW; 0 for none).
