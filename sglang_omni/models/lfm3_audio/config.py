@@ -69,13 +69,17 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
                 prefill_coalesce_requests=32,
                 prefill_coalesce_wait_ms=30.0,
             ),
+            # Same KV pool as the in-process default (about 2.0M tokens on an H100).
+            gpu_memory_fraction=0.70,
             gpu=0,
             next=DECODE_STAGE,
         ),
         StageConfig(
             name=DECODE_STAGE,
-            process="pipeline",
+            # note (ruilin): in the engine's process the codec shares the interpreter with the scheduler loop; on its own it served 61 vs 46 req/s at concurrency 64 on SeedTTS EN, H100 (14.9 vs 12.8 at 8, 78.7 vs 48.9 at 128).
+            process="decode",
             factory_path=f"{PACKAGE}.stages.create_decode_executor",
+            gpu_memory_fraction=0.15,
             gpu=0,
             terminal=True,
         ),

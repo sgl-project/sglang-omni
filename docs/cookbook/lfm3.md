@@ -1,6 +1,6 @@
 # LFM3-Audio and LFM3-Omni
 
-Liquid AI's [LFM3-Audio-2B](https://huggingface.co/LiquidAI/LFM3-Audio-2B) takes text and 16 kHz speech in and answers with text, 24 kHz speech (LiquidCodec, 12.5 frames per second), or interleaved text and speech. [LFM3-Omni-2B](https://huggingface.co/LiquidAI/LFM3-Omni-2B) adds image and video input. Both run as a `preprocessing → generation → decode` pipeline on one GPU and are served through `/v1/audio/speech` and `/v1/chat/completions`.
+Liquid AI's [LFM3-Audio-2B](https://huggingface.co/LiquidAI/LFM3-Audio-2B) takes text and 16 kHz speech in and answers with text, 24 kHz speech (LiquidCodec, 12.5 frames per second), or interleaved text and speech. [LFM3-Omni-2B](https://huggingface.co/LiquidAI/LFM3-Omni-2B) adds image and video input. Both run as a `preprocessing → generation → decode` pipeline on one GPU, with the codec decode in its own process, and are served through `/v1/audio/speech` and `/v1/chat/completions`.
 
 The checkpoints are released under the LFM Open License v1.0.
 
@@ -90,19 +90,21 @@ Speech frames are drawn by one of two samplers, set with `speech_sampler` under 
 
 With `seeded`, each request's speech state lives on the GPU, so the next decode step launches before the host reads the last one (`enable_async_decode`, on by default).
 
-SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100, with the default config (`seeded` rows: mean of two runs):
+SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100, with the default config (`seeded` rows: mean of two or three runs):
 
 | Concurrency | Sampler | WER | Latency p50 | RTF | Throughput |
 |---|---|---|---|---|---|
-| 8 | exact | 0.93% | 0.97 s | 0.22 | 8.2 req/s |
-| 8 | seeded | 0.91% | 0.62 s | 0.14 | 12.8 req/s |
-| 32 | exact | 0.90% | 2.67 s | 0.61 | 11.7 req/s |
-| 32 | seeded | 0.97% | 0.92 s | 0.21 | 33.9 req/s |
-| 64 | seeded | 0.94% | 1.36 s | 0.32 | 45.7 req/s |
+| 8 | exact | 1.05% | 0.91 s | 0.21 | 8.8 req/s |
+| 8 | seeded | 0.97% | 0.53 s | 0.12 | 14.9 req/s |
+| 32 | exact | 0.95% | 2.47 s | 0.56 | 12.8 req/s |
+| 32 | seeded | 0.94% | 0.75 s | 0.17 | 41.4 req/s |
+| 64 | seeded | 0.87% | 0.99 s | 0.24 | 60.7 req/s |
 
-LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32 (measured before prefill coalescing).
+With `--generation.engine.max_running_requests 128`, concurrency 128 serves 78.7 req/s (1.00% WER, 1.50 s p50). LFM3-Audio-2B with `seeded`: 0.95% WER and 15.1 req/s at concurrency 8, 0.95% and 42.2 req/s at 32.
 
-The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). New requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves about 46 instead of 40 req/s, and at 8 it costs about 3%. `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` under `stages.generation.factory` change it; `prefill_coalesce_requests: 0` turns it off.
+The codec decode runs in its own process, so it does not share the Python interpreter with the engine's scheduler loop: against the codec in the engine's process, that serves 14.9 vs 12.8 req/s at concurrency 8, 60.7 vs 46.2 at 64 and 78.7 vs 48.9 at 128. The generation stage reserves 70% of the GPU memory and the codec 15% (`gpu_memory_fraction` under `stages.generation` and `stages.decode`).
+
+The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). New requests wait up to 30 ms (or until 32 are waiting) to prefill together: with the codec in the engine's process it served about 46 instead of 40 req/s at concurrency 64 and cost about 3% at 8. `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` under `stages.generation.factory` change it; `prefill_coalesce_requests: 0` turns it off.
 
 ## Limitations
 
