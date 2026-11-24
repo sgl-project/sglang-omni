@@ -863,6 +863,17 @@ BF16 on one Intel Arc Pro B60 with 24 GB of memory:</p>
 SGLang selects the XPUGraph backend on XPU. The B60 validation uses
 <code class="docutils literal notranslate"><span class="pre">mem_fraction_static=0.70</span></code> to leave enough memory for all eight encoder graph
 buckets; <code class="docutils literal notranslate"><span class="pre">0.80</span></code> leaves too little graph-capture headroom on a 24 GB card.</p>
+<p><strong>Ascend NPU</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>OpenMOSS-Team/MOSS-Transcribe-Diarize<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.max_running_requests<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.cuda_graph_max_bs<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.80
+</pre></div>
+</div>
+<p>SGLang selects the NPU graph backend on Ascend, so decode, breakable prefill, and all eight encoder buckets are captured. The engine turns <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> off on NPU because the fused QKV RMSNorm+RoPE path queries the triton driver while dynamo traces the decoder, which aborts decode graph capture; eager decode keeps graph replay. The engine also exports <code class="docutils literal notranslate"><span class="pre">PER_STREAM_QUEUE=1</span></code> before the stage process starts, because the shared host task queue lets a decode-graph replay overlap the update that rebinds KV lengths and the scheduler deadlocks. Keep that value: startup rejects any NPU decode graph without it, and also rejects <code class="docutils literal notranslate"><span class="pre">TASK_QUEUE_ENABLE</span></code> other than unset or <code class="docutils literal notranslate"><span class="pre">1</span></code> and launch blocking on. To serve without decode graphs, pass <code class="docutils literal notranslate"><span class="pre">--asr.engine.disable_cuda_graph</span> <span class="pre">true</span></code>.</p>
+<p>Supported software versions are listed in <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU installation</span></a>.</p>
 <p>Before it reports ready, the server transcribes one second of audio, at most 8
 tokens. <code class="docutils literal notranslate"><span class="pre">/health</span></code> returns 503 with status <code class="docutils literal notranslate"><span class="pre">starting</span></code> until that request has
 finished, so the one-time kernel builds of the transcription path happen before

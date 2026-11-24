@@ -620,7 +620,12 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-throughput-stream-emit-chunk-frames">Streaming throughput (<code class="docutils literal notranslate"><span class="pre">stream_emit_chunk_frames</span></code>)</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#all-platforms">All platforms</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda">CUDA</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
+</ul>
+</li>
 </ul>
             </nav>
         </div>
@@ -643,13 +648,23 @@ SGLang-Omni it runs as a <code class="docutils literal notranslate"><span class=
 <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.
+On Ascend NPU, follow <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU installation</span></a> and use the override command below in place of the default one.</p>
 <p>Zonos2 uses the Descript DAC codec, which is not included in the base
 <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> package. From the SGLang-Omni repository root, install its
 model-specific dependencies:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">"descript-audiotools==0.7.2"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span><span class="s2">"descript-audio-codec==1.0.0"</span>
+</pre></div>
+</div>
+<p><strong>Ascend NPU:</strong> run this command instead of the one above, so the image’s <code class="docutils literal notranslate"><span class="pre">protobuf</span></code>, <code class="docutils literal notranslate"><span class="pre">torch</span></code>, and <code class="docutils literal notranslate"><span class="pre">torchaudio</span></code> stay as installed.
+Let <code class="docutils literal notranslate"><span class="pre">uv</span></code> resolve the rest of the dependency tree:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">echo</span><span class="w"> </span><span class="s2">"protobuf"</span><span class="w"> </span>&gt;<span class="w"> </span>/tmp/dac-overrides.txt
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--overrides<span class="w"> </span>/tmp/dac-overrides.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">"descript-audiotools==0.7.2"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="s2">"descript-audio-codec==1.0.0"</span>
+python<span class="w"> </span>-c<span class="w"> </span><span class="s2">"import dac; print('ok')"</span>
 </pre></div>
 </div>
 <p>Then download the model:</p>
@@ -901,6 +916,8 @@ Non-streaming RTF ~0.62–0.64, streaming ~0.65–0.72; coalescing is audio-neut
 </section>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
+<section id="all-platforms">
+<h3>All platforms<a class="headerlink" href="#all-platforms" title="Link to this heading">#</a></h3>
 <ul class="simple">
 <li><p><strong>Reference transcripts are not used.</strong> The shared API accepts <code class="docutils literal notranslate"><span class="pre">text</span></code> / <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, but
 Zonos2 currently conditions only on reference audio.</p></li>
@@ -911,6 +928,24 @@ has an isolated request RNG.</p></li>
 <li><p><strong>Rare runaway generation.</strong> A small fraction of utterances can loop and generate up to
 <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code>; lowering <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> bounds the output.</p></li>
 </ul>
+</section>
+<section id="cuda">
+<h3>CUDA<a class="headerlink" href="#cuda" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>The benchmark configuration above runs on CUDA with fp8 MoE experts, replayed decode graphs, asynchronous decode and a compiled sampler.</p></li>
+<li><p>The 2-GPU <code class="docutils literal notranslate"><span class="pre">multi_gpu</span></code> pipeline keeps the decoder on <code class="docutils literal notranslate"><span class="pre">cuda:0</span></code> and places the codec and speaker encoder on <code class="docutils literal notranslate"><span class="pre">cuda:1</span></code>.</p></li>
+</ul>
+</section>
+<section id="ascend-npu">
+<h3>Ascend NPU<a class="headerlink" href="#ascend-npu" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>ZONOS2 defaults to bf16 MoE experts on Ascend because no fp8 expert kernel is registered for these SoCs.</p></li>
+<li><p>It also defaults to <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> off, because the torch_npu inductor backend cannot compile ZONOS2’s graphs.
+Decode graphs stay enabled by default over batch sizes <code class="docutils literal notranslate"><span class="pre">[1,</span> <span class="pre">2,</span> <span class="pre">4,</span> <span class="pre">8,</span> <span class="pre">16]</span></code>.</p></li>
+<li><p>These are platform-derived defaults, not hard guards: an explicit engine override still takes effect.</p></li>
+<li><p>Supported software versions are listed in <a class="reference internal" href="../other_platforms/installation_npu.html"><span class="std std-doc">Ascend NPU installation</span></a>.</p></li>
+</ul>
+</section>
 </section>
 </section>
 
@@ -976,7 +1011,12 @@ has an isolated request RNG.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-throughput-stream-emit-chunk-frames">Streaming throughput (<code class="docutils literal notranslate"><span class="pre">stream_emit_chunk_frames</span></code>)</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#all-platforms">All platforms</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cuda">CUDA</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ascend-npu">Ascend NPU</a></li>
+</ul>
+</li>
 </ul>
   </nav></div>
 
