@@ -111,6 +111,9 @@ class ShortOpenGateTests(unittest.TestCase):
 
     def test_group_complete_requires_three_kept_observations(self):
         self.assertFalse(loop.short_open_group_complete([self.observation()]))
+        self.assertFalse(
+            loop.short_open_group_complete([self.observation() for _ in range(4)])
+        )
         complete = [self.observation() for _ in range(3)]
         self.assertTrue(loop.short_open_group_complete(complete))
 

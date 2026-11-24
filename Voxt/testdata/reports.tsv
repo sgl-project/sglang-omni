@@ -47,7 +47,7 @@ report	fix	symptom	level	check
 #4067	#4069	The setup guide offers no download when only the recommended pack's draft is missing, so Faster transcription never starts	L	TestGuidePackDraftLeft
 #4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
 #4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
-#4421	#4422	A width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
+#4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
 #4421	#4422	A width save's change notification delivered after the reset restores the resized width	L	TestResetKeepsHistoryWidthAfterLateNotification
 #4421	#4422	The reset's late background write erases a History width saved after the reset	L	TestResetKeepsNewerHistoryWidthSave
 #3893	#4396	Transcribe clean-up applies to every app, so dictation into a terminal waits on the language model	L	TestSceneTranscribeCleanup
