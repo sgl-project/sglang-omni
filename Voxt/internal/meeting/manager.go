@@ -265,15 +265,23 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
 		DurationMS: elapsed.Milliseconds(), Audio: m.id,
 	}
-	if !keep {
+	mistake := m.cfg.ASR != nil && elapsed < MistakeWithin && heardWords(m.snap.Segments, m.snap.Live) < MistakeWords
+	if !keep || mistake {
 		m.state = StateAsking
 		m.snap.State = StateAsking
+		m.snap.Mistake = mistake
 		mt.Status = store.MeetingAsking
 		m.mu.Unlock()
 		_ = m.cfg.Store.UpdateMeeting(ctx, mt)
 		m.notify(m.Current())
 		return nil
 	}
+	return m.fileLocked(ctx, mt, elapsed)
+}
+
+// fileLocked files a meeting that ended: done at once, or after the final
+// pass over its recording. It is called with mu held and lets go of it.
+func (m *Manager) fileLocked(ctx context.Context, mt store.Meeting, elapsed time.Duration) error {
 	m.snap.Elapsed = elapsed
 	if m.cfg.Settings().NoFinalPass || m.cfg.ASR == nil {
 		m.state = StateDone
@@ -313,11 +321,12 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 // Save keeps an asking-state meeting.
 func (m *Manager) Save(ctx context.Context, id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	if m.state != StateAsking {
+		m.mu.Unlock()
 		return fmt.Errorf("meeting: not asking")
 	}
 	mt := store.Meeting{
@@ -325,7 +334,14 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
 		DurationMS: m.timeline.Elapsed().Milliseconds(), Audio: m.id,
 	}
+	if m.snap.Mistake && m.cfg.Privacy().KeepHistory {
+		// It asked only because little was heard: kept, it is filed as
+		// any meeting that ended.
+		m.snap.Mistake = false
+		return m.fileLocked(ctx, mt, m.timeline.Elapsed())
+	}
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	meetingID := m.id
@@ -333,6 +349,9 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s) // the question is answered: its overlay goes
 	if auto {
 		go func() {
 			_ = m.GenerateMeetingSummary(context.Background(), meetingID)

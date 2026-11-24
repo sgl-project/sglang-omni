@@ -90,5 +90,8 @@
   "Could not record system audio. Try again, or record the microphone only.": "没能录制系统音频。请重试，或只录制麦克风。",
   "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
   "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。",
-  "You": "你"
+  "You": "你",
+  "Started by mistake?": "是误开的吗？",
+  "Only a few words were captured.": "只录到几个字。",
+  "Keep": "保留"
 }

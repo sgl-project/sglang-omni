@@ -100,11 +100,29 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
 	a.followMeeting(s, prev)
+	if s.State == meeting.StateAsking && s.Mistake && (prev.State != meeting.StateAsking || prev.ID != s.ID) {
+		a.keepUnanswered(s.ID)
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {
 		a.buildTrayMenu()
 	}
+}
+
+// meetingMistakeWait is how long "Started by mistake?" waits for an
+// answer. A meeting that asks blocks dictation and the next meeting, so a
+// question nobody answers is answered Keep: nothing is lost.
+const meetingMistakeWait = 30 * time.Second
+
+// keepUnanswered keeps meeting id when its question is still open after
+// meetingMistakeWait.
+func (a *app) keepUnanswered(id string) {
+	a.later(meetingMistakeWait, func() {
+		if s := a.meetSnap; s.ID == id && s.State == meeting.StateAsking && s.Mistake {
+			a.meetingSave()
+		}
+	})
 }
 
 func meetingModeFrom(s settings.Meeting) meeting.Mode {

@@ -106,7 +106,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return fixture.name
 		}
 		if overlay.ShowAsking {
-			return i18n.T("Save this meeting?")
+			return overlay.AskingText
 		}
 		if overlay.ShowFinishing {
 			return overlay.FinishingText

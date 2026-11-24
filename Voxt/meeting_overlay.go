@@ -69,7 +69,7 @@ func meetingOverlayView(
 		face.DragWindow().Children(func() {
 			switch {
 			case model.ShowAsking:
-				meetingOverlayAsking(c, actions)
+				meetingOverlayAsking(c, state, actions)
 			case model.ShowFinishing:
 				meetingOverlayFinishing(c, state.FinishingText, pillLook{motion: animation.motion, phase: animation.phase})
 			default:
@@ -335,16 +335,22 @@ func meetingMenuRow(c *ui.Context, label, hint string, on, danger bool) bool {
 	}).Clicked()
 }
 
-func meetingOverlayAsking(c *ui.Context, actions meetingOverlayActions) {
+// meetingOverlayAsking is the question a meeting ends with (history off,
+// or hardly anything heard): keep it or discard it, and under the
+// question a line saying why it asks.
+func meetingOverlayAsking(c *ui.Context, state meetingOverlayViewState, actions meetingOverlayActions) {
 	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, i18n.T("Save this meeting?")).FontSize(layout.NoticeSize).FontWeight(500).TextColor(ovText).SingleLine().Grow(1).MinWidth(0)
-		if cardCapsule(c.Key("mt-save"), i18n.T("Save"), "") {
+		ui.Text(c, state.AskingText).FontSize(layout.NoticeSize).FontWeight(500).TextColor(ovText).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+		if cardCapsule(c.Key("mt-save"), state.KeepLabel, "") {
 			actions.meetingSave()
 		}
-		if cardCapsule(c.Key("mt-discard"), i18n.T("Discard"), "") {
+		if cardCapsule(c.Key("mt-discard"), state.DiscardLabel, "") {
 			actions.meetingDiscard()
 		}
 	})
+	if state.AskingHint != "" {
+		ui.Text(c.Key("mt-ask-hint"), state.AskingHint).FontSize(12).FixedLineHeight(meetingOvAskHintH).TextColor(ovText2).SingleLine().Ellipsis("…").Shrink(0)
+	}
 }
 
 func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {

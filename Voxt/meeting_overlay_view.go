@@ -9,6 +9,7 @@ import (
 
 const (
 	meetingOvProblemH   = 42
+	meetingOvAskHintH   = 18
 	meetingOvCollapsedW = 400 + 2*layout.Pad
 	meetingOvCollapsedH = layout.PillH + 2*layout.Pad
 	meetingOvMaxFaceH   = 340
@@ -61,6 +62,8 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		model.Layout.Width, model.Layout.Height = width+2*layout.Pad, min(height, meetingOvMaxFaceH)+2*layout.Pad
 	} else if problem {
 		model.Layout.Height += meetingOvProblemH
+	} else if asking && state.AskingHint != "" {
+		model.Layout.Height += meetingOvAskHintH
 	}
 	return model
 }

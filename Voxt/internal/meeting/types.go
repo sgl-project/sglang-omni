@@ -94,6 +94,9 @@ type Snapshot struct {
 	Segments  []Segment
 	Translate string
 	Problem   *Problem
+	// Mistake: it asks (StateAsking) because it ended with hardly anything
+	// heard, not because history is off (mistake.go).
+	Mistake bool
 }
 
 // StartRequest names a new meeting.

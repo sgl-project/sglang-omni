@@ -70,6 +70,9 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		snapshot.State = state
 		addOverlay("state-"+string(state), snapshot)
 	}
+	mistake := meetingFixtureSnapshot()
+	mistake.State, mistake.Mistake = meeting.StateAsking, true
+	addOverlay("state-asking-mistake", mistake)
 	for _, mode := range []meeting.Mode{meeting.ModeMeeting, meeting.ModeSubtitles, meeting.ModeRecording} {
 		snapshot := meetingFixtureSnapshot()
 		snapshot.Mode = mode
