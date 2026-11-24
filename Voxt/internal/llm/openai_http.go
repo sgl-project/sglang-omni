@@ -82,7 +82,10 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 }
 
 // Models lists the IDs of the models the server has (GET {root}/models,
-// which Ollama, LM Studio and oMLX answer as OpenAI does), in its order.
+// which Ollama, LM Studio and oMLX answer as OpenAI does). A server on
+// this Mac answers with what is installed, kept in its order. A service
+// with a key answers with everything it sells, so only the models that
+// chat stay, the newest first.
 func (o *OpenAI) Models(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
@@ -92,14 +95,16 @@ func (o *OpenAI) Models(ctx context.Context) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	var list struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
+		Data []listedModel `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBody)).Decode(&list); err != nil {
 		e := newErr(CodeInvalidJSON, "provider", o.preset.ID)
 		e.Err = err
 		return nil, e
+	}
+	if !o.preset.KeyOptional {
+		list.Data = slices.DeleteFunc(list.Data, func(m listedModel) bool { return !chatModel(m.ID) })
+		slices.SortStableFunc(list.Data, func(a, b listedModel) int { return b.made().Compare(a.made()) })
 	}
 	var ids []string
 	for _, m := range list.Data {
@@ -108,6 +113,40 @@ func (o *OpenAI) Models(ctx context.Context) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// listedModel is one entry of GET /models. OpenAI dates a model with
+// created (Unix seconds), Anthropic with created_at (RFC 3339); others
+// send neither, or another type, which must not fail the list.
+type listedModel struct {
+	ID        string          `json:"id"`
+	Created   json.RawMessage `json:"created"`
+	CreatedAt json.RawMessage `json:"created_at"`
+}
+
+// made is when the model came out; zero when the entry does not say.
+func (m listedModel) made() time.Time {
+	var secs float64
+	if json.Unmarshal(m.Created, &secs) == nil && secs > 0 {
+		return time.Unix(int64(secs), 0)
+	}
+	var at time.Time
+	_ = json.Unmarshal(m.CreatedAt, &at)
+	return at
+}
+
+// notChat marks, in a model ID, a model that does not answer chat
+// requests: embeddings, speech, pictures, video, moderation, the old
+// completion models.
+var notChat = []string{
+	"embed", "tts", "whisper", "transcribe", "audio", "realtime", "dall-e", "image", "sora", "veo",
+	"moderation", "guard", "rerank", "babbage", "davinci", "turbo-instruct",
+}
+
+// chatModel reports whether a listed model ID is one to offer for chat.
+func chatModel(id string) bool {
+	id = strings.ToLower(id)
+	return !slices.ContainsFunc(notChat, func(mark string) bool { return strings.Contains(id, mark) })
 }
 
 // failed is the error of a response that is not 2xx.

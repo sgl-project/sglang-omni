@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -146,5 +148,46 @@ func TestSavedOllamaSetupMenuIsTheServersModels(t *testing.T) {
 	click(t, tt, "Test connection")
 	if d.test.res.Err != nil || !hasPrefix(tt, "Connection OK") {
 		t.Errorf("test connection: %v %q", d.test.res.Err, firstTexts(tt))
+	}
+}
+
+// TestKeyedServiceModelMenuListsServer: a service that needs a key
+// (OpenAI) is asked for its models when its dialog opens with a saved
+// key, and the Model menu is the answer; with no key it is not asked and
+// the menu is the preset's.
+func TestKeyedServiceModelMenuListsServer(t *testing.T) {
+	keys := &memKeys{m: map[string]string{}}
+	useKeys(t, keys)
+	var mu sync.Mutex
+	var asked []string // the key of each request
+	runListModels = func(_ context.Context, p settings.Provider, key string, _ *http.Client) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, p.ID+" "+key)
+		return []string{"gpt-6.1-sol", "gpt-5.2"}, nil
+	}
+	t.Cleanup(func() { runListModels = failListModels })
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	preset := lookupService(local.LLM, "openai").models
+
+	a.openProviderDialog(local.LLM, "openai")
+	frames(tt)
+	if got := a.provDlg.modelOptions(preset); len(asked) != 0 || !slices.Equal(got, append(slices.Clone(preset), otherModel())) {
+		t.Errorf("with no key: asked %d times, menu %q", len(asked), got)
+	}
+	a.provDlg = providerDialog{}
+
+	if err := keys.Set(providers.Account(local.LLM, "openai"), "", "sk-saved"); err != nil {
+		t.Fatal(err)
+	}
+	a.openProviderDialog(local.LLM, "openai")
+	frames(tt)
+	if !slices.Equal(asked, []string{"openai sk-saved"}) {
+		t.Errorf("with a saved key: asked %q", asked)
+	}
+	if got, want := a.provDlg.modelOptions(preset), []string{"gpt-6.1-sol", "gpt-5.2", "gpt-4.1-mini", otherModel()}; !slices.Equal(got, want) {
+		t.Errorf("menu %q, want %q", got, want)
 	}
 }
