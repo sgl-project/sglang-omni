@@ -25,7 +25,10 @@ var (
 	ovLiveColor = ui.RGBA(255, 255, 255, ovLiveAlpha)
 )
 
-const ovLiveAlpha = 0.85
+// ovLiveAlpha is the live text's; ovPreviewAlpha a streaming speech
+// model's words so far, before the recognised text replaces them: as dim
+// as ovText2 (macOS's secondary label), still 4.5:1 over a light desktop.
+const ovLiveAlpha, ovPreviewAlpha = 0.85, 0.6
 
 // faceStyle gives e, the face, its radius and translucent fill, hairline and
 // shadow. Give it children.
@@ -104,9 +107,9 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 				ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText2).SingleLine().Shrink(0)
 			})
 		case text != "" && look.lines:
-			liveLines(c.Key("ov-lines"), look.scroll, state.SessionID, text)
+			liveLines(c.Key("ov-lines"), look.scroll, state.SessionID, text, pill.LivePreview)
 		case text != "":
-			liveLine(c.Key("ov-live-"+state.SessionID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
+			liveLine(c.Key("ov-live-"+state.SessionID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion, pill.LivePreview)
 		case look.lines:
 			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
@@ -148,7 +151,7 @@ type linesScroll struct {
 // following the newest words unless the wheel took it up to read what
 // came before, until it is back at the end (#3644: the lines before the
 // last ten were out of reach).
-func liveLines(c *ui.Context, l *linesScroll, id, text string) {
+func liveLines(c *ui.Context, l *linesScroll, id, text string, preview bool) {
 	if l == nil {
 		l = &linesScroll{}
 	}
@@ -160,7 +163,11 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 		l.st.Y = math.MaxFloat32 // the end, wherever the new words put it
 	}
 	ui.Scroll(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).TrackScroll(&l.st).Label(text).Children(func() {
-		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
+		color := ovText
+		if preview {
+			color = ovText.Alpha(ovPreviewAlpha)
+		}
+		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(color).Shrink(0)
 	})
 }
 
@@ -169,7 +176,7 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 // edge, sliding left as more come (180 ms, Voxt's 0.2 s ease-out), the
 // letters at the left edge fading out to say that more came before. The
 // key is the session's: a new one starts where its text is, not sliding.
-func liveLine(c *ui.Context, text string, width float32, motion bool) {
+func liveLine(c *ui.Context, text string, width float32, motion, preview bool) {
 	measure := func(t string) float32 { w, _ := c.MeasureText(0, liveTextKey(t).span()); return w }
 	box := ui.Row(c).Width(width).Height(layout.LineH).Shrink(0).AlignItems(ui.Center).Clip().Label(text)
 	// Centred under the row while it fits; else its end at the right edge.
@@ -181,9 +188,13 @@ func liveLine(c *ui.Context, text string, width float32, motion bool) {
 	if motion {
 		x = box.AnimateTo("x", target, ui.Animation{Duration: 180 * time.Millisecond, Ease: ui.EaseOut})
 	}
-	shown, at, spans := text, x, []ui.Span{{Text: text, Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ovLiveColor}}
+	alpha := float32(ovLiveAlpha)
+	if preview {
+		alpha = ovPreviewAlpha
+	}
+	shown, at, spans := text, x, []ui.Span{{Text: text, Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha)}}
 	if x < 0 {
-		shown, at, spans = fadeSpans(text, -x, measure)
+		shown, at, spans = fadeSpans(text, -x, alpha, measure)
 		at = x + at
 	}
 	box.Children(func() {
@@ -194,9 +205,9 @@ func liveLine(c *ui.Context, text string, width float32, motion bool) {
 // fadeSpans are the part of text that shows when it is scrolled off DIPs
 // to the left, measure telling how wide a part of it is: the letters past
 // the edge, where the shown part starts (from the text's start), and its
-// spans: the letters in the layout.FadeW after the edge fading in from it, the
-// rest as ovText.
-func fadeSpans(text string, off float32, measure func(string) float32) (string, float32, []ui.Span) {
+// spans, at alpha: the letters in the layout.FadeW after the edge fading
+// in from it, the rest at alpha.
+func fadeSpans(text string, off, alpha float32, measure func(string) float32) (string, float32, []ui.Span) {
 	r := []rune(text)
 	// The first letter that ends past the edge.
 	lo, hi := 0, len(r)
@@ -215,11 +226,11 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 		end := measure(string(r[:i+1])) - off
 		mid := max(0, (start+end)/2)
 		a := min(mid/layout.FadeW, 1)
-		spans = append(spans, ui.Span{Text: string(r[i]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, ovLiveAlpha*(0.1+0.9*a))})
+		spans = append(spans, ui.Span{Text: string(r[i]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha*(0.1+0.9*a))})
 		start = end
 	}
 	if i < len(r) {
-		spans = append(spans, ui.Span{Text: string(r[i:]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ovLiveColor})
+		spans = append(spans, ui.Span{Text: string(r[i:]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha)})
 	}
 	return string(r[lo:]), from, spans
 }

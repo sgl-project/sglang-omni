@@ -391,6 +391,9 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		// An answer being written keeps its text's full strength (#4105).
 		if block.User {
 			textAlpha = 0.84
+			if block.Preview {
+				textAlpha = ovPreviewAlpha
+			}
 		} else {
 			titleAlpha = 0.54
 		}
