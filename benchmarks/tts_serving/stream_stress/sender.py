@@ -78,6 +78,8 @@ async def run_load(
         if config.warmup_requests:
             await run_warmup(config, responder, session, state)
 
+        # t0 is the first request's send time: arrival_offsets[0] is always 0.0, so the
+        # first request goes out immediately and every planned arrival is t0 + offset.
         load_start = time.perf_counter()
         tasks: set[asyncio.Task[None]] = set()
         try:
@@ -103,6 +105,7 @@ async def run_load(
                         state=state,
                         sequence=index,
                         planned_at_s=offset,
+                        planned_abs=planned_at,
                         load_start=load_start,
                         random_generator=random_generator,
                     )
@@ -150,7 +153,10 @@ async def run_warmup(
             random_generator=random_generator,
         )
         try:
+            recorder.mark_sent(time.perf_counter())
             await perform_request(config, session, recorder)
+        except asyncio.TimeoutError as exc:
+            recorder.fail_timeout(exc, observed_at=time.perf_counter())
         except asyncio.CancelledError:
             recorder.fail("cancelled", "warmup cancelled")
         except Exception as exc:
@@ -170,6 +176,7 @@ async def issue_request(
     state: LoadState,
     sequence: int,
     planned_at_s: float,
+    planned_abs: float,
     load_start: float,
     random_generator: random.Random,
 ) -> None:
@@ -180,6 +187,7 @@ async def issue_request(
         warmup=False,
         random_generator=random_generator,
     )
+    recorder.mark_planned(planned_abs)
     acquired = False
     entered = False
     try:
@@ -194,11 +202,7 @@ async def issue_request(
         try:
             await perform_request(config, session, recorder)
         except asyncio.TimeoutError as exc:
-            recorder.fail(
-                "chunk_timeout",
-                f"chunk wait timed out: {exc}",
-                observed_at=time.perf_counter(),
-            )
+            recorder.fail_timeout(exc, observed_at=time.perf_counter())
         except aiohttp.ClientError as exc:
             recorder.fail(
                 "transport_error",
@@ -331,13 +335,18 @@ async def read_sse_stream(
 
 
 def pop_sse_frame(buffer: bytearray) -> bytes | None:
-    for separator in (b"\r\n\r\n", b"\n\n"):
-        index = buffer.find(separator)
-        if index >= 0:
-            frame = bytes(buffer[:index])
-            buffer[: index + len(separator)] = b""
-            return frame
-    return None
+    """Pop the earliest complete SSE frame, whichever separator ends it."""
+    candidates = [
+        (index, separator)
+        for separator in (b"\r\n\r\n", b"\n\n")
+        if (index := buffer.find(separator)) >= 0
+    ]
+    if not candidates:
+        return None
+    index, separator = min(candidates, key=lambda candidate: candidate[0])
+    frame = bytes(buffer[:index])
+    buffer[: index + len(separator)] = b""
+    return frame
 
 
 def handle_sse_frame(

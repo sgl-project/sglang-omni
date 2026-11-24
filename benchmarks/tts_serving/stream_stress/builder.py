@@ -83,6 +83,7 @@ def print_console_report(
         f"   reasons={json.dumps(report.broken_reasons, ensure_ascii=False)}",
         "",
         "  metric                    count      mean       p50       p95       p99       max",
+        metric_line("dispatch lag (s)", metrics["dispatch_lag_s"]),
         metric_line("TTFA (s)", metrics["ttfa_s"]),
         metric_line("latency (s)", metrics["latency_s"]),
         metric_line("RTF", metrics["rtf"]),
@@ -96,7 +97,8 @@ def print_console_report(
             f"{threshold_name}={'n/a' if value is None else f'{value:.2f}%'}"
             for threshold_name, value in metrics["continuity_pass_rate_pct"].items()
         ),
-        f"  throughput           : achieved_qpm={report.achieved_qpm:.2f}"
+        f"  throughput           : achieved_qpm="
+        f"{'n/a' if report.achieved_qpm is None else f'{report.achieved_qpm:.2f}'}"
         f"  qps={report.throughput_qps:.3f}"
         f"  audio_s/s={report.audio_throughput_s_per_s:.3f}",
         f"  load generator       : lagged={load.get('load_generator_lagged')}"

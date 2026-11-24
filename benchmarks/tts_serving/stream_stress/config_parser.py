@@ -44,8 +44,7 @@ class StressConfig:
     text_id_field: str | None
     text_repeat: str
 
-    qpm: float | None
-    request_rate: float
+    qpm: float
     total_requests: int
     duration_s: float | None
     warmup_requests: int
@@ -72,7 +71,6 @@ class StressConfig:
 
     underrun_thresholds_ms: tuple[int, ...]
     broken_underrun_ms: float
-    stall_broken_s: float
     min_audio_duration_s: float
 
     output: Path
@@ -122,7 +120,6 @@ class StressConfig:
             },
             "load": {
                 "qpm": self.qpm,
-                "request_rate": round(self.request_rate, 6),
                 "total_requests": self.total_requests,
                 "duration_s": self.duration_s,
                 "warmup_requests": self.warmup_requests,
@@ -151,7 +148,6 @@ class StressConfig:
             "stream_health": {
                 "underrun_thresholds_ms": list(self.underrun_thresholds_ms),
                 "broken_underrun_ms": self.broken_underrun_ms,
-                "stall_broken_s": self.stall_broken_s,
                 "min_audio_duration_s": self.min_audio_duration_s,
                 "collect_outcomes": self.collect_outcomes,
             },
@@ -313,16 +309,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     load = parser.add_argument_group("load and QPM")
-    rate = load.add_mutually_exclusive_group()
-    rate.add_argument(
-        "--qpm", type=float, default=None, help="requests per minute, defaults to 60"
-    )
-    rate.add_argument(
-        "--request-rate",
+    load.add_argument(
+        "--qpm",
         type=float,
-        default=None,
-        metavar="RPS",
-        help="requests per second, mutually exclusive with --qpm",
+        default=60.0,
+        help="target requests per minute; this is the only rate unit",
     )
     load.add_argument(
         "--total-requests", type=int, default=100, help="number of measured requests"
@@ -406,12 +397,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=200.0,
         help="max playback underrun that marks a broken stream",
-    )
-    audio.add_argument(
-        "--stall-broken-s",
-        type=float,
-        default=2.0,
-        help="chunk gap that marks a broken stream",
     )
     audio.add_argument(
         "--min-audio-duration-s",
@@ -506,17 +491,9 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         else:
             headers[field_name.strip()] = field_value.strip()
 
-    qpm: float | None
-    if options.request_rate is not None:
-        if options.request_rate <= 0:
-            errors.append("--request-rate must be > 0")
-        request_rate = options.request_rate
-        qpm = request_rate * 60.0
-    else:
-        qpm = 60.0 if options.qpm is None else options.qpm
-        if qpm <= 0:
-            errors.append("--qpm must be > 0")
-        request_rate = qpm / 60.0
+    qpm = options.qpm
+    if qpm <= 0:
+        errors.append("--qpm must be > 0")
 
     if options.duration_s is not None and options.duration_s <= 0:
         errors.append("--duration-s must be > 0")
@@ -544,14 +521,8 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         errors.append("--channels / --bit-depth is invalid")
     if options.fallback_sample_rate <= 0:
         errors.append("--fallback-sample-rate must be > 0")
-    if (
-        options.broken_underrun_ms < 0
-        or options.stall_broken_s <= 0
-        or options.min_audio_duration_s < 0
-    ):
-        errors.append(
-            "stream-health thresholds cannot be negative and --stall-broken-s must be > 0"
-        )
+    if options.broken_underrun_ms < 0 or options.min_audio_duration_s < 0:
+        errors.append("stream-health thresholds cannot be negative")
 
     try:
         thresholds = tuple(
@@ -605,7 +576,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
     offsets, total_requests = arrival_offsets(
         count=options.total_requests,
         duration_s=options.duration_s,
-        request_rate=request_rate,
+        qpm=qpm,
         mode=options.arrival_mode,
         seed=options.arrival_seed,
         ramp_up_s=options.ramp_up_s,
@@ -641,7 +612,6 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         text_id_field=options.text_id_field,
         text_repeat=options.text_repeat,
         qpm=qpm,
-        request_rate=request_rate,
         total_requests=total_requests,
         duration_s=options.duration_s,
         warmup_requests=options.warmup,
@@ -665,7 +635,6 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         bit_depth=options.bit_depth,
         underrun_thresholds_ms=thresholds,
         broken_underrun_ms=options.broken_underrun_ms,
-        stall_broken_s=options.stall_broken_s,
         min_audio_duration_s=options.min_audio_duration_s,
         output=output,
         summary_json=summary_json,
@@ -830,15 +799,20 @@ def arrival_offsets(
     *,
     count: int,
     duration_s: float | None,
-    request_rate: float,
+    qpm: float,
     mode: str,
     seed: int,
     ramp_up_s: float,
     ramp_start_fraction: float,
 ) -> tuple[tuple[float, ...], int]:
-    """Build open-loop arrival times; duration_s takes precedence over count."""
-    if request_rate <= 0:
+    """Build open-loop arrival times in seconds from QPM.
+
+    Offsets are relative to the first request, which is always at 0.0.
+    duration_s takes precedence over count.
+    """
+    if qpm <= 0:
         return (), 0
+    request_rate = qpm / 60.0
     if mode == "burst":
         return (0.0,) * count, count
 
@@ -901,7 +875,7 @@ def describe_plan(config: StressConfig) -> str:
         f"run_id           : {config.run_id}",
         f"target           : POST {config.url}",
         f"stream protocol  : stream_format={config.stream_format}, response_format={config.response_format}",
-        f"QPM / RPS        : {config.qpm} / {config.request_rate:.6f}",
+        f"QPM              : {config.qpm}",
         f"arrival          : mode={config.arrival_mode}, ramp_up_s={config.ramp_up_s}, seed={config.arrival_seed}",
         f"requests         : {config.total_requests} + warmup {config.warmup_requests}, concurrency={config.max_concurrency or 'unlimited'}",
         (

@@ -57,6 +57,26 @@ def summarize(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+def classify_timeout(exc: BaseException, *, received_chunk: bool) -> str:
+    """Map a timeout exception to the stage that expired.
+
+    aiohttp raises ConnectionTimeoutError for the connect timeout, SocketTimeoutError
+    for the sock_read (inter-chunk) timeout, and a bare TimeoutError for the total
+    timeout. Older aiohttp raises ServerTimeoutError for both of the first two, so the
+    message is used as a fallback. Matching by class name keeps this import-free.
+    """
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if "ConnectionTimeoutError" in names:
+        return "connect_timeout"
+    if "SocketTimeoutError" in names:
+        return "chunk_timeout" if received_chunk else "first_chunk_timeout"
+    if "ServerTimeoutError" in names:
+        if "connect" in str(exc).lower():
+            return "connect_timeout"
+        return "chunk_timeout" if received_chunk else "first_chunk_timeout"
+    return "total_timeout"
+
+
 def compute_playback_underrun(
     chunk_records: list[ChunkRecord],
 ) -> tuple[float | None, int]:
@@ -244,6 +264,7 @@ class StreamRecorder:
         self.warmup = warmup
         self.planned_at_s = planned_at_s
 
+        self.planned_abs: float | None = None
         self.sent_at: float | None = None
         self.completed_at: float | None = None
         self.http_status: int | None = None
@@ -273,6 +294,15 @@ class StreamRecorder:
     @property
     def bytes_per_second(self) -> float:
         return float(self.sample_rate * self.channels * self.bit_depth // 8)
+
+    def mark_planned(self, planned_abs: float) -> None:
+        """Anchor all timing to the scheduled arrival, so client-side queueing counts."""
+        self.planned_abs = planned_abs
+
+    @property
+    def origin(self) -> float | None:
+        """Clock start for TTFA, chunk arrivals, and latency."""
+        return self.planned_abs if self.planned_abs is not None else self.sent_at
 
     def mark_sent(self, observed_at: float) -> None:
         self.sent_at = observed_at
@@ -354,7 +384,9 @@ class StreamRecorder:
     ) -> None:
         if self.sent_at is None:
             self.sent_at = observed_at
-        arrival_s = max(0.0, observed_at - self.sent_at)
+        origin = self.origin
+        assert origin is not None
+        arrival_s = max(0.0, observed_at - origin)
         previous = self.chunks[-1].arrival_s if self.chunks else None
         record = ChunkRecord(
             index=len(self.chunks),
@@ -386,6 +418,20 @@ class StreamRecorder:
         if observed_at is not None and self.completed_at is None:
             self.completed_at = observed_at
 
+    def fail_timeout(self, exc: BaseException, *, observed_at: float) -> None:
+        """Record a timeout under the stage that expired."""
+        config = self.config
+        kind = classify_timeout(exc, received_chunk=bool(self.chunks))
+        limits = {
+            "connect_timeout": f"connect timed out ({config.connect_timeout_s}s)",
+            "first_chunk_timeout": (
+                f"no data before the first chunk ({config.chunk_timeout_s}s)"
+            ),
+            "chunk_timeout": (f"no data between chunks ({config.chunk_timeout_s}s)"),
+            "total_timeout": f"request exceeded the total timeout ({config.timeout_s}s)",
+        }
+        self.fail(kind, limits[kind], observed_at=observed_at)
+
     def mark_completed(self, observed_at: float) -> None:
         if self.completed_at is None:
             self.completed_at = observed_at
@@ -396,8 +442,9 @@ class StreamRecorder:
     def finalize(self, *, load_start: float) -> RequestRecord:
         config = self.config
         sent_at = self.sent_at or load_start
-        completed_at = self.completed_at or sent_at
-        latency_s = max(0.0, completed_at - sent_at)
+        origin = self.origin if self.origin is not None else sent_at
+        completed_at = self.completed_at or origin
+        latency_s = max(0.0, completed_at - origin)
         audio_duration_s = self.audio_bytes_total / self.bytes_per_second
 
         inter_chunk = [
@@ -417,7 +464,6 @@ class StreamRecorder:
         self.health_failures.update(
             self.health_reasons(
                 audio_duration_s=audio_duration_s,
-                max_inter_chunk=max_inter_chunk,
                 max_underrun=max_underrun,
             )
         )
@@ -425,8 +471,10 @@ class StreamRecorder:
         fatal = {
             "http_error",
             "transport_error",
-            "timeout",
+            "connect_timeout",
+            "first_chunk_timeout",
             "chunk_timeout",
+            "total_timeout",
             "cancelled",
             "no_audio",
             "partial_audio_frame",
@@ -506,7 +554,6 @@ class StreamRecorder:
         self,
         *,
         audio_duration_s: float,
-        max_inter_chunk: float | None,
         max_underrun: float | None,
     ) -> set[str]:
         config = self.config
@@ -519,8 +566,6 @@ class StreamRecorder:
             reasons.add("partial_audio_frame")
         if self.audio_bytes_total and audio_duration_s < config.min_audio_duration_s:
             reasons.add("audio_too_short")
-        if max_inter_chunk is not None and max_inter_chunk > config.stall_broken_s:
-            reasons.add("chunk_stall")
         if (
             max_underrun is not None
             and max_underrun > config.broken_underrun_ms / 1000.0
@@ -571,10 +616,11 @@ class AggregateReport:
     broken_streams: int
     broken_rate: float
     success_rate: float
-    achieved_qpm: float
+    achieved_qpm: float | None
     throughput_qps: float
     audio_seconds_total: float
     audio_throughput_s_per_s: float
+    dispatch_lag_s: dict[str, Any]
     ttfa_s: dict[str, Any]
     latency_s: dict[str, Any]
     rtf: dict[str, Any]
@@ -602,12 +648,17 @@ class AggregateReport:
                 "success_rate": round(self.success_rate, 6),
                 "broken_streams": self.broken_streams,
                 "broken_rate": round(self.broken_rate, 6),
-                "achieved_qpm": round(self.achieved_qpm, 3),
+                "achieved_qpm": (
+                    round(self.achieved_qpm, 3)
+                    if self.achieved_qpm is not None
+                    else None
+                ),
                 "throughput_qps": round(self.throughput_qps, 6),
                 "audio_seconds_total": round(self.audio_seconds_total, 3),
                 "audio_throughput_s_per_s": round(self.audio_throughput_s_per_s, 6),
             },
             "metrics": {
+                "dispatch_lag_s": self.dispatch_lag_s,
                 "ttfa_s": self.ttfa_s,
                 "latency_s": self.latency_s,
                 "rtf": self.rtf,
@@ -698,7 +749,6 @@ class Responder:
         load = dict(load_stats)
         load["planned_requests"] = self.config.total_requests
         load["qpm"] = self.config.qpm
-        load["request_rate"] = round(self.config.request_rate, 6)
         load["arrival_mode"] = self.config.arrival_mode
         load["max_concurrency"] = self.config.max_concurrency
         load["warmup_completed"] = len(warmups)
@@ -715,10 +765,11 @@ class Responder:
             broken_streams=len(broken),
             broken_rate=(len(broken) / total) if total else 0.0,
             success_rate=(len(successes) / total) if total else 0.0,
-            achieved_qpm=total / window * 60.0,
+            achieved_qpm=achieved_qpm(scored),
             throughput_qps=total / window,
             audio_seconds_total=audio_seconds,
             audio_throughput_s_per_s=audio_seconds / window,
+            dispatch_lag_s=summarize([record.dispatch_lag_s for record in scored]),
             ttfa_s=summarize(
                 [record.ttfa_s for record in successes if record.ttfa_s is not None]
             ),
@@ -739,6 +790,20 @@ class Responder:
             http_status_counts=statuses,
             load=load,
         )
+
+
+def achieved_qpm(records: list[RequestRecord]) -> float | None:
+    """Return the dispatch rate in requests per minute.
+
+    N requests span N - 1 inter-arrival gaps, measured between the first and last send.
+    """
+    if len(records) < 2:
+        return None
+    sent = [record.sent_at_s for record in records]
+    span = max(sent) - min(sent)
+    if span <= 0:
+        return None
+    return (len(records) - 1) / span * 60.0
 
 
 def format_metric(value: float | None) -> str:
