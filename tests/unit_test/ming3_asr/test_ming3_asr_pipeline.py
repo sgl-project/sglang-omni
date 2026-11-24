@@ -283,7 +283,7 @@ def mock_thinker_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_dspark_checkpoint_lives_until_stage_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DSpark greedy requests must survive architecture and sampling adaptation."""
+    """DSpark sampled, penalized and greedy requests survive architecture and sampling adaptation."""
     checkpoint = TemporaryDirectory(prefix="test-ming-dspark-")
     checkpoint_path = Path(checkpoint.name)
     Qwen3Config(
@@ -326,8 +326,10 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
     assert draft_config.hf_config.architectures == ["ReducedVocabularyDSparkDraftModel"]
 
     payload = StagePayload(
-        request_id="greedy-request",
-        request=OmniRequest(inputs=None, params={"temperature": 0.7}),
+        request_id="sampled-request",
+        request=OmniRequest(
+            inputs=None, params={"temperature": 0.7, "repetition_penalty": 1.2}
+        ),
         data={
             "features": [torch.zeros(1)],
             "input_ids": torch.tensor([1, 7]),
@@ -335,10 +337,13 @@ def test_dspark_checkpoint_lives_until_stage_shutdown(
             "audio_embeddings": torch.zeros(1, HIDDEN_SIZE),
         },
     )
-    with pytest.raises(ValueError, match="requires temperature=0") as rejected:
-        stages.OmniScheduler.call_args.kwargs["request_builder"](payload)
-    assert generation_error_status_code(RuntimeError(str(rejected.value))) == 400
-    stages.Ming3ASRPreLMEncoderService.return_value.encode.assert_not_called()
+    sampled_request = stages.OmniScheduler.call_args.kwargs["request_builder"](payload)
+    assert sampled_request.req.sampling_params.temperature == 0.7
+    assert sampled_request.req.sampling_params.repetition_penalty == 1.2
+    assert (
+        stages.Ming3AudioModelRunner.return_value.speculative_repetition_penalty_owner
+        == "verify_logits"
+    )
     payload.data["features"] = []
     payload.request.params = {}
     greedy_request = stages.OmniScheduler.call_args.kwargs["request_builder"](payload)

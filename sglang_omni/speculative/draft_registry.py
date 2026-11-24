@@ -59,6 +59,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wirybeaver/Ming-3.0-asr-tiny-dspark",
         draft_model_revision="3c4d61f6b0e09e91db3480c73b9227e6e2af451d",
         license="mit",
+        is_default_on=True,
     ),
     PinnedDraft(
         model_path="Qwen/Qwen3-ASR-1.7B",
@@ -123,6 +124,7 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark",
         draft_model_revision="695fbc9d88a99389cbe70a26b81c5fc404dcc83a",
         license="apache-2.0",
+        is_default_on=True,
     ),
     # note (wilsonzheng0327): configs written before the Apache-2.0 draft name only this path, so it keeps the revision they were measured on.
     PinnedDraft(

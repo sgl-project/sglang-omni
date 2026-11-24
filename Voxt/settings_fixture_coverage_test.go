@@ -224,6 +224,9 @@ func checkSettingsAppearanceFixtures(t *testing.T, locale string, fixtures map[s
 	if !variant.ReduceMotion {
 		t.Errorf("%s: appearance variant does not reduce motion", locale)
 	}
+	if variant.Opening {
+		t.Errorf("%s: the opening's switch shows on while Reduce motion is on", locale)
+	}
 	overlay := requireSettingsDialogFixture(t, locale, fixtures, "settings-overlay-top-live-lines").Overlay
 	if overlay.Position != 1 || overlay.LiveLayout != 1 {
 		t.Errorf("%s: overlay variant has position=%d and live layout=%d", locale, overlay.Position, overlay.LiveLayout)
