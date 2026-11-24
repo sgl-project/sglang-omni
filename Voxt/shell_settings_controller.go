@@ -114,8 +114,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.syncTrees() // appenhance.go
 	}
 	if !reflect.DeepEqual(old.Features, new.Features) {
-		a.syncHotkeys()   // session_hotkeys.go
-		a.buildTrayMenu() // the shortcuts it shows
+		a.syncHotkeys()          // session_hotkeys.go
+		a.buildTrayMenu()        // the shortcuts it shows
+		a.meetingDetectChanged() // meeting_detect.go: Detect meetings, the hidden Meetings
 	}
 	if !slices.Equal(old.Audio.Devices, new.Audio.Devices) {
 		a.buildTrayMenu() // the microphone it checks

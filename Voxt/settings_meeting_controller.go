@@ -63,6 +63,7 @@ func (a *app) setMeetingHideFromSharing(hideFromSharing bool) {
 	a.meetingUI.hide = hideFromSharing
 	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.HideFromSharing = hideFromSharing })
 	a.applyMeetingOverlayProtection()
+	a.syncMeetingAsk() // meeting_ask_window.go: the card follows it too
 }
 
 // setMeetingDetect turns the detection of meetings on or off; off, a

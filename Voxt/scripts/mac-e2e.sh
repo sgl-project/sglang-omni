@@ -45,7 +45,7 @@ VOXTNEW_TEXTFIT_PROBE=1 VOXTNEW_TEXTFIT_AUDIT=strict nice -n 10 go test -count=1
   grep -E '^(---|ok|FAIL|PASS)|break at'
 
 step "a session over the fake local models"
-nice -n 10 go test -count=1 -run 'TestMacE2ESessionLocal' -v . | grep -vE '^\s*$'
+nice -n 10 go test -count=1 -run 'TestMacE2ESessionLocal|TestMacE2EMeetingDetect' -v . | grep -vE '^\s*$'
 
 if pgrep -f "$VOXTNEW_HELPER" >/dev/null; then
   echo "a helper is still running: $(pgrep -f "$VOXTNEW_HELPER" | tr '\n' ' ')" >&2

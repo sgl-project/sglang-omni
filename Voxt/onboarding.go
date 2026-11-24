@@ -222,6 +222,7 @@ func (a *app) closeOnboarding() {
 		a.cancelSession()
 	}
 	a.ob.open = false
+	a.syncMeetingDetect() // meeting_detect.go: a meeting found during the guide
 	if !a.prefs.Setup.Done {
 		a.updateSettings(func(s *settings.Settings) { s.Setup.Done = true })
 	}

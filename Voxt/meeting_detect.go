@@ -9,12 +9,15 @@ package main
 // their decision.
 
 import (
+	"errors"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meetdetect"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -40,16 +43,30 @@ type meetingDetectState struct {
 // detector's, "" for no card), its compact and menu states, and seq, which
 // numbers its timer so that a later card's is not this one's.
 type meetingAsk struct {
-	key, app         string
-	compact, menu    bool
-	seq              int
-	armed            time.Time
+	key, app      string
+	compact, menu bool
+	seq           int
+	armed         time.Time
+	// startAfter is the app whose meeting starts when the dictation that
+	// records now ends ("": none): its button was pressed meanwhile.
+	startAfter       string
 	meetingAskWindow // meeting_ask_window.go
 }
 
 // detectMeetings reports whether the user wants meetings detected.
 func (a *app) detectMeetings() bool {
-	return a.meetMgr != nil && !a.prefs.Features.Meeting.NoDetect
+	f := a.prefs.Features
+	return a.meetMgr != nil && !f.Meeting.NoDetect && !f.IsHidden(settings.HideMeetings)
+}
+
+// meetingDetectChanged follows the settings (shell_settings_controller.go):
+// the watch stops and the card goes when meetings are no longer detected
+// or Meetings is hidden, and the card goes when its question is decided.
+func (a *app) meetingDetectChanged() {
+	if !a.detectMeetings() || a.prefs.Features.Meeting.AutoStart {
+		a.closeMeetingAsk()
+	}
+	a.syncMicWatch()
 }
 
 // syncMicWatch turns the helper's watch on or off, as the setting and the
@@ -113,8 +130,8 @@ func (a *app) syncMeetingDetect() {
 		}
 		return
 	}
-	if a.sess.State.Live() {
-		return // a dictation: afterSession asks once it ended
+	if a.sess.State.Live() || a.ob.open {
+		return // a dictation, the setup guide: asked once it is over
 	}
 	for _, c := range found {
 		if c.App != "" {
@@ -138,7 +155,7 @@ func (a *app) readMeetingTab(c meetdetect.Candidate) {
 		switch {
 		case err != nil || !ok || !a.detect.Recording(c.Key):
 			a.detect.Settle(c.Key) // not a meeting: this use asks nothing
-		case a.sess.State.Live() || a.meetingActive():
+		case a.sess.State.Live() || a.meetingActive() || a.ob.open:
 			// Held back meanwhile: syncMeetingDetect decides again.
 		default:
 			a.askMeeting(c.Key, app)
@@ -148,12 +165,25 @@ func (a *app) readMeetingTab(c meetdetect.Candidate) {
 	})
 }
 
+// meetingAfterDictation runs when a dictation ended (events.go): the
+// meeting whose button was pressed during it starts, if its app still
+// records; else a meeting found during it is asked about.
+func (a *app) meetingAfterDictation() {
+	key := a.ask.startAfter
+	a.ask.startAfter = ""
+	if key != "" && a.detect.Recording(key) && a.detectMeetings() && !a.meetingActive() {
+		a.startDetectedMeeting()
+		return
+	}
+	a.syncMeetingDetect()
+}
+
 // askMeeting offers to record the meeting in app with the card, or starts
 // it at once when the user chose so.
 func (a *app) askMeeting(key, app string) {
 	a.detect.Settle(key)
 	if a.prefs.Features.Meeting.AutoStart {
-		a.startMeeting()
+		a.startDetectedMeeting()
 		return
 	}
 	a.ask.key, a.ask.app, a.ask.compact, a.ask.menu = key, app, false, false
@@ -205,9 +235,35 @@ func (a *app) meetingAskHovered() {
 	}
 }
 
+// startDetectedMeeting starts a meeting for the one detected. The user
+// is in the meeting's app, and Voxt's window may be closed: a start that
+// fails says so in the overlay too, with the way to fix it.
 func (a *app) startDetectedMeeting() {
+	key := a.ask.key
 	a.closeMeetingAsk()
-	a.startMeeting()
+	if a.sess.State.Live() && key != "" {
+		// The dictation has the microphone, and a second recording of it
+		// fails: the meeting starts when the dictation ends.
+		a.ask.startAfter = key
+		return
+	}
+	a.startMeetingThen(func(msg string, err error) {
+		a.showNotice(sessionNotice{text: msg, action: meetingStartAction(err)})
+	})
+}
+
+// meetingStartAction is where a meeting that did not start is fixed: the
+// speech models when none is downloaded, the permissions when macOS
+// refused the recording.
+func meetingStartAction(err error) string {
+	var start *meeting.StartError
+	switch {
+	case errors.Is(err, local.ErrNotInstalled):
+		return actionModels
+	case errors.As(err, &start) && errors.Is(start.Err, &proto.Error{Code: proto.CodePermissionDenied}):
+		return actionPermissions
+	}
+	return actionNone
 }
 
 func (a *app) dismissMeetingAsk() { a.closeMeetingAsk() }

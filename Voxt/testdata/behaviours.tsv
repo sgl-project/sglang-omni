@@ -42,7 +42,10 @@ Meeting detection	L	TestMeetingDetectedAsksOnce	Which real apps hold the microph
 Meeting detection	L	TestMeetingDetectedInBrowser	Reading a real browser's tab is checked by hand only
 Meeting detection	L	TestMeetingAskMenu	none
 Meeting detection	L	TestMeetingAskCompact	The card's window (its place, staying behind the app in front, the pointer over it) is checked by hand only
+Meeting detection	L	TestMeetingDetectEndToEnd	none
+Meeting detection	L	TestMeetingDetectDuringDictationEndToEnd	none
 Meeting detection	M	TestMacHelperMicWatch	none
+Meeting detection	M	TestMacE2EMeetingDetect	none
 Meeting detection	manual	docs/manual-test.md	A real meeting app joining a call is checked by hand only
 Meeting permissions	manual	docs/manual-test.md	System permission state can only be checked on a Mac
 History	L	TestHistoryTabs	No real-app check that each session leaves one entry

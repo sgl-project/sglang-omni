@@ -123,7 +123,11 @@ func meetingModeFrom(s settings.Meeting) meeting.Mode {
 	}
 }
 
-func (a *app) startMeeting() {
+func (a *app) startMeeting() { a.startMeetingThen(nil) }
+
+// startMeetingThen starts a meeting; failed, when not nil, also hears why
+// one did not start (the toast is the main window's, which may be closed).
+func (a *app) startMeetingThen(failed func(msg string, err error)) {
 	if a.meetMgr == nil {
 		return
 	}
@@ -133,7 +137,11 @@ func (a *app) startMeeting() {
 		_, err := a.meetMgr.Start(ctx, meeting.StartRequest{Mode: meetingModeFrom(a.prefs.Features.Meeting)})
 		if err != nil {
 			a.post(func() {
-				a.meetingFailed("start", meetingStartProblem(err), err)
+				msg := meetingStartProblem(err)
+				a.meetingFailed("start", msg, err)
+				if failed != nil {
+					failed(msg, err)
+				}
 			})
 		}
 	})
