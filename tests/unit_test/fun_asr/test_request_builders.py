@@ -805,12 +805,10 @@ def test_disabled_cache_from_first_request(
     assert torch.equal(*embeddings)
 
 
-@pytest.mark.parametrize("frontend_cache_limits", [(2, 1 << 20)])
 @pytest.mark.parametrize(
     "params,context_length,error",
     [
         ({"max_new_tokens": 33}, None, "max_new_tokens"),
-        ({"max_new_tokens": 16}, None, None),
         ({"max_new_tokens": 32}, 10, "context length"),
     ],
 )
@@ -820,9 +818,9 @@ def test_warm_cache_preserves_request_validation(
     ],
     params: dict[str, int],
     context_length: int | None,
-    error: str | None,
+    error: str,
 ) -> None:
-    """Only an accepted warm request should promote its entry or count a hit."""
+    """A cache hit must not admit an invalid generation request or count a consumed hit."""
     extractor, service, tokenizer, audio = cached_frontend
     build, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
@@ -830,16 +828,13 @@ def test_warm_cache_preserves_request_validation(
         feature_extractor=extractor,
         audio_encoder_service=service,
     )
-    cold = build(
+    build(
         StagePayload(
             request_id="prime",
             request=OmniRequest(inputs={"audio_bytes": b"wav"}),
             data={},
         )
     )
-    embedding = cold.req.multimodal_inputs.mm_items[0].precomputed_embeddings
-    key = f"{service.namespace}:{audio_fingerprint(audio)}"
-    service.cache.put("B", embedding)
     checked_build, _ = request_builders.make_fun_asr_scheduler_adapters(
         tokenizer=tokenizer,
         max_new_tokens=32,
@@ -848,20 +843,15 @@ def test_warm_cache_preserves_request_validation(
         audio_encoder_service=service,
     )
     extractor.side_effect = AssertionError("warm validation recomputed frontend")
-    payload = StagePayload(
-        request_id="warm",
-        request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
-        data={},
-    )
-    if error is None:
-        checked_build(payload)
-    else:
-        with pytest.raises(ValueError, match=error):
-            checked_build(payload)
-    service.cache.put("C", embedding)
-    assert (service.cache.get(key) is not None) == (error is None)
-    assert (service.cache.get("B") is not None) == (error is not None)
-    assert service.stats()["hits"] == int(error is None)
+    with pytest.raises(ValueError, match=error):
+        checked_build(
+            StagePayload(
+                request_id="invalid",
+                request=OmniRequest(inputs={"audio_bytes": b"wav"}, params=params),
+                data={},
+            )
+        )
+    assert service.stats()["hits"] == 0
     assert service.stats()["misses"] == 1
 
 

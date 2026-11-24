@@ -340,23 +340,6 @@ def test_early_cache_lookup_uses_namespace_and_validates_shape() -> None:
     assert service.stats()["hits"] == service.stats()["misses"] == 0
 
 
-def test_consuming_retained_embedding_does_not_promote_same_key_replacement() -> None:
-    """A delayed consumer must leave the replacement generation's eviction order intact."""
-    service = make_service(cache_max_entries=2)
-    original = make_item(11, 3)
-    service.encode_item(original)
-    retained = service.get_cached_embedding("11", 3)
-    assert retained is not None
-    service.cache.put(service.cache_key(original), torch.zeros_like(retained))
-    service.encode_item(make_item(12, 3))
-    resumed = make_item(11, 3, with_feature=False)
-    service.attach_embedding(resumed, retained, cache_hit=True)
-    service.encode_item(make_item(13, 3))
-    assert torch.equal(resumed.precomputed_embeddings, original.precomputed_embeddings)
-    assert service.get_cached_embedding("11", 3) is None
-    assert service.get_cached_embedding("12", 3) is not None
-
-
 def test_concurrent_early_hits_count_once_per_consuming_request() -> None:
     """Concurrent early lookups must neither reencode nor double-count hits."""
     service = make_service()
@@ -444,8 +427,8 @@ def test_stale_cache_miss_rechecks_before_starting_duplicate_encode(
     release_stale_reader = threading.Event()
     original_get = service.cache.get
 
-    def controlled_get(key: str | None, *, touch: bool = True):  # noqa: ANN202
-        cached = original_get(key, touch=touch)
+    def controlled_get(key: str | None):  # noqa: ANN202
+        cached = original_get(key)
         if (
             threading.current_thread().name == "stale-cache-reader"
             and not stale_miss.is_set()

@@ -306,13 +306,13 @@ class FunASRPreLMEncoderService(
     def get_cached_embedding(
         self, audio_fingerprint: str, expected_tokens: int
     ) -> torch.Tensor | None:
-        """Look up a validated embedding without promoting it before consumption."""
+        """Return a validated embedding from the completed cache."""
         if not self.cache_enabled:
             return None
         else:
             pass
         cache_key = f"{self.namespace}:{audio_fingerprint}"
-        embedding = self.cache.get(cache_key, touch=False)
+        embedding = self.cache.get(cache_key)
         if embedding is None:
             return None
         elif self.is_valid(embedding, expected_tokens):
@@ -340,7 +340,6 @@ class FunASRPreLMEncoderService(
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
         if cache_hit:
-            self.cache.touch_if_same(self.cache_key(item), embedding)
             with self.lock:
                 self.hits += 1
         else:

@@ -139,7 +139,7 @@ class StageOutputCache(Generic[CacheInput]):
         self.size_fn = size_fn or value_size_bytes
         self.lock = threading.Lock()
 
-    def get(self, key: str | None, *, touch: bool = True) -> object | None:
+    def get(self, key: str | None) -> object | None:
         if key is None:
             return None
         else:
@@ -151,24 +151,8 @@ class StageOutputCache(Generic[CacheInput]):
                 return None
             else:
                 pass
-            if touch:
-                self.cache.move_to_end(key)
-            else:
-                pass
+            self.cache.move_to_end(key)
             return entry.data
-
-    def touch_if_same(self, key: str | None, expected_data: object) -> None:
-        """Promote a consumed entry only if it is still the one observed."""
-        if key is None:
-            return
-        else:
-            key = str(key)
-        with self.lock:
-            entry = self.cache.get(key)
-            if entry is not None and entry.data is expected_data:
-                self.cache.move_to_end(key)
-            else:
-                pass
 
     def put(self, key: str | None, data: CacheInput) -> None:
         if key is None:
