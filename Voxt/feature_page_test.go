@@ -262,6 +262,9 @@ func TestFeatureModelRecommendedDownload(t *testing.T) {
 		if !slices.Contains(tt.AccessLabels(), "Download MOSS-Transcribe-Diarize") {
 			t.Fatalf("%s does not recommend MOSS-Transcribe-Diarize: %q", feature, tt.AccessLabels())
 		}
+		if !has(tt, "MOSS-Transcribe-Diarize · 2.1 GB download") {
+			t.Errorf("%s labels the pack's size, not the speech model's alone: %q", feature, tt.Texts())
+		}
 	}
 	click(t, tt, "Download MOSS-Transcribe-Diarize")
 	downloadAsked(t, a, drain, models.ASRMoss)
@@ -285,6 +288,9 @@ func TestFeatureModelRecommendedUnsupported(t *testing.T) {
 	frames(tt)
 	if !slices.Contains(tt.AccessLabels(), "Download Qwen3-ASR 1.7B (8bit)") {
 		t.Fatalf("an unsupported main language does not keep Qwen3-ASR: %q", tt.AccessLabels())
+	}
+	if !has(tt, "Qwen3-ASR 1.7B (8bit) · 3.2 GB download") {
+		t.Errorf("the pack's size, not the speech model's alone: %q", tt.Texts())
 	}
 	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	downloadAsked(t, a, drain, models.ASRAccurate)

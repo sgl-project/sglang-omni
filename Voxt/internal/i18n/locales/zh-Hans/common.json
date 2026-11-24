@@ -6,6 +6,7 @@
   "%d minutes ago": "%d 分钟前",
   "%s (%s)": "%s（%s）",
   "%s and %s": "%s和%s",
+  "%s download": "需下载 %s",
   "%s has the same keys and trigger, so only one of them works.": "%s 用了相同的按键和触发方式，两者只有一个会生效。",
   "%s is no longer the frontmost app.": "%s 已经不在前台。",
   "%s is no longer in front. Switch back to insert there, or copy the text.": "%s 已经不在前台。回到那里再插入，或者复制。",
