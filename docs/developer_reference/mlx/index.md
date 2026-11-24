@@ -55,12 +55,13 @@ agree on it with a maintainer first.
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
 | `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
 | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` | `ci/model_golden/moss-transcribe-diarize-dflash.json` |
+| `FunAudioLLM/Fun-ASR-Nano-2512-hf` | `wilsonzheng0327/Fun-ASR-Nano-dflash` | `ci/model_golden/fun-asr-nano-2512-dflash.json` |
 
 The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
-`funasr_server` and `funasr_transcribe` take the same two flags and `--draft-policy`, with Qwen3-ASR's adaptive default, for `wilsonzheng0327/Fun-ASR-Nano-dflash` (pinned in `ci/model_pins.json`) over `FunAudioLLM/Fun-ASR-Nano-2512-hf`. Its golden is still to be recorded. A request that sets `repetition_penalty` decodes without the draft; the CLI's draft counts sum over 30 s windows. `tests/test_funasr_dflash.py` checks on small checkpoints that drafted decoding matches plain decoding across token budgets, with proposals accepted, rejected and ending on `<|im_end|>`.
+`funasr_server` and `funasr_transcribe` take the same two flags and `--draft-policy`, with Qwen3-ASR's adaptive default, for `wilsonzheng0327/Fun-ASR-Nano-dflash` (pinned in `ci/model_pins.json`) over `FunAudioLLM/Fun-ASR-Nano-2512-hf`. Its golden requests `--draft-policy fixed`. A request that sets `repetition_penalty` decodes without the draft; the CLI's draft counts sum over 30 s windows. `tests/test_funasr_dflash.py` checks on small checkpoints that drafted decoding matches plain decoding across token budgets, with proposals accepted, rejected and ending on `<|im_end|>`.
 
 Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
 
