@@ -192,6 +192,9 @@ def needs_quant_config_normalization(
 ) -> bool:
     """True when the checkpoint's method uses stage-local per-block quant names."""
     method = quant_method_name(quant_dict)
+    # Omni only normalizes names here. The XPU MoE scheme for compressed-tensors
+    # is chosen by SGLang's get_moe_scheme (sgl-project/sglang#50810), so Omni
+    # deliberately adds no MoE backend override for it.
     return method in ("auto-round", "compressed-tensors")
 
 
