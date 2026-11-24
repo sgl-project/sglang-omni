@@ -255,9 +255,10 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var ev struct {
-			Type    string         `json:"type"`
-			Audio   string         `json:"audio"`
-			Session map[string]any `json:"session"`
+			Type        string         `json:"type"`
+			Audio       string         `json:"audio"`
+			StartSample int            `json:"start_sample"`
+			Session     map[string]any `json:"session"`
 		}
 		_ = json.Unmarshal(b, &ev)
 		switch ev.Type {
@@ -289,6 +290,12 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 				segs++
 				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
 			}
+		case "input_audio_buffer.final_start":
+			start := strconv.Itoa(ev.StartSample)
+			if fields["final_start"] != "" {
+				start = fields["final_start"] + "," + start
+			}
+			fields["final_start"] = start
 		case "input_audio_buffer.commit":
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":

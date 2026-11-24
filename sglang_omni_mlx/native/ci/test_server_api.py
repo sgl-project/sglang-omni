@@ -16,6 +16,7 @@ import subprocess
 import time
 import uuid
 import wave
+from array import array
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -698,6 +699,183 @@ def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> Non
     assert reused["text"] == sse_events(body)[0]["text"]
     # note (XXXXRT666): the head of the prompt and two 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_prompt_token_count"] > 208
+
+
+def test_a_louder_frame_after_the_last_window_rebuilds_the_prefill(
+    server: Server,
+) -> None:
+    """Speech that got louder after the last complete window raised the log-mel floor, so the windows encoded before it did not fit the Final, which encoded the recording again; the session compares them with the audio at every preview and computes them again, so the Final has them, with the text of a Final without a session."""
+    quiet = array(
+        "h",
+        (sample // 10 for sample in array("h", pcm16("0098_en_mid")[: 9 * 32000])),
+    ).tobytes()
+    loud = pcm16("0108_en_mid")[: 2 * 32000]
+    recording = quiet + loud
+    fields = {
+        "stream": "true",
+        "language": "en",
+        "prompt": "GLOSSARY",
+        "include_generation_metadata": "true",
+        "audio_layout": "voxt_swift",
+    }
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "turn_detection": None,
+                        "language": "en",
+                        "final_prompt": "GLOSSARY",
+                    },
+                }
+            )
+        )
+        session_id = json.loads(socket.recv())["session_id"]
+        for samples in (quiet, loud):
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(samples).decode(),
+                    }
+                )
+            )
+            assert json.loads(socket.recv())["type"] == "transcription.segment"
+            wait_for(
+                lambda: request_states(server) == {}, 30, "the prefill did not finish"
+            )
+        status, body = server.post_form(
+            fields | {"realtime_session": session_id}, wav_bytes(recording)
+        )
+        assert status == 200
+        reused = sse_events(body)[0]
+    status, body = server.post_form(fields, wav_bytes(recording))
+    assert status == 200
+    assert reused["text"] == sse_events(body)[0]["text"]
+    # note (XXXXRT666): one complete 8 s window of 104 audio tokens.
+    assert reused["generation_metadata"]["reused_audio_token_count"] == 104
+
+
+def test_a_final_of_the_recordings_rest_reuses_its_windows(server: Server) -> None:
+    """A recording over 60 s is recognised in pieces, and its last Final encoded its audio again: the client sends where the Final starts, the session encodes the windows from there, and the Final of that audio has them, with the text of a Final without a session. A start the session does not have is an error."""
+    recording = (pcm16("0098_en_mid") + pcm16("0117_en_mid"))[: 37 * 32000]
+    start_sample = int(9.5 * 16000)
+    rest = recording[start_sample * 2 :]
+    fields = {
+        "stream": "true",
+        "language": "en",
+        "include_generation_metadata": "true",
+        "audio_layout": "voxt_swift",
+    }
+
+    def final(extra: dict[str, str]) -> dict:
+        status, body = server.post_form(fields | extra, wav_bytes(rest))
+        assert status == 200
+        return sse_events(body)[0]
+
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "turn_detection": None,
+                        "language": "en",
+                        "final_prompt": "",
+                    },
+                }
+            )
+        )
+        session_id = json.loads(socket.recv())["session_id"]
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(recording).decode(),
+                }
+            )
+        )
+        # note (XXXXRT666): the 30 s cut's final and the second segment's preview.
+        for _ in range(2):
+            assert json.loads(socket.recv())["type"] == "transcription.segment"
+        for invalid_start in (-1, len(recording), "9"):
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.final_start",
+                        "start_sample": invalid_start,
+                    }
+                )
+            )
+            assert json.loads(socket.recv())["type"] == "error"
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.final_start",
+                    "start_sample": start_sample,
+                }
+            )
+        )
+        # note (XXXXRT666): the windows from the start on, one background job each.
+        wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
+        reused = final({"realtime_session": session_id})
+    # note (XXXXRT666): 27.5 s of audio has three complete 8 s windows of 104 audio tokens.
+    assert reused["generation_metadata"]["reused_audio_token_count"] == 312
+    assert reused["generation_metadata"]["reused_prompt_token_count"] > 312
+    assert reused["text"] == final({})["text"]
+
+
+def test_a_final_of_other_audio_reuses_the_dictionary_alone(server: Server) -> None:
+    """A recording over 60 s is recognised in pieces, and its last Final computed the dictionary again: the audio is not the session's recording, so only the prompt the session prefilled is reused, and the text is the one without a session."""
+    clip_id = "0108_en_mid"
+    dictionary = "\n".join(f"term{i}" for i in range(300))
+    fields = {
+        "stream": "true",
+        "language": "en",
+        "prompt": dictionary,
+        "include_generation_metadata": "true",
+        "audio_layout": "voxt_swift",
+    }
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "turn_detection": None,
+                        "language": "en",
+                        "final_prompt": dictionary,
+                    },
+                }
+            )
+        )
+        session_id = json.loads(socket.recv())["session_id"]
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(
+                        pcm16("0098_en_mid")[: 9 * 32000]
+                    ).decode(),
+                }
+            )
+        )
+        assert json.loads(socket.recv())["type"] == "transcription.segment"
+        # note (XXXXRT666): the prefill's chunks of 256 tokens, then the window.
+        wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
+        status, body = server.post_form(
+            fields | {"realtime_session": session_id}, clip(clip_id)
+        )
+        assert status == 200
+        reused = sse_events(body)[0]
+    status, body = server.post_form(fields, clip(clip_id))
+    assert status == 200
+    assert reused["text"] == sse_events(body)[0]["text"]
+    metadata = reused["generation_metadata"]
+    assert "reused_audio_token_count" not in metadata
+    # note (XXXXRT666): the dictionary is over 600 tokens, and no token of the audio.
+    assert metadata["reused_prompt_token_count"] > 600
 
 
 def test_a_long_final_reuses_the_windows_after_the_first_segment(

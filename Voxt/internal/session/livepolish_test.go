@@ -30,6 +30,13 @@ func newLiveLLM() *liveLLM {
 	return &liveLLM{gates: map[string]chan struct{}{}, stuck: map[string]chan struct{}{}, answered: make(chan string, 64)}
 }
 
+// note (luojiaxuan): liveCleanUp is r's first clean-up of the final text:
+// its text and error.
+func liveCleanUp(r *run, text string) (string, error) {
+	out := r.cleanUpFirst(text)
+	return out.text, out.err
+}
+
 // note (luojiaxuan): inputOf is the text between a request's <input> tags.
 func inputOf(req llm.Request) string {
 	msg := req.Messages[len(req.Messages)-1].Content
@@ -155,7 +162,7 @@ func TestLivePolishCleansOnlyTheTail(t *testing.T) {
 	r.hearLive("Hello there.")
 	r.hearLive("Hello there. How are")
 	waitLive(t, r, "Hello there.")
-	got, _, err := r.cleanUpFirst("Hello there. How are you?")
+	got, err := liveCleanUp(r, "Hello there. How are you?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +198,7 @@ func TestLivePolishCleansTheLastSentencesAgain(t *testing.T) {
 	r.hearLive(said)
 	waitLive(t, r, said)
 	r.hearLive(said + " No, make")
-	got, _, err := r.cleanUpFirst(said + " No, make it Thursday.")
+	got, err := liveCleanUp(r, said+" No, make it Thursday.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +223,7 @@ func TestLivePolishAsksAgainWhenRevised(t *testing.T) {
 	waitLive(t, r, "Hello their.")
 	r.hearLive("Hello there. How are you?")
 	waitLive(t, r, "Hello there. How are you?")
-	got, _, err := r.cleanUpFirst("Hello there. How are you?")
+	got, err := liveCleanUp(r, "Hello there. How are you?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +244,7 @@ func TestLivePolishFinalDiffers(t *testing.T) {
 	r.hearLive("Hello their. How are you?")
 	waitLive(t, r, "Hello their. How are you?")
 	full := "Hello there. How are you?"
-	got, _, err := r.cleanUpFirst(full)
+	got, err := liveCleanUp(r, full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +272,7 @@ func TestLivePolishWaitsForTheRequestUnderWay(t *testing.T) {
 	waitLiveFor(t, r, "the request for the whole text", func(lp *livePolish) bool { return lp.flight != nil && lp.flight.src == full })
 	result := make(chan string, 1)
 	go func() {
-		got, _, _ := r.cleanUpFirst(full)
+		got, _ := liveCleanUp(r, full)
 		result <- got
 	}()
 	// note (luojiaxuan): The answer comes once Stop has taken the final text (finish closed
@@ -303,7 +310,7 @@ func TestLivePolishBlocks(t *testing.T) {
 	r.hearLive(first + " " + sentences[5])
 	r.hearLive(full)
 	waitLive(t, r, second)
-	got, _, err := r.cleanUpFirst(full)
+	got, err := liveCleanUp(r, full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +348,7 @@ func TestLivePolishOff(t *testing.T) {
 			if r.live != nil || r.early != nil || len(model.requests()) != 0 {
 				t.Fatalf("the clean-up ran while recording")
 			}
-			if _, _, err := r.cleanUpFirst("Hello there."); err != nil {
+			if _, err := liveCleanUp(r, "Hello there."); err != nil {
 				t.Fatal(err)
 			}
 			if n := len(model.requests()); n != 1 {
@@ -361,7 +368,7 @@ func TestLivePolishThinking(t *testing.T) {
 	r.hearLive("Short one. And")
 	waitLive(t, r, "Short one.")
 	full := "Short one. And a longer second sentence."
-	got, _, err := r.cleanUpFirst(full)
+	got, err := liveCleanUp(r, full)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +387,7 @@ func TestLivePolishEndsWithPieces(t *testing.T) {
 	r.hearPiece("Hello there.")
 	r.hearLive("Hello there. How are you?")
 	model.waitAnswered(t, "Hello there.")
-	if got, _, err := r.cleanUpFirst("Hello there. How are you?"); err != nil || got != "[Hello there.] [How are you?]" {
+	if got, err := liveCleanUp(r, "Hello there. How are you?"); err != nil || got != "[Hello there.] [How are you?]" {
 		t.Errorf("result %q (%v), want the stretch's answer and the tail's", got, err)
 	}
 }
@@ -401,7 +408,7 @@ func TestLivePolishStopsOnFailure(t *testing.T) {
 		t.Fatalf("%d requests while recording, want 2: the refused one is not asked again", n)
 	}
 	full := "Hello there. How are you? Fine."
-	if _, _, err := r.cleanUpFirst(full); err != nil {
+	if _, err := liveCleanUp(r, full); err != nil {
 		t.Fatal(err)
 	}
 	reqs := model.requests()
@@ -465,7 +472,7 @@ func TestLivePolishDoesNotWaitForAStuckRequest(t *testing.T) {
 	})
 	result := make(chan string, 1)
 	go func() {
-		got, _, _ := r.cleanUpFirst("Hello there. How are you doing?")
+		got, _ := liveCleanUp(r, "Hello there. How are you doing?")
 		result <- got
 	}()
 	select {
@@ -493,7 +500,7 @@ func TestLivePolishStopsBetweenParts(t *testing.T) {
 	r.hearLive(live)
 	var flight *liveFlight
 	waitLiveFor(t, r, "the first part's request", func(lp *livePolish) bool { flight = lp.flight; return flight != nil })
-	if _, _, err := r.cleanUpFirst("Hello there, friend. 你好。"); err != nil {
+	if _, err := liveCleanUp(r, "Hello there, friend. 你好。"); err != nil {
 		t.Fatal(err)
 	}
 	close(stuck)

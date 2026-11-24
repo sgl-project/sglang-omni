@@ -39,7 +39,7 @@ func TestLivePolishRedoesWhatWasSaidBefore(t *testing.T) {
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearLive("Meet Tuesday. No,")
 	waitLive(t, r, "Meet Tuesday.")
-	got, _, err := r.cleanUpFirst("Meet Tuesday. No, Thursday. Send the invite.")
+	got, err := liveCleanUp(r, "Meet Tuesday. No, Thursday. Send the invite.")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestLivePolishRedoesAcrossABlock(t *testing.T) {
 	first := strings.Join(s, " ")
 	r.hearLive(first + " Thursday, no")
 	waitLiveFor(t, r, "a committed block", func(lp *livePolish) bool { return len(lp.blocks) == 1 })
-	got, _, err := r.cleanUpFirst(first + " Thursday, no, Friday.")
+	got, err := liveCleanUp(r, first+" Thursday, no, Friday.")
 	if err != nil {
 		t.Fatal(err)
 	}

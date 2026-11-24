@@ -122,16 +122,26 @@ func (r *run) endLive() {
 // would share the GPU with the speech model while the user speaks and
 // beside the Final after Stop.
 func newLivePolish(r *run) *livePolish {
+	r.m.mu.Lock()
+	client, llmInfo, llmCtx := r.svc.LLM, r.svc.LLMInfo, r.llmCtx
+	r.m.mu.Unlock()
 	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() ||
-		r.svc.LLM == nil || len(r.glossary()) > compose.GlossaryAllUpTo || r.shot != nil || len(r.req.Images) > 0 {
+		client == nil || len(r.glossary()) > compose.GlossaryAllUpTo || r.shot != nil || len(r.req.Images) > 0 {
 		return nil
 	}
-	if r.llmOnThisMac() {
-		r.logf("info", "no clean-up while recording: the language model %s runs on this Mac", r.svc.LLMInfo.ID)
+	if r.llmOnThisMac(llmInfo.ID) {
+		r.logf("info", "no clean-up while recording: the language model %s runs on this Mac", llmInfo.ID)
 		return nil
 	}
-	ctx, cancel := context.WithCancel(r.llmCtx)
-	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, thinkOffUnder: r.thinkOffUnder(), llm: r.svc.LLM,
+	thinkOffUnder := 0
+	for _, provider := range r.settings.Providers.LLM {
+		if provider.ID == llmInfo.ID {
+			thinkOffUnder = provider.Generation.ThinkingOffUnder
+			break
+		}
+	}
+	ctx, cancel := context.WithCancel(llmCtx)
+	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, thinkOffUnder: thinkOffUnder, llm: client,
 		reclean: max(0, r.settings.Features.Transcribe.RecleanSentences)}
 	lp.cond = sync.NewCond(&lp.mu)
 	go func() {
@@ -145,11 +155,11 @@ func newLivePolish(r *run) *livePolish {
 	return lp
 }
 
-// note (luojiaxuan): llmOnThisMac says whether the session's language model
-// is served on this Mac: its address's host is a loopback one (Ollama, LM
+// note (luojiaxuan): llmOnThisMac says whether language model id (the
+// session's) is served on this Mac: its address's host is a loopback one (Ollama, LM
 // Studio, a custom server here).
-func (r *run) llmOnThisMac() bool {
-	id, endpoint := r.svc.LLMInfo.ID, ""
+func (r *run) llmOnThisMac(id string) bool {
+	endpoint := ""
 	for _, provider := range r.settings.Providers.LLM {
 		if provider.ID == id {
 			endpoint = provider.Endpoint

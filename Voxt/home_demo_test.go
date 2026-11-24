@@ -28,6 +28,7 @@ func TestHomeDemoActionControls(t *testing.T) {
 		{name: "app relaunch", fixture: "en/home-helper-reason-updated", steps: historySteps("Helper: Restart Voxt"), want: []string{"fixHomeReadiness relaunch"}},
 		{name: "fold looking back", fixture: "en/home-looking-back", steps: historySteps("Looking back"), want: []string{"setInsightsClosed true"}},
 		{name: "open looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Looking back"), want: []string{"setInsightsClosed false"}},
+		{name: "share card", fixture: "en/home-normal", steps: historySteps("Share a card of Voxt and you"), want: []string{"openShare"}},
 		{name: "share folded looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Share a look back"), want: []string{"openInsightsShare"}},
 		{name: "open recent", fixture: "en/home-normal", steps: historySteps("Weekly plan"), want: []string{"openHomeRecent home-transcribe"}},
 		{name: "inline copy", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Copy: Weekly plan", click: true}}, want: []string{"copyHomeRecent home-transcribe"}},
@@ -66,6 +67,7 @@ func TestHomeDemoActionControls(t *testing.T) {
 					t.Fatalf("%s: %v (controls %q)", step.label, err, tester.AccessLabels())
 				}
 				frames(tester)
+				tester.Advance(shareSparkleLength) // Share opens once its stars have flown
 			}
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
@@ -123,7 +125,7 @@ func TestLookingBackNumbersWhole(t *testing.T) {
 	rows := func() int {
 		t.Helper()
 		tops := map[float32]bool{}
-		for _, text := range []string{"2,220", "47", "226", "9"} {
+		for _, text := range []string{"2,220", "42", "226", "9"} {
 			r, ok := tester.Find(text)
 			if !ok {
 				t.Fatalf("no %q: %q", text, tester.Texts())

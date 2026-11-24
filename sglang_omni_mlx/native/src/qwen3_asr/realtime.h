@@ -46,7 +46,8 @@ struct FinalReuse {
 // final_prompt, is prefilled in the background over the recording's complete
 // windows, from the first preview on, so it does not delay it; with an empty
 // one that starts with the second segment, the first's previews having the
-// keys and values already.
+// keys and values already. input_audio_buffer.final_start moves the Final's
+// start on, when the audio before it was recognised otherwise.
 class RealtimeSession : public omni_server::RealtimeConnection {
 public:
   RealtimeSession(omni_server::TranscriptionWorker &worker,
@@ -78,6 +79,9 @@ private:
   };
 
   void Append(const nlohmann::json &audio);
+  // The Final starts at this sample of the session's audio, not at the first:
+  // the windows prefilled for it are dropped, its prompt's head kept.
+  void StartFinalAt(const nlohmann::json &start_sample);
   void StartSegment(long start_sample);
   long EndSample() const {
     return buffer_start_sample_ + static_cast<long>(samples_.size());
@@ -119,9 +123,12 @@ private:
   bool is_prefilling_final_ = false;
   std::vector<float> samples_;
   long buffer_start_sample_ = 0;
-  // The recording's start, what its Final is prefilled from; samples_ drops
-  // what is committed.
+  // The audio from where the Final starts, what it is prefilled from;
+  // samples_ drops what is committed.
   std::vector<float> recording_samples_;
+  long final_start_sample_ = 0;
+  // The audio was longer than is kept, so none is prefilled from here on.
+  bool is_recording_cut_off_ = false;
   std::optional<Segment> segment_;
   // The first segment's reuse.
   std::shared_ptr<RefreshReuse> recording_reuse_;
