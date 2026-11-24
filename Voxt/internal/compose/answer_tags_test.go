@@ -66,6 +66,8 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "instruction 模板不需要")
 	checkAnswer(t, "<instruction>An instruction template is a reusable prompt.</instruction>", "An instruction template is a reusable prompt.", "", "What is an instruction template?")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "No need to use <instruction> tags")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "能不能不用 instruction 模板？")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "Use <instruction> tags, then do not use <instruction> tags")
 	checkAnswer(t, "<selected_text>A real answer</selected_text>", "A real answer", "", "write an instruction template")
 }
 
@@ -114,6 +116,11 @@ func TestAnswerKeepsSingleInstructionPair(t *testing.T) {
 	checkAnswer(t, template, template, "", "Do not hesitate to draft an instruction template")
 	checkAnswer(t, template, template, "", "Use an instruction template. Can you do that?")
 	checkAnswer(t, template, template, "", "用 instruction 模板。明白吗？")
+	checkAnswer(t, template, template, "", "Draft an instruction template that is not generic")
+	checkAnswer(t, template, template, "", "Draft an instruction template that isn't generic")
+	checkAnswer(t, template, template, "", "Draft an instruction template that is no longer than five lines")
+	checkAnswer(t, template, template, "", "写一个 instruction 模板不要包含示例")
+	checkAnswer(t, template, template, "", "Do not use <instruction> tags, then draft an <instruction> template")
 }
 
 func TestAnswerIgnoresEarlierTemplateRequest(t *testing.T) {
@@ -159,11 +166,13 @@ func TestAnswerKeepsSingleSelectedTextPair(t *testing.T) {
 
 func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
 	raw, _ := json.Marshal(Answer{Title: "<instruction>Greeting</instruction>", Content: "Hello"})
-	if got, ok := ParseAnswer(string(raw), "write a greeting"); !ok || got.Title != "Greeting" {
-		t.Errorf("ParseAnswer title = %q, want Greeting", got.Title)
-	}
-	if got := PartialAnswer(string(raw), "write a greeting"); got.Title != "Greeting" {
-		t.Errorf("PartialAnswer title = %q, want Greeting", got.Title)
+	for _, input := range [][]string{{"write a greeting"}, {"Draft an <instruction> template"}} {
+		if got, ok := ParseAnswer(string(raw), input...); !ok || got.Title != "Greeting" {
+			t.Errorf("ParseAnswer title = %q, want Greeting", got.Title)
+		}
+		if got := PartialAnswer(string(raw), input...); got.Title != "Greeting" {
+			t.Errorf("PartialAnswer title = %q, want Greeting", got.Title)
+		}
 	}
 }
 

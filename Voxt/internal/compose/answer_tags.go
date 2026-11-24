@@ -22,7 +22,7 @@ func stripInputTags(s string, content bool, input ...string) string {
 		open, close := "<"+name+">", "</"+name+">"
 		currentHasLiteral := len(input) > 0 && (strings.Contains(input[0], open) || strings.Contains(input[0], close))
 		requestHasLiteral := len(input) > 1 && (strings.Contains(input[1], open) || strings.Contains(input[1], close))
-		if currentHasLiteral && (!requestHasLiteral || !negatedIntent) {
+		if content && currentHasLiteral && (!requestHasLiteral || !negatedIntent) {
 			continue
 		}
 		for from := 0; ; {
@@ -80,7 +80,7 @@ func inputTemplateIntent(input []string, name string) (bool, bool) {
 	clauses := strings.FieldsFunc(clauseRequest, func(r rune) bool {
 		return r == ',' || r == '，' || r == '.' || r == '。' || r == ';' || r == '；' || r == '!' || r == '！' || r == '\n'
 	})
-	negatedMention := false
+	positiveMention, negatedMention := false, false
 	for _, clause := range clauses {
 		clauseWords := splitWords(clause)
 		nameIndex := -1
@@ -107,30 +107,31 @@ func inputTemplateIntent(input []string, name string) (bool, bool) {
 		prefix := clause[:nameAt]
 		suffix := clause[nameAt+len(name):]
 		question := strings.ContainsAny(clause, "?？")
-		positiveQuestion := question && (strings.Contains(prefix, "can't you") || strings.Contains(prefix, "couldn't you") || strings.Contains(prefix, "cannot you") || strings.Contains(clause, "能不能") || strings.Contains(prefix, "不") && strings.Contains(clause, "吗") && (strings.Contains(clause, "你") || strings.Contains(clause, "您")))
+		positiveQuestion := question && (strings.Contains(prefix, "can't you") || strings.Contains(prefix, "couldn't you") || strings.Contains(prefix, "cannot you") || strings.Contains(prefix, "不") && strings.Contains(clause, "吗") && (strings.Contains(clause, "你") || strings.Contains(clause, "您")))
 		chineseDenials := []string{"不要", "不用", "不需要", "不必", "无需", "无须", "没必要", "勿"}
-		negated := strings.Contains(suffix, " is not ") || strings.Contains(suffix, " isn't ") || strings.Contains(suffix, " is no ")
+		negated := strings.Contains(suffix, " is not what i want") || strings.Contains(suffix, " isn't what i want") || strings.Contains(suffix, " is not necessary") || strings.Contains(suffix, " isn't necessary") || strings.Contains(suffix, " is no longer needed")
+		suffixPredicate := strings.TrimRight(suffix, " \t\r\n?？。")
 		for _, denial := range chineseDenials {
-			negated = negated || strings.Contains(suffix, "模板"+denial)
+			negated = negated || strings.HasSuffix(suffixPredicate, "模板"+denial)
 		}
 		if !positiveQuestion {
 			englishPrefix := strings.NewReplacer("not forget to", "", "n't forget to", "", "not hesitate to", "", "n't hesitate to", "", "not just", "", "n't just", "").Replace(prefix)
 			negated = negated || hasWord(splitWords(englishPrefix), "not", "never", "no") || strings.Contains(englishPrefix, "n't")
-			chinesePrefix := strings.NewReplacer("分别", "", "不错", "", "告别", "", "特别", "").Replace(prefix)
+			chinesePrefix := strings.NewReplacer("能不能", "", "分别", "", "不错", "", "告别", "", "特别", "").Replace(prefix)
 			for _, denial := range chineseDenials {
 				negated = negated || strings.Contains(chinesePrefix, denial)
 			}
 			negated = negated || strings.Contains(chinesePrefix, "不") || strings.Contains(chinesePrefix, "别")
 		}
-		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您")
+		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您") || strings.Contains(clause, "能不能")
 		questionIsNotARequest := question && !positiveQuestion && (!secondPerson || hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要"))
 		if negated || questionIsNotARequest {
-			negatedMention = true
+			positiveMention, negatedMention = false, true
 			continue
 		}
-		return true, false
+		positiveMention, negatedMention = true, false
 	}
-	return false, negatedMention
+	return positiveMention, negatedMention
 }
 
 func stripPartialInputTags(s string, content bool, input ...string) string {
@@ -141,7 +142,7 @@ func stripPartialInputTags(s string, content bool, input ...string) string {
 		requestedTemplate := content && positiveIntent
 		currentHasLiteral := len(input) > 0 && (strings.Contains(input[0], open) || strings.Contains(input[0], close))
 		requestHasLiteral := len(input) > 1 && (strings.Contains(input[1], open) || strings.Contains(input[1], close))
-		if requestedTemplate || currentHasLiteral && (!requestHasLiteral || !negatedIntent) {
+		if requestedTemplate || content && currentHasLiteral && (!requestHasLiteral || !negatedIntent) {
 			continue
 		}
 		i := strings.LastIndex(s, open)
