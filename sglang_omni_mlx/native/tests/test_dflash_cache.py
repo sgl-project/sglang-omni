@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""DFlash decoding keeps the target's and the draft's caches exact.
+"""DFlash decoding keeps the target's cache exact and the draft's aligned.
 
 The target is one Qwen3 layer whose attention is uniform (zero queries and
 keys) and reads only a decoy token's value, which it adds to a poison
@@ -61,11 +61,16 @@ class Request(TypedDict):
     prompt_ids: list[int]
     guessed_ids: list[int]
     budget: int
+    # -1 for none.
+    stop_id: int
+    prefill_step_tokens: int
 
 
 class ProbeRow(TypedDict):
     plain_ids: list[int]
     drafted_ids: list[int]
+    plain_commit_count: int
+    drafted_commit_count: int
     target_cache_length: int
     draft_cache_length: int
     verify_round_count: int
@@ -227,13 +232,10 @@ def probe(
     binary: Path, tmp_path: Path, proposed_token: int, requests: list[Request]
 ) -> list[ProbeRow]:
     target = tmp_path / "target"
-    if not target.exists():
-        write_target(target)
-    else:
-        pass
-    draft = tmp_path / f"draft-{proposed_token}"
+    write_target(target)
+    draft = tmp_path / "draft"
     write_draft(draft, proposed_token)
-    requests_path = tmp_path / f"requests-{proposed_token}.json"
+    requests_path = tmp_path / "requests.json"
     requests_path.write_text(json.dumps(requests))
     completed = subprocess.run(
         [str(binary), str(target), str(draft), str(requests_path)],
@@ -244,41 +246,71 @@ def probe(
     return json.loads(completed.stdout)
 
 
+def check_caches(row: ProbeRow, prompt_length: int, is_last_token_cached: bool) -> None:
+    """Both caches cover the prompt and the committed tokens, the last only
+    when it was an accepted guess or proposal rather than the target's own
+    prediction, which the next round verifies."""
+    assert row["plain_ids"] == row["drafted_ids"]
+    assert row["drafted_commit_count"] == row["plain_commit_count"]
+    assert POISON not in row["drafted_ids"]
+    assert row["target_cache_length"] == row["draft_cache_length"]
+    assert row["target_cache_length"] == (
+        prompt_length + row["drafted_commit_count"] - (0 if is_last_token_cached else 1)
+    )
+
+
 @pytest.mark.parametrize(
-    ("proposed_token", "prompt_ids", "guessed_ids"),
+    (
+        "proposed_token",
+        "prompt_ids",
+        "guessed_ids",
+        "accepted_guess_count",
+        "prefill_step_tokens",
+    ),
     [
-        (DECOY, [10, 11, 12], []),
-        (30, [27, 28, 29], []),
-        (40, [38, 39], []),
-        (DECOY, [10, 11, 12], [13, 14, DECOY]),
-        (40, [38, 39], [40, DECOY, 40]),
+        (DECOY, [10, 11, 12], [], 0, 0),
+        (DECOY, [10, 11, 12], [], 0, 1),
+        (30, [27, 28, 29], [], 0, 0),
+        (40, [38, 39], [], 0, 0),
+        (DECOY, [10, 11, 12], [13, 14, DECOY], 2, 0),
+        (DECOY, [10, 11, 12], [13, 14, 15], 3, 0),
+        (40, [38, 39], [40, DECOY, 40], 1, 0),
     ],
-    ids=["rejected", "alternating", "accepted", "guesses-then-decoy", "guess-rejected"],
+    ids=[
+        "rejected",
+        "rejected-chunked-prefill",
+        "alternating",
+        "accepted",
+        "guesses-then-decoy",
+        "guesses-all-accepted",
+        "guess-rejected",
+    ],
 )
-def test_drafted_decoding_keeps_both_caches_exact(
+def test_drafted_decoding_keeps_the_caches_on_the_committed_tokens(
     dflash_cache_probe_binary: Path,
     tmp_path: Path,
     proposed_token: int,
     prompt_ids: list[int],
     guessed_ids: list[int],
+    accepted_guess_count: int,
+    prefill_step_tokens: int,
 ) -> None:
     requests: list[Request] = [
-        {"prompt_ids": prompt_ids, "guessed_ids": guessed_ids, "budget": budget}
+        {
+            "prompt_ids": prompt_ids,
+            "guessed_ids": guessed_ids,
+            "budget": budget,
+            "stop_id": -1,
+            "prefill_step_tokens": prefill_step_tokens,
+        }
         for budget in BUDGETS
     ]
     rows = probe(dflash_cache_probe_binary, tmp_path, proposed_token, requests)
     for budget, row in zip(BUDGETS, rows):
-        assert row["plain_ids"] == row["drafted_ids"], budget
-        assert POISON not in row["plain_ids"]
-        # Both caches cover the prompt and every committed token but the last,
-        # which is cached too when the round ended on an accepted proposal.
-        committed_count = len(row["drafted_ids"])
-        assert row["target_cache_length"] == row["draft_cache_length"], budget
-        assert (
-            len(prompt_ids) + committed_count - 1
-            <= row["target_cache_length"]
-            <= len(prompt_ids) + committed_count
-        ), budget
+        assert row["drafted_commit_count"] == budget
+        # A budget ends on the target's own prediction: the block is cut so
+        # the last proposal leaves room for it.
+        check_caches(row, len(prompt_ids), budget <= accepted_guess_count)
     long_request = rows[-1]
     assert long_request["verify_round_count"] > 0
     if proposed_token == DECOY:
@@ -293,3 +325,30 @@ def test_drafted_decoding_keeps_both_caches_exact(
         assert (
             long_request["accepted_token_count"] == long_request["proposed_token_count"]
         )
+
+
+@pytest.mark.parametrize(
+    ("proposed_token", "prompt_ids", "stop_id", "is_stop_proposed"),
+    [(40, [38], 40, True), (DECOY, [10, 11, 12], 15, False)],
+    ids=["stop-accepted-as-proposal", "stop-as-prediction"],
+)
+def test_a_stop_token_ends_the_decode_once(
+    dflash_cache_probe_binary: Path,
+    tmp_path: Path,
+    proposed_token: int,
+    prompt_ids: list[int],
+    stop_id: int,
+    is_stop_proposed: bool,
+) -> None:
+    request: Request = {
+        "prompt_ids": prompt_ids,
+        "guessed_ids": [],
+        "budget": 64,
+        "stop_id": stop_id,
+        "prefill_step_tokens": 0,
+    }
+    [row] = probe(dflash_cache_probe_binary, tmp_path, proposed_token, [request])
+    # The stop token is the last commit, and nothing is committed after it.
+    assert row["drafted_commit_count"] == len(row["drafted_ids"]) + 1
+    assert row["accepted_token_count"] == (1 if is_stop_proposed else 0)
+    check_caches(row, len(prompt_ids), is_stop_proposed)
