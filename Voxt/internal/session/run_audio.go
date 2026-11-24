@@ -28,12 +28,18 @@ func (r *run) hints() []string {
 
 // SpeechHints are the dictionary's terms for the speech model when the
 // settings send them (dict.Hints: the enabled ones, the most recently
-// changed first). Meetings use it too.
+// changed first), then the built-in words' unless they are off
+// (dict.BuiltinHints: a model that takes fewer cuts them first).
+// Meetings use it too.
 func SpeechHints(s settings.Settings, terms []store.Term) []string {
 	if !s.Dictionary.Enabled || !s.Dictionary.ASRHints {
 		return nil
 	}
-	return dict.Hints(terms)
+	hints := dict.Hints(terms)
+	if !s.Dictionary.BuiltinOff {
+		hints = append(hints, dict.BuiltinHints(terms)...)
+	}
+	return hints
 }
 
 // speechContext is the free-text prompt for the speech model: the global

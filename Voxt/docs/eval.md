@@ -574,12 +574,14 @@ The runs were on mac-air with TestEvalDictLLM and TestEvalGlossary, before (5bdb
 
 ## Built-in vocabulary (11-23)
 
-Voxt writes a short list of AI and developer names right with no dictionary (`dict.builtin`, behavior.md 7.9d). The aliases were chosen on one run and scored on another.
+Voxt writes a list of AI and developer names right with no dictionary (`dict.builtin`, behavior.md 7.9d). It has three layers: aliases for what speech recognition writes instead, a few speech hints for models that take them, and casing. The aliases were chosen on one run and scored on another; the hints were chosen by comparing sets on Qwen3-ASR.
 
-- **Audio**: sentences said by macOS `say` voices the way a user says them ("S G Lang", "A P I key"), Chinese sentences with English names and English ones, recognised by Whisper Large v3 Turbo through the omni runtime as the app sends a file (language hint `zh` or `en`). Whisper takes no prompt, so recognition is the same with or without the list; the list acts on its text (`dict.ReplaceWithBuiltin`, as `session.spoken` calls it, with no user terms).
+### Aliases on Whisper Large v3 Turbo
+
+- **Audio**: sentences said by macOS `say` voices the way a user says them ("S G Lang", "A P I key"), Chinese sentences with English names and English ones, recognised through the omni runtime as the app sends a file (language hint `zh` or `en`). Whisper takes no prompt, so recognition is the same with or without the list; the list acts on its text (`dict.ReplaceWithBuiltin`, as `session.spoken` calls it, with no user terms).
 - **Round 1, where the aliases come from**: 172 sentences with one of 21 names and 48 without any, by 6 voices per language (1320 recognitions). An alias had to be a spelling Whisper wrote that is not an ordinary word or name.
 - **Round 2, held out**: 72 new sentences with a built-in name and 40 without any, the latter full of near words (box, voice, LAN, deep, seek, chat, open, face, hug, queue, Quinn, Gwen, clouds), by 4 voices per language, 6 of the 8 new (448 recognitions).
-- A name counts as written when it is spelled exactly ("API Key" is a miss for API key). An insertion is a name of the corpus written more often than the sentence has it.
+- A name counts as written when it is spelled exactly ("API Key" is a miss for API key, "SGLang Omni" for SGLang-Omni). An insertion is a name of the corpus written more often than the sentence has it.
 
 Round 2:
 
@@ -591,11 +593,29 @@ Round 2:
 | Sandy, Reed (English) | 24 of 72 | 32 of 72 | 0 of 40 | 0 → 0 |
 | all | 75 of 292 | **142 of 292** | 0 of 160 | 0 → 0 |
 
-By name, on the four natural voices (Tingting, Meijia, Tara, Aman; 12 sentences each): SGLang 0 → 11, Voxt 0 → 11, DeepSeek 0 → 9, OpenAI 2 → 9, Hugging Face 6 → 12, ChatGPT 6 → 10, CUDA 6 → 10, SGLang Omni 0 → 4, Qwen 0 → 2, GitHub 11 → 12, Gemini 11 → 11, API key 6 → 6.
+By name, on the four natural voices (12 sentences each): SGLang 0 → 11, Voxt 0 → 11, DeepSeek 0 → 9, OpenAI 2 → 9, Hugging Face 6 → 12, ChatGPT 6 → 10, CUDA 6 → 10, SGLang-Omni 0 → 4, Qwen 0 → 2, GitHub 11 → 12, Gemini 11 → 11, API key 6 → 6.
 
-- **What is left.** Sandy and Rocko (and Eddy, Flo, Reed and Shelley in round 1) say an English name inside Chinese so that Whisper writes other Chinese words ("B2" for GitHub); no alias can fix that. Some names are only heard as ordinary words or names: Claude as "Cloud" or "Claw", Qwen as "坤", "昆" or "Quinn", CUDA as "Q的" (also how "Q的维度" is said), JSON as "Jason", PR as "P2". Those stay; a fix that reads the sentence (the clean-up's glossary) or a speech model given the names (Qwen3-ASR's context) might, and is not measured here. New spellings of a name ("SGLUNG Omni") are also left.
-- **No sentence without a name changed**: 0 of 160 in round 2 and 0 of 288 in round 1. Over the repository's own text (docs, CHANGELOG, READMEs and the Chinese strings, 6907 lines) the list changes 15 lines, each quoting a misheard name ("Vox New", "Vox T", "S G Long"). Before a word all in one case was kept, it also changed `VOXT_UPDATE_CHANNEL` and the strings' "API Key".
-- **Time**: 15 µs for a 200-character dictation.
+- **What is left.** Sandy and Rocko (and Eddy, Flo, Reed and Shelley in round 1) say an English name inside Chinese so that Whisper writes other Chinese words ("B2" for GitHub); no alias can fix that. Some names are only heard as ordinary words or names: Claude as "Cloud" or "Claw", Qwen as "坤", "昆" or "Quinn", CUDA as "Q的" (also how "Q的维度" is said), JSON as "Jason", PR as "P2". Those stay. New spellings of a name ("SGLUNG Omni") are also left.
+- **No sentence without a name changed**: 0 of 160 in round 2 and 0 of 288 in round 1, also with the casing list added later. Over the repository's own text (docs, CHANGELOG, READMEs and the Chinese strings, about 6970 lines) the list changes 40 lines: each quotes a misheard name ("Vox New", "S G Long", spaced letters) or writes "SGLang Omni", the folder name `Application Support/SGLang Omni` included, as SGLang-Omni. Before a word all in one case was kept, it also changed `VOXT_UPDATE_CHANNEL` and the strings' "API Key"; before macOS left the casing list, `Contents/MacOS`.
+- **Time**: 39 µs for a 200-character dictation.
+
+### Hints on Qwen3-ASR 1.7B (11-24)
+
+The draft's 28 starred names were each said in 2 Chinese and 2 English new sentences by Tingting, Meijia, Samantha and Tara. The same voices said 70 sentences without a name: 40 everyday and 30 near words (Quinn, Gwen, Kimmy, Kim, cursor, "cloud code", slang, box, deep sea, key, period, voice…). There were also 8 recordings without speech (1.5 or 4.5 s of silence or -55 dBFS noise) and 16 of a filler followed by 1.5–4 s of silence ("嗯", "好的", "Um", "Okay"…). Each set of hints was sent as the app sends them with an empty dictionary, then the aliases were applied. The model ran with no voice activity model, so audio without speech reached it.
+
+| hints | names written (of 226) | a name not said, in 140 sentences without one | in sentences with one | audio without speech: names | filler + silence: names | median Final |
+|---|---|---|---|---|---|---|
+| none | 166 | 0 | 0 | 0 of 8 | 0 of 16 | 302 ms |
+| **5: SGLang, Voxt, DeepSeek, Claude Code, API key** | **201** | **0** | 2 | 2 of 8 | 0 of 16 | **306 ms** |
+| 6: the 5 and Kimi | 202 | 2 (Kimmy → Kimi) | 0 | 0 of 8 | | 350 ms |
+| 10: the 6 and Qwen, CUDA, PR, PRD | 209 | 5 (Quinn, Gwen → Qwen; Kimmy → Kimi) | 1 (Cursor → CUDA) | 0 of 8 | | 340 ms |
+| all 28 | 210 | 3 (Gwen → Qwen; Kimmy → Kimi) | 1 | 2 of 8 | | 492 ms |
+
+- **Five hints carry most of the gain.** SGLang 0 → 8 of 8, SGLang-Omni 2 → 8, Claude Code 2 → 8, API key 5 → 8, Voxt 6 → 8, DeepSeek 6 → 8. Qwen3-ASR writes SGLang as "S. G. Lang", "S G 龙" or "SG Line" without the hint, too many forms for aliases.
+- **A hint with a near word writes that word as the name.** Kimi took "Kimmy is my cousin" in every set that had it, and Qwen took "Quinn" and "Gwen". Those three stay out of the hints. With the five, no sentence without a name got one; twice a word already misheard became a hint name ("CUDA" heard as "Claude", "JSON" as "SGLang").
+- **More hints, slower.** 28 hints cost 190 ms at the median Final (about 7 ms a hint, as #24 found), 6 or 10 cost 40–50 ms, and the five 4 ms.
+- **Audio without speech echoes the hints**, as #24 found for the dictionary. The guard (`omni/echo.go`) removed it in 6 of 8 recordings; in 2 (4.5 s of silence) the model wrote "S Lang, Voxt, DeepSeek, API key, Claude Code.", and "S Lang" is not a term the guard knows. With all 28 hints, it missed because the model wrote "SGLang Omni" for the hint SGLang-Omni, so no hyphenated name is a hint. In the app the voice activity model skips audio without speech before it reaches the speech model (`ASR.noSpeech`, the session's gate). A filler followed by silence, the case of the user's 10-19 echo, echoed nothing in 16 of 16.
+- **Spaced letters.** With or without hints, Qwen3-ASR writes an acronym said letter by letter as "L L M", "M C P" or "P.R.D."; these spellings are aliases, which took LLM 6 → 8 and PRD 4 → 7 with no hint.
 
 ## App enhancement and the dictionary, whole sessions on the real models
 

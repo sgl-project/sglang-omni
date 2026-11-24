@@ -16,6 +16,10 @@ func (host *meetingDemoHost) setDictionaryASRHints(on bool) {
 func (host *meetingDemoHost) setDictionaryGlossary(on bool) {
 	host.record("setDictionaryGlossary %t", on)
 }
+
+func (host *meetingDemoHost) setDictionaryBuiltin(on bool) {
+	host.record("setDictionaryBuiltin %t", on)
+}
 func (host *meetingDemoHost) setDictionaryLearn(on bool) { host.record("setDictionaryLearn %t", on) }
 func (host *meetingDemoHost) openDictionaryTranscribe()  { host.record("openDictionaryTranscribe") }
 func (host *meetingDemoHost) importTerms()               { host.record("importTerms") }

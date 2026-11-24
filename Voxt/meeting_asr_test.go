@@ -77,23 +77,25 @@ func TestMeetingTrackASRUsesDictationLanguage(t *testing.T) {
 	}
 }
 
-// A meeting gives its speech model the dictionary terms and the speech
-// context dictation gives it, on the live path and the final pass alike;
-// with the dictionary or its speech-model hints off it gives no terms
-// (#3988).
+// A meeting gives its speech model the dictionary terms, then the
+// built-in hints unless they are off, and the speech context dictation
+// gives it, on the live path and the final pass alike; with the
+// dictionary or its speech-model hints off it gives no terms (#3988).
 func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		dict, asrHint bool
-		want          []string
+		name                      string
+		dict, asrHint, builtinOff bool
+		want                      []string
 	}{
-		{"on", true, true, []string{"Voxt", "Typeless"}},
-		{"dictionary off", false, true, nil},
-		{"hints off", true, false, nil},
+		{"on", true, true, false, []string{"Voxt", "Typeless", "SGLang", "DeepSeek", "API key", "Claude Code"}},
+		{"built-in words off", true, true, true, []string{"Voxt", "Typeless"}},
+		{"dictionary off", false, true, false, nil},
+		{"hints off", true, false, false, nil},
 	} {
 		a, _, _ := newTestApp(t)
 		a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
 		a.prefs.Dictionary.Enabled, a.prefs.Dictionary.ASRHints = tc.dict, tc.asrHint
+		a.prefs.Dictionary.BuiltinOff = tc.builtinOff
 		a.prefs.Dictionary.SpeechContext = "A Zoom call about Voxt"
 		now := time.Now()
 		for _, tm := range []store.Term{

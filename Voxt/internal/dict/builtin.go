@@ -15,28 +15,95 @@ type builtinTerm struct {
 	// here (matchText keeps one word all in one case: sglang, VOXT_HOME).
 	// Not for words like Cursor or prompt, nor for a style (API Key).
 	spelled bool
+	// hint: sent to the speech model after the user's terms (BuiltinHints).
+	hint bool
 }
 
+// sglangAliases are what speech recognition writes for SGLang.
+var sglangAliases = []string{"SG Lang", "SG-Lang", "S.G.Lang", "SGLand", "SGLAN", "SG LAN", "SGLONG", "SG Long", "S G Long", "SG狼"}
+
 // builtin is the vocabulary every install starts with: Voxt, the
-// repository it is made in, and AI and developer names its users say
-// often, each with what speech recognition writes for it instead
+// repository it is made in, and AI, developer and product names its
+// users say often. Aliases are what speech recognition wrote for a name
 // (Whisper Large v3 Turbo on macOS voices, docs/eval.md "Built-in
-// vocabulary (11-23)"). An alias is never an ordinary word or name ("cloud" for
-// Claude, "Quinn" for Qwen), so that a sentence without the term stays
-// as said. It is not in the store: the user's dictionary stays theirs.
-var builtin = []builtinTerm{
-	{term: "SGLang Omni", aliases: []string{"SGLOMNI"}, spelled: true},
-	{term: "SGLang", aliases: []string{"SG Lang", "SG-Lang", "S.G.Lang", "SGLand", "SGLAN", "SG LAN", "SGLONG", "SG Long", "S G Long", "SG狼"}, spelled: true},
-	{term: "Voxt", aliases: []string{"Vox T", "Vox", "Voxed", "Voist", "沃克斯特"}, spelled: true},
+// vocabulary (11-23)"), never an ordinary word or name ("cloud" for
+// Claude, "Quinn" for Qwen), so that a sentence without the name stays
+// as said. The rest only get their spelling back. It is not in the
+// store: the user's dictionary stays theirs.
+var builtin = append([]builtinTerm{
+	{term: "SGLang-Omni", aliases: append([]string{"SGLang Omni", "SGLOMNI"}, suffixed(sglangAliases, " Omni")...), spelled: true},
+	{term: "SGLang", aliases: sglangAliases, spelled: true, hint: true},
+	{term: "Voxt", aliases: []string{"Vox T", "Vox", "Voxed", "Voist", "沃克斯特"}, spelled: true, hint: true},
 	{term: "Qwen", aliases: []string{"Quen", "QEN"}, spelled: true},
-	{term: "DeepSeek", aliases: []string{"Deep Seek", "DeepSeq", "Deep Sick", "DeepSick", "DeepSig"}, spelled: true},
+	{term: "DeepSeek", aliases: []string{"Deep Seek", "DeepSeq", "Deep Sick", "DeepSick", "DeepSig"}, spelled: true, hint: true},
 	{term: "ChatGPT", aliases: []string{"Chat GPT", "ChatsGPT", "ChadGPT", "Chad GPT", "ChatGTT"}, spelled: true},
 	{term: "OpenAI", aliases: []string{"OpenEye"}, spelled: true},
 	{term: "GitHub", aliases: []string{"Jithub"}, spelled: true},
 	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}, spelled: true},
 	{term: "CUDA", aliases: []string{"QDA"}, spelled: true},
-	{term: "API key", aliases: []string{"APIQ"}},
+	{term: "API key", aliases: []string{"APIQ"}, hint: true},
 	{term: "Gemini", aliases: []string{"Geminar", "Gamini"}},
+	{term: "Claude Code", spelled: true, hint: true},
+	{term: "MCP", aliases: lettersOf("MCP"), spelled: true},
+	{term: "LLM", aliases: lettersOf("LLM"), spelled: true},
+	{term: "JSON", spelled: true},
+	{term: "TypeScript", spelled: true},
+	{term: "PR", aliases: []string{"P.R.", "P.R", "P R"}, spelled: true},
+	{term: "PRD", aliases: []string{"P.R.D.", "P.R.D", "P R D"}, spelled: true},
+}, spelledOnly(
+	// AI and coding
+	"Anthropic", "GPT-5", "Gemini CLI", "GitHub Copilot", "GLM", "Replit", "PyTorch", "KV cache", "FP8", "INT4",
+	"TTS", "ASR", "VLM", "GPU", "MLX", "API", "SDK", "CLI", "YAML", "README", "SSH",
+	"JavaScript", "SwiftUI", "Xcode", "npm", "pnpm", "PostgreSQL", "SQLite", "Cloudflare", "Supabase",
+	// product work
+	"OKR", "KPI", "MVP", "SaaS", "B2B", "PMF", "GMV", "Google Docs",
+	// everyday
+	"WeChat", "iPhone", "iPad", "MacBook", "YouTube", "TikTok", "Gmail", "Wi-Fi", "PDF", "PPT",
+)...)
+
+// spelledOnly is a built-in term for each name that only gets its
+// spelling back (an acronym also from its letters spaced out).
+func spelledOnly(names ...string) []builtinTerm {
+	out := make([]builtinTerm, len(names))
+	for i, n := range names {
+		out[i] = builtinTerm{term: n, aliases: lettersOf(n), spelled: true}
+	}
+	return out
+}
+
+// lettersOf is an acronym said letter by letter as speech recognition
+// writes it ("L L M" for LLM; Qwen3-ASR does), nil for another name.
+func lettersOf(name string) []string {
+	if len(name) < 2 || len(name) > 4 || strings.ToUpper(name) != name || strings.ContainsFunc(name, func(r rune) bool { return r < 'A' || r > 'Z' }) {
+		return nil
+	}
+	return []string{strings.Join(strings.Split(name, ""), " ")}
+}
+
+// suffixed is each of list with suffix after it.
+func suffixed(list []string, suffix string) []string {
+	out := make([]string, len(list))
+	for i, s := range list {
+		out[i] = s + suffix
+	}
+	return out
+}
+
+// BuiltinHints are the built-in terms for the speech model, after the
+// user's hints: the ones marked hint that the user does not have
+// (ignoring case, enabled or not: a term the user turned off stays off).
+func BuiltinHints(terms []store.Term) []string {
+	user := map[string]bool{}
+	for _, t := range terms {
+		user[strings.ToLower(oneLine(t.Term))] = true
+	}
+	var out []string
+	for _, b := range builtin {
+		if b.hint && !user[strings.ToLower(b.term)] {
+			out = append(out, b.term)
+		}
+	}
+	return out
 }
 
 // ReplaceWithBuiltin is Replace over terms, the user's dictionary, then

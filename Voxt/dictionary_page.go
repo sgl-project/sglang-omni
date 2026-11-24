@@ -162,6 +162,11 @@ func dictSwitches(c *ui.Context, state *dictionaryViewState, actions dictionaryA
 			Tooltip(i18n.T("The language model writes terms as spelled here.")).Changed() {
 			actions.setDictionaryGlossary(glossary)
 		}
+		builtin := state.Builtin
+		if ui.Checkbox(c.Key("dict-builtin"), &builtin, i18n.T("Built-in words")).Disabled(off).
+			Tooltip(i18n.T("Common AI and coding names come out spelled right, such as SGLang and GitHub. Your terms come first.")).Changed() {
+			actions.setDictionaryBuiltin(builtin)
+		}
 		learnOn := state.Learn
 		if ui.Checkbox(c.Key("dict-learn"), &learnOn, i18n.T("Learn from my corrections")).Disabled(off).
 			Tooltip(i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", state.LearnWatchSeconds)).Changed() {

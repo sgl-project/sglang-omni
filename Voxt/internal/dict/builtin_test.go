@@ -60,13 +60,29 @@ func TestReplaceWithBuiltin(t *testing.T) {
 	}
 }
 
-// TestBuiltinList: every built-in term is one a user could keep (Check,
-// MaxAliases), spelled once; an alias is not its term in another case,
-// not another term's alias, and not a lone Chinese, Japanese or Korean
-// character, which Replace would find inside other words.
+// TestBuiltinHints: the built-in hints come after the user's, without
+// a term the user has or turned off (ignoring case).
+func TestBuiltinHints(t *testing.T) {
+	saved := builtin
+	t.Cleanup(func() { builtin = saved })
+	builtin = []builtinTerm{{term: "SGLang", hint: true}, {term: "Voxt", hint: true}, {term: "DeepSeek", hint: true}, {term: "GitHub"}}
+	user := []store.Term{{Term: "voxt", Enabled: true}, {Term: "DeepSeek", Enabled: false}}
+	if got := strings.Join(BuiltinHints(user), ","); got != "SGLang" {
+		t.Errorf("hints %q, want SGLang", got)
+	}
+	if got := strings.Join(BuiltinHints(nil), ","); got != "SGLang,Voxt,DeepSeek" {
+		t.Errorf("hints %q", got)
+	}
+}
+
+// TestBuiltinList: the lists are short; every built-in term is one a
+// user could keep (Check), spelled once; an alias is not its term in
+// another case, not another term's alias, and not a lone Chinese,
+// Japanese or Korean character, which Replace would find inside other
+// words.
 func TestBuiltinList(t *testing.T) {
-	if len(builtin) == 0 || len(builtin) > 30 {
-		t.Fatalf("%d built-in terms: keep the list short", len(builtin))
+	if hints := BuiltinHints(nil); len(builtin) == 0 || len(builtin) > 100 || len(hints) > 30 {
+		t.Fatalf("%d built-in terms, %d hints: keep the lists short (long hints make the model write terms never said)", len(builtin), len(hints))
 	}
 	seen := map[string]string{}
 	for _, b := range builtin {
@@ -79,8 +95,8 @@ func TestBuiltinList(t *testing.T) {
 		seen[strings.ToLower(b.term)] = b.term
 	}
 	for _, b := range builtin {
-		if len(b.aliases) > MaxAliases {
-			t.Errorf("%q has %d aliases, more than a user's term may", b.term, len(b.aliases))
+		if len(b.aliases) > 2*MaxAliases {
+			t.Errorf("%q has %d aliases", b.term, len(b.aliases))
 		}
 		for _, a := range b.aliases {
 			key := strings.ToLower(a)

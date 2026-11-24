@@ -234,7 +234,7 @@ func TestPipeline(t *testing.T) {
 				if len(st.streams) != 1 || st.streams[0].bytes != h.audio.recorded()*len(frame) {
 					t.Errorf("streamed %d bytes of %d frames", st.streams[0].bytes, h.audio.recorded())
 				}
-				if strings.Join(st.hints, ",") != "VoxtNew" || st.prompt != "Leo works on LLM serving." || !st.liveResult {
+				if strings.Join(st.hints, ",") != "VoxtNew,SGLang,Voxt,DeepSeek,API key,Claude Code" || st.prompt != "Leo works on LLM serving." || !st.liveResult {
 					t.Errorf("hints %q, prompt %q, live result %v", st.hints, st.prompt, st.liveResult)
 				}
 			} else if f := prov.(*fakeFile); f.calls != 1 || f.bytes != h.audio.recorded()*len(frame) || f.prompt != "Leo works on LLM serving." {

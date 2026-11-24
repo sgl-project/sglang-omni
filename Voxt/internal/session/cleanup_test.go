@@ -55,24 +55,26 @@ func TestAliases(t *testing.T) {
 	}
 }
 
-// TestBuiltinVocabulary: with the dictionary on, the built-in
-// vocabulary's aliases become their terms beside the user's (here
-// "aura link"), also without a language model; the history keeps the
-// text as recognised, and only the user's terms are highlighted. The
-// dictionary off leaves the text alone.
+// TestBuiltinVocabulary: with the dictionary on, the built-in words'
+// aliases become their terms beside the user's (here "aura link"), also
+// without a language model; the history keeps the text as recognised,
+// and only the user's terms are highlighted. The built-in words off
+// leave only the user's aliases; the dictionary off leaves the text
+// alone.
 func TestBuiltinVocabulary(t *testing.T) {
 	const heard = "用SG狼部署, then ask OpenEye about aura link"
 	for _, c := range []struct {
-		name   string
-		off    bool
-		result string
+		name          string
+		dict, builtin bool
+		result, lit   string
 	}{
-		{"on", false, "用SGLang部署, then ask OpenAI about VoxtNew"},
-		{"dictionary off", true, heard},
+		{"on", true, true, "用SGLang部署, then ask OpenAI about VoxtNew", "VoxtNew"},
+		{"built-in words off", true, false, "用SG狼部署, then ask OpenEye about VoxtNew", "VoxtNew"},
+		{"dictionary off", false, true, heard, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := newHarness(t, &fakeFile{text: heard}, nil, func(_ *Config, s *settings.Settings) {
-				s.Dictionary.Enabled = !c.off
+				s.Dictionary.Enabled, s.Dictionary.BuiltinOff = c.dict, !c.builtin
 			})
 			h.speak(h.start(), 5)
 			end := h.rec.wait(t)
@@ -84,8 +86,8 @@ func TestBuiltinVocabulary(t *testing.T) {
 			for _, span := range end.Highlights {
 				lit = append(lit, end.Result[span.Start:span.End])
 			}
-			if want := map[bool]string{false: "VoxtNew", true: ""}[c.off]; strings.Join(lit, ",") != want {
-				t.Errorf("highlighted %q, want %q", lit, want)
+			if strings.Join(lit, ",") != c.lit {
+				t.Errorf("highlighted %q, want %q", lit, c.lit)
 			}
 		})
 	}
