@@ -177,6 +177,10 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     break
 
             if msg.type == "new_request":
+                if self.consume_if_aborted(msg.request_id):
+                    continue
+                else:
+                    pass
                 if self.max_batch_cost is not None:
                     msg_cost = self.message_cost(msg)
                     if batch and batch_cost + msg_cost > self.max_batch_cost:
@@ -194,7 +198,8 @@ class SimpleScheduler(Generic[ComputeInput, ComputeResult]):
                     pass
             else:
                 self.pending_messages.append(msg)
-        return batch
+        # note (j20120307): an abort that lands during the wait window must not reach batch_compute_fn
+        return [msg for msg in batch if not self.consume_if_aborted(msg.request_id)]
 
     @staticmethod
     def emit_result(
