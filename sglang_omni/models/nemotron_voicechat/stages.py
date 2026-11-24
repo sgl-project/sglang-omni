@@ -250,7 +250,7 @@ def create_code2wav_executor(
     stream_decoder: RVQVAEDecoder | CodecDecodeGraphRunner
     if (
         enable_cuda_graph
-        and current_platform.enable_codec_decode_graph()
+        and (current_platform.enable_codec_decode_graph() or device.type == "npu")
         and graph_backend is not None
         and current_platform.supports_graph_captured_fft()
     ):

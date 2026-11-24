@@ -19,12 +19,13 @@ from sglang_omni.models.nemotron_voicechat.conformer import (
     GraphPerception,
     StreamingPerception,
 )
-from sglang_omni.models.nemotron_voicechat.cuda_graph import capture_cuda_graph
+from sglang_omni.models.nemotron_voicechat.device_graph import capture_voicechat_graph
 from sglang_omni.models.nemotron_voicechat.payload_types import (
     OUTPUT_SAMPLE_RATE,
     TOOL_CALLS,
     VOICECHAT_FORMAT,
 )
+from sglang_omni.platforms.device_graph import ReplayableGraph
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import ResourceUsage, SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -172,19 +173,22 @@ class CodecHooks(SessionHooks):
     def __init__(self, decoder: RVQVAEDecoder, device: str | torch.device) -> None:
         self.decoder, self.device = decoder, device
         self.states: dict[SessionIdentity, CodecState] = {}
-        self.decode_graph: torch.cuda.CUDAGraph | None = None
+        self.decode_graph: ReplayableGraph | None = None
         self.decode_input: torch.Tensor | None = None
         self.decode_output: torch.Tensor | None = None
 
     @torch.inference_mode()
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
-        if codes.device.type != "cuda" or codes.shape[0] != DECODE_WINDOW_FRAMES:
+        if (
+            codes.device.type not in ("cuda", "npu")
+            or codes.shape[0] != DECODE_WINDOW_FRAMES
+        ):
             return self.decoder(codes)
         else:
             pass
         if self.decode_graph is None:
             self.decode_input = codes.clone()
-            self.decode_graph, self.decode_output = capture_cuda_graph(
+            self.decode_graph, self.decode_output = capture_voicechat_graph(
                 lambda: self.decoder(self.decode_input), codes.device
             )
         else:
