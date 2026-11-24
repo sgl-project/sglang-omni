@@ -430,6 +430,7 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	if result != "fallback" {
 		t.Errorf("result %q, want the whole-text fallback", result)
 	}
+	waitEarlyWorker(t, r)
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	if !errors.Is(model.secondErr, context.Canceled) {

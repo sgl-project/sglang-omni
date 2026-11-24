@@ -214,9 +214,23 @@ async def test_sentences_keep_the_reply_spacing_and_split_cjk_without_spaces():
         for delta in deltas:
             yield delta
 
-    spans = [span async for span in sentences(stream(), max_words=24)]
+    spans = [span async for span, _ in sentences(stream(), max_words=24)]
     assert spans == ["One two.", "\nThree four.", " 五六。", "七八。"]
     assert "".join(spans) == REPLY
+
+
+@pytest.mark.asyncio
+async def test_sentences_say_which_spans_end_their_sentence():
+    """A span cut by max_words does not end its sentence, also in the reply's last sentence, which is cut only once the reply is complete."""
+
+    async def stream():
+        yield text_chunk("Sure. Alpha beta gamma delta.", 1)
+
+    assert [pair async for pair in sentences(stream(), max_words=3)] == [
+        ("Sure.", True),
+        (" Alpha beta", False),
+        (" gamma delta.", True),
+    ]
 
 
 async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
@@ -224,7 +238,7 @@ async def spans_of(*parts: str, max_words: int = 24) -> list[str]:
         for part in parts:
             yield text_chunk(part, 1)
 
-    return [span async for span in sentences(stream(), max_words)]
+    return [span async for span, _ in sentences(stream(), max_words)]
 
 
 @pytest.mark.asyncio
@@ -1437,6 +1451,147 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
 
 
 @pytest.mark.asyncio
+async def test_openai_speech_pauses_before_each_sentence_after_the_first_audio(
+    backends,
+):
+    """A pause goes before each spoken sentence after the reply's first audio, not before that audio, not at a cut inside a sentence even across a span with no word, and not for a sentence with no word, but still when a span with no word sits between two sentences, and reply.progress counts it."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build({**tts, "max_sentence_words": 2, "sentence_pause_ms": 0.125}),
+        [
+            text_chunk(
+                "😀. Hello there my friend 😀. Second one. 😀 😀 Third one. "
+                "Four five 😀 😀 six seven. 😀.",
+                1,
+            ),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == [
+        "Hello there",
+        "my friend",
+        "Second one.",
+        "Third one.",
+        "Four five",
+        "six seven.",
+    ]
+    assert played.tolist() == (
+        speech + speech + pause + speech + pause + speech + pause + speech + speech
+    )
+    assert [point["audio_ms"] for point in progress] == [
+        0.0,
+        0.125,
+        0.25,
+        0.25,
+        0.5,
+        0.5,
+        0.75,
+        1.0,
+        1.0,
+        1.125,
+        1.125,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, skip_screen_blocks, expected_spoken, expected_ms",
+    [
+        pytest.param(
+            "Dr. Smith is here. Welcome!",
+            False,
+            ["Dr.", "Smith is here.", "Welcome!"],
+            [0.125, 0.25, 0.5],
+            id="title_before_a_name",
+        ),
+        pytest.param(
+            "Use <screen>Step 1. Step 2</screen> this option. "
+            "<screen>Done.</screen> Next one.",
+            True,
+            ["Use", "this option.", "Next one."],
+            [0.125, 0.25, 0.5],
+            id="sentence_end_inside_a_screen_block",
+        ),
+    ],
+)
+async def test_openai_speech_pauses_only_where_the_heard_words_end_a_sentence(
+    backends, reply, skip_screen_blocks, expected_spoken, expected_ms
+):
+    """No pause goes after a title such as "Dr." or after a sentence end the reply audio leaves out inside a screen block, but a screen block after a spoken sentence end keeps its pause, and reply.progress keeps the offsets of the whole text."""
+    settings, _, spoken, _ = backends
+    tts = settings.component_graph().node("tts").component.model_dump()
+    outputs = await drain(
+        build(
+            {
+                **tts,
+                "max_sentence_words": 24,
+                "sentence_pause_ms": 0.125,
+                "skip_screen_blocks": skip_screen_blocks,
+            }
+        ),
+        [text_chunk(reply, 1), control_chunk(TURN_DONE, turn=1)],
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    speech = [0.0, 0.5, -0.5]
+    pause = [0.0, 0.0, 0.0]
+    assert spoken == expected_spoken
+    assert played.tolist() == speech + speech + pause + speech
+    progress = spoken_progress(outputs)
+    assert [audio_ms for _, audio_ms in progress] == expected_ms
+    assert progress[-1][0] == len(reply)
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_pauses_once_across_a_sentence_that_plays_nothing():
+    """drop_quiet_start can drop a whole sentence, which then sends no pause, so the sentences around it get one pause between them and reply.progress does not move for it."""
+    sample_rate_hz = 24000
+    speech = np.full(1200, 16384, dtype="<i2")
+    room_tone = np.full(3600, 164, dtype="<i2")  # 0.005 of full scale
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["input"] == "Middle.":
+            audio = room_tone
+        else:
+            audio = speech
+        return httpx.Response(
+            200,
+            content=audio.tobytes(),
+            headers={"X-Sample-Rate": str(sample_rate_hz)},
+        )
+
+    tts = build(
+        {
+            "kind": "openai_speech",
+            **HTTP_SERVICE,
+            "drop_quiet_start": True,
+            "sentence_pause_ms": 10,
+        }
+    )
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("First. Middle. Last.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    pause = [0] * 240  # 10 ms at 24 kHz
+    assert (played * 32768).round().tolist() == (
+        speech.tolist() + pause + speech.tolist()
+    )
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert [point["audio_ms"] for point in progress] == pytest.approx([50, 50, 110])
+
+
+@pytest.mark.asyncio
 async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(backends):
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()
@@ -2004,7 +2159,11 @@ def test_profiles_expand_components_into_independent_session_nodes(profile):
     assert graph.publish == {
         name: tuple(formats) for name, formats in config.session_publish.items()
     }
-    assert config.session_ports() == CASCADE_PORTS
+    # note (Haoling Pu): the client shows a screen only when the server says its audio skips the blocks, since any other profile speaks a screen tag.
+    assert config.session_ports() == replace(
+        CASCADE_PORTS,
+        skips_screen_blocks=profile == "qwen3-asr-qwen3.8-27b-vivian-screen",
+    )
     assert (
         StreamingCascadePipelineConfig.model_validate(
             config.model_dump()
@@ -2084,6 +2243,30 @@ def test_only_the_screen_profile_skips_screen_blocks_in_its_speech_and_aligner(
     skips = profile == "qwen3-asr-qwen3.8-27b-vivian-screen"
     assert settings.node("tts").component.skip_screen_blocks == skips
     assert settings.node("aligner").component.skip_screen_blocks == skips
+
+
+def test_a_session_skips_screen_blocks_only_when_every_published_speaker_does():
+    data = profile_config("qwen3-asr-qwen3.8-27b-vivian-screen").model_dump()
+    assert (
+        StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
+    data["session_nodes"]["tts_aloud"] = {
+        **data["session_nodes"]["tts"],
+        "skip_screen_blocks": False,
+    }
+    assert (
+        StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
+    data["session_publish"]["tts_aloud"] = ["pcm_f32le"]
+    assert (
+        not StreamingCascadePipelineConfig.model_validate(data)
+        .session_ports()
+        .skips_screen_blocks
+    )
 
 
 def test_the_reference_profile_routes_reply_progress_through_the_aligner():

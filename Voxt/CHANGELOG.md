@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 - **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
 
 ### Changed
 
@@ -30,6 +31,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。目前只用于转录。
 
 #### 变更
 
