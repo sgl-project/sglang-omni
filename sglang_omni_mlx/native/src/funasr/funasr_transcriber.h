@@ -36,11 +36,11 @@ public:
   // With a DFlash draft directory, greedy requests verify the draft's
   // proposals instead of decoding one token per step; a request with a
   // repetition penalty decodes plainly.
-  explicit FunAsrTranscriber(const std::filesystem::path &model_directory,
-                             const std::filesystem::path &draft_directory = {},
-                             int draft_quantization_bits = 0,
-                             omni_common::DraftPolicy draft_policy =
-                                 omni_common::DraftPolicy::kAdaptive);
+  explicit FunAsrTranscriber(
+      const std::filesystem::path &model_directory,
+      const std::filesystem::path &draft_directory = {},
+      int draft_quantization_bits = 0,
+      omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kFixed);
 
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const FunAsrOptions &options,
