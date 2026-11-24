@@ -406,6 +406,7 @@ def test_http_requires_a_successful_final_event(reply: bytes) -> None:
 
 
 def test_http_reads_the_statistics_of_a_decode_with_a_draft() -> None:
+    """A successful HTTP final event with draft statistics raised TypeError in the client instead of returning them."""
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             self.rfile.read(int(self.headers["Content-Length"]))

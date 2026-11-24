@@ -44,12 +44,11 @@ class GenerationMetadata:
     generated_token_count: int
     language: str | None
     finish_reason: str
-    # Sent for a decode with a draft: its verify rounds and, over them, the
-    # proposed and accepted draft tokens.
+    # note (YingjieHe): the server sends the draft statistics only for a decode with a draft, so they are optional.
     verify_round_count: int | None = None
     proposed_draft_token_count: int | None = None
     accepted_draft_token_count: int | None = None
-    # Sent by Whisper: the text of each window.
+    # note (YingjieHe): only Whisper sends the text of each window, so it is optional.
     window_texts: list[str] | None = None
 
 
