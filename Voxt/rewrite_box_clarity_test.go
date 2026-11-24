@@ -93,6 +93,18 @@ func TestRewriteBoxAnsweredVoiceAffordance(t *testing.T) {
 	if _, ok := tt.Find(view.Card.FollowTooltip); !ok {
 		t.Errorf("the answered card has no voice-follow-up button: %q", firstTexts(tt))
 	}
+	a.prefs.Features.Hidden = []string{string(store.KindRewrite)}
+	view = a.boxViewState()
+	if view.FollowKeys != "" {
+		t.Errorf("a disabled Rewrite shortcut is still advertised as %q", view.FollowKeys)
+	}
+	if got := view.Card.FollowTooltip; got != "Follow up by voice. Text you select first goes with it." {
+		t.Errorf("the microphone tooltip advertises a disabled shortcut: %q", got)
+	}
+	frames(tt)
+	if hasExact(tt, "follow up by voice") {
+		t.Errorf("the footer advertises a disabled Rewrite shortcut: %q", firstTexts(tt))
+	}
 	if a.box.session != "" || a.sess.State.Live() {
 		t.Errorf("rendering the answer started recording: box %+v, session %+v", a.box, a.sess)
 	}

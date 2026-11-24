@@ -176,11 +176,8 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 					route, reason = "follow-up", "card app accepted a follow-up"
 				case sameCardApp:
 					reason = "the card has no completed answer to follow up"
-					switch {
-					case a.answer.problem != nil:
+					if a.answer.problem != nil {
 						reason = "the card is showing an error"
-					case a.sess.State.Live() || a.bgID != "" && a.bgSess.State.Live():
-						reason = "a session is still active"
 					}
 				}
 				a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "Rewrite shortcut with card open: " + route + " (" + reason + ")"})

@@ -548,6 +548,9 @@ func (a *app) writingAnswer() bool {
 }
 
 func (a *app) featureKeys(feature string) string {
+	if a.prefs.Features.IsHidden(feature) {
+		return ""
+	}
 	hotkeys := hotkey.HotkeysOf(a.prefs.Features, feature)
 	if len(hotkeys) == 0 {
 		return ""

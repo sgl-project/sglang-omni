@@ -201,6 +201,7 @@ func (a *app) followUpWith(hold, typed string) bool {
 			Selection: cmpOr(in.Selection, in.Raw), Answer: compose.Answer{Content: a.answer.text}}}
 	}
 	card := a.answer
+	previousFollowUp := a.followUp
 	a.followUp = card.id
 	// It is asked in the input card, as the first turn was: spoken or
 	// typed, with the answer it changes on top.
@@ -214,7 +215,7 @@ func (a *app) followUpWith(hold, typed string) bool {
 		a.boxShare.store("", a.box.images)
 	}
 	if id, n := a.startSessionID(req); n != nil || id == "" {
-		a.followUp = ""
+		a.followUp = previousFollowUp
 	} else {
 		// The card turns into a conversation, which the follow-up's answer
 		// joins (Voxt's).

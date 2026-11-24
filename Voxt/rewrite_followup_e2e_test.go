@@ -230,7 +230,7 @@ func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 }
 
 func TestRewriteVoiceFollowUpButtonKeepsConversation(t *testing.T) {
-	for _, finish := range []string{"button", "shortcut"} {
+	for _, finish := range []string{"button", "shortcut", "rapid start clicks"} {
 		t.Run(finish, func(t *testing.T) {
 			chat := &fakeChat{texts: []string{"First answer.", "Voice answer.", "Typed answer."}}
 			a, tr := rewriteOnce(t, "", chat, "initial instruction")
@@ -245,6 +245,9 @@ func TestRewriteVoiceFollowUpButtonKeepsConversation(t *testing.T) {
 			tt := hudTester(a.boxView, boxWinW, boxWinH)
 			tr.setText("voice follow-up")
 			click(t, tt, view.Card.FollowTooltip)
+			if finish == "rapid start clicks" {
+				click(t, tt, view.Card.FollowTooltip)
+			}
 			a.pump("the microphone follow-up", func() bool {
 				return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
 			})
