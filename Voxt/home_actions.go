@@ -21,4 +21,7 @@ type homeActions interface {
 	fixHomeReadiness(fix string)
 	activityBack()
 	activityForward()
+	// openShare opens the share card (share_card.go).
+	openShare()
+	insightsActions
 }

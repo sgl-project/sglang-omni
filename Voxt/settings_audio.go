@@ -38,7 +38,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 		sectionTitleText(c, i18n.T("Microphones"))
 		infoTip(c.Key("audio-mics-info"), i18n.T("Voxt uses the first connected microphone in the list, or the system default."))
 		ui.Spacer(c)
-		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!state.HelperReady || state.DevicesLoading).Clicked() {
+		if iconButton(c.Key("audio-refresh"), icons.Refresh, i18n.T("Refresh microphones")).Disabled(!state.HelperReady).Clicked() {
 			actions.loadDevices()
 		}
 	})
@@ -143,7 +143,7 @@ func audioSettings(c *ui.Context, state settingsAudioViewState, actions settings
 func deviceName(c *ui.Context, name, notes string, inUse, present bool) {
 	t := c.Theme()
 	k := tok(t)
-	ic, col := icons.MicrophoneLarge, k.Text3
+	ic, col := icons.VoxtMicrophone, k.Text3
 	if inUse {
 		ic, col = icons.CheckCircle, k.Accent
 	}

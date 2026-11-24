@@ -52,7 +52,11 @@ type homeViewState struct {
 	Today        homeTodayViewState       `json:"today"`
 	// Activity is the activity calendar once its log was read.
 	Activity *homeActivityViewState `json:"activity,omitempty"`
-	Recent   []homeRecentViewState  `json:"recent"`
+	// Insights is the log's totals above the calendar (insights_view.go).
+	Insights *insightsViewState    `json:"insights,omitempty"`
+	Recent   []homeRecentViewState `json:"recent"`
+	// Outfit is what the mascot wears today (mascotOutfitOn), "" none.
+	Outfit string `json:"outfit,omitempty"`
 }
 
 type homeViewStateInput struct {
@@ -88,10 +92,13 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 		ShowTry: input.ShowTry, TryRecording: input.TryRecording,
 		Today:  buildHomeTodayViewState(translator, input.Today, input.Features),
 		Recent: make([]homeRecentViewState, len(input.Recent)),
+		Outfit: mascotOutfitOn(input.Now),
 	}
 	if input.ActivityRead {
 		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now)
 		state.Activity = &activity
+		insights := buildInsightsViewState(translator, input.Activity, input.Now)
+		state.Insights = &insights
 	}
 	for index, entry := range input.Recent {
 		state.Recent[index] = homeRecentViewState{

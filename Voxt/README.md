@@ -71,7 +71,7 @@ Every shortcut can be changed on its feature's page, and Settings → Shortcuts 
 
 ### New to Voxt
 
-1. **Download** [`Voxt-2.1.2-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.1.3-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
@@ -114,7 +114,7 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 - **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
-- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR or MOSS (726 MB, 262 MB, or 262 MB, respectively), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
+- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit and 6bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR (726 MB, downloaded once for the 1.7B's 8bit and 6bit; 262 MB for the 0.6B) or MOSS (262 MB), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
 - **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
 ### Language models
@@ -134,7 +134,7 @@ A model on your Mac and an external API are two paths for your data. You choose 
 | | With a model on your Mac | With an external API |
 |---|---|---|
 | **Speech recognition** | Your recordings are recognised on your Mac and stay there. This is the default. | The feature sends its recordings to that speech service. When the feature and model support them, Voxt can also send your speech context and recognition prompt. With Speech hints on, supported services can get enabled dictionary terms, not aliases. |
-| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, that provider gets the same request too. |
+| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too. |
 
 - **Audio is never sent to a language model.** It gets text, and images only with the two switches above.
 - **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
@@ -149,6 +149,7 @@ A model on your Mac and an external API are two paths for your data. You choose 
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
 - **Change settings with a script or an agent**: [every setting, where it is stored and how to edit it safely](docs/settings.md).
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
+- **Import dictionary terms from a script**: [`Voxt dictionary import`](docs/dictionary-import.md) merges a CSV, text or Voxt 1.x file into your dictionary, as Dictionary → Import… does, with `--dry-run` to see the counts first.
 
 ## For developers
 
@@ -167,7 +168,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

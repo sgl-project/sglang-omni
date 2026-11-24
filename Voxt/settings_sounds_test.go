@@ -25,6 +25,7 @@ func newSoundsRig(t *testing.T) *soundsRig {
 	a, _, tt := newTestApp(t)
 	r := &soundsRig{app: a, tt: tt}
 	r.ft = new(fakeTimers).install(a)
+	a.now = r.ft.clock
 	a.startSound = func(s sounds.Target) func() {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
@@ -102,11 +103,13 @@ func TestSoundPairs(t *testing.T) {
 	if s := r.settings.Get().Audio; s.StartSound != "tally" {
 		t.Fatalf("▶ chose %q", s.StartSound)
 	}
-	if ch, left := r.previewPlayingAt(time.Now()); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Soft") {
+	// The preview runs on the rig's clock, so it has Pebble's 230 ms left
+	// no matter how long the wall clock took (CI's frames take longer).
+	if ch, left := r.previewPlayingAt(r.ft.clock()); ch != "pebble" || left != 230*time.Millisecond || !has(r.tt, "Stop Soft") {
 		t.Fatalf("playing %q %v", ch, left)
 	}
 	click(t, r.tt, "Stop Soft")
-	if ch, _ := r.previewPlayingAt(time.Now()); ch != "" || !has(r.tt, "Play Soft") {
+	if ch, _ := r.previewPlayingAt(r.ft.clock()); ch != "" || !has(r.tt, "Play Soft") {
 		t.Errorf("stopped %q", ch)
 	}
 	r.chooseSounds("chime", "tink")

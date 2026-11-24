@@ -467,10 +467,10 @@ func TestReleaseAbout(t *testing.T) {
 }
 
 // TestReleaseLive asks the real GitHub API, read-only, as 2.0.3 would:
-// VOXT_LIVE_RELEASES=1 go test -run TestReleaseLive -v .
+// VOXTNEW_LIVE_RELEASES=1 go test -run TestReleaseLive -v .
 func TestReleaseLive(t *testing.T) {
-	if os.Getenv("VOXT_LIVE_RELEASES") == "" {
-		t.Skip("set VOXT_LIVE_RELEASES=1 to ask api.github.com")
+	if os.Getenv("VOXTNEW_LIVE_RELEASES") == "" {
+		t.Skip("set VOXTNEW_LIVE_RELEASES=1 to ask api.github.com")
 	}
 	r := newReleaseUpdates(settings.NewMemory(), releasesURL, "2.0.3", nil)
 	rel, newer, err := r.check(context.Background(), &http.Client{Timeout: releaseTimeout})

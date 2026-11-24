@@ -128,6 +128,14 @@ func TestDiarizeTrackAnchorsRenumberedSpeaker(t *testing.T) {
 	}
 }
 
+func TestAnchorSpeakersSkipsPunctuationHistory(t *testing.T) {
+	tail := []labeledLine{{words: echoWords("..."), speaker: "s2"}}
+	parts := []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "你好"}}
+	if anchors := anchorSpeakers(parts, 0, time.Second, tail); len(anchors) != 0 {
+		t.Fatalf("punctuation anchored an unrelated speaker: %v", anchors)
+	}
+}
+
 // Pauses shorter than a chunk do not start a new MTD request: speech
 // packs into chunks up to the cap, so a pause-rich track's request count
 // follows its length, not its pause count.
