@@ -7,7 +7,10 @@ prompt's last token, a newline, by its table rows alone: newline -> x -> x ...
 in the loop checkpoint, newline -> x -> <|im_end|> in the stop checkpoint.
 The draft's layers are zero too, so it proposes one token at every block
 position: x, which the loop target accepts, or <|im_end|>, which it rejects
-and the stop target accepts as its stop token.
+and the stop target accepts as its stop token. Attention adds nothing here,
+so this guards Fun-ASR's draft wiring (budget, stop token, penalty dispatch,
+draft counts), not the shared draft's cache trimming and context, which only
+the real-model DFlash golden checks.
 """
 
 from __future__ import annotations
