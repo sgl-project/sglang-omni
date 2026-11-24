@@ -610,6 +610,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Docker (recommended)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">pip / uv</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">From source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-precompiled-flashinfer-kernels">Optional: Precompiled FlashInfer Kernels</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
@@ -681,6 +682,7 @@ uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </sp
 uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span><span class="s2">"sglang-omni==0.2.0"</span>
 </pre></div>
 </div>
+<p><strong>FlashInfer kernels.</strong> The image’s provided <code class="docutils literal notranslate"><span class="pre">/opt/sglang</span></code> Python environment already includes compatible precompiled FlashInfer kernels, so it does not need a separate JIT-cache installation. The <code class="docutils literal notranslate"><span class="pre">.venv</span></code> created above is isolated and may not inherit those packages; if you use it, you can install the optional cache there after installing SGLang-Omni.</p>
 </section>
 <section id="option-b-manual-install">
 <span id="pip-uv"></span><span id="pip--uv"></span><h3>pip / uv<a class="headerlink" href="#option-b-manual-install" title="Link to this heading">#</a></h3>
@@ -723,6 +725,17 @@ uv<span class="w"> </span>venv<span class="w"> </span>.venv<span class="w"> </sp
 uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--prerelease<span class="o">=</span>allow<span class="w"> </span>-v<span class="w"> </span>-e<span class="w"> </span>.<span class="w">   </span><span class="c1"># drop -e for a non-editable install</span>
 </pre></div>
 </div>
+</section>
+<section id="optional-precompiled-flashinfer-kernels">
+<h3>Optional: Precompiled FlashInfer Kernels<a class="headerlink" href="#optional-precompiled-flashinfer-kernels" title="Link to this heading">#</a></h3>
+<p>After installing SGLang-Omni with pip / uv or from source, you can optionally install FlashInfer’s precompiled JIT-cache kernels into that same Python environment. This step is for supported NVIDIA CUDA environments only; it does not apply to CPU, Apple Silicon, Intel XPU, AMD ROCm, Ascend NPU, or MUSA.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>flashinfer<span class="w"> </span>install-jit-cache-wheel<span class="w"> </span>--mode<span class="w"> </span>minimal
+</pre></div>
+</div>
+<p>The FlashInfer CLI detects the CUDA version used by PyTorch and matches the JIT-cache package to the installed <code class="docutils literal notranslate"><span class="pre">flashinfer-python</span></code> and CUDA environment. It also detects visible NVIDIA GPU architectures and installs only their best compatible providers, avoiding packages for unrelated architectures. Precompiled coverage is not available for every NVIDIA GPU or kernel variant, so variants without coverage may still require JIT compilation. Run the command again after upgrading FlashInfer so the cache stays compatible.</p>
+<p>Installing the cache can reduce first-launch compilation and cold-start overhead. It generally does not improve steady-state GPU execution when the same kernels are already compiled and cached.</p>
+<p>For heterogeneous NVIDIA deployments, make sure compatible providers are installed for every GPU architecture used by the deployment. If GPUs are unavailable during installation, such as during an image build, automatic detection may not find the target architectures; use FlashInfer’s <a class="reference external" href="https://docs.flashinfer.ai/cli.html#install-jit-cache-wheel">CLI architecture-selection option</a> (<code class="docutils literal notranslate"><span class="pre">--sm</span></code>, repeatable) to select them explicitly.</p>
+<p>To also install the separate precompiled cubin package, run <code class="docutils literal notranslate"><span class="pre">flashinfer</span> <span class="pre">install-cubin-wheel</span></code> after the JIT-cache installation above.</p>
 </section>
 </section>
 <section id="next-steps">
@@ -790,6 +803,7 @@ For model-specific configuration and other request formats, see the
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-a-docker-recommended">Docker (recommended)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#option-b-manual-install">pip / uv</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#install-from-source">From source</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#optional-precompiled-flashinfer-kernels">Optional: Precompiled FlashInfer Kernels</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#next-steps">Next steps</a></li>
