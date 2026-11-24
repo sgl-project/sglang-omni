@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import sys
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -18,6 +19,11 @@ import sglang_omni.platforms.xpu as xpu_platform
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.device_graph import (
+    CudaDeviceGraphBackend,
+    NpuDeviceGraphBackend,
+    XpuDeviceGraphBackend,
+)
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.rocm import ROCMOmniPlatform
@@ -234,6 +240,129 @@ def test_each_platform_names_the_graph_backend_its_hardware_uses() -> None:
             assert backend is None, platform_class.__name__
         else:
             assert isinstance(backend, backend_class), platform_class.__name__
+
+
+def test_a_non_reclaiming_capture_leaves_both_caches_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert NpuDeviceGraphBackend().supports_non_reclaiming_capture() is False
+
+    for backend, module_name, inference_mode_at_begin in (
+        (CudaDeviceGraphBackend(), "cuda", True),
+        (XpuDeviceGraphBackend(), "xpu", False),
+    ):
+        module = getattr(torch, module_name)
+        calls: list[str] = []
+        begin_modes: list[bool] = []
+
+        begin_args: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        entered: list[object] = []
+
+        class FakeGraph:
+            def capture_begin(self, *args: object, **kwargs: object) -> None:
+                calls.append("capture_begin")
+                begin_modes.append(torch.is_inference_mode_enabled())
+                begin_args.append((args, kwargs))
+
+            def capture_end(self) -> None:
+                calls.append("capture_end")
+
+        @contextmanager
+        def fake_stream_context(stream: object) -> Iterator[None]:
+            entered.append(stream)
+            calls.append("stream_enter")
+            try:
+                yield
+            finally:
+                calls.append("stream_exit")
+
+        graph_attribute = "CUDAGraph" if module_name == "cuda" else "XPUGraph"
+        monkeypatch.setattr(module, graph_attribute, FakeGraph, raising=False)
+        monkeypatch.setattr(
+            module, "empty_cache", lambda: calls.append("empty_cache"), raising=False
+        )
+        monkeypatch.setattr(
+            module,
+            "graph",
+            lambda **kwargs: calls.append("context_manager") or nullcontext(),
+            raising=False,
+        )
+        monkeypatch.setattr(module, "stream", fake_stream_context, raising=False)
+
+        assert backend.supports_non_reclaiming_capture() is True, module_name
+
+        sentinel_pool = ("pool", module_name)
+        sentinel_stream = object()
+        with torch.inference_mode():
+            with backend.capture(
+                pool=sentinel_pool,
+                stream=sentinel_stream,
+                thread_local_errors=True,
+                reclaim_memory=False,
+            ) as graph:
+                assert isinstance(graph, FakeGraph), module_name
+                assert torch.is_inference_mode_enabled(), module_name
+        assert calls == [
+            "stream_enter",
+            "capture_begin",
+            "capture_end",
+            "stream_exit",
+        ], (module_name, calls)
+        assert begin_modes == [inference_mode_at_begin], (module_name, begin_modes)
+        assert entered == [sentinel_stream], module_name
+        args, kwargs = begin_args[0]
+        assert sentinel_pool in args or kwargs.get("pool") == sentinel_pool, (
+            module_name,
+            args,
+            kwargs,
+        )
+        expected_error_mode = "thread_local" if module_name == "cuda" else None
+        assert kwargs.get("capture_error_mode") == expected_error_mode, (
+            module_name,
+            kwargs,
+        )
+
+        calls.clear()
+        with torch.inference_mode():
+            with pytest.raises(RuntimeError, match="body failed"):
+                with backend.capture(
+                    pool=sentinel_pool, stream=sentinel_stream, reclaim_memory=False
+                ):
+                    raise RuntimeError("body failed")
+        assert calls == [
+            "stream_enter",
+            "capture_begin",
+            "capture_end",
+            "stream_exit",
+        ], (module_name, calls)
+
+        calls.clear()
+        entered.clear()
+        waited: list[object] = []
+        ambient_stream = object()
+
+        class FakeSideStream:
+            def wait_stream(self, other: object) -> None:
+                waited.append(other)
+
+        monkeypatch.setattr(module, "Stream", FakeSideStream, raising=False)
+        monkeypatch.setattr(
+            module, "current_stream", lambda *args: ambient_stream, raising=False
+        )
+        with torch.inference_mode():
+            with backend.capture(reclaim_memory=False):
+                pass
+        assert calls == [
+            "stream_enter",
+            "capture_begin",
+            "capture_end",
+            "stream_exit",
+        ], (module_name, calls)
+        assert len(entered) == 1 and isinstance(entered[0], FakeSideStream), (
+            module_name,
+            entered,
+        )
+        assert waited == [ambient_stream], (module_name, waited)
 
 
 def test_npu_platform_opts_only_mimi_into_decode_graphs() -> None:
