@@ -23,7 +23,7 @@ type Span struct {
 // changes its own output no further). An alias two terms share goes to
 // the first.
 func Replace(text string, terms []store.Term) string {
-	text, _ = matchText(text, terms, false)
+	text, _ = matchText(text, terms, false, nil)
 	return text
 }
 
@@ -31,24 +31,28 @@ func Replace(text string, terms []store.Term) string {
 // same matching and overlap rules as Replace. Its spans are byte ranges
 // in text, with the longest match at each place from left to right.
 func HighlightSpans(text string, terms []store.Term) []Span {
-	_, spans := matchText(text, terms, true)
+	_, spans := matchText(text, terms, true, nil)
 	return spans
 }
 
 // matchText is the dictionary's one matcher. highlight keeps the input
 // and collects its matches, including terms without aliases; otherwise it
-// performs Replace's alias substitution.
-func matchText(text string, terms []store.Term, highlight bool) (string, []Span) {
+// performs Replace's alias substitution, and writes a term in spelled as
+// spelled where it is found in another case ("Github" for GitHub), except
+// one word all in lower or all in upper case: that is how code, files and
+// addresses write it (config.json, OPENAI_API_KEY), and it stays.
+func matchText(text string, terms []store.Term, highlight bool, spelled map[string]bool) (string, []Span) {
 	type pattern struct {
 		words []string // the alias (or term), split at its spaces
 		term  string   // "" for a term itself: kept as written
 		size  int      // characters, for the longest first
+		spell string   // a term in spelled: written so, unless oneCaseWord
 	}
 	var patterns []pattern
 	add := func(s, term string) {
 		words := strings.Fields(s)
 		if len(words) > 0 {
-			patterns = append(patterns, pattern{words, term, utf8.RuneCountInString(strings.Join(words, " "))})
+			patterns = append(patterns, pattern{words: words, term: term, size: utf8.RuneCountInString(strings.Join(words, " "))})
 		}
 	}
 	for _, t := range terms {
@@ -63,8 +67,11 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 				replaced = true
 			}
 		}
-		if replaced || highlight {
+		if replaced || highlight || spelled[term] {
 			add(term, "")
+			if spelled[term] && !highlight {
+				patterns[len(patterns)-1].spell = term
+			}
 		}
 	}
 	if len(patterns) == 0 {
@@ -87,6 +94,8 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 			if n := matchAt(text, i, p.words); n > 0 {
 				if highlight {
 					spans = append(spans, Span{Start: i, End: i + n})
+				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) {
+					b.WriteString(p.spell)
 				} else if p.term == "" {
 					b.WriteString(text[i : i+n])
 				} else {
@@ -109,6 +118,11 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 		return text, spans
 	}
 	return b.String(), nil
+}
+
+// oneCaseWord: s is one word with no capital letter or no small one.
+func oneCaseWord(s string) bool {
+	return !strings.ContainsFunc(s, unicode.IsSpace) && (strings.ToLower(s) == s || strings.ToUpper(s) == s)
 }
 
 // matchAt is the length in bytes of words matched at text[i:] (0 for

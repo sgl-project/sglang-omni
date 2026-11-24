@@ -572,6 +572,31 @@ The runs were on mac-air with TestEvalDictLLM and TestEvalGlossary, before (5bdb
 - With 130 terms a dictation's first token still comes about 0.1–0.25 s after 30 terms' (`llm.balanced` 0.49 against 0.31 s): the block and the input are new on every dictation.
 
 
+## Built-in vocabulary (11-23)
+
+Voxt writes a short list of AI and developer names right with no dictionary (`dict.builtin`, behavior.md 7.9d). The aliases were chosen on one run and scored on another.
+
+- **Audio**: sentences said by macOS `say` voices the way a user says them ("S G Lang", "A P I key"), Chinese sentences with English names and English ones, recognised by Whisper Large v3 Turbo through the omni runtime as the app sends a file (language hint `zh` or `en`). Whisper takes no prompt, so recognition is the same with or without the list; the list acts on its text (`dict.ReplaceWithBuiltin`, as `session.spoken` calls it, with no user terms).
+- **Round 1, where the aliases come from**: 172 sentences with one of 21 names and 48 without any, by 6 voices per language (1320 recognitions). An alias had to be a spelling Whisper wrote that is not an ordinary word or name.
+- **Round 2, held out**: 72 new sentences with a built-in name and 40 without any, the latter full of near words (box, voice, LAN, deep, seek, chat, open, face, hug, queue, Quinn, Gwen, clouds), by 4 voices per language, 6 of the 8 new (448 recognitions).
+- A name counts as written when it is spelled exactly ("API Key" is a miss for API key). An insertion is a name of the corpus written more often than the sentence has it.
+
+Round 2:
+
+| voices | names written, before | after | sentences without a name changed | insertions |
+|---|---|---|---|---|
+| Tingting, Meijia (Chinese) | 14 of 74 | **48 of 74** | 0 of 40 | 0 → 0 |
+| Tara, Aman (English) | 36 of 72 | **61 of 72** | 0 of 40 | 0 → 0 |
+| Sandy, Rocko (Chinese) | 1 of 74 | 1 of 74 | 0 of 40 | 0 → 0 |
+| Sandy, Reed (English) | 24 of 72 | 32 of 72 | 0 of 40 | 0 → 0 |
+| all | 75 of 292 | **142 of 292** | 0 of 160 | 0 → 0 |
+
+By name, on the four natural voices (Tingting, Meijia, Tara, Aman; 12 sentences each): SGLang 0 → 11, Voxt 0 → 11, DeepSeek 0 → 9, OpenAI 2 → 9, Hugging Face 6 → 12, ChatGPT 6 → 10, CUDA 6 → 10, SGLang Omni 0 → 4, Qwen 0 → 2, GitHub 11 → 12, Gemini 11 → 11, API key 6 → 6.
+
+- **What is left.** Sandy and Rocko (and Eddy, Flo, Reed and Shelley in round 1) say an English name inside Chinese so that Whisper writes other Chinese words ("B2" for GitHub); no alias can fix that. Some names are only heard as ordinary words or names: Claude as "Cloud" or "Claw", Qwen as "坤", "昆" or "Quinn", CUDA as "Q的" (also how "Q的维度" is said), JSON as "Jason", PR as "P2". Those stay; a fix that reads the sentence (the clean-up's glossary) or a speech model given the names (Qwen3-ASR's context) might, and is not measured here. New spellings of a name ("SGLUNG Omni") are also left.
+- **No sentence without a name changed**: 0 of 160 in round 2 and 0 of 288 in round 1. Over the repository's own text (docs, CHANGELOG, READMEs and the Chinese strings, 6907 lines) the list changes 15 lines, each quoting a misheard name ("Vox New", "Vox T", "S G Long"). Before a word all in one case was kept, it also changed `VOXT_UPDATE_CHANNEL` and the strings' "API Key".
+- **Time**: 15 µs for a 200-character dictation.
+
 ## App enhancement and the dictionary, whole sessions on the real models
 
 *History: measured on the retired local language models in `voxtnew-llm`, with tests that were removed with it.*

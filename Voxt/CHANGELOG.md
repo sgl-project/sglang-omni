@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 - **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **AI and coding names come out right from the first dictation** (#4565): without adding anything to your dictionary, Voxt now writes SGLang, SGLang Omni, Voxt, Qwen, DeepSeek, ChatGPT, OpenAI, GitHub, Hugging Face, CUDA, API key and Gemini where speech recognition wrote "SG狼", "Vox", "Deep Seek", "OpenEye" or "Github". Your dictionary comes first: a word you keep there is never changed. Turning the dictionary off turns this off too.
 
 ### Changed
 
@@ -27,6 +28,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **AI 和编程常用名第一次听写就能写对**（#4565）：不用往词典里加词，语音识别写成“SG狼”“Vox”“Deep Seek”“OpenEye”“Github”的地方，现在会写成 SGLang、SGLang Omni、Voxt、Qwen、DeepSeek、ChatGPT、OpenAI、GitHub、Hugging Face、CUDA、API key 和 Gemini。你的词典优先：词典里保留的写法不会被改；关掉词典，这项也一起关掉。
 
 #### 变更
 

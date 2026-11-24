@@ -55,6 +55,42 @@ func TestAliases(t *testing.T) {
 	}
 }
 
+// TestBuiltinVocabulary: with the dictionary on, the built-in
+// vocabulary's aliases become their terms beside the user's (here
+// "aura link"), also without a language model; the history keeps the
+// text as recognised, and only the user's terms are highlighted. The
+// dictionary off leaves the text alone.
+func TestBuiltinVocabulary(t *testing.T) {
+	const heard = "用SG狼部署, then ask OpenEye about aura link"
+	for _, c := range []struct {
+		name   string
+		off    bool
+		result string
+	}{
+		{"on", false, "用SGLang部署, then ask OpenAI about VoxtNew"},
+		{"dictionary off", true, heard},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: heard}, nil, func(_ *Config, s *settings.Settings) {
+				s.Dictionary.Enabled = !c.off
+			})
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			e := h.hist.all()
+			if end.Result != c.result || end.Raw != heard || len(e) != 1 || e[0].RawText != heard || e[0].Result != c.result {
+				t.Errorf("result %q, raw %q, entries %+v", end.Result, end.Raw, e)
+			}
+			var lit []string
+			for _, span := range end.Highlights {
+				lit = append(lit, end.Result[span.Start:span.End])
+			}
+			if want := map[bool]string{false: "VoxtNew", true: ""}[c.off]; strings.Join(lit, ",") != want {
+				t.Errorf("highlighted %q, want %q", lit, want)
+			}
+		})
+	}
+}
+
 // TestComposingSpoken: while the language model works, the snapshot holds
 // the text it got (the pill shows it): the recognised Final with the
 // dictionary's aliases replaced, not the stream's last partial, which the
