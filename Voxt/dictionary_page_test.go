@@ -140,13 +140,13 @@ func TestDictionarySettingsTips(t *testing.T) {
 	}
 	tips("Terms go to the speech model as words to expect.",
 		fmt.Sprintf("With more than %d terms", compose.GlossaryAllUpTo),
-		fmt.Sprintf("are sent, up to %d.", compose.MaxGlossaryTerms),
+		fmt.Sprintf("only those in the text, up to %d.", compose.MaxGlossaryTerms),
 		"If you correct a word, it suggests your spelling.")
 	i18n.SetLocale("zh-Hans")
 	defer i18n.SetLocale("en")
 	frames(tt)
-	tips("词条会发给语音识别模型",
-		fmt.Sprintf("超过 %d 个时，只发送文本里出现的词条", compose.GlossaryAllUpTo),
+	tips("让语音识别更容易认出这些词",
+		fmt.Sprintf("超过 %d 个时，只用文中出现的", compose.GlossaryAllUpTo),
 		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms))
 }
 

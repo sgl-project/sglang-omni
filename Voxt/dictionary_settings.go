@@ -31,7 +31,7 @@ func dictSettingsDialog(c *ui.Context, state *dictionaryViewState, actions dicti
 			}
 		})
 		formRow(c, "dict-glossary-row", i18n.T("Glossary for the language model"),
-			i18n.T("The language model writes terms as spelled here. With more than %d terms, only those found in the text are sent, up to %d.", state.GlossaryAllUpTo, state.MaxGlossaryTerms), func() {
+			i18n.T("The language model writes terms as spelled here. With more than %d terms, it uses only those in the text, up to %d.", state.GlossaryAllUpTo, state.MaxGlossaryTerms), func() {
 				glossary := state.Glossary
 				if ui.Switch(c.Key("dict-glossary"), &glossary).Label(i18n.T("Glossary for the language model")).Disabled(off).Changed() {
 					actions.setDictionaryGlossary(glossary)

@@ -273,7 +273,7 @@ func buildDictionaryScanViewState(translator *i18n.Translator, input dictionaryS
 	switch {
 	case input.Running:
 		state.Stage = "running"
-		state.Body = translator.N(input.Found, "Read %d/%d · %d suggestion", "Read %d/%d · %d suggestions", input.Read, input.Total, input.Found)
+		state.Body = translator.N(input.Found, "Scanned %d/%d · %d suggestion", "Scanned %d/%d · %d suggestions", input.Read, input.Total, input.Found)
 	case input.Ended:
 		state.Stage = "ended"
 		state.Body = dictionaryScanFoundTextFor(translator, input.Found)

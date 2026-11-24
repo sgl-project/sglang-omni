@@ -13,7 +13,7 @@ import (
 )
 
 func notesPlaceholder() string {
-	return i18n.T("| Standard spelling | Correction mapping | Condition |\n|---|---|---|\n| 101; I-80 | `one oh one` → 101 | Bay Area highways |\n| Roth | `wrath` → Roth | retirement accounts |\n| NVDA | — | tickers, all caps |")
+	return i18n.T("| Standard spelling | Heard as | Condition |\n|---|---|---|\n| 101; I-80 | `one oh one` → 101 | Bay Area highways |\n| Roth | `wrath` → Roth | retirement accounts |\n| NVDA | — | tickers, all caps |")
 }
 
 // dictionaryNotesView is the switch that sends it, then the Markdown,
@@ -25,7 +25,7 @@ func dictionaryNotesView(c *ui.Context, state *dictionaryNotesViewState, actions
 		ui.Column(c).Gap(px(t, sp3)).Children(func() {
 			off := !state.Enabled
 			if off {
-				notice(c, "dict-notes-off", noticeInfo, i18n.T("The dictionary is off, so the personal dictionary is not sent."), "", func() {
+				notice(c, "dict-notes-off", noticeInfo, i18n.T("The dictionary is off, so the personal dictionary is not used."), "", func() {
 					if ghostButton(c.Key("dict-notes-turn-on"), i18n.T("Turn on")).Label(i18n.T("Turn on the dictionary")).Clicked() {
 						actions.setDictionaryEnabled(true)
 					}

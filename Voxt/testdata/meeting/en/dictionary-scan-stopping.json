@@ -53,7 +53,7 @@
     "scan": {
       "stage": "running",
       "model_name": "Fixture model",
-      "body": "Read 0/24 · 0 suggestions",
+      "body": "Scanned 0/24 · 0 suggestions",
       "warning": "",
       "error_code": "",
       "can_start": false,
