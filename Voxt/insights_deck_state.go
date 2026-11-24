@@ -116,14 +116,12 @@ func buildInsightsFace(translator *i18n.Translator, log activity.Log, now time.T
 	ins := buildInsightsViewState(translator, log, now)
 	stats := log.Stats(now)
 	var chars, count, active int
-	var audio time.Duration
 	for _, day := range log.Days {
 		chars += day.Chars
 		count += day.Count
 		if day.Count > 0 {
 			active++
 		}
-		audio += time.Duration(day.AudioMS) * time.Millisecond
 	}
 	face := insightsFaceViewState{Kind: kind, Theme: theme, Date: homeActivityDate(translator, now)}
 	face.Move = max(slices.Index(insightsCardKinds, kind), 0) % 3
@@ -155,11 +153,11 @@ func buildInsightsFace(translator *i18n.Translator, log activity.Log, now time.T
 		}
 	case insightsCardSaved:
 		face.Title = translator.T("Time saved")
-		typing := time.Duration(float64(chars) / insightsTypingRate * float64(time.Minute))
+		typing, audio := insightsTyping(log)
 		face.Parts = ins.Stats[1].Parts
-		// Nothing dictated yet: neither bar has a length.
+		// Nothing said yet: neither bar has a length.
 		full, speaking := float32(0), float32(0)
-		if typing > 0 {
+		if typing > 0 && audio > 0 {
 			full, speaking = 1, float32(min(1, float64(audio)/float64(typing)))
 		}
 		face.Bars = []insightsBarViewState{

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"image"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -274,6 +275,14 @@ func TestInsightsNumbers(t *testing.T) {
 	if len(ins.Weeks) != insightsWeeks || len(ins.Months) != insightsWeeks {
 		t.Errorf("%d weeks, %d month labels", len(ins.Weeks), len(ins.Months))
 	}
+	// A rewrite's long result, and a translation longer than what was
+	// said, are not time saved: only the characters of speech are.
+	log.Add(now, activity.Result{Chars: 4000})
+	log.Add(now, activity.Result{Chars: 2000, Spoken: 100, Audio: 30 * time.Second})
+	more := buildInsightsViewState(i18n.CurrentTranslator(), log, now)
+	if got := parts(more.Stats[1]); got != "58 minutes " { // 2,900 characters of speech is 72.5 minutes typed; 14.5 were said
+		t.Errorf("with a long rewrite and a translation, time saved = %q, want 58 minutes", got)
+	}
 	if got := insightsDuration(i18n.CurrentTranslator(), 154*time.Minute); len(got) != 2 || got[0].Value != "2" || got[1].Value != "34" {
 		t.Errorf("2 h 34 min shows as %+v", got)
 	}
@@ -300,6 +309,10 @@ func TestShareClickThrough(t *testing.T) {
 		frames(tt)
 	}
 	control("Share a card of Voxt and you")
+	if a.share.open {
+		t.Error("Share opened the card before its stars flew")
+	}
+	tt.Advance(shareSparkleLength)
 	if !a.share.open {
 		t.Fatal("Share did not open the card")
 	}
@@ -513,5 +526,86 @@ func TestInsightsEntrance(t *testing.T) {
 	}
 	if state := a.insightsModel(now, true); state.Elapsed != insightsSettled {
 		t.Errorf("Reduce motion shows the card %v into its entrance", state.Elapsed)
+	}
+}
+
+// TestLookingBackFolds: a click on Looking back's title folds its totals
+// away and leaves the title's row, Share on it; the settings keep the
+// choice, so the next start shows it folded; a click opens it again. The
+// title's arrow shows only under the pointer, which leaves the title's
+// words as they are.
+func TestLookingBackFolds(t *testing.T) {
+	dir := testDir(t)
+	a, _, tt := newTestAppIn(t, dir)
+	tt.SetSize(windowWidth, 1600)
+	a.navigate("/home")
+	untilActivity(t, tt, "log read", func() bool { return a.act.loaded })
+	totals := func(tt *ui.Tester) bool {
+		tt.Advance(time.Second) // the fold's motion
+		return hasExact(tt, "Characters dictated")
+	}
+	if !totals(tt) {
+		t.Fatalf("no totals at first: %q", firstTexts(tt))
+	}
+	// The arrow's room is the end of the title's button: empty until the
+	// pointer is over the title.
+	title, _ := tt.Find("Looking back")
+	arrow := func() bool {
+		frames(tt)
+		img := tt.Image()
+		box := image.Rect(int(title.X+title.W)-12, int(title.Y), int(title.X+title.W), int(title.Y+title.H))
+		for y := box.Min.Y; y < box.Max.Y; y++ {
+			for x := box.Min.X; x < box.Max.X; x++ {
+				if img.RGBAAt(x, y) != img.RGBAAt(box.Min.X, box.Min.Y) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	words := func() []byte {
+		frames(tt)
+		box := image.Rect(int(title.X), int(title.Y), int(title.X+title.W)-12, int(title.Y+title.H))
+		img, pix := tt.Image(), []byte(nil)
+		for y := box.Min.Y; y < box.Max.Y; y++ {
+			pix = append(pix, img.Pix[img.PixOffset(box.Min.X, y):img.PixOffset(box.Max.X, y)]...)
+		}
+		return pix
+	}
+	if arrow() {
+		t.Error("the arrow shows without the pointer")
+	}
+	resting := words()
+	tt.Move(title.X+4, title.Y+title.H/2)
+	if !arrow() {
+		t.Error("no arrow under the pointer")
+	}
+	if !bytes.Equal(words(), resting) {
+		t.Error("the pointer changed the title's words")
+	}
+	clickControl(t, tt, "Looking back")
+	if !a.prefs.Appearance.LookingBackClosed || totals(tt) {
+		t.Fatalf("a click on the title: closed %v, totals %v", a.prefs.Appearance.LookingBackClosed, totals(tt))
+	}
+	clickControl(t, tt, "Share a look back")
+	tt.Advance(shareSparkleLength) // Share opens once its stars have flown
+	if !a.share.insights.open {
+		t.Error("folded, Share did not open the card")
+	}
+	a.closeInsightsShare()
+	untilActivity(t, tt, "choice saved", func() bool { return a.settings.Get().Appearance.LookingBackClosed })
+
+	a.quit()
+	a.lib.close()
+	b, _, bt := newTestAppIn(t, dir)
+	bt.SetSize(windowWidth, 1600)
+	b.navigate("/home")
+	untilActivity(t, bt, "log read again", func() bool { return b.act.loaded })
+	if !hasExact(bt, "Looking back") || totals(bt) {
+		t.Fatalf("after a restart: title %v, totals %v", hasExact(bt, "Looking back"), totals(bt))
+	}
+	clickControl(t, bt, "Looking back")
+	if b.prefs.Appearance.LookingBackClosed || !totals(bt) {
+		t.Fatalf("a second click: closed %v, totals %v", b.prefs.Appearance.LookingBackClosed, totals(bt))
 	}
 }

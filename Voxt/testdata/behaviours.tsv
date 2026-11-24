@@ -85,3 +85,4 @@ Share card of Voxt and a sentence said to it, copied as a picture	L	TestShareCar
 Hat studio: draw, erase, undo, the wardrobe, put on	L	TestShareStudioDrawsUndoesAndWears	Drawing with a real pointer is checked by hand only
 Home Insights	L	TestInsightsNumbers	none
 The insights cards to share	L	TestInsightsFaces	How the cards look and move is checked by hand only
+Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none
