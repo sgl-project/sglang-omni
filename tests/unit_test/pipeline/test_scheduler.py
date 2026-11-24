@@ -2522,6 +2522,7 @@ def test_speculative_step_lengths_survive_the_next_verify_replay() -> None:
         ({}, True, False, None, "logprobs"),
         ({}, False, True, None, "return_hidden_states"),
         ({"min_p": 0.05}, False, False, None, "min_p"),
+        ({"min_p": 0.05, "top_k": 1}, False, False, None, None),
         ({"frequency_penalty": 0.5}, False, False, None, "frequency_penalty"),
         ({"presence_penalty": 0.5}, False, False, None, "presence_penalty"),
         ({"repetition_penalty": 1.2}, False, False, None, "repetition_penalty"),

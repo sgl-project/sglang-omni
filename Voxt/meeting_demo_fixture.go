@@ -38,6 +38,7 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 		fixture.Kind == "appenhance" && fixture.AppEnhancement != nil ||
 		fixture.Kind == "dictionary" && fixture.Dictionary != nil ||
 		fixture.Kind == "notes" && fixture.Notes != nil ||
+		fixture.Kind == "snippets" && fixture.Snippets != nil && fixture.SnippetsUI != nil ||
 		fixture.Kind == "remote" && fixture.Remote != nil ||
 		fixture.Kind == "remote-cards" && fixture.RemoteCards != nil ||
 		fixture.Kind == "remote-dialog" && fixture.RemoteDialog != nil ||
