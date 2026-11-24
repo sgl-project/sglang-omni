@@ -172,11 +172,13 @@ class GatedNaturalTailAdapter(GatedAdapter):
         self.release_tail = asyncio.Event()
         self.cancel_called = asyncio.Event()
         self.tail_calls = 0
+        self.tail_input_unit: Unit | None = None
 
     async def finish_tail(self, last_unit: Unit, max_tail_units: int) -> None:
         assert last_unit.eos
         assert max_tail_units == 3
         self.tail_calls += 1
+        self.tail_input_unit = last_unit
         self.tail_started.set()
         await self.release_tail.wait()
 
@@ -344,6 +346,32 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
         assert [unit.eos for unit in adapter.units] == [False, False, True]
         assert isinstance(drained, Drained)
         assert (drained.accepted_end_ms, drained.consumed_ms) == (60.0, 60.0)
+
+
+@pytest.mark.asyncio
+async def test_natural_tail_receives_image_at_audio_unit_boundary() -> None:
+    """An image in the empty terminal unit must reach natural finish after full audio."""
+    image = b"\xff\xd8frame"
+    adapter = GatedNaturalTailAdapter()
+    adapter.release_tail.set()
+    async with open_runtime(
+        adapter,
+        capabilities=Capabilities(
+            input_modalities=("audio", "image"), supports_natural_finish=True
+        ),
+        config={"sglang": {"finish_mode": "natural", "max_tail_units": 3}},
+    ) as runtime:
+        await runtime.append(b"\1" * UNIT_BYTES, 0, None, "client_append")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        await runtime.append_image(image, NATIVE_UNIT_MS, "client_image")
+        await runtime.end("client_end")
+        adapter.release.set()
+        await asyncio.wait_for(adapter.tail_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+
+        assert len(adapter.units) == 1
+        assert adapter.tail_input_unit is not None
+        assert adapter.tail_input_unit.real_samples == 0
+        assert adapter.tail_input_unit.images == (image,)
 
 
 @pytest.mark.asyncio

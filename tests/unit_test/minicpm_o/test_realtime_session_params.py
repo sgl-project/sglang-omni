@@ -293,6 +293,26 @@ async def test_natural_tail_generates_bounded_silence_then_ends_the_session_inpu
 
 
 @pytest.mark.asyncio
+async def test_natural_tail_delivers_image_on_empty_terminal_unit() -> None:
+    """An image after the final full audio unit must reach the coordinator during natural finish."""
+    image = b"\xff\xd8frame"
+    coordinator = TailCoordinator(end_on_unit=0)
+    adapter, _ = await open_adapter(coordinator)
+    await adapter.process(unit(0))
+    await adapter.finish_tail(
+        replace(unit(1), pcm=b"", real_samples=0, eos=True, images=(image,)), 1
+    )
+    await adapter.close()
+
+    assert [chunk.seq for chunk in coordinator.appended] == [0, 1, 2]
+    assert coordinator.appended[1].payload == {
+        "pcm": b"\0\0" * UNIT_SAMPLES,
+        "images": [image],
+    }
+    assert coordinator.appended[2].eos
+
+
+@pytest.mark.asyncio
 async def test_cancel_during_natural_tail_stops_after_the_current_unit() -> None:
     """Cancelling a speaking reply during tail must not spend the remaining silence budget."""
     coordinator = VoiceCoordinator()
