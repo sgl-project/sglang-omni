@@ -26,6 +26,7 @@ type meetingDemoHost struct {
 	calls                 []string
 	pageUI                meetingsLocalUI
 	overlayUI             meetingOverlayLocalUI
+	askUI                 meetingAskDemoUI // meeting_ask_demo.go
 	historyUI             historyLocalUI
 	insightsClosed        bool // Home's Looking back, folded in the demo
 	historySettingsUI     historySettingsLocalUI
@@ -140,6 +141,10 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.pageUI.page = fixture.state.Page.Page
 	}
 	host.overlayUI = meetingOverlayLocalUI{}
+	host.askUI = meetingAskDemoUI{}
+	if ask := fixture.state.Ask; ask != nil {
+		host.askUI = meetingAskDemoUI{compact: ask.Compact, menu: ask.MenuOpen}
+	}
 	if fixture.state.Overlay != nil {
 		host.overlayUI.collapsed = fixture.state.Overlay.Collapsed
 	}

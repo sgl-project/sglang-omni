@@ -52,6 +52,8 @@ const (
 	MethodOutputRelease = "output.release" // request: give a claim back (unmuting it, unless the user did)
 	MethodOutputRecover = "output.recover" // request: undo the claims a helper that is gone left in the journal
 
+	MethodMicWatch = "mic.watch" // request: the apps recording from an input; mic.changed while on
+
 	MethodSpeechRecognize = "speech.recognize" // request, job: macOS's speech recognition, on this Mac, of what speech.audio brings
 	MethodSpeechAudio     = "speech.audio"     // request: audio for a speech.recognize job (end: the last)
 
@@ -65,6 +67,7 @@ const (
 	MethodAppActivated     = "app.activated"     // another app came to the front
 	MethodOutputChanged    = "output.changed"    // the default output device or its mute changed (output.watch on)
 	MethodOutputReleased   = "output.released"   // the helper gave its claims back on its own (sleep)
+	MethodMicChanged       = "mic.changed"       // the apps recording from an input changed (mic.watch on)
 	MethodSpeechStarted    = "speech.started"    // a speech.recognize job's recognizer runs
 	MethodSpeechPartial    = "speech.partial"    // the text a speech.recognize job heard so far
 	MethodLog              = "log"               // a log line (stderr stays free-form text)
@@ -180,6 +183,10 @@ func ParamsFor(method string) any {
 		return new(OutputState)
 	case MethodOutputReleased:
 		return new(OutputReleasedParams)
+	case MethodMicWatch:
+		return new(MicWatchParams)
+	case MethodMicChanged:
+		return new(MicUsers)
 	case MethodCaptureStarted:
 		return new(CaptureStartedParams)
 	case MethodCaptureLevel:
@@ -251,6 +258,8 @@ func ResultFor(method string) any {
 		return new(OutputReleaseResult)
 	case MethodOutputRecover:
 		return new(OutputRecoverResult)
+	case MethodMicWatch:
+		return new(MicUsers)
 	case MethodSpeechRecognize:
 		return new(SpeechResult)
 	}
@@ -269,12 +278,12 @@ var (
 		MethodTextFocus, MethodTextSelection, MethodTextPaste, MethodTextRead,
 		MethodBrowserURL, MethodScreenWindow, MethodClipboardImage,
 		MethodOutputWatch, MethodOutputMute, MethodOutputRelease, MethodOutputRecover,
-		MethodSpeechRecognize, MethodSpeechAudio,
+		MethodSpeechRecognize, MethodSpeechAudio, MethodMicWatch,
 	}
 	Notifications = []string{
 		MethodCaptureStarted, MethodCaptureLevel, MethodCapturePCM, MethodCaptureRestarted,
 		MethodHotkeyEvent, MethodHotkeyState, MethodAppActivated, MethodOutputChanged, MethodOutputReleased,
-		MethodSpeechStarted, MethodSpeechPartial, MethodLog,
+		MethodSpeechStarted, MethodSpeechPartial, MethodMicChanged, MethodLog,
 	}
 )
 

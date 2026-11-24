@@ -278,5 +278,8 @@
   "%s seconds": "%s 秒",
   "Opening speed": "开场动画速度",
   "Slower": "更慢",
-  "Faster": "更快"
+  "Faster": "更快",
+  "Detect meetings": "检测会议",
+  "When a meeting app starts using the microphone, Voxt offers to record it.": "会议 App 开始用麦克风时，Voxt 会问你要不要记录。",
+  "A detected meeting is recorded without asking.": "检测到会议就直接开始记录，不再询问。"
 }

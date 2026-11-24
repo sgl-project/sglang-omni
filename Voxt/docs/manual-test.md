@@ -1182,6 +1182,7 @@ MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh   # 真实模型�
 |---|---|---|
 | `swift test` | 协议 fixture、热键识别、PCM 分帧；文件输入：22.05 kHz 立体声 fixture 按实时节奏读出，混成单声道并重采样到 16 kHz，分帧连续，电平正确；哪些 App 设置 `AXManualAccessibility`、每个进程一次（`ManualAccessibilityTests`） | 10-16（M0）：59 个用例全部通过 |
 | `TestMacHelperIcons` | 真实的辅助进程画 App 图标（`app.icons`）：访达、Safari 按 bundle ID，微信、Arc 装了才算，已安装列表里的前几个按路径，加一个不存在的 App（应当没有图标）；`VOXTNEW_E2E_ICONS=<目录>` 时把 PNG 存下来 | 10-15 通过：10 个图标 309 ms（第一次，之后系统有缓存），每个 64×64、4–7 KB；不存在的 App 没有图标 |
+| `TestMacHelperMicWatch` | 真实的辅助进程回答 `mic.watch`：哪些进程在用音频输入（Core Audio 的进程列表），不需要任何权限；列表里没有辅助进程和测试进程自己 | 11-24 通过（没有 App 在录音时列表为空；Zoom 开会时手动核对列出 `us.zoom.xos`，放开麦克风后收到 `mic.changed`） |
 | `TestMacHelperReadOnly` | 真实的 supervisor 加真实的辅助进程：`helper.hello`、`permissions.status`、`hotkey.status`（没有绑定时不装 tap）、`app.frontmost`、`app.list`（运行中的、已安装的）、`capture.devices`、对已经在运行的浏览器按 pid 调三轮 `browser.url`（第二轮之前发 `app.configure`，列出 Chromium 系浏览器：读不到网页区域的会被设置 `AXManualAccessibility` 后重试）、`textio.focus`、`textio.selection`（不允许 ⌘C）；前后的权限状态不变，没有收到任何热键通知 | 通过。Arc 在后台：第一轮 `none`（717 ms），`app.configure` 之后重试读到（`ax-focus`，1230 ms，`retried`），之后 2–5 ms；Chrome 一直是 `ax-document`，1–22 ms（见 10.3） |
 | `TestMacHelperCaptureFile` | 辅助进程以 4 倍速读语音样本：`capture.started` 报告文件名、16 kHz、单声道；帧序号和偏移连续；录到的 PCM 和文件逐样本一致；电平约 20 Hz；`capture.stop`、取消、`maxSeconds` 三种结束方式；22.05 kHz 立体声的 fixture 混音后峰值是 0.375；麦克风的权限状态没有变 | 通过：和文件的相关系数 1.00000，延迟 0 个样本；`maxSeconds=1` 时正好 16000 个样本 |
 | `TestMacE2ESessionLocal` | 和 app 一样组装的 `session.Manager`：辅助进程按实时节奏读语音样本，假的本地语音识别和语言模型（`local_fakes_test.go`），文字交给假的文本输出，历史写进临时目录里的 SQLite | 10-16（M0）通过：整段样本都送到了假的语音识别，结果整理、交付、写进历史 |
@@ -1357,6 +1358,10 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 **做**：在会议页下方改 **采集模式**（仅麦克风 / 仅系统 / 两者），开 **隐藏会议浮窗**，并给会议设一个快捷键。
 
 **应看到**：下一场录音的 WAV 符合所选模式（`meetings/<id>/` 里可能只有 `mic.wav` 或 `system.wav`）；共享屏幕时浮窗是否隐藏取决于该开关；快捷键在无听写冲突时能开始会议。
+
+**做**：不开 Voxt 的会议，在 Zoom（或 Teams、腾讯会议、飞书）里加入一场会议；再在 Chrome 里打开一个 Google Meet 会议并允许麦克风。
+
+**应看到**：会议 App 开始用麦克风后一两秒，屏幕左侧出现卡片“检测到会议 · Zoom”和“开始记录”按钮，期间没有任何录音开始；卡片不抢前台（Zoom 仍是当前 App）。鼠标移到卡片上，左上角出现 ×；点按钮旁的箭头，菜单向上展开（2 分钟后再问、自动开始记录、检测设置），卡片的下边缘不动。约 8 秒不碰，卡片缩成一行，鼠标移上去再展开。点“开始记录”就开始 Voxt 的会议（同“开始会议”）；点 × 卡片消失，这场会议不再问；选“2 分钟后再问”，两分钟后会议还在就再出现；离开会议后卡片自己消失。Chrome 在 Meet 页面上用麦克风时卡片写“Google Meet”，在别的网页（如 ChatGPT 的语音输入）上用麦克风时不出现。同一场会议里静音再取消静音不重问；在微信里发语音消息不问；关掉会议 → 设置 →“检测会议”后不再出现；打开“自动开始记录”后，检测到会议直接开始记录，不出卡片。
 
 **做**：录制中在浮窗的 **更多** 菜单里点 **取消会议**，在对话框选 **取消会议**。
 

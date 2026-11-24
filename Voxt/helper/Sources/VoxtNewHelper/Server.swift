@@ -111,6 +111,7 @@ final class Server: @unchecked Sendable {
     let keyRecorder: HotkeyRecorder
     let textio: TextIO
     let output: Output
+    let mic: Mic
     let speech: SpeechJobs
     private let lock = NSLock()
     private var ready = false
@@ -126,6 +127,7 @@ final class Server: @unchecked Sendable {
         keyRecorder = HotkeyRecorder()
         textio = TextIO(front: front)
         output = Output(out: out)
+        mic = Mic(out: out)
         speech = SpeechJobs(out: out)
     }
 
@@ -293,6 +295,8 @@ final class Server: @unchecked Sendable {
             return output.claims.release(try msg.decodeParams(OutputReleaseParams.self))
         case Method.outputRecover:
             return output.claims.recover(try msg.decodeParams(OutputRecoverParams.self))
+        case Method.micWatch:
+            return mic.watch(try msg.decodeParams(MicWatchParams.self))
         default:
             throw RPCError(Code.methodNotFound, "Unknown method \(method)")
         }

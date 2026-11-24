@@ -14,6 +14,8 @@ import (
 type meetingSettingsUI struct {
 	mode       string
 	hide       bool
+	detect     bool
+	auto       bool
 	seen       string
 	correction speechContextState
 }
@@ -25,6 +27,20 @@ func meetingCaptureSettings(c *ui.Context, state settingsMeetingViewState, actio
 			actions.setMeetingCaptureMode(settingsLanguageCode(captureMode, state.CaptureModeOptions))
 		}
 	})
+	settingRow(c, "mt-detect", i18n.T("Detect meetings"),
+		i18n.T("When a meeting app starts using the microphone, Voxt offers to record it."), func() {
+			if ui.Switch(c.Key("mt-detect-sw"), &local.detect).Label(i18n.T("Detect meetings")).Changed() {
+				actions.setMeetingDetect(local.detect)
+			}
+		})
+	if state.DetectMeetings {
+		settingRow(c, "mt-auto", i18n.T("Start recording automatically"),
+			i18n.T("A detected meeting is recorded without asking."), func() {
+				if ui.Switch(c.Key("mt-auto-sw"), &local.auto).Label(i18n.T("Start recording automatically")).Changed() {
+					actions.setMeetingAutoStart(local.auto)
+				}
+			})
+	}
 	settingRow(c, "mt-hide-share", i18n.T("Hide from screen sharing"),
 		"", func() {
 			if ui.Switch(c.Key("mt-hide-sw"), &local.hide).Label(i18n.T("Hide meeting overlay")).Changed() {

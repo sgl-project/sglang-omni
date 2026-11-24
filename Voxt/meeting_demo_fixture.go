@@ -27,6 +27,7 @@ func readMeetingDemoFixture(path string) (meetingFixtureState, error) {
 	valid := fixture.Kind == "overlay" && fixture.Overlay != nil ||
 		fixture.Kind == "page" && fixture.Page != nil ||
 		fixture.Kind == "start" && fixture.Start != nil ||
+		fixture.Kind == "meeting-ask" && fixture.Ask != nil ||
 		fixture.Kind == "history" && fixture.History != nil ||
 		fixture.Kind == "history-settings" && fixture.HistorySettings != nil ||
 		fixture.Kind == "history-access" && fixture.HistoryAccess != nil ||

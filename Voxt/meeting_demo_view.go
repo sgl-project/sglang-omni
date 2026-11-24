@@ -44,6 +44,13 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				}
 			case "session-overlay":
 				sessionDemoOverlayView(c, host)
+			case "meeting-ask":
+				state := *fixture.state.Ask
+				state.Compact, state.MenuOpen = host.askUI.compact, host.askUI.menu && !host.askUI.compact
+				model := meetingAskLayoutModel(state)
+				ui.Box(c).Size(float32(model.Width), float32(model.Height)).Children(func() {
+					meetingAskView(c, state, host, meetingOverlayFaceStyle{radius: meetingAskRadius, alpha: 1})
+				})
 			case "start":
 				ui.Column(c).Padding(24).Children(func() {
 					fillCard(c).Padding(16).Children(func() {

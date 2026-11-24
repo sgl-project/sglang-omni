@@ -17,6 +17,8 @@
       }
     ],
     "capture_mode_selected": "录音（仅麦克风）",
+    "detect_meetings": true,
+    "auto_start": false,
     "hide_from_sharing": true,
     "asr_options": [
       {

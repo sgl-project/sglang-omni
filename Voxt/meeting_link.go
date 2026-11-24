@@ -24,9 +24,10 @@ import (
 const meetingLogSource = "meeting"
 
 type meetingState struct {
-	meetMgr   *meeting.Manager
-	meetSnap  meeting.Snapshot
-	meetingUI *meetingSettingsUI // settings_meeting.go
+	meetMgr            *meeting.Manager
+	meetSnap           meeting.Snapshot
+	meetingUI          *meetingSettingsUI // settings_meeting.go
+	meetingDetectState                    // meeting_detect.go
 }
 
 func (a *app) openMeetings() {
@@ -100,6 +101,10 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
 	a.followMeeting(s, prev)
+	if s.State.Active() != prev.State.Active() {
+		a.closeMeetingAsk()   // meeting_detect.go: it records now
+		a.syncMeetingDetect() // an app that records is settled while Voxt does
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {

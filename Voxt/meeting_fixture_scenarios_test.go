@@ -8,6 +8,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meetdetect"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -18,6 +19,7 @@ type meetingFixtureScenario struct {
 	snapshot                   meeting.Snapshot
 	page                       meetingsViewStateInput
 	err                        error
+	ask                        meetingAskInput
 	collapsed                  bool
 	cardSize                   int
 	history                    historyViewStateInput
@@ -102,6 +104,12 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios,
 		meetingFixtureScenario{name: "state-collapsed", kind: "overlay", snapshot: meetingFixtureSnapshot(), collapsed: true, cardSize: 1},
 		meetingFixtureScenario{name: "state-card-largest", kind: "overlay", snapshot: meetingFixtureSnapshot(), cardSize: len(meetingOvWidths) - 1},
+	)
+
+	scenarios = append(scenarios,
+		meetingFixtureScenario{name: "ask-normal", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Zoom}},
+		meetingFixtureScenario{name: "ask-menu", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Meet, MenuOpen: true}},
+		meetingFixtureScenario{name: "ask-compact", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Tencent, Compact: true}},
 	)
 
 	for _, scenario := range []struct {

@@ -50,6 +50,7 @@ public enum Method {
     public static let outputRecover = "output.recover"
     public static let speechRecognize = "speech.recognize"
     public static let speechAudio = "speech.audio"
+    public static let micWatch = "mic.watch"
     // Notifications, helper → app.
     public static let captureStarted = "capture.started"
     public static let captureLevel = "capture.level"
@@ -62,6 +63,7 @@ public enum Method {
     public static let outputReleased = "output.released"
     public static let speechStarted = "speech.started"
     public static let speechPartial = "speech.partial"
+    public static let micChanged = "mic.changed"
     public static let log = "log"
 
     /// Every request, in the order hello lists them.
@@ -70,10 +72,11 @@ public enum Method {
         captureDevices, captureStart, captureStop, captureSystem, hotkeyConfigure, hotkeyStatus, hotkeyRecord, hotkeyCancelRecord,
         appFrontmost, appList, appConfigure, appIcons, textFocus, textSelection, textPaste, textRead,
         browserURL, screenWindow, clipboardImage, outputWatch, outputMute, outputRelease, outputRecover, speechRecognize, speechAudio,
+        micWatch,
     ]
     public static let notifications = [
         captureStarted, captureLevel, capturePCM, captureRestarted, hotkeyEvent, hotkeyState, appActivated,
-        outputChanged, outputReleased, speechStarted, speechPartial, log,
+        outputChanged, outputReleased, speechStarted, speechPartial, micChanged, log,
     ]
 }
 

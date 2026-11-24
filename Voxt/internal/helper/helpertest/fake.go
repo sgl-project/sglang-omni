@@ -150,9 +150,9 @@ func Main() {
 // most tests have their own speech model.
 func Methods() []string { return slices.DeleteFunc(slices.Clone(proto.Requests), isSpeech) }
 
-// oldMethods are an older helper's (no-output): without output.*.
+// oldMethods are an older helper's (no-output): without output.* and mic.watch.
 func oldMethods() []string {
-	return slices.DeleteFunc(Methods(), func(m string) bool { return strings.HasPrefix(m, "output.") })
+	return slices.DeleteFunc(Methods(), func(m string) bool { return strings.HasPrefix(m, "output.") || m == proto.MethodMicWatch })
 }
 
 // Devices are the fake's audio inputs.
@@ -557,7 +557,7 @@ func (f *fake) serve(m proto.Message) {
 		}
 		f.output(m)
 	default:
-		f.fail(m.ID, proto.CodeMethodNotFound, "Unknown method %s", m.Method)
+		f.serveMic(m) // fake_mic.go: mic.watch, else method_not_found
 	}
 }
 

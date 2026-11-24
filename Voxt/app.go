@@ -156,6 +156,7 @@ func (a *app) quit() {
 	a.closeBoxWindow()
 	a.stopMeetingAudioWatch(a.mv.detail)
 	a.destroyMeetingOverlay()
+	a.destroyMeetingAsk()
 	a.closeTray()
 	a.closeMute() // mute_link.go: the output back before the helper goes
 	a.stopHelper()

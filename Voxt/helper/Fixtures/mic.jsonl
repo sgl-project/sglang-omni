@@ -1,0 +1,7 @@
+{"to":"helper","msg":{"id":"c1","method":"mic.watch","params":{"on":true}}}
+{"to":"app","msg":{"id":"c1","result":{"apps":[{"pid":1206,"bundleId":"com.apple.CoreSpeech"}]}}}
+{"to":"app","msg":{"method":"mic.changed","params":{"apps":[{"pid":704,"bundleId":"us.zoom.xos"},{"pid":1206,"bundleId":"com.apple.CoreSpeech"}]}}}
+{"to":"app","msg":{"method":"mic.changed","params":{"apps":[{"pid":1206,"bundleId":"com.apple.CoreSpeech"},{"pid":4764,"bundleId":"com.google.Chrome.helper"},{"pid":39938}]}}}
+{"to":"app","msg":{"method":"mic.changed","params":{"apps":[]}}}
+{"to":"helper","msg":{"id":"c2","method":"mic.watch","params":{"on":false}}}
+{"to":"app","msg":{"id":"c2","result":{"apps":[]}}}

@@ -1,0 +1,29 @@
+{
+  "name": "ask-normal",
+  "kind": "meeting-ask",
+  "ask": {
+    "visible": true,
+    "title": "检测到会议",
+    "app": "Zoom",
+    "start_label": "开始记录",
+    "menu_label": "更多选项",
+    "close_label": "关闭",
+    "compact": false,
+    "menu_open": false,
+    "menu": [
+      {
+        "id": "snooze",
+        "label": "2 分钟后再问",
+        "rule": true
+      },
+      {
+        "id": "auto",
+        "label": "自动开始记录"
+      },
+      {
+        "id": "settings",
+        "label": "检测设置"
+      }
+    ]
+  }
+}

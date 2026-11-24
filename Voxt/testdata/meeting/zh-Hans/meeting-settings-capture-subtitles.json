@@ -17,6 +17,8 @@
       }
     ],
     "capture_mode_selected": "字幕（仅系统音频）",
+    "detect_meetings": true,
+    "auto_start": false,
     "hide_from_sharing": true,
     "asr_options": [
       {

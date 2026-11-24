@@ -26,7 +26,7 @@ func checkSettingsFixtureEnvelopes(t *testing.T, locale string, fixtures map[str
 	t.Helper()
 	for name, fixture := range fixtures {
 		states := map[string]bool{
-			"overlay": fixture.Overlay != nil, "page": fixture.Page != nil, "start": fixture.Start != nil,
+			"overlay": fixture.Overlay != nil, "page": fixture.Page != nil, "start": fixture.Start != nil, "meeting-ask": fixture.Ask != nil,
 			"history": fixture.History != nil, "history-settings": fixture.HistorySettings != nil,
 			"history-access": fixture.HistoryAccess != nil, "settings": fixture.Settings != nil,
 			"meeting-settings": fixture.MeetingSettings != nil, "shortcut-prompt": fixture.ShortcutPrompt != nil,

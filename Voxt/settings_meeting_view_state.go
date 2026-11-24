@@ -12,6 +12,8 @@ import (
 type settingsMeetingViewState struct {
 	CaptureModeOptions           []settingsLanguageViewState `json:"capture_mode_options"`
 	CaptureModeSelected          string                      `json:"capture_mode_selected"`
+	DetectMeetings               bool                        `json:"detect_meetings"`
+	AutoStart                    bool                        `json:"auto_start"`
 	HideFromSharing              bool                        `json:"hide_from_sharing"`
 	ASROptions                   []settingsLanguageViewState `json:"asr_options"`
 	ASRSelected                  string                      `json:"asr_selected"`
@@ -40,6 +42,8 @@ func buildSettingsMeetingViewState(translator *i18n.Translator, input settingsMe
 			{Code: "subtitles", Label: translator.T("Subtitles (system audio only)")},
 			{Code: "recording", Label: translator.T("Recording (microphone only)")},
 		},
+		DetectMeetings:               !input.Meeting.NoDetect,
+		AutoStart:                    input.Meeting.AutoStart,
 		HideFromSharing:              input.Meeting.HideFromSharing,
 		ASRDisabled:                  len(input.ReadyASR) == 0,
 		NoLLM:                        len(input.ReadyLLM) == 0,

@@ -90,5 +90,14 @@
   "Could not record system audio. Try again, or record the microphone only.": "没能录制系统音频。请重试，或只录制麦克风。",
   "Download MOSS-Transcribe-Diarize on the Speech models page to label the other side as Speaker 1–4.": "在语音识别模型页下载 MOSS-Transcribe-Diarize，把对方的话按说话人 1–4 分开。",
   "Could not record the microphone. Check your input device and try again.": "没能录制麦克风。请检查输入设备后重试。",
-  "You": "你"
+  "You": "你",
+  "Tencent Meeting": "腾讯会议",
+  "Lark": "飞书",
+  "DingTalk": "钉钉",
+  "WeCom": "企业微信",
+  "Meeting detected": "检测到会议",
+  "Start recording": "开始记录",
+  "More options": "更多选项",
+  "Ask again in 2 minutes": "2 分钟后再问",
+  "Detection settings": "检测设置"
 }

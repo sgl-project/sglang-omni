@@ -419,6 +419,36 @@ func TestEventScript(t *testing.T) {
 	}
 }
 
+// TestMicWatch: mic.watch names the apps recording, mic.changed reaches
+// OnNotify, and an older helper has neither.
+func TestMicWatch(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "events.jsonl")
+	os.WriteFile(script, []byte(`{"method":"mic.changed","params":{"apps":[{"pid":1206,"bundleId":"com.apple.CoreSpeech"}]}}
+`), 0o644)
+	h := start(t, "recording=us.zoom.xos/com.apple.CoreSpeech,"+helpertest.Opt("events", script))
+	h.ready(t)
+	users, err := request[proto.MicUsers](t, h, proto.MethodMicWatch, proto.MicWatchParams{On: true})
+	if err != nil || len(users.Apps) != 2 || users.Apps[0].BundleID != "us.zoom.xos" || users.Apps[0].PID == 0 {
+		t.Fatalf("mic.watch %+v %v", users, err)
+	}
+	request[proto.HotkeyStatus](t, h, proto.MethodHotkeyConfigure, proto.HotkeyConfigureParams{Bindings: fnTap})
+	wait(t, "mic.changed", func() bool { return len(h.notes1()) == 1 })
+	n := h.notes1()[0]
+	var now proto.MicUsers
+	if n.DecodeParams(&now); n.Method != proto.MethodMicChanged || len(now.Apps) != 1 || now.Apps[0].BundleID != "com.apple.CoreSpeech" {
+		t.Errorf("notification %s %+v", n.Method, now)
+	}
+
+	old := start(t, "no-output")
+	old.ready(t)
+	if old.sup.Status().Has(proto.MethodMicWatch) {
+		t.Error("an older helper lists mic.watch")
+	}
+	if _, err := request[proto.MicUsers](t, old, proto.MethodMicWatch, proto.MicWatchParams{On: true}); !errors.Is(err, &proto.Error{Code: proto.CodeMethodNotFound}) {
+		t.Errorf("an older helper answered mic.watch: %v", err)
+	}
+}
+
 func TestTextIO(t *testing.T) {
 	log := filepath.Join(t.TempDir(), "paste.jsonl")
 	h := start(t, helpertest.Opt("selection", "Hello, world")+","+helpertest.Opt("paste-log", log))
