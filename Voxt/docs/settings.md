@@ -220,7 +220,7 @@ And their own fields:
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
 | `features.transcribe.cleanAfterStop` | bool | `false` | | Clean up while you speak, inverted: `true` sends nothing to the language model until Stop. With it `false`, a dictation costs more requests and input tokens (a block goes again each time it gains a sentence); a language model on this Mac, or a clean-up that sends a picture, waits for Stop all the same |
-| `features.transcribe.recleanSentences` | integer | `1` | `0` or more: how many sentences of the text cleaned while you speak go back to the language model with the text left at Stop | none (settings file only) |
+| `features.transcribe.recleanSentences` | integer | `2` | `0` or more: how many sentences of the text cleaned while you speak go back to the language model with the text left at Stop | none (settings file only) |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |

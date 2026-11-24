@@ -120,9 +120,11 @@ type Transcribe struct {
 	RecleanSentences int `json:"recleanSentences"`
 }
 
-// note (luojiaxuan): DefaultRecleanSentences is Transcribe.RecleanSentences's default: one
-// sentence, the one a correction said last most often takes back.
-const DefaultRecleanSentences = 1
+// note (luojiaxuan): DefaultRecleanSentences is Transcribe.RecleanSentences's
+// default: the fewest sentences with which both language models of an
+// offline AASR-Bench run (150 dictations, recleanSentences 0, 1, 2) scored
+// no lower than a clean-up after Stop alone (behavior.md 5.31b).
+const DefaultRecleanSentences = 2
 
 // Translate: speech or selected text → a translation.
 type Translate struct {

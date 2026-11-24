@@ -178,29 +178,31 @@ func TestLivePolishCleansOnlyTheTail(t *testing.T) {
 	}
 }
 
-// note (luojiaxuan): TestLivePolishCleansTheLastSentenceAgain: by default
-// the last sentence of the cleaned text goes back to the model with the
-// text left at Stop, so that a correction said last reaches it; the cleaned
-// text before it is the context.
-func TestLivePolishCleansTheLastSentenceAgain(t *testing.T) {
+// note (luojiaxuan): TestLivePolishCleansTheLastSentencesAgain: by default
+// the last two sentences of the cleaned text go back to the model with the
+// text left at Stop, so that a correction said last reaches them; the
+// cleaned text before them is the context.
+func TestLivePolishCleansTheLastSentencesAgain(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
-	r.hearLive("Book the room. Let's")
-	waitLive(t, r, "Book the room.")
-	r.hearLive("Book the room. Let's meet Tuesday.")
-	waitLive(t, r, "Book the room. Let's meet Tuesday.")
-	r.hearLive("Book the room. Let's meet Tuesday. No, make")
-	got, _, err := r.cleanUpFirst("Book the room. Let's meet Tuesday. No, make it Thursday.")
+	said := "Book the room. Bring the slides. Let's meet Tuesday."
+	r.hearLive("Book the room. Bring the slides. Let's")
+	waitLive(t, r, "Book the room. Bring the slides.")
+	r.hearLive(said)
+	waitLive(t, r, said)
+	r.hearLive(said + " No, make")
+	got, _, err := r.cleanUpFirst(said + " No, make it Thursday.")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "[Book the room. [Let's meet Tuesday.] No, make it Thursday.]"; got != want {
+	asked := "Bring the slides. Let's meet Tuesday.] No, make it Thursday."
+	if want := "[Book the room. [" + asked + "]"; got != want {
 		t.Errorf("result %q, want %q", got, want)
 	}
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if user := last[len(last)-1].Content; user != compose.BeforeMessage("[Book the room.", "Let's meet Tuesday.] No, make it Thursday.") {
-		t.Errorf("the request after Stop is %q, want the last cleaned sentence with the rest", user)
+	if user := last[len(last)-1].Content; user != compose.BeforeMessage("[Book the room.", asked) {
+		t.Errorf("the request after Stop is %q, want the last two cleaned sentences with the rest", user)
 	}
 }
 

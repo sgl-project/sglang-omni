@@ -52,8 +52,8 @@ func TestLivePolishRedoesWhatWasSaidBefore(t *testing.T) {
 }
 
 // note (luojiaxuan): TestLivePolishRedoesAcrossABlock: right after a block
-// was committed, the cleaned sentence asked again with the text left at Stop
-// is the block's last, the rest of the block the context.
+// was committed, the cleaned sentences asked again with the text left at
+// Stop are the block's last two, the rest of the block the context.
 func TestLivePolishRedoesAcrossABlock(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
@@ -66,14 +66,14 @@ func TestLivePolishRedoesAcrossABlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	four := "[" + strings.Join(s[:4], " ")
-	asked := s[4] + "] Thursday, no, Friday."
+	three := "[" + strings.Join(s[:3], " ")
+	asked := s[3] + " " + s[4] + "] Thursday, no, Friday."
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
-	if user := last[len(last)-1].Content; user != compose.BeforeMessage(four, asked) {
-		t.Errorf("the request after Stop is %q, want the block's last sentence with the rest", user)
+	if user := last[len(last)-1].Content; user != compose.BeforeMessage(three, asked) {
+		t.Errorf("the request after Stop is %q, want the block's last two sentences with the rest", user)
 	}
-	if want := four + " [" + asked + "]"; got != want {
+	if want := three + " [" + asked + "]"; got != want {
 		t.Errorf("result %q, want %q", got, want)
 	}
 }
