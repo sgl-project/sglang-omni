@@ -14,6 +14,7 @@
 #include "common/kv_cache.h"
 #include "common/text.h"
 #include "common/transcription.h"
+#include "qwen3_asr/realtime.h"
 
 namespace qwen3_asr {
 
@@ -498,6 +499,7 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
       static_cast<size_t>(kMinimumTailSeconds * omni_common::kSampleRate));
   TranscriptionResult merged;
   merged.finish_reason = FinishReason::kStop;
+  std::vector<std::string> texts;
   int remaining_tokens = options.max_new_tokens.value_or(0);
   const bool has_token_budget = remaining_tokens != 0;
   for (const auto &[start, end] : chunks) {
@@ -509,15 +511,7 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     const TranscriptionResult chunk = TranscribeWindow(
         std::vector<float>(samples.begin() + start, samples.begin() + end),
         chunk_options, cancel, nullptr);
-    // Scripts written with spaces need one between pieces; CJK text does not.
-    if (!merged.text.empty() && !chunk.text.empty() &&
-        static_cast<unsigned char>(merged.text.back()) < 0x80 &&
-        static_cast<unsigned char>(chunk.text.front()) < 0x80 &&
-        !std::isspace(static_cast<unsigned char>(merged.text.back()))) {
-      merged.text += ' ';
-    } else {
-    }
-    merged.text += chunk.text;
+    texts.push_back(chunk.text);
     if (!merged.language.has_value()) {
       merged.language = chunk.language;
     } else {
@@ -539,6 +533,8 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     } else {
     }
   }
+  // Scripts written with spaces need one between pieces; CJK text does not.
+  merged.text = JoinTranscriptParts(texts);
   return merged;
 }
 
