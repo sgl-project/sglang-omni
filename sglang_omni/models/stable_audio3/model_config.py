@@ -7,8 +7,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
 MODEL_CONFIG_FILENAME = "model_config.json"
-# The Medium checkpoint's sample_size, 16777216 samples at 44.1 kHz.
+# note (ruilin): the Medium checkpoint's sample_size, 16777216 samples at 44.1 kHz.
 MAX_DURATION_SECONDS = 380.0
+# note (ruilin): the Medium model_config.json omits the encoder chunk_size, so the encoder runs at this default.
+DEFAULT_ENCODER_CHUNK_SIZE = 32
 
 
 class AttentionOptions(BaseModel):
@@ -50,7 +52,7 @@ class DiffusionSection(BaseModel):
 
 class EncoderOptions(BaseModel):
     strides: list[int] = Field(min_length=1, max_length=1)
-    chunk_size: int = 32
+    chunk_size: int = DEFAULT_ENCODER_CHUNK_SIZE
 
 
 class DecoderOptions(BaseModel):
@@ -120,7 +122,7 @@ class PromptConditionerOptions(BaseModel):
     subfolder: str
 
 
-class PromptConditioner(BaseModel):
+class PromptConditionerSection(BaseModel):
     id: Literal["prompt"]
     type: Literal["t5gemma"]
     config: PromptConditionerOptions
@@ -132,14 +134,14 @@ class SecondsConditionerOptions(BaseModel):
     fourier_features_type: Literal["expo"]
 
 
-class SecondsConditioner(BaseModel):
+class SecondsConditionerSection(BaseModel):
     id: Literal["seconds_total"]
     type: Literal["number"]
     config: SecondsConditionerOptions
 
 
 class ConditioningSection(BaseModel):
-    configs: tuple[PromptConditioner, SecondsConditioner]
+    configs: tuple[PromptConditionerSection, SecondsConditionerSection]
     cond_dim: int
 
 

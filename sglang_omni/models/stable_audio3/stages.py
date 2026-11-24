@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 
 # note (ruilin): one batch covers the DiT, a single-chunk decode and a multi-chunk decode, so serving starts compiled.
 WARMUP_REQUESTS = [
-    GenerationRequest(prompt="Warm piano chords", seconds=4.0, seed=0),
-    GenerationRequest(prompt="Warm piano chords", seconds=30.0, seed=0),
+    GenerationRequest(prompt="Warm piano chords", duration_seconds=4.0, seed=0),
+    GenerationRequest(prompt="Warm piano chords", duration_seconds=30.0, seed=0),
 ]
 
 if current_platform.is_cuda():
@@ -55,19 +55,19 @@ def create_generation_executor(
     gpu_id: int | None = None,
     device: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
-    resolved = resolve_concrete_device(device, gpu_id)
-    if resolved.type != "cuda":
+    resolved_device = resolve_concrete_device(device, gpu_id)
+    if resolved_device.type != "cuda":
         raise ValueError("Stable Audio 3 serving requires a CUDA device")
     else:
         pass
     # note (ruilin): the checkpoint's own inference runs the DiT and decoder in fp16, with FlashAttention where the GPU has it.
     runtime = StableAudio3Runtime.from_pretrained(
         Path(resolve_checkpoint(model_path)),
-        resolved,
+        resolved_device,
         torch.float16,
         attention_backend=(
             "flash"
-            if current_platform.is_cuda() and _is_fa3_supported(resolved)
+            if current_platform.is_cuda() and _is_fa3_supported(resolved_device)
             else "sdpa"
         ),
     )
@@ -76,7 +76,7 @@ def create_generation_executor(
     else:
         pass
     graph_backend = (
-        current_platform.get_device_graph_backend(resolved)
+        current_platform.get_device_graph_backend(resolved_device)
         if enable_cuda_graph
         else None
     )
@@ -92,10 +92,10 @@ def create_generation_executor(
             max_batch_size=max_batch_size,
         )
     if enable_torch_compile:
-        started = time.perf_counter()
+        warmup_start_seconds = time.perf_counter()
         runtime.generate(WARMUP_REQUESTS)
         logger.info(
-            f"Stable Audio 3 blocks compiled in {time.perf_counter() - started:.1f}s"
+            f"Stable Audio 3 blocks compiled in {time.perf_counter() - warmup_start_seconds:.1f}s"
         )
     else:
         pass
@@ -105,7 +105,9 @@ def create_generation_executor(
         audio = runtime.generate_in_length_groups(
             [
                 GenerationRequest(
-                    prompt=state.prompt, seconds=state.duration_seconds, seed=state.seed
+                    prompt=state.prompt,
+                    duration_seconds=state.duration_seconds,
+                    seed=state.seed,
                 )
                 for state in states
             ]

@@ -23,6 +23,12 @@ ROTARY_BASE = 10000.0
 QK_RMS_NORM_EPS = 1e-6
 FOURIER_MIN_FREQUENCY = 0.5
 FOURIER_MAX_FREQUENCY = 10000.0
+# note (ruilin): the official inference uses this truncated pi, so the angles match it bit for bit.
+TRUNCATED_PI = 3.14159265359
+# note (ruilin): differential attention runs its two softmax maps as one call over twice the heads; self-attention projects queries, keys and values plus the second map's queries and keys, cross-attention keys and values plus the second map's keys.
+DIFFERENTIAL_MAPS = 2
+SELF_ATTENTION_PROJECTIONS = 5
+CROSS_ATTENTION_PROJECTIONS = 3
 
 
 def expo_fourier_features(values: torch.Tensor, dim: int) -> torch.Tensor:
@@ -40,8 +46,8 @@ class RMSNorm(nn.Module):
     def __init__(self, dim: int, *, eps: float, force_fp32: bool) -> None:
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(dim))
-        self.eps = eps
-        self.force_fp32 = force_fp32
+        self.eps: float = eps
+        self.force_fp32: bool = force_fp32
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.force_fp32:
@@ -95,11 +101,11 @@ def flash_attention(
     keys: torch.Tensor,
     values: torch.Tensor,
     key_lengths: torch.Tensor | None,
-    window: int,
+    window_tokens: int,
 ) -> torch.Tensor:
-    """FA3 over [batch, tokens, heads, head_dim]; a window of -1 is unbounded."""
+    """FA3 over [batch, tokens, heads, head_dim]; a window_tokens of -1 is unbounded."""
     # note (ruilin): one split keeps a row's reduction order independent of the rows batched with it.
-    output = flash_attn_varlen_func(
+    return flash_attn_varlen_func(
         queries,
         keys,
         values,
@@ -108,10 +114,9 @@ def flash_attention(
         max_seqlen_q=queries.shape[1],
         max_seqlen_k=keys.shape[1],
         seqused_k=key_lengths,
-        window_size=(window, window),
+        window_size=(window_tokens, window_tokens),
         num_splits=1,
     )
-    return output[0] if isinstance(output, tuple) else output
 
 
 if current_platform.is_cuda():
@@ -133,12 +138,16 @@ def attend(
     *,
     backend: AttentionBackend,
     key_lengths: torch.Tensor | None,
-    window: int | None,
+    window_tokens: int | None,
 ) -> torch.Tensor:
-    """Attention over [batch, tokens, heads, head_dim] tensors; each row sees its first key_lengths keys, and each query the keys within window positions."""
+    """Attention over [batch, tokens, heads, head_dim] tensors; each row sees its first key_lengths keys, and each query the keys within window_tokens positions."""
     if backend == "flash":
         return flash_attention_op(
-            queries, keys, values, key_lengths, -1 if window is None else window
+            queries,
+            keys,
+            values,
+            key_lengths,
+            -1 if window_tokens is None else window_tokens,
         )
     else:
         positions = torch.arange(keys.shape[1], device=keys.device)
@@ -147,8 +156,8 @@ def attend(
             mask = (positions < key_lengths[:, None])[:, None, None, :]
         else:
             pass
-        if window is not None:
-            band = (positions[None, :] - positions[:, None]).abs() <= window
+        if window_tokens is not None:
+            band = (positions[None, :] - positions[:, None]).abs() <= window_tokens
             mask = band if mask is None else mask & band
         else:
             pass
@@ -173,13 +182,15 @@ class DifferentialAttention(nn.Module):
         backend: AttentionBackend,
     ) -> None:
         super().__init__()
-        self.num_heads = dim // head_dim
-        self.backend = backend
+        self.num_heads: int = dim // head_dim
+        self.backend: AttentionBackend = backend
         if context_dim is None:
-            self.to_qkv = nn.Linear(dim, dim * 5, bias=False)
+            self.to_qkv = nn.Linear(dim, dim * SELF_ATTENTION_PROJECTIONS, bias=False)
         else:
-            self.to_q = nn.Linear(dim, dim * 2, bias=False)
-            self.to_kv = nn.Linear(context_dim, context_dim * 3, bias=False)
+            self.to_q = nn.Linear(dim, dim * DIFFERENTIAL_MAPS, bias=False)
+            self.to_kv = nn.Linear(
+                context_dim, context_dim * CROSS_ATTENTION_PROJECTIONS, bias=False
+            )
         self.to_out = nn.Linear(dim, dim, bias=False)
         if qk_norm == "rms":
             self.q_norm = RMSNorm(head_dim, eps=QK_RMS_NORM_EPS, force_fp32=False)
@@ -196,9 +207,9 @@ class DifferentialAttention(nn.Module):
         self, context: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Keys of both maps and the values for cross-attention, fixed across sampling steps."""
-        keys, values = self.split_heads(self.to_kv(context), 3).split(
-            [2 * self.num_heads, self.num_heads], dim=2
-        )
+        keys, values = self.split_heads(
+            self.to_kv(context), CROSS_ATTENTION_PROJECTIONS
+        ).split([DIFFERENTIAL_MAPS * self.num_heads, self.num_heads], dim=2)
         return self.k_norm(keys), torch.cat([values, values], dim=2)
 
     def forward(
@@ -208,17 +219,17 @@ class DifferentialAttention(nn.Module):
         context_keys_values: tuple[torch.Tensor, torch.Tensor] | None = None,
         rotary_angles: torch.Tensor | None = None,
         key_lengths: torch.Tensor | None = None,
-        window: int | None = None,
+        window_tokens: int | None = None,
     ) -> torch.Tensor:
         if context_keys_values is None:
             queries, keys, values, query_diffs, key_diffs = self.split_heads(
-                self.to_qkv(x), 5
-            ).chunk(5, dim=2)
+                self.to_qkv(x), SELF_ATTENTION_PROJECTIONS
+            ).chunk(SELF_ATTENTION_PROJECTIONS, dim=2)
             queries = self.q_norm(torch.cat([queries, query_diffs], dim=2))
             keys = self.k_norm(torch.cat([keys, key_diffs], dim=2))
             values = torch.cat([values, values], dim=2)
         else:
-            queries = self.q_norm(self.split_heads(self.to_q(x), 2))
+            queries = self.q_norm(self.split_heads(self.to_q(x), DIFFERENTIAL_MAPS))
             keys, values = context_keys_values
         if rotary_angles is not None:
             queries = apply_rotary(queries, rotary_angles)
@@ -231,7 +242,7 @@ class DifferentialAttention(nn.Module):
             values,
             backend=self.backend,
             key_lengths=key_lengths,
-            window=window,
+            window_tokens=window_tokens,
         )
         difference = maps[:, :, : self.num_heads] - maps[:, :, self.num_heads :]
         return self.to_out(difference.flatten(2))
@@ -241,13 +252,12 @@ class GatedLinearUnit(nn.Module):
     def __init__(self, dim: int, inner_dim: int, *, sinusoidal: bool) -> None:
         super().__init__()
         self.proj = nn.Linear(dim, inner_dim * 2)
-        self.sinusoidal = sinusoidal
+        self.sinusoidal: bool = sinusoidal
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         values, gates = self.proj(x).chunk(2, dim=-1)
         if self.sinusoidal:
-            # note (ruilin): the checkpoint was trained with this truncated pi.
-            return values * torch.sin(3.14159265359 * gates)
+            return values * torch.sin(TRUNCATED_PI * gates)
         else:
             return values * F.silu(gates)
 

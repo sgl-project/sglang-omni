@@ -28,8 +28,8 @@ class StableAudio3SpeechRequestValidator(SpeechRequestValidator):
             raise bad_request("Stable Audio 3 has no voices", param="voice")
         elif updates["stream"]:
             raise bad_request("Stable Audio 3 does not stream", param="stream")
-        elif request.seed is not None and request.seed >= SEED_LIMIT:
-            raise bad_request(f"seed must be below {SEED_LIMIT}", param="seed")
+        elif request.seed is not None and not 0 <= request.seed < SEED_LIMIT:
+            raise bad_request(f"seed must be in [0, {SEED_LIMIT})", param="seed")
         elif set(stage_params) - {GENERATION_STAGE}:
             raise bad_request(
                 f"stage_params must target {GENERATION_STAGE}", param="stage_params"

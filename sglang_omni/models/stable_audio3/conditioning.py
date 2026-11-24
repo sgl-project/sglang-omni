@@ -3,8 +3,8 @@
 # Copyright (c) 2026 Stability AI. The MIT license notice is retained in licenses/.
 """Prompt and duration conditioning: T5Gemma text tokens and a Fourier duration embedding."""
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 import torch
 from torch import nn
@@ -21,6 +21,12 @@ from sglang_omni.models.stable_audio3.model_config import ConditioningSection
 SECONDS_FEATURES = 256
 
 
+class EncodeText(Protocol):
+    def __call__(
+        self, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor: ...
+
+
 class PromptConditioner(nn.Module):
     def __init__(self, dim: int) -> None:
         super().__init__()
@@ -32,6 +38,10 @@ class NumberEmbedder(nn.Module):
         super().__init__()
         # note (ruilin): the identity stands for the parameter-free Fourier features, keeping the embedding.1 name.
         self.embedding = nn.Sequential(nn.Identity(), nn.Linear(SECONDS_FEATURES, dim))
+
+    @property
+    def projection(self) -> nn.Linear:
+        return self.embedding[1]
 
 
 class SecondsConditioner(nn.Module):
@@ -46,8 +56,11 @@ class Conditioner(nn.Module):
     def __init__(self, conditioning: ConditioningSection) -> None:
         super().__init__()
         prompt, seconds = conditioning.configs
-        self.max_length = prompt.config.max_length
-        self.seconds_range = (seconds.config.min_val, seconds.config.max_val)
+        self.max_length: int = prompt.config.max_length
+        self.seconds_range: tuple[float, float] = (
+            seconds.config.min_val,
+            seconds.config.max_val,
+        )
         self.conditioners = nn.ModuleDict(
             {
                 "prompt": PromptConditioner(conditioning.cond_dim),
@@ -59,7 +72,7 @@ class Conditioner(nn.Module):
         self,
         prompts: list[str],
         tokenizer: PreTrainedTokenizerBase,
-        encode: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        encode: EncodeText,
     ) -> torch.Tensor:
         """Text tokens padded to max_length, with the learned embedding at padding positions; encode maps token ids and mask to hidden states."""
         padding_embedding = self.conditioners["prompt"].padding_embedding
@@ -79,14 +92,14 @@ class Conditioner(nn.Module):
         )
 
     def embed_seconds(self, seconds: list[float]) -> torch.Tensor:
-        projection = self.conditioners["seconds_total"].embedder.embedding[1]
-        minimum, maximum = self.seconds_range
+        projection = self.conditioners["seconds_total"].embedder.projection
+        min_seconds, max_seconds = self.seconds_range
         normalized = (
             torch.tensor(seconds, device=projection.weight.device).clamp(
-                minimum, maximum
+                min_seconds, max_seconds
             )
-            - minimum
-        ) / (maximum - minimum)
+            - min_seconds
+        ) / (max_seconds - min_seconds)
         return projection(
             expo_fourier_features(
                 normalized.to(projection.weight.dtype), SECONDS_FEATURES

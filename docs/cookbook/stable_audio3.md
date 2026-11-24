@@ -33,7 +33,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output house.wav
 ```
 
-`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, up to 380 seconds; the default is 120 seconds, as in the official library. `seed` makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error.
+`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, from 0.1 to 380 seconds; the default is 120 seconds, as in the official library. `seed` (0 to 2⁶³ − 1) makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error. The model serves only `/v1/audio/speech`; `/generate` and chat requests are refused.
 
 ## Limitations
 
@@ -47,4 +47,4 @@ curl http://localhost:8000/v1/audio/speech \
 pytest tests/unit_test/stable_audio3 -q
 ```
 
-The CPU tests cover request validation, the official latent lengths and noise schedule, and that batching leaves every request's audio unchanged.
+The CPU tests cover request validation, the official latent lengths and noise schedule, and that batching and length groups leave every request's audio unchanged. On a GPU, one more case checks the compiled blocks and CUDA graphs against eager runs.

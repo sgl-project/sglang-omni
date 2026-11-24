@@ -1,21 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bucketed CUDA graphs for the Stable Audio 3 prompt encoder and DiT step.
+"""Bucketed CUDA graphs for the Stable Audio 3 prompt encoder and DiT step; each bucket records one graph on first use and later calls replay it.
 
-Both are launch-bound for short clips: a DiT step runs about 1700 small kernels
-with an H200 busy a fifth of the time, and the prompt encoder, at a fixed
-prompt length, spends 9 ms launching 2 ms of work. Each bucket records one
-graph on first use and later calls replay it.
-
-Rows pad up to the batch bucket and latents up to the length bucket. Every
-row's keys stop at its own key length, so FlashAttention never reads a padded
-position or row, and padded outputs are dropped. The DiT conditions are copied
-into shared buffers once per batch; a step copies only the latents and the
-timestep.
+Rows pad up to the batch bucket and latents up to the length bucket; each row's keys stop at its own key length, so padding never reaches a real row.
 """
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 from sglang.srt.utils.common import get_available_gpu_memory
@@ -36,12 +27,21 @@ logger = logging.getLogger(__name__)
 
 BATCH_BUCKETS = (1, 2, 4, 8)
 LATENT_BUCKET_STEP = 32
-# note (ruilin): on H200 an eager step stays near 20 ms up to about 2000 tokens, then turns GPU-bound; past that a graph saves about 3 ms and bucket padding can cost more.
+# note (ruilin): on H200 a short-clip DiT step launches about 1700 small kernels with the GPU busy a fifth of the time and stays near 20 ms up to about 2000 tokens, then turns GPU-bound; past that a graph saves about 3 ms and bucket padding can cost more.
 MAX_GRAPH_TOKENS = 2048
+# note (ruilin): a bucket captured mid-serving must not take the memory the decoder and later batches still need; 3 GB is the floor the Fun-ASR encoder graphs use.
 MIN_FREE_GB = 3.0
 WARMUP_ITERATIONS = 2
 
-GraphedStep = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+
+class GraphedStep(Protocol):
+    def __call__(
+        self, latents: torch.Tensor, timestep: torch.Tensor
+    ) -> torch.Tensor: ...
+
+
+class GraphForward(Protocol):
+    def __call__(self) -> torch.Tensor: ...
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -49,6 +49,7 @@ class StepGraph:
     graph: ReplayableGraph
     latents: torch.Tensor
     timesteps: torch.Tensor
+    # note (ruilin): never read; holding it keeps the recorded angles alive, so their memory is not reused under the replay.
     rotary_angles: torch.Tensor
     velocity: torch.Tensor
 
@@ -85,7 +86,7 @@ def bucket_latents(latent_length: int) -> int:
 
 
 def capture_graph(
-    forward: Callable[[], torch.Tensor],
+    forward: GraphForward,
     *,
     graph_backend: DeviceGraphBackend,
     pool: DeviceGraphPool,
@@ -121,9 +122,9 @@ def capture_graph(
                     output = forward()
             finally:
                 device_module.set_stream(entry_stream)
-    except Exception as error:
+    except torch.OutOfMemoryError as error:
         logger.warning(
-            f"Stable Audio 3 {label} graph capture failed: {error}; running eager",
+            f"Stable Audio 3 {label} graph capture ran out of memory: {error}; running eager",
             exc_info=True,
         )
         return None
@@ -132,7 +133,7 @@ def capture_graph(
 
 
 class PromptEncoderCudaGraphRunner:
-    """Replays the text encoder per batch bucket; prompts pad to one fixed length, so the batch is the only size that varies."""
+    """Replays the text encoder per batch bucket; prompts pad to one fixed length, where eager encoding on H200 spends 9 ms launching 2 ms of work."""
 
     def __init__(
         self,
@@ -141,51 +142,47 @@ class PromptEncoderCudaGraphRunner:
         graph_backend: DeviceGraphBackend,
         max_batch_size: int,
     ) -> None:
-        self.text_encoder = text_encoder
-        self.graph_backend = graph_backend
-        self.max_batch_size = max_batch_size
-        self.device = next(text_encoder.parameters()).device
+        self.text_encoder: T5GemmaEncoderModel = text_encoder
+        self.graph_backend: DeviceGraphBackend = graph_backend
+        self.max_batch_size: int = max_batch_size
+        self.device: torch.device = next(text_encoder.parameters()).device
         self.graphs: dict[int, PromptGraph] = {}
-        self.failed: set[int] = set()
-        self.pool = graph_backend.graph_pool_handle()
+        self.failed_buckets: set[int] = set()
+        self.pool: DeviceGraphPool = graph_backend.graph_pool_handle()
 
     def encode(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
         """Hidden states for the prompts; the result is a view the next call overwrites."""
         batch_size = input_ids.shape[0]
-        bucket = bucket_batch(batch_size, self.max_batch_size)
-        entry = None
-        if bucket is None or bucket in self.failed:
-            pass
+        batch_bucket = bucket_batch(batch_size, self.max_batch_size)
+        if batch_bucket is None or batch_bucket in self.failed_buckets:
+            prompt_graph = None
+        elif batch_bucket in self.graphs:
+            prompt_graph = self.graphs[batch_bucket]
         else:
-            entry = self.graphs.get(bucket)
-            if entry is None:
-                entry = self.capture(bucket, input_ids.shape[1])
+            prompt_graph = self.capture(batch_bucket, input_ids.shape[1])
+            if prompt_graph is None:
+                self.failed_buckets.add(batch_bucket)
             else:
-                pass
-        if entry is None:
-            if bucket is not None:
-                self.failed.add(bucket)
-            else:
-                pass
+                self.graphs[batch_bucket] = prompt_graph
+        if prompt_graph is None:
             return self.text_encoder(
                 input_ids=input_ids, attention_mask=attention_mask
             ).last_hidden_state
         else:
-            self.graphs[bucket] = entry
-        entry.input_ids[:batch_size].copy_(input_ids)
-        entry.attention_mask[:batch_size].copy_(attention_mask)
-        entry.graph.replay()
-        return entry.hidden_states[:batch_size]
+            prompt_graph.input_ids[:batch_size].copy_(input_ids)
+            prompt_graph.attention_mask[:batch_size].copy_(attention_mask)
+            prompt_graph.graph.replay()
+            return prompt_graph.hidden_states[:batch_size]
 
-    def capture(self, bucket: int, prompt_length: int) -> PromptGraph | None:
+    def capture(self, batch_bucket: int, prompt_length: int) -> PromptGraph | None:
         # note (ruilin): padded rows keep every token visible, so their attention stays finite.
         input_ids = torch.zeros(
-            bucket, prompt_length, device=self.device, dtype=torch.long
+            batch_bucket, prompt_length, device=self.device, dtype=torch.long
         )
         attention_mask = torch.ones(
-            bucket, prompt_length, device=self.device, dtype=torch.bool
+            batch_bucket, prompt_length, device=self.device, dtype=torch.bool
         )
         captured = capture_graph(
             lambda: self.text_encoder(
@@ -194,7 +191,7 @@ class PromptEncoderCudaGraphRunner:
             graph_backend=self.graph_backend,
             pool=self.pool,
             device=self.device,
-            label=f"prompt encoder batch={bucket}",
+            label=f"prompt encoder batch={batch_bucket}",
         )
         if captured is None:
             return None
@@ -218,16 +215,16 @@ class DiTCudaGraphRunner:
         graph_backend: DeviceGraphBackend,
         max_batch_size: int,
     ) -> None:
-        self.dit = dit
-        self.graph_backend = graph_backend
-        self.max_batch_size = max_batch_size
+        self.dit: DiffusionTransformer = dit
+        self.graph_backend: DeviceGraphBackend = graph_backend
+        self.max_batch_size: int = max_batch_size
         reference = next(dit.parameters())
-        self.device = reference.device
-        self.dtype = reference.dtype
-        self.num_memory_tokens = dit.transformer.memory_tokens.shape[0]
+        self.device: torch.device = reference.device
+        self.dtype: torch.dtype = reference.dtype
+        self.num_memory_tokens: int = dit.transformer.memory_tokens.shape[0]
         self.graphs: dict[tuple[int, int], StepGraph] = {}
-        self.failed: set[tuple[int, int]] = set()
-        self.pool = graph_backend.graph_pool_handle()
+        self.failed_buckets: set[tuple[int, int]] = set()
+        self.pool: DeviceGraphPool = graph_backend.graph_pool_handle()
         self.conditions: ConditionBuffers | None = None
 
     def bind(
@@ -244,50 +241,49 @@ class DiTCudaGraphRunner:
             return None
         else:
             pass
-        key = (batch_bucket, latent_bucket)
-        if key in self.failed:
+        bucket_shape = (batch_bucket, latent_bucket)
+        if bucket_shape in self.failed_buckets:
             return None
         else:
             pass
         self.load_conditions(conditions, batch_size)
-        entry = self.graphs.get(key)
-        if entry is None:
-            entry = self.capture(batch_bucket, latent_bucket)
+        if bucket_shape in self.graphs:
+            step_graph = self.graphs[bucket_shape]
         else:
-            pass
-        if entry is None:
-            self.failed.add(key)
-            return None
-        else:
-            self.graphs[key] = entry
+            captured = self.capture(batch_bucket, latent_bucket)
+            if captured is None:
+                self.failed_buckets.add(bucket_shape)
+                return None
+            else:
+                step_graph = captured
+                self.graphs[bucket_shape] = step_graph
 
         def step(latents: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
-            entry.latents[:batch_size, :, :latent_length].copy_(latents)
-            entry.timesteps.copy_(timestep.expand(batch_bucket))
-            entry.graph.replay()
+            step_graph.latents[:batch_size, :, :latent_length].copy_(latents)
+            step_graph.timesteps.copy_(timestep.expand(batch_bucket))
+            step_graph.graph.replay()
             # note (ruilin): the next replay overwrites this view, so the caller consumes it on this stream first.
-            return entry.velocity[:batch_size, :, :latent_length]
+            return step_graph.velocity[:batch_size, :, :latent_length]
 
         return step
 
     def load_conditions(self, conditions: SamplingConditions, batch_size: int) -> None:
         if self.conditions is None:
-            rows = self.max_batch_size
             self.conditions = ConditionBuffers(
                 seconds_embedding=conditions.seconds_embedding.new_zeros(
-                    rows, *conditions.seconds_embedding.shape[1:]
+                    self.max_batch_size, *conditions.seconds_embedding.shape[1:]
                 ),
                 context_keys_values=[
                     (
-                        keys.new_zeros(rows, *keys.shape[1:]),
-                        values.new_zeros(rows, *values.shape[1:]),
+                        keys.new_zeros(self.max_batch_size, *keys.shape[1:]),
+                        values.new_zeros(self.max_batch_size, *values.shape[1:]),
                     )
                     for keys, values in conditions.context_keys_values
                 ],
                 local_embeddings=[
                     embedding.clone() for embedding in conditions.local_embeddings
                 ],
-                key_lengths=conditions.key_lengths.new_zeros(rows),
+                key_lengths=conditions.key_lengths.new_zeros(self.max_batch_size),
             )
         else:
             pass

@@ -10,28 +10,27 @@ from types import MethodType
 
 import torch
 from safetensors import safe_open
-from torch import nn
 from torch._dynamo import mark_dynamic
 from torch._dynamo.decorators import mark_unbacked
 from transformers import PreTrainedTokenizerBase, T5GemmaEncoderModel
 
-from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
+from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder, DecoderBlock
 from sglang_omni.models.stable_audio3.conditioning import Conditioner, load_text_encoder
 from sglang_omni.models.stable_audio3.cuda_graphs import (
     DiTCudaGraphRunner,
     PromptEncoderCudaGraphRunner,
 )
-from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
+from sglang_omni.models.stable_audio3.dit import DiffusionTransformer, TransformerBlock
 from sglang_omni.models.stable_audio3.layers import AttentionBackend
 from sglang_omni.models.stable_audio3.model_config import (
     MAX_DURATION_SECONDS,
     StableAudio3Config,
 )
 
+# note (ruilin): the checkpoint is distilled for 8 ping-pong steps; the official inference also pads every clip by 6 s.
 SAMPLING_STEPS = 8
 HEADROOM_SECONDS = 6.0
-# note (ruilin): on an H200 one more generate call costs about as much as 40 s of padded audio
-# (sampling-step launches, prompt encoding, graph binding); it sets how finely a batch is split.
+# note (ruilin): on an H200 one more generate call (step launches, prompt encoding, graph binding) costs about as much as 40 s of padded audio; it sets how finely a batch is split.
 GROUP_OVERHEAD_SECONDS = 40.0
 # note (ruilin): the checkpoint's sampling shift has rate 0, so the schedule does not depend on length.
 LOGSNR_START = -6.2
@@ -54,7 +53,7 @@ UNUSED_PREFIXES = (
 @dataclass(frozen=True, kw_only=True)
 class GenerationRequest:
     prompt: str
-    seconds: float
+    duration_seconds: float
     seed: int
 
 
@@ -63,9 +62,11 @@ def sampling_schedule(device: torch.device) -> torch.Tensor:
     timesteps = torch.linspace(1, 0, SAMPLING_STEPS + 1, device=device)
     logsnr_start = torch.tensor(LOGSNR_START, device=device)
     logsnr = LOGSNR_END - timesteps * (LOGSNR_END - logsnr_start)
-    schedule = torch.sigmoid(-logsnr)
-    schedule = torch.where(timesteps <= 0, torch.zeros_like(schedule), schedule)
-    return torch.where(timesteps >= 1, torch.ones_like(schedule), schedule)
+    noise_levels = torch.sigmoid(-logsnr)
+    noise_levels = torch.where(
+        timesteps <= 0, torch.zeros_like(noise_levels), noise_levels
+    )
+    return torch.where(timesteps >= 1, torch.ones_like(noise_levels), noise_levels)
 
 
 def plan_length_groups(
@@ -73,8 +74,7 @@ def plan_length_groups(
 ) -> list[list[int]]:
     """Cut a batch, sorted by length, into runs that each pad only to their own longest request.
 
-    The cut minimizes the padded latents plus a fixed overhead per run, so a batch of equal
-    lengths stays whole. Returns indices into ``latent_lengths``.
+    The cut minimizes the padded latents plus a fixed overhead per run, so a batch of equal lengths stays whole. Returns indices into latent_lengths.
     """
     order = sorted(range(len(latent_lengths)), key=lambda index: latent_lengths[index])
     best_cost = [0] + [math.inf] * len(order)
@@ -99,16 +99,6 @@ def plan_length_groups(
     return groups[::-1]
 
 
-def load_component(module: nn.Module, archive_path: Path, prefix: str) -> None:
-    with safe_open(archive_path, framework="pt", device="cpu") as archive:
-        weights = {
-            name.removeprefix(prefix): archive.get_tensor(name)
-            for name in archive.keys()
-            if name.startswith(prefix) and not name.startswith(UNUSED_PREFIXES)
-        }
-    module.load_state_dict(weights, strict=True, assign=True)
-
-
 class StableAudio3Runtime:
     def __init__(
         self,
@@ -121,7 +111,12 @@ class StableAudio3Runtime:
         text_encoder: T5GemmaEncoderModel,
         device: torch.device,
     ) -> None:
-        assert config.sample_size >= MAX_DURATION_SECONDS * config.sample_rate
+        if config.sample_size < MAX_DURATION_SECONDS * config.sample_rate:
+            raise ValueError(
+                f"sample_size {config.sample_size} is shorter than {MAX_DURATION_SECONDS} s"
+            )
+        else:
+            pass
         self.config = config
         self.dit = dit
         self.conditioner = conditioner
@@ -130,7 +125,7 @@ class StableAudio3Runtime:
         self.text_encoder = text_encoder
         self.device = device
         self.dtype = next(dit.parameters()).dtype
-        self.schedule = sampling_schedule(device)
+        self.noise_levels = sampling_schedule(device)
         encoder = config.model.pretransform.config.encoder.config
         self.latent_alignment = encoder.chunk_size // encoder.strides[0]
         self.latent_channels = config.model.diffusion.config.io_channels
@@ -155,12 +150,24 @@ class StableAudio3Runtime:
             decoder = AudioDecoder(
                 config.model.pretransform.config, backend=attention_backend
             )
-        modules = {"dit": dit, "conditioner": conditioner, "decoder": decoder}
-        for name, module in modules.items():
-            load_component(
-                module, checkpoint_dir / CHECKPOINT_FILENAME, COMPONENT_PREFIXES[name]
-            )
-            module.to(device=device, dtype=dtype).eval().requires_grad_(False)
+        modules: dict[str, DiffusionTransformer | Conditioner | AudioDecoder] = {
+            "dit": dit,
+            "conditioner": conditioner,
+            "decoder": decoder,
+        }
+        with safe_open(
+            checkpoint_dir / CHECKPOINT_FILENAME, framework="pt", device="cpu"
+        ) as archive:
+            for name, module in modules.items():
+                prefix = COMPONENT_PREFIXES[name]
+                weights = {
+                    weight_name.removeprefix(prefix): archive.get_tensor(weight_name)
+                    for weight_name in archive.keys()
+                    if weight_name.startswith(prefix)
+                    and not weight_name.startswith(UNUSED_PREFIXES)
+                }
+                module.load_state_dict(weights, strict=True, assign=True)
+                module.to(device=device, dtype=dtype).eval().requires_grad_(False)
         tokenizer, text_encoder = load_text_encoder(
             checkpoint_dir / config.model.conditioning.configs[0].config.subfolder,
             device,
@@ -179,33 +186,46 @@ class StableAudio3Runtime:
         """Compiles the DiT and decoder blocks, one compiled forward per stack, folding their norms, modulation and rotary into fewer kernels."""
         compiled_dit_block = torch.compile(type(self.dit.transformer.layers[0]).forward)
         compiled_decoder_block = torch.compile(
-            type(self.decoder.decoder.layers[3].transformers[0]).forward
+            type(self.decoder.decoder.resampling.transformers[0]).forward
         )
 
-        def dit_block(block: nn.Module, x: torch.Tensor, **inputs) -> torch.Tensor:
-            keys, values = inputs["context_keys_values"]
+        def dit_block(
+            block: TransformerBlock,
+            hidden_states: torch.Tensor,
+            *,
+            context_keys_values: tuple[torch.Tensor, torch.Tensor],
+            adaln_modulation: torch.Tensor,
+            rotary_angles: torch.Tensor,
+            key_lengths: torch.Tensor,
+            local_embedding: torch.Tensor,
+            num_memory_tokens: int,
+        ) -> torch.Tensor:
+            keys, values = context_keys_values
             # note (ruilin): an unbacked batch size never specializes to one, so a row's bits do not depend on the rows batched with it.
-            for batched in (
-                x,
-                inputs["global_condition"],
-                inputs["key_lengths"],
-                keys,
-                values,
-            ):
+            for batched in (hidden_states, adaln_modulation, key_lengths, keys, values):
                 mark_unbacked(batched, 0)
-            mark_dynamic(x, 1)
-            mark_dynamic(inputs["rotary_angles"], 0)
-            return compiled_dit_block(block, x, **inputs)
+            mark_dynamic(hidden_states, 1)
+            mark_dynamic(rotary_angles, 0)
+            return compiled_dit_block(
+                block,
+                hidden_states,
+                context_keys_values=context_keys_values,
+                adaln_modulation=adaln_modulation,
+                rotary_angles=rotary_angles,
+                key_lengths=key_lengths,
+                local_embedding=local_embedding,
+                num_memory_tokens=num_memory_tokens,
+            )
 
         def decoder_block(
-            block: nn.Module, x: torch.Tensor, window: int
+            block: DecoderBlock, hidden_states: torch.Tensor, window_tokens: int
         ) -> torch.Tensor:
-            mark_dynamic(x, [0, 1])
-            return compiled_decoder_block(block, x, window)
+            mark_dynamic(hidden_states, [0, 1])
+            return compiled_decoder_block(block, hidden_states, window_tokens)
 
         for block in self.dit.transformer.layers:
             block.forward = MethodType(dit_block, block)
-        for block in self.decoder.decoder.layers[3].transformers:
+        for block in self.decoder.decoder.resampling.transformers:
             block.forward = MethodType(decoder_block, block)
 
     def encode_text(
@@ -218,19 +238,24 @@ class StableAudio3Runtime:
         else:
             return self.prompt_graphs.encode(input_ids, attention_mask)
 
-    def latent_length(self, seconds: float) -> int:
+    def latent_length(self, duration_seconds: float) -> int:
         """Latents for the request plus headroom, aligned to the autoencoder and capped at the model's sample size."""
-        ratio = self.decoder.downsampling_ratio
-        alignment = ratio * self.latent_alignment
-        samples = int((seconds + HEADROOM_SECONDS) * self.config.sample_rate)
-        samples = math.ceil(math.ceil(samples / ratio) * ratio / alignment) * alignment
-        return min(samples, self.config.sample_size) // ratio
+        samples_per_latent = self.decoder.downsampling_ratio
+        alignment_samples = samples_per_latent * self.latent_alignment
+        samples = int((duration_seconds + HEADROOM_SECONDS) * self.config.sample_rate)
+        samples = math.ceil(samples / alignment_samples) * alignment_samples
+        return min(samples, self.config.sample_size) // samples_per_latent
 
-    def valid_length(self, seconds: float, latent_length: int) -> int:
-        ratio = self.decoder.downsampling_ratio
-        headroom = int(HEADROOM_SECONDS * self.config.sample_rate / ratio)
-        content = math.ceil(int(seconds * self.config.sample_rate) / ratio)
-        return min(content + headroom, latent_length)
+    def valid_latent_length(self, duration_seconds: float, latent_length: int) -> int:
+        """Latents attention reads: the clip plus headroom, within the padded length."""
+        samples_per_latent = self.decoder.downsampling_ratio
+        headroom_latents = int(
+            HEADROOM_SECONDS * self.config.sample_rate / samples_per_latent
+        )
+        content_latents = math.ceil(
+            int(duration_seconds * self.config.sample_rate) / samples_per_latent
+        )
+        return min(content_latents + headroom_latents, latent_length)
 
     def noise(
         self, generator: torch.Generator, latent_length: int, dtype: torch.dtype
@@ -252,7 +277,7 @@ class StableAudio3Runtime:
             / self.decoder.downsampling_ratio
         )
         groups = plan_length_groups(
-            [self.latent_length(request.seconds) for request in requests],
+            [self.latent_length(request.duration_seconds) for request in requests],
             overhead_latents,
         )
         audio: dict[int, torch.Tensor] = {}
@@ -266,7 +291,7 @@ class StableAudio3Runtime:
     def generate(self, requests: list[GenerationRequest]) -> list[torch.Tensor]:
         """Stereo audio per request in the decoder's precision; each request draws its noise from its own seed, so batching does not change it."""
         seconds_embedding = self.conditioner.embed_seconds(
-            [request.seconds for request in requests]
+            [request.duration_seconds for request in requests]
         )
         condition_tokens = torch.cat(
             [
@@ -279,10 +304,12 @@ class StableAudio3Runtime:
             ],
             dim=1,
         )
-        latent_lengths = [self.latent_length(request.seconds) for request in requests]
+        latent_lengths = [
+            self.latent_length(request.duration_seconds) for request in requests
+        ]
         valid_lengths = torch.tensor(
             [
-                self.valid_length(request.seconds, length)
+                self.valid_latent_length(request.duration_seconds, length)
                 for request, length in zip(requests, latent_lengths, strict=True)
             ],
             device=self.device,
@@ -314,8 +341,8 @@ class StableAudio3Runtime:
             else self.dit_graphs.bind(conditions, len(requests), latents.shape[-1])
         )
         for step in range(SAMPLING_STEPS):
-            timestep = self.schedule[step].to(self.dtype)
-            next_timestep = self.schedule[step + 1].to(self.dtype)
+            timestep = self.noise_levels[step].to(self.dtype)
+            next_timestep = self.noise_levels[step + 1].to(self.dtype)
             if graphed_step is None:
                 velocity = self.dit(latents, timestep.expand(len(requests)), conditions)
             else:
@@ -332,6 +359,6 @@ class StableAudio3Runtime:
             zip(requests, generators, latent_lengths, strict=True)
         ):
             decoded = self.decoder(latents[row : row + 1, :, :length], generator)
-            samples = int(request.seconds * self.config.sample_rate)
+            samples = int(request.duration_seconds * self.config.sample_rate)
             audio.append(decoded[0, :, :samples].clamp(-1, 1))
         return audio

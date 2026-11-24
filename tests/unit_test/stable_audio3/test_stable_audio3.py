@@ -1,32 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Stable Audio 3: request contract, official layout values, batch invariance, fp16 audio transport and checkpoint detection."""
+"""Stable Audio 3: request contract, official layout values, batch and length-group invariance, graph buckets and checkpoint detection."""
 
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 from torch import nn
 from transformers import BatchEncoding
 
-from sglang_omni.client.audio import encode_audio, to_numpy
-from sglang_omni.client.client import Client
-from sglang_omni.client.types import GenerateChunk
+from sglang_omni.config.manager import resolve_config_cls_for_model_path
 from sglang_omni.models.stable_audio3 import runtime as runtime_module
 from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner
+from sglang_omni.models.stable_audio3.config import StableAudio3PipelineConfig
 from sglang_omni.models.stable_audio3.cuda_graphs import (
     MAX_GRAPH_TOKENS,
+    DiTCudaGraphRunner,
+    PromptEncoderCudaGraphRunner,
     bucket_batch,
     bucket_latents,
 )
 from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
+from sglang_omni.models.stable_audio3.layers import AttentionBackend
 from sglang_omni.models.stable_audio3.model_config import StableAudio3Config
-from sglang_omni.models.stable_audio3.request_builders import (
-    DEFAULT_DURATION_SECONDS,
-    build_state,
-)
+from sglang_omni.models.stable_audio3.request_builders import build_state
 from sglang_omni.models.stable_audio3.runtime import (
     GenerationRequest,
     StableAudio3Runtime,
@@ -36,27 +34,43 @@ from sglang_omni.models.stable_audio3.runtime import (
 from sglang_omni.models.stable_audio3.speech_validation import (
     StableAudio3SpeechRequestValidator,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
-from sglang_omni.serve.protocol import CreateSpeechRequest
 from sglang_omni.serve.speech_errors import SpeechAPIError
-from sglang_omni.utils.audio_payload import audio_waveform_payload
-from sglang_omni.utils.hf import try_resolve_arch_from_stable_audio3_layout
+from tests.unit_test.fixtures.accelerator import require_device_streams
+
+if current_platform.is_cuda():
+    from sglang.kernels.ops.attention.flash_attention_v3 import (  # noqa: leading-underscore  # upstream spelling
+        _is_fa3_supported,
+    )
+else:
+    pass
 
 PROMPT_TOKENS = 6
 TEXT_DIM = 12
+# note (ruilin): on an H100 the graphed fp16 audio of the tiny model is 4.4e-4 relative error from eager for every one of 24 seeded requests.
+GRAPH_RELATIVE_ERROR_LIMIT = 2e-3
 
 
-def payload_with(params: dict[str, object]) -> StagePayload:
+def payload_with(
+    params: dict[str, object], metadata: dict[str, object] | None = None
+) -> StagePayload:
     return StagePayload(
         request_id="request",
-        request=OmniRequest(inputs="ambient pads", params=params, metadata={}),
+        request=OmniRequest(
+            inputs="ambient pads",
+            params=params,
+            metadata=(
+                {"task": "tts", "tts_params": {}} if metadata is None else metadata
+            ),
+        ),
         data={},
     )
 
 
 def test_request_defaults_to_the_official_duration_and_a_random_seed() -> None:
     first, second = (build_state(payload_with({})) for _ in range(2))
-    assert first.duration_seconds == DEFAULT_DURATION_SECONDS
+    assert first.duration_seconds == 120.0
     assert first.seed != second.seed
     state = build_state(
         payload_with(
@@ -66,19 +80,28 @@ def test_request_defaults_to_the_official_duration_and_a_random_seed() -> None:
     assert (state.prompt, state.duration_seconds, state.seed) == ("ambient pads", 30, 7)
 
 
+def test_requests_from_other_endpoints_are_refused() -> None:
+    """A /generate or chat request skips the speech validator, so its seed could overflow inside a batch and fail every request in it."""
+    with pytest.raises(ValueError, match="/v1/audio/speech"):
+        build_state(payload_with({"seed": 2**64}, metadata={}))
+
+
 @pytest.mark.parametrize(
     ("fields", "param"),
     [
         ({"voice": "alloy"}, "voice"),
         ({"stream": True, "response_format": "wav"}, "stream"),
         ({"seed": 2**63}, "seed"),
+        ({"seed": -1}, "seed"),
+        ({"temperature": 0.7}, "temperature"),
+        ({"instructions": "dreamy"}, "instructions"),
         ({"stage_params": {"vocoder": {}}}, "stage_params"),
         (
             {"stage_params": {"generation": {"duration_seconds": 381}}},
             "stage_params.generation.duration_seconds",
         ),
         (
-            {"stage_params": {"generation": {"duration_seconds": 0}}},
+            {"stage_params": {"generation": {"duration_seconds": 0.05}}},
             "stage_params.generation.duration_seconds",
         ),
         (
@@ -90,11 +113,12 @@ def test_request_defaults_to_the_official_duration_and_a_random_seed() -> None:
 def test_unsupported_requests_are_client_errors(
     fields: dict[str, object], param: str
 ) -> None:
-    validator = StableAudio3SpeechRequestValidator(default_model="stable-audio-3")
+    validator = StableAudio3SpeechRequestValidator(
+        default_model="stable-audio-3",
+        supported_speech_fields=StableAudio3PipelineConfig.supported_speech_fields,
+    )
     with pytest.raises(SpeechAPIError) as error:
-        validator.prepare_generation_updates(
-            CreateSpeechRequest(input="ambient pads", **fields)
-        )
+        validator.parse_generation_request({"input": "ambient pads", **fields})
     assert (error.value.status_code, error.value.param) == (400, param)
 
 
@@ -223,27 +247,30 @@ class EmbeddingTextEncoder(nn.Module):
         return BatchEncoding({"last_hidden_state": self.embedding(input_ids)})
 
 
-@pytest.fixture(scope="module")
-def runtime() -> StableAudio3Runtime:
+def tiny_runtime(
+    device: torch.device, dtype: torch.dtype, backend: AttentionBackend
+) -> StableAudio3Runtime:
     torch.manual_seed(0)
     config = tiny_config()
-    modules = [
-        DiffusionTransformer(config.model.diffusion.config, backend="sdpa"),
-        Conditioner(config.model.conditioning),
-        AudioDecoder(config.model.pretransform.config, backend="sdpa"),
-    ]
-    for module in modules:
-        module.eval()
-    dit, conditioner, decoder = modules
+    dit = DiffusionTransformer(config.model.diffusion.config, backend=backend)
+    conditioner = Conditioner(config.model.conditioning)
+    decoder = AudioDecoder(config.model.pretransform.config, backend=backend)
+    for module in (dit, conditioner, decoder):
+        module.to(device=device, dtype=dtype).eval()
     return StableAudio3Runtime(
         config=config,
         dit=dit,
         conditioner=conditioner,
         decoder=decoder,
         tokenizer=CharacterTokenizer(),
-        text_encoder=EmbeddingTextEncoder().eval(),
-        device=torch.device("cpu"),
+        text_encoder=EmbeddingTextEncoder().to(device).eval(),
+        device=device,
     )
+
+
+@pytest.fixture(scope="module")
+def runtime() -> StableAudio3Runtime:
+    return tiny_runtime(torch.device("cpu"), torch.float32, "sdpa")
 
 
 def test_layout_values_match_the_official_implementation(
@@ -259,7 +286,10 @@ def test_layout_values_match_the_official_implementation(
         388,
         4096,
     ]
-    assert [runtime.valid_length(5.0, 120), runtime.valid_length(30.0, 388)] == [
+    assert [
+        runtime.valid_latent_length(5.0, 120),
+        runtime.valid_latent_length(30.0, 388),
+    ] == [
         118,
         387,
     ]
@@ -274,14 +304,14 @@ def test_layout_values_match_the_official_implementation(
 
 def test_batching_does_not_change_any_request(runtime: StableAudio3Runtime) -> None:
     """A short request padded next to a long one, decoded in chunks, matches its own single run."""
-    short = GenerationRequest(prompt="lofi", seconds=4.0, seed=3)
-    long = GenerationRequest(prompt="orchestral swell", seconds=20.0, seed=4)
+    short = GenerationRequest(prompt="lofi", duration_seconds=4.0, seed=3)
+    long = GenerationRequest(prompt="orchestral swell", duration_seconds=20.0, seed=4)
     batched = runtime.generate([short, long])
     singles = [runtime.generate([request])[0] for request in (short, long)]
     for batched_audio, single_audio, request in zip(
         batched, singles, (short, long), strict=True
     ):
-        assert batched_audio.shape == (2, int(request.seconds * 44100))
+        assert batched_audio.shape == (2, int(request.duration_seconds * 44100))
         assert batched_audio.abs().max() > 0
         assert torch.allclose(batched_audio, single_audio, atol=1e-6)
 
@@ -290,16 +320,16 @@ def test_batching_does_not_change_any_request(runtime: StableAudio3Runtime) -> N
     ("latent_lengths", "groups"),
     [
         ([388] * 8, [list(range(8))]),
-        ([250], [[0]]),
-        ([], []),
-        ([1357, 119, 1357, 119], [[1, 3], [0, 2]]),
-        ([119, 248, 4096, 119], [[0, 3, 1], [2]]),
+        ([1357, 119, 1357, 119], [[0, 2], [1, 3]]),
+        ([119, 248, 4096, 119], [[0, 1, 3], [2]]),
     ],
 )
 def test_length_groups_split_only_mixed_lengths(
     latent_lengths: list[int], groups: list[list[int]]
 ) -> None:
-    assert plan_length_groups(latent_lengths, overhead_latents=431) == groups
+    """Equal lengths stay one batch; a long request no longer pads the short ones next to it."""
+    planned = plan_length_groups(latent_lengths, overhead_latents=431)
+    assert sorted(sorted(group) for group in planned) == groups
 
 
 def test_grouped_generation_matches_one_batch(
@@ -307,9 +337,9 @@ def test_grouped_generation_matches_one_batch(
 ) -> None:
     """Split into length groups, every request still returns its own audio, in order."""
     requests = [
-        GenerationRequest(prompt="orchestral swell", seconds=20.0, seed=4),
-        GenerationRequest(prompt="lofi", seconds=4.0, seed=3),
-        GenerationRequest(prompt="rain", seconds=4.0, seed=5),
+        GenerationRequest(prompt="orchestral swell", duration_seconds=20.0, seed=4),
+        GenerationRequest(prompt="lofi", duration_seconds=4.0, seed=3),
+        GenerationRequest(prompt="rain", duration_seconds=4.0, seed=5),
     ]
     monkeypatch.setattr(runtime_module, "GROUP_OVERHEAD_SECONDS", 0.0)
     grouped = runtime.generate_in_length_groups(requests)
@@ -319,51 +349,75 @@ def test_grouped_generation_matches_one_batch(
         assert torch.allclose(grouped_audio, batched_audio, atol=1e-6)
 
 
-@pytest.mark.parametrize(
-    ("batch_size", "max_batch_size", "bucket"),
-    [(1, 8, 1), (3, 8, 4), (8, 8, 8), (3, 3, 3), (12, 16, 16), (5, 4, None)],
-)
-def test_batch_buckets_stay_within_the_stage_batch(
-    batch_size: int, max_batch_size: int, bucket: int | None
-) -> None:
-    assert bucket_batch(batch_size, max_batch_size) == bucket
-
-
-def test_latent_buckets_cover_every_length_within_the_graph_budget() -> None:
-    for latent_length in range(1, MAX_GRAPH_TOKENS):
-        bucket = bucket_latents(latent_length)
-        assert latent_length <= bucket < latent_length + 32
-        assert bucket % 32 == 0
-
-
-def test_float16_waveform_reaches_the_client_as_the_same_audio() -> None:
-    """The fp16 decoder output travels at half the bytes; the client widens it to the same float32 values and WAV."""
-    waveform = (torch.rand(2, 4410) * 2.4 - 1.2).half().clamp(-1, 1)
-    payload = audio_waveform_payload(
-        waveform, sample_rate=44100, keep_channels=True, keep_float16=True
+@pytest.mark.accelerator
+def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds() -> None:
+    """Compiled blocks replayed from CUDA graphs stay close to eager, and a batch padded up to its bucket returns the same bits after a longer, fuller batch left its data in the padding."""
+    device = require_device_streams()
+    if not (current_platform.is_cuda() and _is_fa3_supported(device)):
+        pytest.skip("the flash backend needs FlashAttention 3")
+    else:
+        pass
+    runtime = tiny_runtime(device, torch.float16, "flash")
+    padded_batch = [
+        GenerationRequest(prompt="lofi", duration_seconds=4.0, seed=3),
+        GenerationRequest(prompt="rain", duration_seconds=5.3, seed=5),
+        GenerationRequest(prompt="orchestral swell", duration_seconds=9.0, seed=4),
+    ]
+    fuller_batch = [
+        GenerationRequest(prompt=f"drone {index}", duration_seconds=9.5, seed=index)
+        for index in range(4)
+    ]
+    eager = runtime.generate(padded_batch)
+    runtime.compile_blocks()
+    graph_backend = current_platform.get_device_graph_backend(device)
+    runtime.dit_graphs = DiTCudaGraphRunner(
+        runtime.dit, graph_backend=graph_backend, max_batch_size=8
     )
-    chunk = GenerateChunk(request_id="stable-audio-3")
-    Client.set_audio_data(chunk, payload)
-    widened = waveform.float().numpy()
-    assert payload["audio_waveform_dtype"] == "float16"
-    assert len(payload["audio_waveform"]) == waveform.numel() * 2
-    assert np.array_equal(to_numpy(chunk.audio_data), widened)
-    assert (
-        encode_audio(chunk.audio_data, sample_rate=44100).audio_bytes
-        == encode_audio(widened, sample_rate=44100).audio_bytes
+    runtime.prompt_graphs = PromptEncoderCudaGraphRunner(
+        runtime.text_encoder, graph_backend=graph_backend, max_batch_size=8
+    )
+    graphed = runtime.generate(padded_batch)
+    runtime.generate(fuller_batch)
+    graphed_after_fuller = runtime.generate(padded_batch)
+    # note (ruilin): both batches share one bucket of each runner, so the second replay sees the fuller batch's leftovers.
+    assert (len(runtime.dit_graphs.graphs), len(runtime.prompt_graphs.graphs)) == (1, 1)
+    for eager_audio, graphed_audio, later_audio in zip(
+        eager, graphed, graphed_after_fuller, strict=True
+    ):
+        relative_error = (
+            (graphed_audio.float() - eager_audio.float()).norm()
+            / eager_audio.float().norm()
+        ).item()
+        assert relative_error < GRAPH_RELATIVE_ERROR_LIMIT
+        assert torch.equal(graphed_audio, later_audio)
+
+
+@pytest.mark.parametrize("max_batch_size", [3, 8, 16])
+def test_batch_buckets_fit_every_batch_the_stage_sends(max_batch_size: int) -> None:
+    """A graph bucket holds the whole batch and never exceeds the stage batch its buffers are sized for."""
+    for batch_size in range(1, max_batch_size + 2):
+        bucket = bucket_batch(batch_size, max_batch_size)
+        if batch_size > max_batch_size:
+            assert bucket is None
+        else:
+            assert batch_size <= bucket <= max_batch_size
+
+
+def test_latent_buckets_hold_every_length_within_the_graph_budget() -> None:
+    assert all(
+        bucket_latents(latent_length) >= latent_length
+        for latent_length in range(1, MAX_GRAPH_TOKENS)
     )
 
 
 @pytest.mark.parametrize(
-    ("model_type", "prompt_encoder", "architecture"),
-    [
-        ("diffusion_cond_inpaint", "t5gemma", "StableAudio3ForConditionalGeneration"),
-        ("diffusion_cond", "t5", None),
-    ],
+    ("model_type", "prompt_encoder", "is_stable_audio3"),
+    [("diffusion_cond_inpaint", "t5gemma", True), ("diffusion_cond", "t5", False)],
 )
 def test_checkpoint_layout_detection(
-    tmp_path: Path, model_type: str, prompt_encoder: str, architecture: str | None
+    tmp_path: Path, model_type: str, prompt_encoder: str, is_stable_audio3: bool
 ) -> None:
+    """The checkpoint ships only model_config.json; the Medium layout resolves to this pipeline, Stable Audio Open's does not."""
     (tmp_path / "model_config.json").write_text(
         json.dumps(
             {
@@ -372,4 +426,9 @@ def test_checkpoint_layout_detection(
             }
         )
     )
-    assert try_resolve_arch_from_stable_audio3_layout(str(tmp_path)) == architecture
+    if is_stable_audio3:
+        config_cls = resolve_config_cls_for_model_path(str(tmp_path))
+        assert config_cls is StableAudio3PipelineConfig
+    else:
+        with pytest.raises(ValueError, match="Could not resolve"):
+            resolve_config_cls_for_model_path(str(tmp_path))

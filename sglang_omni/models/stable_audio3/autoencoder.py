@@ -37,11 +37,13 @@ class DecoderBlock(nn.Module):
         )
         self.rope = RotaryEmbedding(head_dim // 2)
 
-    def forward(self, x: torch.Tensor, window: int) -> torch.Tensor:
-        x = x + self.self_attn(
-            self.pre_norm(x), rotary_angles=self.rope(x.shape[1]), window=window
+    def forward(self, hidden_states: torch.Tensor, window_tokens: int) -> torch.Tensor:
+        hidden_states = hidden_states + self.self_attn(
+            self.pre_norm(hidden_states),
+            rotary_angles=self.rope(hidden_states.shape[1]),
+            window_tokens=window_tokens,
         )
-        return x + self.ff(self.ff_norm(x))
+        return hidden_states + self.ff(self.ff_norm(hidden_states))
 
 
 class TransformerResamplingBlock(nn.Module):
@@ -52,12 +54,12 @@ class TransformerResamplingBlock(nn.Module):
     ) -> None:
         super().__init__()
         decoder = options.decoder.config
-        self.dim = decoder.channels * decoder.c_mults[0]
+        self.dim: int = decoder.channels * decoder.c_mults[0]
         depth = decoder.transformer_depths[0]
-        self.stride = decoder.strides[0]
-        self.mask_noise = decoder.mask_noise
+        self.stride: int = decoder.strides[0]
+        self.mask_noise: float = decoder.mask_noise
         # note (ruilin): each query sees one latent's tokens on either side, one sub-chunk of stride + 1.
-        self.window = decoder.sliding_window[0] * (self.stride + 1)
+        self.window_tokens: int = decoder.sliding_window[0] * (self.stride + 1)
         self.mapping = weight_norm(nn.Conv1d(self.dim, decoder.out_channels, 1))
         self.new_tokens = nn.Parameter(torch.zeros(1, 1, self.dim))
         self.transformers = nn.ModuleList(
@@ -85,7 +87,7 @@ class TransformerResamplingBlock(nn.Module):
             dim=1,
         ).reshape(batch_size, latent_length * (self.stride + 1), dim)
         for block in self.transformers:
-            tokens = block(tokens, self.window)
+            tokens = block(tokens, self.window_tokens)
         patches = tokens.reshape(batch_size * latent_length, self.stride + 1, dim)[
             :, 1:
         ]
@@ -122,8 +124,18 @@ class SameDecoder(nn.Module):
             ]
         )
 
+    @property
+    def latent_projection(self) -> nn.Linear:
+        return self.layers[1]
+
+    @property
+    def resampling(self) -> TransformerResamplingBlock:
+        return self.layers[3]
+
     def forward(self, latents: torch.Tensor, query_noise: torch.Tensor) -> torch.Tensor:
-        return self.layers[3](self.layers[1](latents.transpose(1, 2)), query_noise)
+        return self.resampling(
+            self.latent_projection(latents.transpose(1, 2)), query_noise
+        )
 
 
 class AudioDecoder(nn.Module):
@@ -135,8 +147,8 @@ class AudioDecoder(nn.Module):
         super().__init__()
         self.bottleneck = SoftNormBottleneck()
         self.decoder = SameDecoder(options, backend=backend)
-        self.patch_size = options.pretransform.config.patch_size
-        self.downsampling_ratio = options.downsampling_ratio
+        self.patch_size: int = options.pretransform.config.patch_size
+        self.downsampling_ratio: int = options.downsampling_ratio
 
     def forward(
         self, latents: torch.Tensor, generator: torch.Generator
@@ -144,17 +156,22 @@ class AudioDecoder(nn.Module):
         """One request's latents to audio: overlapping chunks, the last anchored at the end, decoded as one batch and stitched from their inner halves."""
         latent_length = latents.shape[-1]
         if latent_length < CHUNK_LATENTS:
-            chunk_starts, chunk_length = [0], latent_length
+            chunk_start_latents, chunk_length_latents = [0], latent_length
         else:
-            hop = CHUNK_LATENTS - CHUNK_OVERLAP_LATENTS
-            chunk_starts = list(range(0, latent_length - CHUNK_LATENTS + 1, hop))
-            if chunk_starts[-1] != latent_length - CHUNK_LATENTS:
-                chunk_starts.append(latent_length - CHUNK_LATENTS)
+            hop_latents = CHUNK_LATENTS - CHUNK_OVERLAP_LATENTS
+            chunk_start_latents = list(
+                range(0, latent_length - CHUNK_LATENTS + 1, hop_latents)
+            )
+            if chunk_start_latents[-1] != latent_length - CHUNK_LATENTS:
+                chunk_start_latents.append(latent_length - CHUNK_LATENTS)
             else:
                 pass
-            chunk_length = CHUNK_LATENTS
-        chunks = [latents[..., start : start + chunk_length] for start in chunk_starts]
-        resampling = self.decoder.layers[3]
+            chunk_length_latents = CHUNK_LATENTS
+        chunks = [
+            latents[..., start_latent : start_latent + chunk_length_latents]
+            for start_latent in chunk_start_latents
+        ]
+        resampling = self.decoder.resampling
         bottleneck_noise: list[torch.Tensor] = []
         query_noise: list[torch.Tensor] = []
         # note (ruilin): the checkpoint noises the latents and the query tokens at inference too; each chunk draws both in turn, as when chunks are decoded one by one.
@@ -169,7 +186,7 @@ class AudioDecoder(nn.Module):
             )
             query_noise.append(
                 torch.randn(
-                    (chunk_length, resampling.stride, resampling.dim),
+                    (chunk_length_latents, resampling.stride, resampling.dim),
                     generator=generator,
                     device=chunk.device,
                     dtype=resampling.new_tokens.dtype,
@@ -189,16 +206,24 @@ class AudioDecoder(nn.Module):
             return decoded
         else:
             pass
-        ratio = self.downsampling_ratio
-        chunk_samples = CHUNK_LATENTS * ratio
-        trim_samples = CHUNK_OVERLAP_LATENTS // 2 * ratio
-        audio = latents.new_zeros(1, decoded.shape[1], latent_length * ratio)
-        for index, start in enumerate(chunk_starts):
+        samples_per_latent = self.downsampling_ratio
+        chunk_samples = CHUNK_LATENTS * samples_per_latent
+        trim_samples = CHUNK_OVERLAP_LATENTS // 2 * samples_per_latent
+        audio = latents.new_zeros(
+            1, decoded.shape[1], latent_length * samples_per_latent
+        )
+        for index, start_latent in enumerate(chunk_start_latents):
             is_last = index == chunk_count - 1
-            output_start = audio.shape[-1] - chunk_samples if is_last else start * ratio
-            left = 0 if index == 0 else trim_samples
-            right = chunk_samples if is_last else chunk_samples - trim_samples
-            audio[..., output_start + left : output_start + right] = decoded[
-                index, :, left:right
+            output_start_sample = (
+                audio.shape[-1] - chunk_samples
+                if is_last
+                else start_latent * samples_per_latent
+            )
+            keep_start_sample = 0 if index == 0 else trim_samples
+            keep_end_sample = chunk_samples if is_last else chunk_samples - trim_samples
+            write_start_sample = output_start_sample + keep_start_sample
+            write_end_sample = output_start_sample + keep_end_sample
+            audio[..., write_start_sample:write_end_sample] = decoded[
+                index, :, keep_start_sample:keep_end_sample
             ]
         return audio

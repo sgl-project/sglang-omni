@@ -31,11 +31,9 @@ def audio_waveform_payload(
 ) -> dict[str, bytes | list[int] | str | int]:
     """Serialize a waveform into the relay payload format.
 
-    With ``keep_channels`` a rank-2 ``[channels, samples]`` waveform keeps its
-    shape (for natively multi-channel codecs); otherwise it is flattened to
-    mono-style rank-1, preserving the historical behavior. With
-    ``keep_float16`` a float16 waveform is sent as float16: half the bytes,
-    and the client widens it to the same float32 values.
+    With keep_channels a rank-2 [channels, samples] waveform keeps its shape (for natively multi-channel codecs); otherwise it is flattened to mono-style rank-1, preserving the historical behavior.
+
+    With keep_float16 a float16 waveform is sent as float16: half the bytes, and the client widens it to the same float32 values.
     """
     dtype = np.float32
     if isinstance(audio, torch.Tensor):

@@ -36,6 +36,7 @@ DEFAULT_SAMPLE_RATE = 24000
 # note (ratish): The speech rate floor preserves the lowest supported AAC rate.
 MIN_AUDIO_OUTPUT_SAMPLE_RATE = 7350
 MAX_AUDIO_OUTPUT_SAMPLE_RATE = 192000
+WAV_HEADER_BYTES = 44
 OPUS_PLAYBACK_SAMPLE_RATE = 48000
 # note (ratish): FLAC's streamable subset uses 10 Hz units above the 16-bit Hz field's limit.
 FLAC_MAX_UNSCALED_SAMPLE_RATE_HZ = 65535
@@ -237,12 +238,7 @@ def apply_speed(
 
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
-    """Encode audio as a WAV file (16-bit PCM).
-
-    The samples are interleaved straight into the output buffer: a long stereo
-    clip is tens of megabytes, so every extra copy shows in the latency.
-    """
-    # Clamp to [-1, 1] and scale in the input's precision
+    """Encode audio as a 16-bit PCM WAV, interleaving the samples straight into the output buffer, since every copy of a long clip shows in the latency."""
     scaled = np.clip(np.atleast_1d(audio), -1.0, 1.0)
     np.multiply(scaled, 32767.0, out=scaled)
     num_channels = int(scaled.shape[0]) if scaled.ndim == 2 else 1
@@ -252,7 +248,7 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     block_align = num_channels * bits_per_sample // 8
     data_size = scaled.size * bits_per_sample // 8
 
-    wav = bytearray(44 + data_size)
+    wav = bytearray(WAV_HEADER_BYTES + data_size)
     struct.pack_into(
         "<4sI4s4sIHHIIHH4sI",
         wav,
@@ -271,8 +267,7 @@ def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
         b"data",
         data_size,
     )
-    # Cast to int16 while interleaving the channels into the data chunk
-    samples = np.frombuffer(wav, dtype=np.int16, offset=44)
+    samples = np.frombuffer(wav, dtype=np.int16, offset=WAV_HEADER_BYTES)
     if scaled.ndim == 2:
         samples = samples.reshape(scaled.shape[1], num_channels)
         np.copyto(samples, scaled.T, casting="unsafe")
