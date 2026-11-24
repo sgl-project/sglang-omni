@@ -607,6 +607,7 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-checkpoint">Serve a checkpoint</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-an-upload">Transcribe an upload</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compile-the-encoder">Compile the encoder</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#validate-the-integration">Validate the integration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-on-a-corpus">Benchmark on a corpus</a></li>
@@ -707,7 +708,71 @@
 <span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>text
 </pre></div>
 </div>
-<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> are outside this integration.</p>
+<p>Set <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, and <code class="docutils literal notranslate"><span class="pre">/v1/realtime</span></code> are outside this integration.</p>
+</section>
+<section id="mtp-decoding">
+<h2>MTP decoding<a class="headerlink" href="#mtp-decoding" title="Link to this heading">#</a></h2>
+<p>The checkpoint includes a multi-token prediction (MTP) layer that the decoder can use as a NEXTN draft, so decoding needs no separate draft model. MTP is off by default, and the launch above does not load it. Enable it with:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>nemotron-transcribe<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.revision<span class="w"> </span>c17667641642c4265ff2b7037dd101b7d4567634<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.speculative_algorithm<span class="w"> </span>NEXTN<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave <code class="docutils literal notranslate"><span class="pre">speculative_draft_model_path</span></code> and <code class="docutils literal notranslate"><span class="pre">speculative_draft_model_revision</span></code> unset. The draft proposes 3 tokens per step by default (<code class="docutils literal notranslate"><span class="pre">speculative_num_steps</span> <span class="pre">3</span></code>, <code class="docutils literal notranslate"><span class="pre">speculative_num_draft_tokens</span> <span class="pre">4</span></code>).</p>
+<p>On one H100 80 GB, the launch above runs out of memory at startup: to roll the Mamba layers back after verify, SGLang keeps an fp32 SSM state per draft token for every decoder slot. Limit the decoder to 8 slots. Each request then keeps 8,996 KV tokens, in line with the 9,199 tokens per request of the default launch without the draft (64 slots):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>nemotron-transcribe<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.85<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.max_running_requests<span class="w"> </span><span class="m">8</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.revision<span class="w"> </span>c17667641642c4265ff2b7037dd101b7d4567634<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.engine.speculative_algorithm<span class="w"> </span>NEXTN<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Usage notes:</p>
+<ul class="simple">
+<li><p>Keep <code class="docutils literal notranslate"><span class="pre">speculative_eagle_topk</span> <span class="pre">1</span></code> and set <code class="docutils literal notranslate"><span class="pre">speculative_num_draft_tokens</span></code> to <code class="docutils literal notranslate"><span class="pre">speculative_num_steps</span></code> plus one. The MTP layer drafts a single chain, and the launch fails with the setting to change otherwise.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EAGLE</span></code> is accepted as another name for <code class="docutils literal notranslate"><span class="pre">NEXTN</span></code>. Separate draft models, EAGLE3, multi-layer EAGLE, and mixed chunking are rejected at launch.</p></li>
+<li><p>The launch fails if the checkpoint is missing any <code class="docutils literal notranslate"><span class="pre">llm.mtp.*</span></code> tensor the draft needs, or has one the draft cannot place.</p></li>
+<li><p>To disable MTP in a config that enables it, add <code class="docutils literal notranslate"><span class="pre">--asr.engine.disable_speculative_decoding</span> <span class="pre">true</span></code>.</p></li>
+<li><p>Send the form field <code class="docutils literal notranslate"><span class="pre">return_spec_tokens_details=true</span></code> to get <code class="docutils literal notranslate"><span class="pre">sglext.spec_tokens_details</span></code> with the acceptance statistics on <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> responses.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--asr.engine.speculative_num_steps</span> <span class="pre">7</span></code> raised the H200 speedup at concurrency 16 to 1.30x, but its rollback state takes 23.5 GB, and an H100 then starts with at most 4 slots.</p></li>
+</ul>
+<p>Speed against the same server without a draft, on one H200 with BF16, SGLang 0.5.23 and greedy decoding. The corpus is the full SeedTTS English set (666 clips) with <code class="docutils literal notranslate"><span class="pre">--unique-audio</span></code>:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Client concurrency</p></th>
+<th class="head text-right"><p>No draft RTFx</p></th>
+<th class="head text-right"><p>MTP RTFx</p></th>
+<th class="head text-right"><p>Speedup</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td class="text-right"><p>30.2</p></td>
+<td class="text-right"><p>37.5</p></td>
+<td class="text-right"><p>1.24x</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td class="text-right"><p>74.4</p></td>
+<td class="text-right"><p>95.7</p></td>
+<td class="text-right"><p>1.29x</p></td>
+</tr>
+<tr class="row-even"><td><p>16</p></td>
+<td class="text-right"><p>115.3</p></td>
+<td class="text-right"><p>137.5</p></td>
+<td class="text-right"><p>1.19x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Each verify step accepts 3.82 tokens on average, out of a possible 4, and 95.4% of drafts are accepted. Averaged over the three concurrencies, corpus WER is 0.977% without the draft and 0.952% with it. Verify and plain decode run different kernels, so a near-tie token can flip and a few transcripts differ. The mean absolute WER change between the two modes is at most 0.043 percentage points, close to the 0.023 to 0.030 points between two runs without the draft.</p>
+<p>On one H100 80 GB with 8 slots, on the first 50 SeedTTS English clips, MTP raised RTFx at concurrency 1 from 39.4 to 55.5 (1.41x). At 8 concurrent requests it reached 141.7 RTFx, while the server without a draft reached 247.1 at 64. On an H100, use the draft for latency at low load and leave it off for peak throughput.</p>
 </section>
 <section id="compile-the-encoder">
 <h2>Compile the encoder<a class="headerlink" href="#compile-the-encoder" title="Link to this heading">#</a></h2>
@@ -833,6 +898,7 @@ python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmar
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serve-a-checkpoint">Serve a checkpoint</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-an-upload">Transcribe an upload</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mtp-decoding">MTP decoding</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compile-the-encoder">Compile the encoder</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#validate-the-integration">Validate the integration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-on-a-corpus">Benchmark on a corpus</a></li>
