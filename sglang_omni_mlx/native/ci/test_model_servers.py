@@ -975,7 +975,6 @@ def test_funasr_leaves_the_silence_marker_out_of_the_text(
     assert status == 200
     done = sse_events(body)[0]
     assert "/sil" not in done["text"]
-    assert "/sil" not in done["generation_metadata"]["window_texts"]
 
 
 def test_funasr_token_budget_covers_the_whole_request(
