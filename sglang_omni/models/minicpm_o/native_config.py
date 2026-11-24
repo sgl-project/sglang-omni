@@ -83,6 +83,8 @@ class MiniCPMODuplexSampling(BaseModel):
     repetition_penalty: float = Field(default=1.05, ge=1)
     listen_prob_scale: float = Field(default=1.0, ge=0)
     force_listen_count: int = Field(default=3, ge=0)
+    turn_eos_peak_sum_threshold: float = Field(default=0.0, ge=0)
+    "End the reply once the highest turn_eos probabilities of its last three units sum to this; 0 leaves ending the reply to the sampled turn_eos."
     max_new_tokens_per_unit: int = Field(default=20, ge=1)
     repetition_window_size: int = Field(default=512, ge=1)
     talker_temperature: float = Field(default=0.8, ge=0, le=2)

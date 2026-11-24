@@ -551,6 +551,7 @@ async def test_session_overrides_stay_local_to_the_session() -> None:
         repetition_penalty=1.2,
         listen_prob_scale=0.5,
         force_listen_count=0,
+        turn_eos_peak_sum_threshold=0.2,
         max_new_tokens_per_unit=8,
         repetition_window_size=64,
         talker_temperature=0.6,

@@ -1668,6 +1668,101 @@ def test_listen_prob_scale_rescales_the_listen_logit(
     assert sample(runner, logits, [unit_request(state)]) == [expected_token_id]
 
 
+def speak_unit(
+    runner: DuplexThinkerModelRunner,
+    state: MiniCPMOThinkerSessionState,
+    *turn_eos_probabilities: float,
+) -> list[int]:
+    """One spoken unit: its first step, then one step per turn_eos probability, a plain token taking the rest."""
+    sample(
+        runner,
+        unit_logits({PLAIN_TOKEN_ID: 1.0}),
+        [unit_request(state, generation_step=0)],
+    )
+    token_ids = []
+    for step, turn_eos_probability in enumerate(turn_eos_probabilities, start=1):
+        logits = unit_logits(
+            {
+                PLAIN_TOKEN_ID: math.log(1.0 - turn_eos_probability),
+                SPECIAL_TOKENS.turn_eos: math.log(turn_eos_probability),
+            }
+        )
+        token_ids += sample(runner, logits, [unit_request(state, generation_step=step)])
+    return token_ids
+
+
+@pytest.mark.parametrize(
+    ("threshold", "units", "expected_last_token_id"),
+    [
+        # At the threshold the reply ends; just under it, or with the rule off, it goes on.
+        (0.5, [[0.01], [0.5]], SPECIAL_TOKENS.turn_eos),
+        (0.5, [[0.01], [0.49]], PLAIN_TOKEN_ID),
+        (0.0, [[0.01], [0.49]], PLAIN_TOKEN_ID),
+        # Three units add up; a fourth unit back no longer counts.
+        (0.7, [[0.01], [0.25], [0.25], [0.25]], SPECIAL_TOKENS.turn_eos),
+        (0.7, [[0.01], [0.25], [0.25], [0.01], [0.25]], PLAIN_TOKEN_ID),
+        # A unit counts once, by its highest step.
+        (0.45, [[0.01], [0.25, 0.25]], PLAIN_TOKEN_ID),
+        (0.45, [[0.01], [0.25, 0.01], [0.01, 0.25]], SPECIAL_TOKENS.turn_eos),
+        # The unit that opens the reply is not counted.
+        (0.5, [[0.49], [0.25]], PLAIN_TOKEN_ID),
+    ],
+)
+def test_turn_eos_peaks_of_three_units_end_the_reply_at_the_threshold(
+    threshold: float, units: list[list[float]], expected_last_token_id: int
+) -> None:
+    """A short spoken stop lifted turn_eos for a step in the units after it and the reply went on, since no single step made it the likely token."""
+    runner = duplex_runner(SPECIAL_TOKENS)
+    state = session_state(turn_eos_peak_sum_threshold=threshold)
+
+    token_ids = [
+        token_id
+        for turn_eos_probabilities in units
+        for token_id in speak_unit(runner, state, *turn_eos_probabilities)
+    ]
+
+    assert token_ids[:-1] == [PLAIN_TOKEN_ID] * (len(token_ids) - 1)
+    assert token_ids[-1] == expected_last_token_id
+    assert state.is_turn_ended is (expected_last_token_id == SPECIAL_TOKENS.turn_eos)
+    assert state.generated_history[-1] == expected_last_token_id
+
+
+def test_a_new_reply_does_not_count_the_turn_eos_peaks_of_the_reply_before_it() -> None:
+    runner = duplex_runner(SPECIAL_TOKENS)
+    state = session_state(turn_eos_peak_sum_threshold=0.45)
+
+    stopped_reply = speak_unit(runner, state, 0.01) + speak_unit(runner, state, 0.25)
+    # The client stops the reply, which ends the turn without a sampled turn_eos.
+    state.is_turn_ended = True
+    next_reply = speak_unit(runner, state, 0.01) + speak_unit(runner, state, 0.25)
+    next_unit = speak_unit(runner, state, 0.25)
+
+    assert stopped_reply + next_reply == [PLAIN_TOKEN_ID] * 4
+    assert next_unit == [SPECIAL_TOKENS.turn_eos]
+
+
+def test_the_turn_eos_threshold_ends_the_reply_ahead_of_chunk_eos_and_only_for_its_session() -> (
+    None
+):
+    runner = duplex_runner(SPECIAL_TOKENS)
+    states = [
+        session_state(turn_eos_peak_sum_threshold=threshold) for threshold in (0.4, 0.0)
+    ]
+    for state in states:
+        speak_unit(runner, state, 0.01)
+        speak_unit(runner, state)
+    logits = unit_logits(
+        *[{SPECIAL_TOKENS.chunk_eos: 0.2, SPECIAL_TOKENS.turn_eos: 0.0}] * 2
+    )
+
+    token_ids = sample(
+        runner, logits, [unit_request(state, generation_step=1) for state in states]
+    )
+
+    assert token_ids == [SPECIAL_TOKENS.turn_eos, SPECIAL_TOKENS.chunk_eos]
+    assert [state.is_turn_ended for state in states] == [True, False]
+
+
 def test_sampled_and_greedy_rows_share_one_step() -> None:
     runner = duplex_runner(SPECIAL_TOKENS)
     greedy = session_state()

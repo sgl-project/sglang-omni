@@ -9,6 +9,9 @@ import torch.nn.functional as F
 from sglang_omni.models.minicpm_o.special_tokens import MiniCPMOSpecialTokenIds
 from sglang_omni.models.minicpm_o.thinker_state import MiniCPMOThinkerSessionState
 
+# note (yaourt): A short spoken stop lifts turn_eos for a step or two in each of the units after it without making it the likely token; three units cover it in the spoken stop trials.
+TURN_EOS_PEAK_UNITS = 3
+
 
 def build_forbidden_token_index(
     special_tokens: MiniCPMOSpecialTokenIds, vocab_size: int, device: torch.device
@@ -91,6 +94,14 @@ def duplex_sample_batch(
     undecided_rows: list[int] = []
     for row, thinker_state in enumerate(thinker_states):
         sampling = thinker_state.sampling
+        if generation_steps[row] == 0:
+            thinker_state.turn_eos_peaks = (
+                []
+                if thinker_state.is_turn_ended
+                else [*thinker_state.turn_eos_peaks[1 - TURN_EOS_PEAK_UNITS :], 0.0]
+            )
+        else:
+            pass
         if generation_steps[row] >= sampling.max_new_tokens_per_unit - 1:
             decided_token_ids[row] = special_tokens.chunk_eos
         elif generation_steps[row] == 0 and listen_forced_flags[row]:
@@ -105,6 +116,38 @@ def duplex_sample_batch(
     undecided_logits = logits[
         torch.tensor(undecided_rows, dtype=torch.long, device=device)
     ].float()
+    watched_positions = [
+        candidate_position
+        for candidate_position, row in enumerate(undecided_rows)
+        if generation_steps[row] >= 1
+        and thinker_states[row].sampling.turn_eos_peak_sum_threshold > 0
+        and not thinker_states[row].is_turn_ended
+        and thinker_states[row].turn_eos_peaks
+    ]
+    turn_end_forced_positions: set[int] = set()
+    if watched_positions:
+        turn_eos_probabilities = F.softmax(
+            undecided_logits[
+                torch.tensor(watched_positions, dtype=torch.long, device=device)
+            ],
+            dim=-1,
+        )[:, special_tokens.turn_eos].tolist()
+        for candidate_position, turn_eos_probability in zip(
+            watched_positions, turn_eos_probabilities, strict=True
+        ):
+            thinker_state = thinker_states[undecided_rows[candidate_position]]
+            turn_eos_peaks = thinker_state.turn_eos_peaks
+            turn_eos_peaks[-1] = max(turn_eos_peaks[-1], turn_eos_probability)
+            if (
+                sum(turn_eos_peaks)
+                >= thinker_state.sampling.turn_eos_peak_sum_threshold
+            ):
+                turn_end_forced_positions.add(candidate_position)
+                thinker_state.turn_eos_peaks = []
+            else:
+                pass
+    else:
+        pass
     # note (Junnan Li): The first sample must use the unscaled model distribution.
     first_token_ids = sample_rows(
         undecided_logits,
@@ -112,7 +155,9 @@ def duplex_sample_batch(
     ).tolist()
     second_stage_positions: list[int] = []
     for candidate_position, row in enumerate(undecided_rows):
-        if first_token_ids[candidate_position] == special_tokens.chunk_eos:
+        if candidate_position in turn_end_forced_positions:
+            second_stage_positions.append(candidate_position)
+        elif first_token_ids[candidate_position] == special_tokens.chunk_eos:
             decided_token_ids[row] = special_tokens.chunk_eos
         else:
             second_stage_positions.append(candidate_position)
@@ -147,6 +192,10 @@ def duplex_sample_batch(
     ):
         thinker_state = thinker_states[undecided_rows[candidate_position]]
         sampling = thinker_state.sampling
+        if candidate_position in turn_end_forced_positions:
+            candidate_token_id = special_tokens.turn_eos
+        else:
+            pass
         # note (Junnan Li): History retains controls before the mid-turn listen rewrite.
         history = thinker_state.generated_history
         history.append(candidate_token_id)
