@@ -101,6 +101,18 @@
         "icons"
       ],
       "reduce_motion": false,
+      "opening": true,
+      "opening_length": 1,
+      "opening_length_options": [
+        "3 seconds",
+        "2 seconds",
+        "1 second"
+      ],
+      "opening_length_values": [
+        3000,
+        2000,
+        1000
+      ],
       "palette": "#0d9384",
       "default_palette": "#0d9384",
       "transparent": false,

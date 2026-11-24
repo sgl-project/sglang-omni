@@ -81,6 +81,10 @@ type Appearance struct {
 	WindowTransparency int     `json:"windowTransparency"` // percent, used in transparent mode
 	Scale              float64 `json:"scale"`              // UI scale, 0.9–1.25 (1 = 100 %)
 	ReduceMotion       bool    `json:"reduceMotion"`       // in addition to the system setting
+	// Opening plays Voxt's mark at each start of the app (on by default),
+	// in OpeningMillis: one of OpeningLengths.
+	Opening       bool `json:"opening"`
+	OpeningMillis int  `json:"openingMillis"`
 	// Rail shows the sidebar as icons only. Without it the sidebar is
 	// automatic (icons only in a narrow window) unless RailChosen: the
 	// user chose names and icons. SidebarWidth is its width in DIPs at
@@ -365,7 +369,7 @@ func Defaults() Settings {
 	return Settings{
 		Version:    Version,
 		General:    General{MenuBar: true, CloseToTray: true},
-		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1},
+		Appearance: Appearance{Theme: ThemeSystem, Palette: DefaultPalette, WindowTransparency: DefaultWindowTransparency, Scale: 1, Opening: true, OpeningMillis: DefaultOpeningMillis},
 		Privacy:    Privacy{KeepHistory: true},
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},

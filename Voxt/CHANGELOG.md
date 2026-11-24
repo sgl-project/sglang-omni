@@ -6,6 +6,42 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
+- **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
+- **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
+- **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
+
+### Changed
+
+- **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+
+### Fixed
+
+- **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
+
+### 中文
+
+#### 新增
+
+- **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
+- **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
+- **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
+- **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。目前只用于转录。
+
+#### 变更
+
+- **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+
+#### 修复
+
+- **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
+
+## [2.1.3] - 2026-11-22
+
+### Added
+
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
 - **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
@@ -14,9 +50,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Transcribe's clean-up follows its rules better on small local models** (#4459): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
 - **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
-- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
@@ -66,9 +102,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
-- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。

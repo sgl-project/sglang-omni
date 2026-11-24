@@ -168,6 +168,7 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = general.Dock, general.CopyResult
 	appearance := a.appearanceSettingsModel()
 	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
+	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
 	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
