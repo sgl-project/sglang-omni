@@ -124,6 +124,9 @@ func TestMeetingAskDemoControls(t *testing.T) {
 		{"settings", "zh-Hans/ask-menu", []string{"检测设置"}, []string{"chooseMeetingAskMenu settings"}},
 		{"close menu", "en/ask-menu", []string{"More options"}, []string{"toggleMeetingAskMenu"}},
 		{"dismiss", "en/ask-menu", []string{"Dismiss"}, []string{"dismissMeetingAsk"}},
+		{"end", "en/ask-ended", []string{"End recording"}, []string{"startDetectedMeeting"}},
+		{"end zh", "zh-Hans/ask-ended", []string{"结束记录"}, []string{"startDetectedMeeting"}},
+		{"not ended", "en/ask-ended", []string{"Dismiss"}, []string{"dismissMeetingAsk"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			host, err := loadMeetingDemoHost("testdata/meeting")

@@ -79,7 +79,7 @@ func (a *app) meetingAskViewNow() meetingAskViewState {
 // rebuildMeetingAsk writes the card's view state in the language now.
 func (a *app) rebuildMeetingAsk() {
 	a.ask.locale = i18n.Locale()
-	a.ask.view = buildMeetingAskViewState(i18n.CurrentTranslator(), meetingAskInput{App: a.ask.app, Compact: a.ask.compact, MenuOpen: a.ask.menu})
+	a.ask.view = buildMeetingAskViewState(i18n.CurrentTranslator(), meetingAskInput{App: a.ask.app, Compact: a.ask.compact, MenuOpen: a.ask.menu, End: a.ask.end})
 }
 
 func (a *app) destroyMeetingAsk() {

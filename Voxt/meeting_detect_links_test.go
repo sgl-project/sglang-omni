@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -194,5 +195,105 @@ func TestMeetingDetectWatchRefused(t *testing.T) {
 	a.setMeetingDetect(true)
 	if !a.micWatch {
 		t.Fatal("asked again, and still not watching")
+	}
+}
+
+// Voxt records a meeting and its app lets go of the microphone: after
+// meetingEndAfter the card asks whether the meeting is over, once.
+func TestMeetingEndedAsks(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	timers := detectClock(t, a)
+	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording}) // started by hand
+	micUsers(t, a, "us.zoom.xos")
+	if a.ask.view.Visible || a.recorded.key != "us.zoom.xos" {
+		t.Fatalf("Zoom records while Voxt does: card %+v, recorded for %q", a.ask.view, a.recorded.key)
+	}
+	micSays(t, a, "com.apple.CoreSpeech") // Zoom lets go
+	micSays(t, a)                         // and others come and go meanwhile
+	timers.advance(meetingEndAfter - time.Second)
+	if a.ask.view.Visible {
+		t.Fatal("asked before Zoom was off the microphone for long")
+	}
+	timers.advance(time.Second)
+	view := a.ask.view
+	if !view.Visible || !view.End || view.Title != "Meeting ended?" || view.App != "Zoom" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
+		t.Fatalf("Zoom is off the microphone: %+v", view)
+	}
+	if !a.meetingActive() {
+		t.Fatal("the recording ended by itself")
+	}
+
+	micUsers(t, a, "us.zoom.xos") // only muted: the meeting goes on
+	if a.ask.view.Visible {
+		t.Fatal("the card stayed after Zoom took the microphone again")
+	}
+	micSays(t, a)
+	timers.advance(meetingEndAfter)
+	if !a.ask.view.Visible || !a.ask.view.End {
+		t.Fatalf("Zoom let go again: %+v", a.ask.view)
+	}
+	a.dismissMeetingAsk()
+	micUsers(t, a, "us.zoom.xos")
+	micSays(t, a)
+	timers.advance(time.Hour)
+	if a.ask.view.Visible {
+		t.Fatal("asked again after the card was closed")
+	}
+
+	// Its button ends the recording (here: a meeting the manager does not
+	// know, so the end is refused and says so).
+	b, _, _ := newTestApp(t)
+	clock := detectClock(t, b)
+	b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+	micUsers(t, b, "us.zoom.xos")
+	micSays(t, b)
+	clock.advance(meetingEndAfter)
+	b.startDetectedMeeting()
+	if b.ask.view.Visible || len(b.toasts) != 1 || !strings.Contains(b.toasts[0], "end the meeting") {
+		t.Fatalf("End recording: card %+v, toasts %q", b.ask.view, b.toasts)
+	}
+	b.meetingChanged(meeting.Snapshot{})
+	if b.recorded.key != "" {
+		t.Fatalf("after Voxt's meeting: still recorded for %q", b.recorded.key)
+	}
+}
+
+// A browser that builds its page tree only on request (Arc, Dia) gets
+// the request while it records, also with app enhancement off, and loses
+// it when it stops.
+func TestMeetingDetectedInArc(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	const arc = "company.thebrowser.Browser"
+	var listed []string
+	fs.mu.Lock()
+	fs.handlers[proto.MethodAppConfigure] = func(raw json.RawMessage) (any, error) {
+		var p proto.AppConfigureParams
+		json.Unmarshal(raw, &p)
+		listed = p.ManualAccessibility
+		return proto.Empty{}, nil
+	}
+	fs.handlers[proto.MethodBrowserURL] = func(raw json.RawMessage) (any, error) {
+		var p proto.BrowserURLParams
+		json.Unmarshal(raw, &p)
+		res := proto.BrowserURLResult{BundleID: p.BundleID, Via: proto.URLViaNone, MS: 3, Error: "no web area"}
+		if slices.Contains(listed, p.BundleID) {
+			res.URL, res.Via, res.Error = "https://meet.google.com/abc-defg-hij", proto.URLViaAXDocument, ""
+		}
+		return res, nil
+	}
+	fs.mu.Unlock()
+	// App enhancement off: no browser is asked for its tree any more.
+	a.prefs.AppEnhancement.Enabled = false
+	a.syncTrees()
+	if len(listed) != 0 {
+		t.Fatalf("app enhancement off, trees still asked of %v", listed)
+	}
+	micUsers(t, a, arc+".helper")
+	if !a.ask.view.Visible || a.ask.view.App != "Google Meet" || !slices.Equal(listed, []string{arc}) {
+		t.Fatalf("a Meet in Arc: card %+v, trees asked of %v", a.ask.view, listed)
+	}
+	micUsers(t, a)
+	if len(listed) != 0 || a.ask.view.Visible {
+		t.Fatalf("Arc stopped recording: trees asked of %v, card %+v", listed, a.ask.view)
 	}
 }

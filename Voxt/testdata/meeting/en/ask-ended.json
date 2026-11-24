@@ -1,0 +1,16 @@
+{
+  "name": "ask-ended",
+  "kind": "meeting-ask",
+  "ask": {
+    "visible": true,
+    "title": "Meeting ended?",
+    "app": "Zoom",
+    "start_label": "End recording",
+    "menu_label": "",
+    "close_label": "Dismiss",
+    "compact": false,
+    "end": true,
+    "menu_open": false,
+    "menu": []
+  }
+}

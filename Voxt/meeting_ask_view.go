@@ -108,7 +108,7 @@ func meetingAskView(c *ui.Context, state meetingAskViewState, actions meetingAsk
 			}
 			meetingAskRow(c, state, actions)
 		})
-		if (over || state.MenuOpen) && !state.Compact {
+		if (over || state.MenuOpen || state.End) && !state.Compact {
 			meetingAskCloseButton(c, state, actions)
 		}
 	})
@@ -120,9 +120,15 @@ func meetingAskBadgeIcon(c *ui.Context, size float32) {
 	})
 }
 
-func meetingAskLiveLine(c *ui.Context, app string, size float32) {
+// meetingAskLiveLine is the app's name behind a dot: green while the app
+// records, grey once it let go of the microphone (ended).
+func meetingAskLiveLine(c *ui.Context, app string, size float32, ended bool) {
+	dot := meetingAskLive
+	if ended {
+		dot = ovText2
+	}
 	ui.Row(c).Gap(5).AlignItems(ui.Center).MinWidth(0).Shrink(1).Children(func() {
-		ui.Box(c).Size(6, 6).Radius(3).Background(meetingAskLive).Shrink(0)
+		ui.Box(c).Size(6, 6).Radius(3).Background(dot).Shrink(0)
 		ui.Text(c, app).FontSize(size).TextColor(ovText2).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
 	})
 }
@@ -132,18 +138,25 @@ func meetingAskRow(c *ui.Context, state meetingAskViewState, actions meetingAskA
 		meetingAskBadgeIcon(c, meetingAskBadge)
 		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 			ui.Text(c, state.Title).FontSize(13).FontWeight(600).TextColor(ovText).SingleLine().Ellipsis("…")
-			meetingAskLiveLine(c, state.App, 11)
+			meetingAskLiveLine(c, state.App, 11, state.End)
 		})
 		ui.Row(c).Gap(1).AlignItems(ui.Center).Shrink(0).Children(func() {
 			start := ui.ButtonBase(c.Key("ask-start")).Height(meetingAskButtonH).Padding(0, 12).Radius(9).Center().Shrink(0).Label(state.StartLabel)
 			start.Background(meetingAskButtonFill(start.Hovered()))
 			if start.Children(func() {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Icon(c, icons.VoxtMicrophone.Bold).Size(14, 14).TextColor(meetingAskButtonInk).Shrink(0)
+					icon := icons.VoxtMicrophone
+					if state.End {
+						icon = icons.Stop
+					}
+					ui.Icon(c, icon.Bold).Size(14, 14).TextColor(meetingAskButtonInk).Shrink(0)
 					ui.Text(c, state.StartLabel).FontSize(12.5).FontWeight(600).TextColor(meetingAskButtonInk).SingleLine()
 				})
 			}).Clicked() {
 				actions.startDetectedMeeting()
+			}
+			if len(state.Menu) == 0 {
+				return
 			}
 			chevron := icons.AltArrowUp
 			if state.MenuOpen {
@@ -171,7 +184,7 @@ func meetingAskCompactRow(c *ui.Context, state meetingAskViewState) {
 	ui.Row(c).Height(meetingAskCompactH-2*layout.Border).Shrink(0).Padding(0, meetingAskPadX-layout.Border).Gap(10).AlignItems(ui.Center).Children(func() {
 		meetingAskBadgeIcon(c, 20)
 		ui.Text(c, state.Title).FontSize(12.5).FontWeight(600).TextColor(ovText).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-		meetingAskLiveLine(c, state.App, 11)
+		meetingAskLiveLine(c, state.App, 11, state.End)
 	})
 }
 

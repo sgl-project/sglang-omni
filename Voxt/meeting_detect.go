@@ -10,6 +10,7 @@ package main
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
@@ -35,9 +36,12 @@ type meetingDetectState struct {
 	// micWatch: mic.watch is on in the helper that runs now.
 	micWatch bool
 	micUsers []meetdetect.User
-	// reading is the browser whose tab is being read.
-	reading string
-	ask     meetingAsk
+	// reading is the browser whose tab is being read; tree the browser
+	// that records and needs its page tree turned on for that
+	// (appenhance.go: syncTrees), "" for none.
+	reading, tree string
+	ask           meetingAsk
+	recorded      meetingRecorded // meeting_detect_end.go
 }
 
 // meetingAsk is the card on screen: the app it asks about (key is the
@@ -46,8 +50,11 @@ type meetingDetectState struct {
 type meetingAsk struct {
 	key, app      string
 	compact, menu bool
-	seq           int
-	armed         time.Time
+	// end: the card asks whether the meeting Voxt records is over
+	// (meeting_detect_end.go), not whether to record one.
+	end   bool
+	seq   int
+	armed time.Time
 	// snoozed is the app to ask about again when "Ask again in 2 minutes"
 	// is up ("": none, or Voxt recorded it meanwhile).
 	snoozed string
@@ -70,7 +77,7 @@ func (a *app) meetingDetectChanged() {
 	switch {
 	case !a.detectMeetings():
 		a.closeMeetingAsk()
-	case a.prefs.Features.Meeting.AutoStart && a.ask.key != "":
+	case a.prefs.Features.Meeting.AutoStart && a.ask.key != "" && !a.ask.end:
 		a.startDetectedMeeting() // the card asked what is now decided: yes
 	}
 	a.syncMicWatch()
@@ -131,9 +138,14 @@ func (a *app) syncMeetingDetect() {
 		browsers = append(browsers, b.BundleID)
 	}
 	found, wait := a.detect.Update(a.micUsers, browsers, a.now())
-	if a.ask.key != "" && !a.detect.Recording(a.ask.key) {
-		a.closeMeetingAsk() // the meeting is over
+	if a.ask.key != "" && a.detect.Recording(a.ask.key) == a.ask.end {
+		a.closeMeetingAsk() // the meeting is over (or, asked whether it is, goes on)
 	}
+	if a.tree != "" && !a.detect.Recording(a.tree) {
+		a.tree = ""
+		a.syncTrees() // appenhance.go: the browser no longer records
+	}
+	a.followRecordedMeeting() // meeting_detect_end.go
 	if wait > 0 {
 		// An app took the microphone a moment ago: a test of it is over
 		// before meetdetect.Hold, a meeting is not.
@@ -145,6 +157,9 @@ func (a *app) syncMeetingDetect() {
 	if a.meetingActive() {
 		for _, c := range found {
 			a.detect.Settle(c.Key) // Voxt records it already
+			if a.recorded.key == "" && c.App != "" {
+				a.recorded.key, a.recorded.app = c.Key, c.App // started by hand during it
+			}
 		}
 		return
 	}
@@ -167,6 +182,15 @@ func (a *app) readMeetingTab(c meetdetect.Candidate) {
 		return
 	}
 	a.reading = c.Key
+	if a.tree == "" && slices.Contains(appctx.TreeOnDemand(a.prefs.AppEnhancement.Browsers), c.Browser) {
+		// A Chromium browser builds a page's tree only when asked (Arc
+		// and Dia show no address without it): asked while it records.
+		a.tree = c.Browser
+	}
+	a.sendTrees(func() { a.readMeetingTabNow(c) })
+}
+
+func (a *app) readMeetingTabNow(c meetdetect.Candidate) {
 	helperCall(a, proto.MethodBrowserURL, proto.BrowserURLParams{BundleID: c.Browser}, 2*time.Second, func(tab proto.BrowserURLResult, err error) {
 		a.reading = ""
 		app, ok := meetdetect.Web(tab.URL)
@@ -190,7 +214,7 @@ func (a *app) meetingAfterDictation() {
 	key := a.ask.startAfter
 	a.ask.startAfter = ""
 	if key != "" && a.detect.Recording(key) && a.detectMeetings() && !a.meetingActive() {
-		a.startDetectedMeeting()
+		a.startMeetingFor(key, a.recorded.app)
 		return
 	}
 	a.syncMeetingDetect()
@@ -201,10 +225,16 @@ func (a *app) meetingAfterDictation() {
 func (a *app) askMeeting(key, app string) {
 	a.detect.Settle(key)
 	if a.prefs.Features.Meeting.AutoStart {
-		a.startDetectedMeeting()
+		a.startMeetingFor(key, app)
 		return
 	}
-	a.ask.key, a.ask.app, a.ask.compact, a.ask.menu = key, app, false, false
+	a.showMeetingAsk(key, app, false)
+}
+
+// showMeetingAsk shows the card about app: whether to record its meeting,
+// or (end) whether the meeting Voxt records is over.
+func (a *app) showMeetingAsk(key, app string, end bool) {
+	a.ask.key, a.ask.app, a.ask.end, a.ask.compact, a.ask.menu = key, app, end, false, false
 	a.syncMeetingAsk()
 	a.restMeetingAsk()
 }
@@ -232,7 +262,7 @@ func (a *app) closeMeetingAsk() {
 	if a.ask.key == "" {
 		return
 	}
-	a.ask.key, a.ask.app, a.ask.menu = "", "", false
+	a.ask.key, a.ask.app, a.ask.menu, a.ask.end = "", "", false, false
 	a.ask.seq++
 	a.syncMeetingAsk()
 }
@@ -257,15 +287,28 @@ func (a *app) meetingAskHovered() {
 // is in the meeting's app, and Voxt's window may be closed: a start that
 // fails says so in the overlay too, with the way to fix it.
 func (a *app) startDetectedMeeting() {
-	key := a.ask.key
+	key, app, end := a.ask.key, a.ask.app, a.ask.end
 	a.closeMeetingAsk()
+	if end {
+		a.recorded.asked = true
+		a.meetingFinish() // "End recording": the meeting it asked about is over
+		return
+	}
+	a.startMeetingFor(key, app)
+}
+
+// startMeetingFor starts a meeting for the one detected in app (key).
+func (a *app) startMeetingFor(key, app string) {
+	a.recorded.app = app
 	if a.sess.State.Live() && key != "" {
 		// The dictation has the microphone, and a second recording of it
 		// fails: the meeting starts when the dictation ends.
 		a.ask.startAfter = key
 		return
 	}
+	a.recorded.key, a.recorded.asked = key, false
 	a.startMeetingThen(func(msg string, err error) {
+		a.recorded.key = ""
 		a.showNotice(sessionNotice{text: msg, action: meetingStartAction(err)})
 	})
 }
@@ -284,7 +327,12 @@ func meetingStartAction(err error) string {
 	return actionNone
 }
 
-func (a *app) dismissMeetingAsk() { a.closeMeetingAsk() }
+func (a *app) dismissMeetingAsk() {
+	if a.ask.end {
+		a.recorded.asked = true // not asked again about this meeting
+	}
+	a.closeMeetingAsk()
+}
 
 func (a *app) toggleMeetingAskMenu() {
 	a.ask.menu = !a.ask.menu

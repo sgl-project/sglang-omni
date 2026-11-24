@@ -24,6 +24,7 @@ type meetingAskViewState struct {
 	MenuLabel  string               `json:"menu_label"`
 	CloseLabel string               `json:"close_label"`
 	Compact    bool                 `json:"compact"`
+	End        bool                 `json:"end,omitempty"`
 	MenuOpen   bool                 `json:"menu_open"`
 	Menu       []meetingAskMenuItem `json:"menu"`
 }
@@ -41,11 +42,21 @@ type meetingAskInput struct {
 	App      string
 	Compact  bool
 	MenuOpen bool
+	// End: the card asks whether the meeting Voxt records is over.
+	End bool
 }
 
 func buildMeetingAskViewState(translator *i18n.Translator, input meetingAskInput) meetingAskViewState {
 	if input.App == "" {
 		return meetingAskViewState{Menu: []meetingAskMenuItem{}}
+	}
+	if input.End {
+		// One answer, no menu: End recording, or close the card.
+		return meetingAskViewState{
+			Visible: true, Title: translator.T("Meeting ended?"), App: meetingAppNameFor(translator, input.App),
+			StartLabel: translator.T("End recording"), CloseLabel: translator.T("Dismiss"),
+			Compact: input.Compact, End: true, Menu: []meetingAskMenuItem{},
+		}
 	}
 	return meetingAskViewState{
 		Visible:    true,

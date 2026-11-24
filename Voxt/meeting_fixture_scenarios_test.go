@@ -110,6 +110,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 		meetingFixtureScenario{name: "ask-normal", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Zoom}},
 		meetingFixtureScenario{name: "ask-menu", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Meet, MenuOpen: true}},
 		meetingFixtureScenario{name: "ask-compact", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Tencent, Compact: true}},
+		meetingFixtureScenario{name: "ask-ended", kind: "meeting-ask", ask: meetingAskInput{App: meetdetect.Zoom, End: true}},
 	)
 
 	for _, scenario := range []struct {

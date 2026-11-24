@@ -1,0 +1,16 @@
+{
+  "name": "ask-ended",
+  "kind": "meeting-ask",
+  "ask": {
+    "visible": true,
+    "title": "会议结束了？",
+    "app": "Zoom",
+    "start_label": "结束记录",
+    "menu_label": "",
+    "close_label": "关闭",
+    "compact": false,
+    "end": true,
+    "menu_open": false,
+    "menu": []
+  }
+}

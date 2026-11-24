@@ -44,6 +44,8 @@ Meeting detection	L	TestMeetingAskMenu	none
 Meeting detection	L	TestMeetingAskCompact	The card's window (its place, staying behind the app in front, the pointer over it) is checked by hand only
 Meeting detection	L	TestMeetingDetectEndToEnd	none
 Meeting detection	L	TestMeetingDetectDuringDictationEndToEnd	none
+Meeting detection	L	TestMeetingEndedAsks	Whether an app lets go of the microphone when muted is checked by hand only
+Meeting detection	L	TestMeetingDetectedInArc	A real Arc or Dia tab is checked by hand only
 Meeting detection	M	TestMacHelperMicWatch	none
 Meeting detection	M	TestMacE2EMeetingDetect	none
 Meeting detection	manual	docs/manual-test.md	A real meeting app joining a call is checked by hand only
