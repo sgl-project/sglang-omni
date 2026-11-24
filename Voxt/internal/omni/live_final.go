@@ -41,11 +41,13 @@ func (s *live) finalPass(pcm []byte) {
 	if tail := pcm[done:]; len(tail) > 0 {
 		hint := language
 		var known prior
-		if done == 0 && s.a.spec.Kind == kindQwen3ASR {
+		if s.a.spec.Kind == kindQwen3ASR {
+			// The server has prefilled the Final's audio, from the last piece
+			// on, and its dictionary (startFinalAt).
 			known.session = s.session
 			// Without a hint the model writes the language before the text,
 			// and the preview does not hold it.
-			if hint != "" {
+			if done == 0 && hint != "" {
 				s.mu.Lock()
 				known.text = s.asm.text()
 				s.mu.Unlock()

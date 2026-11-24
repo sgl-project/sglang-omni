@@ -26,10 +26,12 @@ var loopback = &http.Client{Transport: &http.Transport{
 	IdleConnTimeout:     30 * time.Second,
 }}
 
-// prior is what a live session already has of the audio of a Final that
-// starts with its recording: the preview's text, whose beginning the server
-// keeps while decoding agrees, and the session, whose encoded audio it
-// reuses ("" none). Both only save work: the text is decoding's.
+// prior is what a live session already has for a Final: the preview's text
+// of a recording the Final starts with, whose beginning the server keeps while
+// decoding agrees, and the session, whose encoded audio it reuses ("" none).
+// Of the rest after the pieces the session has what it prefilled from where
+// the last one ended, and no text. All of it only saves work: the text is
+// decoding's.
 type prior struct{ text, session string }
 
 // finalRequest is one request of a Final.
