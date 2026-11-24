@@ -45,7 +45,6 @@ type livePolish struct {
 	r             *run
 	ctx           context.Context
 	cancel        context.CancelFunc
-	workerDone    chan struct{}
 	thinkOffUnder int
 	reclean       int // note (luojiaxuan): sentences cleaned again with the text left at Stop
 
@@ -121,7 +120,7 @@ func newLivePolish(r *run) *livePolish {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(r.llmCtx)
-	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, workerDone: make(chan struct{}), thinkOffUnder: r.thinkOffUnder(),
+	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, thinkOffUnder: r.thinkOffUnder(),
 		reclean: max(0, r.settings.Features.Transcribe.RecleanSentences)}
 	lp.cond = sync.NewCond(&lp.mu)
 	go func() {
@@ -210,11 +209,12 @@ func blockOf(open string) (string, bool) {
 	return src, src != "" && utf8.RuneCountInString(open) > compose.PieceChars
 }
 
-// note (luojiaxuan): work cleans the stretches next gives, one request at a time, until
-// finish or the session ends. A request that fails ends the live clean-up:
-// Stop cleans the text, as without it.
+// note (luojiaxuan): work cleans the stretches next gives, one request at a
+// time, until finish or the session ends; finish does not wait for it, and
+// an answer that comes after finish counts only as the request it awaits. A
+// request that fails ends the live clean-up: Stop cleans the text, as
+// without it.
 func (lp *livePolish) work() {
-	defer close(lp.workerDone)
 	for {
 		lp.mu.Lock()
 		job, ok := liveResult{}, false
@@ -231,6 +231,7 @@ func (lp *livePolish) work() {
 		ctx, cancel := context.WithCancel(lp.ctx)
 		f := &liveFlight{liveResult: job, cancel: cancel, done: make(chan struct{})}
 		lp.flight = f
+		lp.cond.Broadcast()
 		before := liveContext(joinResults(lp.blocks, lp.text))
 		lp.mu.Unlock()
 		start := time.Now()
@@ -241,6 +242,8 @@ func (lp *livePolish) work() {
 		lp.flight = nil
 		f.liveResult, f.ok = res, err == nil
 		switch {
+		case lp.closed:
+			// note (luojiaxuan): finish took what it keeps without waiting for this request; a late answer is only the awaited flight's (f).
 		case err == nil && res.epoch == lp.epoch:
 			lp.done = append(lp.done, res)
 			lp.r.logf("info", "cleaned up %d characters while recording in %v (%d prompt tokens, %d cached)",

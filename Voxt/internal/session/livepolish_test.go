@@ -21,11 +21,12 @@ type liveLLM struct {
 	mu       sync.Mutex
 	reqs     []llm.Request
 	gates    map[string]chan struct{}
+	stuck    map[string]chan struct{} // note (luojiaxuan): inputs whose request ignores its cancellation until the channel closes
 	answered chan string
 }
 
 func newLiveLLM() *liveLLM {
-	return &liveLLM{gates: map[string]chan struct{}{}, answered: make(chan string, 64)}
+	return &liveLLM{gates: map[string]chan struct{}{}, stuck: map[string]chan struct{}{}, answered: make(chan string, 64)}
 }
 
 // note (luojiaxuan): inputOf is the text between a request's <input> tags.
@@ -40,8 +41,12 @@ func (m *liveLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	in := inputOf(req)
 	m.mu.Lock()
 	m.reqs = append(m.reqs, req)
-	gate := m.gates[in]
+	gate, stuck := m.gates[in], m.stuck[in]
 	m.mu.Unlock()
+	if stuck != nil {
+		<-stuck
+		return llm.Response{}, ctx.Err()
+	}
 	if gate != nil {
 		select {
 		case <-gate:
@@ -256,14 +261,7 @@ func TestLivePolishWaitsForTheRequestUnderWay(t *testing.T) {
 	waitLive(t, r, "Hello there.")
 	r.hearLive(full)
 	// note (luojiaxuan): Stop comes once the request for the whole text is under way.
-	waitStarted := time.After(5 * time.Second)
-	for len(model.requests()) < 2 {
-		select {
-		case <-waitStarted:
-			t.Fatal("the request for the whole text did not start")
-		case <-time.After(time.Millisecond):
-		}
-	}
+	waitLiveFor(t, r, "the request for the whole text", func(lp *livePolish) bool { return lp.flight != nil && lp.flight.src == full })
 	result := make(chan string, 1)
 	go func() {
 		got, _, _ := r.cleanUpFirst(full)
@@ -271,16 +269,7 @@ func TestLivePolishWaitsForTheRequestUnderWay(t *testing.T) {
 	}()
 	// note (luojiaxuan): The answer comes once Stop has taken the final text (finish closed
 	// the live clean-up and waits for the request).
-	for closed := false; !closed; {
-		select {
-		case <-waitStarted:
-			t.Fatal("the final text was not taken")
-		case <-time.After(time.Millisecond):
-		}
-		r.live.mu.Lock()
-		closed = r.live.closed
-		r.live.mu.Unlock()
-	}
+	waitLiveFor(t, r, "the final text taken", func(lp *livePolish) bool { return lp.closed })
 	close(release)
 	select {
 	case got := <-result:
@@ -437,5 +426,39 @@ func TestLivePolishCountsEachRequest(t *testing.T) {
 	r.live.mu.Unlock()
 	if n := len(model.requests()); n != 2 || asked != n {
 		t.Errorf("%d requests, %d counted; want 2 and 2", n, asked)
+	}
+}
+
+// note (luojiaxuan): TestLivePolishDoesNotWaitForAStuckRequest: a request
+// under way for text the final text does not have is cancelled at Stop and
+// not waited for, even when it ignores the cancellation: Stop cleans the
+// rest at once (reverted, it waited for the request to return).
+func TestLivePolishDoesNotWaitForAStuckRequest(t *testing.T) {
+	model := newLiveLLM()
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	model.mu.Lock()
+	model.stuck["Hello there. How are you?"] = stuck
+	model.mu.Unlock()
+	r := newEarlyUnitRun(t, model, nil)
+	r.settings.Features.Transcribe.RecleanSentences = 0
+	r.hearLive("Hello there. How")
+	waitLive(t, r, "Hello there.")
+	r.hearLive("Hello there. How are you?")
+	waitLiveFor(t, r, "the request for the whole text", func(lp *livePolish) bool {
+		return lp.flight != nil && lp.flight.src == "Hello there. How are you?"
+	})
+	result := make(chan string, 1)
+	go func() {
+		got, _, _ := r.cleanUpFirst("Hello there. How are you doing?")
+		result <- got
+	}()
+	select {
+	case got := <-result:
+		if want := "[Hello there.] [How are you doing?]"; got != want {
+			t.Errorf("result %q, want %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop waited for the stuck request")
 	}
 }

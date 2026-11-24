@@ -15,7 +15,8 @@ import (
 // (lp.reclean sentences, "" when nothing is left); and tail, the text after
 // them. Kept is the longest chain of clean-ups that start text. A request
 // under way for exactly the text after the blocks is awaited: it is ahead
-// of a new one for the same text; any other is cancelled. A clean-up asked
+// of a new one for the same text, with the same deadlines, started earlier.
+// Any other is cancelled and not waited for: finish goes on at once. A clean-up asked
 // with thinking other than the final text's (ThinkingOffUnder) does not
 // count.
 func (lp *livePolish) finish(text string) (parts []compose.Part, answers []string, redo, tail string) {
@@ -44,7 +45,6 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 		}
 	}
 	lp.cancel()
-	<-lp.workerDone
 	parts, answers, tail = laid(keep, text)
 	if lp.reclean > 0 && len(answers) > 0 && strings.TrimSpace(tail) != "" {
 		parts, answers, redo = redoEnd(parts, answers, lp.reclean)
