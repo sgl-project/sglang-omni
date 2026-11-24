@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -38,7 +39,7 @@ func (r *run) awaitServices() bool {
 
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
-	r.resolved, r.svc, r.terms = true, s.svc, s.terms
+	r.resolved, r.svc, r.terms, r.snippets = true, s.svc, s.terms, s.snippets
 	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
@@ -482,12 +483,14 @@ func (r *run) warmLLM() {
 	}()
 }
 
-// transcribeInput is Transcribe's request to compose for raw.
+// transcribeInput is Transcribe's request to compose for raw, its
+// snippets' triggers marked for the model to keep (expandSnippets).
 func (r *run) transcribeInput(raw string) compose.Input {
 	f := r.settings.Features.Transcribe
+	text, marked := snippet.Mark(raw, r.snippets)
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
-		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
+		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: text, Snippets: len(marked) > 0,
 		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
 		Scene: r.composeScene(),
 	}

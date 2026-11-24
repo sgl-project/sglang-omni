@@ -223,6 +223,7 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
+		Snippets: snippetsReader(lib.store.Documents()),
 		Notes:    lib.store.Notes(),
 		Settings: st.Get,
 		Locale:   i18n.Locale,

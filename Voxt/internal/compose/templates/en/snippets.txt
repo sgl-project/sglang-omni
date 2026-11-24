@@ -1,0 +1,1 @@
+Text between ⟦ and ⟧ is a trigger for one of the user's saved snippets: keep it with its brackets, exactly as written, where it is, as a word of the sentence: punctuate around it and end the sentence as you would otherwise.
