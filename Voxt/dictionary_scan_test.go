@@ -60,6 +60,7 @@ func scanTester(t *testing.T, count int) (*app, *ui.Tester, *scanChat, chan func
 	frames(tt)
 	posts := make(chan func(), 64)
 	a.postQueue = func(fn func()) { posts <- fn }
+	clickControl(t, tt, "词典设置")
 	clickControl(t, tt, "扫描历史…")
 	drainPosts(posts)
 	frames(tt)
@@ -110,13 +111,9 @@ func TestScanButtonNeedsTheTranscribeLanguageModel(t *testing.T) {
 			a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.LLM = c.id })
 			i18n.SetLocale("zh-Hans")
 			frames(tt)
-			if !slices.Contains(tt.AccessLabels(), "扫描历史…") {
-				t.Fatalf("no button: %q", tt.AccessLabels())
-			}
-			_ = tt.ClickControl("扫描历史…")
-			frames(tt)
-			if a.dictUI.scanOpen || has(tt, "开始") {
-				t.Fatalf("the button opened the dialog: %q", tt.Texts())
+			clickControl(t, tt, "词典设置")
+			if slices.Contains(tt.AccessLabels(), "扫描历史…") {
+				t.Fatalf("Scan shows with no language model: %q", tt.AccessLabels())
 			}
 			if !has(tt, "先给转录选一个语言模型") {
 				t.Errorf("no explanation: %q", tt.Texts())
@@ -220,6 +217,7 @@ func TestScanStopKeepsWhatItFound(t *testing.T) {
 	if !has(tt, "Name00") {
 		t.Errorf("the suggestion is gone: %q", tt.Texts())
 	}
+	clickControl(t, tt, "词典设置")
 	clickControl(t, tt, "扫描历史…")
 	drainPosts(posts)
 	frames(tt)
@@ -255,6 +253,7 @@ func TestScanRunsOnWithTheDialogClosed(t *testing.T) {
 	if a.dictUI.scanOpen || !a.dv.scan.running {
 		t.Fatalf("open %v running %v", a.dictUI.scanOpen, a.dv.scan.running)
 	}
+	clickControl(t, tt, "词典设置")
 	clickControl(t, tt, "扫描历史…")
 	if !has(tt, "已读 0/2 · 0 条建议") {
 		t.Fatalf("reopening lost the progress: %q", tt.Texts())
