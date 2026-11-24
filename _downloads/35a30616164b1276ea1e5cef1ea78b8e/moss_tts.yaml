@@ -1,0 +1,2 @@
+config_cls: MossTTSPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-v1.5
