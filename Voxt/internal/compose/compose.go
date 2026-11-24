@@ -132,6 +132,10 @@ type Input struct {
 	// the selection (Translate with Selected, Rewrite; "" when Rewrite
 	// writes from scratch).
 	Text string
+	// Before is Transcribe's text said before Text, already cleaned: the
+	// context of a block of a dictation cleaned up while it is spoken
+	// (before.go). "" for none: Text is the whole dictation.
+	Before string
 	// Selected: Translate's Text is selected text, not speech (no clean-up,
 	// its form kept).
 	Selected bool
@@ -299,6 +303,9 @@ func Build(in Input) (Output, error) {
 			input = strings.TrimSpace(input) + "\n" + render("snippets", nil)
 		}
 		add("input", input)
+		if strings.TrimSpace(in.Before) != "" {
+			add("before", render("before", nil))
+		}
 		if in.Cleanup {
 			add("cleanup", render("cleanup", nil))
 		}
@@ -380,7 +387,7 @@ func Build(in Input) (Output, error) {
 		}
 		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text, in.Typed))
 	} else {
-		out.User = out.withGlossary(UserMessage(in.Text))
+		out.User = out.withGlossary(userMessage(in))
 		if input, answer, ok := Example(in); ok {
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}

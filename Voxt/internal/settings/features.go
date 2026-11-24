@@ -107,6 +107,12 @@ type Transcribe struct {
 	Structure bool `json:"structure,omitempty"`
 	// ShowCard shows the text in the answer card instead of typing it.
 	ShowCard bool `json:"showCard,omitempty"`
+	// CleanAfterStop sends nothing to the language model while the user
+	// speaks: the whole clean-up runs after Stop. Off by default: the
+	// clean-up starts on what the speech model has written so far (the
+	// session's live and early clean-ups), the Transcribe page's "Clean up
+	// while you speak".
+	CleanAfterStop bool `json:"cleanAfterStop,omitempty"`
 }
 
 // Translate: speech or selected text → a translation.

@@ -56,7 +56,7 @@ func featureModelStatus(c *ui.Context, state *featureModelStatusViewState, actio
 
 func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureActions) {
 	sectionTitle(c, i18n.T("Clean-up"))
-	enhance, cleanup, structure := state.Enhance, state.Cleanup, state.Structure
+	enhance, cleanup, structure, whileSpeaking := state.Enhance, state.Cleanup, state.Structure, state.WhileSpeaking
 	settingRowNoteTip(c, "tr-enhance", i18n.T("Clean up with a language model"),
 		i18n.T("When off, or if the model fails, the text is typed as recognised."),
 		i18n.T("Add a prompt to translate or reformat what you said."), func() {
@@ -74,6 +74,12 @@ func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureAct
 		i18n.T("Makes lists and paragraphs when you dictate steps or a long text."), func() {
 			if ui.Switch(c.Key("tr-structure-switch"), &structure).Label(i18n.T("Structure")).Disabled(!enhance).Changed() {
 				actions.setFeatureStructure(structure)
+			}
+		})
+	settingRow(c, "tr-while-speaking", i18n.T("Clean up while you speak"),
+		i18n.T("Sends each finished sentence to the language model as you speak, so the text is ready sooner after you stop. When off, nothing is sent until you stop."), func() {
+			if ui.Switch(c.Key("tr-while-speaking-switch"), &whileSpeaking).Label(i18n.T("Clean up while you speak")).Disabled(!enhance).Changed() {
+				actions.setFeatureCleanWhileSpeaking(whileSpeaking)
 			}
 		})
 }

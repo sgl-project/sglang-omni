@@ -80,9 +80,11 @@ func (e *earlyClean) stop() {
 // hearPiece takes the final text so far of a recording that finalises
 // stretches while it continues (asr.EventPiece): the stretch since the
 // last event goes to the early clean-up (Transcribe with the clean-up
-// on only; the final text repeats these stretches as its prefix).
+// on, unless the user has it wait for Stop; the final text repeats these
+// stretches as its prefix).
 func (r *run) hearPiece(stable string) {
-	if r.req.Kind != store.KindTranscribe || !r.transcribeCleanup() {
+	r.endLive()
+	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
 		return
 	}
 	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
@@ -141,13 +143,7 @@ func (e *earlyClean) work() {
 		e.stop()
 		return
 	}
-	thinkOffUnder := 0
-	for _, provider := range r.settings.Providers.LLM {
-		if provider.ID == r.svc.LLMInfo.ID {
-			thinkOffUnder = provider.Generation.ThinkingOffUnder
-			break
-		}
-	}
+	thinkOffUnder := r.thinkOffUnder()
 	next := 0
 	for {
 		e.mu.Lock()
@@ -163,6 +159,17 @@ func (e *earlyClean) work() {
 		e.mu.Unlock()
 		e.clean(job, thinkOffUnder)
 	}
+}
+
+// thinkOffUnder is the session's language model's ThinkingOffUnder: a
+// clean-up of fewer characters is asked with thinking off.
+func (r *run) thinkOffUnder() int {
+	for _, provider := range r.settings.Providers.LLM {
+		if provider.ID == r.svc.LLMInfo.ID {
+			return provider.Generation.ThinkingOffUnder
+		}
+	}
+	return 0
 }
 
 func (e *earlyClean) clean(job segJob, thinkOffUnder int) {

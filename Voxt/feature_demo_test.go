@@ -52,6 +52,7 @@ func TestFeatureDemoActionControls(t *testing.T) {
 		{name: "fallback", fixture: "en/feature-models-fallback", steps: []historyDemoStep{{label: "Fallback language model for Translate"}, {label: "Fixture language model", click: true}}, want: []string{`selectFeatureFallback "fixture-language"`}},
 		{name: "enhance", fixture: "en/feature-normal", steps: historySteps("Clean up with a language model"), want: []string{"setFeatureEnhance false"}},
 		{name: "structure", fixture: "en/feature-normal", steps: historySteps("Structure"), want: []string{"setFeatureStructure true"}},
+		{name: "clean while speaking", fixture: "en/feature-normal", steps: historySteps("Clean up while you speak"), want: []string{"setFeatureCleanWhileSpeaking false"}},
 		{name: "transcribe cleanup", fixture: "en/feature-normal", steps: historySteps("Basic clean-up"), want: []string{"setFeatureCleanup false"}},
 		{name: "translate cleanup", fixture: "en/feature-translate-normal", steps: historySteps("Basic clean-up"), want: []string{"setFeatureTranslateCleanup false"}},
 		{name: "rewrite cleanup", fixture: "en/feature-rewrite-normal", steps: historySteps("Clean up the instruction"), want: []string{"setFeatureRewriteCleanup false"}},

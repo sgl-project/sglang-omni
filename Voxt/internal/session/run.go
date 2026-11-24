@@ -105,6 +105,14 @@ type run struct {
 	// (earlyclean.go); the Once makes it on the first stretch or use.
 	earlyOnce sync.Once
 	early     *earlyClean
+	// live cleans the stream's live text up while the user speaks, so
+	// Stop leaves only what was said last (livepolish.go); the Once makes
+	// it on the first live text or at Stop. liveOff: the stream's own
+	// stretches took over (hearPiece). Both are the stream's reader
+	// goroutine's until it returns.
+	liveOnce sync.Once
+	live     *livePolish
+	liveOff  bool
 }
 
 type capResult struct {

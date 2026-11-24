@@ -86,23 +86,34 @@ func (r *run) transcribeOpts() finishOpts {
 	return o
 }
 
-// cleanUpFirst is a dictation's first clean-up: what the early clean-up
-// finished while the recording went on is not asked again, only the
-// tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
-// whole text instead.
+// cleanUpFirst is a dictation's first clean-up: what the clean-up while
+// the recording went on finished is not asked again, only the tail left
+// at Stop is: of the speech model's stretches (earlyclean.go), else of the
+// live text (livepolish.go), whose tail goes with the cleaned text before
+// it. A Rethink reruns cleanUp on the whole text instead.
 func (r *run) cleanUpFirst(text string) (string, string, error) {
 	r.earlyOnce.Do(func() { r.early = newEarlyClean(r) })
 	parts, answers, tail, failed, ok := r.early.drain(text)
-	if !ok {
-		return r.cleanUp(text, nil)
-	}
-	if len(answers) > 0 {
+	before := ""
+	switch {
+	case ok && len(answers) > 0:
 		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
+	case !ok:
+		r.liveOnce.Do(func() {})
+		if r.live == nil {
+			return r.cleanUp(text, nil)
+		}
+		if parts, answers, tail = r.live.finish(text); len(answers) == 0 {
+			return r.cleanUp(text, nil)
+		}
+		before = compose.JoinParts(parts, answers)
 	}
 	if strings.TrimSpace(tail) == "" {
 		return compose.JoinParts(parts, answers), parts[0].Profile(), failed
 	}
-	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
+	in := r.transcribeInput(tail)
+	in.Before = before
+	tailParts, err := compose.BuildParts(in)
 	if err != nil {
 		return text, "", err
 	}
