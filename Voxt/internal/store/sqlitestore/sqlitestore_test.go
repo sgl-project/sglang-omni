@@ -422,6 +422,7 @@ func TestDictionaryProfiles(t *testing.T) {
 	if err != nil || len(profiles) != 1 || profiles[0].ID != "default" || profiles[0].Name != "Default" || !profiles[0].Active {
 		t.Fatalf("initial profiles %+v, %v", profiles, err)
 	}
+	// Not Voxt: the seeded row holds that spelling under UNIQUE (profile_id, term).
 	if err := d.Put(ctx, store.Term{ID: "default-term", Term: "Kubernetes", Note: "default", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

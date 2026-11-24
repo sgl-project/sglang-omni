@@ -163,6 +163,7 @@ func TestAcceptNewTermHasNoAliases(t *testing.T) {
 
 func TestAcceptKnownTermMerges(t *testing.T) {
 	b, st, _ := newBook(t)
+	// Not Voxt: the seeded row holds that spelling under UNIQUE (profile_id, term).
 	putTerm(t, st, store.Term{ID: "1", Term: "Ghostty", Aliases: []string{"Ghost T"}, Enabled: true})
 	s := Suggestion{Term: "GHOSTTY", Source: FromEdit}
 	saved, err := b.Accept(context.Background(), s.Key(), store.Term{Term: "GHOSTTY", Aliases: []string{"Goat T"}, Enabled: true})

@@ -96,6 +96,7 @@ func TestMeetingTrackASRUsesDictionary(t *testing.T) {
 		a.prefs.Dictionary.Enabled, a.prefs.Dictionary.ASRHints = tc.dict, tc.asrHint
 		a.prefs.Dictionary.SpeechContext = "A Zoom call about Voxt"
 		now := time.Now()
+		// "voxt" is the seeded row's id: a second Voxt would break UNIQUE (profile_id, term).
 		for _, tm := range []store.Term{
 			{ID: "1", Term: "Typeless", Enabled: true, UpdatedAt: now.Add(time.Second)},
 			{ID: "voxt", Term: "Voxt", Enabled: true, UpdatedAt: now.Add(2 * time.Second)},
