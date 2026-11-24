@@ -8,6 +8,7 @@ import (
 	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -30,8 +31,15 @@ func TestMeetingMistakeOverlay(t *testing.T) {
 		t.Fatalf("few words, Chinese: %+v", zh)
 	}
 	short, tall := meetingOverlayLayoutModel(plain, meetingMenuNone).Layout, meetingOverlayLayoutModel(mistake, meetingMenuNone).Layout
-	if tall.Height != short.Height+meetingOvAskHintH || tall.Width != short.Width {
-		t.Fatalf("the question with its line: %+v, without %+v", tall, short)
+	if tall.Height != meetingOvAskCardH || tall.Height <= short.Height || tall.Width != meetingOvAskCardW || tall.Width <= short.Width {
+		t.Fatalf("the question as a card: %+v, as a row %+v", tall, short)
+	}
+	card, row := meetingOverlayLayoutModel(mistake, meetingMenuNone), meetingOverlayLayoutModel(plain, meetingMenuNone)
+	if _, height := meetingOverlayFace(card); height != 2*meetingOvAskRadius {
+		t.Fatalf("the card's corners come from a height of %d", height)
+	}
+	if _, height := meetingOverlayFace(row); height != row.Layout.Height-2*layout.Pad {
+		t.Fatalf("the row keeps the pill's ends: %d", height)
 	}
 }
 

@@ -66,6 +66,9 @@ func meetingOverlayView(
 		if model.ShowExpanded {
 			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
 		}
+		if model.AskingCard {
+			face.Padding(0, meetingOvAskPadX-layout.Border)
+		}
 		face.DragWindow().Children(func() {
 			switch {
 			case model.ShowAsking:
@@ -336,21 +339,62 @@ func meetingMenuRow(c *ui.Context, label, hint string, on, danger bool) bool {
 }
 
 // meetingOverlayAsking is the question a meeting ends with (history off,
-// or hardly anything heard): keep it or discard it, and under the
-// question a line saying why it asks.
+// or hardly anything heard): keep it or discard it. With a line saying
+// why it asks, it is a card: an icon, the question over the line, and the
+// buttons centred beside both; without, one row in the pill.
 func meetingOverlayAsking(c *ui.Context, state meetingOverlayViewState, actions meetingOverlayActions) {
-	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, state.AskingText).FontSize(layout.NoticeSize).FontWeight(500).TextColor(ovText).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
-		if cardCapsule(c.Key("mt-save"), state.KeepLabel, "") {
-			actions.meetingSave()
-		}
-		if cardCapsule(c.Key("mt-discard"), state.DiscardLabel, "") {
-			actions.meetingDiscard()
-		}
-	})
-	if state.AskingHint != "" {
-		ui.Text(c.Key("mt-ask-hint"), state.AskingHint).FontSize(12).FixedLineHeight(meetingOvAskHintH).TextColor(ovText2).SingleLine().Ellipsis("…").Shrink(0)
+	card := state.AskingHint != ""
+	// One row either way (each ui.Row is an element): the card's fills the
+	// face and centres its parts, the pill's is the pill's row.
+	row, button := ui.Row(c).AlignItems(ui.Center), float32(layout.CardBtn+2)
+	if card {
+		row, button = row.Grow(1).Gap(10), meetingOvAskBtnH
+	} else {
+		row = row.Height(layout.RowH).Shrink(0).Gap(8)
 	}
+	row.Children(func() {
+		if card {
+			ui.Box(c).Size(meetingOvAskBadge, meetingOvAskBadge).Radius(meetingOvAskBadge / 2).Background(mtWarn.Alpha(0.16)).Center().Shrink(0).Children(func() {
+				ui.Icon(c, icons.DangerTriangle.Bold).Size(15, 15).TextColor(mtWarn).Shrink(0)
+			})
+		}
+		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+			ui.Text(c, state.AskingText).FontSize(layout.NoticeSize).FontWeight(600).FixedLineHeight(18).TextColor(ovText).SingleLine().Ellipsis("…")
+			if card {
+				ui.Text(c.Key("mt-ask-hint"), state.AskingHint).FontSize(11).FixedLineHeight(15).TextColor(ovText2).SingleLine().Ellipsis("…")
+			}
+		})
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+			if meetingAskingButton(c.Key("mt-discard"), state.DiscardLabel, button, false) {
+				actions.meetingDiscard()
+			}
+			if meetingAskingButton(c.Key("mt-save"), state.KeepLabel, button, true) {
+				actions.meetingSave()
+			}
+		})
+	})
+}
+
+// meetingAskingButton is a button of the question, height high: the
+// answer that loses nothing (primary) is light, the other one quiet.
+func meetingAskingButton(c *ui.Context, label string, height float32, primary bool) bool {
+	button := ui.ButtonBase(c).Height(height).MinWidth(2*height).Padding(0, 14-layout.Border).Radius(min(height/2, 9)).Center().Shrink(0).Label(label)
+	fill, line, ink := ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), ovText
+	if primary {
+		fill, line, ink = ui.RGB(245, 245, 247), ui.RGB(245, 245, 247), ui.RGB(22, 22, 26)
+	}
+	if button.Hovered() {
+		fill, line = ui.RGBA(255, 255, 255, 0.18), ui.RGBA(255, 255, 255, 0.2)
+		if primary {
+			fill, line = ui.RGB(255, 255, 255), ui.RGB(255, 255, 255)
+		}
+	}
+	button.Background(fill).Border(layout.Border, line)
+	return button.Children(func() {
+		// Half a point up: the line box leaves more room above the
+		// strokes than below (measured on Chinese and English labels).
+		ui.Text(c, label).FontSize(12.5).FontWeight(600).FixedLineHeight(16).TextColor(ink).SingleLine().Translate(0, -0.5)
+	}).Clicked()
 }
 
 func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {
