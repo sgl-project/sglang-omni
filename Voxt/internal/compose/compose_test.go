@@ -678,3 +678,29 @@ func TestTranslateBackLine(t *testing.T) {
 		}
 	}
 }
+
+// TestSnippetsRule: marked triggers come with the rule to keep them,
+// with the built-in prompt and with the user's own; without marks the
+// prompt is as before.
+func TestSnippetsRule(t *testing.T) {
+	for _, set := range []struct{ main, rule string }{{"en", "Text between ⟦ and ⟧"}, {"zh", "⟦ 和 ⟧ 之间"}} {
+		for _, custom := range []string{"", "Keep my words; add nothing."} {
+			in := Input{Task: Transcribe, Cleanup: true, MainLanguage: set.main, TaskPrompt: custom, Text: "send it to ⟦my email⟧"}
+			plain, err := Build(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.Snippets = true
+			marked, err := Build(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(plain.System, set.rule) || strings.Count(marked.System, set.rule) != 1 {
+				t.Errorf("%s %q: without %v, with %v", set.main, custom, strings.Contains(plain.System, set.rule), strings.Count(marked.System, set.rule))
+			}
+			if got := strings.Replace(marked.System, "\n"+strings.TrimSpace(template(TemplateSet(set.main), "snippets")), "", 1); custom == "" && got != plain.System {
+				t.Errorf("%s: the rule changed more than its line:\n%s", set.main, marked.System)
+			}
+		}
+	}
+}

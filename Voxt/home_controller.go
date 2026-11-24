@@ -201,6 +201,7 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 			Readiness: buildHomeReadinessList(i18n.CurrentTranslator(), a.prefs.Features, readiness),
 			ShowTry:   showTry, TryRecording: tryRecording, Retry: a.hist.retry, Now: now,
 			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page,
+			InsightsClosed: a.prefs.Appearance.LookingBackClosed,
 		})
 		a.hm.viewKey = key
 	}

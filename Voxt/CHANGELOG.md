@@ -10,18 +10,26 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke. Share copies them as a picture, with your active days, streaks and last 13 weeks.
+- **Fold Looking back away** (#4570): click Home's Looking back title to fold its numbers to one row, and click again to open them. Share stays on the row, and Voxt remembers the choice.
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 - **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
 
 ### Changed
 
 - **MOSS-Transcribe-Diarize is the recommended speech model** (#4067): the setup guide and Home now download MOSS-Transcribe-Diarize with its 262 MB DFlash draft (2.1 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. It knows Chinese and English. It takes no dictionary or Speech context while it recognises: while every feature uses such a model, the Speech models page says so under Speech context, which meeting transcript correction still reads, and your dictionary still guides the language model's clean-up. Qwen3-ASR stays on the Speech models page, and a Qwen3-ASR another ActNow app installed is offered in the guide instead of a download. A model you chose for a feature stays as chosen.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+- **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
+- **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
 
 ### Fixed
 
 - **Continue processing finishes an interrupted import**: with the after-meeting pass turned off, Continue processing on an interrupted import ran nothing and the meeting stayed finishing forever, and a failed transcript clean-up or summary looked like a success. Continue processing now runs the pass as the import itself does, the meeting ends done, and a clean-up or summary failure is reported.
+- **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
 - **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
+- **Reprocess transcript no longer deletes other meetings' recordings**: a finished meeting's recording is deleted once it is transcribed (unless Save each recording is on, or the meeting was in Recording mode). Choosing Reprocess transcript on such a meeting removed the whole folder of meeting recordings: those of Recording-mode meetings, of meetings waiting for Continue processing, and of a meeting being recorded. The menu item now shows only while the meeting still has its recording, and Continue processing on a meeting without one deletes nothing.
+- **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
+- **Changing a meeting's mode keeps it recording**: switching from Meeting to Recording or Subtitles while recording stopped every track, so the meeting went on with nothing recorded; switching to Meeting stopped the track the meeting already had. The tracks both modes have now carry on without a gap, and when the new one cannot start (system audio not allowed, say) the meeting stays in its mode.
 
 ### 中文
 
@@ -31,18 +39,26 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
 - **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。“分享”会把它们连同活跃天数、连续天数和最近 13 周复制成一张图片。
+- **回顾可以收起**（#4570）：点首页“回顾”的标题，把数字收成一行，再点一下展开。“分享”留在这一行，Voxt 会记住你的选择。
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。目前只用于转录。
 
 #### 变更
 
 - **推荐的语音识别模型改为 MOSS-Transcribe-Diarize**（#4067）：设置引导和首页现在下载 MOSS-Transcribe-Diarize 及其 262 MB 的 DFlash 草稿（共 2.1 GB），一开始就开着转录加速；装好后“自动”优先用它。它支持中文和英语，识别时不用词典和识别上下文：所有功能都用这类模型时，语音识别模型页在“识别上下文”下注明这一点，会议转录稿校对仍会读它，词典仍用于语言模型整理。Qwen3-ASR 仍在语音识别模型页上，其他 ActNow app 装过的 Qwen3-ASR 会在引导里作为不用下载的选择。你在功能里明确选过的模型不变。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+- **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
+- **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
 
 #### 修复
 
 - **“继续整理”能把中断的导入跑完**：关掉会后重新整理时，对中断的导入点“继续整理”什么都不跑，会议一直停在收尾状态，转录稿校对或总结失败也被当成成功。现在“继续整理”和导入本身一样会跑整理，会议正常完成，校对或总结失败会提示失败。
+- **回顾里的数字不再被截断**（#4570）：窗口较窄时，英文界面的速度会显示成“2… characters a min…”。现在数字、单位和标题都不会被截断：放得下就一行四张，放不下就两两一行。
 - **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
+- **「重新整理」不再删除其他会议的录音**：会议整理完后，录音会被删除（开了「保存每段录音」或用的是录音模式除外）。对这样的会议选「重新整理」，整个会议录音文件夹都会被删掉：录音模式会议的录音、等待「继续整理」的录音、正在录的会议都在里面。现在只有还留着录音的会议才显示这一项；对没有录音的会议点「继续整理」也不会删任何文件。
+- **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
+- **会议中切换模式不再停录**：录音时从「会议」切到「录音」或「字幕」，所有音轨都会停下，会议继续计时却什么都没录；切到「会议」时，原有的音轨也会停下。现在两种模式都有的音轨不中断；新音轨启动不了（比如未允许系统音频）时，会议保持原来的模式继续录。
 
 ## [2.1.3] - 2026-11-22
 

@@ -70,7 +70,9 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "updates-release":
 				releaseDialog(c, *fixture.state.UpdatesRelease, host, &host.updatesUI)
 			case "home":
-				homePage(c, fixture.state.Home, host, &host.historyUI, nil)
+				state := *fixture.state.Home
+				state.InsightsClosed = host.insightsClosed
+				homePage(c, &state, host, &host.historyUI, nil)
 				historyDeleteDialog(c, &host.historyUI, host)
 			case "onboarding":
 				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
@@ -81,6 +83,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
 			case "notes":
 				notesPage(c, fixture.state.Notes, host, &host.notesUI)
+			case "snippets":
+				snippetsPage(c, fixture.state.Snippets, host, &host.snipUI)
 			case "remote":
 				local := remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI}
 				ui.Scroll(c.Key("demo-remote")).Grow(1).Children(func() {

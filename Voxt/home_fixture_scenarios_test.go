@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/activity"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
@@ -36,6 +37,14 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 	})
 	add("home-hidden-features", func(input *homeViewStateInput, _ *homeReadinessInput) {
 		input.Features.Hidden = []string{settings.HideTranslate, settings.HideRewrite}
+	})
+	// Looking back and Activity, once the activity log was read; folded,
+	// Looking back keeps its title row.
+	add("home-looking-back", func(input *homeViewStateInput, _ *homeReadinessInput) {
+		input.Activity, input.ActivityRead = homeFixtureActivity(), true
+	})
+	add("home-looking-back-closed", func(input *homeViewStateInput, _ *homeReadinessInput) {
+		input.Activity, input.ActivityRead, input.InsightsClosed = homeFixtureActivity(), true, true
 	})
 	add("home-recent-no-audio", func(input *homeViewStateInput, _ *homeReadinessInput) {
 		for index := range input.Recent {
@@ -149,6 +158,18 @@ func homeFixtureInput() homeViewStateInput {
 		}},
 		Recent: homeFixtureEntries(), Now: meetingFixtureNow,
 	}
+}
+
+// homeFixtureActivity is an activity log of two weeks before the
+// fixtures' now, three results a day: 226 characters a minute.
+func homeFixtureActivity() activity.Log {
+	var log activity.Log
+	for _, back := range []int{0, 1, 2, 4, 5, 8, 9, 10, 11, 13} {
+		for range 3 {
+			log.Add(meetingFixtureNow.AddDate(0, 0, -back), activity.Result{Chars: 74, Spoken: 68, Audio: 18 * time.Second})
+		}
+	}
+	return log
 }
 
 func homeFixtureReadiness() homeReadinessInput {
