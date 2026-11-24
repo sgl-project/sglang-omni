@@ -766,12 +766,9 @@ against 37.34 (**2.5x**), and 692 output tokens per second at concurrency 16 aga
 378. GSM8K over 100 problems scored 91% against bf16's 93%, a gap of two problems. The
 text-only command above gives the same inter-token latency, 14.74 ms.
 
-Do not read that speedup across to a quantized MoE. Weight-only 4-bit wins here because
-the dense backbone's decode is bandwidth-bound and Intel's INT4 dense kernel is well
-optimized. On XPU, AWQ and GPTQ do not cover MoE layers at all and refuse them at load.
-The one quantized MoE measured so far, Qwen3-Omni's thinker as a compressed-tensors
-W4A16 checkpoint on the Triton WNA16 runner, was slower than bf16 on the same four cards
-(123.4 ms against 106.3 ms per output token).
+The speedup comes from a dense backbone: its decode is bandwidth-bound, and Intel's INT4
+dense kernel is well optimized. It says nothing about quantized MoE models. On XPU, AWQ
+and GPTQ refuse MoE layers at load.
 
 **Expected result:** A text reply naming Paris, from a checkpoint less than half the
 size of the bf16 one.
