@@ -55,7 +55,7 @@ agree on it with a maintainer first.
 | `mlx-community/Qwen3-ASR-0.6B-4bit` | `wilsonzheng0327/Qwen3-ASR-0.6B-dflash` | `ci/golden/qwen3-asr-0.6b-4bit-dflash.json` |
 | `mlx-community/Qwen3-ASR-1.7B-{6bit,8bit}` | `wilsonzheng0327/Qwen3-ASR-1.7B-dflash` | `ci/golden/qwen3-asr-1.7b-8bit-dflash.json` |
 | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | `wilsonzheng0327/MOSS-Transcribe-Diarize-dflash` | `ci/model_golden/moss-transcribe-diarize-dflash.json` |
-| `Edge0/ARK-ASR-3B` | `wilsonzheng0327/ARK-ASR-3B-dflash` | none yet |
+| `Edge0/ARK-ASR-3B` | `wilsonzheng0327/ARK-ASR-3B-dflash` | `ci/model_golden/arkasr-3b-dflash.json` |
 
 The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD and ARK-ASR drafts are pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
