@@ -438,6 +438,33 @@ def test_request_switch_overrides_server_switch(
     assert sampling.cache_dit_params == ({"max_warmup_steps": 2} if expected else None)
 
 
+def test_warmup_beyond_the_last_step_is_clamped(
+    monkeypatch: pytest.MonkeyPatch,
+    new_stage: StageFactory,
+) -> None:
+    """cache-dit lists every warmup step on each step, so a huge warmup must not reach it."""
+    mounts = Mock(wraps=sensenova_cache_dit.enable_cache_on_transformer)
+    monkeypatch.setattr(sensenova_cache_dit, "enable_cache_on_transformer", mounts)
+    images = []
+    for warmup in (10**6, STEPS):
+        stage = new_stage()
+        images.append(
+            generate(
+                stage,
+                generation_request(
+                    enable_cache_dit=True,
+                    cache_dit_params=CACHE_EVERY_STEP | {"max_warmup_steps": warmup},
+                ),
+            )
+        )
+        release(stage)
+    assert [call.args[1].max_warmup_steps for call in mounts.call_args_list] == [
+        STEPS,
+        STEPS,
+    ]
+    assert torch.equal(images[0], images[1])
+
+
 @pytest.mark.parametrize("request_switch", ["false", "true", 0, 1])
 @pytest.mark.parametrize("server_switch", [None, "true"])
 def test_non_boolean_request_switch_is_rejected(

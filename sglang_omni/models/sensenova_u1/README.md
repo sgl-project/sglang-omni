@@ -99,7 +99,7 @@ stages:
 
 SenseNova runs plain DBCache only. TaylorSeer, step computation masks (SCM), DMD and secondary settings are not supported.
 
-A request overrides the server default with `enable_cache_dit` and `cache_dit_params`. `enable_cache_dit` set to true or false replaces the server switch for that request; any other value, such as the JSON string `"false"`, is rejected. Each key in `cache_dit_params` replaces the matching variable, and the keys a request leaves out keep the server values. The keys are the five setting names in the table.
+A request overrides the server default with `enable_cache_dit` and `cache_dit_params`. Left out or null, `enable_cache_dit` keeps the server switch; true or false replaces it for that request; any other value, such as the JSON string `"false"`, is rejected. Each key in `cache_dit_params` replaces the matching variable, and the keys a request leaves out keep the server values. The keys are the five setting names in the table.
 
 ```bash
 curl http://localhost:30000/v1/images/generations \

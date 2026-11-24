@@ -213,7 +213,8 @@ def resolve_cache_dit_config(
         enabled=True,
         Fn_compute_blocks=params["Fn_compute_blocks"],
         Bn_compute_blocks=params["Bn_compute_blocks"],
-        max_warmup_steps=params["max_warmup_steps"],
+        # note (Wes): cache-dit 1.3.0 rebuilds a list of every warmup step on each step; warmup past the last step changes nothing.
+        max_warmup_steps=min(params["max_warmup_steps"], num_inference_steps),
         residual_diff_threshold=params["residual_diff_threshold"],
         max_continuous_cached_steps=params["max_continuous_cached_steps"],
         num_inference_steps=num_inference_steps,
