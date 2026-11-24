@@ -319,7 +319,9 @@ class FunASRPreLMEncoderService(
             return embedding
         else:
             logger.warning(
-                f"Fun-ASR pre-LM cache entry {cache_key} failed validation; "
+                f"Fun-ASR pre-LM cache entry {cache_key} failed validation "
+                f"(shape={tuple(getattr(embedding, 'shape', ()))}, "
+                f"dtype={getattr(embedding, 'dtype', None)}); "
                 f"discarding it if unchanged before re-encoding"
             )
             self.cache.remove_if_same(cache_key, embedding)
