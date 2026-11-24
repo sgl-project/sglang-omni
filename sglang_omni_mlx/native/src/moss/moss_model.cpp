@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "moss/moss_model.h"
 
-#include <cmath>
 #include <stdexcept>
+
+#include "common/whisper_encoder.h"
 
 namespace moss {
 
@@ -38,14 +39,7 @@ WeightMap LoadedWeights(WeightMap weights) {
       std::string(kDecoderPrefix) + ".output_projection.weight",
       weights.at(std::string(kDecoderPrefix) + ".embed_tokens.weight"));
   weights.erase("lm_head.weight");
-  const std::string conv_prefix = std::string(kWhisperPrefix) + ".conv";
-  for (auto &[name, array] : weights) {
-    if (name.rfind(conv_prefix, 0) == 0 && array.ndim() == 3) {
-      array = mx::transpose(array, {0, 2, 1});
-    } else {
-    }
-  }
-  return weights;
+  return omni_common::WhisperConvMlxLayout(std::move(weights), kWhisperPrefix);
 }
 
 } // namespace
@@ -96,40 +90,6 @@ mx::array MossTranscribeDiarize::Conv1d(const mx::array &x,
       checkpoint_.Weight(prefix + ".bias"));
 }
 
-mx::array MossTranscribeDiarize::WhisperEncoderLayer(const mx::array &x,
-                                                     int layer) const {
-  const std::string prefix =
-      std::string(kWhisperPrefix) + ".layers." + std::to_string(layer);
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
-  const int width = x.shape(2);
-  const int head_count = whisper_.encoder_attention_heads;
-  const int head_dim = width / head_count;
-  const mx::array normed = checkpoint_.LayerNorm(
-      x, prefix + ".self_attn_layer_norm", kWhisperLayerNormEps);
-  const auto project = [&](const std::string &name) {
-    return mx::transpose(
-        mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn." + name),
-                    {batch, length, head_count, head_dim}),
-        {0, 2, 1, 3});
-  };
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      project("q_proj"), project("k_proj"), project("v_proj"),
-      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)));
-  const mx::array hidden = mx::add(
-      x, checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                        {batch, length, width}),
-                            prefix + ".self_attn.out_proj"));
-  return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          Gelu(checkpoint_.Linear(
-              checkpoint_.LayerNorm(hidden, prefix + ".final_layer_norm",
-                                    kWhisperLayerNormEps),
-              prefix + ".fc1")),
-          prefix + ".fc2"));
-}
-
 mx::array MossTranscribeDiarize::EncodeAudio(
     const mx::array &window_features,
     const std::vector<int> &window_token_counts) const {
@@ -144,7 +104,9 @@ mx::array MossTranscribeDiarize::EncodeAudio(
               mx::slice(checkpoint_.Weight(whisper + ".embed_positions.weight"),
                         {0, 0}, {frame_count, width}));
   for (int layer = 0; layer < whisper_.encoder_layers; ++layer) {
-    x = WhisperEncoderLayer(x, layer);
+    x = omni_common::WhisperEncoderLayer(
+        checkpoint_, x, whisper + ".layers." + std::to_string(layer),
+        whisper_.encoder_attention_heads, false);
   }
   x = checkpoint_.LayerNorm(x, whisper + ".layer_norm", kWhisperLayerNormEps);
 
