@@ -65,6 +65,7 @@ class ReplicaProfileDecision:
     message: str | None
 
 
+H100 = MeasuredGpu(name="NVIDIA H100 80GB HBM3", total_memory_mib=81559)
 B200 = MeasuredGpu(name="NVIDIA B200", total_memory_mib=183359)
 RTX_4090_D = MeasuredGpu(name="NVIDIA GeForce RTX 4090 D", total_memory_mib=24564)
 H200 = MeasuredGpu(name="NVIDIA H200", total_memory_mib=143771)
@@ -228,6 +229,110 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.factory.max_batch_size": 16,
             "stages.asr.factory.session_max_concurrency": 16,
             # note (Yuanfan Chen): under the runtime's default thread plan, which sets only OMP_NUM_THREADS, 12 replicas served 31 requests/s against 239 with these caps.
+            "stages.asr.env.OMP_NUM_THREADS": "4",
+            "stages.asr.env.MKL_NUM_THREADS": "4",
+            "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
+        },
+    ),
+    # note (Yuanfan Chen): searched with sglang-omni 8848e500 and measured again on c9e8e34e6, each against the model's own config. Where the B200 caps of 16 running and 16 queued requests lost to it, each replica keeps the engine's own limits and the replicas split the GPU's memory.
+    ReplicaProfile(
+        config_cls="Qwen3TTSPipelineConfig",
+        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        gpu=H100,
+        num_replicas=3,
+        replicated_processes=("pipeline", "vocoder"),
+        settings={
+            "stages.tts_engine.gpu_memory_fraction": 0.2421,
+            "stages.tts_engine.engine.mem_fraction_static": 0.8,
+            "stages.tts_engine.engine.max_total_tokens": 52888,
+            "stages.vocoder.gpu_memory_fraction": 0.0646,
+            "stages.vocoder.process": "vocoder",
+        },
+    ),
+    ReplicaProfile(
+        config_cls="Qwen3TTSPipelineConfig",
+        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        gpu=H100,
+        num_replicas=3,
+        replicated_processes=("pipeline", "vocoder"),
+        settings={
+            "stages.tts_engine.gpu_memory_fraction": 0.2421,
+            "stages.tts_engine.engine.mem_fraction_static": 0.8,
+            "stages.tts_engine.engine.max_total_tokens": 52888,
+            "stages.vocoder.gpu_memory_fraction": 0.0646,
+            "stages.vocoder.process": "vocoder",
+        },
+    ),
+    ReplicaProfile(
+        config_cls="MossTTSLocalPipelineConfig",
+        model_path="OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+        gpu=H100,
+        num_replicas=2,
+        replicated_processes=("pipeline", "vocoder"),
+        settings={
+            "stages.preprocessing.gpu_memory_fraction": 0.05,
+            "stages.tts_engine.gpu_memory_fraction": 0.24,
+            "stages.tts_engine.engine.mem_fraction_static": 0.22,
+            "stages.tts_engine.engine.max_running_requests": 16,
+            "stages.tts_engine.engine.max_queued_requests": 16,
+            "stages.tts_engine.engine.cuda_graph_max_bs": 32,
+            "stages.tts_engine.engine.max_total_tokens": 16384,
+            # note (Yuanfan Chen): measured with the B200 profile's prefill backend and graph.
+            "stages.tts_engine.engine.prefill_attention_backend": "flashinfer",
+            "stages.tts_engine.engine.cuda_graph_backend_prefill": "full",
+            "stages.vocoder.gpu_memory_fraction": 0.14,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="Ming3TTSPipelineConfig",
+        model_path="inclusionAI/Ming-3.0-tts-0.5B",
+        gpu=H100,
+        num_replicas=2,
+        replicated_processes=("preprocessing", "tts_engine", "vocoder"),
+        settings={
+            "stages.preprocessing.gpu_memory_fraction": 0.03,
+            "stages.tts_engine.gpu_memory_fraction": 0.07,
+            "stages.tts_engine.engine.mem_fraction_static": 0.8,
+            "stages.tts_engine.engine.max_running_requests": 16,
+            "stages.tts_engine.engine.max_queued_requests": 16,
+            "stages.tts_engine.engine.max_total_tokens": 32768,
+            "stages.vocoder.gpu_memory_fraction": 0.04,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="WhisperASRPipelineConfig",
+        model_path="openai/whisper-large-v3",
+        gpu=H100,
+        num_replicas=4,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.23,
+            "stages.asr.engine.mem_fraction_static": 0.94,
+            "stages.asr.engine.max_total_tokens": 20935,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="MossTranscribeDiarizePipelineConfig",
+        model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+        gpu=H100,
+        num_replicas=2,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.46,
+            "stages.asr.engine.mem_fraction_static": 0.94,
+            "stages.asr.engine.max_total_tokens": 89402,
+        },
+    ),
+    ReplicaProfile(
+        config_cls="Nemotron3_5ASRPipelineConfig",
+        model_path="nvidia/nemotron-3.5-asr-streaming-0.6b",
+        gpu=H100,
+        num_replicas=6,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.14,
+            "stages.asr.factory.max_batch_size": 16,
+            "stages.asr.factory.session_max_concurrency": 16,
             "stages.asr.env.OMP_NUM_THREADS": "4",
             "stages.asr.env.MKL_NUM_THREADS": "4",
             "stages.asr.env.OPENBLAS_NUM_THREADS": "4",
