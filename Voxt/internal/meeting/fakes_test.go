@@ -45,6 +45,13 @@ func newFakeAudio(pcm []byte) *fakeAudio {
 	return &fakeAudio{pcm: pcm, stops: map[string]chan struct{}{}}
 }
 
+// running is how many captures are open: started and not stopped.
+func (f *fakeAudio) running() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.stops)
+}
+
 func (f *fakeAudio) jobIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
