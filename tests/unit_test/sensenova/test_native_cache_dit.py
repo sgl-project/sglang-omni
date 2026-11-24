@@ -438,6 +438,32 @@ def test_request_switch_overrides_server_switch(
     assert sampling.cache_dit_params == ({"max_warmup_steps": 2} if expected else None)
 
 
+@pytest.mark.parametrize("request_switch", ["false", "true", 0, 1])
+@pytest.mark.parametrize("server_switch", [None, "true"])
+def test_non_boolean_request_switch_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_path: str,
+    request_switch: str | int,
+    server_switch: str | None,
+) -> None:
+    """A JSON request can pass the switch as a string, which must not turn the cache on."""
+    if server_switch is not None:
+        monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", server_switch)
+    else:
+        pass
+    sampling = SenseNovaU1SamplingParams(
+        prompt="a red apple",
+        width=64,
+        height=64,
+        num_inference_steps=STEPS,
+        enable_cache_dit=request_switch,
+    )
+    with pytest.raises(
+        ValueError, match="enable_cache_dit must be true, false or omitted"
+    ):
+        sampling.resolve_cache_dit(checkpoint_path, None)
+
+
 def test_request_settings_override_server_settings_per_key(
     monkeypatch: pytest.MonkeyPatch,
     new_stage: StageFactory,

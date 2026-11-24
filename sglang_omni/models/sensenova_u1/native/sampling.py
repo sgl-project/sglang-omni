@@ -129,6 +129,11 @@ class SenseNovaU1SamplingParams(SamplingParams):
         """Settle this request's Cache-DiT switch and overrides, rejecting what it cannot run."""
         if self.enable_cache_dit is None:
             self.enable_cache_dit = envs.SGLANG_CACHE_DIT_ENABLED
+        elif not isinstance(self.enable_cache_dit, bool):
+            # note (Wes): the JSON generations route passes this field through unchecked, so a string "false" would enable the cache.
+            raise ValueError(
+                f"enable_cache_dit must be true, false or omitted, got {self.enable_cache_dit!r}"
+            )
         else:
             pass
         if self.enable_cache_dit:
