@@ -45,7 +45,7 @@
             "draft": {
               "model_id": "asr.accurate.draft",
               "parent_id": "asr.accurate",
-              "help": "使用推测解码：一个小的草稿模型（725.7 MB）每次先提出几个词，再由语音识别模型校验。需要先下载草稿模型。",
+              "help": "用一个小模型（725.7 MB）加快识别，需要先下载它。",
               "installed": false,
               "needs_download": false,
               "size_text": "需下载 725.7 MB",
@@ -61,7 +61,7 @@
             "default": false,
             "installed": false,
             "size_text": "正在由 AudioSmith 下载… 25%",
-            "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
+            "about": "更快、更省内存，适合安静环境、吐字清楚时使用。",
             "tags": [
               "本地",
               "快速",
@@ -74,7 +74,7 @@
                 "model_id": "asr.fast",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 0.6B (4bit)",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "cancel",
@@ -108,7 +108,7 @@
                 "model_id": "asr.qwen3-6bit",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Qwen3-ASR 1.7B (6bit)",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -146,7 +146,7 @@
                 "model_id": "asr.whisper-turbo",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3 Turbo",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -176,7 +176,7 @@
                 "model_id": "asr.whisper-large",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Large v3",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -206,7 +206,7 @@
                 "model_id": "asr.whisper-small",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Whisper Small",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -242,7 +242,7 @@
                 "model_id": "asr.parakeet",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Parakeet TDT 0.6B v3",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -278,7 +278,7 @@
                 "model_id": "asr.sensevoice",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 SenseVoice Small",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -314,7 +314,7 @@
                 "model_id": "asr.cohere",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Cohere Transcribe 03-2026 (fp16)",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -351,7 +351,7 @@
                 "model_id": "asr.nemotron",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 Nemotron 3.5 ASR 0.6B (8bit)",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -387,7 +387,7 @@
                 "model_id": "asr.moss",
                 "label": "隐藏",
                 "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "不在功能页的模型菜单里列出"
+                "tooltip": "从模型菜单中隐藏"
               },
               {
                 "kind": "download",
@@ -411,7 +411,7 @@
           "installed": false,
           "size_text": "内置",
           "about": "macOS 自带的语音识别，在这台 Mac 上运行。速度快，不用下载，但不如 Qwen3-ASR 准确，支持的语言也更少。只识别你的主要语言。",
-          "languages": "这台 Mac 可在本机识别的 macOS 听写语言（系统设置 → 键盘 → 听写）",
+          "languages": "这台 Mac 可离线识别的听写语言（系统设置 → 键盘 → 听写）",
           "tags": [
             "本地",
             "内置",
@@ -423,7 +423,7 @@
               "model_id": "asr.system",
               "label": "隐藏",
               "accessibility_label": "隐藏 系统听写",
-              "tooltip": "不在功能页的模型菜单里列出"
+              "tooltip": "从模型菜单中隐藏"
             },
             {
               "kind": "assign",

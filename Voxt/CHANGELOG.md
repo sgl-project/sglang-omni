@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+- **Plainer wording** (#4596): about 130 Chinese strings read less like translations and say what happens for you rather than what the program does (待授权 for Not asked yet, 可按网站匹配 for Address read), with one word per idea: 授权, 匹配, 无法, Return, API Key. A few English ones changed too: Faster transcription's note no longer explains speculative decoding, App enhancement's browser check says Not checked yet and Check again, and the meeting warning says One audio source stopped.
 
 ### Fixed
 
@@ -33,6 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+- **说人话的文案**（#4596）：约 130 条中文文案不再像翻译，也不再讲程序在做什么（“还没请求”改成“待授权”，“读到了网址”改成“可按网站匹配”），同一个意思只用一个词：授权、匹配、无法、Return、API Key。几条英文也一起改了：转录加速不再解释推测解码，应用增强的浏览器检测改说“还没检测”“重新检查”，会议里的提示改成“其中一个音源中断了”。
 
 #### 修复
 

@@ -161,7 +161,7 @@
           },
           "custom": false,
           "engine": "webkit",
-          "status_text": "Address read",
+          "status_text": "Matches by website",
           "status_tone": "success"
         },
         {
@@ -183,7 +183,7 @@
           },
           "custom": false,
           "engine": "gecko",
-          "status_text": "Not tried; may be app only",
+          "status_text": "Not checked; may match the app only",
           "status_tone": "info"
         },
         {
@@ -193,7 +193,7 @@
           },
           "custom": true,
           "engine": "",
-          "status_text": "Not tried; may be app only",
+          "status_text": "Not checked; may match the app only",
           "status_tone": "info"
         }
       ],

@@ -142,7 +142,7 @@
       "has_bundle_id": true,
       "front_text": "Frontmost: Google Chrome",
       "browser": true,
-      "address": "Reading the address…",
+      "address": "Checking the address…",
       "address_status": "loading",
       "matched": true,
       "match_source": "url",

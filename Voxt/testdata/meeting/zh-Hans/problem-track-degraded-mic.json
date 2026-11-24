@@ -22,7 +22,7 @@
     "mode_hint": "仅系统音频",
     "finishing_text": "正在结束会议…",
     "problem_key": "meeting.track.degraded.mic",
-    "problem_text": "一路音频已中断。Voxt 已切换到更简单的录制方式。",
+    "problem_text": "其中一个音源中断了，录音改用更简单的方式继续。",
     "show_microphone": false,
     "show_system": true,
     "microphone_levels": [

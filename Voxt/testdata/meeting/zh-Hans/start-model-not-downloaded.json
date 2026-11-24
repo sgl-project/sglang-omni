@@ -3,6 +3,6 @@
   "kind": "start",
   "start": {
     "code": "meeting.model.not_downloaded",
-    "text": "会议用的语音模型还没下载。请在“设置 → 会议”里下载。"
+    "text": "会议用的语音识别模型还没下载。请在“设置 → 会议”里下载。"
   }
 }

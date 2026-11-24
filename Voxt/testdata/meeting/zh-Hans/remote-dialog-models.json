@@ -12,7 +12,7 @@
     "has_key_url": true,
     "key": {
       "info": "本机上的服务可不填。保存在这台 Mac 的钥匙串里。",
-      "placeholder": "已保存：•••• · 粘贴新的密钥即可替换",
+      "placeholder": "已保存：•••• · 粘贴新的 API Key 即可替换",
       "has_saved": true
     },
     "endpoint": {
@@ -40,7 +40,7 @@
           "value": "on"
         },
         {
-          "title": "推理强度",
+          "title": "思考强度",
           "value": "effort"
         },
         {
@@ -112,7 +112,7 @@
           "value": "responses"
         }
       ],
-      "service_default": "服务默认",
+      "service_default": "服务商默认",
       "show_temperature": true,
       "show_top_p": true,
       "show_top_k": true,
@@ -151,9 +151,9 @@
       "state": "failure",
       "code": "llm.model_not_found",
       "text": "失败",
-      "long_text": "服务器上没有这个模型。它有的模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …",
-      "tooltip": "服务器上没有这个模型。它有的模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …\n\nredacted fixture detail",
-      "long_tooltip": "服务器上没有这个模型。它有的模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …\n\nredacted fixture detail"
+      "long_text": "服务器上没有这个模型。可用模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …",
+      "tooltip": "服务器上没有这个模型。可用模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …\n\nredacted fixture detail",
+      "long_tooltip": "服务器上没有这个模型。可用模型：model-1, model-2, model-3, model-4, model-5, model-6, model-7, model-8, …\n\nredacted fixture detail"
     },
     "show_remove": true,
     "saving": false,

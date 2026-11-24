@@ -21,7 +21,7 @@ func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
 	if state.Title != "转录" {
 		t.Errorf("title %q", state.Title)
 	}
-	if got := state.Models.ASR.Options[0].Label; got != "自动（现在用：Fixture speech model）" {
+	if got := state.Models.ASR.Options[0].Label; got != "自动（当前：Fixture speech model）" {
 		t.Errorf("automatic model label %q", got)
 	}
 	if got := state.Shortcuts.Rows[0].Value; got != "右 ⌥" {
@@ -30,7 +30,7 @@ func TestFeatureViewStateUsesExplicitLocale(t *testing.T) {
 	if got := state.Shortcuts.Rows[0].Custom.ErrorText; got != "请输入按键，例如 Control+Option+Space。" {
 		t.Errorf("shortcut parse error %q", got)
 	}
-	if got := state.Try.Ended.Warning.Text; got != "完整识别失败，用了实时识别的文字。" {
+	if got := state.Try.Ended.Warning.Text; got != "整段识别失败，已改用实时文字。" {
 		t.Errorf("problem text %q", got)
 	}
 	if got := state.Try.Ended.TimingsText; !strings.HasPrefix(got, "录音 3.2 秒") {

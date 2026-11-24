@@ -29,7 +29,7 @@
   "Releases only.": "只接收正式版。",
   "Restart Voxt to finish updating.": "重启 Voxt 即可完成更新。",
   "The new version runs once Voxt restarts.": "Voxt 重启后即运行新版本。",
-  "This copy cannot update itself because it is a development build or is in a folder Voxt cannot write to. Move Voxt to Applications.": "这个副本不能自动更新，因为它是开发版，或者 Voxt 对所在的文件夹没有写入权限。请把 Voxt 移到“应用程序”文件夹。",
+  "This copy cannot update itself because it is a development build or is in a folder Voxt cannot write to. Move Voxt to Applications.": "这个 Voxt 不能自动更新：它是开发版，或者放在了 Voxt 无法写入的文件夹里。请把 Voxt 移到“应用程序”文件夹。",
   "This version does not update automatically.": "这个版本不会自动更新。",
   "Update installed": "已安装更新",
   "Updates": "更新",

@@ -56,7 +56,7 @@
         {
           "name": "APP_NAME",
           "token": "{{APP_NAME}}",
-          "tooltip": "最前面的 App，在它匹配某个应用增强分组时填入。用于该分组生效的功能。"
+          "tooltip": "前台 App（匹配到应用增强分组时才有），以及这个分组适用的功能。"
         }
       ],
       "apps": [],
@@ -73,19 +73,19 @@
             "value": "Return"
           },
           {
-            "label": "⌘回车",
+            "label": "⌘Return",
             "value": "Command+Return"
           },
           {
-            "label": "⇧回车",
+            "label": "⇧Return",
             "value": "Shift+Return"
           },
           {
-            "label": "⌃回车",
+            "label": "⌃Return",
             "value": "Control+Return"
           },
           {
-            "label": "⌥回车",
+            "label": "⌥Return",
             "value": "Option+Return"
           },
           {
@@ -107,12 +107,12 @@
       "app_name": "",
       "empty": true,
       "has_bundle_id": false,
-      "front_text": "切换到其他 App，查看它会命中哪个分组。",
+      "front_text": "切换到其他 App，查看它会匹配哪个分组。",
       "browser": false,
       "address_status": "none",
       "matched": false,
       "match_source": "global",
-      "match_text": "没有命中任何分组，只用各功能自己的规则。",
+      "match_text": "没有匹配到任何分组，只用各功能自己的规则。",
       "can_refresh": false,
       "add_app": false,
       "add_site": false

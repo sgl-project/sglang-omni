@@ -242,7 +242,7 @@ func meetingOverlayStateProblemText(translator *i18n.Translator, key string) str
 		return translator.T("Recording system audio needs a newer Voxt helper. Update Voxt, or record the microphone only.")
 	default:
 		if strings.HasPrefix(key, meeting.ProblemKeyTrackDegraded) {
-			return translator.T("One audio track stopped. Voxt switched to a simpler capture mode.")
+			return translator.T("One audio source stopped. Recording goes on in a simpler mode.")
 		}
 		return ""
 	}

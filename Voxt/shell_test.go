@@ -588,11 +588,11 @@ func TestPermissionsMeetingSystemAudio(t *testing.T) {
 	}
 	// Once asked, the row says so instead of offering Ask again (#4364).
 	frames(tt)
-	if unknown, asked, ask := has(tt, "Unknown"), has(tt, "Asked: check System Settings"), hasExact(tt, "Ask"); unknown || !asked || ask {
+	if unknown, asked, ask := has(tt, "Unknown"), has(tt, "Turn it on in System Settings"), hasExact(tt, "Ask"); unknown || !asked || ask {
 		t.Errorf("after asking: Unknown shown %v, Asked shown %v, Ask shown %v", unknown, asked, ask)
 	}
 	a.ob.step = obPermissions // the setup guide's row says the same
-	if p := a.onboardingViewStateForTranslator(i18n.CurrentTranslator()).Permissions; p == nil || p.SystemAudio.CanAsk || p.SystemAudio.Text != "Asked: check System Settings" {
+	if p := a.onboardingViewStateForTranslator(i18n.CurrentTranslator()).Permissions; p == nil || p.SystemAudio.CanAsk || p.SystemAudio.Text != "Turn it on in System Settings" {
 		t.Errorf("setup guide after asking: %+v", p)
 	}
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})

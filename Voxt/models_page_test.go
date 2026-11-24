@@ -501,14 +501,14 @@ func TestModelsPageFaster(t *testing.T) {
 	frames(tt)
 	const sw, dl = "Faster transcription for Qwen3-ASR 0.6B (4bit)", "Download Qwen3-ASR 0.6B DFlash draft"
 	drain := queuePosts(a)
-	if !has(tt, "Faster transcription") || has(tt, "Download the draft model to use this.") || tt.HasText(dl) {
+	if !has(tt, "Faster transcription") || has(tt, "Download the small model to use this.") || tt.HasText(dl) {
 		t.Fatalf("off: %q", tt.Texts())
 	}
 	scrollSettingsToText(tt, sw)
 	clickControl(t, tt, sw)
 	drain()
 	frames(tt)
-	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the draft model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
+	if !a.settings.Get().Models.Faster[models.ASRFast] || !has(tt, "Download the small model to use this.") || !has(tt, "262.5 MB download") || !tt.HasText(dl) {
 		t.Fatalf("on without the draft: %+v %q", a.settings.Get().Models, tt.Texts())
 	}
 	scrollSettingsToText(tt, sw)
@@ -524,7 +524,7 @@ func TestModelsPageFaster(t *testing.T) {
 	a.navigate("/home")
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "262.5 MB on disk") || has(tt, "Download the draft model to use this.") || a.omniDraft(models.ASRFast) != "" {
+	if !has(tt, "262.5 MB on disk") || has(tt, "Download the small model to use this.") || a.omniDraft(models.ASRFast) != "" {
 		t.Fatalf("installed, off: %q, omniDraft %q", tt.Texts(), a.omniDraft(models.ASRFast))
 	}
 	scrollSettingsToText(tt, sw)

@@ -368,7 +368,7 @@ func buildAppEnhancementPreview(translator *i18n.Translator, input appEnhancemen
 	if !state.Empty && state.Browser {
 		switch {
 		case input.Preview.app != app || input.Preview.reading:
-			state.Address = translator.T("Reading the address…")
+			state.Address = translator.T("Checking the address…")
 			state.AddressStatus = "loading"
 		case input.Preview.url != "":
 			if address, ok := appctx.ParseAddress(input.Preview.url); ok {
@@ -493,14 +493,14 @@ func buildAppEnhancementBrowsersDialog(translator *i18n.Translator, input appEnh
 func appEnhancementBrowserStatus(translator *i18n.Translator, browser appctx.Browser, reads map[string]urlRead) (string, string) {
 	if read, ok := reads[browser.BundleID]; ok {
 		if read.ok {
-			return translator.T("Address read"), "success"
+			return translator.T("Matches by website"), "success"
 		}
 		return translator.T("No address: app only"), "warning"
 	}
 	if browser.Engine == appctx.Gecko || browser.Engine == "" {
-		return translator.T("Not tried; may be app only"), "info"
+		return translator.T("Not checked; may match the app only"), "info"
 	}
-	return translator.T("Not tried yet"), "info"
+	return translator.T("Not checked yet"), "info"
 }
 
 func appEnhancementURLError(translator *i18n.Translator, group appctx.Group, pattern string) string {

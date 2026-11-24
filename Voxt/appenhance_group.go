@@ -47,7 +47,7 @@ func appEnhancementDetail(c *ui.Context, state *appEnhancementGroupDetail, actio
 		ui.Row(c).Wrap().GapX(px(theme, sp4)).GapY(px(theme, sp1)).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(px(theme, 6)).AlignItems(ui.Center).Children(func() {
 				caption(c, i18n.T("Applies to"))
-				infoTip(c, i18n.T("Translate is off by default, since a scene's tone rarely suits a translation."))
+				infoTip(c, i18n.T("Off for Translate by default: a group's tone rarely suits a translation."))
 			})
 			for _, feature := range state.Features {
 				on := feature.Checked

@@ -413,7 +413,7 @@ func buildModelDraftViewState(translator *i18n.Translator, input modelsViewState
 	state := &modelDraftViewState{
 		ModelID: draft.ID, ParentID: parent.ID, Installed: status.Installed, NeedsDownload: on && !status.Installed && !status.Downloading,
 		SizeText: modelSizeTextFor(translator, draft, status), On: on, SwitchLabel: translator.T("Faster transcription for %s", uitext.ModelNameFor(translator, parent.ID)),
-		Help: translator.T("Uses speculative decoding: a small draft model (%s) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.", uitext.HumanBytes(draft.Size())),
+		Help: translator.T("Speeds up recognition with a small extra model (%s). Download it first.", uitext.HumanBytes(draft.Size())),
 	}
 	if on || status.Installed || status.OnDisk || status.Downloading || status.Done > 0 {
 		state.Actions = buildModelActions(translator, input, draft, status)

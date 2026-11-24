@@ -28,7 +28,7 @@ func appEnhancementPreviewCard(c *ui.Context, state *appEnhancementPreview, acti
 				}
 				ui.Spacer(c)
 			}
-			if iconButton(c.Key("ae-preview-refresh"), icons.Refresh, i18n.T("Read again")).Disabled(!state.CanRefresh).Clicked() {
+			if iconButton(c.Key("ae-preview-refresh"), icons.Refresh, i18n.T("Check again")).Disabled(!state.CanRefresh).Clicked() {
 				actions.refreshAppEnhancementPreview()
 			}
 		})

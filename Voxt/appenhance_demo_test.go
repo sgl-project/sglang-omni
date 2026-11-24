@@ -63,7 +63,7 @@ func TestAppEnhancementDemoActionControls(t *testing.T) {
 		{name: "custom key commit", fixture: "en/appenhance-key-custom-editing", steps: []appEnhancementDemoStep{{label: "Custom key after inserting", enter: true}}, want: []string{`commitAppEnhancementCustomAutoKey g-chat "command+return"`}},
 		{name: "add browser", fixture: "en/appenhance-browsers-normal", steps: []appEnhancementDemoStep{{label: "Bundle ID", text: "org.example.new"}, {label: "Name", text: "New Browser"}, {label: "Add browser"}}, want: []string{`addAppEnhancementBrowser org.example.new "New Browser"`}},
 		{name: "remove browser", fixture: "en/appenhance-browsers-normal", steps: appEnhancementSteps("Remove Example Browser"), want: []string{"removeAppEnhancementBrowser org.example.browser"}},
-		{name: "refresh preview", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Read again"), want: []string{"refreshAppEnhancementPreview"}},
+		{name: "refresh preview", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Check again"), want: []string{"refreshAppEnhancementPreview"}},
 		{name: "add preview app", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add Google Chrome to Team chat"), want: []string{"addAppEnhancementPreviewApp"}},
 		{name: "add preview site", fixture: "en/appenhance-preview-add-actions", steps: appEnhancementSteps("Add example.com to Team chat"), want: []string{"addAppEnhancementPreviewSite"}},
 		{name: "select group", fixture: "en/appenhance-normal", steps: appEnhancementSteps("Code review"), wantText: "gitlab.com/acme/*", otherText: "Add Slack to Code review", check: func(t *testing.T, host *meetingDemoHost) {

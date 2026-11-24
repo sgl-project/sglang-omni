@@ -11,12 +11,12 @@
     "can_export": true,
     "recording_scopes": [
       "全部录音",
-      "翻译中匹配“agenda”的"
+      "翻译中匹配“agenda”的记录"
     ],
     "recording_scope": "全部录音",
     "text_scopes": [
       "全部记录",
-      "翻译中匹配“agenda”的"
+      "翻译中匹配“agenda”的记录"
     ],
     "text_scope": "全部记录",
     "text_formats": [

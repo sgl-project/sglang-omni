@@ -22,7 +22,7 @@
     "mode_hint": "Microphone only",
     "finishing_text": "Finishing the meeting…",
     "problem_key": "meeting.track.degraded.system",
-    "problem_text": "One audio track stopped. Voxt switched to a simpler capture mode.",
+    "problem_text": "One audio source stopped. Recording goes on in a simpler mode.",
     "show_microphone": true,
     "show_system": false,
     "microphone_levels": [

@@ -184,7 +184,7 @@ func draftRow(c *ui.Context, draft *modelDraftViewState, actions modelsActions) 
 				}
 			})
 			if draft.NeedsDownload {
-				caption(c.Key("needs"), i18n.T("Download the draft model to use this."))
+				caption(c.Key("needs"), i18n.T("Download the small model to use this."))
 			}
 			caption(c.Key("size"), draft.SizeText)
 		})

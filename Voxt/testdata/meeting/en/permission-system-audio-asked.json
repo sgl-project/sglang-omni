@@ -56,7 +56,7 @@
       },
       "system_audio": {
         "code": "asked",
-        "text": "Asked: check System Settings",
+        "text": "Turn it on in System Settings",
         "ok": false,
         "can_ask": false,
         "can_open": true,

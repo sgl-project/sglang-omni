@@ -272,7 +272,7 @@ func TestAppEnhancementModelCache(t *testing.T) {
 	browsers := a.appEnhancementModel()
 	found := false
 	for _, browser := range browsers.Browsers.Rows {
-		if browser.Ref.BundleID == "com.apple.Safari" && browser.StatusText == "Address read" {
+		if browser.Ref.BundleID == "com.apple.Safari" && browser.StatusText == "Matches by website" {
 			found = true
 		}
 	}
@@ -355,7 +355,7 @@ func TestAppEnhancementBrowsers(t *testing.T) {
 	a.urlReads["com.apple.Safari"] = urlRead{err: "no web area"}
 	frames(tt)
 	click(t, tt, "Browsers")
-	for _, s := range []string{"Microsoft Edge", "Brave Browser", "Arc", "Address read", "No address: app only"} {
+	for _, s := range []string{"Microsoft Edge", "Brave Browser", "Arc", "Matches by website", "No address: app only"} {
 		if !has(tt, s) {
 			t.Errorf("no %q", s)
 		}

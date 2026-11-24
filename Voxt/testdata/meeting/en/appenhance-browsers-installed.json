@@ -160,7 +160,7 @@
           },
           "custom": false,
           "engine": "webkit",
-          "status_text": "Not tried yet",
+          "status_text": "Not checked yet",
           "status_tone": "info"
         },
         {
@@ -170,7 +170,7 @@
           },
           "custom": true,
           "engine": "",
-          "status_text": "Not tried; may be app only",
+          "status_text": "Not checked; may match the app only",
           "status_tone": "info"
         }
       ],

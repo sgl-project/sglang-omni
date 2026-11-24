@@ -78,7 +78,7 @@ func systemAudioPermission(translator *i18n.Translator, asked bool) permissionRo
 		Ask: !asked, Open: true,
 	}
 	if asked {
-		row.Status = translator.T("Asked: check System Settings")
+		row.Status = translator.T("Turn it on in System Settings")
 		row.Tip = translator.T("If you allowed it when macOS asked, it is on. No prompt means macOS asked before. Check it in System Settings.")
 	}
 	return row

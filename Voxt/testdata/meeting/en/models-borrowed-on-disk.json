@@ -45,7 +45,7 @@
             "draft": {
               "model_id": "asr.accurate.draft",
               "parent_id": "asr.accurate",
-              "help": "Uses speculative decoding: a small draft model (725.7 MB) proposes several words at a time, and the speech model checks them. It needs the draft downloaded.",
+              "help": "Speeds up recognition with a small extra model (725.7 MB). Download it first.",
               "installed": false,
               "needs_download": false,
               "size_text": "725.7 MB download",

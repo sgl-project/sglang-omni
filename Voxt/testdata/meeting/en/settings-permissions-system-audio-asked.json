@@ -85,7 +85,7 @@
       "system_audio": {
         "permission_id": "systemAudio",
         "settings_url": "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture",
-        "status": "Asked: check System Settings",
+        "status": "Turn it on in System Settings",
         "allowed": false,
         "known": false,
         "tip": "If you allowed it when macOS asked, it is on. No prompt means macOS asked before. Check it in System Settings.",

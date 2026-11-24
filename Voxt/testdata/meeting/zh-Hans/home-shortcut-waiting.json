@@ -19,7 +19,7 @@
         "warn": false,
         "text": "第一次录音时 macOS 会请求麦克风权限。",
         "kind": "info",
-        "action": "现在授权",
+        "action": "授权",
         "fix": "microphone"
       }
     ],
@@ -49,7 +49,7 @@
         "title": "辅助功能",
         "ok": true,
         "warn": false,
-        "text": "已允许",
+        "text": "已授权",
         "kind": "",
         "action": "",
         "fix": ""

@@ -79,7 +79,7 @@ func TestMeetingProblemMessageKeys(t *testing.T) {
 		{meeting.ProblemKeyLiveBacklog, "Live captions are falling behind. The final transcript will catch up after you end the meeting."},
 		{meeting.ProblemKeyDiskLow, "Disk space is running low. End the meeting soon or free space on this Mac."},
 		{meeting.ProblemKeyHelperOld, "Recording system audio needs a newer Voxt helper. Update Voxt, or record the microphone only."},
-		{"meeting.track.degraded.system", "One audio track stopped. Voxt switched to a simpler capture mode."},
+		{"meeting.track.degraded.system", "One audio source stopped. Recording goes on in a simpler mode."},
 	} {
 		if got := meetingOverlayProblemText(tc.key); got != tc.want {
 			t.Errorf("key %q: got %q want %q", tc.key, got, tc.want)
