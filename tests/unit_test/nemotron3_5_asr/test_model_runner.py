@@ -14,11 +14,7 @@ from numpy.typing import NDArray
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 
-from sglang_omni.models.nemotron3_5_asr import (
-    encoder,
-    encoder_state_pool,
-    model_runner,
-)
+from sglang_omni.models.nemotron3_5_asr import encoder, encoder_state_pool, model_runner
 from sglang_omni.models.nemotron3_5_asr.encoder import (
     CapturedEncoderBatch,
     NemotronStreamingEncoderGraphRunner,
@@ -46,11 +42,12 @@ CUDA_ACCELERATOR_MARKS = [
     pytest.mark.accelerator,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
 ]
+NPU_REQUIRED = pytest.mark.skipif(
+    not hasattr(torch, "npu") or not torch.npu.is_available(), reason="NPU required"
+)
 NPU_ACCELERATOR_MARKS = [
     pytest.mark.accelerator,
-    pytest.mark.skipif(
-        not hasattr(torch, "npu") or not torch.npu.is_available(), reason="NPU required"
-    ),
+    NPU_REQUIRED,
 ]
 
 
@@ -326,6 +323,8 @@ def test_runner_selects_graph_execution_from_the_device_platform(
     runner.close()
 
 
+@pytest.mark.accelerator
+@NPU_REQUIRED
 def test_streaming_batch_synchronizes_the_stream_device(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
