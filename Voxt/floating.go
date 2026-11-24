@@ -82,6 +82,7 @@ type cardWindow interface {
 	SetAlwaysOnTop(bool)
 	ShowInactive()
 	Focus()
+	IsOnActiveSpace() bool
 }
 
 // cardMay says whether a card the user acted on may take the front now.
@@ -145,7 +146,13 @@ func (c *cardFront) settle(win cardWindow, may func() cardMay) {
 	case cardWait:
 		return
 	case cardTake:
-		win.Focus() // an ordinary window: VoxtNew comes in front with it
+		// Not on the user's Space (another app's full screen, where macOS
+		// shows no ordinary window of an app with a Dock icon), VoxtNew
+		// taking the front would switch the user to a desktop with its
+		// windows: the card stays where it is.
+		if win.IsOnActiveSpace() {
+			win.Focus() // an ordinary window: VoxtNew comes in front with it
+		}
 	}
 	c.lower(win)
 }

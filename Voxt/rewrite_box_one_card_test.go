@@ -270,6 +270,67 @@ func TestRewriteCardTakesTheFront(t *testing.T) {
 	}
 }
 
+// TestRewriteCardOverAFullScreenApp: the wish wall's "Rewrite switched my
+// full-screen app back to the desktop". In another app's full screen the
+// card's ordinary window is not on the user's Space (macOS shows no
+// ordinary window of an app with a Dock icon there), and VoxtNew taking the
+// front with it switched the user to a desktop. The card is a panel
+// there instead: it shows over the full-screen app and takes the keyboard
+// without activating VoxtNew. It stays a panel until it closes; the next
+// card on a desktop is an ordinary window again.
+func TestRewriteCardOverAFullScreenApp(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.ov.native = true
+	var made []*fakeBoxDropWindow
+	var options []mygo.WindowOptions
+	fullScreen := true
+	previous, front := newBoxNativeWindow, frontmostPID
+	newBoxNativeWindow = func(o mygo.WindowOptions) boxDropWindow {
+		w := &fakeBoxDropWindow{onTop: o.AlwaysOnTop}
+		w.offSpace = fullScreen && !o.Panel // macOS: a panel shows there
+		made, options = append(made, w), append(options, o)
+		return w
+	}
+	frontmostPID = func() int { return 42 } // the full-screen app
+	t.Cleanup(func() { newBoxNativeWindow, frontmostPID = previous, front })
+
+	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea} // already placed: no screen to ask in a test
+	a.sess = session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Recording, ReadingSelection: true}
+	a.showBox(proto.App{PID: 42}, "r1") // the shortcut, in the full-screen app
+	if len(made) != 2 || !made[0].destroyed || made[0].focused != 0 || made[0].raised != 0 {
+		t.Fatalf("the ordinary window: %d windows, first destroyed %v, raised %d, focused %d", len(made), len(made) > 0 && made[0].destroyed, made[0].raised, made[0].focused)
+	}
+	panel := made[1]
+	if !options[1].Panel || options[1].NonActivating || !a.box.panel || a.box.win != boxWindow(panel) {
+		t.Fatalf("the card over the full-screen app: options %+v, panel %v", options[1], a.box.panel)
+	}
+	if panel.raised != 1 || panel.focused != 0 || panel.style != a.box.style || panel.bounds != a.box.frame {
+		t.Fatalf("the panel while the selection is read: raised %d, focused %d, style %+v, bounds %+v", panel.raised, panel.focused, panel.style, panel.bounds)
+	}
+	a.sess.ReadingSelection = false
+	a.boxSync()
+	if panel.focused != 1 {
+		t.Fatalf("once the selection is read the panel takes the keyboard: focused %d", panel.focused)
+	}
+	a.boxKeep() // the answer is in: the follow-up stays in the panel
+	a.boxShortcutSend()
+	if len(made) != 2 || !a.box.panel || panel.raised != 2 {
+		t.Errorf("a follow-up: %d windows, panel %v, raised %d", len(made), a.box.panel, panel.raised)
+	}
+
+	a.closeBox()
+	if !panel.destroyed || a.box.panel {
+		t.Errorf("closing: panel destroyed %v, still a panel %v", panel.destroyed, a.box.panel)
+	}
+	fullScreen = false // back on a desktop
+	a.sess = session.Snapshot{}
+	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea}
+	a.showBox(proto.App{PID: 42}, "r2")
+	if len(made) != 3 || options[2].Panel || a.box.panel || made[2].focused != 1 {
+		t.Errorf("the next card on a desktop: %d windows, panel %v/%v, focused %d", len(made), options[len(options)-1].Panel, a.box.panel, made[len(made)-1].focused)
+	}
+}
+
 // TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,
 // Enter sends only with Settings → Shortcuts' Return switch on (it is
 // taken, no newline). Off, Enter is a newline there, as it reaches any app
