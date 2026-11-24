@@ -1,5 +1,5 @@
 diff --git a/mlx/allocator.h b/mlx/allocator.h
-index 82bc874..a26f3e4 100644
+index 760bf2086..98a360742 100644
 --- a/mlx/allocator.h
 +++ b/mlx/allocator.h
 @@ -53,6 +53,12 @@ class MLX_API Allocator {
@@ -15,9 +15,9 @@ index 82bc874..a26f3e4 100644
    virtual Buffer make_buffer(void* ptr, size_t size) {
      return Buffer{nullptr};
    };
-@@ -85,6 +91,23 @@ class MLX_API Allocator {
- 
- MLX_API Allocator& allocator();
+@@ -88,6 +94,23 @@ MLX_API Allocator& allocator();
+ // Whether the active memory is above the memory limit.
+ MLX_API bool over_memory_limit();
  
 +class AllocationScope {
 + public:
@@ -40,7 +40,7 @@ index 82bc874..a26f3e4 100644
  
  // The allocator owns data from malloc
 diff --git a/mlx/array.h b/mlx/array.h
-index 59ab941..bae6993 100644
+index 59ab94194..bae6993ec 100644
 --- a/mlx/array.h
 +++ b/mlx/array.h
 @@ -284,7 +284,8 @@ class MLX_API array {
@@ -62,7 +62,7 @@ index 59ab941..bae6993 100644
    switch (dtype()) {
      case bool_:
 diff --git a/mlx/backend/common/common.cpp b/mlx/backend/common/common.cpp
-index 81dc5c1..8d0009c 100644
+index e317fe858..97add8ede 100644
 --- a/mlx/backend/common/common.cpp
 +++ b/mlx/backend/common/common.cpp
 @@ -88,6 +88,7 @@ void ExpandDims::eval(const std::vector<array>& inputs, array& out) {
@@ -74,7 +74,7 @@ index 81dc5c1..8d0009c 100644
  
    double numel = 1;
 diff --git a/mlx/backend/cpu/eval.cpp b/mlx/backend/cpu/eval.cpp
-index 354820f..d02efe1 100644
+index 354820f0f..d02efe113 100644
 --- a/mlx/backend/cpu/eval.cpp
 +++ b/mlx/backend/cpu/eval.cpp
 @@ -22,6 +22,7 @@ void clear_streams() {
@@ -86,10 +86,10 @@ index 354820f..d02efe1 100644
  
    auto outputs = arr.outputs();
 diff --git a/mlx/backend/metal/allocator.cpp b/mlx/backend/metal/allocator.cpp
-index ff12293..55e771f 100644
+index 80a3f72ba..ddf442433 100644
 --- a/mlx/backend/metal/allocator.cpp
 +++ b/mlx/backend/metal/allocator.cpp
-@@ -42,6 +42,14 @@ bool can_reuse_alien_buffer(void* ptr) {
+@@ -43,6 +43,14 @@ bool can_reuse_alien_buffer(void* ptr) {
  
  namespace metal {
  
@@ -104,7 +104,7 @@ index ff12293..55e771f 100644
  MetalAllocator::MetalAllocator(Device& d)
      : device_(d.mtl_device()),
        residency_sets_(d.residency_sets()),
-@@ -127,6 +135,20 @@ Buffer MetalAllocator::malloc(size_t size) {
+@@ -129,6 +137,20 @@ Buffer MetalAllocator::malloc(size_t size) {
  
    // Try the cache
    std::unique_lock lk(mutex_);
@@ -124,8 +124,8 @@ index ff12293..55e771f 100644
 +  }
    MTL::Buffer* buf = buffer_cache_.reuse_from_cache(size);
    if (!buf) {
-     size_t mem_required = get_active_memory() + get_cache_memory() + size;
-@@ -190,11 +212,15 @@ void MetalAllocator::free(Buffer buffer) {
+     auto cache_size = buffer_cache_.cache_size();
+@@ -198,11 +220,15 @@ void MetalAllocator::free(Buffer buffer) {
      return;
    }
  
@@ -140,10 +140,10 @@ index ff12293..55e771f 100644
  #endif
 -
 -  std::unique_lock lk(mutex_);
+   assert(buf->length() <= active_memory_);
    active_memory_ -= buf->length();
-   if (get_cache_memory() < max_pool_size_) {
-     buffer_cache_.recycle_to_cache(buf);
-@@ -209,6 +235,78 @@ void MetalAllocator::free(Buffer buffer) {
+   if (buffer_cache_.cache_size() < max_pool_size_) {
+@@ -218,6 +244,78 @@ void MetalAllocator::free(Buffer buffer) {
    }
  }
  
@@ -220,10 +220,10 @@ index ff12293..55e771f 100644
 +}
 +
  size_t MetalAllocator::size(Buffer buffer) const {
-   return static_cast<MTL::Buffer*>(buffer.ptr())->length();
- }
+   if (const auto* p = buffer.ptr(); p) {
+     return static_cast<const MTL::Buffer*>(p)->length();
 diff --git a/mlx/backend/metal/allocator.h b/mlx/backend/metal/allocator.h
-index 8859513..572a950 100644
+index 251d67a2e..faf14b91a 100644
 --- a/mlx/backend/metal/allocator.h
 +++ b/mlx/backend/metal/allocator.h
 @@ -20,6 +20,8 @@ class MetalAllocator : public allocator::Allocator {
@@ -235,7 +235,7 @@ index 8859513..572a950 100644
    virtual Buffer make_buffer(void* ptr, size_t size) override;
    virtual void release(Buffer buffer) override;
  
-@@ -41,8 +43,20 @@ class MetalAllocator : public allocator::Allocator {
+@@ -48,8 +50,20 @@ class MetalAllocator : public allocator::Allocator {
    size_t get_memory_limit();
    size_t set_wired_limit(size_t limit);
    void clear_cache();
@@ -256,7 +256,7 @@ index 8859513..572a950 100644
    MTL::Device* device_;
  
    // The size of allocations which go on the heap until it is full. This size
-@@ -61,6 +75,8 @@ class MetalAllocator : public allocator::Allocator {
+@@ -68,6 +82,8 @@ class MetalAllocator : public allocator::Allocator {
  
    // Caching allocator
    BufferCache<MTL::Buffer> buffer_cache_;
@@ -266,7 +266,7 @@ index 8859513..572a950 100644
    // Allocation stats
    size_t block_limit_;
 diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
-index 6c0c92f..9151efc 100644
+index 100b74ae4..f98a3c973 100644
 --- a/mlx/backend/metal/device.cpp
 +++ b/mlx/backend/metal/device.cpp
 @@ -15,6 +15,7 @@
@@ -538,10 +538,10 @@ index 6c0c92f..9151efc 100644
  #endif
  
 diff --git a/mlx/backend/metal/device.h b/mlx/backend/metal/device.h
-index ad5a1d4..ab9da8c 100644
+index c0ff6a3c5..a53cad0a5 100644
 --- a/mlx/backend/metal/device.h
 +++ b/mlx/backend/metal/device.h
-@@ -35,8 +35,9 @@ class MLX_API CommandEncoder {
+@@ -36,8 +36,9 @@ class MLX_API CommandEncoder {
      }
      ~ConcurrentContext() {
        enc.concurrent_ = false;
@@ -553,7 +553,7 @@ index ad5a1d4..ab9da8c 100644
        enc.concurrent_outputs_.clear();
      }
  
-@@ -48,6 +49,7 @@ class MLX_API CommandEncoder {
+@@ -49,6 +50,7 @@ class MLX_API CommandEncoder {
    void set_input_array(const array& a, int idx, int64_t offset = 0);
    void set_output_array(array& a, int idx, int64_t offset = 0);
    void register_output_array(const array& a);
@@ -561,7 +561,7 @@ index ad5a1d4..ab9da8c 100644
  
    void add_temporary(array arr);
    void add_temporaries(std::vector<array> arrays);
-@@ -101,10 +103,7 @@ class MLX_API CommandEncoder {
+@@ -102,10 +104,7 @@ class MLX_API CommandEncoder {
    void commit(std::function<void()> completion = nullptr);
    void synchronize();
  #ifndef NDEBUG
@@ -573,7 +573,7 @@ index ad5a1d4..ab9da8c 100644
  #endif
  
    MTL::CommandBuffer* get_command_buffer() const {
-@@ -115,6 +114,7 @@ class MLX_API CommandEncoder {
+@@ -116,6 +115,7 @@ class MLX_API CommandEncoder {
    MTL::ComputeCommandEncoder* get_command_encoder();
  
    Device& device_;
@@ -581,7 +581,7 @@ index ad5a1d4..ab9da8c 100644
    bool exiting_{false};
  
    // Buffer that stores encoded commands.
-@@ -122,6 +122,8 @@ class MLX_API CommandEncoder {
+@@ -123,6 +123,8 @@ class MLX_API CommandEncoder {
    NS::SharedPtr<MTL::CommandBuffer> buffer_;
    int buffer_ops_{0};
    size_t buffer_sizes_{0};
@@ -590,7 +590,7 @@ index ad5a1d4..ab9da8c 100644
  
    // The residency set and how many of its sets this queue has attached.
    ResidencySets& residency_sets_;
-@@ -141,20 +143,23 @@ class MLX_API CommandEncoder {
+@@ -142,20 +144,23 @@ class MLX_API CommandEncoder {
    NS::SharedPtr<MTL::Fence> fence_;
    bool needs_barrier_{false};
    bool concurrent_{false};
@@ -619,7 +619,7 @@ index ad5a1d4..ab9da8c 100644
  };
  
 diff --git a/mlx/backend/metal/eval.cpp b/mlx/backend/metal/eval.cpp
-index b53feae..5a37187 100644
+index b53feaea4..5a371879d 100644
 --- a/mlx/backend/metal/eval.cpp
 +++ b/mlx/backend/metal/eval.cpp
 @@ -2,6 +2,7 @@
@@ -682,7 +682,7 @@ index b53feae..5a37187 100644
  }
  
 diff --git a/mlx/backend/metal/fence.cpp b/mlx/backend/metal/fence.cpp
-index 3c133e5..a75ba21 100644
+index 3c133e589..a75ba21ff 100644
 --- a/mlx/backend/metal/fence.cpp
 +++ b/mlx/backend/metal/fence.cpp
 @@ -21,6 +21,7 @@ struct FenceImpl {
@@ -694,7 +694,7 @@ index 3c133e5..a75ba21 100644
        cpu_value()[0] = 0;
      }
 diff --git a/mlx/backend/metal/fft.cpp b/mlx/backend/metal/fft.cpp
-index 952f829..4a3f934 100644
+index 100dc4fa6..4e2181b21 100644
 --- a/mlx/backend/metal/fft.cpp
 +++ b/mlx/backend/metal/fft.cpp
 @@ -281,6 +281,7 @@ int primitive_root(int n) {

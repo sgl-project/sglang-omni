@@ -14,7 +14,7 @@ test "$(uname -m)" = arm64 || { echo "Apple Silicon is required" >&2; exit 1; }
 command -v uv >/dev/null || { echo "uv is required" >&2; exit 1; }
 
 deployment_target="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
-mlx_commit=fc344c986c4169d99f76b5d95ae6b4a58a359a63
+mlx_commit=5598dfa0aeb94bb9f4ac462e2b02a1ff35f56c13
 shopt -s nullglob
 mlx_patches=("$native_dir"/scripts/mlx-patches/*.patch)
 shopt -u nullglob
