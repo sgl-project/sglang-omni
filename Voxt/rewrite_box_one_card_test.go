@@ -276,8 +276,10 @@ func TestRewriteCardTakesTheFront(t *testing.T) {
 // ordinary window of an app with a Dock icon there), and VoxtNew taking the
 // front with it switched the user to a desktop. The card is a panel
 // there instead: it shows over the full-screen app and takes the keyboard
-// without activating VoxtNew. It stays a panel until it closes; the next
-// card on a desktop is an ordinary window again.
+// without activating VoxtNew, and it floats (at the windows' level the app
+// in front would cover it). It stays a panel until it closes; the next card
+// on a desktop is an ordinary window again, and a card left open on a
+// desktop becomes a panel when the shortcut is pressed in full screen.
 func TestRewriteCardOverAFullScreenApp(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.ov.native = true
@@ -309,13 +311,13 @@ func TestRewriteCardOverAFullScreenApp(t *testing.T) {
 	}
 	a.sess.ReadingSelection = false
 	a.boxSync()
-	if panel.focused != 1 {
-		t.Fatalf("once the selection is read the panel takes the keyboard: focused %d", panel.focused)
+	if panel.focused != 1 || !panel.onTop || !a.box.focusText {
+		t.Fatalf("once the selection is read the panel takes the keyboard and floats: focused %d, on top %v, text focus %v", panel.focused, panel.onTop, a.box.focusText)
 	}
 	a.boxKeep() // the answer is in: the follow-up stays in the panel
 	a.boxShortcutSend()
-	if len(made) != 2 || !a.box.panel || panel.raised != 2 {
-		t.Errorf("a follow-up: %d windows, panel %v, raised %d", len(made), a.box.panel, panel.raised)
+	if len(made) != 2 || !a.box.panel || panel.raised != 2 || !panel.onTop {
+		t.Errorf("a follow-up: %d windows, panel %v, raised %d, on top %v", len(made), a.box.panel, panel.raised, panel.onTop)
 	}
 
 	a.closeBox()
@@ -326,8 +328,16 @@ func TestRewriteCardOverAFullScreenApp(t *testing.T) {
 	a.sess = session.Snapshot{}
 	a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea}
 	a.showBox(proto.App{PID: 42}, "r2")
-	if len(made) != 3 || options[2].Panel || a.box.panel || made[2].focused != 1 {
-		t.Errorf("the next card on a desktop: %d windows, panel %v/%v, focused %d", len(made), options[len(options)-1].Panel, a.box.panel, made[len(made)-1].focused)
+	if len(made) != 3 || options[2].Panel || a.box.panel || made[2].focused != 1 || made[2].onTop {
+		t.Fatalf("the next card on a desktop: %d windows, panel %v/%v, focused %d, on top %v", len(made), options[len(options)-1].Panel, a.box.panel, made[len(made)-1].focused, made[len(made)-1].onTop)
+	}
+
+	fullScreen, made[2].offSpace = true, true // the user went to a full-screen app, the card open
+	a.box.focusText = false                   // the text box had taken the focus
+	a.boxShortcutSend()
+	if len(made) != 4 || !made[2].destroyed || !options[3].Panel || !a.box.panel || made[3].focused != 1 || !made[3].onTop || !a.box.focusText {
+		t.Errorf("the shortcut in full screen: %d windows, old destroyed %v, panel %v, focused %d, on top %v, text focus %v",
+			len(made), made[2].destroyed, a.box.panel, made[len(made)-1].focused, made[len(made)-1].onTop, a.box.focusText)
 	}
 }
 

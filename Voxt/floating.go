@@ -110,6 +110,10 @@ const (
 type cardFront struct {
 	lowered bool // at the windows' level
 	waiting bool // raised, VoxtNew not in front yet
+	// floats: a panel over another app's full screen (boxPanel), which
+	// takes the keyboard while VoxtNew stays behind: at the windows' level
+	// the app in front would cover it, so it stays above every window.
+	floats bool
 }
 
 // float keeps win above every window: a preview's level.
@@ -153,6 +157,10 @@ func (c *cardFront) settle(win cardWindow, may func() cardMay) {
 		if win.IsOnActiveSpace() {
 			win.Focus() // an ordinary window: VoxtNew comes in front with it
 		}
+	}
+	if c.floats {
+		c.waiting = false
+		return
 	}
 	c.lower(win)
 }

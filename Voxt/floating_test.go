@@ -98,4 +98,12 @@ func TestCardFrontStaysOnTheUsersSpace(t *testing.T) {
 	if win.raised != 1 || win.focused != 0 || win.onTop {
 		t.Errorf("a card off the user's Space: raised %d, focused %d, on top %v", win.raised, win.focused, win.onTop)
 	}
+	// A panel over the full screen takes the keyboard and floats: VoxtNew
+	// stays behind, and at the windows' level the app in front covers it.
+	panel, front2 := &frontRecorder{}, cardFront{floats: true}
+	front2.raise(panel)
+	front2.settle(panel, func() cardMay { return cardTake })
+	if !panel.onTop || panel.focused != 1 {
+		t.Errorf("a floating panel: on top %v, focused %d", panel.onTop, panel.focused)
+	}
 }

@@ -191,15 +191,18 @@ func (a *app) newBoxWin(panel bool) boxWindow {
 // shows no ordinary window of an app with a Dock icon, and VoxtNew taking
 // the front with it (cardFront) would switch the user to a desktop. A
 // panel shows over the full-screen app and takes the keyboard without
-// activating VoxtNew, as the card did before it took the front (#4417);
-// it stays a panel until the card closes. Main thread.
+// activating VoxtNew, as the card did before it took the front (#4417).
+// It floats: VoxtNew never comes in front with it, and at the windows'
+// level the app in front would cover it. It stays a panel until the card
+// closes. Main thread.
 func (a *app) boxPanel() {
 	if a.box.panel || a.box.win.IsOnActiveSpace() {
 		return
 	}
 	a.box.win.Destroy()
 	a.box.win, a.box.panel = a.newBoxWin(true), true
-	a.box.front = cardFront{} // a new window starts above every window
+	a.box.front = cardFront{floats: true} // a new window starts above every window
+	a.box.focusText = true                // its text box takes the typing
 	a.box.win.SetVibrancyStyle(a.box.style)
 	a.box.win.SetContentBounds(a.box.frame)
 }
