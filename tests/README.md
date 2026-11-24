@@ -142,13 +142,15 @@ tests/
     │   ├── test_tail.py
     │   ├── test_vocoder.py
     │   └── test_vocoder_streaming.py
-    ├── llada2_uni/
-    │   └── test_request_builders.py
     ├── lfm3_audio/
+    │   ├── test_backbone.py
     │   ├── test_generation.py
     │   ├── test_hf_config.py
     │   ├── test_model_runner.py
+    │   ├── test_speech_pool.py
     │   └── test_stages.py
+    ├── llada2_uni/
+    │   └── test_request_builders.py
     ├── minimax_music3/
     │   ├── test_core.py
     │   └── test_request_builders.py
@@ -952,10 +954,10 @@ that happened to contain an older version of the test.
   session over the WebSocket against a scripted pipeline). CPU only, no
   weights; runner and request tests need SGLang but start no engine.
 
+- `unit_test/lfm3_audio/`: LFM3-Audio and LFM3-Omni config parsing for both checkpoint layouts, the short-conv state, the text/speech state machine and its device copy, mixed-batch speech steps, retraction replay, refused server settings, speech-frame sampling, depth CUDA graphs against eager, and prompt and media helpers.
+
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
-
-- `unit_test/lfm3_audio/`: LFM3-Audio and LFM3-Omni config parsing for both checkpoint layouts, the text/speech state machine, mixed-batch speech steps, retraction replay, refused server settings, speech-frame sampling, and prompt and media helpers.
 
 - `unit_test/minimax_music3/`: MiniMax Music 3 request validation, placement,
   acoustic configuration, hidden-frame buffering, deterministic sampling,

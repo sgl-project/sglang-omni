@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """LFM3 AR stage model: LFM3 backbone, speech-frame embeddings, depth decoder and media encoders.
 
-Serves LFM3-Audio (audio encoder) and LFM3-Omni (audio encoder plus vision
-tower). The encoders are the checkpoint's own modules (custom code).
+Serves LFM3-Audio (audio encoder) and LFM3-Omni (audio encoder plus vision tower). The encoders are the checkpoint's own modules (custom code).
 
-One step produces the backbone's last hidden state and text logits. The model
-runner samples a speech frame from the hidden state when the request is
-speaking and feeds the frame back as the next step's input embedding; every
-decode row reads its input from decode_input_embed_buffer.
+One step produces the backbone's last hidden state and text logits. The model runner samples a speech frame from the hidden state when the request is speaking and feeds the frame back as the next step's input embedding; every decode row reads its input from decode_input_embed_buffer.
 """
 
 from __future__ import annotations
@@ -158,8 +154,7 @@ class Lfm3AudioSGLangModel(nn.Module):
         return self.language_model.embed_tokens
 
     def get_attention_sliding_window_size(self) -> int:
-        # The runtime's window excludes the current token, so the attention
-        # backend builds the window KV indices of the sliding layers.
+        # note (ruilin): the runtime's window excludes the current token; without this the attention backend builds no window KV indices for the sliding layers.
         return self.config.sliding_window - 1
 
     def frame_embeddings(self, codes: torch.Tensor) -> torch.Tensor:
@@ -203,7 +198,6 @@ class Lfm3AudioSGLangModel(nn.Module):
         input_embeds: torch.Tensor | None = None,
     ) -> LogitsProcessorOutput:
         if forward_batch.forward_mode.is_decode():
-            # The runner writes every decode row's input: a speech frame or a text token embedding.
             input_embeds = self.decode_input_embed_buffer[: input_ids.shape[0]]
         elif input_embeds is None:
             raise RuntimeError(

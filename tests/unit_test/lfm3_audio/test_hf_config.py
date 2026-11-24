@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from sglang_omni.models.lfm3_audio import hf_config
 
@@ -38,13 +39,15 @@ TEXT = {
 DEPTH = {"hidden_size": 1024, "num_hidden_layers": 3}
 
 
-def write_checkpoint(path, config: dict, generation: dict) -> str:
+def write_checkpoint(
+    path: Path, config: dict[str, object], generation: dict[str, object]
+) -> str:
     (path / "config.json").write_text(json.dumps(config))
     (path / "generation_config.json").write_text(json.dumps(generation))
     return str(path)
 
 
-def test_audio_export_layout(tmp_path) -> None:
+def test_audio_export_layout(tmp_path: Path) -> None:
     checkpoint = write_checkpoint(
         tmp_path,
         {
@@ -78,7 +81,7 @@ def test_audio_export_layout(tmp_path) -> None:
     )
 
 
-def test_omni_transformers_layout(tmp_path) -> None:
+def test_omni_transformers_layout(tmp_path: Path) -> None:
     checkpoint = write_checkpoint(
         tmp_path,
         {

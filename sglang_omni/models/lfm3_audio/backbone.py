@@ -232,7 +232,7 @@ class Lfm3ShortConv(nn.Module):
         cache_indices: torch.Tensor,
     ) -> torch.Tensor:
         """One token per request: dot the rolling window, then advance the state in place."""
-        # A graph's padding rows carry slot -1, which indexing would wrap to the last live slot; slot 0 is the pool's dummy.
+        # note (ruilin): a graph's padding rows carry slot -1, which indexing would wrap to the last live slot; slot 0 is the pool's dummy.
         cache_indices = cache_indices.clamp(min=0)
         state = conv_state[cache_indices].to(gated_inputs.dtype)
         window = torch.cat([state, gated_inputs.unsqueeze(-1)], dim=-1)

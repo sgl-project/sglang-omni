@@ -31,7 +31,14 @@ def test_conv_decode_padding_rows_write_only_the_dummy_slot() -> None:
         torch.testing.assert_close(conv_state[slot], live[slot])
 
 
-def reference_conv_prefill(conv, inputs, conv_state, slots, starts, continues):
+def reference_conv_prefill(
+    conv: SimpleNamespace,
+    inputs: torch.Tensor,
+    conv_state: torch.Tensor,
+    slots: list[int],
+    starts: list[int],
+    continues: list[bool],
+) -> torch.Tensor:
     """One request at a time: its cached state (or zeros) followed by its inputs."""
     kernel = conv.conv_weight.shape[1]
     outputs = []
@@ -39,6 +46,8 @@ def reference_conv_prefill(conv, inputs, conv_state, slots, starts, continues):
         start, end = starts[row], starts[row + 1]
         if start == end:
             continue
+        else:
+            pass
         state = (
             conv_state[slot].clone()
             if continues[row]

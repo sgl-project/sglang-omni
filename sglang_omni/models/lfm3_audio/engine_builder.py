@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping
+from typing import Literal
 
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
@@ -59,13 +60,20 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
     context_length = 16384
 
     def __init__(
-        self, *, speech_sampler: SpeechSampler, enable_async_decode: bool
+        self,
+        *,
+        speech_sampler: SpeechSampler,
+        enable_async_decode: bool,
+        prefill_coalesce_requests: int,
+        prefill_coalesce_wait_ms: float,
     ) -> None:
         self.speech_sampler = speech_sampler
-        # Launching a decode step before the previous one resolves needs the seeded sampler's device speech state.
+        # note (ruilin): launching a decode step before the previous one resolves needs the seeded sampler's device speech state.
         self.enable_async_decode = (
             enable_async_decode and speech_sampler is SpeechSampler.SEEDED
         )
+        self.prefill_coalesce_requests = prefill_coalesce_requests
+        self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
 
     def resolve_checkpoint(self, model_path: str) -> str:
         """A directory the SGLang loader reads: the backbone config plus the checkpoint's weights."""
@@ -108,7 +116,7 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         }
 
     def get_model_buffer_bs(self, model: Lfm3AudioSGLangModel) -> int:
-        # The decode input buffers hold max_running_requests rows; a larger graph would read past them.
+        # note (ruilin): the decode input buffers hold max_running_requests rows; a larger graph would read past them.
         return model.decode_input_embed_buffer.shape[0]
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
@@ -210,11 +218,10 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         )
         return {
             "enable_async_decode": enable_async_decode,
-            # A prefill reads the host speech state, so the pending step resolves first.
+            # note (ruilin): a prefill reads the host speech state, so the pending step resolves first.
             "async_decode_resolve_before_prefill": True,
-            # note (ruilin): each prefill drains the pending decode step and runs eagerly, which bounds the engine loop at high concurrency. Holding new requests up to 30 ms (or until 32 wait) gave 46.3 vs 40.5 req/s at concurrency 64 on SeedTTS EN, H100, and 13.1 vs 13.6 at 8.
-            "prefill_coalesce_requests": 32,
-            "prefill_coalesce_wait_ms": 30.0,
+            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def make_adapters(self, model: Lfm3AudioSGLangModel) -> tuple[
@@ -235,12 +242,16 @@ def create_generation_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
-    speech_sampler: str,
+    speech_sampler: Literal["exact", "seeded"],
     enable_async_decode: bool,
+    prefill_coalesce_requests: int,
+    prefill_coalesce_wait_ms: float,
 ) -> OmniScheduler[Lfm3AudioRequestData]:
     return Lfm3AudioEngineBuilder(
         speech_sampler=SpeechSampler(speech_sampler),
         enable_async_decode=enable_async_decode,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
     ).build(
         model_path,
         device=device,

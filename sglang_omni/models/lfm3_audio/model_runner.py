@@ -126,7 +126,6 @@ class Lfm3AudioModelRunner(ModelRunner):
             return prompt_embeds
         else:
             pass
-        # A replay: each output token feeds its frame embedding (audio_out) or its token embedding again.
         output_id_tensor = torch.tensor(output_ids, device=prompt_embeds.device)
         output_embeds = self.model.get_input_embeddings()(output_id_tensor)
         is_frame = output_id_tensor == self.tokens.audio_out_token_id
@@ -141,7 +140,7 @@ class Lfm3AudioModelRunner(ModelRunner):
             ).to(output_embeds.dtype)
         else:
             pass
-        # The queued embedding of the last frame is in output_embeds now.
+        # note (ruilin): the queued embedding of the last frame is in output_embeds now.
         request_data.pending_feedback_queue.clear()
         return torch.cat([prompt_embeds, output_embeds], dim=0)
 
@@ -324,7 +323,7 @@ class Lfm3AudioModelRunner(ModelRunner):
             return
         else:
             pass
-        # The pinned staging is reused two launches later; the host state keeps these codes.
+        # note (ruilin): the pinned staging is reused two launches later; the host state keeps these codes.
         self.commit_speech_step(launch_buf.clone(), result, requests)
 
     @torch.no_grad()
@@ -348,7 +347,7 @@ class Lfm3AudioModelRunner(ModelRunner):
             frame_positions=rows.frames_sampled,
             temperature=rows.temperature,
             top_k=rows.top_k,
-            # A row without history leaves its scores unchanged.
+            # note (ruilin): a row without history must leave its scores unchanged.
             repetition_penalty=torch.where(
                 rows.history_len > 0, rows.repetition_penalty, 1.0
             ),
@@ -375,7 +374,7 @@ class Lfm3AudioModelRunner(ModelRunner):
         )
         pool.next_input_embeds.index_copy_(0, slots, next_inputs)
         result.next_token_ids = step.token_ids
-        new = step.rows
+        advanced_rows = step.rows
         packed = torch.cat(
             [
                 step.token_ids[:, None].long(),
@@ -384,13 +383,13 @@ class Lfm3AudioModelRunner(ModelRunner):
                 step.fed_codes,
                 torch.stack(
                     [
-                        new.mode,
-                        new.speaking.long(),
-                        new.text_done.long(),
-                        new.finished.long(),
-                        new.slots_left,
-                        new.frames_sampled,
-                        new.history_len,
+                        advanced_rows.mode,
+                        advanced_rows.speaking.long(),
+                        advanced_rows.text_done.long(),
+                        advanced_rows.finished.long(),
+                        advanced_rows.slots_left,
+                        advanced_rows.frames_sampled,
+                        advanced_rows.history_len,
                     ],
                     dim=1,
                 ),

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Protocol
 
 import torch
 
@@ -23,48 +25,43 @@ logger = logging.getLogger(__name__)
 WARMUP_ITERATIONS = 2
 
 
+class GraphCompute(Protocol):
+    """The work one graph records, reading its static input buffers."""
+
+    def __call__(self) -> torch.Tensor: ...
+
+
+@dataclass(kw_only=True)
 class DepthPassGraph:
     """Static buffers and graph of one bucket of depth passes."""
 
-    def __init__(
-        self,
-        graph: ReplayableGraph,
-        hidden_states: torch.Tensor,
-        codes: torch.Tensor,
-        masked: torch.Tensor,
-        logits: torch.Tensor,
-    ) -> None:
-        self.graph = graph
-        self.hidden_states = hidden_states
-        self.codes = codes
-        self.masked = masked
-        self.logits = logits
+    graph: ReplayableGraph
+    hidden_states: torch.Tensor
+    codes: torch.Tensor
+    masked: torch.Tensor
+    logits: torch.Tensor
 
 
+@dataclass(kw_only=True)
+class SeededFrameInputs:
+    """Static input buffers of one bucket of whole seeded frames."""
+
+    hidden_states: torch.Tensor
+    seeds: torch.Tensor
+    frame_positions: torch.Tensor
+    temperature: torch.Tensor
+    top_k: torch.Tensor
+    repetition_penalty: torch.Tensor
+    history: torch.Tensor
+
+
+@dataclass(kw_only=True)
 class SeededFrameGraph:
-    """Static buffers and graph of one bucket of whole seeded frames."""
+    """Input buffers, graph and output codes of one bucket of whole seeded frames."""
 
-    def __init__(
-        self,
-        graph: ReplayableGraph,
-        hidden_states: torch.Tensor,
-        seeds: torch.Tensor,
-        frame_positions: torch.Tensor,
-        temperature: torch.Tensor,
-        top_k: torch.Tensor,
-        repetition_penalty: torch.Tensor,
-        history: torch.Tensor,
-        codes: torch.Tensor,
-    ) -> None:
-        self.graph = graph
-        self.hidden_states = hidden_states
-        self.seeds = seeds
-        self.frame_positions = frame_positions
-        self.temperature = temperature
-        self.top_k = top_k
-        self.repetition_penalty = repetition_penalty
-        self.history = history
-        self.codes = codes
+    graph: ReplayableGraph
+    inputs: SeededFrameInputs
+    codes: torch.Tensor
 
 
 class Lfm3DepthCudaGraphs:
@@ -92,7 +89,10 @@ class Lfm3DepthCudaGraphs:
         self.pass_graphs: dict[int, DepthPassGraph] = {}
         self.frame_graphs: dict[int, SeededFrameGraph] = {}
 
-    def warm_up_and_capture(self, compute: GraphCompute) -> ReplayableGraph:
+    def warm_up_and_capture(
+        self, compute: GraphCompute
+    ) -> tuple[ReplayableGraph, torch.Tensor]:
+        """The captured graph and the static tensor its replays write."""
         stream = torch.cuda.Stream(device=self.device)
         stream.wait_stream(torch.cuda.current_stream(self.device))
         with torch.cuda.stream(stream):
@@ -103,8 +103,8 @@ class Lfm3DepthCudaGraphs:
         with self.graph_backend.capture(
             pool=self.pool, thread_local_errors=True
         ) as graph:
-            compute.capture()
-        return graph
+            output = compute()
+        return graph, output
 
     @torch.no_grad()
     def capture_pass_graphs(self, batch_sizes: Sequence[int]) -> None:
@@ -117,10 +117,15 @@ class Lfm3DepthCudaGraphs:
                 bucket, self.num_codebooks, device=self.device, dtype=torch.long
             )
             masked = torch.ones_like(codes, dtype=torch.bool)
-            compute = PassCompute(self.decoder, hidden_states, codes, masked)
-            graph = self.warm_up_and_capture(compute)
+            graph, logits = self.warm_up_and_capture(
+                PassCompute(self.decoder, hidden_states, codes, masked)
+            )
             self.pass_graphs[bucket] = DepthPassGraph(
-                graph, hidden_states, codes, masked, compute.output
+                graph=graph,
+                hidden_states=hidden_states,
+                codes=codes,
+                masked=masked,
+                logits=logits,
             )
         logger.info(
             f"LFM3 depth pass CUDA graphs captured for bs={sorted(self.pass_graphs)}"
@@ -130,8 +135,7 @@ class Lfm3DepthCudaGraphs:
     def capture_frame_graphs(self, batch_sizes: Sequence[int]) -> None:
         self.pool = self.graph_backend.graph_pool_handle()
         for bucket in sorted({int(size) for size in batch_sizes}, reverse=True):
-            buffers = SeededFrameGraph(
-                graph=None,
+            inputs = SeededFrameInputs(
                 hidden_states=torch.zeros(
                     bucket, self.hidden_size, device=self.device, dtype=self.dtype
                 ),
@@ -149,12 +153,13 @@ class Lfm3DepthCudaGraphs:
                     device=self.device,
                     dtype=torch.long,
                 ),
-                codes=None,
             )
-            compute = FrameCompute(self.decoder, buffers, self.schedule)
-            buffers.graph = self.warm_up_and_capture(compute)
-            buffers.codes = compute.output
-            self.frame_graphs[bucket] = buffers
+            graph, codes = self.warm_up_and_capture(
+                FrameCompute(self.decoder, inputs, self.schedule)
+            )
+            self.frame_graphs[bucket] = SeededFrameGraph(
+                graph=graph, inputs=inputs, codes=codes
+            )
         logger.info(
             f"LFM3 seeded frame CUDA graphs captured for bs={sorted(self.frame_graphs)}"
         )
@@ -168,13 +173,13 @@ class Lfm3DepthCudaGraphs:
             return self.decoder(hidden_states, codes, masked)
         else:
             pass
-        entry = self.pass_graphs[bucket]
-        entry.hidden_states[:rows].copy_(hidden_states)
-        entry.codes[:rows].copy_(codes)
-        entry.masked[:rows].copy_(masked)
-        entry.graph.replay()
+        pass_graph = self.pass_graphs[bucket]
+        pass_graph.hidden_states[:rows].copy_(hidden_states)
+        pass_graph.codes[:rows].copy_(codes)
+        pass_graph.masked[:rows].copy_(masked)
+        pass_graph.graph.replay()
         # note (ruilin): the caller consumes these logits before the next replay on the same stream.
-        return entry.logits[:rows]
+        return pass_graph.logits[:rows]
 
     def seeded_frames(
         self,
@@ -202,31 +207,20 @@ class Lfm3DepthCudaGraphs:
             )
         else:
             pass
-        entry = self.frame_graphs[bucket]
-        entry.hidden_states[:rows].copy_(hidden_states)
-        entry.seeds[:rows].copy_(seeds)
-        entry.frame_positions[:rows].copy_(frame_positions)
-        entry.temperature[:rows].copy_(temperature)
-        entry.top_k[:rows].copy_(top_k)
-        entry.repetition_penalty[:rows].copy_(repetition_penalty)
-        entry.history[:rows].copy_(history)
-        entry.graph.replay()
-        return entry.codes[:rows].clone()
+        frame_graph = self.frame_graphs[bucket]
+        inputs = frame_graph.inputs
+        inputs.hidden_states[:rows].copy_(hidden_states)
+        inputs.seeds[:rows].copy_(seeds)
+        inputs.frame_positions[:rows].copy_(frame_positions)
+        inputs.temperature[:rows].copy_(temperature)
+        inputs.top_k[:rows].copy_(top_k)
+        inputs.repetition_penalty[:rows].copy_(repetition_penalty)
+        inputs.history[:rows].copy_(history)
+        frame_graph.graph.replay()
+        return frame_graph.codes[:rows].clone()
 
 
-class GraphCompute:
-    """The work one graph records; capture() keeps its output tensor."""
-
-    output: torch.Tensor
-
-    def __call__(self) -> torch.Tensor:
-        raise NotImplementedError
-
-    def capture(self) -> None:
-        self.output = self()
-
-
-class PassCompute(GraphCompute):
+class PassCompute:
     def __init__(
         self,
         decoder: Lfm3DepthDecoder,
@@ -243,27 +237,27 @@ class PassCompute(GraphCompute):
         return self.decoder(self.hidden_states, self.codes, self.masked)
 
 
-class FrameCompute(GraphCompute):
+class FrameCompute:
     def __init__(
         self,
         decoder: Lfm3DepthDecoder,
-        buffers: SeededFrameGraph,
+        inputs: SeededFrameInputs,
         schedule: Sequence[int],
     ) -> None:
         self.decoder = decoder
-        self.buffers = buffers
+        self.inputs = inputs
         self.schedule = schedule
 
     def __call__(self) -> torch.Tensor:
-        buffers = self.buffers
+        inputs = self.inputs
         return seeded_frame_codes(
             self.decoder,
-            buffers.hidden_states,
-            buffers.seeds,
-            buffers.frame_positions,
-            buffers.temperature,
-            buffers.top_k,
-            buffers.repetition_penalty,
-            buffers.history,
+            inputs.hidden_states,
+            inputs.seeds,
+            inputs.frame_positions,
+            inputs.temperature,
+            inputs.top_k,
+            inputs.repetition_penalty,
+            inputs.history,
             self.schedule,
         )

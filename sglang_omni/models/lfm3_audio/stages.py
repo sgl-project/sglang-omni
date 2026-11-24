@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import math
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -42,6 +43,8 @@ INTERLEAVED_SYSTEM_PROMPT = "Respond with interleaved text and audio."
 AUDIO_PART_TYPES = frozenset({"audio", "audio_url", "input_audio"})
 IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 VIDEO_PART_TYPES = frozenset({"video", "video_url"})
+# note (ruilin): the API layer answers 400 to errors that carry this prefix.
+REQUEST_ERROR_PREFIX = "LFM3 request:"
 
 
 def load_processor(model_path: str) -> ProcessorMixin:
@@ -61,7 +64,9 @@ def tts_system_prompt(tts_params: Mapping[str, object]) -> str:
     if voice in ("", "default"):
         voice = DEFAULT_TTS_VOICE
     elif voice not in TTS_VOICES:
-        raise ValueError(f"LFM3 voices are {sorted(TTS_VOICES)}, got {voice!r}")
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} voices are {sorted(TTS_VOICES)}, got {voice!r}"
+        )
     else:
         pass
     language = str(tts_params.get("language") or DEFAULT_TTS_LANGUAGE)
@@ -79,7 +84,9 @@ def as_messages(inputs: object) -> list[dict[str, object]]:
     if not isinstance(messages, list) or not all(
         isinstance(message, Mapping) for message in messages
     ):
-        raise ValueError("LFM3 takes chat messages or a text prompt, not token ids")
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} send chat messages or a text prompt, not token ids"
+        )
     else:
         return [dict(message) for message in messages]
 
@@ -89,7 +96,7 @@ def part_source(part: Mapping[str, object], kind: str) -> object:
     if kind == "audio" and part.get("type") == "input_audio":
         audio = part["input_audio"]
         if not isinstance(audio, Mapping) or "data" not in audio:
-            raise ValueError("input_audio needs a data field")
+            raise ValueError(f"{REQUEST_ERROR_PREFIX} input_audio needs a data field")
         else:
             pass
         return f"data:audio/{audio.get('format', 'wav')};base64,{audio['data']}"
@@ -97,7 +104,9 @@ def part_source(part: Mapping[str, object], kind: str) -> object:
         value = part.get(f"{kind}_url", part.get(kind, part.get(f"input_{kind}")))
         source = value.get("url") if isinstance(value, Mapping) else value
         if source is None:
-            raise ValueError(f"A {part.get('type')} content part needs its {kind}")
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} a {part.get('type')} content part needs its {kind}"
+            )
         else:
             return source
 
@@ -124,7 +133,9 @@ async def load_video_bytes(source: object) -> bytes:
     elif isinstance(source, (str, Path)):
         return connector.load_local_path(source, VideoBytesIO())
     else:
-        raise ValueError(f"Unsupported LFM3 video input {type(source).__name__}")
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} unsupported video input {type(source).__name__}"
+        )
 
 
 def load_video_frames(
@@ -141,7 +152,7 @@ def load_video_frames(
             1 for packet in container.demux(stream) if packet.size
         )
     if not total_frames:
-        raise ValueError("LFM3 found no frames in the video")
+        raise ValueError(f"{REQUEST_ERROR_PREFIX} no frames in the video")
     else:
         pass
     frame_indices = [
@@ -175,13 +186,45 @@ def load_video_frames(
     return np.stack(decoded_frames), metadata
 
 
+def is_finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
 def audio_sampling(params: Mapping[str, object], is_tts: bool) -> dict[str, object]:
     """Speech-frame sampling: a TTS request's sampling fields, or a chat request's talker_ fields."""
     prefix = "" if is_tts else "talker_"
+    temperature = params.get(f"{prefix}temperature")
+    top_k = params.get(f"{prefix}top_k")
+    repetition_penalty = params.get(f"{prefix}repetition_penalty")
+    # note (ruilin): the frame sampler runs on the whole batch, so a value it rejects would fail every request beside this one.
+    if temperature is not None and not (
+        is_finite_number(temperature) and temperature >= 0
+    ):
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} {prefix}temperature must be a number >= 0"
+        )
+    elif top_k is not None and not (
+        isinstance(top_k, int) and not isinstance(top_k, bool) and top_k >= 0
+    ):
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} {prefix}top_k must be an integer >= 0"
+        )
+    elif repetition_penalty is not None and not (
+        is_finite_number(repetition_penalty) and repetition_penalty > 0
+    ):
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} {prefix}repetition_penalty must be a number > 0"
+        )
+    else:
+        pass
     return {
-        "audio_temperature": params.get(f"{prefix}temperature"),
-        "audio_top_k": params.get(f"{prefix}top_k"),
-        "audio_repetition_penalty": params.get(f"{prefix}repetition_penalty"),
+        "audio_temperature": temperature,
+        "audio_top_k": top_k,
+        "audio_repetition_penalty": repetition_penalty,
     }
 
 
@@ -231,6 +274,17 @@ class Lfm3AudioPreprocessor:
         metadata = request.metadata or {}
         tts_params = metadata.get("tts_params") or {}
         is_tts = metadata.get("task") == "tts"
+        if (
+            params.get("stop")
+            or params.get("stop_token_ids")
+            or params.get("epsilon_cutoff")
+        ):
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} stop sequences, stop_token_ids and epsilon_cutoff are not supported"
+            )
+        else:
+            pass
+        speech_sampling_fields = audio_sampling(params, is_tts)
         media = Media()
         if is_tts:
             inputs = request.inputs
@@ -247,7 +301,9 @@ class Lfm3AudioPreprocessor:
                 content = message.get("content")
                 if isinstance(content, list):
                     if not all(isinstance(part, Mapping) for part in content):
-                        raise ValueError("LFM3 message content parts must be objects")
+                        raise ValueError(
+                            f"{REQUEST_ERROR_PREFIX} message content parts must be objects"
+                        )
                     else:
                         pass
                     message["content"] = [
@@ -299,16 +355,6 @@ class Lfm3AudioPreprocessor:
             return_tensors="pt",
             **media.processor_inputs(),
         )
-        if (
-            params.get("stop")
-            or params.get("stop_token_ids")
-            or params.get("epsilon_cutoff")
-        ):
-            raise ValueError(
-                "LFM3 does not support stop sequences, stop_token_ids or epsilon_cutoff"
-            )
-        else:
-            pass
         text_sampling = (
             {}
             if is_tts
@@ -336,7 +382,7 @@ class Lfm3AudioPreprocessor:
             max_new_tokens=int(params.get("max_new_tokens") or DEFAULT_MAX_NEW_TOKENS),
             seed=params.get("seed"),
             **text_sampling,
-            **audio_sampling(params, is_tts),
+            **speech_sampling_fields,
         )
         return store_state(payload, state)
 
@@ -355,7 +401,7 @@ class Lfm3AudioPreprocessor:
         elif kind in IMAGE_PART_TYPES or kind in VIDEO_PART_TYPES:
             if not self.has_vision:
                 raise ValueError(
-                    "This LFM3 checkpoint takes text and audio; images and videos need LFM3-Omni"
+                    f"{REQUEST_ERROR_PREFIX} this checkpoint takes text and audio; images and videos need LFM3-Omni"
                 )
             else:
                 pass

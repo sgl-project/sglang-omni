@@ -200,7 +200,7 @@ def advance_speech(
     # A text row: text_end ends the text of an interleaved block and the turn otherwise; an end id ends the turn; outside a block, mode markers open one.
     text = ~needs_frame
     is_text_end = sampled_ids == tokens.text_end_token_id
-    # Compared one id at a time: a device tensor built from the host ids would block on the stream.
+    # note (ruilin): compared one id at a time, since a device tensor built from the host ids would block on the stream.
     is_end_id = torch.zeros_like(is_text_end)
     for end_id in tokens.eos_token_ids:
         is_end_id |= sampled_ids == end_id

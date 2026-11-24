@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """LiquidAI LFM3-Audio and LFM3-Omni: text, speech, image and video in; text and speech out."""
 
 from sglang_omni.models.lfm3_audio import config

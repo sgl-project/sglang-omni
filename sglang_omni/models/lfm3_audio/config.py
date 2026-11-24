@@ -62,7 +62,13 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
             name=GENERATION_STAGE,
             process="pipeline",
             factory_path=f"{PACKAGE}.engine_builder.create_generation_executor",
-            factory=FactoryArgs(speech_sampler="seeded", enable_async_decode=True),
+            factory=FactoryArgs(
+                speech_sampler="seeded",
+                enable_async_decode=True,
+                # note (ruilin): each prefill drains the pending decode step and runs eagerly, which bounds the engine loop at high concurrency. Holding new requests up to 30 ms (or until 32 wait) gave 46.3 vs 40.5 req/s at concurrency 64 on SeedTTS EN, H100, and 13.1 vs 13.6 at 8.
+                prefill_coalesce_requests=32,
+                prefill_coalesce_wait_ms=30.0,
+            ),
             gpu=0,
             next=DECODE_STAGE,
         ),

@@ -9,21 +9,20 @@ The checkpoints are released under the LFM Open License v1.0.
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download a model:
 
 ```bash
-hf download LiquidAI/LFM3-Omni-2B
+hf download LiquidAI/LFM3-Omni-2B --revision c01718a568e53ae936e6b5e1ff5ab2de7d7f388b
 ```
 
-The checkpoints ship their own encoder and codec code, which the pipeline loads with `trust_remote_code`.
+The checkpoints ship their own encoder and codec code, which the pipeline loads with `trust_remote_code`. `examples/configs/lfm3_omni.yaml` pins the checkpoint to the snapshot it was validated against, so the launch below takes `model_path` from the config.
 
 ## Server Configuration
 
 ```bash
 sgl-omni serve \
-  --model-path LiquidAI/LFM3-Omni-2B \
   --config examples/configs/lfm3_omni.yaml \
   --port 8000
 ```
 
-For LFM3-Audio, use `LiquidAI/LFM3-Audio-2B` with `examples/configs/lfm3_audio.yaml`.
+For LFM3-Audio, use `examples/configs/lfm3_audio.yaml` (`LiquidAI/LFM3-Audio-2B` at revision `2d6c1f99c129b3ef07a8d168bc0ff08e2bdb93f1`).
 
 ## Text to Speech
 
@@ -91,7 +90,7 @@ Speech frames are drawn by one of two samplers, set with `speech_sampler` under 
 
 With `seeded`, each request's speech state lives on the GPU, so the next decode step launches before the host reads the last one (`enable_async_decode`, on by default).
 
-SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100:
+SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100, without prefill coalescing:
 
 | Concurrency | Sampler | WER | Latency p50 | RTF | Throughput |
 |---|---|---|---|---|---|
@@ -101,7 +100,9 @@ SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100:
 | 32 | seeded | 0.89% | 1.01 s | 0.23 | 31.0 req/s |
 | 64 | seeded | 0.90% | 1.51 s | 0.35 | 41.3 req/s |
 
-LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32. The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). New requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves 46.3 instead of 40.5 req/s, at 8 it costs about 3%.
+LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32.
+
+The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). By default new requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves 46.3 req/s (p50 1.33 s) instead of 40.5, and at 8 it costs about 3% (13.1 req/s). `prefill_coalesce_requests` and `prefill_coalesce_wait_ms` under `stages.generation.factory` change it; `prefill_coalesce_requests: 0` turns it off.
 
 ## Limitations
 

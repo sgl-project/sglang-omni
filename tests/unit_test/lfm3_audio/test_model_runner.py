@@ -45,6 +45,25 @@ def make_runner() -> Lfm3AudioModelRunner:
     return runner
 
 
+def make_seeded_runner(monkeypatch: pytest.MonkeyPatch) -> Lfm3AudioModelRunner:
+    """A runner with the seeded sampler's device speech pool, on the CPU."""
+    runner = make_runner()
+    runner.speech_pool = SpeechStatePool(
+        slot_count=4,
+        hidden_size=HIDDEN_SIZE,
+        window=4,
+        num_codebooks=TOKENS.num_codebooks,
+        embed_dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "next_host_staging",
+        lambda shape, dtype: torch.empty(shape, dtype=dtype),
+    )
+    return runner
+
+
 def make_request(request_id: str, last_prompt_token: int) -> SchedulerRequest:
     speech = SpeechState.from_prompt(
         TOKENS,
@@ -165,7 +184,7 @@ def test_device_speech_steps_match_the_host_state_machine(
 ) -> None:
     """The seeded runner advances speech on the device; its emitted ids, fed inputs and host replay match the host state machine step for step, through both the synchronous and the launch/resolve path."""
     host_runner = make_runner()
-    device_runner = make_runner()
+    device_runner = make_seeded_runner(monkeypatch)
     device_runner.model = types.SimpleNamespace(
         **{
             **vars(host_runner.model),
@@ -175,19 +194,6 @@ def test_device_speech_steps_match_the_host_state_machine(
     )
     host_runner.model.decode_input_embed_buffer = torch.zeros(3, HIDDEN_SIZE)
     host_runner.model.text_only_buffer = torch.zeros(3, dtype=torch.bool)
-    device_runner.speech_pool = SpeechStatePool(
-        slot_count=4,
-        hidden_size=HIDDEN_SIZE,
-        window=4,
-        num_codebooks=TOKENS.num_codebooks,
-        embed_dtype=torch.float32,
-        device=torch.device("cpu"),
-    )
-    monkeypatch.setattr(
-        device_runner,
-        "next_host_staging",
-        lambda shape, dtype: torch.empty(shape, dtype=dtype),
-    )
     prompts = (TOKENS.audio_start_token_id, TOKENS.mixed_start_token_id, 1000)
     host_requests = [make_request(f"r{i}", token) for i, token in enumerate(prompts)]
     device_requests = [make_request(f"r{i}", token) for i, token in enumerate(prompts)]
@@ -278,6 +284,59 @@ def test_device_speech_steps_match_the_host_state_machine(
         ] == [codes.tolist() for codes in host_request.data.feedback_frame_codes]
 
 
+def test_step_launched_before_a_retraction_or_finish_is_not_committed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request can be retracted, or finish, between a step's launch and its resolve. The resolve must leave its host state at the last committed step, and the replay prefill must write that state back over the device's, or the replay would skip a frame."""
+    runner = make_seeded_runner(monkeypatch)
+    requests = [
+        make_request("retracted", TOKENS.audio_start_token_id),
+        make_request("finished", TOKENS.audio_start_token_id),
+    ]
+    forward_batch = types.SimpleNamespace(req_pool_indices=torch.tensor([2, 3]))
+    frames = torch.full((2, TOKENS.num_codebooks), 7)
+    monkeypatch.setattr(
+        model_runner_module, "seeded_frame_codes", lambda *args, **kwargs: frames
+    )
+
+    def step_result() -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(2, HIDDEN_SIZE)
+            ),
+            next_token_ids=torch.tensor([42, 42]),
+        )
+
+    runner.post_prefill(step_result(), forward_batch, None, requests)
+    result = step_result()
+    launch_buf = runner.post_decode_launch(result, forward_batch, requests)
+    requests[0].data.req.is_retracted = True
+    requests[1].data.req.finished = lambda: True
+    runner.post_decode_resolve(launch_buf, result, forward_batch, None, requests)
+
+    for request in requests:
+        assert len(request.data.feedback_frame_codes) == 1
+        assert request.data.speech.sampling.frames_sampled == 1
+    device_frames = runner.speech_pool.gather(forward_batch.req_pool_indices)
+    assert device_frames.frames_sampled.tolist() == [2, 2]
+
+    retracted = requests[0]
+    retracted.data.req.is_retracted = False
+    replay_batch = types.SimpleNamespace(req_pool_indices=torch.tensor([2]))
+    replay_result = types.SimpleNamespace(
+        logits_output=types.SimpleNamespace(hidden_states=torch.zeros(1, HIDDEN_SIZE)),
+        next_token_ids=torch.tensor([42]),
+    )
+    monkeypatch.setattr(
+        model_runner_module, "seeded_frame_codes", lambda *args, **kwargs: frames[:1]
+    )
+    runner.post_prefill(replay_result, replay_batch, None, [retracted])
+
+    assert retracted.data.speech.sampling.frames_sampled == 2
+    replayed = runner.speech_pool.gather(replay_batch.req_pool_indices)
+    assert replayed.frames_sampled.tolist() == [2]
+
+
 SUPPORTED_SETTINGS = dict(
     attention_backend="triton",
     prefill_attention_backend=None,
@@ -313,7 +372,10 @@ def test_engine_refuses_unsupported_server_settings(
     override: dict[str, object],
 ) -> None:
     builder = Lfm3AudioEngineBuilder(
-        speech_sampler=SpeechSampler.EXACT, enable_async_decode=False
+        speech_sampler=SpeechSampler.EXACT,
+        enable_async_decode=False,
+        prefill_coalesce_requests=0,
+        prefill_coalesce_wait_ms=30.0,
     )
     builder.validate_before_infrastructure(types.SimpleNamespace(**SUPPORTED_SETTINGS))
     with pytest.raises(ValueError, match="LFM3"):

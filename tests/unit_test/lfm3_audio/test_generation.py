@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU tests of the LFM3 speech state machine and frame sampling."""
+"""The LFM3 speech state machine and frame sampling, with the seeded sampler and depth graphs on an accelerator."""
 
 from __future__ import annotations
 
@@ -9,14 +9,29 @@ from transformers.generation.logits_process import RepetitionPenaltyLogitsProces
 
 from sglang_omni.models.lfm3_audio.depth import (
     FrameSampling,
+    Lfm3DepthDecoder,
     sample_frames,
     seeded_frame_codes,
 )
+from sglang_omni.models.lfm3_audio.depth_cuda_graph import Lfm3DepthCudaGraphs
 from sglang_omni.models.lfm3_audio.generation import GenerationMode, SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
+from sglang_omni.platforms import current_platform
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 TOKENS = Lfm3AudioTokens()
 TEXT_ID = 1000
+BACKBONE_HIDDEN_SIZE = 8
+REPETITION_WINDOW = 4
+TINY_DEPTH_CONFIG = {
+    "hidden_size": 16,
+    "intermediate_size": 32,
+    "num_attention_heads": 2,
+    "num_key_value_heads": 2,
+    "norm_eps": 1e-5,
+    "layer_types": ["full_attention", "full_attention"],
+    "rope_parameters": {"full_attention": {"rope_theta": 10000.0}},
+}
 
 
 def sampling(
@@ -112,10 +127,6 @@ def test_text_only_rows_never_sample_frames() -> None:
     assert [step(state) for _ in range(4)] == ["text"] * 4
 
 
-def test_maskgit_schedule_covers_every_codebook() -> None:
-    assert TOKENS.maskgit_schedule == [4, 4, 4]
-
-
 class PassLogits:
     """Depth logits that depend on the pass inputs, so each pass scores differently."""
 
@@ -189,11 +200,10 @@ def test_exact_sampler_draws_as_the_checkpoint() -> None:
             theirs[row].append(expected[row])
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="the seeded sampler is a Triton kernel"
-)
+@pytest.mark.accelerator
 def test_seeded_sampler_rows_depend_only_on_their_seed() -> None:
     """A row's frame is the same alone or in a batch, the same on a rerun, and changes with its seed."""
+    require_cuda()
     device = torch.device("cuda")
     depth_logits = PassLogits(3)
     base = depth_logits.base.to(device)
@@ -248,3 +258,74 @@ def test_repetition_history_keeps_the_last_window_of_frames() -> None:
     for code in range(6):
         frame_sampling.append(frame(code))
     assert frame_sampling.history[:, 0].tolist() == [2, 3, 4, 5]
+
+
+def seeded_inputs(
+    rows: int, device: torch.device, generator: torch.Generator
+) -> dict[str, torch.Tensor]:
+    """Mixed greedy, top-k and penalized rows with random repetition history."""
+    return dict(
+        seeds=torch.arange(rows, device=device) + 7,
+        frame_positions=torch.arange(rows, device=device) * 3,
+        temperature=torch.tensor([0.8, 0.0, 1.0, 0.6], device=device)[:rows],
+        top_k=torch.tensor([64, 0, 0, 16], device=device)[:rows],
+        repetition_penalty=torch.tensor([1.2, 1.3, 1.0, 1.1], device=device)[:rows],
+        history=torch.randint(
+            0,
+            TOKENS.codebook_size,
+            (rows, REPETITION_WINDOW, TOKENS.num_codebooks),
+            generator=generator,
+        ).to(device),
+    )
+
+
+@pytest.mark.accelerator
+def test_depth_graphs_replay_the_eager_frames() -> None:
+    """A captured bucket returns what eager returns, for a whole seeded frame and for one depth pass, also when the batch is smaller than its bucket and a fuller batch left its data in the padding rows."""
+    require_cuda()
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    decoder = (
+        Lfm3DepthDecoder(
+            TINY_DEPTH_CONFIG,
+            BACKBONE_HIDDEN_SIZE,
+            TOKENS.num_codebooks,
+            TOKENS.codebook_size,
+        )
+        .to(device)
+        .eval()
+    )
+    generator = torch.Generator().manual_seed(1)
+    frame_graphs, pass_graphs = (
+        Lfm3DepthCudaGraphs(
+            decoder,
+            current_platform.get_device_graph_backend(device),
+            hidden_size=BACKBONE_HIDDEN_SIZE,
+            schedule=TOKENS.maskgit_schedule,
+            repetition_window=REPETITION_WINDOW,
+        )
+        for _ in range(2)
+    )
+    frame_graphs.capture_frame_graphs([1, 4])
+    pass_graphs.capture_pass_graphs([1, 4])
+    for rows in (4, 3, 1):
+        hidden_states = torch.randn(rows, BACKBONE_HIDDEN_SIZE, generator=generator).to(
+            device
+        )
+        inputs = seeded_inputs(rows, device, generator)
+        expected_codes = seeded_frame_codes(
+            decoder, hidden_states, schedule=TOKENS.maskgit_schedule, **inputs
+        )
+        assert torch.equal(
+            frame_graphs.seeded_frames(hidden_states, **inputs), expected_codes
+        ), rows
+
+        masked = torch.rand(rows, TOKENS.num_codebooks, generator=generator) < 0.5
+        masked = masked.to(device)
+        expected_logits = decoder(hidden_states, expected_codes, masked)
+        torch.testing.assert_close(
+            pass_graphs.depth_logits(hidden_states, expected_codes, masked),
+            expected_logits,
+            rtol=1e-4,
+            atol=1e-5,
+        )

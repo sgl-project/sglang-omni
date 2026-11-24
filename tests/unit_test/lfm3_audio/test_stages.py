@@ -18,6 +18,7 @@ from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     resource_connector_scope,
 )
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 def test_tts_prompt_uses_voice_and_language() -> None:
@@ -55,6 +56,32 @@ def test_speech_sampling_fields_of_tts_and_chat() -> None:
         "audio_top_k": None,
         "audio_repetition_penalty": None,
     }
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"temperature": -1.0},
+        {"temperature": float("nan")},
+        {"temperature": "hot"},
+        {"top_k": -1},
+        {"top_k": 1.5},
+        {"repetition_penalty": 0},
+        {"repetition_penalty": float("inf")},
+    ],
+)
+def test_speech_sampling_values_the_sampler_rejects_are_request_errors(
+    params: dict[str, object],
+) -> None:
+    """The frame sampler runs on the whole batch: a repetition penalty of 0 or a negative temperature raised inside it and failed every request of the batch. The request alone is now answered with a 400."""
+    with pytest.raises(ValueError) as tts_error:
+        stages.audio_sampling(params, is_tts=True)
+    with pytest.raises(ValueError, match="talker_") as chat_error:
+        stages.audio_sampling(
+            {f"talker_{name}": value for name, value in params.items()}, is_tts=False
+        )
+    assert is_bad_request_error(tts_error.value)
+    assert is_bad_request_error(chat_error.value)
 
 
 @pytest.mark.parametrize(
