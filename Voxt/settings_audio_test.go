@@ -136,6 +136,9 @@ func TestDeviceInUse(t *testing.T) {
 
 func TestRecordingCues(t *testing.T) {
 	snap := func(id string, st session.State) session.Snapshot { return session.Snapshot{ID: id, State: st} }
+	rewrite := func(id string, st session.State) session.Snapshot {
+		return session.Snapshot{ID: id, State: st, Kind: store.KindRewrite}
+	}
 	for _, tc := range []struct {
 		name   string
 		was, s session.Snapshot
@@ -151,6 +154,8 @@ func TestRecordingCues(t *testing.T) {
 		{"failed", snap("a", session.Recording), snap("a", session.Failed), noCue},
 		{"reading a selection", snap("a", session.Reading), snap("a", session.Composing), noCue},
 		{"recognized", snap("a", session.Recognizing), snap("a", session.Composing), noCue},
+		{"rewrite starts", snap("", session.Idle), rewrite("a", session.Recording), noCue},
+		{"rewrite stops", rewrite("a", session.Recording), rewrite("a", session.Composing), noCue},
 	} {
 		if got := recordingCue(tc.was, tc.s); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
