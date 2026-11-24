@@ -37,6 +37,10 @@ func (a *app) setStrictShortcuts(on bool) {
 	a.updateSettings(func(current *settings.Settings) { current.Features.StrictShortcuts = on })
 }
 
+func (a *app) setReturnFinishes(on bool) {
+	a.updateSettings(func(current *settings.Settings) { current.Features.ReturnFinishes = on })
+}
+
 // applyShortcutPreset gives the shortcuts the user did not change preset's
 // keys, or says that there are none.
 func (a *app) applyShortcutPreset(preset string) {

@@ -139,6 +139,7 @@ func settingsDemoGeneralCases() []settingsDemoCase {
 		{name: "interface scale", fixture: "en/settings-appearance-normal", steps: historySteps("125%"), want: []string{"setInterfaceScale 1.25"}},
 		{name: "sidebar", fixture: "en/settings-appearance-normal", steps: historySteps("Icons only"), want: []string{"setSidebarChoice icons"}},
 		{name: "reduce motion", fixture: "en/settings-appearance-normal", steps: historySteps("Reduce motion"), want: []string{"setReduceMotion true"}},
+		{name: "opening", fixture: "en/settings-appearance-normal", steps: historySteps("Play the opening at start"), want: []string{"setOpening false"}},
 		{name: "required permissions", fixture: "en/settings-permissions-state-not-determined", steps: historySteps("Ask for the required permissions"), want: []string{"askRequired"}},
 		{name: "recheck permissions", fixture: "en/settings-permissions-normal", steps: historySteps("Check again"), want: []string{"recheckPermissions"}},
 		{name: "ask microphone", fixture: "en/settings-permissions-state-not-determined", prepare: settingsDemoSearch("Microphone"), steps: historySteps("Ask"), want: []string{"requestPermission microphone"}},

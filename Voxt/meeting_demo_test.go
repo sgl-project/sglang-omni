@@ -64,6 +64,7 @@ func TestMeetingDemoScreenshots(t *testing.T) {
 			host.selectMeetingFixture(index - host.selected)
 			tester := newMeetingDemoTester(t, host)
 			want := meetingDemoSentinel(fixture)
+			waitLoadingLine(tester, want)
 			if want != "" && !tester.HasText(want) {
 				t.Fatalf("fixture does not show %q; texts %q", want, tester.Texts())
 			}

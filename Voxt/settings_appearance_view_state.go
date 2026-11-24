@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -24,6 +25,16 @@ type settingsAppearanceViewState struct {
 	SidebarOptions []string  `json:"sidebar_options"`
 	SidebarValues  []string  `json:"sidebar_values"`
 	ReduceMotion   bool      `json:"reduce_motion"`
+	// Opening is what the opening's switch shows: off while Reduce motion,
+	// which skips the opening, is on; the saved choice is kept for after.
+	Opening bool `json:"opening"`
+	// OpeningLength is the speed slider's stop: the length's index in
+	// OpeningLengthValues (milliseconds, slow to fast), and
+	// OpeningLengthOptions says each in seconds; its row shows only while
+	// Opening is on.
+	OpeningLength        int      `json:"opening_length"`
+	OpeningLengthOptions []string `json:"opening_length_options"`
+	OpeningLengthValues  []int    `json:"opening_length_values"`
 	// Palette is the saved colour ("#0d9384"), DefaultPalette the one
 	// Reset color restores.
 	Palette        string `json:"palette"`
@@ -37,6 +48,18 @@ type settingsAppearanceViewState struct {
 
 var scaleLabels = []string{"90%", "100%", "110%", "125%"}
 
+func openingLengthLabels(translator *i18n.Translator) []string {
+	labels := make([]string, len(settings.OpeningLengths))
+	for i, ms := range settings.OpeningLengths {
+		n := 2 // "seconds" but for exactly one
+		if ms == 1000 {
+			n = 1
+		}
+		labels[i] = translator.N(n, "%s second", "%s seconds", strconv.FormatFloat(float64(ms)/1000, 'f', -1, 64))
+	}
+	return labels
+}
+
 func buildSettingsAppearanceViewState(translator *i18n.Translator, appearance settings.Appearance) settingsAppearanceViewState {
 	return settingsAppearanceViewState{
 		Theme:        max(0, slices.Index(settings.Themes, appearance.Theme)),
@@ -44,10 +67,13 @@ func buildSettingsAppearanceViewState(translator *i18n.Translator, appearance se
 		ThemeValues:  slices.Clone(settings.Themes),
 		Scale:        max(0, slices.Index(settings.Scales, appearance.Scale)), ScaleOptions: slices.Clone(scaleLabels),
 		ScaleValues: slices.Clone(settings.Scales), Sidebar: sidebarChoice(appearance),
-		SidebarOptions: []string{translator.T("Automatic"), translator.T("Names and icons"), translator.T("Icons only")},
-		SidebarValues:  []string{settingsSidebarAutomatic, settingsSidebarNames, settingsSidebarIcons},
-		ReduceMotion:   appearance.ReduceMotion,
-		Palette:        appearance.Palette, DefaultPalette: settings.DefaultPalette,
+		SidebarOptions:       []string{translator.T("Automatic"), translator.T("Names and icons"), translator.T("Icons only")},
+		SidebarValues:        []string{settingsSidebarAutomatic, settingsSidebarNames, settingsSidebarIcons},
+		ReduceMotion:         appearance.ReduceMotion,
+		Opening:              appearance.Opening && !appearance.ReduceMotion,
+		OpeningLength:        max(0, slices.Index(settings.OpeningLengths, appearance.OpeningMillis)),
+		OpeningLengthOptions: openingLengthLabels(translator), OpeningLengthValues: slices.Clone(settings.OpeningLengths),
+		Palette: appearance.Palette, DefaultPalette: settings.DefaultPalette,
 		Transparent:     appearance.Theme == settings.ThemeTransparent,
 		MinTransparency: settings.MinWindowTransparency, MaxTransparency: settings.MaxWindowTransparency,
 	}
