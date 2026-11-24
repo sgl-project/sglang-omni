@@ -502,14 +502,15 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
   std::vector<std::string> texts;
   int remaining_tokens = options.max_new_tokens.value_or(0);
   const bool has_token_budget = remaining_tokens != 0;
-  for (const auto &[start, end] : chunks) {
+  for (const auto &[start_sample, end_sample] : chunks) {
     TranscriptionOptions chunk_options = options;
     if (has_token_budget) {
       chunk_options.max_new_tokens = remaining_tokens;
     } else {
     }
     const TranscriptionResult chunk = TranscribeWindow(
-        std::vector<float>(samples.begin() + start, samples.begin() + end),
+        std::vector<float>(samples.begin() + start_sample,
+                           samples.begin() + end_sample),
         chunk_options, cancel, nullptr);
     texts.push_back(chunk.text);
     if (!merged.language.has_value()) {

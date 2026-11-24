@@ -315,10 +315,12 @@ def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
         )
         outputs[policy] = json.loads(result.stdout)
         assert outputs[policy]["finish_reason"] == "stop"
+        assert ("DFlash backoff after " in result.stderr) == (
+            policy == "adaptive"
+        ), result.stderr
     fixed = outputs["fixed"]
     adaptive = outputs["adaptive"]
-    # note (YingjieHe): pieces start with fresh draft state, so backoff and the verify round gap are covered by the draft backoff tests.
-    assert adaptive["verify_rounds"] > 0 and fixed["verify_rounds"] > 0
+    assert 0 < adaptive["verify_rounds"] < fixed["verify_rounds"]
     fixed_error = score(recording.reference, fixed["text"], "zh").error_rate
     adaptive_error = score(recording.reference, adaptive["text"], "zh").error_rate
     golden = json.loads(
