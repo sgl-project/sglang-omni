@@ -5,12 +5,12 @@
 Adapted from NVIDIA-NeMo/Speech revision
 2c1a2f91d64566b5d391b83df42f9ab4cd810adb: transformer_encoder.py,
 sortformer_diar_models.py, features.py, subsampling.py and multi_head_attention.py.
-Omni changes: fixed checkpoint architecture, single-recording inference, plain
-PyTorch modules, and explicit request-local cache ownership.
+Omni changes: fixed checkpoint architecture, plain PyTorch modules, explicit
+request-local cache ownership, and batched compact chunk execution.
 """
 
-from collections import OrderedDict
-from collections.abc import Generator
+from collections import OrderedDict, defaultdict
+from collections.abc import Generator, Sequence
 from threading import local
 
 import torch
@@ -30,6 +30,7 @@ compiled_flex_attention = torch.compile(
     options={"deterministic": True, "triton.autotune_pointwise": False},
 )
 MASK_BLOCK_FRAMES = 128
+MEL_FRAMES_PER_ENCODER_FRAME = 8
 
 
 class Featurizer(nn.Module):
@@ -78,7 +79,7 @@ class FeatureStacking(nn.Module):
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         frames = features.transpose(1, 2)
         frames = F.pad(frames, (0, 0, 0, -frames.shape[1] % 8))
-        return self.proj(frames.reshape(1, -1, 8 * 128))
+        return self.proj(frames.reshape(features.shape[0], -1, 8 * 128))
 
 
 @triton.jit(do_not_specialize=["q_batch", "k_batch", "o_batch"])
@@ -183,7 +184,7 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         qkv = (
             self.w_qkv(hidden_states)
-            .view(1, hidden_states.shape[1], 3, 8, 64)
+            .view(hidden_states.shape[0], hidden_states.shape[1], 3, 8, 64)
             .permute(2, 0, 3, 1, 4)
         )
         q, k, v = qkv.unbind(0)
@@ -196,7 +197,7 @@ class Attention(nn.Module):
         return self.out_proj(
             attention_output.transpose(1, 2)
             .contiguous()
-            .view(1, hidden_states.shape[1], 512)
+            .view(hidden_states.shape[0], hidden_states.shape[1], 512)
         )
 
 
@@ -231,11 +232,15 @@ class TransformerBlock(nn.Module):
 
 def block_mask_rows(blocks: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the per-row block counts and the block indices that come first."""
+    if blocks.ndim == 2:
+        blocks = blocks.unsqueeze(0)
+    else:
+        pass
     return (
-        blocks.sum(-1).to(torch.int32)[None, None],
+        blocks.sum(-1).to(torch.int32)[:, None],
         blocks.to(torch.int32)
         .argsort(descending=True, stable=True)
-        .to(torch.int32)[None, None],
+        .to(torch.int32)[:, None],
     )
 
 
@@ -250,20 +255,35 @@ class TransformerEncoder(nn.Module):
         # note (Richard Wang): Per-thread masks stay on that worker thread's stream.
         self.thread_masks = local()
 
-    def attention_mask(self, frame_count: int, valid_length: int) -> BlockMask:
+    def attention_mask(
+        self, frame_count: int, valid_length: int | Sequence[int]
+    ) -> BlockMask:
         masks = getattr(self.thread_masks, "masks", None)
         if masks is None:
             masks = self.thread_masks.masks = OrderedDict()
         else:
             pass
-        mask_key = (frame_count, valid_length)
-        if mask_key in masks:
-            masks.move_to_end(mask_key)
-            return masks[mask_key]
+        valid_encoder_lengths = (
+            (valid_length,) if isinstance(valid_length, int) else tuple(valid_length)
+        )
+        if (
+            not valid_encoder_lengths
+            or min(valid_encoder_lengths) < 1
+            or max(valid_encoder_lengths) > frame_count
+        ):
+            raise ValueError(
+                "Attention valid_encoder_lengths must be in [1, frame_count]"
+            )
+        else:
+            pass
+        padding_mask_key = (frame_count, valid_encoder_lengths)
+        if padding_mask_key in masks:
+            masks.move_to_end(padding_mask_key)
+            return masks[padding_mask_key]
         else:
             pass
         device = self.final_norm.weight.device
-        valid_lengths = torch.tensor([valid_length], device=device)
+        encoder_length_tensor = torch.tensor(valid_encoder_lengths, device=device)
 
         def padding_mask(
             batch: torch.Tensor,
@@ -271,15 +291,20 @@ class TransformerEncoder(nn.Module):
             query_index: torch.Tensor,
             key_value_index: torch.Tensor,
         ) -> torch.Tensor:
-            return key_value_index < valid_lengths[batch]
+            return key_value_index < encoder_length_tensor[batch]
 
         # note (Richard Wang): Derive prefix blocks without a dense token mask.
         blocks = torch.arange(-(-frame_count // MASK_BLOCK_FRAMES), device="cpu")
-        full = ((blocks[:, None] + 1) * MASK_BLOCK_FRAMES <= frame_count) & (
-            (blocks[None, :] + 1) * MASK_BLOCK_FRAMES <= valid_length
+        host_encoder_lengths = torch.tensor(valid_encoder_lengths, device="cpu")
+        full = ((blocks[None, :, None] + 1) * MASK_BLOCK_FRAMES <= frame_count) & (
+            (blocks[None, None, :] + 1) * MASK_BLOCK_FRAMES
+            <= host_encoder_lengths[:, None, None]
         )
-        partial = (blocks[None, :] * MASK_BLOCK_FRAMES < valid_length) & ~full
-        masks[mask_key] = BlockMask.from_kv_blocks(
+        partial = (
+            blocks[None, None, :] * MASK_BLOCK_FRAMES
+            < host_encoder_lengths[:, None, None]
+        ) & ~full
+        masks[padding_mask_key] = BlockMask.from_kv_blocks(
             *block_mask_rows(partial),
             *block_mask_rows(full),
             BLOCK_SIZE=MASK_BLOCK_FRAMES,
@@ -291,9 +316,11 @@ class TransformerEncoder(nn.Module):
             masks.popitem(last=False)
         else:
             pass
-        return masks[mask_key]
+        return masks[padding_mask_key]
 
-    def forward(self, embeddings: torch.Tensor, valid_length: int) -> torch.Tensor:
+    def forward(
+        self, embeddings: torch.Tensor, valid_length: int | Sequence[int]
+    ) -> torch.Tensor:
         mask = self.attention_mask(embeddings.shape[1], valid_length)
         hidden_states = self.embed_norm(embeddings)
         for layer in self.layers:
@@ -328,14 +355,16 @@ class SortformerModules(nn.Module):
         self, embeddings: torch.Tensor, valid_length: int | torch.Tensor
     ) -> torch.Tensor:
         """valid_length is an int, or per-row lengths shaped (batch, 1)."""
+        mask = (
+            torch.arange(embeddings.shape[1], device=embeddings.device) < valid_length
+        )
         hidden = self.encoder_proj(embeddings)
+        # note (eranik): Projection bias must also be zeroed before convolution reads a padded neighbor.
+        hidden = hidden.masked_fill(~mask[..., None], 0.0)
         hidden = self.subpixel_upsample(hidden.transpose(1, 2)).transpose(1, 2)
         hidden = hidden.reshape(embeddings.shape[0], -1, self.tf_d_model)
         hidden = F.relu(self.first_hidden_to_hidden(F.relu(hidden)))
         probabilities = torch.sigmoid(self.single_hidden_to_spks(hidden))
-        mask = (
-            torch.arange(embeddings.shape[1], device=embeddings.device) < valid_length
-        )
         return probabilities * mask.repeat_interleave(self.upsample, dim=-1)[..., None]
 
 
@@ -405,3 +434,206 @@ class NemotronDiarizationModel(nn.Module):
             self.sortformer_modules.learnable_sil_emb,
         )
         return output
+
+    def forward_chunks(
+        self,
+        mel_features: Sequence[torch.Tensor],
+        speaker_caches: Sequence[SpeakerCache],
+        right_context_mel_frames: Sequence[int],
+    ) -> list[torch.Tensor]:
+        """Advance independent recordings with compact, right-padded encoder rows."""
+        batch_size = len(mel_features)
+        if (
+            batch_size == 0
+            or len(speaker_caches) != batch_size
+            or len(right_context_mel_frames) != batch_size
+        ):
+            raise ValueError(
+                "Features, states and right contexts need equal nonzero lengths"
+            )
+        else:
+            pass
+        if any(
+            chunk_mel_features.ndim != 3
+            or chunk_mel_features.shape[:2] != (1, 128)
+            or chunk_mel_features.shape[2] == 0
+            for chunk_mel_features in mel_features
+        ):
+            raise ValueError("Each chunk must have shape (1,128,positive frames)")
+        else:
+            pass
+        maximum_mel_frames = max(
+            chunk_mel_features.shape[2] for chunk_mel_features in mel_features
+        )
+        packed_mel_features = torch.cat(
+            [
+                F.pad(
+                    chunk_mel_features,
+                    (0, maximum_mel_frames - chunk_mel_features.shape[2]),
+                )
+                for chunk_mel_features in mel_features
+            ]
+        )
+        chunk_embeddings = self.encoder.pre_encode(packed_mel_features)
+        chunk_encoder_frames = [
+            (chunk_mel_features.shape[2] + MEL_FRAMES_PER_ENCODER_FRAME - 1)
+            // MEL_FRAMES_PER_ENCODER_FRAME
+            for chunk_mel_features in mel_features
+        ]
+        prefix_encoder_frames = [
+            speaker_cache.cache.shape[1] + speaker_cache.fifo.shape[1]
+            for speaker_cache in speaker_caches
+        ]
+        valid_encoder_frames = [
+            prefix_encoder_frame_count + chunk_encoder_frame_count
+            for prefix_encoder_frame_count, chunk_encoder_frame_count in zip(
+                prefix_encoder_frames, chunk_encoder_frames
+            )
+        ]
+        maximum_encoder_frames = max(valid_encoder_frames)
+        # note (eranik): Padding only after each complete prefix preserves rotary positions.
+        packed_embeddings = torch.cat(
+            [
+                F.pad(
+                    torch.cat(
+                        [
+                            speaker_cache.cache,
+                            speaker_cache.fifo,
+                            chunk_embeddings[
+                                row_index : row_index + 1, :chunk_encoder_frame_count
+                            ],
+                        ],
+                        dim=1,
+                    ),
+                    (0, 0, 0, maximum_encoder_frames - valid_encoder_frames[row_index]),
+                )
+                for row_index, (speaker_cache, chunk_encoder_frame_count) in enumerate(
+                    zip(speaker_caches, chunk_encoder_frames)
+                )
+            ]
+        )
+        encoded_embeddings = self.encoder(packed_embeddings, valid_encoder_frames)
+        encoder_length_tensor = torch.tensor(
+            valid_encoder_frames, device=encoded_embeddings.device
+        )[:, None]
+        predictions = self.sortformer_modules(encoded_embeddings, encoder_length_tensor)
+        downsampled_predictions = F.avg_pool1d(
+            predictions.transpose(1, 2),
+            MEL_FRAMES_PER_ENCODER_FRAME,
+            MEL_FRAMES_PER_ENCODER_FRAME,
+        ).transpose(1, 2)
+        kept_encoder_frames = [
+            chunk_encoder_frame_count
+            - (right_frames + MEL_FRAMES_PER_ENCODER_FRAME - 1)
+            // MEL_FRAMES_PER_ENCODER_FRAME
+            for chunk_encoder_frame_count, right_frames in zip(
+                chunk_encoder_frames, right_context_mel_frames
+            )
+        ]
+        if min(kept_encoder_frames) < 1:
+            raise ValueError(
+                "Each offline step needs at least one central encoder frame"
+            )
+        else:
+            pass
+        outputs = [
+            predictions[
+                row_index : row_index + 1,
+                prefix_encoder_frame_count
+                * MEL_FRAMES_PER_ENCODER_FRAME : (
+                    prefix_encoder_frame_count + kept_encoder_frame_count
+                )
+                * MEL_FRAMES_PER_ENCODER_FRAME,
+            ]
+            for row_index, (
+                prefix_encoder_frame_count,
+                kept_encoder_frame_count,
+            ) in enumerate(zip(prefix_encoder_frames, kept_encoder_frames))
+        ]
+        cache_groups: dict[tuple[int, int, bool, int, int, int, int], list[int]] = (
+            defaultdict(list)
+        )
+        for row_index, (speaker_cache, kept_encoder_frame_count) in enumerate(
+            zip(speaker_caches, kept_encoder_frames)
+        ):
+            cache_geometry = (
+                speaker_cache.cache.shape[1],
+                speaker_cache.fifo.shape[1],
+                speaker_cache.compressed,
+                speaker_cache.cache_size,
+                speaker_cache.fifo_size,
+                speaker_cache.update_period,
+                kept_encoder_frame_count,
+            )
+            cache_groups[cache_geometry].append(row_index)
+        silence_embedding = self.sortformer_modules.learnable_sil_emb
+        # note (eranik): Only matching geometries and compression phases can share the native cache update.
+        for row_indices in cache_groups.values():
+            if len(row_indices) == 1:
+                row_index = row_indices[0]
+                speaker_caches[row_index].update(
+                    chunk_embeddings[
+                        row_index : row_index + 1, : kept_encoder_frames[row_index]
+                    ],
+                    downsampled_predictions[
+                        row_index : row_index + 1, : valid_encoder_frames[row_index]
+                    ],
+                    silence_embedding,
+                )
+            else:
+                first_cache = speaker_caches[row_indices[0]]
+                merged_cache = SpeakerCache(
+                    chunk_embeddings,
+                    cache_size=first_cache.cache_size,
+                    fifo_size=first_cache.fifo_size,
+                    update_period=first_cache.update_period,
+                    batch=len(row_indices),
+                )
+                merged_cache.cache = torch.cat(
+                    [speaker_caches[row_index].cache for row_index in row_indices]
+                )
+                merged_cache.fifo = torch.cat(
+                    [speaker_caches[row_index].fifo for row_index in row_indices]
+                )
+                merged_cache.cache_preds = torch.cat(
+                    [speaker_caches[row_index].cache_preds for row_index in row_indices]
+                )
+                merged_cache.compressed = first_cache.compressed
+                kept_encoder_frame_count = kept_encoder_frames[row_indices[0]]
+                required_encoder_frames = (
+                    first_cache.cache.shape[1]
+                    + first_cache.fifo.shape[1]
+                    + kept_encoder_frame_count
+                )
+                merged_cache.update(
+                    torch.cat(
+                        [
+                            chunk_embeddings[
+                                row_index : row_index + 1, :kept_encoder_frame_count
+                            ]
+                            for row_index in row_indices
+                        ]
+                    ),
+                    torch.cat(
+                        [
+                            downsampled_predictions[
+                                row_index : row_index + 1, :required_encoder_frames
+                            ]
+                            for row_index in row_indices
+                        ]
+                    ),
+                    silence_embedding,
+                )
+                for cache_row_index, row_index in enumerate(row_indices):
+                    # note (eranik): Fresh storage keeps request views safe across later slot refills.
+                    speaker_caches[row_index].cache = merged_cache.cache[
+                        cache_row_index : cache_row_index + 1
+                    ]
+                    speaker_caches[row_index].fifo = merged_cache.fifo[
+                        cache_row_index : cache_row_index + 1
+                    ]
+                    speaker_caches[row_index].cache_preds = merged_cache.cache_preds[
+                        cache_row_index : cache_row_index + 1
+                    ]
+                    speaker_caches[row_index].compressed = merged_cache.compressed
+        return outputs
