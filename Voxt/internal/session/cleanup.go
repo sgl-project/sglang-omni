@@ -167,6 +167,9 @@ func (r *run) cleanParts(text string, parts []compose.Part, answers []string, th
 			answers = append(answers, p.Text)
 		default:
 			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+			if u := resp.Usage; u.PromptTokens > 0 && !u.Estimated {
+				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
+			}
 		}
 		draft.done(answers)
 	}

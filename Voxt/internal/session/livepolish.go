@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -27,7 +28,9 @@ import (
 // a sentence to it, so that a list or a correction across its sentences is
 // cleaned as at Stop. A block that is full is kept (committed), and the
 // next one goes with the cleaned text before it (compose.Input.Before), as
-// does the text left at Stop.
+// does the text left at Stop. The last settings.Transcribe.RecleanSentences
+// sentences before that text are cleaned again with it, so that what was
+// said last can correct them ("Tuesday. No, make it Thursday.").
 //
 // add is the stream's reader goroutine's, work the worker's, finish the
 // session goroutine's (after the reader returned); mu guards the rest, and
@@ -38,15 +41,18 @@ type livePolish struct {
 	cancel        context.CancelFunc
 	workerDone    chan struct{}
 	thinkOffUnder int
+	reclean       int // sentences cleaned again with the text left at Stop
 
-	mu     sync.Mutex
-	cond   *sync.Cond
-	text   string       // the newest live text, as the final text is cleaned (aliases replaced)
-	blocks []liveResult // committed, in order
-	epoch  int          // bumped when blocks change: a clean-up of an older epoch has other text before it
-	done   []liveResult // the clean-ups of the open block: each of a stretch that starts the text after blocks
-	flight *liveFlight  // the request under way, nil when none
-	closed bool         // the final text came, or the live clean-up gave up: no more requests
+	mu      sync.Mutex
+	cond    *sync.Cond
+	asked   int          // requests while recording
+	dropped int          // of them, cancelled as the live text changed
+	text    string       // the newest live text, as the final text is cleaned (aliases replaced)
+	blocks  []liveResult // committed, in order
+	epoch   int          // bumped when blocks change: a clean-up of an older epoch has other text before it
+	done    []liveResult // the clean-ups of the open block: each of a stretch that starts the text after blocks
+	flight  *liveFlight  // the request under way, nil when none
+	closed  bool         // the final text came, or the live clean-up gave up: no more requests
 }
 
 // liveResult is the clean-up of src, a stretch of the live text that ends
@@ -59,6 +65,7 @@ type liveResult struct {
 	chars    int  // the dictation's characters up to the end of src
 	thinkOff bool // asked with thinking off (chars under the service's ThinkingOffUnder)
 	epoch    int
+	usage    llm.Usage
 }
 
 // liveFlight is the request under way: done closes when it ends, ok when
@@ -108,7 +115,8 @@ func newLivePolish(r *run) *livePolish {
 		return nil
 	}
 	ctx, cancel := context.WithCancel(r.llmCtx)
-	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, workerDone: make(chan struct{}), thinkOffUnder: r.thinkOffUnder()}
+	lp := &livePolish{r: r, ctx: ctx, cancel: cancel, workerDone: make(chan struct{}), thinkOffUnder: r.thinkOffUnder(),
+		reclean: max(0, r.settings.Features.Transcribe.RecleanSentences)}
 	lp.cond = sync.NewCond(&lp.mu)
 	go func() {
 		<-ctx.Done()
@@ -213,8 +221,10 @@ func (lp *livePolish) work() {
 		ctx, cancel := context.WithCancel(lp.ctx)
 		f := &liveFlight{liveResult: job, cancel: cancel, done: make(chan struct{})}
 		lp.flight = f
+		lp.asked++
 		before := joinResults(lp.blocks, lp.text)
 		lp.mu.Unlock()
+		start := time.Now()
 		res, err := lp.clean(ctx, job, before)
 		cancel()
 		lp.mu.Lock()
@@ -223,8 +233,11 @@ func (lp *livePolish) work() {
 		switch {
 		case err == nil && res.epoch == lp.epoch:
 			lp.done = append(lp.done, res)
-			lp.r.logf("info", "cleaned up %d characters while recording", utf8.RuneCountInString(res.src))
-		case err != nil && ctx.Err() == nil:
+			lp.r.logf("info", "cleaned up %d characters while recording in %v (%d prompt tokens, %d cached)",
+				utf8.RuneCountInString(res.src), time.Since(start).Round(time.Millisecond), res.usage.PromptTokens, res.usage.CachedTokens)
+		case ctx.Err() != nil:
+			lp.dropped++
+		case err != nil:
 			lp.r.logf("warning", "the live clean-up stops, Stop cleans the text: %v", err)
 			lp.closed = true
 		}
@@ -252,6 +265,7 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 			return job, err
 		}
 		job.answers = append(job.answers, compose.CleanOutput(resp.Text, p.Text))
+		job.usage = job.usage.Add(resp.Usage)
 	}
 	return job, nil
 }
@@ -277,11 +291,7 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	open := strings.TrimLeftFunc(text[end:], unicode.IsSpace)
 	var best *liveResult
 	if k == len(lp.blocks) {
-		for i, d := range lp.done {
-			if d.thinkOff == thinkOff && endsSentence(open, d.src) && (best == nil || len(d.src) > len(best.src)) {
-				best = &lp.done[i]
-			}
-		}
+		best = lp.base(open, thinkOff)
 	}
 	var wait *liveFlight
 	if f := lp.flight; f != nil {
@@ -294,6 +304,7 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	if best != nil {
 		blocks = append(blocks, *best)
 	}
+	asked, dropped := lp.asked, lp.dropped
 	lp.mu.Unlock()
 	if wait != nil {
 		<-wait.done
@@ -304,8 +315,34 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	lp.cancel()
 	<-lp.workerDone
 	parts, answers, tail = laid(blocks, text)
-	lp.r.logf("info", "the live clean-up covered %d of %d characters", chars-utf8.RuneCountInString(tail), chars)
+	lp.r.logf("info", "the live clean-up covered %d of %d characters (%d requests while recording, %d cancelled as the text changed; awaited the request under way: %t)",
+		chars-utf8.RuneCountInString(tail), chars, asked, dropped, wait != nil)
 	return parts, answers, tail
+}
+
+// base is the open block's clean-up that the text left at Stop goes after
+// (lp.mu held): one of all of open when there is, else the longest that
+// leaves at least lp.reclean whole sentences before the rest of open, to
+// clean again with it.
+func (lp *livePolish) base(open string, thinkOff bool) *liveResult {
+	units := compose.SentenceEnds(open)
+	if len(units) == 0 || units[len(units)-1] != len(open) {
+		units = append(units, len(open)) // the unfinished last sentence
+	}
+	var best *liveResult
+	for i, d := range lp.done {
+		if d.thinkOff != thinkOff || !endsSentence(open, d.src) {
+			continue
+		}
+		if len(d.src) == len(open) {
+			return &lp.done[i]
+		}
+		after := len(units) - slices.Index(units, len(d.src)) - 1
+		if after > lp.reclean && (best == nil || len(d.src) > len(best.src)) {
+			best = &lp.done[i]
+		}
+	}
+	return best
 }
 
 // chainIn is how many of blocks start text, in order, each at one of its

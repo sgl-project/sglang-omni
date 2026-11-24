@@ -130,10 +130,11 @@ func TestLivePolishLeavesNothingAfterStop(t *testing.T) {
 
 // TestLivePolishCleansOnlyTheTail: what the live text finished is kept;
 // after Stop only the rest is asked, with the cleaned text before it, and
-// the answers join.
+// the answers join (no sentence cleaned again: RecleanSentences 0).
 func TestLivePolishCleansOnlyTheTail(t *testing.T) {
 	model := newLiveLLM()
 	r := newEarlyUnitRun(t, model, nil)
+	r.settings.Features.Transcribe.RecleanSentences = 0
 	r.hearLive("Hello there.")
 	r.hearLive("Hello there. How are")
 	waitLive(t, r, "Hello there.")
@@ -157,6 +158,31 @@ func TestLivePolishCleansOnlyTheTail(t *testing.T) {
 	}
 	if strings.Contains(reqs[0].Messages[0].Content, "<before>") || reqs[0].Messages[1].Content != compose.UserMessage("Hello there.") {
 		t.Errorf("the live request is not a whole dictation's: %q", reqs[0].Messages[1].Content)
+	}
+}
+
+// TestLivePolishCleansTheLastSentenceAgain: by default the sentence before
+// the text left at Stop is cleaned again with it, after the clean-up of the
+// text before that sentence, so that a correction said last reaches it.
+func TestLivePolishCleansTheLastSentenceAgain(t *testing.T) {
+	model := newLiveLLM()
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearLive("Book the room. Let's")
+	waitLive(t, r, "Book the room.")
+	r.hearLive("Book the room. Let's meet Tuesday.")
+	waitLive(t, r, "Book the room. Let's meet Tuesday.")
+	r.hearLive("Book the room. Let's meet Tuesday. No, make")
+	got, _, err := r.cleanUpFirst("Book the room. Let's meet Tuesday. No, make it Thursday.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[Book the room.] [Let's meet Tuesday. No, make it Thursday.]"; got != want {
+		t.Errorf("result %q, want %q", got, want)
+	}
+	reqs := model.requests()
+	last := reqs[len(reqs)-1].Messages
+	if user := last[len(last)-1].Content; user != compose.BeforeMessage("[Book the room.]", "Let's meet Tuesday. No, make it Thursday.") {
+		t.Errorf("the request after Stop is %q, want the last two sentences after the first", user)
 	}
 }
 

@@ -103,10 +103,13 @@ type Request struct {
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.
 type Usage struct {
-	PromptTokens     int  `json:"promptTokens"`
-	CompletionTokens int  `json:"completionTokens"`
-	TotalTokens      int  `json:"totalTokens"`
-	Estimated        bool `json:"estimated,omitempty"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	// CachedTokens are the prompt tokens the service read from its prompt
+	// cache, when it says (OpenAI's prompt_tokens_details); 0 otherwise.
+	CachedTokens int  `json:"cachedTokens,omitempty"`
+	Estimated    bool `json:"estimated,omitempty"`
 }
 
 // Add returns u + v.
@@ -115,6 +118,7 @@ func (u Usage) Add(v Usage) Usage {
 		PromptTokens:     u.PromptTokens + v.PromptTokens,
 		CompletionTokens: u.CompletionTokens + v.CompletionTokens,
 		TotalTokens:      u.TotalTokens + v.TotalTokens,
+		CachedTokens:     u.CachedTokens + v.CachedTokens,
 		Estimated:        u.Estimated || v.Estimated,
 	}
 }

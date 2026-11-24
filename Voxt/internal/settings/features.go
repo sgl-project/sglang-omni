@@ -113,7 +113,16 @@ type Transcribe struct {
 	// session's live and early clean-ups), the Transcribe page's "Clean up
 	// while you speak".
 	CleanAfterStop bool `json:"cleanAfterStop,omitempty"`
+	// RecleanSentences is how many whole sentences before the text left at
+	// Stop the live clean-up cleans again with it, so that what was said
+	// last can correct them; 0: only the text left
+	// (DefaultRecleanSentences, no page).
+	RecleanSentences int `json:"recleanSentences"`
 }
+
+// DefaultRecleanSentences is Transcribe.RecleanSentences's default: one
+// sentence, the one a correction said last most often takes back.
+const DefaultRecleanSentences = 1
 
 // Translate: speech or selected text → a translation.
 type Translate struct {
