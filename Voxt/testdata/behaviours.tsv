@@ -26,6 +26,7 @@ App enhancement	L	TestSessionAppEnhancement	Finding the real front app and brows
 App enhancement: per-app Transcribe clean-up	L	TestAppEnhancementTranscribeCleanup	none
 Dictionary and hot words	L	TestTranscribeDictionaryHighlights	none
 Dictionary and hot words	E	TestEvalDictASR	none
+Built-in vocabulary	L	TestBuiltinVocabulary	none
 Dictionary profiles	L	TestDictionaryProfileControls	none
 Dictionary profiles	L	TestDictionaryProfileExternalSwitch	none
 Dictionary suggestions, history scan, learning from edits	L	TestLearnFromCorrection	Reading a real text field is checked by hand only

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -50,6 +51,81 @@ func TestAliases(t *testing.T) {
 				if got := end.Result[span.Start:span.End]; got != "VoxtNew" {
 					t.Errorf("highlighted %q, want VoxtNew", got)
 				}
+			}
+		})
+	}
+}
+
+// TestBuiltinVocabulary: with the dictionary on, the built-in words'
+// aliases become their terms beside the user's (here "aura link"), also
+// without a language model; the history keeps the text as recognised,
+// and only the user's terms are highlighted. The built-in words off
+// leave only the user's aliases; the dictionary off leaves the text
+// alone.
+func TestBuiltinVocabulary(t *testing.T) {
+	const heard = "用SG狼部署, then ask OpenEye about aura link"
+	for _, c := range []struct {
+		name          string
+		dict, builtin bool
+		result, lit   string
+	}{
+		{"on", true, true, "用SGLang部署, then ask OpenAI about VoxtNew", "VoxtNew"},
+		{"built-in words off", true, false, "用SG狼部署, then ask OpenEye about VoxtNew", "VoxtNew"},
+		{"dictionary off", false, true, heard, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, &fakeFile{text: heard}, nil, func(_ *Config, s *settings.Settings) {
+				s.Dictionary.Enabled, s.Dictionary.BuiltinOff = c.dict, !c.builtin
+			})
+			h.speak(h.start(), 5)
+			end := h.rec.wait(t)
+			e := h.hist.all()
+			if end.Result != c.result || end.Raw != heard || len(e) != 1 || e[0].RawText != heard || e[0].Result != c.result {
+				t.Errorf("result %q, raw %q, entries %+v", end.Result, end.Raw, e)
+			}
+			var lit []string
+			for _, span := range end.Highlights {
+				lit = append(lit, end.Result[span.Start:span.End])
+			}
+			if strings.Join(lit, ",") != c.lit {
+				t.Errorf("highlighted %q, want %q", lit, c.lit)
+			}
+		})
+	}
+}
+
+// TestBuiltinHints: the speech model gets the built-in words' hints
+// after the user's terms only when it is the model they were measured on
+// (Services.BuiltinHints) and the dictionary, its speech-model hints and
+// the built-in words are on; a remote service gets the user's alone.
+func TestBuiltinHints(t *testing.T) {
+	for _, c := range []struct {
+		name                     string
+		model, asrHints, builtin bool
+		want                     string
+	}{
+		{"measured model", true, true, true, "VoxtNew,SGLang,Voxt,DeepSeek,API key,Claude Code"},
+		{"another model", false, true, true, "VoxtNew"},
+		{"built-in words off", true, true, false, "VoxtNew"},
+		{"hints off", true, false, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeFile{text: "好的"}
+			h := newHarness(t, f, nil, func(cfg *Config, s *settings.Settings) {
+				resolve := cfg.Resolve
+				cfg.Resolve = func(ctx context.Context, kind Kind, st settings.Settings, speech bool) (Services, error) {
+					svc, err := resolve(ctx, kind, st, speech)
+					svc.BuiltinHints = c.model
+					return svc, err
+				}
+				s.Dictionary.ASRHints, s.Dictionary.BuiltinOff = c.asrHints, !c.builtin
+			})
+			h.speak(h.start(), 5)
+			h.rec.wait(t)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if got := strings.Join(f.hints, ","); got != c.want {
+				t.Errorf("hints %q, want %q", got, c.want)
 			}
 		})
 	}

@@ -174,7 +174,8 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	}
 	click(t, tt, "Speech hints")
 	click(t, tt, "Glossary for the language model")
-	if d := a.lib.settings.Get().Dictionary; d.ASRHints || d.Glossary || !d.Enabled {
+	click(t, tt, "Built-in words")
+	if d := a.lib.settings.Get().Dictionary; d.ASRHints || d.Glossary || !d.BuiltinOff || !d.Enabled {
 		t.Errorf("settings %+v", d)
 	}
 	click(t, tt, "Use the dictionary")

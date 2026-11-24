@@ -251,6 +251,7 @@ And their own fields:
 | `dictionary.speechContext` | string | `""` | Free text about the speech (who speaks, about what) for the speech model |
 | `dictionary.notes` | string | `""` | The personal dictionary: Markdown sent to the language model of the three features |
 | `dictionary.notesOff` | bool | `false` | Keep the personal dictionary out of the prompt |
+| `dictionary.builtinOff` | bool | `false` | Turn off the built-in words: common AI and coding names written right with no dictionary (behavior.md 7.9d) |
 | `dictionary.learn` | bool | `false` | Learn from my corrections (suggest terms) |
 
 ### App enhancement (App enhancement page)

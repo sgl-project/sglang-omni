@@ -298,6 +298,10 @@ type Dictionary struct {
 	// out of the prompt; notes are sent by default once written.
 	Notes    string `json:"notes,omitempty"`
 	NotesOff bool   `json:"notesOff,omitempty"`
+	// BuiltinOff turns off the built-in words (dict.ReplaceWithBuiltin,
+	// dict.BuiltinHints): common AI and coding names Voxt writes right
+	// with no dictionary. On by default.
+	BuiltinOff bool `json:"builtinOff,omitempty"`
 	// Learn watches the field a Transcribe result was pasted into for
 	// 30 s and proposes a term when the user corrects a word of it
 	// (internal/learn). Off by default.

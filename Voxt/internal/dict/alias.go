@@ -23,7 +23,7 @@ type Span struct {
 // changes its own output no further). An alias two terms share goes to
 // the first.
 func Replace(text string, terms []store.Term) string {
-	text, _ = matchText(text, terms, false)
+	text, _ = matchText(text, terms, false, builtinRules{from: len(terms)})
 	return text
 }
 
@@ -31,27 +31,43 @@ func Replace(text string, terms []store.Term) string {
 // same matching and overlap rules as Replace. Its spans are byte ranges
 // in text, with the longest match at each place from left to right.
 func HighlightSpans(text string, terms []store.Term) []Span {
-	_, spans := matchText(text, terms, true)
+	_, spans := matchText(text, terms, true, builtinRules{from: len(terms)})
 	return spans
 }
 
 // matchText is the dictionary's one matcher. highlight keeps the input
 // and collects its matches, including terms without aliases; otherwise it
-// performs Replace's alias substitution.
-func matchText(text string, terms []store.Term, highlight bool) (string, []Span) {
+// performs Replace's alias substitution, and writes a term in spelled as
+// spelled where it is found in another case ("Github" for GitHub), except
+// one word all in lower or all in upper case: that is how code, files and
+// addresses write it (config.json, OPENAI_API_KEY), and it stays. Terms
+// from index rules.from on are the built-in words': a match of theirs
+// inside a longer token (inToken: X-Api-Key, Github.com, Support/SGLang
+// Omni/) stays as written, and so does one where its rule says it is not
+// the name (rules.guarded, casing's where).
+func matchText(text string, terms []store.Term, highlight bool, rules builtinRules) (string, []Span) {
 	type pattern struct {
-		words []string // the alias (or term), split at its spaces
-		term  string   // "" for a term itself: kept as written
-		size  int      // characters, for the longest first
+		words   []string                        // the alias (or term), split at its spaces
+		term    string                          // "" for a term itself: kept as written
+		size    int                             // characters, for the longest first
+		spell   string                          // a term in spelled: written so, unless oneCaseWord
+		where   func(before, after string) bool // where it is the name (nil: everywhere)
+		builtin bool                            // a built-in word's: not inside a token
 	}
 	var patterns []pattern
+	fromBuiltin := false
 	add := func(s, term string) {
 		words := strings.Fields(s)
 		if len(words) > 0 {
-			patterns = append(patterns, pattern{words, term, utf8.RuneCountInString(strings.Join(words, " "))})
+			p := pattern{words: words, term: term, size: utf8.RuneCountInString(strings.Join(words, " ")), builtin: fromBuiltin}
+			if fromBuiltin && term != "" {
+				p.where = rules.guarded[strings.ToLower(s)]
+			}
+			patterns = append(patterns, p)
 		}
 	}
-	for _, t := range terms {
+	for k, t := range terms {
+		fromBuiltin = k >= rules.from
 		term := strings.TrimSpace(t.Term)
 		if !t.Enabled || term == "" {
 			continue
@@ -63,8 +79,12 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 				replaced = true
 			}
 		}
-		if replaced || highlight {
+		sp, spell := rules.casing[term]
+		if replaced || highlight || spell {
 			add(term, "")
+			if spell && !highlight {
+				patterns[len(patterns)-1].spell, patterns[len(patterns)-1].where = term, sp.where
+			}
 		}
 	}
 	if len(patterns) == 0 {
@@ -87,6 +107,12 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 			if n := matchAt(text, i, p.words); n > 0 {
 				if highlight {
 					spans = append(spans, Span{Start: i, End: i + n})
+				} else if p.builtin && inToken(text, i, i+n) {
+					b.WriteString(text[i : i+n])
+				} else if p.where != nil && !p.where(text[:i], text[i+n:]) {
+					b.WriteString(text[i : i+n])
+				} else if p.spell != "" && !oneCaseWord(text[i:i+n]) {
+					b.WriteString(p.spell)
 				} else if p.term == "" {
 					b.WriteString(text[i : i+n])
 				} else {
@@ -109,6 +135,30 @@ func matchText(text string, terms []store.Term, highlight bool) (string, []Span)
 		return text, spans
 	}
 	return b.String(), nil
+}
+
+// joiners join words into one token in code, paths and addresses.
+const joiners = "-_./\\@:#~+="
+
+// inToken: text[start:end] is joined to a word before or after it by one
+// of joiners ("X-Api-Key", "Github.com", "Support/SGLang Omni/models").
+func inToken(text string, start, end int) bool {
+	if r, n := utf8.DecodeLastRuneInString(text[:start]); start > 0 && strings.ContainsRune(joiners, r) {
+		if w, _ := utf8.DecodeLastRuneInString(text[:start-n]); start-n > 0 && wordRune(w) {
+			return true
+		}
+	}
+	if r, n := utf8.DecodeRuneInString(text[end:]); end < len(text) && strings.ContainsRune(joiners, r) {
+		if w, _ := utf8.DecodeRuneInString(text[end+n:]); end+n < len(text) && wordRune(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// oneCaseWord: s is one word with no capital letter or no small one.
+func oneCaseWord(s string) bool {
+	return !strings.ContainsFunc(s, unicode.IsSpace) && (strings.ToLower(s) == s || strings.ToUpper(s) == s)
 }
 
 // matchAt is the length in bytes of words matched at text[i:] (0 for

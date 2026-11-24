@@ -14,14 +14,19 @@ import (
 )
 
 // spoken is the recognised text with the dictionary's aliases replaced
-// by their terms (dict.Replace), when the dictionary is on: before the
-// clean-up, so it holds without a language model too. The snapshot's
-// Raw, and the history's, stay as recognised.
+// by their terms, then the built-in words' unless they are off
+// (dict.ReplaceWithBuiltin), when the dictionary is on: before the clean-up, so it holds without a
+// language model too. The snapshot's Raw, and the history's, stay as
+// recognised.
 func (r *run) spoken(raw string) string {
 	if !r.settings.Dictionary.Enabled {
 		return raw
 	}
-	text := dict.Replace(raw, r.terms)
+	replace := dict.ReplaceWithBuiltin
+	if r.settings.Dictionary.BuiltinOff {
+		replace = dict.Replace
+	}
+	text := replace(raw, r.terms)
 	if text != raw {
 		r.logf("info", "the dictionary's aliases replaced: %s", r.logText(text))
 	}

@@ -6,6 +6,7 @@ type dictionaryActions interface {
 	setDictionaryEnabled(on bool)
 	setDictionaryASRHints(on bool)
 	setDictionaryGlossary(on bool)
+	setDictionaryBuiltin(on bool)
 	setDictionaryLearn(on bool)
 	openDictionaryTranscribe()
 	importTerms()

@@ -572,6 +572,61 @@ The runs were on mac-air with TestEvalDictLLM and TestEvalGlossary, before (5bdb
 - With 130 terms a dictation's first token still comes about 0.1–0.25 s after 30 terms' (`llm.balanced` 0.49 against 0.31 s): the block and the input are new on every dictation.
 
 
+## Built-in vocabulary (11-23)
+
+Voxt writes a list of AI and developer names right with no dictionary (`dict.builtin`, behavior.md 7.9d). It has three layers: aliases for what speech recognition writes instead, a few speech hints for models that take them, and casing. The aliases were chosen on one run and scored on another; the hints were chosen by comparing sets on Qwen3-ASR.
+
+### Aliases on Whisper Large v3 Turbo
+
+- **Audio**: sentences said by macOS `say` voices the way a user says them ("S G Lang", "A P I key"), Chinese sentences with English names and English ones, recognised through the omni runtime as the app sends a file (language hint `zh` or `en`). Whisper takes no prompt, so recognition is the same with or without the list; the list acts on its text (`dict.ReplaceWithBuiltin`, as `session.spoken` calls it, with no user terms).
+- **Round 1, where the aliases come from**: 172 sentences with one of 21 names and 48 without any, by 6 voices per language (1320 recognitions). An alias had to be a spelling Whisper wrote that is not an ordinary word or name.
+- **Round 2, held out**: 72 new sentences with a built-in name and 40 without any, the latter full of near words (box, voice, LAN, deep, seek, chat, open, face, hug, queue, Quinn, Gwen, clouds), by 4 voices per language, 6 of the 8 new (448 recognitions).
+- A name counts as written when it is spelled exactly ("API Key" is a miss for API key, "SGLang Omni" for SGLang-Omni). An insertion is a name of the corpus written more often than the sentence has it.
+
+Round 2:
+
+| voices | names written, before | after | sentences without a name changed | insertions |
+|---|---|---|---|---|
+| Tingting, Meijia (Chinese) | 14 of 74 | **45 of 74** | 0 of 40 | 0 → 0 |
+| Tara, Aman (English) | 36 of 72 | **61 of 72** | 0 of 40 | 0 → 0 |
+| Sandy, Rocko (Chinese) | 1 of 74 | 1 of 74 | 0 of 40 | 0 → 0 |
+| Sandy, Reed (English) | 24 of 72 | 32 of 72 | 0 of 40 | 0 → 0 |
+| all | 75 of 292 | **139 of 292** | 0 of 160 | 0 → 0 |
+
+By name, on the four natural voices (12 sentences each): SGLang 0 → 11, Voxt 0 → 11, DeepSeek 0 → 9, OpenAI 2 → 9, Hugging Face 6 → 12, ChatGPT 6 → 10, CUDA 6 → 7, SGLang-Omni 0 → 4, Qwen 0 → 2, GitHub 11 → 12, Gemini 11 → 11, API key 6 → 6.
+
+- **What is left.** Sandy and Rocko (and Eddy, Flo, Reed and Shelley in round 1) say an English name inside Chinese so that Whisper writes other Chinese words ("B2" for GitHub); no alias can fix that. Some names are only heard as ordinary words or names: Claude as "Cloud" or "Claw", Qwen as "坤", "昆" or "Quinn", CUDA as "Q的" (also how "Q的维度" is said), JSON as "Jason", PR as "P2". Those stay, and so do two spellings Whisper wrote that are a term or a name of their own: "QDA" for CUDA (quadratic discriminant analysis) and "Gamini" for Gemini. "Vox" is a name too (Vox Media, vox pop, Vox amplifiers), but it is Whisper's usual spelling of Voxt (Voxt 11 of 12 with it, 5 without), so it stays an alias, except before Media, News, pop, populi, amp, AC30 and the like (`notVoxBrand`) and in an address such as vox.com; a user who means the news site keeps "Vox" by adding it to the dictionary. New spellings of a name ("SGLUNG Omni") are also left.
+- **No sentence without a name changed**: 0 of 160 in round 2 and 0 of 288 in round 1, also with the casing list added later. Over the repository's own text on main (the docs but this one, CHANGELOG, README and the Chinese strings, 6388 lines) the list changes 13 lines: each quotes a misheard name ("Vox New", "S G Long", "m l x", the Dictionary page's example "Vox T, 沃克斯特") or writes the name "SGLang Omni" as SGLang-Omni. A word joined to another by a hyphen, a dot, a slash or the like is part of code, a path or an address and stays as written (`dict.inToken`): before that rule the list also changed the header `X-Api-Resource-Id` and the folder `Application Support/SGLang Omni/models`. Before a word all in one case was kept, it also changed `VOXT_UPDATE_CHANNEL` and the strings' "API Key"; before macOS left the casing list, `Contents/MacOS`.
+- **Time**: 39 µs for a 200-character dictation, 0.6 ms for 4500 characters.
+- **Spellings added on 11-24** from round 2, the Qwen3-ASR set below and the live sessions, so not held out: "S.G. Lang", "S. G. Lang", "SG Land", "S G Land", "SGLUNG", "S G狼" and "S G 龙" for SGLang (and with " Omni" for SGLang-Omni), "APIT", "API T" and "APIP" for API key; only natural voices, nothing that is a word. With them round 2 writes 143 of 292, Qwen3-ASR without hints 177 of 226, and still no sentence without a name changes (0 of 160, 0 of 288, 0 of 140). "hugging face" is also two ordinary words (the live sessions' "the hugging face emoji"), so since 11-24 it is recased only where it stands for the name (`asPlace`): after on, to, from, at, in, into, onto or via, after Chinese, or opening a sentence, and never before "emoji" or "表情". The recognitions above wrote the name in lower case only so ("on hugging face", "Hugging face has the weights"); "a hugging face" stays.
+
+### Hints on Qwen3-ASR 1.7B (11-24)
+
+The draft's 28 starred names were each said in 2 Chinese and 2 English new sentences by Tingting, Meijia, Samantha and Tara. The same voices said 70 sentences without a name: 40 everyday and 30 near words (Quinn, Gwen, Kimmy, Kim, cursor, "cloud code", slang, box, deep sea, key, period, voice…). There were also 8 recordings without speech (1.5 or 4.5 s of silence or -55 dBFS noise) and 16 of a filler followed by 1.5–4 s of silence ("嗯", "好的", "Um", "Okay"…). Each set of hints was sent as the app sends them with an empty dictionary, then the aliases were applied. The model ran with no voice activity model, so audio without speech reached it.
+
+| hints | names written (of 226) | a name not said, in 140 sentences without one | in sentences with one | audio without speech: names | filler + silence: names | median Final |
+|---|---|---|---|---|---|---|
+| none | 177 | 0 | 0 | 0 of 8 | 0 of 16 | 302 ms |
+| **5: SGLang, Voxt, DeepSeek, Claude Code, API key** | **201** | **0** | 2 | 2 of 8 | 0 of 16 | **306 ms** |
+| 6: the 5 and Kimi | 202 | 2 (Kimmy → Kimi) | 0 | 0 of 8 | | 350 ms |
+| 10: the 6 and Qwen, CUDA, PR, PRD | 209 | 5 (Quinn, Gwen → Qwen; Kimmy → Kimi) | 1 (Cursor → CUDA) | 0 of 8 | | 340 ms |
+| all 28 | 210 | 3 (Gwen → Qwen; Kimmy → Kimi) | 1 | 2 of 8 | | 492 ms |
+
+- **Five hints carry most of the gain.** SGLang 7 → 8 of 8, SGLang-Omni 6 → 8, Claude Code 2 → 8, API key 5 → 8, Voxt 6 → 8, DeepSeek 6 → 8. Without the hint Qwen3-ASR writes SGLang "S. G. Lang", "S G狼", "S G 龙" (aliases now) or "SG Line" (not one: also ordinary English), and Claude Code "Cloud Code".
+- **A hint with a near word writes that word as the name.** Kimi took "Kimmy is my cousin" in every set that had it, and Qwen took "Quinn" and "Gwen". Those three stay out of the hints. With the five, no sentence without a name got one; twice a word already misheard became a hint name ("CUDA" heard as "Claude", "JSON" as "SGLang").
+- **More hints, slower.** 28 hints cost 190 ms at the median Final (about 7 ms a hint, as #24 found), 6 or 10 cost 40–50 ms, and the five 4 ms.
+- **Audio without speech echoes the hints**, as #24 found for the dictionary. The guard (`omni/echo.go`) removed it in 6 of 8 recordings; in 2 (4.5 s of silence) the model wrote "S Lang, Voxt, DeepSeek, API key, Claude Code.", and "S Lang" is not a term the guard knows. The guard now takes the item just before two or more terms in the context's order as an earlier term when their letters are at most a third of the term apart ("S Lang" for SGLang, `mangledTerm`, TestEchoTailMisspelt), so both go. With all 28 hints, it missed because the model wrote "SGLang Omni" for the hint SGLang-Omni, so no hyphenated name is a hint. In the app the voice activity model skips audio without speech before it reaches the speech model (`ASR.noSpeech`, the session's gate). A filler followed by silence, the case of the user's 10-19 echo, echoed nothing in 16 of 16.
+- **Only the model measured gets the hints**: Qwen3-ASR 1.7B 8-bit, the default (`Services.BuiltinHints`). The 0.6B and 6-bit models, remote services and meetings were not measured with them and get the user's terms alone, as before; the aliases and casing apply to every model.
+- **Spaced letters.** With or without hints, Qwen3-ASR writes an acronym said letter by letter as "L L M", "M C P" or "P.R.D."; these spellings are aliases, which took LLM 6 → 8 and PRD 4 → 7 with no hint.
+
+### Live sessions (11-24)
+
+Transcribe sessions as the app runs them (`mac_e2e_test.go`'s harness, local only): the real helper played each recording from its file input (no microphone, no speaker), Whisper Large v3 Turbo recognised it through the omni runtime, the energy detector found the speech (no Silero installed), and the text went to a paste that only keeps it. 27 recordings by Tingting and Samantha, each with the built-in words on and off (54 sessions): 14 sentences without a name, most with a near word ("an article on Vox", "QDA and LDA", "the hugging face emoji", "the X-Api-Key header", cloud, cursor, Kimmy, 盒子, 声音, 深海, 云, 光标), 10 with names, and 3 without speech.
+
+- **Without a name, the text is the same on and off** in 13 of 14 with the list as merged (the sessions ran with an earlier list; the one merged was applied again to the same recognitions). The one changed is the news site: "I read an article on Vox" became Voxt, the price of "Vox" as Voxt's alias. Whisper wrote the header "xapi key", so the token rule was not reached here.
+- **Names**: 3 → 12 of 13 ("S.G. Lang Omni" and "APIT" came from these sessions). Left: DeepSeek heard as "Deepsea".
+- **Without speech**: the same on and off. The noise found no speech; the silence and a 0.3 s burst reached Whisper, which wrote its "优优独播剧场" hallucination with the list on and off alike (for the silence, the session recorded 5.3 s of the 4.5 s file and the detector found speech after 4.7 s, in what the helper recorded past the file's end).
+
 ## App enhancement and the dictionary, whole sessions on the real models
 
 *History: measured on the retired local language models in `voxtnew-llm`, with tests that were removed with it.*

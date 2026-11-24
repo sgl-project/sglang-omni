@@ -85,6 +85,7 @@ type dictionaryViewState struct {
 	Enabled           bool                            `json:"enabled"`
 	ASRHints          bool                            `json:"asr_hints"`
 	Glossary          bool                            `json:"glossary"`
+	Builtin           bool                            `json:"builtin"`
 	Learn             bool                            `json:"learn"`
 	CanScan           bool                            `json:"can_scan"`
 	LegacyImport      bool                            `json:"legacy_import"`
@@ -168,7 +169,7 @@ func buildDictionaryViewState(translator *i18n.Translator, input dictionaryViewS
 	state := dictionaryViewState{
 		Read: input.Read, Loading: input.Loading, Error: input.Error, Query: input.Query, ListFor: input.ListFor,
 		Enabled: input.Settings.Dictionary.Enabled, ASRHints: input.Settings.Dictionary.ASRHints,
-		Glossary: input.Settings.Dictionary.Glossary, Learn: input.Settings.Dictionary.Learn,
+		Glossary: input.Settings.Dictionary.Glossary, Builtin: !input.Settings.Dictionary.BuiltinOff, Learn: input.Settings.Dictionary.Learn,
 		CanScan: canScan, LegacyImport: input.LegacyImport, Tab: input.Tab, ScanOpen: input.ScanOpen,
 		Scan: buildDictionaryScanViewState(translator, input.Scan), Edit: buildDictionaryTermEditViewState(translator, input.Edit),
 		NotesText: input.NotesText, NotesQuery: input.NotesQuery, NotesFindCurrent: input.NotesFind,

@@ -11,6 +11,7 @@
     "enabled": true,
     "asr_hints": true,
     "glossary": true,
+    "builtin": true,
     "learn": false,
     "can_scan": false,
     "legacy_import": true,

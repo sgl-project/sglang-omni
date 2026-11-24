@@ -22,6 +22,7 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		{name: "enabled", fixture: "en/dictionary-normal", steps: historySteps("Use the dictionary"), want: []string{"setDictionaryEnabled false"}},
 		{name: "hints", fixture: "en/dictionary-normal", steps: historySteps("Speech hints"), want: []string{"setDictionaryASRHints false"}},
 		{name: "glossary", fixture: "en/dictionary-normal", steps: historySteps("Glossary for the language model"), want: []string{"setDictionaryGlossary false"}},
+		{name: "built-in words", fixture: "en/dictionary-normal", steps: historySteps("Built-in words"), want: []string{"setDictionaryBuiltin false"}},
 		{name: "learn", fixture: "en/dictionary-normal", steps: historySteps("Learn from my corrections"), want: []string{"setDictionaryLearn true"}},
 		{name: "scan model", fixture: "en/dictionary-scan-unavailable", steps: historySteps("Open Transcribe"), want: []string{"openDictionaryTranscribe"}},
 		{name: "open scan", fixture: "en/dictionary-normal", steps: historySteps("Scan history…"), want: []string{"openDictionaryScan"}},

@@ -263,6 +263,10 @@ func (a *app) setDictionaryGlossary(on bool) {
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Glossary = on })
 }
 
+func (a *app) setDictionaryBuiltin(on bool) {
+	a.updateSettings(func(s *settings.Settings) { s.Dictionary.BuiltinOff = !on })
+}
+
 func (a *app) setDictionaryLearn(on bool) {
 	a.updateSettings(func(s *settings.Settings) { s.Dictionary.Learn = on })
 }

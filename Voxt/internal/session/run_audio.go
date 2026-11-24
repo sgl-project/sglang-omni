@@ -21,9 +21,16 @@ func (r *run) streamer() (asr.Streamer, bool) {
 	return st, ok && r.svc.ASR.Caps().Stream
 }
 
-// hints are the dictionary's terms for the speech model (SpeechHints).
+// hints are the dictionary's terms for the speech model (SpeechHints),
+// then the built-in words' (dict.BuiltinHints: a model that takes fewer
+// cuts them first) when the model is the one they were measured on
+// (Services.BuiltinHints) and they are not off.
 func (r *run) hints() []string {
-	return SpeechHints(r.settings, r.terms)
+	hints := SpeechHints(r.settings, r.terms)
+	if d := r.settings.Dictionary; d.Enabled && d.ASRHints && !d.BuiltinOff && r.svc.BuiltinHints {
+		hints = append(hints, dict.BuiltinHints(r.terms)...)
+	}
+	return hints
 }
 
 // SpeechHints are the dictionary's terms for the speech model when the
