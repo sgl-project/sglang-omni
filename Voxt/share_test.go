@@ -275,6 +275,14 @@ func TestInsightsNumbers(t *testing.T) {
 	if len(ins.Weeks) != insightsWeeks || len(ins.Months) != insightsWeeks {
 		t.Errorf("%d weeks, %d month labels", len(ins.Weeks), len(ins.Months))
 	}
+	// A rewrite's long result, and a translation longer than what was
+	// said, are not time saved: only the characters of speech are.
+	log.Add(now, activity.Result{Chars: 4000})
+	log.Add(now, activity.Result{Chars: 2000, Spoken: 100, Audio: 30 * time.Second})
+	more := buildInsightsViewState(i18n.CurrentTranslator(), log, now)
+	if got := parts(more.Stats[1]); got != "58 minutes " { // 2,900 characters of speech is 72.5 minutes typed; 14.5 were said
+		t.Errorf("with a long rewrite and a translation, time saved = %q, want 58 minutes", got)
+	}
 	if got := insightsDuration(i18n.CurrentTranslator(), 154*time.Minute); len(got) != 2 || got[0].Value != "2" || got[1].Value != "34" {
 		t.Errorf("2 h 34 min shows as %+v", got)
 	}
@@ -301,6 +309,10 @@ func TestShareClickThrough(t *testing.T) {
 		frames(tt)
 	}
 	control("Share a card of Voxt and you")
+	if a.share.open {
+		t.Error("Share opened the card before its stars flew")
+	}
+	tt.Advance(shareSparkleLength)
 	if !a.share.open {
 		t.Fatal("Share did not open the card")
 	}
@@ -354,14 +366,181 @@ func TestShareClickThrough(t *testing.T) {
 		t.Error("a click outside left the card open")
 	}
 	a.openInsightsShare()
+	insights := &a.share.insights
+	control("Next card")
+	control("Card 4 of 6")
+	control("Previous card")
+	if insights.card != 2 || insights.slide != -1 {
+		t.Errorf("Next, the fourth dot and Previous show card %d from side %d, want the third from the left", insights.card, insights.slide)
+	}
+	tt.Key(0, ui.KeyRight)
+	frames(tt)
+	tt.Key(0, ui.KeyLeft)
+	frames(tt)
+	tt.Key(0, ui.KeyLeft)
+	frames(tt)
+	if insights.card != 1 {
+		t.Errorf("→ ← ← from the third card show card %d, want the second", insights.card)
+	}
+	control("Next card")
+	theme := insights.themes[2]
+	control("Another color")
+	if insights.themes[2] == theme || insights.themes[3] != 3 {
+		t.Errorf("Another color left the themes %v", insights.themes)
+	}
 	control("Copy picture")
 	if len(copied) != 2 {
 		t.Errorf("the insights card's Copy copied %d pictures in all", len(copied))
 	}
+	saved := filepath.Join(t.TempDir(), "streak.png")
+	defer func(old func(*app, string, func(string))) { chooseInsightsFile = old }(chooseInsightsFile)
+	chooseInsightsFile = func(_ *app, name string, then func(string)) {
+		if want := "Voxt-streak-" + activity.DayKey(a.now()) + ".png"; name != want {
+			t.Errorf("Save offers the name %q, want %q", name, want)
+		}
+		then(saved)
+	}
+	control("Save picture")
+	waitFor(t, func() { frames(tt) }, func() bool { _, err := os.Stat(saved); return err == nil })
+	if f, err := os.Open(saved); err != nil {
+		t.Errorf("Save wrote no picture: %v", err)
+	} else {
+		config, err := png.DecodeConfig(f)
+		_ = f.Close() // read only
+		if err != nil || config.Width != 3*insightsCardW || config.Height != 3*insightsCardH {
+			t.Errorf("the saved picture is %d×%d (%v), want the card at 3×", config.Width, config.Height, err)
+		}
+	}
+	// LinkedIn and X: the picture is copied, the window says to paste it
+	// where the dots were, and the site opens after a moment.
+	var opened []string
+	defer func(old func(string, time.Duration)) { openInsightsLink = old }(openInsightsLink)
+	openInsightsLink = func(address string, after time.Duration) {
+		if after <= 0 {
+			t.Errorf("%s opens at once, before the window says to paste", address)
+		}
+		opened = append(opened, address)
+	}
+	for i, post := range []struct{ button, site, hint string }{
+		{"Share to LinkedIn", insightsSiteLinkedIn, "Picture copied. Press ⌘V in your LinkedIn post to paste it."},
+		{"Share to X", insightsSiteX, "Picture copied. Press ⌘V in your post on X to paste it."},
+	} {
+		control(post.button)
+		if len(copied) != 3+i || len(opened) != i+1 || opened[i] != insightsSites[post.site] {
+			t.Errorf("%s: %d pictures copied in all, opened %q", post.button, len(copied), opened)
+		}
+		if _, ok := tt.Find(post.hint); !ok {
+			t.Errorf("%s: no hint to paste", post.button)
+		}
+	}
 	tt.ClickAt(4, 4)
 	frames(tt)
-	if a.share.insights.open {
-		t.Error("a click outside left the insights card open")
+	if insights.open {
+		t.Error("a click outside left the insights cards open")
+	}
+}
+
+// TestInsightsFaces builds each card from a log: its number, what it
+// says beside it, and what its entrance grows to.
+func TestInsightsFaces(t *testing.T) {
+	now := time.Date(2027, 2, 6, 18, 0, 0, 0, time.Local) // a Saturday
+	var log activity.Log
+	for _, back := range []int{0, 1, 2, 5, 6, 7, 8} { // runs of 3 and 4
+		log.Add(now.AddDate(0, 0, -back), activity.Result{Chars: 400, Spoken: 400, Audio: 2 * time.Minute})
+	}
+	face := func(kind string) insightsFaceViewState {
+		return buildInsightsFace(i18n.CurrentTranslator(), log, now, kind, 0)
+	}
+	if f := face(insightsCardHighlights); len(f.Stats) != 4 || len(f.Days) != 3 || len(f.Weeks) != insightsWeeks || f.Date != "Feb 6, 2027" {
+		t.Errorf("the overview has %d totals, %d day counts and %d weeks, dated %q", len(f.Stats), len(f.Days), len(f.Weeks), f.Date)
+	}
+	// 2,800 characters are five pages of 500.
+	if f := face(insightsCardCharacters); f.Number != 2800 || f.Line != "About 5 pages of a book" ||
+		!slices.Equal(f.Notes, []string{"7 dictations", "7 active days"}) {
+		t.Errorf("the characters card says %d, %q, %q", f.Number, f.Line, f.Notes)
+	}
+	week := ""
+	streak := face(insightsCardStreak)
+	for _, day := range streak.Week {
+		mark := "-"
+		if day.Active {
+			mark = "+"
+		}
+		week += day.Label + mark
+	}
+	if streak.Number != 3 || week != "S+M+T-W-T+F+S+" || !streak.Week[6].Today || streak.Move != 2 {
+		t.Errorf("the streak card says %d days over %q, its mascot's move %d", streak.Number, week, streak.Move)
+	}
+	// 200 characters a minute is five typing speeds, of the dial's eight.
+	if f := face(insightsCardSpeed); f.Number != 200 || f.Times != "5×" || f.Dial != 5.0/insightsDialTimes {
+		t.Errorf("the speed card says %d, %q, the dial at %v", f.Number, f.Times, f.Dial)
+	}
+	// Typing 2,800 characters takes 70 minutes; saying them took 14.
+	saved := face(insightsCardSaved)
+	if len(saved.Bars) != 2 || saved.Bars[0].Value != "1 hour 10 minutes" || saved.Bars[1].Value != "14 minutes" || saved.Bars[1].Fraction != .2 {
+		t.Errorf("the saved card's bars are %+v", saved.Bars)
+	}
+	if f := face(insightsCardDays); len(f.Weeks) != insightsWeeks || len(f.Stats) != 2 || f.Stats[1].Parts[0].Value != "4" {
+		t.Errorf("the days card has %d weeks and %+v", len(f.Weeks), f.Stats)
+	}
+	// Nothing yet: a dash for the speed, an empty dial, no bar.
+	if f := buildInsightsFace(i18n.CurrentTranslator(), activity.Log{}, now, insightsCardSpeed, 0); f.Known || f.Times != "—" || f.Dial != 0 {
+		t.Errorf("the speed card of an empty log says %+v", f)
+	}
+	if f := buildInsightsFace(i18n.CurrentTranslator(), activity.Log{}, now, insightsCardCharacters, 0); f.Line != "The first page is under way" {
+		t.Errorf("the characters card of an empty log says %q", f.Line)
+	}
+	if f := buildInsightsFace(i18n.CurrentTranslator(), activity.Log{}, now, insightsCardSaved, 0); f.Bars[0].Fraction != 0 || f.Bars[1].Fraction != 0 {
+		t.Errorf("the saved card of an empty log has bars %+v", f.Bars)
+	}
+	for at, want := range map[time.Duration]string{0: "0", 650 * time.Millisecond: "2,450", insightsSettled: "2,800"} {
+		if got := insightsCount(2800, insightsProgress(at, 150*time.Millisecond, time.Second)); got != want {
+			t.Errorf("the count toward 2,800 shows %q after %v, want %q", got, at, want)
+		}
+	}
+}
+
+// TestInsightsEntrance plays a card's entrance: the speed's dial is
+// empty when the card comes up and filled once it has settled, a turn of
+// the cards starts the entrance over, and Reduce motion shows the card
+// settled at once.
+func TestInsightsEntrance(t *testing.T) {
+	now := time.Date(2027, 2, 6, 18, 0, 0, 0, time.Local)
+	var log activity.Log
+	log.Add(now, activity.Result{Chars: 400, Spoken: 400, Audio: 2 * time.Minute})
+	face := buildInsightsFace(i18n.CurrentTranslator(), log, now, insightsCardSpeed, 3)
+	// The dial's part of the card: only its fill has a color there, on
+	// the white tile under the grey track and the dark text.
+	filled := func(elapsed time.Duration) int {
+		img := ui.Render(func(c *ui.Context) { insightsCardFace(c, &face, elapsed, false) }, insightsCardW, insightsCardH, 1)
+		n := 0
+		for y := 100; y < 270; y++ {
+			for x := 330; x < 550; x++ {
+				c := img.RGBAAt(x, y)
+				if int(max(c.R, c.G, c.B))-int(min(c.R, c.G, c.B)) > 60 {
+					n++
+				}
+			}
+		}
+		return n
+	}
+	if n := filled(0); n != 0 {
+		t.Errorf("the dial has %d filled pixels as the card comes up", n)
+	}
+	if n := filled(insightsSettled); n < 500 {
+		t.Errorf("the dial has %d filled pixels once the card settled", n)
+	}
+
+	a, _, _ := newTestApp(t)
+	a.now = func() time.Time { return now }
+	a.openInsightsShare()
+	now = now.Add(time.Minute)
+	a.showInsightsShare(3) // the speed
+	if state := a.insightsModel(now, false); state.Elapsed != 0 || state.Face.Kind != insightsCardSpeed || state.Slide != 1 {
+		t.Errorf("the speed card comes up as %+v", state)
+	}
+	if state := a.insightsModel(now, true); state.Elapsed != insightsSettled {
+		t.Errorf("Reduce motion shows the card %v into its entrance", state.Elapsed)
 	}
 }
 
@@ -424,6 +603,7 @@ func TestLookingBackFolds(t *testing.T) {
 		t.Fatalf("a click on the title: closed %v, totals %v", a.prefs.Appearance.LookingBackClosed, totals(tt))
 	}
 	clickControl(t, tt, "Share a look back")
+	tt.Advance(shareSparkleLength) // Share opens once its stars have flown
 	if !a.share.insights.open {
 		t.Error("folded, Share did not open the card")
 	}

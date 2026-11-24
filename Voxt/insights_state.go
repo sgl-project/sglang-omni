@@ -49,15 +49,14 @@ type insightsViewState struct {
 func buildInsightsViewState(translator *i18n.Translator, log activity.Log, now time.Time) insightsViewState {
 	stats, longest := log.Stats(now), insightsLongest(log)
 	var chars, active int
-	var audio time.Duration
 	for _, day := range log.Days {
 		chars += day.Chars
-		audio += time.Duration(day.AudioMS) * time.Millisecond
 		if day.Count > 0 {
 			active++
 		}
 	}
-	saved := time.Duration(float64(chars)/insightsTypingRate*float64(time.Minute)) - audio
+	typing, audio := insightsTyping(log)
+	saved := typing - audio
 	if saved < 0 || audio == 0 {
 		saved = 0 // nothing timed yet, or slower than typing
 	}
@@ -99,6 +98,20 @@ func buildInsightsViewState(translator *i18n.Translator, log activity.Log, now t
 		state.Months = append(state.Months, month)
 	}
 	return state
+}
+
+// insightsTyping is how long typing what the user said would have taken,
+// and how long saying it took: the characters of speech (not of the
+// results, which rewrites, translations and answers make longer) at
+// insightsTypingRate, beside the speech's own length. Time saved and the
+// average speed both come from these two.
+func insightsTyping(log activity.Log) (typing, audio time.Duration) {
+	var spoken int
+	for _, day := range log.Days {
+		spoken += day.Spoken
+		audio += time.Duration(day.AudioMS) * time.Millisecond
+	}
+	return time.Duration(float64(spoken) / insightsTypingRate * float64(time.Minute)), audio
 }
 
 // insightsDuration is d as hours and minutes ("2 hours 34 minutes"), or

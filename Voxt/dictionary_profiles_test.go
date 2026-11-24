@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -14,7 +14,13 @@ func TestDictionaryProfileControls(t *testing.T) {
 	seedTerms(t, a)
 	a.loadDict()
 	frames(tt)
-	click(t, tt, "New profile")
+	if has(tt, "Default") {
+		t.Errorf("one profile shows its name: %q", firstTexts(tt))
+	}
+	click(t, tt, "More actions")
+	if err := tt.ChooseMenuItem("New profile…"); err != nil {
+		t.Fatal(err)
+	}
 	click(t, tt, "Profile name")
 	tt.Type("Work")
 	click(t, tt, "Save")
@@ -22,10 +28,13 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if err != nil || len(profiles) != 2 || profiles[1].Name != "Work" || !profiles[0].Active {
 		t.Fatalf("created profiles %+v, %v; state %+v; view %q", profiles, err, a.dictProfiles, firstTexts(tt))
 	}
-	if got := terms(t, a); len(got) != 5 || !has(tt, "Work") {
+	if got := terms(t, a); len(got) != 5 || !has(tt, "Default") {
 		t.Fatalf("creating changed the active dictionary: %+v", got)
 	}
-	click(t, tt, "Work")
+	click(t, tt, "Active dictionary profile")
+	if err := tt.ChooseMenuItem("Work"); err != nil {
+		t.Fatal(err)
+	}
 	frames(tt)
 	profiles, _ = a.lib.store.Dictionary().Profiles(context.Background())
 	if !profiles[1].Active || len(terms(t, a)) != 0 {
@@ -35,7 +44,7 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if got := terms(t, a); len(got) != 1 || got[0].Term != "ActiveOnly" {
 		t.Errorf("term saved outside Work: %+v", got)
 	}
-	click(t, tt, "Profile actions")
+	click(t, tt, "Active dictionary profile")
 	if err := tt.ChooseMenuItem("Rename “Work”…"); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +54,7 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if profiles[1].Name != "Office" || !profiles[1].Active || !has(tt, "Office") {
 		t.Errorf("rename did not apply: %+v", profiles)
 	}
-	click(t, tt, "Profile actions")
+	click(t, tt, "Active dictionary profile")
 	if err := tt.ChooseMenuItem("Delete “Office”…"); err != nil {
 		t.Fatal(err)
 	}
@@ -57,11 +66,9 @@ func TestDictionaryProfileControls(t *testing.T) {
 	if len(profiles) != 1 || !profiles[0].Active || len(terms(t, a)) != 5 {
 		t.Errorf("delete did not restore Default: %+v", profiles)
 	}
-	click(t, tt, "Profile actions")
-	if err := tt.ChooseMenuItem("Delete “Default”…"); err == nil || !strings.Contains(err.Error(), "disabled") {
-		t.Errorf("the last profile can be deleted: %v", err)
+	if slices.Contains(tt.AccessLabels(), "Active dictionary profile") {
+		t.Errorf("the picker shows with one profile left: %q", tt.AccessLabels())
 	}
-	tt.CloseMenu()
 }
 
 func TestDictionaryProfileExternalSwitch(t *testing.T) {
@@ -161,6 +168,10 @@ func TestDictionaryTermDialogStaysInItsProfile(t *testing.T) {
 // switch takes the shown name too.
 func TestDictionaryProfileDefaultTranslated(t *testing.T) {
 	a, tt := dictTester(t)
+	if err := a.lib.store.Dictionary().CreateProfile(context.Background(), store.DictionaryProfile{ID: "work", Name: "Work"}); err != nil {
+		t.Fatal(err)
+	}
+	a.loadDictionaryProfiles()
 	i18n.SetLocale("zh-Hans")
 	defer i18n.SetLocale("en")
 	frames(tt)
@@ -172,7 +183,7 @@ func TestDictionaryProfileDefaultTranslated(t *testing.T) {
 		t.Errorf("switch by the translated name toasted %q", toast)
 	}
 	profiles, err := a.lib.store.Dictionary().Profiles(context.Background())
-	if err != nil || len(profiles) != 1 || !profiles[0].Active {
+	if err != nil || len(profiles) != 2 || !profiles[0].Active {
 		t.Errorf("switch by the translated name: %+v, %v", profiles, err)
 	}
 }
