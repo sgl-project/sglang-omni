@@ -78,6 +78,7 @@ type app struct {
 	appEnhanceState
 	appIconsState
 	dictionaryState
+	snippetsState
 	homeState
 	shareState // share_controller.go: the share card and its hat studio
 	onboardingState

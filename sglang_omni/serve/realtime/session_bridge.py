@@ -128,6 +128,7 @@ def capabilities_of(ports: SessionPorts) -> Capabilities:
         supports_truncate=TRUNCATE in ports.controls,
         supports_cancel=INTERRUPT in ports.controls,
         supports_client_commit=COMMIT in ports.controls,
+        skips_screen_blocks=ports.skips_screen_blocks,
     )
 
 
