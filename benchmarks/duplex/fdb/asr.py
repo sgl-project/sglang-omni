@@ -4,7 +4,6 @@ quality of every reply."""
 
 from __future__ import annotations
 
-import os
 import shlex
 import sys
 from pathlib import Path
@@ -31,7 +30,7 @@ def v10_asr(settings: Settings, tree: Path) -> bool:
         return True
     else:
         pass
-    log(f"== v1.0 ASR (Parakeet on {settings.asr_device})")
+    log(f"== v1.0 ASR (Parakeet on GPU {settings.gpu})")
     return run_command(
         v10_command(
             settings,
@@ -45,7 +44,7 @@ def v10_asr(settings: Settings, tree: Path) -> bool:
             "--nemo-sha256",
             PARAKEET_SHA256,
             "--device",
-            settings.asr_device,
+            "cuda",
         ),
         visible_gpus=settings.gpu,
     )
@@ -54,7 +53,7 @@ def v10_asr(settings: Settings, tree: Path) -> bool:
 def listening(settings: Settings, manifests: list[Path], out: Path) -> bool:
     """Cut and transcribe the replies in the scoring venv, then score them in
     the serving venv, which holds the UTMOS and WavLM models."""
-    log(f"== Listening quality: reply transcripts (Parakeet on {settings.asr_device})")
+    log(f"== Listening quality: reply transcripts (Parakeet on GPU {settings.gpu})")
     is_transcribed = run_command(
         listening_command(
             settings.scoring_python,
@@ -67,7 +66,7 @@ def listening(settings: Settings, manifests: list[Path], out: Path) -> bool:
             "--nemo-sha256",
             PARAKEET_SHA256,
             "--device",
-            settings.asr_device,
+            "cuda",
         ),
         visible_gpus=settings.gpu,
     )
@@ -76,17 +75,11 @@ def listening(settings: Settings, manifests: list[Path], out: Path) -> bool:
     else:
         pass
     log(
-        f"== Listening quality: UTMOS, voice consistency, omitted words "
-        f"({settings.asr_device})"
+        f"== Listening quality: UTMOS, voice consistency, omitted words (GPU {settings.gpu})"
     )
     return run_command(
         listening_command(
-            Path(sys.executable),
-            "score",
-            "--out",
-            str(out),
-            "--device",
-            settings.asr_device,
+            Path(sys.executable), "score", "--out", str(out), "--device", "cuda"
         ),
         visible_gpus=settings.gpu,
     )
@@ -117,7 +110,7 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
             str(scores),
             *(["--retry-failed"] if retry_failed else []),
         ]
-        log(f"== v1.5 ASR (Parakeet on {settings.asr_device})")
+        log(f"== v1.5 ASR (Parakeet on GPU {settings.gpu})")
         is_asr_ok = run_command(
             reference_command(
                 settings,
@@ -128,7 +121,7 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
                 "--nemo-sha256",
                 PARAKEET_SHA256,
                 "--device",
-                settings.asr_device,
+                "cuda",
             ),
             visible_gpus=settings.gpu,
         )
@@ -155,11 +148,7 @@ def asr(settings: Settings, repeat: int, retry_failed: bool) -> None:
         *([v15_manifest] if has_v15 else []),
         *([v10_tree / "manifest.json"] if v10_tree is not None else []),
     ]
-    is_listening_ok = True
-    if os.environ.get("FDB_SKIP_LISTENING") == "1":
-        log("== Listening quality skipped (FDB_SKIP_LISTENING=1)")
-    else:
-        is_listening_ok = listening(settings, manifests, repeat_dir / LISTENING_DIR)
+    is_listening_ok = listening(settings, manifests, repeat_dir / LISTENING_DIR)
 
     problems = []
     if not (is_asr_ok and is_timing_ok):
