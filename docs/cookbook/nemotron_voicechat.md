@@ -46,6 +46,17 @@ The reply text is the thinker's spoken tokens only; frames where the model is li
 
 For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../other_platforms/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
 
+For one 64 GiB Ascend910_9362, use the Mamba2 runtime described in the [Ascend 910 setup](#ascend-910). With `MODEL_DIR` pointing to the local VoiceChat checkpoint, the following settings select the tested offline memory budgets and Talker decode graph.
+
+```bash
+python examples/run_nemotron_voicechat.py \
+  --model-path "$MODEL_DIR" --audio "$MODEL_DIR/turn_taking.wav" --out reply.wav \
+  --startup-timeout 600 \
+  --thinker.engine.mem_fraction_static 0.78 --talker.engine.mem_fraction_static 0.18 \
+  --thinker.engine.max_total_tokens 8192 --talker.engine.max_total_tokens 8192 \
+  --talker.engine.disable_cuda_graph false
+```
+
 ### Streaming codec chunk sizes
 
 The offline pipeline enables the `(1, 1, 1, 1, 2, 2, 4)` chunk ramp by default to reduce decoder calls and audio transfers. To disable the ramp and decode one codec frame at a time, set the code2wav factory's `chunk_frames`:
@@ -86,6 +97,28 @@ Larger chunks trade playback arrival frequency for fewer decoder calls. Measure 
 ## Realtime conversation
 
 VoiceChat also serves live full-duplex voice sessions on `/v1/realtime` with its `session` variant. Launching, settings and the protocol are in [Full-Duplex Guide](../developer_reference/full_duplex_guide.md#native-full-duplex-nemotron-voicechat).
+
+### Ascend 910
+
+The single-session configuration targets one 64 GiB Ascend910_9362. Start with the [Omni Ascend installation](../other_platforms/installation_npu.md) for SGLang 0.5.23, CANN 9.1, PyTorch 2.10.0 and torch_npu 2.10.0.post6. VoiceChat needs the Mamba2, session KV and attention fixes tracked in [SGLang #52443](https://github.com/sgl-project/sglang/pull/52443). Apply their release-specific source backport in the environment used to start the service:
+
+```bash
+git clone --branch v0.5.23 --depth 1 https://github.com/sgl-project/sglang.git voicechat-sglang
+git -C voicechat-sglang fetch https://github.com/celestial-micha/sglang.git refs/heads/codex/voicechat-v0523-backport
+git -C voicechat-sglang merge --ff-only 42ece9a87014387a0291e178e0832fecf427937e
+export PYTHONPATH="$(cd voicechat-sglang/python && pwd)${PYTHONPATH:+:$PYTHONPATH}"
+python -c 'import pathlib, sglang; assert pathlib.Path(sglang.__file__).resolve() == pathlib.Path("voicechat-sglang/python/sglang/__init__.py").resolve()'
+```
+
+Run this command from the repository root with one NPU visible to the service. For a local checkpoint, pass its directory with `--model-path`.
+
+```bash
+sgl-omni serve \
+  --config examples/configs/nemotron_voicechat_ascend910_session.yaml \
+  --enable-realtime --host 127.0.0.1 --port 8000
+```
+
+This configuration selects Ascend attention with 128-token pages, eager Thinker decode and Talker graph replay. Wait for `/health` before opening a WebSocket session.
 
 ## Offline request parameters
 

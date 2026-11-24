@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import sglang_omni.models.nemotron_voicechat.engine_builder as engine_builder
@@ -48,6 +50,27 @@ def test_talker_default_attention_backend(
     )
 
     assert defaults.get("attention_backend") == expected_backend
+
+
+@pytest.mark.parametrize(
+    "builder_class",
+    [engine_builder.NemotronVoiceChatTalkerEngineBuilder, TalkerBuilder],
+)
+@pytest.mark.parametrize("is_npu", [False, True])
+def test_talker_uses_sdpa_for_ascend_prefill(
+    monkeypatch: pytest.MonkeyPatch, builder_class: type, is_npu: bool
+) -> None:
+    monkeypatch.setattr(engine_builder.current_platform, "is_npu", lambda: is_npu)
+    backend = SimpleNamespace(use_native_sdpa=False)
+    worker = SimpleNamespace(model_runner=SimpleNamespace(attn_backend=backend))
+    builder_class().setup_model(
+        model_worker=worker,
+        checkpoint_dir=None,
+        device=None,
+        gpu_id=0,
+        server_args=None,
+    )
+    assert backend.use_native_sdpa is is_npu
 
 
 def test_operator_attention_backend_overrides_talker_default(
