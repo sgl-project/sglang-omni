@@ -728,15 +728,49 @@ async def test_a_speech_with_nothing_to_speak_is_reported_instead_of_completed(t
     assert "no audio was produced" in outputs[-1].payload[SPEECH_ERROR]
 
 
-def tool_generator():
+def tool_generator(**options: object):
     return build(
         {
             "kind": "openai_chat",
             "base_url": "http://127.0.0.1:1/v1",
             "model": "test-model",
             "tools": [{"name": "tts_start", "description": "Say text aloud."}],
+            **options,
         }
     )
+
+
+OPENING = "<tool_call>\n<function=tts_start>\n<parameter=text>\n"
+QUESTION = {"role": "user", "content": "question"}
+
+
+@pytest.mark.parametrize(
+    ("tool_choice", "request_fields"),
+    [
+        (
+            "required",
+            {
+                "messages": [QUESTION, {"role": "assistant", "content": OPENING}],
+                "continue_final_message": True,
+                "tool_choice": "auto",
+            },
+        ),
+        (
+            None,
+            {
+                "messages": [QUESTION],
+                "continue_final_message": None,
+                "tool_choice": None,
+            },
+        ),
+    ],
+)
+def test_the_generator_opens_only_a_required_call_for_the_model_to_continue(
+    tool_choice: str | None, request_fields: dict[str, object]
+):
+    generator = tool_generator(required_call_opening=OPENING)
+    body = generator.request_body([ChatMessage(**QUESTION)], tool_choice)
+    assert {name: body.get(name) for name in request_fields} == request_fields
 
 
 @pytest.mark.asyncio

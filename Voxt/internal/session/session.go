@@ -389,6 +389,10 @@ type Config struct {
 	// language, for a main language left to follow it.
 	Settings func() settings.Settings
 	Locale   func() string
+	// Languages lists the languages the user reads, most preferred first,
+	// as the system orders them (nil: none), for the Chinese script of
+	// dictation (SpeechScript).
+	Languages func() []string
 	// Scene is app enhancement (nil: none).
 	Scene *SceneConfig
 	// Self is VoxtNew's pid and Activate brings an app back to the front
@@ -466,8 +470,7 @@ const (
 	// the settle (selectionSettleMS), the modifier wait
 	// (selectionModifierWaitMS) and the copy wait (selectionCopyMS),
 	// plus AX and IPC overhead (selectionOverheadMS) — 2 s.
-	DefaultReadTimeout  = 2 * time.Second
-	selectionOverheadMS = 300
+	DefaultReadTimeout = 2 * time.Second
 	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
 	// read, and its ⌘C landing on the clipboard (the helper's default
 	// 300 ms), in Rewrite (#3644: long selections failed).

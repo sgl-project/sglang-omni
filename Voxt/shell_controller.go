@@ -26,7 +26,7 @@ import (
 // shellState is the shell's view state and the services it owns.
 type shellState struct {
 	router         *uiRouter
-	openingStarted time.Time // the first-use opening's start (opening_controller.go)
+	openingStarted time.Time // the opening's start (opening_controller.go)
 	// nav is the sidebar's choice; navShown the router path it was last
 	// synced from (see syncNav).
 	nav, navShown string
@@ -65,6 +65,9 @@ type shellState struct {
 	paletteSavePending      bool
 	transparencySavePending bool
 	transparencyRevision    atomic.Uint64
+	// historyWidthRevision invalidates a detail-width save still in
+	// flight when the look or every setting is reset.
+	historyWidthRevision atomic.Uint64
 
 	logsState     // shell_logs_controller.go
 	navState      // shell_nav_controller.go
@@ -196,10 +199,12 @@ func (a *app) currentPage() string { return section(a.router.Path())[1:] }
 func (a *app) openWindow() {
 	a.version = mygo.App.Version()
 	a.systemLocale = systemLanguage() // settings_locale.go
+	readSystemLanguages()
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()
-	a.startOpening() // opening_controller.go
+	hidden := startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General)
+	a.startOpening(hidden) // opening_controller.go
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:          "Voxt",
 		Width:          windowWidth,
@@ -211,7 +216,7 @@ func (a *app) openWindow() {
 		TitleBarHeight: titleBarHeight,
 		Transparent:    true,
 		Content:        shellContent(a.view),
-		Hidden:         startHidden(mygo.App.WasOpenedAtLogin(), a.prefs.General),
+		Hidden:         hidden,
 	})
 	a.life = a.win
 	a.maybeOnboard()        // onboarding.go: the setup guide, on the first start
@@ -242,7 +247,7 @@ func (a *app) shellModel(now time.Time) *shellViewState {
 		Transparent:   a.prefs.Appearance.Theme == settings.ThemeTransparent,
 		Still:         a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts:        a.toasts,
-		Nav:           a.navModel(), Notices: a.noticesModel(now),
+		Nav:           a.navModel(), Notices: a.noticesModel(),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,
@@ -283,7 +288,7 @@ func (a *app) view(c *uiContext) {
 	a.mainUI = c.Services()
 	shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
 	a.syncNav()
-	now := time.Now()
+	now := a.now()
 	model := a.shellModel(now)
 	model.Opening = a.openingModel(c.Preferences().ReduceMotion) // opening_controller.go
 	shellView(c, model, a, a.shellLocal(), func() { a.pages(c) }, func() {

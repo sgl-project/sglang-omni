@@ -641,6 +641,46 @@ def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
 
 
 @pytest.mark.parametrize(
+    ("requested", "with_draft", "expected"),
+    [
+        (None, False, False),
+        (None, True, True),
+        (False, True, False),
+        (True, False, True),
+    ],
+)
+def test_arkasr_early_request_builds_default_on_only_with_the_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requested: bool | None,
+    with_draft: bool,
+    expected: bool,
+) -> None:
+    """By default a build starts on arrival only under the draft; an explicit setting reaches the scheduler unchanged."""
+    stub_arkasr_engine_build(
+        monkeypatch,
+        want_cuda_graph=False,
+        encoder_service=SimpleNamespace(close=lambda: None),
+    )
+    monkeypatch.setattr(platforms.current_platform, "is_cuda", lambda: True)
+    write_ark_dflash_checkpoint(tmp_path)
+    overrides = (
+        {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+        if with_draft
+        else {}
+    )
+
+    scheduler = create_sglang_arkasr_executor(
+        "target", early_request_builds=requested, server_args_overrides=overrides
+    )
+
+    assert scheduler.early_request_builds is expected
+
+
+@pytest.mark.parametrize(
     (
         "with_draft",
         "enable_async_decode",
@@ -648,13 +688,14 @@ def test_arkasr_speculative_overlap_is_an_explicit_opt_in(
         "requested_workers",
         "expected_wait_ms",
         "expected_workers",
+        "expected_coalesce_requests",
     ),
     [
-        (False, None, None, None, 32.0, 2),
-        (True, None, None, None, 0.5, 4),
-        (True, True, None, None, 32.0, 2),
-        (False, None, 24.0, 3, 24.0, 3),
-        (True, None, 24.0, 2, 24.0, 2),
+        (False, None, None, None, 32.0, 2, 16),
+        (True, None, None, None, 32.0, 4, 0),
+        (True, True, None, None, 32.0, 2, 16),
+        (False, None, 24.0, 3, 24.0, 3, 16),
+        (True, None, 24.0, 2, 24.0, 2, 16),
     ],
 )
 def test_arkasr_admission_defaults_reach_scheduler(
@@ -666,6 +707,7 @@ def test_arkasr_admission_defaults_reach_scheduler(
     requested_workers: int | None,
     expected_wait_ms: float,
     expected_workers: int,
+    expected_coalesce_requests: int,
 ) -> None:
     """Resolve admission defaults after selecting the draft; preserve explicit settings and ordinary decode defaults."""
     stub_arkasr_engine_build(
@@ -704,6 +746,7 @@ def test_arkasr_admission_defaults_reach_scheduler(
 
     assert scheduler.prefill_coalesce_wait_ms == expected_wait_ms
     assert scheduler.request_build_max_workers == expected_workers
+    assert scheduler.prefill_coalesce_requests == expected_coalesce_requests
 
 
 def test_arkasr_runner_opts_into_speculative_overlap(
