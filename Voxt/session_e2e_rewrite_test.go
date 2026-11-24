@@ -8,12 +8,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+func cardRewriteShortcutLogs(a *sessionApp) []core.LogEntry {
+	var entries []core.LogEntry
+	for _, entry := range a.logs.Tail(100, sessionSource) {
+		if strings.HasPrefix(entry.Message, "Rewrite shortcut with card open:") {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
 
 // TestRewriteAnswerFollowUp: nothing selected and nothing takes text: the
 // JSON answer streams into the card with its title; the Rewrite shortcut
@@ -36,6 +47,10 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt) })
+	logs := cardRewriteShortcutLogs(a)
+	if len(logs) != 1 || logs[0].Level != core.SeverityInfo || logs[0].Message != "Rewrite shortcut with card open: follow-up (card app accepted a follow-up)" {
+		t.Fatalf("card-open Rewrite route log: %+v", logs)
+	}
 	// It records in the same card, the conversation above the text box.
 	if v := a.boxViewState(); !a.answer.open || !a.answer.conversation || !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
 		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.overlayModeNow(), v)
@@ -45,6 +60,9 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's end", func() bool { return a.sess.State.Ended() && a.answer.text == "Running late." })
+	if logs := cardRewriteShortcutLogs(a); len(logs) != 1 {
+		t.Errorf("the finishing shortcut added another route log: %+v", logs)
+	}
 	if a.answer.text != "Running late." || len(a.answer.turns) != 2 || !a.answer.open || !a.answer.conversation || len(a.pasted()) != 0 {
 		t.Errorf("card %+v", a.answer)
 	}

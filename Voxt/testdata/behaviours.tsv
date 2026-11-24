@@ -10,6 +10,7 @@ Translation follow-up and fallback model	L	TestTranslateFallbackModel	none
 Rewrite a selection by a spoken instruction	L	TestRewriteSelectionInCard	none
 Rewrite a selection by a spoken instruction	L	TestRewriteBlankSelectionReadsTheCopy	none
 Rewrite continue with a new selection	L	TestRewriteFollowUpNewSelection	none
+Rewrite voice and typed follow-ups	L	TestRewriteVoiceFollowUpButtonKeepsConversation	Real microphone and native-window behavior is checked by hand only
 Image input: window screenshot and clipboard image	L	TestWindowScreenshotEndToEnd	No test of an unreadable selection with the image switch on
 Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	none
 Answer card	L	TestAnswerCardMarkdown	none

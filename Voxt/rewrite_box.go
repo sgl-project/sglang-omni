@@ -121,6 +121,7 @@ type rewriteBoxViewState struct {
 	ManualImages      int
 	VoiceLine         string
 	EditorPlaceholder string
+	FollowKeys        string
 	Subtitle          string
 	SubtitleError     bool
 	CanSend           bool

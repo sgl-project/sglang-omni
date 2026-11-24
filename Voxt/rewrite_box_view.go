@@ -206,7 +206,25 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			}
 
 			// The trailing text box stays visible while earlier inputs scroll.
-			boxTextEditor(context, -1, &local.text, state, actions, local)
+			ui.Row(context.Key("box-input-row")).Shrink(0).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Column(context).Grow(1).MinWidth(0).Children(func() {
+					boxTextEditor(context, -1, &local.text, state, actions, local)
+				})
+				if card := state.Card; card != nil && (card.CanFollowUp || card.CanStop) {
+					label, icon := card.FollowTooltip, icons.VoxtTranscribe
+					if card.CanStop {
+						label, icon = i18n.T("Send the follow-up"), icons.Stop
+					}
+					if cardIconButton(context.Key("box-follow-up"), label, label, icon, true) {
+						actions.textChanged(local.text)
+						if card.CanStop {
+							actions.send()
+						} else {
+							actions.card.followUpAnswer("")
+						}
+					}
+				}
+			})
 
 			// The voice line carries actual speech, not another hint.
 			if state.VoiceLine != "" {
@@ -245,6 +263,11 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						}
 					})
 				})
+				if card := state.Card; card != nil && (card.CanFollowUp || card.CanStop) && state.FollowKeys != "" {
+					keycap(context, state.FollowKeys)
+					ui.Text(context, i18n.T("follow up by voice")).FontSize(11).TextColor(ovText2).SingleLine()
+					ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				}
 				if state.EnterSends {
 					keycap(context, "Enter")
 					ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()
