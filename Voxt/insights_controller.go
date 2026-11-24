@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 type insightsShare struct {
@@ -23,6 +24,14 @@ func (a *app) openInsightsShare() {
 }
 
 func (a *app) closeInsightsShare() { a.share.insights.open = false }
+
+// setInsightsClosed folds Looking back to its title row, or opens it:
+// the settings keep the choice.
+func (a *app) setInsightsClosed(closed bool) {
+	if closed != a.prefs.Appearance.LookingBackClosed {
+		a.updateSettings(func(s *settings.Settings) { s.Appearance.LookingBackClosed = closed })
+	}
+}
 
 func (a *app) shuffleInsightsShare() {
 	s := &a.share.insights

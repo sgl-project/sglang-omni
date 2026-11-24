@@ -17,8 +17,7 @@ Architecturally, MOSS-TTS-v1.5 is the `delay-pattern` counterpart to [MOSS-TTS-L
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then
-download the model (public, no token required):
+Install `sglang-omni` using [Installation](../get_started/installation.md) for CUDA or [Installation — NPU](../other_platforms/installation_npu.md) for Ascend. Download the model (public, no token required):
 
 ```bash
 hf download OpenMOSS-Team/MOSS-TTS-v1.5
@@ -26,6 +25,22 @@ hf download OpenMOSS-Team/MOSS-TTS-v1.5
 
 The processor ships with the checkpoint, so no extra TTS package is needed. Decoding base64
 (data-URI) reference audio additionally requires `soundfile` (`uv pip install soundfile`).
+
+### Ascend NPU
+
+For BF16 inference on one Ascend 910 A3, select your allocated device and launch with the shared [MOSS configuration](../../examples/configs/moss_tts.yaml):
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0
+export SGLANG_OMNI_PLATFORM_SPEC=sglang_omni.platforms.npu.NPUOmniPlatform
+export PER_STREAM_QUEUE=1
+export TASK_QUEUE_ENABLE=1
+sgl-omni serve --model-path OpenMOSS-Team/MOSS-TTS-v1.5 --config examples/configs/moss_tts.yaml --port 8000
+```
+
+`PER_STREAM_QUEUE` is an [experimental torch_npu option](https://www.hiascend.com/document/detail/en/Pytorch/2610/devguide/fwfeatures/docs/en/framework_feature_guide_pytorch/stream_taskqueue_parallel_delivery.md).
+
+Incomplete NPU sampling graph capture stops startup. Check the preceding traceback; for out-of-memory or insufficient-headroom errors, free device memory or reduce `stages.tts_engine.engine.max_running_requests` and remove explicit decode graph batch-size overrides so Omni regenerates the buckets for the new request limit.
 
 ## Server Configuration
 
@@ -242,15 +257,10 @@ over the single-value aliases.
 
 ## Seed Reproducibility
 
-MOSS-TTS samples each row, position, and codebook with `multinomial_with_seed`, deriving a
-per-request seed from the public `seed` and combining it with a per-(step, channel) position. A
-sampled token therefore depends only on its own seed and position — never on its batch
-neighbours — so a fixed `seed` is reproducible at any concurrency, not just batch size 1.
+MOSS-TTS derives a per-request seed from the public `seed` and combines it with a per-(step, channel) position and original token ID to generate sampling noise. With identical logits and prepared inputs, the sampler reproduces its selection across batches independently of batch neighbours.
 Limitations:
 
-- Reproducibility holds for a **fixed server configuration and hardware**. Floating-point
-  non-determinism in the backbone (different batch shapes, GPU models, or kernels) can still
-  change the logits, and thus the sampled tokens, across deployments.
+- Reproducibility holds for a **fixed server configuration and hardware**. Floating-point differences in reference encoding and the backbone (different batch shapes, device models, or kernels) can change prepared codes or logits, and thus the sampled tokens. A fixed seed does not guarantee identical end-to-end audio across concurrency settings or deployments.
 - `seed` must be a non-negative integer; non-integer or negative values are rejected.
 - Requests **without** a `seed` draw a fresh random per-request seed, so they are not
   reproducible across runs (but are still independent of batch neighbours).
@@ -282,12 +292,15 @@ references, not CI thresholds.
 | EN | 1.68% | 1.32% (4 outliers) | 3.449 / 4.141 | 0.811 | 2.312 |
 | ZH | 1.36% | 1.27% (2 outliers) | 3.608 / 4.153 | 0.635 | 2.213 |
 
-A handful of utterances run away into a repetition loop (> 50% WER) and dominate the raw
+A handful of utterances in the H200 reference run away into a repetition loop (> 50% WER) and dominate the raw
 micro-average; excluding them, corpus WER is ~1.3% in both languages, and per-sample median WER
 is 0.00%.
 
+Ascend measurements and validation conditions are recorded in [PR #2278](https://github.com/sgl-project/sglang-omni/pull/2278).
+
 ## Known Limitations
 
+- **NPU throughput.** The earlier throughput regression remains tracked in [#3296](https://github.com/sgl-project/sglang-omni/issues/3296).
 - **Voice cloning depends on the reference.** Omit the reference for non-cloned speech; provide
   the transcript (`text` / `ref_text`) for the best speaker similarity when cloning.
 - **Concurrency vs. WER.** Quality is best around `--max-concurrency 8`; higher concurrency

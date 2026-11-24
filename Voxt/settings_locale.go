@@ -4,6 +4,8 @@ package main
 // system's, and the language MyGo shows.
 
 import (
+	"sync/atomic"
+
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
@@ -51,4 +53,23 @@ func showLanguage(tag string) {
 	if mygo.App.Locale() != tag {
 		mygo.App.SetLocale(tag)
 	}
+}
+
+// systemLanguages are the languages the user reads, as the system lists
+// them (mygo.App.PreferredLanguages), read when the window opens: MyGo
+// answers on its main thread, which a session must not wait for. They
+// pick the Chinese script of dictation (session.Config.Languages).
+var systemLanguages atomic.Pointer[[]string]
+
+func readSystemLanguages() {
+	langs := mygo.App.PreferredLanguages()
+	systemLanguages.Store(&langs)
+}
+
+// readingLanguages are the systemLanguages, nil before the window opens.
+func readingLanguages() []string {
+	if p := systemLanguages.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
