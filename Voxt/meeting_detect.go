@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -47,6 +48,9 @@ type meetingAsk struct {
 	compact, menu bool
 	seq           int
 	armed         time.Time
+	// snoozed is the app to ask about again when "Ask again in 2 minutes"
+	// is up ("": none, or Voxt recorded it meanwhile).
+	snoozed string
 	// startAfter is the app whose meeting starts when the dictation that
 	// records now ends ("": none): its button was pressed meanwhile.
 	startAfter       string
@@ -63,8 +67,11 @@ func (a *app) detectMeetings() bool {
 // the watch stops and the card goes when meetings are no longer detected
 // or Meetings is hidden, and the card goes when its question is decided.
 func (a *app) meetingDetectChanged() {
-	if !a.detectMeetings() || a.prefs.Features.Meeting.AutoStart {
+	switch {
+	case !a.detectMeetings():
 		a.closeMeetingAsk()
+	case a.prefs.Features.Meeting.AutoStart && a.ask.key != "":
+		a.startDetectedMeeting() // the card asked what is now decided: yes
 	}
 	a.syncMicWatch()
 }
@@ -85,7 +92,13 @@ func (a *app) syncMicWatch() {
 		}
 	}
 	helperCall(a, proto.MethodMicWatch, proto.MicWatchParams{On: want}, 5*time.Second, func(users proto.MicUsers, err error) {
-		if err == nil && want && a.micWatch {
+		switch {
+		case err != nil && want:
+			// Not watching after all: the next change of the helper or of
+			// the settings asks again.
+			a.micWatch = false
+			a.logs.Append(core.LogEntry{Time: a.now(), Source: meetingLogSource, Level: core.SeverityWarning, Message: "mic.watch: " + err.Error()})
+		case err == nil && want && a.micWatch:
 			a.micChanged(users)
 		}
 	})
@@ -102,7 +115,7 @@ func (a *app) micHelperChanged(st helper.Status) {
 
 // micChanged takes the apps recording now (mic.watch, mic.changed).
 func (a *app) micChanged(users proto.MicUsers) {
-	a.micUsers = a.micUsers[:0]
+	a.micUsers = make([]meetdetect.User, 0, len(users.Apps)) // not nil: the helper answered
 	for _, u := range users.Apps {
 		a.micUsers = append(a.micUsers, meetdetect.User{PID: u.PID, BundleID: u.BundleID})
 	}
@@ -117,9 +130,14 @@ func (a *app) syncMeetingDetect() {
 	for _, b := range appctx.Browsers(a.prefs.AppEnhancement.Browsers) {
 		browsers = append(browsers, b.BundleID)
 	}
-	found := a.detect.Update(a.micUsers, browsers, time.Now())
+	found, wait := a.detect.Update(a.micUsers, browsers, a.now())
 	if a.ask.key != "" && !a.detect.Recording(a.ask.key) {
 		a.closeMeetingAsk() // the meeting is over
+	}
+	if wait > 0 {
+		// An app took the microphone a moment ago: a test of it is over
+		// before meetdetect.Hold, a meeting is not.
+		a.later(wait, a.syncMeetingDetect)
 	}
 	if len(found) == 0 || !a.detectMeetings() {
 		return
@@ -196,7 +214,7 @@ func (a *app) askMeeting(key, app string) {
 func (a *app) restMeetingAsk() {
 	a.ask.seq++
 	seq := a.ask.seq
-	a.ask.armed = time.Now()
+	a.ask.armed = a.now()
 	a.later(meetingAskRest, func() {
 		switch {
 		case a.ask.seq != seq || a.ask.key == "" || a.ask.compact:
@@ -230,7 +248,7 @@ func (a *app) meetingAskHovered() {
 		a.ask.compact = false
 		a.post(a.syncMeetingAsk)
 		a.restMeetingAsk()
-	} else if time.Since(a.ask.armed) > time.Second {
+	} else if a.now().Sub(a.ask.armed) > time.Second {
 		a.restMeetingAsk()
 	}
 }
@@ -278,13 +296,18 @@ func (a *app) chooseMeetingAskMenu(id string) {
 	case meetingAskSnooze:
 		key := a.ask.key
 		a.closeMeetingAsk()
+		a.ask.snoozed = key
 		a.later(meetingAskLater, func() {
+			if a.ask.snoozed != key {
+				return // Voxt recorded it meanwhile, or it was asked later again
+			}
+			a.ask.snoozed = ""
 			a.detect.Forget(key) // still recording: syncMeetingDetect asks again
 			a.syncMeetingDetect()
 		})
 	case meetingAskAuto:
 		a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.AutoStart = true })
-		a.startDetectedMeeting()
+		a.meetingDetectChanged() // starts this one, unless the saved setting already did
 	case meetingAskSettings:
 		a.ask.menu = false
 		a.syncMeetingAsk()

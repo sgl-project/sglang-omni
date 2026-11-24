@@ -194,7 +194,9 @@ type BrowserURLParams struct {
 }
 
 // BrowserURLResult is the URL ("" when none was read) and how. A URL is
-// used only to match app enhancement rules, never sent to a model.
+// used only to match app enhancement rules and, when a browser records
+// from the microphone, to see whether its tab is a meeting's page
+// (internal/meetdetect); it is not kept, and never sent to a model.
 type BrowserURLResult struct {
 	BundleID string  `json:"bundleId"`
 	URL      string  `json:"url,omitempty"`

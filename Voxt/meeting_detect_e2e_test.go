@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/hehehai/actnowkit/sounds"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
@@ -28,7 +29,17 @@ func detectApp(t *testing.T, opts string, set func(*settings.Settings), svc loca
 	}, svc)
 	useTestSounds(t, s.app)
 	s.playSound = func(sounds.Target) {}
+	shortHold(s)
 	return s
+}
+
+// shortHold makes s ask about an app after a moment of recording instead
+// of meetdetect.Hold, on real timers (a test app has none of its own), and
+// decides again about what the helper said before.
+func shortHold(s *sessionApp) {
+	s.detect.Hold = 20 * time.Millisecond
+	s.laterHook = func(d time.Duration, fn func()) { time.AfterFunc(d, func() { s.post(fn) }) }
+	s.post(s.syncMeetingDetect)
 }
 
 func hearsMeeting() *fakeLocal {

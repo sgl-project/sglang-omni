@@ -15,7 +15,7 @@ import (
 // meeting and the next ones without a card.
 func TestMeetingAskMenu(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	timers := (&fakeTimers{}).install(a)
+	timers := detectClock(t, a)
 	micUsers(t, a, "us.zoom.xos")
 	closed := meetingAskLayoutModel(a.ask.view)
 	a.toggleMeetingAskMenu()
@@ -51,9 +51,11 @@ func TestMeetingAskMenu(t *testing.T) {
 	if !b.ask.view.Visible || b.ask.view.MenuOpen || !b.mvUI.setOpen {
 		t.Fatalf("settings: card %+v, dialog open %v", b.ask.view, b.mvUI.setOpen)
 	}
+	// Start recording automatically, switched on while the card asks,
+	// answers it: this meeting starts too.
 	b.setMeetingAutoStart(true)
-	if b.ask.view.Visible {
-		t.Fatal("the card stayed after the user chose to start automatically")
+	if b.ask.view.Visible || !b.meetingActive() && len(b.toasts) != 1 {
+		t.Fatalf("automatic, chosen in the settings: card %+v, toasts %q", b.ask.view, b.toasts)
 	}
 }
 
@@ -61,7 +63,7 @@ func TestMeetingAskMenu(t *testing.T) {
 // stays open while its menu is.
 func TestMeetingAskCompact(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	timers := (&fakeTimers{}).install(a)
+	timers := detectClock(t, a)
 	micUsers(t, a, "us.zoom.xos")
 	open := meetingAskLayoutModel(a.ask.view)
 	timers.advance(meetingAskRest)

@@ -2,16 +2,43 @@ package main
 
 import (
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meetdetect"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
-// micUsers sends the app a mic.changed naming the bundle ids that record.
+// detectClock gives a fake timers and their clock, once: the tests move
+// the time an app has recorded by hand.
+func detectClock(t *testing.T, a *app) *fakeTimers {
+	t.Helper()
+	if f, ok := detectClocks.Load(a); ok {
+		return f.(*fakeTimers)
+	}
+	f := (&fakeTimers{}).install(a)
+	a.now = f.clock
+	detectClocks.Store(a, f)
+	t.Cleanup(func() { detectClocks.Delete(a) })
+	return f
+}
+
+var detectClocks sync.Map // *app → *fakeTimers
+
+// micUsers sends the app a mic.changed naming the bundle ids that record,
+// and lets them record for meetdetect.Hold.
 func micUsers(t *testing.T, a *app, ids ...string) {
+	t.Helper()
+	timers := detectClock(t, a)
+	micSays(t, a, ids...)
+	timers.advance(meetdetect.Hold)
+}
+
+// micSays sends the mic.changed alone: the apps have only just started.
+func micSays(t *testing.T, a *app, ids ...string) {
 	t.Helper()
 	users := proto.MicUsers{Apps: []proto.App{}}
 	for i, id := range ids {

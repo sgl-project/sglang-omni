@@ -103,6 +103,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.followMeeting(s, prev)
 	if s.State.Active() != prev.State.Active() {
 		a.closeMeetingAsk()   // meeting_detect.go: it records now
+		a.ask.snoozed = ""    // and is not asked about again later
 		a.syncMeetingDetect() // an app that records is settled while Voxt does
 	}
 	a.syncMeetingOverlay()

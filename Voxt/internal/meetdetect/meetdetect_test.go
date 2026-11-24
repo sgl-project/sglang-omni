@@ -15,9 +15,16 @@ func keys(cs []Candidate) []string {
 	return out
 }
 
+// held is what Update says about users once they have recorded for Hold.
+func held(d *Detector, users []User, browsers []string, start time.Time) []Candidate {
+	d.Update(users, browsers, start)
+	found, _ := d.Update(users, browsers, start.Add(Hold))
+	return found
+}
+
 func TestUpdatePicksMeetingApps(t *testing.T) {
 	var d Detector
-	got := d.Update([]User{
+	got := held(&d, []User{
 		{PID: 1206, BundleID: "com.apple.CoreSpeech"}, // Siri listens all day
 		{PID: 704, BundleID: "us.zoom.xos"},
 		{PID: 12, BundleID: "com.tencent.xinWeChat"}, // a voice message
@@ -39,43 +46,98 @@ func TestUpdateNamesTheBrowser(t *testing.T) {
 		"com.apple.WebKit.GPU":          "com.apple.Safari",
 	} {
 		var d Detector
-		got := d.Update([]User{{PID: 1, BundleID: id}}, testBrowsers, time.Unix(0, 0))
+		got := held(&d, []User{{PID: 1, BundleID: id}}, testBrowsers, time.Unix(0, 0))
 		if len(got) != 1 || got[0].Browser != want || got[0].Key != want || got[0].App != "" {
 			t.Errorf("%s: candidates = %+v, want the browser %s", id, got, want)
 		}
 	}
 	var d Detector
-	if got := d.Update([]User{{PID: 1, BundleID: "com.google.ChromeX"}}, testBrowsers, time.Unix(0, 0)); len(got) != 0 {
+	if got := held(&d, []User{{PID: 1, BundleID: "com.google.ChromeX"}}, testBrowsers, time.Unix(0, 0)); len(got) != 0 {
 		t.Errorf("another app's id that starts like a browser's: %+v", got)
 	}
 }
 
+// An app is a candidate only once it has recorded for Hold: a microphone
+// test of a moment is none, and Update says when to look again.
+func TestHold(t *testing.T) {
+	var d Detector
+	zoom := []User{{PID: 704, BundleID: "us.zoom.xos"}}
+	t0 := time.Unix(1000, 0)
+	if got, wait := d.Update(zoom, nil, t0); len(got) != 0 || wait != Hold {
+		t.Fatalf("just started: %v, look again in %v", keys(got), wait)
+	}
+	if got, wait := d.Update(zoom, nil, t0.Add(Hold-time.Second)); len(got) != 0 || wait != time.Second {
+		t.Fatalf("a second short of Hold: %v, look again in %v", keys(got), wait)
+	}
+	if got, wait := d.Update(nil, nil, t0.Add(Hold-time.Millisecond)); len(got) != 0 || wait != 0 {
+		t.Fatalf("stopped before Hold: %v, look again in %v", keys(got), wait)
+	}
+	// The next use starts its own Hold.
+	if got, wait := d.Update(zoom, nil, t0.Add(Hold)); len(got) != 0 || wait != Hold {
+		t.Fatalf("started again: %v, look again in %v", keys(got), wait)
+	}
+	if got, wait := d.Update(zoom, nil, t0.Add(2*Hold)); len(got) != 1 || wait != 0 {
+		t.Fatalf("held: %v, look again in %v", keys(got), wait)
+	}
+	short := Detector{Hold: time.Millisecond}
+	short.Update(zoom, nil, t0)
+	if got, _ := short.Update(zoom, nil, t0.Add(time.Millisecond)); len(got) != 1 {
+		t.Fatalf("a Detector's own Hold: %v", keys(got))
+	}
+}
+
 // An app the user was asked about is not asked about again while it
-// records, nor at an unmute soon after; a later meeting asks again.
+// records, nor at an unmute soon after; a later meeting asks again, also
+// when nothing else changed in between.
 func TestSettledUntilQuiet(t *testing.T) {
 	var d Detector
 	zoom := []User{{PID: 704, BundleID: "us.zoom.xos"}}
 	t0 := time.Unix(1000, 0)
-	if got := keys(d.Update(zoom, nil, t0)); len(got) != 1 {
+	if got := keys(held(&d, zoom, nil, t0)); len(got) != 1 {
 		t.Fatalf("first use: %v", got)
 	}
 	d.Settle("us.zoom.xos")
 	if !d.Recording("us.zoom.xos") {
 		t.Fatal("Recording is false while Zoom records")
 	}
-	if got := keys(d.Update(zoom, nil, t0.Add(time.Second))); len(got) != 0 {
-		t.Fatalf("asked again while recording: %v", got)
+	if got, _ := d.Update(zoom, nil, t0.Add(time.Minute)); len(got) != 0 {
+		t.Fatalf("asked again while recording: %v", keys(got))
 	}
-	if got := keys(d.Update(nil, nil, t0.Add(10*time.Second))); len(got) != 0 || d.Recording("us.zoom.xos") {
-		t.Fatalf("after it stopped: %v, recording %v", got, d.Recording("us.zoom.xos"))
+	if got, _ := d.Update(nil, nil, t0.Add(30*time.Minute)); len(got) != 0 || d.Recording("us.zoom.xos") {
+		t.Fatalf("after it stopped: %v, recording %v", keys(got), d.Recording("us.zoom.xos"))
 	}
-	if got := keys(d.Update(zoom, nil, t0.Add(40*time.Second))); len(got) != 0 {
+	if got := keys(held(&d, zoom, nil, t0.Add(30*time.Minute+30*time.Second))); len(got) != 0 {
 		t.Fatalf("asked again at an unmute: %v", got)
 	}
-	d.Update(nil, nil, t0.Add(50*time.Second))
-	d.Update(nil, nil, t0.Add(50*time.Second+Quiet+time.Second))
-	if got := keys(d.Update(zoom, nil, t0.Add(time.Hour))); len(got) != 1 {
+	d.Update(nil, nil, t0.Add(40*time.Minute))
+	// Three hours later, with no Update in between: the next meeting.
+	if got := keys(held(&d, zoom, nil, t0.Add(3*time.Hour))); len(got) != 1 {
 		t.Fatalf("the next meeting did not ask: %v", got)
+	}
+
+	// The same for a browser settled as no meeting: an hour later its tab
+	// is read again.
+	var b Detector
+	chrome := []User{{PID: 4764, BundleID: "com.google.Chrome.helper"}}
+	if got := held(&b, chrome, testBrowsers, t0); len(got) != 1 {
+		t.Fatalf("Chrome records: %+v", got)
+	}
+	b.Settle("com.google.Chrome")
+	b.Update(nil, testBrowsers, t0.Add(time.Minute))
+	if got := held(&b, chrome, testBrowsers, t0.Add(time.Hour)); len(got) != 1 {
+		t.Fatalf("Chrome records an hour later: %+v", got)
+	}
+}
+
+func TestForget(t *testing.T) {
+	var d Detector
+	zoom := []User{{PID: 704, BundleID: "us.zoom.xos"}}
+	t0 := time.Unix(1000, 0)
+	held(&d, zoom, nil, t0)
+	d.Settle("us.zoom.xos")
+	d.Forget("us.zoom.xos")
+	if got, _ := d.Update(zoom, nil, t0.Add(2*time.Minute)); len(got) != 1 {
+		t.Fatalf("forgotten while it records: %v", keys(got))
 	}
 }
 

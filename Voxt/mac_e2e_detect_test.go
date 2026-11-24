@@ -78,6 +78,7 @@ func newMacDetectApp(t *testing.T, bin string) *sessionApp {
 		}
 	})
 	s.pump("the helper", func() bool { return a.helperStatus().State == helper.Ready })
+	shortHold(s)
 	return s
 }
 
@@ -87,18 +88,16 @@ func newMacDetectApp(t *testing.T, bin string) *sessionApp {
 // records a meeting through the helper's two captures.
 func TestMacE2EMeetingDetect(t *testing.T) {
 	s := newMacDetectApp(t, macE2E(t))
-	s.pump("the watch", func() bool { return s.micWatch })
-	s.drain(500 * time.Millisecond) // Core Audio's answer
-	t.Logf("recording on this Mac now: %d process(es); a meeting among them: %v", len(s.micUsers), s.ask.view.Visible)
-	if !s.ask.view.Visible {
-		// No meeting runs on this Mac: Zoom joins one, as mic.changed says.
-		users := proto.MicUsers{Apps: []proto.App{{PID: 704, BundleID: "us.zoom.xos"}}}
-		for _, u := range s.micUsers {
-			users.Apps = append(users.Apps, proto.App{PID: u.PID, BundleID: u.BundleID})
-		}
-		s.micChanged(users)
+	s.pump("Core Audio's answer", func() bool { return s.micWatch && s.micUsers != nil })
+	t.Logf("recording on this Mac now: %d process(es)", len(s.micUsers))
+	// Zoom joins a meeting, as mic.changed says, beside whoever records.
+	users := proto.MicUsers{Apps: []proto.App{{PID: 704, BundleID: "us.zoom.xos"}}}
+	for _, u := range s.micUsers {
+		users.Apps = append(users.Apps, proto.App{PID: u.PID, BundleID: u.BundleID})
 	}
-	if !s.ask.view.Visible || s.meetingActive() {
+	s.micChanged(users)
+	s.pump("the card", func() bool { return s.ask.view.Visible })
+	if s.meetingActive() {
 		t.Fatalf("the card %+v, meeting %s", s.ask.view, s.meetSnap.State)
 	}
 	s.startDetectedMeeting()

@@ -84,9 +84,7 @@ func (a *app) setMeetingAutoStart(auto bool) {
 	a.meetingSettingsSync()
 	a.meetingUI.auto = auto
 	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.AutoStart = auto })
-	if auto {
-		a.closeMeetingAsk() // the card asked what is now decided
-	}
+	a.meetingDetectChanged() // meeting_detect.go: a card that asks is answered
 }
 
 func (a *app) setMeetingASR(speechModelID string) {

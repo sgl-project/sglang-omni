@@ -5,12 +5,16 @@ package main
 // records, and a start that fails.
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meetdetect"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -120,5 +124,75 @@ func TestMeetingStartAction(t *testing.T) {
 		if got := meetingStartAction(c.err); got != c.want {
 			t.Errorf("%s: action %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// An app that has the microphone for a moment (a microphone test, a voice
+// clip) is no meeting: no card, and nothing starts by itself.
+func TestMeetingDetectHoldsBeforeAsking(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	timers := detectClock(t, a)
+	a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.AutoStart = true })
+	micSays(t, a, "us.zoom.xos")
+	timers.advance(meetdetect.Hold - time.Second)
+	micSays(t, a) // Zoom's microphone test is over
+	timers.advance(time.Minute)
+	if a.ask.view.Visible || a.meetingActive() || len(a.toasts) != 0 {
+		t.Fatalf("two seconds of Zoom: card %+v, meeting %s, toasts %q", a.ask.view, a.meetSnap.State, a.toasts)
+	}
+	micSays(t, a, "us.zoom.xos")
+	timers.advance(meetdetect.Hold - time.Millisecond)
+	if len(a.toasts) != 0 {
+		t.Fatalf("started before Zoom held the microphone: %q", a.toasts)
+	}
+	timers.advance(time.Millisecond)
+	// No speech model here: the start runs and says why no meeting began.
+	if !a.meetingActive() && len(a.toasts) != 1 {
+		t.Fatalf("a meeting that holds the microphone, automatic: toasts %q", a.toasts)
+	}
+}
+
+// "Ask again in 2 minutes" asks nothing when Voxt recorded the meeting
+// meanwhile.
+func TestMeetingAskLaterAfterRecording(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	timers := detectClock(t, a)
+	micUsers(t, a, "us.zoom.xos")
+	a.chooseMeetingAskMenu(meetingAskSnooze)
+	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording}) // started from the menu bar
+	a.meetingChanged(meeting.Snapshot{})                                        // and ended
+	timers.advance(meetingAskLater)
+	if a.ask.view.Visible {
+		t.Fatalf("asked again about a meeting Voxt recorded: %+v", a.ask.view)
+	}
+}
+
+// A helper that refuses mic.watch is not watched, and the log says so; a
+// change of the setting asks it again.
+func TestMeetingDetectWatchRefused(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	if !a.micWatch {
+		t.Fatal("the watch is not on")
+	}
+	a.setMeetingDetect(false)
+	fs.mu.Lock()
+	fs.handlers[proto.MethodMicWatch] = func(json.RawMessage) (any, error) { return nil, proto.Errorf(proto.CodeInternal, "no process list") }
+	fs.mu.Unlock()
+	before := len(fs.methods())
+	a.setMeetingDetect(true)
+	logged := false
+	for _, e := range a.logs.Tail(50, meetingLogSource) {
+		logged = logged || strings.Contains(e.Message, "mic.watch") && strings.Contains(e.Message, "no process list")
+	}
+	if a.micWatch || !logged || len(fs.methods()) == before {
+		t.Fatalf("refused: watching %v, logged %v, %d calls", a.micWatch, logged, len(fs.methods())-before)
+	}
+	fs.mu.Lock()
+	fs.handlers[proto.MethodMicWatch] = func(json.RawMessage) (any, error) { return proto.MicUsers{Apps: []proto.App{}}, nil }
+	fs.mu.Unlock()
+	a.setMeetingDetect(false)
+	a.setMeetingDetect(true)
+	if !a.micWatch {
+		t.Fatal("asked again, and still not watching")
 	}
 }

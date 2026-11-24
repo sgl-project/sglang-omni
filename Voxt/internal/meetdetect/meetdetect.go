@@ -9,6 +9,8 @@
 package meetdetect
 
 import (
+	"cmp"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -70,6 +72,11 @@ const (
 // use asks again: an app that lets go of the microphone while muted asks
 // once a meeting, not at every unmute.
 const Quiet = 2 * time.Minute
+
+// Hold is how long an app must record before it is a candidate: a
+// microphone test or a voice clip of a moment is no meeting, and with
+// Start recording automatically it would start one.
+const Hold = 3 * time.Second
 
 // User is a process recording from an input (the helper's mic.watch).
 type User struct {
@@ -145,17 +152,22 @@ func Web(address string) (app string, ok bool) {
 // asked, or there is nothing to ask. The zero value is ready. Not safe
 // for concurrent use (the app's main thread).
 type Detector struct {
+	// Hold replaces the package's Hold when it is not zero (tests).
+	Hold time.Duration
 	// settled has an app's key while it records (the zero time), and for
 	// Quiet after it stopped (when it stopped).
 	settled map[string]time.Time
+	// since is when each app that records now started.
+	since   map[string]time.Time
 	present []string
 }
 
 // Update takes the processes recording at now and returns the candidates
-// to decide about, each app once, by key. An app that stopped recording
-// more than Quiet ago is forgotten: its next use is a candidate again.
-func (d *Detector) Update(users []User, browsers []string, now time.Time) []Candidate {
-	var found []Candidate
+// to decide about, each app once, by key, and how long until an app that
+// just started has recorded for Hold (0: none waits; call Update again
+// then). An app that stopped recording more than Quiet ago is forgotten:
+// its next use is a candidate again.
+func (d *Detector) Update(users []User, browsers []string, now time.Time) (found []Candidate, wait time.Duration) {
 	d.present = d.present[:0]
 	for _, u := range users {
 		c, ok := classify(u.BundleID, browsers)
@@ -165,22 +177,42 @@ func (d *Detector) Update(users []User, browsers []string, now time.Time) []Cand
 		d.present = append(d.present, c.Key)
 		found = append(found, c)
 	}
+	if d.since == nil {
+		d.since = map[string]time.Time{}
+	}
+	maps.DeleteFunc(d.since, func(key string, _ time.Time) bool { return !slices.Contains(d.present, key) })
+	for _, key := range d.present {
+		if _, recording := d.since[key]; !recording {
+			d.since[key] = now
+		}
+	}
 	for key, left := range d.settled {
 		switch {
+		case !left.IsZero() && now.Sub(left) > Quiet:
+			// Long gone: forgotten, also when it records again just now
+			// (Update runs only when something changes).
+			delete(d.settled, key)
 		case slices.Contains(d.present, key):
 			d.settled[key] = time.Time{}
 		case left.IsZero():
 			d.settled[key] = now
-		case now.Sub(left) > Quiet:
-			delete(d.settled, key)
 		}
 	}
+	hold := cmp.Or(d.Hold, Hold)
 	found = slices.DeleteFunc(found, func(c Candidate) bool {
-		_, done := d.settled[c.Key]
-		return done
+		if _, done := d.settled[c.Key]; done {
+			return true
+		}
+		if left := hold - now.Sub(d.since[c.Key]); left > 0 {
+			if wait == 0 || left < wait {
+				wait = left
+			}
+			return true
+		}
+		return false
 	})
 	slices.SortFunc(found, func(a, b Candidate) int { return strings.Compare(a.Key, b.Key) })
-	return found
+	return found, wait
 }
 
 // Settle marks key as decided for this use: Update returns it again only
