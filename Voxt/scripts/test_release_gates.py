@@ -109,21 +109,30 @@ class ShortOpenGateTests(unittest.TestCase):
         self.assertEqual(len(loop.distinct_text_hashes(rows)), 2)
         self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows))
 
+    def test_group_complete_requires_three_kept_observations(self):
+        self.assertFalse(loop.short_open_group_complete([self.observation()]))
+        complete = [self.observation() for _ in range(3)]
+        self.assertTrue(loop.short_open_group_complete(complete))
+
     def test_group_complete_requires_every_kept(self):
         observations = [self.observation() for _ in range(2)]
         observations.append(self.observation(kept=False))
         # A third invalid attempt stops the group: no medians.
         self.assertFalse(loop.short_open_group_complete(observations))
         self.assertFalse(
-            loop.short_open_group_complete(observations[:2][:1] + observations[2:])
+            loop.short_open_group_complete(
+                observations[:1] + observations[2:] + [self.observation()]
+            )
         )
-        complete = [self.observation() for _ in range(3)]
-        self.assertTrue(loop.short_open_group_complete(complete))
 
     def test_group_complete_rejects_empty_hash(self):
         bad = self.observation()
         bad["rows"][1]["text_sha256"] = ""
-        self.assertFalse(loop.short_open_group_complete([bad, self.observation()]))
+        self.assertFalse(
+            loop.short_open_group_complete(
+                [bad, self.observation(), self.observation()]
+            )
+        )
 
 
 class EnvironmentProbeTests(unittest.TestCase):

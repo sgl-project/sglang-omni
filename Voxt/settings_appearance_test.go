@@ -23,6 +23,9 @@ func TestAppearancePalette(t *testing.T) {
 	if !hasExact(tt, "Color") || hasExact(tt, "Hex") {
 		t.Fatal("the color editor should start folded")
 	}
+	if !hasExact(tt, "Default") {
+		t.Fatal("the original palette should say Default instead of showing a custom color")
+	}
 	colorRow, colorOK := tt.Find("Color")
 	themeRow, themeOK := tt.Find("Theme")
 	if !colorOK || !themeOK || math.Abs(float64(colorRow.X-themeRow.X)) > 1 {
@@ -38,10 +41,10 @@ func TestAppearancePalette(t *testing.T) {
 	if hasExact(tt, "Hex") {
 		t.Fatal("hover opened the color editor")
 	}
-	tt.ClickAt(colorRow.X+colorRow.W-12, y) // the swatch
+	tt.ClickAt(colorRow.X+colorRow.W-12, y) // the Default label
 	frames(tt)
 	if !hasExact(tt, "Hex") {
-		t.Fatal("clicking the color swatch did not open the editor")
+		t.Fatal("clicking the Default label did not open the editor")
 	}
 	tt.ClickAt(colorRow.X+5, y) // the title
 	frames(tt)
@@ -61,6 +64,9 @@ func TestAppearancePalette(t *testing.T) {
 	if ap := a.settings.Get().Appearance; ap.Palette != "#b25280" || ap.Theme != settings.ThemeSystem {
 		t.Fatalf("saved custom color = %+v", ap)
 	}
+	if hasExact(tt, "Default") || !hasExact(tt, "Custom") {
+		t.Fatal("the chosen custom color should say Custom instead of Default")
+	}
 	click(t, tt, "Dark")
 	if ap := a.settings.Get().Appearance; ap.Palette != "#b25280" || ap.Theme != settings.ThemeDark {
 		t.Fatalf("saved dark appearance = %+v", ap)
@@ -74,6 +80,9 @@ func TestAppearancePalette(t *testing.T) {
 	click(t, tt, "Reset color")
 	if ap := a.settings.Get().Appearance; ap.Palette != settings.DefaultPalette || ap.Scale != 1.25 {
 		t.Fatalf("reset appearance at minimum window size = %+v", ap)
+	}
+	if !hasExact(tt, "Default") {
+		t.Fatal("resetting the color did not restore the Default indicator")
 	}
 	a.navigate("/settings/general")
 	a.navigate("/settings/appearance")
@@ -220,13 +229,14 @@ func TestLateAppearancePreviewSavePreservesOtherSettings(t *testing.T) {
 	transparencySaved := a.settings.Get()
 	a.updateSettings(func(s *settings.Settings) {
 		s.Appearance.Scale = 1.25
+		s.Appearance.HistoryDetailWidth = settings.MaxHistoryDetailWidth
 		s.Privacy.KeepHistory = false
 	})
 	// Deliver the preview notifications after the other settings have applied.
 	a.settingsChanged(paletteSaved, transparencySaved)
 	a.settingsChanged(before, paletteSaved)
 	if appearance := a.prefs.Appearance; appearance.Scale != 1.25 || appearance.Palette != "#b25280" ||
-		appearance.WindowTransparency != settings.MaxWindowTransparency {
+		appearance.WindowTransparency != settings.MaxWindowTransparency || appearance.HistoryDetailWidth != settings.MaxHistoryDetailWidth {
 		t.Fatalf("late preview notifications changed appearance to %+v", appearance)
 	}
 	if a.scale != 3 || a.prefs.Privacy.KeepHistory || a.keepHistory {
@@ -343,6 +353,10 @@ func TestPaletteContrast(t *testing.T) {
 				seed := fmt.Sprintf("#%02x%02x%02x", min(r*16, 255), min(g*16, 255), min(b*16, 255))
 				for _, dark := range []bool{false, true} {
 					k := paletteTokens(seed, dark)
+					if !dark && (k.Bg != ui.Hex("#ffffff") || k.Sidebar != ui.Hex("#f7f7f7") ||
+						k.Subtle != ui.Hex("#f7f7f7") || k.TranscriptFace != ui.Hex("#f7f7f7")) {
+						t.Fatalf("%s: a custom color tinted the original light backgrounds", seed)
+					}
 					for _, ink := range []ui.Color{k.Text, k.Text2, k.AccentInk} {
 						if ratio := contrastRatio(ink, k.TranscriptFace); ratio < 4.5 {
 							t.Fatalf("%s dark=%t: transcript contrast %.2f for %v on %v", seed, dark, ratio, ink, k.TranscriptFace)

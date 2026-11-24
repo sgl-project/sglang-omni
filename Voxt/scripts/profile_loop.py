@@ -457,10 +457,10 @@ def short_open_attempt_kept(
 
 
 def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
-    """A group is complete only when every attempt was kept; observations
+    """A group is complete only with three kept attempts; observations
     carry {kept, rows} and the caller writes text-consistency.json with
     distinct_text_hashes before calling this."""
-    if not observations or not all(obs.get("kept") for obs in observations):
+    if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
     rows = [row for obs in observations for row in obs.get("rows", [])]
     return bool(rows) and "" not in distinct_text_hashes(rows)

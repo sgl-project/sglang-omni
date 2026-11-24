@@ -270,6 +270,21 @@ async def test_a_reply_the_talker_cut_at_its_token_budget_ends_incomplete():
 
 
 @pytest.mark.asyncio
+async def test_a_speech_the_speech_service_failed_ends_failed():
+    """A speech the speech service failed ended as a completed response, so the client could not tell it from one that was spoken."""
+    h = Harness()
+    await h.open()
+    h.client.control(TURN_STARTED, turn=0)
+    h.client.emit(TEXT, TEXT_DELTA, {"text": "Hello."})
+    h.client.control(TURN_DONE, speech_error="ReadTimeout('')")
+    await settle()
+    assert [event for event in h.published if isinstance(event, ResponseFinished)] == [
+        ResponseFinished("resp_0", "item_0", "Hello.", False, "failed", "speech_error")
+    ]
+    await h.bridge.close()
+
+
+@pytest.mark.asyncio
 async def test_reply_progress_maps_to_the_open_response_of_its_turn():
     h = Harness()
     await h.open()
@@ -417,6 +432,11 @@ async def test_reader_failure_reports_turn_failure_and_fails_the_next_unit():
         (
             RuntimeError("context_exhausted: the session is full"),
             "context_exhausted",
+            False,
+        ),
+        (
+            RuntimeError("session_capacity_exhausted: session KV capacity exhausted"),
+            "session_capacity_exhausted",
             False,
         ),
     ],

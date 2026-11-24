@@ -30,7 +30,10 @@ from sglang_omni.config.schema import (
     ProcessConfig,
     StageConfig,
 )
-from sglang_omni.config.topology import compile_logical_processes
+from sglang_omni.config.topology import (
+    compile_logical_processes,
+    resolve_coordinator_max_in_flight,
+)
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.serve import launcher
@@ -383,7 +386,7 @@ def test_coordinator_cap_follows_an_entry_stage_that_admits_requests(
     plan, _ = compile_logical_processes(config)
 
     assert (
-        mp_runner.resolve_coordinator_max_in_flight(config, logical_process_plan=plan)
+        resolve_coordinator_max_in_flight(config, logical_process_plan=plan)
         == expected_max_in_flight
     )
 

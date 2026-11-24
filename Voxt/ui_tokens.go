@@ -83,15 +83,11 @@ type tokens struct {
 
 func makeTokens(dark bool, colors paletteColors) *tokens {
 	g := lightGreys
-	tint := float32(0.025)
-	transcriptTint := float32(0.13)
 	navTint := float32(0.13)
 	accent := colors.accent
 	k := &tokens{OnAccent: ui.Hex("#ffffff"), OverlayFace: ui.RGB(22, 22, 26), OverlayLine: ui.RGBA(255, 255, 255, 0.12)}
 	if dark {
 		g = darkGreys
-		tint = 0.05
-		transcriptTint = 0.17
 		navTint = 0.22
 		k.OnAccent = ui.Hex("#06201c")
 		k.InkHover, k.InkPressed = ui.Hex("#dcdcdc"), ui.Hex("#c4c4c4")
@@ -102,10 +98,10 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 	}
 	if colors.background != ui.Transparent {
 		g[0] = colors.background
-		for i := 1; i <= 5; i++ {
-			g[i] = g[i].Mix(accent, tint)
-		}
 		if dark {
+			for i := 1; i <= 5; i++ {
+				g[i] = g[i].Mix(accent, 0.05)
+			}
 			g[6], g[7] = ui.Hex("#b5b5b5"), ui.Hex("#b8b8b8")
 			k.OnAccent = ui.Hex("#121212")
 			k.OverlayFace = k.OverlayFace.Mix(accent, 0.16)
@@ -138,8 +134,10 @@ func makeTokens(dark bool, colors paletteColors) *tokens {
 		k.NavSelected = strongerTint(k.Sidebar.Mix(accent, navTint))
 		k.NavInk = k.AccentInk
 		k.Waveform = k.Accent
-		fill := strongerTint(k.Subtle.Mix(accent, transcriptTint))
-		k.TranscriptFace = readableTint(fill, k.Subtle, k.Text, k.Text2, k.AccentInk)
+		if dark {
+			fill := strongerTint(k.Subtle.Mix(accent, 0.17))
+			k.TranscriptFace = readableTint(fill, k.Subtle, k.Text, k.Text2, k.AccentInk)
+		}
 	}
 	k.RecordSoft = k.Record.Alpha(0.12)
 	k.Danger = k.Record

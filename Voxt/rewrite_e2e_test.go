@@ -53,8 +53,9 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 	a.pump("the follow-up's recording", func() bool {
 		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
 	})
-	if v := a.cachedCard(); a.ov.mode != ovAnswer || !v.Conversation || !v.Recording || !v.CanStop || v.CanFollowUp {
-		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)
+	// It is asked in the same card, the conversation above the text box.
+	if v := a.boxViewState(); !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
+		t.Errorf("recording the follow-up: box shown %v, overlay %s, %+v", a.box.shown, a.overlayModeNow(), v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
 	// fake helper sends a level before each 100 ms frame.
@@ -94,7 +95,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 	if a.sess.Inserted || !a.answer.open || a.answer.input.Selection != "hey all, ship friday" || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v := a.cachedCard(); v.Title != "AI answer" || !v.CanFollowUp || !v.CanInsert {
+	if v := a.cachedCard(); v.Title != "Rewrite" || !v.CanFollowUp || !v.CanInsert {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])

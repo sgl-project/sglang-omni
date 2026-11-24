@@ -37,6 +37,7 @@ type homeState struct {
 		view    homeViewState
 		viewKey homeViewCacheKey
 	}
+	act    homeActivity // home_activity_controller.go
 	homeUI homeLocalUI
 }
 
@@ -58,6 +59,8 @@ type homeViewCacheKey struct {
 	location     string
 	zoneOffset   int
 	locale       string
+	activityGen  int
+	activityPage int
 }
 
 // homeReadinessKey is the comparable part of homeReadinessInput: the
@@ -173,6 +176,7 @@ func (a *app) prepareHomePage() {
 	if !a.hm.loading && (!a.hm.read || a.hm.stale) {
 		a.loadHome()
 	}
+	a.loadActivity()
 	if !a.perms.checked {
 		a.recheckPermissions()
 	}
@@ -188,6 +192,7 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 		readiness: homeReadinessKeyFor(readiness), retryID: a.hist.retry.id, retryStage: string(a.hist.retry.stage),
 		showTry: showTry, tryRecording: tryRecording,
 		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale(),
+		activityGen: a.act.gen, activityPage: a.act.page,
 	}
 	if key != a.hm.viewKey {
 		a.hm.view = buildHomeViewState(i18n.CurrentTranslator(), homeViewStateInput{
@@ -195,6 +200,7 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 			KeepHistory: a.prefs.Privacy.KeepHistory, Features: a.prefs.Features,
 			Readiness: buildHomeReadinessList(i18n.CurrentTranslator(), a.prefs.Features, readiness),
 			ShowTry:   showTry, TryRecording: tryRecording, Retry: a.hist.retry, Now: now,
+			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page,
 		})
 		a.hm.viewKey = key
 	}
