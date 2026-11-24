@@ -241,11 +241,7 @@ func TestLivePolishWaitsForTheRequestUnderWay(t *testing.T) {
 	r.hearLive("Hello there.")
 	waitLive(t, r, "Hello there.")
 	r.hearLive(full)
-	result := make(chan string, 1)
-	go func() {
-		got, _, _ := r.cleanUpFirst(full)
-		result <- got
-	}()
+	// Stop comes once the request for the whole text is under way.
 	waitStarted := time.After(5 * time.Second)
 	for len(model.requests()) < 2 {
 		select {
@@ -253,6 +249,23 @@ func TestLivePolishWaitsForTheRequestUnderWay(t *testing.T) {
 			t.Fatal("the request for the whole text did not start")
 		case <-time.After(time.Millisecond):
 		}
+	}
+	result := make(chan string, 1)
+	go func() {
+		got, _, _ := r.cleanUpFirst(full)
+		result <- got
+	}()
+	// The answer comes once Stop has taken the final text (finish closed
+	// the live clean-up and waits for the request).
+	for closed := false; !closed; {
+		select {
+		case <-waitStarted:
+			t.Fatal("the final text was not taken")
+		case <-time.After(time.Millisecond):
+		}
+		r.live.mu.Lock()
+		closed = r.live.closed
+		r.live.mu.Unlock()
 	}
 	close(release)
 	select {
