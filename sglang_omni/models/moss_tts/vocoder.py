@@ -64,9 +64,9 @@ def autocast_if_supported(
     device: torch.device,
     dtype: torch.dtype | None,
 ) -> Iterator[None]:
-    enabled = (device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)) or (
-        device.type == "cpu" and dtype is torch.bfloat16
-    )
+    enabled = (
+        device.type in {"cuda", "musa"} and dtype in (torch.float16, torch.bfloat16)
+    ) or (device.type == "cpu" and dtype is torch.bfloat16)
     if enabled:
         with torch.autocast(
             device_type=device.type,
