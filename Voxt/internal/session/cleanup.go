@@ -19,6 +19,7 @@ type cleanupOutput struct {
 	profile     string
 	err         error
 	completedAt time.Time
+	generation  uint64
 }
 
 type cleanupChoice uint8
@@ -28,8 +29,23 @@ const (
 	cleanupComplete
 	cleanupRaw
 	cleanupRetry
+	cleanupPending
 	cleanupCancelled
 )
+
+type cleanupOutcome string
+
+const (
+	cleanupOutcomeCleaned      cleanupOutcome = "cleaned"
+	cleanupOutcomeManualSkip   cleanupOutcome = "manual_skip"
+	cleanupOutcomeSoftDeadline cleanupOutcome = "soft_deadline"
+	cleanupOutcomeLLMError     cleanupOutcome = "llm_error"
+	cleanupOutcomeCancelled    cleanupOutcome = "cancelled"
+)
+
+type cleanupCandidate struct {
+	output cleanupOutput
+}
 
 func (r *run) cleanupMayContinueLocked() bool {
 	return r.cleanupDecisionOpenLocked() && !r.skipped.Load() && !r.cancelled.Load() && !r.rethink.Load()
@@ -63,160 +79,107 @@ func (r *run) spoken(raw string) string {
 func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
-	if r.transcribeCleanup() && r.svc.LLM != nil {
+	cleanupRequested := r.transcribeCleanup() && r.svc.LLM != nil
+	ordinaryTranscribe := r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+	if ordinaryTranscribe {
+		r.logf("info", "cleanup requested=%t", cleanupRequested)
+		if !cleanupRequested {
+			r.logf("info", "cleanup outcome=not_requested")
+		}
+	}
+	if cleanupRequested {
 		card := r.settings.Features.Transcribe.ShowCard && !r.req.Note && !r.req.Try // a note is saved, not shown
 		r.m.update(r, func(s *Snapshot) { s.State, s.CanSkip, s.Card, s.Spoken = Composing, true, card, text })
 		llmStart := r.now()
-		output := cleanupOutput{}
-		softFallbackSelected := false
 		policy := r.m.cfg.CleanupLatency
-		softDeadline := policy.AutoFallbackAfter > 0 && r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+		softDeadline := policy.AutoFallbackAfter > 0 && ordinaryTranscribe
+		var deadlineAt time.Time
 		if softDeadline {
 			stopAt := r.stoppedAt()
-			deadlineAt := stopAt.Add(policy.AutoFallbackAfter)
+			deadlineAt = stopAt.Add(policy.AutoFallbackAfter)
 			if stopAt.IsZero() {
 				deadlineAt = r.now().Add(policy.AutoFallbackAfter)
 			}
 			r.m.setCleanupDeadline(r, deadlineAt)
-			if !r.now().Before(deadlineAt) {
-				choice := r.m.chooseCleanup(r, cleanupRaw)
+		}
+		if softDeadline && r.now().Before(deadlineAt) {
+			stopTimer := r.m.cfg.AfterFunc(deadlineAt.Sub(r.now()), func() { r.m.notifyCleanupDeadline(r) })
+			defer stopTimer()
+		}
+		startCleanup := func() {
+			r.m.mu.Lock()
+			if r.cleanupChoice != cleanupUndecided || r.cleanupWorkerRunning || r.cancelled.Load() {
+				r.m.mu.Unlock()
+				return
+			}
+			r.cleanupWorkerRunning = true
+			generation := r.cleanupGeneration
+			r.m.mu.Unlock()
+			go func() {
+				output := r.cleanTranscribe(text, generation)
+				r.m.publishCleanupCandidate(r, output, output.generation, time.Time{})
+			}()
+		}
+		if softDeadline && !r.now().Before(deadlineAt) {
+			r.earlyMu.Lock()
+			early := r.early
+			r.earlyMu.Unlock()
+			if early != nil {
+				if candidate, publishedAt, ok := early.completedCompatible(text, deadlineAt); ok {
+					r.m.mu.Lock()
+					generation := r.cleanupGeneration
+					r.m.mu.Unlock()
+					r.m.publishCleanupCandidate(r, candidate, generation, publishedAt)
+				}
+			}
+			r.m.notifyCleanupDeadline(r)
+		} else {
+			startCleanup()
+		}
+		var output cleanupOutput
+		decisionMade := false
+		for !decisionMade {
+			select {
+			case <-r.cleanupWake:
+				choice, candidate := r.m.chooseCleanup(r)
+				switch choice {
+				case cleanupComplete, cleanupRaw:
+					output = candidate
+					if choice == cleanupRaw {
+						output = cleanupOutput{text: text}
+					}
+					decisionMade = true
+				case cleanupRetry:
+					startCleanup()
+				}
+			case <-r.ctx.Done():
+				choice, _ := r.m.chooseCleanup(r)
 				if choice == cleanupCancelled {
 					r.endCancelled(nil)
 					return
 				}
-				softFallbackSelected = choice == cleanupRaw
-				output = cleanupOutput{text: text}
-			} else {
-				deadlineReached := make(chan struct{}, 1)
-				stopTimer := r.m.cfg.AfterFunc(deadlineAt.Sub(r.now()), func() {
-					select {
-					case deadlineReached <- struct{}{}:
-					default:
-					}
-				})
-				defer stopTimer()
-				cleaned := make(chan cleanupOutput, 1)
-				startCleanup := func() {
-					go func() { cleaned <- r.cleanTranscribe(text) }()
-				}
-				startCleanup()
-				decisionMade := false
-				for !decisionMade {
-					select {
-					case candidate := <-cleaned:
-						if r.cancelled.Load() {
-							r.endCancelled(nil)
-							return
-						}
-						choice := cleanupRaw
-						if candidate.completedAt.Before(deadlineAt) {
-							choice = r.m.chooseCleanup(r, cleanupComplete)
-						} else {
-							choice = r.m.chooseCleanup(r, cleanupRaw)
-						}
-						switch choice {
-						case cleanupRetry:
-							startCleanup()
-							continue
-						case cleanupCancelled:
-							r.endCancelled(nil)
-							return
-						case cleanupComplete:
-							output = candidate
-							decisionMade = true
-						case cleanupRaw:
-							output = cleanupOutput{text: text}
-							softFallbackSelected = true
-							decisionMade = true
-						}
-					case <-deadlineReached:
-						if r.cancelled.Load() {
-							r.endCancelled(nil)
-							return
-						}
-						selected := false
-						select {
-						case candidate := <-cleaned:
-							if candidate.completedAt.Before(deadlineAt) {
-								choice := r.m.chooseCleanup(r, cleanupComplete)
-								switch choice {
-								case cleanupComplete:
-									output, selected = candidate, true
-								case cleanupCancelled:
-									r.endCancelled(nil)
-									return
-								case cleanupRaw:
-									output, softFallbackSelected, selected = cleanupOutput{text: text}, true, true
-								}
-							}
-						default:
-						}
-						if !selected {
-							choice := r.m.chooseCleanup(r, cleanupRaw)
-							if choice == cleanupCancelled {
-								r.endCancelled(nil)
-								return
-							}
-							output, softFallbackSelected = cleanupOutput{text: text}, choice == cleanupRaw
-						}
-						decisionMade = true
-					case <-r.skipWake:
-						if r.cancelled.Load() {
-							r.endCancelled(nil)
-							return
-						}
-						if r.skipped.Load() {
-							choice := r.m.chooseCleanup(r, cleanupComplete)
-							if choice == cleanupCancelled {
-								r.endCancelled(nil)
-								return
-							}
-							output = cleanupOutput{text: text}
-							softFallbackSelected = choice == cleanupRaw
-							decisionMade = true
-						}
-					case <-r.ctx.Done():
-						r.endCancelled(nil)
-						return
-					}
-				}
-			}
-		} else {
-			for {
-				output = r.cleanTranscribe(text)
-				if r.cancelled.Load() {
-					r.endCancelled(nil)
-					return
-				}
-				choice := r.m.chooseCleanup(r, cleanupComplete)
-				switch choice {
-				case cleanupRetry:
-					continue
-				case cleanupCancelled:
-					r.endCancelled(nil)
-					return
-				case cleanupRaw:
-					output, softFallbackSelected = cleanupOutput{text: text}, true
-				}
-				break
 			}
 		}
 		llmTime := r.now().Sub(llmStart)
-		if r.cancelled.Load() {
-			r.endCancelled(nil)
-			return
-		}
+		r.m.mu.Lock()
+		outcome := r.cleanupOutcome
+		r.m.mu.Unlock()
 		r.m.update(r, func(s *Snapshot) {
 			s.Profile, s.Timings.LLM = output.profile, llmTime
-			if softFallbackSelected || r.skipped.Load() {
+			if outcome == cleanupOutcomeSoftDeadline || outcome == cleanupOutcomeManualSkip {
 				s.Draft = ""
 			}
 		})
 		result = output.text
 		switch {
-		case r.skipped.Load():
+		case outcome == cleanupOutcomeManualSkip:
 			r.logf("info", "the language model was skipped after %v: the text goes on as recognised", llmTime.Round(time.Millisecond))
 			result = text
+		case outcome == cleanupOutcomeSoftDeadline:
+			result = text
+		case outcome == cleanupOutcomeCancelled:
+			r.endCancelled(nil)
+			return
 		case output.err != nil:
 			r.logf("warning", "language model %s (%s) failed after %v, the text goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), output.err)
 			problem = &Problem{Code: ProblemLLM, Err: output.err, Degraded: true}
@@ -239,20 +202,24 @@ func (r *run) transcribeOpts() finishOpts {
 	return o
 }
 
-func (r *run) cleanTranscribe(text string) cleanupOutput {
+func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
 	output := cleanupOutput{text: text, completedAt: r.now()}
 	if r.cleanupMayContinue() {
 		output = r.cleanUpFirst(text)
 	}
 	for {
 		if r.askAgain() {
+			r.m.mu.Lock()
+			generation = r.cleanupGeneration
+			r.m.mu.Unlock()
 			output = r.cleanUpOutput(text, r.thinking())
 			continue
 		}
 		if !r.cleanupMayContinue() {
-			return cleanupOutput{text: text, completedAt: r.now()}
+			return cleanupOutput{text: text, completedAt: r.now(), generation: generation}
 		}
 		if !r.useFallback(output.err) {
+			output.generation = generation
 			return output
 		}
 		// The fallback joins the re-ask loop: it keeps the level chosen,
@@ -402,7 +369,11 @@ func (d *drafter) publish() {
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
 	draft = d.r.draftSnippets(draft, d.parts)
-	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+	d.r.m.update(d.r, func(s *Snapshot) {
+		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
+			s.Draft = draft
+		}
+	})
 }
 
 // done puts the answers of the parts so far in the snapshot.
@@ -412,7 +383,11 @@ func (d *drafter) done(answers []string) {
 	}
 	draft := compose.JoinParts(d.parts, answers)
 	draft = d.r.draftSnippets(draft, d.parts)
-	d.r.m.update(d.r, func(s *Snapshot) { s.Draft = draft })
+	d.r.m.update(d.r, func(s *Snapshot) {
+		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
+			s.Draft = draft
+		}
+	})
 }
 
 // askAgain says whether Rethink chose another level for the answer under

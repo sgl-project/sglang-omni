@@ -214,7 +214,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
-		svcResolved: make(chan struct{}), skipWake: make(chan struct{}, 1),
+		svcResolved: make(chan struct{}), cleanupWake: make(chan struct{}, 1), cleanupGeneration: 1,
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.think = req.Thinking
@@ -288,11 +288,21 @@ func (m *Manager) Cancel(id string) {
 	m.mu.Lock()
 	r, snap := m.find(id)
 	ok := r != nil && snap.State.Live()
+	logCleanupCancellation := ok && r.req.Kind == store.KindTranscribe && r.cleanupChoice == cleanupUndecided
 	if ok {
 		r.cancelled.Store(true)
+		if logCleanupCancellation {
+			r.cleanupOutcome = cleanupOutcomeCancelled
+		}
+		if r.cleanupChoice == cleanupUndecided {
+			wakeCleanupLocked(r)
+		}
 	}
 	m.mu.Unlock()
 	if ok {
+		if logCleanupCancellation {
+			r.logf("info", "cleanup outcome=%s", cleanupOutcomeCancelled)
+		}
 		r.cancel()
 		r.finalizeEarlyCleanup()
 	}
@@ -307,10 +317,7 @@ func (m *Manager) SkipLLM(id string) {
 	if r != nil && snap.State == Composing && snap.CanSkip && r.cleanupChoice == cleanupUndecided {
 		r.skipped.Store(true)
 		r.llmStop()
-		select {
-		case r.skipWake <- struct{}{}:
-		default:
-		}
+		wakeCleanupLocked(r)
 	}
 	m.mu.Unlock()
 }
@@ -347,7 +354,10 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 		}
 		s.Thinking, r.think = t, t
 		r.rethink.Store(true)
+		r.cleanupGeneration++
+		r.cleanupCandidate = nil
 		r.llmStop()
+		wakeCleanupLocked(r)
 	})
 }
 
@@ -434,82 +444,6 @@ func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
 	}
 	m.mu.Unlock()
 	return false
-}
-
-func (m *Manager) setCleanupDeadline(r *run, deadline time.Time) {
-	m.mu.Lock()
-	if !r.ended && r.cleanupDeadline.IsZero() {
-		r.cleanupDeadline = deadline
-	}
-	m.mu.Unlock()
-}
-
-func (m *Manager) chooseCleanup(r *run, choice cleanupChoice) cleanupChoice {
-	m.mu.Lock()
-	if r.cancelled.Load() || r.ctx.Err() != nil || r.ended {
-		m.mu.Unlock()
-		return cleanupCancelled
-	}
-	if r.cleanupChoice != cleanupUndecided {
-		choice := r.cleanupChoice
-		m.mu.Unlock()
-		return choice
-	}
-	var snap *Snapshot
-	if m.cur == r {
-		snap = &m.snap
-	} else if m.bg == r {
-		snap = &r.own
-	} else {
-		m.mu.Unlock()
-		return cleanupCancelled
-	}
-	if choice == cleanupComplete && !r.cleanupDeadline.IsZero() && !r.now().Before(r.cleanupDeadline) {
-		choice = cleanupRaw
-	}
-	if r.skipped.Load() {
-		choice = cleanupRaw
-	}
-	if choice == cleanupComplete && r.rethink.Load() {
-		m.mu.Unlock()
-		return cleanupRetry
-	}
-	if !r.cleanupChoiceOpenLocked() || (choice != cleanupComplete && choice != cleanupRaw) {
-		m.mu.Unlock()
-		return cleanupCancelled
-	}
-	r.cleanupChoice = choice
-	var stop context.CancelFunc
-	snap.CanSkip = false
-	if choice == cleanupRaw {
-		r.skipped.Store(true)
-		snap.Draft = ""
-		stop = r.llmStop
-	}
-	m.rev++
-	snap.Rev = m.rev
-	s := snap.clone()
-	if m.bg == r {
-		m.backgroundPub.enqueue(publication{snapshot: s})
-	} else {
-		m.foregroundPub.enqueue(publication{snapshot: s})
-	}
-	m.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
-	if choice == cleanupRaw {
-		r.finalizeEarlyCleanup()
-	}
-	return choice
-}
-
-func (r *run) cleanupDecisionOpenLocked() bool {
-	return r.cleanupChoiceOpenLocked() && (r.cleanupDeadline.IsZero() || r.now().Before(r.cleanupDeadline))
-}
-
-func (r *run) cleanupChoiceOpenLocked() bool {
-	return !r.ended && r.cleanupChoice == cleanupUndecided
 }
 
 // end makes r's session end in state st (once). Before the end is

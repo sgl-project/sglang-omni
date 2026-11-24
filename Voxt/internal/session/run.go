@@ -38,16 +38,23 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx   context.Context
-	llmStop  context.CancelFunc
-	skipped  atomic.Bool
-	stopped  atomic.Bool
-	rethink  atomic.Bool
-	skipWake chan struct{}
-	// cleanupChoice and cleanupDeadline are guarded by m.mu. The choice
-	// closes the Skip/Rethink/fallback race once the owner selects output.
-	cleanupChoice   cleanupChoice
-	cleanupDeadline time.Time
+	llmCtx      context.Context
+	llmStop     context.CancelFunc
+	skipped     atomic.Bool
+	stopped     atomic.Bool
+	rethink     atomic.Bool
+	cleanupWake chan struct{}
+	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
+	// here before waking the session owner; only the owner delivers one.
+	cleanupChoice           cleanupChoice
+	cleanupOutcome          cleanupOutcome
+	cleanupDeadline         time.Time
+	cleanupDeadlineNotified bool
+	cleanupGeneration       uint64
+	cleanupWorkerRunning    bool
+	cleanupCandidate        *cleanupCandidate
+	cleanupOutput           cleanupOutput
+	cleanupChosenAt         time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -337,7 +344,17 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
 	default:
-		r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		if r.req.Kind == store.KindTranscribe {
+			if !r.m.beginTranscribeDelivery(r, result) {
+				// The session finished in the background; keep the result in
+				// its card rather than pasting into the new session's target.
+				dres.Reason = deliver.ReasonCard
+				o.card = deliver.ReasonCard
+				break
+			}
+		} else {
+			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		}
 		press := r.press(o.replace) // app enhancement's auto key
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DeliverTime)
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
@@ -350,6 +367,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		}
 		if dres.Err != nil {
 			r.logf("warning", "insert: %v", dres.Err)
+		}
+		if stopAt := r.stoppedAt(); !stopAt.IsZero() {
+			r.logf("info", "stop_to_delivery=%v", r.now().Sub(stopAt).Round(time.Millisecond))
 		}
 		r.logf("info", "delivery: %s", dres.Diag())
 		switch {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -689,30 +690,37 @@ func TestCleanupSoftDeadlineOldBackgroundResultCannotContaminateNewDictation(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.rec.waitFor(t, "second session recording", func(snapshot Snapshot) bool { return snapshot.ID == second && snapshot.State == Recording })
+	if clock.timerCount() != 1 {
+		t.Fatalf("timer count %d, want only the stopped dictation's timer", clock.timerCount())
+	}
+	clock.Advance(CandidateCleanupSoftDeadline)
+	clock.Fire(t, 0)
+	firstEnd := h.rec.waitFor(t, "first raw result", func(snapshot Snapshot) bool { return snapshot.ID == first && snapshot.State.Ended() })
+	if firstEnd.Result != "first transcript" || !firstEnd.Card {
+		t.Fatalf("first result %+v", firstEnd)
+	}
+	close(model.firstRelease)
+	waitCleanupSignal(t, model.firstReturned, "late first response")
+	if current := h.m.Current(); current.ID != second || current.State != Recording {
+		t.Fatalf("new recording changed: %+v", current)
+	}
+	if pasted := h.text.pastes(); len(pasted) != 0 {
+		t.Fatalf("background result pasted while the new session was recording: %q", pasted)
+	}
 	h.say(second, 3)
 	secondEnd := h.rec.waitFor(t, "second result", func(snapshot Snapshot) bool { return snapshot.ID == second && snapshot.State.Ended() })
 	if secondEnd.Result != "second cleaned" {
 		t.Fatalf("second result %+v", secondEnd)
 	}
 	if clock.timerCount() != 2 {
-		t.Fatalf("timer count %d, want one per dictation", clock.timerCount())
-	}
-	clock.Advance(CandidateCleanupSoftDeadline)
-	clock.Fire(t, 0)
-	firstEnd := h.rec.waitFor(t, "first raw result", func(snapshot Snapshot) bool { return snapshot.ID == first && snapshot.State.Ended() })
-	if firstEnd.Result != "first transcript" {
-		t.Fatalf("first result %+v", firstEnd)
-	}
-	close(model.firstRelease)
-	waitCleanupSignal(t, model.firstReturned, "late first response")
-	if current := h.m.Current(); current.ID != second || current.Result != "second cleaned" {
-		t.Fatalf("new dictation changed: %+v", current)
+		t.Fatalf("timer count %d, want one per stopped dictation", clock.timerCount())
 	}
 	entries := h.hist.all()
-	if len(entries) != 2 || entries[0].Result != "second cleaned" || entries[1].Result != "first transcript" {
+	if len(entries) != 2 || entries[0].Result != "first transcript" || entries[0].Delivery != string(deliver.ReasonCard) || entries[1].Result != "second cleaned" {
 		t.Fatalf("history was contaminated: %+v", entries)
 	}
-	if pasted := h.text.pastes(); len(pasted) != 2 || !strings.EqualFold(pasted[0], "second cleaned") || pasted[1] != "first transcript" {
+	if pasted := h.text.pastes(); len(pasted) != 1 || !strings.EqualFold(pasted[0], "second cleaned") {
 		t.Fatalf("deliveries %q", pasted)
 	}
 }

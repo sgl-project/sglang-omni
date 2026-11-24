@@ -53,6 +53,7 @@ type segResult struct {
 	answers     []string
 	done        bool
 	completedAt time.Time
+	publishedAt time.Time
 }
 
 func newEarlyClean(r *run) *earlyClean {
@@ -254,6 +255,7 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 	res.done, res.completedAt = true, r.now()
 	e.mu.Lock()
 	if !e.finalized {
+		res.publishedAt = r.now()
 		e.segs = append(e.segs, res)
 	}
 	e.mu.Unlock()
@@ -265,6 +267,42 @@ func (e *earlyClean) fail(err error) {
 		e.failed = err
 	}
 	e.mu.Unlock()
+}
+
+// completedCompatible returns only a full result whose segments were
+// already complete and published before the Stop-relative deadline. It
+// never waits for the worker or returns a cleaned-prefix/raw-tail mix.
+func (e *earlyClean) completedCompatible(text string, deadline time.Time) (cleanupOutput, time.Time, bool) {
+	e.mu.Lock()
+	if e.broken || e.failed != nil || e.covered == "" || e.covered != text || len(e.segs) != len(e.jobs) || len(e.segs) == 0 {
+		e.mu.Unlock()
+		return cleanupOutput{}, time.Time{}, false
+	}
+	var parts []compose.Part
+	var answers []string
+	var completedAt, publishedAt time.Time
+	for _, segment := range e.segs {
+		if !segment.done || len(segment.parts) == 0 || !segment.completedAt.Before(deadline) || !segment.publishedAt.Before(deadline) || len(segment.answers) != len(segment.parts) {
+			e.mu.Unlock()
+			return cleanupOutput{}, time.Time{}, false
+		}
+		parts = append(parts, segment.parts...)
+		answers = append(answers, segment.answers...)
+		if segment.completedAt.After(completedAt) {
+			completedAt = segment.completedAt
+		}
+		if segment.publishedAt.After(publishedAt) {
+			publishedAt = segment.publishedAt
+		}
+	}
+	e.finalized, e.closed = true, true
+	e.mu.Unlock()
+	e.cancel()
+	e.cond.Broadcast()
+	if len(parts) == 0 {
+		return cleanupOutput{}, time.Time{}, false
+	}
+	return cleanupOutput{text: compose.JoinParts(parts, answers), profile: parts[0].Profile(), completedAt: completedAt}, publishedAt, true
 }
 
 // drain abandons a mismatching prefix without waiting. Matching work keeps

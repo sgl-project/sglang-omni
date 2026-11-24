@@ -65,19 +65,21 @@ func (r *run) currentLLMContext() context.Context {
 func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
 	r.m.mu.Lock()
 	client, choice, deadlineAt := r.svc.LLM, r.cleanupChoice, r.cleanupDeadline
-	r.m.mu.Unlock()
-	if choice != cleanupUndecided {
+	if choice != cleanupUndecided || !r.cleanupDecisionOpenLocked() {
+		r.m.mu.Unlock()
 		return llm.Response{}, context.Canceled
-	}
-	if client == nil {
-		return llm.Response{}, errors.New("no language model is ready")
 	}
 	if !deadlineAt.IsZero() {
 		remaining := deadlineAt.Sub(r.now())
 		if remaining <= 0 {
+			r.m.mu.Unlock()
 			return llm.Response{}, context.DeadlineExceeded
 		}
 		req.Timeout = min(req.Timeout, remaining)
+	}
+	r.m.mu.Unlock()
+	if client == nil {
+		return llm.Response{}, errors.New("no language model is ready")
 	}
 	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
