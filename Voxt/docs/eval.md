@@ -598,7 +598,7 @@ By name, on the four natural voices (12 sentences each): SGLang 0 → 11, Voxt 0
 - **What is left.** Sandy and Rocko (and Eddy, Flo, Reed and Shelley in round 1) say an English name inside Chinese so that Whisper writes other Chinese words ("B2" for GitHub); no alias can fix that. Some names are only heard as ordinary words or names: Claude as "Cloud" or "Claw", Qwen as "坤", "昆" or "Quinn", CUDA as "Q的" (also how "Q的维度" is said), JSON as "Jason", PR as "P2". Those stay, and so do three spellings Whisper wrote that are a word, a term or a name of their own: "Vox" for Voxt (Vox Media, vox pop; it was Whisper's most common spelling of Voxt, 11 → 5 without it), "QDA" for CUDA (quadratic discriminant analysis) and "Gamini" for Gemini. New spellings of a name ("SGLUNG Omni") are also left.
 - **No sentence without a name changed**: 0 of 160 in round 2 and 0 of 288 in round 1, also with the casing list added later. Over the repository's own text on main (the docs but this one, CHANGELOG, README and the Chinese strings, 6388 lines) the list changes 8 lines: each quotes a misheard name ("S G Long", "m l x", the Dictionary page's example "Vox T, 沃克斯特") or writes the name "SGLang Omni" as SGLang-Omni. A word joined to another by a hyphen, a dot, a slash or the like is part of code, a path or an address and stays as written (`dict.inToken`): before that rule the list also changed the header `X-Api-Resource-Id` and the folder `Application Support/SGLang Omni/models`. Before a word all in one case was kept, it also changed `VOXT_UPDATE_CHANNEL` and the strings' "API Key"; before macOS left the casing list, `Contents/MacOS`.
 - **Time**: 39 µs for a 200-character dictation, 0.6 ms for 4500 characters.
-- **Spellings added on 11-24** from round 2, the Qwen3-ASR set below and the live sessions, so not held out: "S.G. Lang", "S. G. Lang", "SG Land", "S G Land", "SGLUNG", "S G狼" and "S G 龙" for SGLang (and with " Omni" for SGLang-Omni), "APIT", "API T" and "APIP" for API key; only natural voices, nothing that is a word. With them round 2 writes 136 of 292, Qwen3-ASR without hints 172 of 226, and still no sentence without a name changes (0 of 160, 0 of 288, 0 of 140).
+- **Spellings added on 11-24** from round 2, the Qwen3-ASR set below and the live sessions, so not held out: "S.G. Lang", "S. G. Lang", "SG Land", "S G Land", "SGLUNG", "S G狼" and "S G 龙" for SGLang (and with " Omni" for SGLang-Omni), "APIT", "API T" and "APIP" for API key; only natural voices, nothing that is a word. With them round 2 writes 136 of 292, Qwen3-ASR without hints 169 of 226, and still no sentence without a name changes (0 of 160, 0 of 288, 0 of 140). On 11-24 Hugging Face also left the casing list: "hugging face" is two ordinary words (the live sessions' "hugging face emoji"), so only its misspellings ("Hogging Face") are aliases; Qwen3-ASR writes it in lower case 4 times of 8 with the hints.
 
 ### Hints on Qwen3-ASR 1.7B (11-24)
 
@@ -606,11 +606,11 @@ The draft's 28 starred names were each said in 2 Chinese and 2 English new sente
 
 | hints | names written (of 226) | a name not said, in 140 sentences without one | in sentences with one | audio without speech: names | filler + silence: names | median Final |
 |---|---|---|---|---|---|---|
-| none | 172 | 0 | 0 | 0 of 8 | 0 of 16 | 302 ms |
-| **5: SGLang, Voxt, DeepSeek, Claude Code, API key** | **199** | **0** | 2 | 2 of 8 | 0 of 16 | **306 ms** |
-| 6: the 5 and Kimi | 200 | 2 (Kimmy → Kimi) | 0 | 0 of 8 | | 350 ms |
-| 10: the 6 and Qwen, CUDA, PR, PRD | 207 | 5 (Quinn, Gwen → Qwen; Kimmy → Kimi) | 1 (Cursor → CUDA) | 0 of 8 | | 340 ms |
-| all 28 | 208 | 3 (Gwen → Qwen; Kimmy → Kimi) | 1 | 2 of 8 | | 492 ms |
+| none | 169 | 0 | 0 | 0 of 8 | 0 of 16 | 302 ms |
+| **5: SGLang, Voxt, DeepSeek, Claude Code, API key** | **195** | **0** | 2 | 2 of 8 | 0 of 16 | **306 ms** |
+| 6: the 5 and Kimi | 196 | 2 (Kimmy → Kimi) | 0 | 0 of 8 | | 350 ms |
+| 10: the 6 and Qwen, CUDA, PR, PRD | 203 | 5 (Quinn, Gwen → Qwen; Kimmy → Kimi) | 1 (Cursor → CUDA) | 0 of 8 | | 340 ms |
+| all 28 | 207 | 3 (Gwen → Qwen; Kimmy → Kimi) | 1 | 2 of 8 | | 492 ms |
 
 - **Five hints carry most of the gain.** SGLang 7 → 8 of 8, SGLang-Omni 6 → 8, Claude Code 2 → 8, API key 5 → 8, Voxt 1 → 6, DeepSeek 6 → 8. Without the hint Qwen3-ASR writes SGLang "S. G. Lang", "S G狼", "S G 龙" (aliases now) or "SG Line" (not one: also ordinary English), and Claude Code "Cloud Code".
 - **A hint with a near word writes that word as the name.** Kimi took "Kimmy is my cousin" in every set that had it, and Qwen took "Quinn" and "Gwen". Those three stay out of the hints. With the five, no sentence without a name got one; twice a word already misheard became a hint name ("CUDA" heard as "Claude", "JSON" as "SGLang").
@@ -623,8 +623,8 @@ The draft's 28 starred names were each said in 2 Chinese and 2 English new sente
 
 Transcribe sessions as the app runs them (`mac_e2e_test.go`'s harness, local only): the real helper played each recording from its file input (no microphone, no speaker), Whisper Large v3 Turbo recognised it through the omni runtime, the energy detector found the speech (no Silero installed), and the text went to a paste that only keeps it. 27 recordings by Tingting and Samantha, each with the built-in words on and off (54 sessions): 14 sentences without a name, most with a near word ("an article on Vox", "QDA and LDA", "the hugging face emoji", "the X-Api-Key header", cloud, cursor, Kimmy, 盒子, 声音, 深海, 云, 光标), 10 with names, and 3 without speech.
 
-- **Without a name, the text is the same on and off** in 14 of 14 but for one word's case: "hugging face" → "Hugging Face", also the emoji's own name. Whisper wrote the header "xapi key", so the token rule was not reached here.
-- **Names**: 3 → 10 of 13 (8 with the list before the 11-24 spellings; "S.G. Lang Omni" and "APIT" came from these sessions). Left: Voxt heard as "Vox" twice (not an alias: Vox is a news site and an amplifier) and DeepSeek as "Deepsea".
+- **Without a name, the text is the same on and off** in 14 of 14 with the list as merged (the sessions ran with Hugging Face still on the casing list, which made "hugging face emoji" "Hugging Face emoji"; it left the list, and the list applied again to the same recognitions changes none). Whisper wrote the header "xapi key", so the token rule was not reached here.
+- **Names**: 3 → 9 of 13 ("S.G. Lang Omni" and "APIT" came from these sessions; "hugging face" stays in lower case). Left: Voxt heard as "Vox" twice (not an alias: Vox is a news site and an amplifier) and DeepSeek as "Deepsea".
 - **Without speech**: the same on and off. The noise found no speech; the silence and a 0.3 s burst reached Whisper, which wrote its "优优独播剧场" hallucination with the list on and off alike (for the silence, the session recorded 5.3 s of the 4.5 s file and the detector found speech after 4.7 s, in what the helper recorded past the file's end).
 
 ## App enhancement and the dictionary, whole sessions on the real models

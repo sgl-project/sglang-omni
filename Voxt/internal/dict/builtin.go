@@ -42,7 +42,7 @@ var builtin = append([]builtinTerm{
 	{term: "ChatGPT", aliases: []string{"Chat GPT", "ChatsGPT", "ChadGPT", "Chad GPT", "ChatGTT"}, spelled: true},
 	{term: "OpenAI", aliases: []string{"OpenEye"}, spelled: true},
 	{term: "GitHub", aliases: []string{"Jithub"}, spelled: true},
-	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}, spelled: true},
+	{term: "Hugging Face", aliases: []string{"Hogging Face", "HoggingFace", "Hoggin Face"}},
 	{term: "CUDA", spelled: true},
 	{term: "API key", aliases: []string{"APIQ", "APIT", "API T", "APIP"}, hint: true},
 	{term: "Gemini", aliases: []string{"Geminar"}},
