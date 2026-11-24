@@ -208,10 +208,13 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
             f"LFM3 async decode: {'on' if enable_async_decode else 'off'} "
             f"(speech sampler {self.speech_sampler.value})"
         )
-        # A prefill reads the host speech state, so the pending step resolves first.
         return {
             "enable_async_decode": enable_async_decode,
+            # A prefill reads the host speech state, so the pending step resolves first.
             "async_decode_resolve_before_prefill": True,
+            # note (ruilin): each prefill drains the pending decode step and runs eagerly, which bounds the engine loop at high concurrency. Holding new requests up to 30 ms (or until 32 wait) gave 46.3 vs 40.5 req/s at concurrency 64 on SeedTTS EN, H100, and 13.1 vs 13.6 at 8.
+            "prefill_coalesce_requests": 32,
+            "prefill_coalesce_wait_ms": 30.0,
         }
 
     def make_adapters(self, model: Lfm3AudioSGLangModel) -> tuple[

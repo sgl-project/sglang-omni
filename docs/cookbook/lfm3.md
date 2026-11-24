@@ -101,7 +101,7 @@ SeedTTS EN (1088 samples), LFM3-Omni-2B, one H100:
 | 32 | seeded | 0.89% | 1.01 s | 0.23 | 31.0 req/s |
 | 64 | seeded | 0.90% | 1.51 s | 0.35 | 41.3 req/s |
 
-LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32. The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`).
+LFM3-Audio-2B with `seeded`: 0.97% WER and 13.6 req/s at concurrency 8, 0.99% and 32.2 req/s at 32. The engine runs up to 64 requests at once (`--generation.engine.max_running_requests`). New requests wait up to 30 ms (or until 32 are waiting) to prefill together: at concurrency 64 that serves 46.3 instead of 40.5 req/s, at 8 it costs about 3%.
 
 ## Limitations
 
