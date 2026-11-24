@@ -12,6 +12,9 @@ requests then show how the budget is spent and how the window texts join.
 The DFlash draft's one-token vocabulary maps to id 0, the loop checkpoint's
 token, so its proposals are always accepted there and never on the stop
 checkpoint; with either, decoding with the draft must equal plain decoding.
+Attention adds nothing here, so this guards ARK-ASR's draft wiring (budget,
+stop, windows, draft counts), not the shared draft's cache trimming and
+context, which only the real-model DFlash golden checks.
 """
 
 from __future__ import annotations

@@ -1369,7 +1369,9 @@ def test_arkasr_plain_request_returns_json_text(arkasr_server: ModelServer) -> N
 @pytest.mark.parametrize("arkasr_server", ARKASR_SERVER_MODES, indirect=True)
 @pytest.mark.parametrize("budget_fields", [{}, {"max_new_tokens": "0"}])
 def test_arkasr_decodes_long_audio_one_window_at_a_time(
-    arkasr_server: ModelServer, budget_fields: dict[str, str]
+    arkasr_server: ModelServer,
+    budget_fields: dict[str, str],
+    request: pytest.FixtureRequest,
 ) -> None:
     # Note (AzizbekMuminoff): the checkpoint's processor stops at 30 s, so the
     # text past it comes only from the later windows. The default budget,
@@ -1386,11 +1388,14 @@ def test_arkasr_decodes_long_audio_one_window_at_a_time(
         three_windows["generated_token_count"] > 2 * one_window["generated_token_count"]
     )
     assert len(three_windows["window_texts"]) == 3
+    assert ("verify_round_count" in three_windows) == request.node.callspec.params[
+        "arkasr_server"
+    ]
 
 
 @pytest.mark.parametrize("arkasr_server", ARKASR_SERVER_MODES, indirect=True)
 def test_arkasr_token_budget_covers_the_whole_request(
-    arkasr_server: ModelServer,
+    arkasr_server: ModelServer, request: pytest.FixtureRequest
 ) -> None:
     # Like Cohere, an explicit max_new_tokens is one budget for every window
     # of the request together, not a fresh one per 30 s window.
@@ -1406,6 +1411,9 @@ def test_arkasr_token_budget_covers_the_whole_request(
     metadata = sse_events(body)[0]["generation_metadata"]
     assert metadata["finish_reason"] == "length"
     assert metadata["generated_token_count"] == 2
+    assert ("verify_round_count" in metadata) == request.node.callspec.params[
+        "arkasr_server"
+    ]
 
 
 @pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
