@@ -337,6 +337,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
 | `setup.sessionSwitches` | integer | Session switches, capped at two: until then a switch's notice explains sessions and their shortcuts |
+| `setup.sessionSwitchTotal` | integer | Every session switch; stays on this Mac |
+| `setup.sessionReturns` | integer | Session switches that came back to a session with a card; stays on this Mac |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |
