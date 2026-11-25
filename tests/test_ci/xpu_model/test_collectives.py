@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""A tensor-parallel decode graph is only right if its all-reduces replay.
+"""An all-reduce captured in an XPU graph must sum on replay, or every TP>1 decode graph answers wrong.
 
-When oneCCL fails to record an all-reduce inside an XPU graph, the replay is a no-op:
-each rank keeps its own partial sum, so a TP>1 model answers its first token from the
-eager prefill and garbage after it. This checks the collective itself, in seconds and
-with no checkpoint, on as many cards as a tensor-parallel row uses.
-
-    pytest tests/test_ci/xpu_model/test_collectives.py -m xpu_serving -v
+pytest tests/test_ci/xpu_model/test_collectives.py -m xpu_serving -v
 """
 
 from __future__ import annotations
@@ -21,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_ci.xpu_model.conftest import free_port
+from tests.test_ci.xpu_model.captured_all_reduce import ProbeResult
+from tests.test_ci.xpu_model.conftest import ClaimCards, free_port
 
 pytestmark = [pytest.mark.accelerator, pytest.mark.xpu_serving, pytest.mark.xpu_tp]
 
@@ -37,13 +33,8 @@ def group_alive(pgid: int) -> bool:
     return True
 
 
-def stop_group(proc: subprocess.Popen) -> None:
-    """End the launcher and every rank it spawned, before the cards are released.
-
-    The ranks are the launcher's children in its own process group, so killing the
-    launcher alone would leave them holding the cards. SIGTERM first, as the lane stops
-    a server, and SIGKILL only for a group that ignores it.
-    """
+def stop_group(proc: subprocess.Popen[str]) -> None:
+    """End the launcher and every rank in its process group, SIGTERM first, before the cards are released."""
     for sig in (signal.SIGTERM, signal.SIGKILL):
         proc.poll()
         if not group_alive(proc.pid):
@@ -60,7 +51,7 @@ def stop_group(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def probe(cards: list[int]) -> dict:
+def probe(cards: list[int]) -> ProbeResult:
     env = dict(os.environ, ZE_AFFINITY_MASK=",".join(str(card) for card in cards))
     proc = subprocess.Popen(
         [sys.executable, "-m", PROBE, str(len(cards)), str(free_port())],
@@ -88,7 +79,7 @@ def probe(cards: list[int]) -> dict:
 
 @pytest.mark.parametrize("world_size", [2, 4])
 def test_an_all_reduce_captured_in_an_xpu_graph_sums_on_replay(
-    world_size: int, xpu_host: None, claim_cards
+    world_size: int, xpu_host: None, claim_cards: ClaimCards
 ) -> None:
     result = probe(claim_cards(world_size))
     want = [world_size * (world_size + 1) / 2]

@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Capture an all-reduce in an XPU graph on every rank, replay it, and report what each rank holds.
+"""Capture an all-reduce in an XPU graph on every rank, replay it, and print what each rank holds.
 
-    python -m tests.test_ci.xpu_model.captured_all_reduce <world_size> <port>
-
-Rank 0 prints one line, RESULT followed by JSON: the oneCCL the ranks mapped, and per
-rank and size the distinct values left after the replay and after an eager all-reduce.
+python -m tests.test_ci.xpu_model.captured_all_reduce <world_size> <port> prints one RESULT line of JSON.
 """
 
 from __future__ import annotations
@@ -13,12 +10,24 @@ import importlib.metadata
 import json
 import os
 import sys
+from typing import TypedDict
 
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
 SIZES = {"4 KiB": 2048, "2 MiB": 1 << 20}
+
+
+class HeldValues(TypedDict):
+    replay: list[float]
+    eager: list[float]
+
+
+class ProbeResult(TypedDict):
+    oneccl: str
+    libccl: list[str]
+    ranks: list[dict[str, HeldValues]]
 
 
 def distinct(tensor: torch.Tensor) -> list[float]:
@@ -37,7 +46,7 @@ def run_rank(rank: int, world_size: int, port: int) -> None:
     os.environ.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(port))
     torch.xpu.set_device(rank)
     dist.init_process_group("xccl", rank=rank, world_size=world_size)
-    held = {}
+    held: dict[str, HeldValues] = {}
     for label, numel in SIZES.items():
         captured = torch.zeros(numel, dtype=torch.bfloat16, device="xpu")
         dist.all_reduce(captured)
@@ -57,10 +66,14 @@ def run_rank(rank: int, world_size: int, port: int) -> None:
     libs = sorted(
         {line.split()[-1] for line in open("/proc/self/maps") if "libccl.so" in line}
     )
-    gathered: list[object] = [None] * world_size
+    gathered: list[dict[str, HeldValues] | None] = [None] * world_size
     dist.all_gather_object(gathered, held)
     if rank == 0:
-        result = {"oneccl": oneccl_version(), "libccl": libs, "ranks": gathered}
+        result: ProbeResult = {
+            "oneccl": oneccl_version(),
+            "libccl": libs,
+            "ranks": [ranked for ranked in gathered if ranked is not None],
+        }
         print("RESULT " + json.dumps(result), flush=True)
     else:
         pass

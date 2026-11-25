@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Every model family Intel XPU serves, shared by both XPU test lanes.
+"""Every model family Intel XPU serves, shared by the contract tests, the serving lane and the baseline.
 
-tests/unit_test/xpu/test_model_support.py and tests/test_ci/xpu_model/
-test_model_smoke.py parametrize over these entries, so a family cannot be
-covered by one lane and forgotten by the other.
-
-The package, architecture and stage tuple of every row were read out of the
-pipeline config registry and then pinned here, which is the point: the stage
-tuple is the contract, so deriving it at test time from the code under test
-would assert nothing.
-
-``serve_args`` is the recipe from that model's section of
-docs/other_platforms/installation_xpu.md, and several rows do not start without it.
-It lives on the row rather than in the test so that the placement a topology
-needs and the flags a checkpoint needs are not split across two files. Stage
-gpu ids are lane-relative, because the lane sets ZE_AFFINITY_MASK to the cards
-it claimed and a stage's gpu id indexes into the mask.
-
-``device_args`` holds what one device family needs on top of that recipe.
-D270 is the only such family today: three captures that a B60 records lose the
-device there, so those rows turn the graph off on D270 alone.
-The recipe is keyed on the hardware the lane finds, not on the runner, so the
-same table serves both.
-
-A row carries ``serving`` when the device lane has to skip it -- a model not
-reachable over HTTP at all, or a checkpoint no runner should pull. It keeps its
-row either way, because the weight-free lane still has something to say about a
-family this image cannot serve, and a skip the table explains is worth more
-than one a reader has to reconstruct.
+A row's serve_args are its recipe from docs/other_platforms/installation_xpu.md, with stage gpu ids relative to the ZE_AFFINITY_MASK the lane sets; device_args add what one card family needs on top, and serving says why the lane skips a row.
 """
 
 from __future__ import annotations
@@ -40,17 +14,12 @@ ALLOW_DOWNLOAD_ENV = "OMNI_XPU_ALLOW_HF_DOWNLOAD"
 DEVICE_FAMILY_ENV = "OMNI_XPU_DEVICE_FAMILY"
 
 KNOWN_FAMILIES = ("bmg", "d270")
-# torch reports a D270 card as "Intel(R) Graphics [0x674c]"; the PCI id is the
-# only stable part of that name.
+# torch names a D270 card "Intel(R) Graphics [0x674c]"; the PCI id is the only stable part.
 D270_PCI_IDS = ("0x674c",)
 
 
 def device_family(device_name: str, override: str = "") -> str:
-    """Which recipe family a card belongs to: "d270", "bmg" or "unknown".
-
-    An unknown card gets the base recipe, which is what a B60 runs, rather than
-    a guess at another family's workarounds.
-    """
+    """Which recipe family a card belongs to: d270, bmg, or unknown, which gets the base recipe."""
     if override:
         return override
     else:
@@ -79,8 +48,7 @@ class XpuModel:
     # Pairs rather than a dict so the row stays hashable and frozen.
     env: tuple[tuple[str, str], ...] = ()
     startup_seconds: int = 900
-    # For a model whose first request does one-off work: the lane waits the longer
-    # of this and its own request timeout. 0 keeps the lane's default.
+    # For a first request that does one-off work; the lane waits the longer of this and its default.
     request_seconds: int = 0
     # (family, extra serve args) pairs, applied after serve_args on that family.
     device_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
@@ -88,9 +56,11 @@ class XpuModel:
     serving: str = ""
     # The checkpoint revision the recipe was validated on; empty follows main.
     revision: str = ""
+    # Further checkpoints the server loads by repo id, which must be cached before it starts.
+    companions: tuple[str, ...] = ()
 
     def serve_args_on(self, family: str) -> tuple[str, ...]:
-        """The full recipe for a card of ``family``."""
+        """The full recipe for a card of the given family."""
         extra: tuple[str, ...] = ()
         for name, args in self.device_args:
             if name == family:
@@ -125,12 +95,7 @@ class XpuModel:
 
     @property
     def checkpoint_env(self) -> str:
-        """Env var pointing this row at a local copy.
-
-        Derived rather than spelled out per row: twenty-eight hand-written names
-        are twenty-eight chances to paste the wrong one, and nothing outside this
-        package names them literally.
-        """
+        """Environment variable that points this row at a local copy of its checkpoint."""
         return f"OMNI_XPU_{self.key.upper().replace('-', '_')}_MODEL"
 
 
@@ -197,6 +162,28 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         kind="transcription",
     ),
     XpuModel(
+        key="nemotron-transcribe",
+        package="nemotron_transcribe",
+        architecture="Nemotron3_5TranscribeForConditionalGeneration",
+        variant=None,
+        stages=("asr",),
+        repo_id="nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        # 62.9 GiB of bf16 weights: TP=4 is the smallest layout that fits 24 GB cards.
+        cards=4,
+        kind="transcription",
+        serve_args=(
+            "--asr.tp_size",
+            "4",
+            "--asr.gpu",
+            "[0, 1, 2, 3]",
+            "--mem-fraction-static",
+            "0.75",
+        ),
+        startup_seconds=1800,
+        # The first requests tune the decoder's mamba kernels: 108 to 232 s on an idle B60.
+        request_seconds=600,
+    ),
+    XpuModel(
         key="arkasr",
         package="arkasr",
         architecture="ArkasrForConditionalGeneration",
@@ -216,9 +203,7 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         # About 22 GB of a 24 GB card, so it needs an otherwise idle one.
         cards=1,
         kind="transcription",
-        # The first request compiles and tunes the backbone's linear-attention Triton
-        # kernels for its audio length: 279 s on a B60 with a cold cache, which a fresh
-        # CI container always has, against a 300 s default.
+        # A cold cache tunes the linear-attention kernels on the first request: 279 s on a B60.
         request_seconds=900,
     ),
     XpuModel(
@@ -255,9 +240,7 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         repo_id="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         cards=1,
         kind="speech_cloned",
-        # The reference-code batcher captures on a private stream, and on D270 that
-        # capture loses the device (error 20 later). Only ref_audio reaches it, so
-        # CustomVoice and VoiceDesign keep their graph.
+        # Only ref_audio reaches the batcher whose private-stream capture loses a D270 device.
         device_args=(("d270", ("--tts_engine.engine.disable_cuda_graph", "true")),),
     ),
     XpuModel(
@@ -314,8 +297,7 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             "--allowed-local-media-path",
             "docs/_static/audio",
         ),
-        # The longest window in the table: a cold torch.compile cache makes this
-        # row's startup far longer than a warm one.
+        # A cold torch.compile cache makes this row's startup far longer than a warm one.
         startup_seconds=2400,
     ),
     XpuModel(
@@ -427,11 +409,11 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         cards=1,
         kind="speech_instructions",
         startup_seconds=1800,
-        # On D270 the DiT step graph fails capture with error 40 and the run then
-        # dies with error 20 instead of staying eager.
+        # On D270 the DiT step graph fails capture with error 40, then the run dies with error 20.
         device_args=(
             ("d270", ("--auk_engine.factory.enable_dit_cuda_graph", "false")),
         ),
+        companions=("Qwen/Qwen2.5-Omni-3B",),
     ),
     XpuModel(
         key="auk-flash",
@@ -448,11 +430,11 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         cards=1,
         kind="speech_instructions",
         startup_seconds=1800,
-        # On D270 the DiT step graph fails capture with error 40 and the run then
-        # dies with error 20 instead of staying eager.
+        # On D270 the DiT step graph fails capture with error 40, then the run dies with error 20.
         device_args=(
             ("d270", ("--auk_engine.factory.enable_dit_cuda_graph", "false")),
         ),
+        companions=("Qwen/Qwen2.5-Omni-3B",),
     ),
     XpuModel(
         key="minimax-music3",
@@ -474,6 +456,18 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             "triton",
         ),
         startup_seconds=1800,
+    ),
+    XpuModel(
+        key="yue2",
+        package="yue2",
+        architecture="YuE2ForCausalLM",
+        variant=None,
+        stages=("yue2_ar", "yue2_acoustic"),
+        repo_id="m-a-p/YuE2-3B",
+        # Both stages together hold about 21 GB, so it needs an otherwise idle card.
+        cards=1,
+        kind="music",
+        companions=("m-a-p/YuE2-Vae",),
     ),
     XpuModel(
         key="omni-text",
@@ -553,12 +547,10 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         cards=6,
         kind="chat_speech",
         serve_args=(
-            # The talker's sampler reads the host inside its captured region, so on
-            # XPU capture fails with Level-Zero error 44 and the stage exits.
+            # The talker's sampler reads the host inside its captured region: error 44 on XPU.
             "--talker_ar.engine.disable_cuda_graph",
             "true",
-            # Warmup reaches the vision encoder, whose RoPE head dim (72) the XPU
-            # kernel does not build; drop once sgl-project/sglang-omni#3907 lands.
+            # Warmup reaches the vision RoPE (head dim 72) the XPU kernel does not build: #3907.
             "--skip-server-warmup",
             "--image_encoder.gpu",
             "0",
@@ -568,8 +560,7 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             "4",
             "--thinker.gpu",
             "[0, 1, 2, 3]",
-            # TP=4 puts 14.3 GB of weights on each 24 GB card, so the KV check needs
-            # more than 0.60; 0.80 is the value this layout was measured at.
+            # 14.3 GB of weights per 24 GB card at TP=4; 0.80 is the fraction this layout was measured at.
             "--thinker.engine.mem_fraction_static",
             "0.80",
             "--talker_ar.gpu",
@@ -759,18 +750,14 @@ XPU_MODELS: tuple[XpuModel, ...] = (
 
 
 def xpu_pipelines() -> tuple[XpuModel, ...]:
-    """One row per distinct pipeline.
-
-    The three Qwen3-TTS checkpoints share Qwen3TTSPipelineConfig, as do the
-    three dots.tts ones and the two AuK ones, so the weight-free lane runs over
-    each pipeline once instead of restating the same assertions per checkpoint.
-    """
+    """One row per distinct pipeline, since checkpoints of one family share a pipeline config."""
     seen: set[str] = set()
     unique: list[XpuModel] = []
     for model in XPU_MODELS:
         if model.pipeline_key in seen:
             continue
-        seen.add(model.pipeline_key)
+        else:
+            seen.add(model.pipeline_key)
         unique.append(model)
     return tuple(unique)
 

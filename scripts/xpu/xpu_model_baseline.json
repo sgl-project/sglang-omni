@@ -1,9 +1,62 @@
 {
   "environments": {
-    "8c71267e0826": {
+    "07c79aac2bbb": {
       "fingerprint": {
         "device": "Intel(R) Arc(TM) Pro B60 Graphics",
         "host": "bmg17690",
+        "oneccl": "2022.1.2",
+        "sglang": "0.5.23",
+        "torch": "2.14.0+xpu"
+      },
+      "models": {
+        "ming-tts": {
+          "atmost": {
+            "round_trip_wer": 0.0
+          },
+          "cards": "1,2",
+          "close": {},
+          "exact": {
+            "sample_rate": 44100.0
+          },
+          "judge_cards": "3",
+          "launches": 3,
+          "observed": {
+            "audio_seconds_per_wall_second": 2.766255213681361,
+            "frames": 169344.0,
+            "peak": 0.4290771484375,
+            "rms": 0.046384850814103026
+          },
+          "observed_span": {
+            "audio_seconds_per_wall_second": 0.4765,
+            "frames": 0.0,
+            "peak": 0.0,
+            "rms": 0.0
+          },
+          "speed": {
+            "latency_s": 1.7790356999994401
+          },
+          "spread": {
+            "speed.latency_s": 0.4143
+          },
+          "within_run_spread": {
+            "speed.latency_s": 0.6425
+          }
+        }
+      },
+      "recorded_from_commit": "08ac50a72",
+      "serve_extra": {},
+      "tolerances": {
+        "absolute": 0.05,
+        "close": 0.03,
+        "speed": 0.1,
+        "speed_headroom": 3.0
+      }
+    },
+    "678dc2b3ef82": {
+      "fingerprint": {
+        "device": "Intel(R) Arc(TM) Pro B60 Graphics",
+        "host": "bmg17690",
+        "oneccl": "2022.1.1",
         "sglang": "0.5.23",
         "torch": "2.14.0+xpu"
       },
@@ -201,33 +254,6 @@
             "close.rms": 0.0,
             "speed.audio_seconds_per_wall_second": 0.0009,
             "speed.latency_s": 0.0009
-          }
-        },
-        "ming-tts": {
-          "atmost": {
-            "round_trip_wer": 0.2222222222222222
-          },
-          "cards": "0,1",
-          "cards_used_mib": {
-            "after": {
-              "0": 24.2,
-              "1": 25.4
-            },
-            "before": {
-              "0": 196.0,
-              "1": 25.4
-            }
-          },
-          "close": {},
-          "exact": {
-            "sample_rate": 44100.0
-          },
-          "speed": {
-            "latency_s": 2.1142289389972575
-          },
-          "spread": {
-            "atmost.round_trip_wer": 1.0,
-            "speed.latency_s": 0.3951
           }
         },
         "minicpm-o": {

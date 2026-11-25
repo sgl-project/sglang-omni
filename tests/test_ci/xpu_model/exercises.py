@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """What one request per model family asks for, and what the answer must contain.
 
-Not a test module: the unit lane imports EXERCISES from here to prove every
-family in the table has a request shaped for it, and pytest must not collect it.
+Not a test module: the contract tests import EXERCISES from here to prove every family in the table has a request shaped for it.
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ import json
 import wave
 from array import array
 from pathlib import Path
+from typing import Protocol, TypedDict
 
 import pytest
 import requests
@@ -20,27 +20,23 @@ import requests
 from tests.test_ci.xpu_model.conftest import REQUEST_TIMEOUT, SPEECH_REQUEST_TIMEOUT
 from tests.test_ci.xpu_model.model_table import XpuModel
 
-_DATA = Path(__file__).resolve().parents[2] / "data"
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
-REF_AUDIO = _DATA / "query_to_cars.wav"
+REF_AUDIO = DATA_DIR / "query_to_cars.wav"
 REF_TEXT = "How many cars are there in the picture?"
 REF_KEYWORD = "car"
 
-# Hy-SimulMT translates rather than transcribes. The reference clip is English, and
-# /v1/audio/translations always targets English, so the lane asks the transcription
-# route for English to Chinese, as the recipe does. Any Chinese rendering of the
-# question names the car.
+# /v1/audio/translations always targets English, so Hy-SimulMT is asked for English to Chinese.
 TRANSLATION_SOURCE_LANGUAGE = "en"
-TRANSLATION_KEYWORD = "\u8f66"
+TRANSLATION_KEYWORD = "车"
 
 SPOKEN_TEXT = "The quick brown fox jumps over the lazy dog."
 MIN_SPEECH_SECONDS = 1.0
 
-# Every payload below is the one the matching recipe in
-# docs/other_platforms/installation_xpu.md uses, and each was confirmed to return
-# audible speech from its checkpoint on a B60. They are not interchangeable
-# between families: a Qwen3-TTS reference pair sent to dots.tts is ignored, and
-# AuK needs its generated length asked for explicitly.
+ARITHMETIC_PROMPT = "Answer with the number only: 17 plus 25?"
+ARITHMETIC_ANSWER = "42"
+
+# Each payload is its recipe's from docs/other_platforms/installation_xpu.md; they are not interchangeable.
 CV_VOICE = "Ryan"
 CV_LANGUAGE = "English"
 VOICE_DESIGN_INSTRUCTIONS = "A warm, natural young adult voice."
@@ -50,23 +46,59 @@ MUSIC_INSTRUCTIONS = (
     "An energetic arena rock anthem with distorted electric guitars, punchy "
     "live drums and a soaring male vocal at 130 BPM, wide stereo image"
 )
-# Bounded so the request cannot run for as long as the model feels like.
 MUSIC_MAX_NEW_TOKENS = 750
 
 
-def assert_audible_speech(raw: bytes, label: str) -> float:
-    """Assert ``raw`` is a decodable WAV holding audible frames; return seconds.
+class Reference(TypedDict):
+    audio_path: str
+    text: str
 
-    A broken vocoder still returns 200 with an undecodable container, a header
-    with no frames, or frames that are all zeros.
-    """
+
+class SpeechRequest(TypedDict, total=False):
+    model: str
+    input: str
+    voice: str
+    response_format: str
+    ref_audio: str
+    ref_text: str
+    task_type: str
+    language: str
+    instructions: str
+    references: list[Reference]
+    stage_params: dict[str, dict[str, int]]
+    max_new_tokens: int
+
+
+class AudioPart(TypedDict, total=False):
+    data: str
+
+
+class ChatMessage(TypedDict, total=False):
+    content: str
+    audio: AudioPart
+
+
+class ChatChoice(TypedDict, total=False):
+    message: ChatMessage
+
+
+class ChatResponse(TypedDict, total=False):
+    choices: list[ChatChoice]
+
+
+class Exercise(Protocol):
+    def __call__(self, base_url: str, checkpoint: str, model: XpuModel) -> str: ...
+
+
+def assert_audible_speech(raw: bytes, label: str) -> float:
+    """Assert raw is a decodable WAV holding audible frames, and return its length in seconds."""
     assert raw, f"{label}: empty response body"
     try:
         with wave.open(io.BytesIO(raw)) as handle:
             frames = handle.getnframes()
             rate = handle.getframerate()
             width = handle.getsampwidth()
-            payload = handle.readframes(frames)
+            pcm = handle.readframes(frames)
     except wave.Error as exc:
         pytest.fail(f"{label}: response is not a decodable WAV ({exc}); {raw[:64]!r}")
 
@@ -79,10 +111,11 @@ def assert_audible_speech(raw: bytes, label: str) -> float:
     )
 
     typecode = {1: "b", 2: "h", 4: "i"}.get(width)
-    if typecode is None:  # pragma: no cover - no XPU vocoder emits these
+    if typecode is None:
         return seconds
-    samples = array(typecode)
-    samples.frombytes(payload[: len(payload) - len(payload) % samples.itemsize])
+    else:
+        samples = array(typecode)
+    samples.frombytes(pcm[: len(pcm) - len(pcm) % samples.itemsize])
     peak = max((abs(sample) for sample in samples), default=0)
     full_scale = float(1 << (8 * width - 1))
     assert peak / full_scale > 0.01, (
@@ -92,7 +125,7 @@ def assert_audible_speech(raw: bytes, label: str) -> float:
     return seconds
 
 
-def message_content(body: dict, label: str) -> str:
+def message_content(body: ChatResponse, label: str) -> str:
     assert body.get("choices"), f"{label}: no choices in response: {body}"
     content = body["choices"][0].get("message", {}).get("content")
     assert content, f"{label}: no assistant content: {json.dumps(body)[:400]}"
@@ -139,10 +172,10 @@ def exercise_translation(base_url: str, checkpoint: str, model: XpuModel) -> str
     return f"translated to {translated.strip()!r}"
 
 
-def speak(base_url: str, payload: dict, label: str) -> str:
+def speak(base_url: str, speech_request: SpeechRequest, label: str) -> str:
     response = requests.post(
         f"{base_url}/v1/audio/speech",
-        json=payload,
+        json=speech_request,
         timeout=SPEECH_REQUEST_TIMEOUT,
     )
     assert response.status_code == 200, f"http {response.status_code}: {response.text}"
@@ -199,7 +232,7 @@ def exercise_speech_default_voice(
 
 
 def exercise_speech_references(base_url: str, checkpoint: str, model: XpuModel) -> str:
-    """dots.tts takes its reference as a list, not as ref_audio/ref_text."""
+    """dots.tts takes its reference as a list, not as ref_audio and ref_text."""
     return speak(
         base_url,
         {
@@ -250,7 +283,7 @@ def exercise_speech_instructions(
 
 
 def exercise_music(base_url: str, checkpoint: str, model: XpuModel) -> str:
-    """Music takes a style prompt rather than a voice, and lyrics as the input."""
+    """Music takes a style prompt rather than a voice, lyrics as the input, and a token cap."""
     return speak(
         base_url,
         {
@@ -265,22 +298,24 @@ def exercise_music(base_url: str, checkpoint: str, model: XpuModel) -> str:
 
 
 def exercise_chat(base_url: str, checkpoint: str, model: XpuModel) -> str:
+    """The answer must be exactly 42: garbage after correct leading tokens is how a dropped all-reduce shows."""
     response = requests.post(
         f"{base_url}/v1/chat/completions",
         json={
             "model": checkpoint,
-            "messages": [
-                {"role": "user", "content": "Answer with the number only: 17 plus 25?"}
-            ],
+            "messages": [{"role": "user", "content": ARITHMETIC_PROMPT}],
             "max_tokens": 32,
             "temperature": 0,
         },
         timeout=REQUEST_TIMEOUT,
     )
     assert response.status_code == 200, f"http {response.status_code}: {response.text}"
-    content = message_content(response.json(), model.key)
-    assert "42" in content, f"expected 42 in the answer, got {content.strip()!r}"
-    return f"answered {content.strip()[:40]!r}"
+    body: ChatResponse = response.json()
+    content = message_content(body, model.key).strip()
+    assert (
+        content == ARITHMETIC_ANSWER
+    ), f"expected exactly {ARITHMETIC_ANSWER!r}, got {content[:80]!r}"
+    return f"answered {content!r}"
 
 
 def exercise_chat_speech(base_url: str, checkpoint: str, model: XpuModel) -> str:
@@ -296,17 +331,19 @@ def exercise_chat_speech(base_url: str, checkpoint: str, model: XpuModel) -> str
         timeout=SPEECH_REQUEST_TIMEOUT,
     )
     assert response.status_code == 200, f"http {response.status_code}: {response.text}"
-    body = response.json()
+    body: ChatResponse = response.json()
     audio = body["choices"][0].get("message", {}).get("audio") or {}
     data = audio.get("data")
     assert data, f"no audio in response: {json.dumps(body)[:400]}"
     if data.startswith("data:"):
         data = data.split(",", 1)[1]
+    else:
+        pass
     seconds = assert_audible_speech(base64.b64decode(data), model.key)
     return f"talker and vocoder produced {seconds:.2f}s of audible speech"
 
 
-EXERCISES = {
+EXERCISES: dict[str, Exercise] = {
     "transcription": exercise_transcription,
     "translation": exercise_translation,
     "speech_cloned": exercise_speech_cloned,
