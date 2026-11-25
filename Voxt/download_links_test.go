@@ -73,6 +73,12 @@ func TestDownloadLinks(t *testing.T) {
 		}
 		found := false
 		for _, u := range link.FindAllString(string(b), -1) {
+			// The tutorials' Beta route points at the releases listing: the
+			// newest pre-release there is the newest Beta, so no fixed link
+			// can be one click.
+			if f.tagPage && u == "https://github.com/sgl-project/sglang-omni/releases" {
+				continue
+			}
 			if tm := tag.FindStringSubmatch(u); f.tagPage && tm != nil {
 				if tm[1] != cfg.Version {
 					t.Errorf("%s: %s, want the release page of %s", file, u, cfg.Version)
@@ -94,6 +100,50 @@ func TestDownloadLinks(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("%s: no download link for Voxt %s", file, cfg.Version)
+		}
+	}
+}
+
+// TestTutorialBetaGuidance: the tutorials' Beta route tracks the release in
+// mygo.json. Betas of a 2.1.3 cycle are 2.1.3-beta.* (the page once named a
+// 2.1.4 series that does not exist, and froze Beta #40 of the 2.0.3 cycle as
+// "the newest" long after its artifact expired). A Beta updates itself
+// through GitHub releases since 2.1.3, so the page must not say it cannot.
+func TestTutorialBetaGuidance(t *testing.T) {
+	var cfg struct{ Version string }
+	b, err := os.ReadFile("mygo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	series := regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+-beta\.`)
+	files := []struct {
+		path, newest, noSelfUpdate, selfUpdate string
+	}{
+		{"../docs/get_started/voxt-tutorials/en/start.md", "The newest is **Voxt Beta", "does not update itself", "Check for Updates"},
+		{"../docs/get_started/voxt-tutorials/start.md", "当前最新的是 **Voxt Beta", "不会自己更新", "检查更新"},
+	}
+	for _, f := range files {
+		b, err := os.ReadFile(f.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(b)
+		for _, m := range series.FindAllString(text, -1) {
+			if !strings.HasPrefix(m, cfg.Version+"-beta.") {
+				t.Errorf("%s: beta series %s, want %s-beta.*", f.path, m, cfg.Version)
+			}
+		}
+		if strings.Contains(text, f.newest) {
+			t.Errorf("%s: freezes one build as the newest Beta; name the current build with its date instead", f.path)
+		}
+		if strings.Contains(text, f.noSelfUpdate) {
+			t.Errorf("%s: a Beta updates itself through GitHub releases since %s", f.path, cfg.Version)
+		}
+		if !strings.Contains(text, f.selfUpdate) {
+			t.Errorf("%s: the Beta route must say a Beta updates itself (%s)", f.path, f.selfUpdate)
 		}
 	}
 }

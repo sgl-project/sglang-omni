@@ -43,7 +43,7 @@ func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	if a.openingStarted.IsZero() || has(tt, "Get started") {
 		t.Fatal("the first launch did not show the opening before the guide")
 	}
-	a.openingStarted = time.Now().Add(-openingDuration)
+	a.openingStarted = time.Now().Add(-a.openingLength())
 	frames(tt)
 	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
 		t.Fatal("the opening did not finish at the setup guide")

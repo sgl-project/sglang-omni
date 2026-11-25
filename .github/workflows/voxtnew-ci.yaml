@@ -10,6 +10,7 @@ name: Voxt CI
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
     paths:
       - "Voxt/**"
       - "README.md"
@@ -26,11 +27,6 @@ on:
   workflow_dispatch:
   workflow_call:
 
-# The calling workflow's name keeps the nightly's run apart from a push to main.
-concurrency:
-  group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -40,6 +36,15 @@ defaults:
 
 jobs:
   go:
+    if: >-
+      github.event_name != 'pull_request' || github.workflow == 'Voxt Nightly' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-mac-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-mac-ci'))
+    # Only a selected job may replace another run for this PR or nightly.
+    concurrency:
+      group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     # The CJK fonts below are this release's packages.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -133,7 +138,7 @@ jobs:
       - name: Go tests
         run: |
           set -o pipefail
-          CGO_ENABLED=0 go test -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
           {
             echo "### Coverage by package"
             echo '```'

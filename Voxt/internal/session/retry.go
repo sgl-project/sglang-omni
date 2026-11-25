@@ -12,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -61,7 +62,7 @@ func (m *Manager) Retry(ctx context.Context, req RetryRequest) (store.Entry, err
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	r := &run{m: m, id: e.ID, req: StartRequest{Kind: e.Kind}, settings: cfg.Settings(), ctx: ctx, cancel: cancel, llmCtx: ctx,
-		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, typed: e.TypedText, onDraft: req.OnDraft}
+		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(), target: e.TargetLang, typed: e.TypedText, historyRetry: true, onDraft: req.OnDraft}
 	r.pcm.append(pcm)
 	r.retryScene(e)
 	stage := func(st State) {
@@ -147,6 +148,9 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	if r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 		r.terms, _ = cfg.Glossary(r.ctx)
 	}
+	if cfg.Snippets != nil {
+		r.snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
+	}
 	if p := r.lacks(); p != nil {
 		return e, p.Err
 	}
@@ -177,7 +181,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	if err != nil {
 		return e, err
 	}
-	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), r.endWord())
+	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text, res.Lang)), r.endWord())
 	r.logf("info", "retry: recognised %s in %v", r.logText(raw), time.Duration(e.ASRMS)*time.Millisecond)
 	if raw == "" {
 		return e, errors.New("nothing was recognised in the recording")
@@ -189,18 +193,25 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 		e.RawText = raw
 	}
 	e.Result = text
-	if e.Kind == store.KindTranscribe && (!r.transcribeCleanup() || svc.LLM == nil) {
-		return e, nil
+	if e.Kind == store.KindTranscribe {
+		if s, ok := snippet.Whole(text, r.snippets); ok { // as a session: the snippet, without the model
+			e.Result = snippet.Alone(s.Text)
+			return e, nil
+		}
+		if !r.transcribeCleanup() || svc.LLM == nil {
+			e.Result = r.expandSnippets(text, text)
+			return e, nil
+		}
 	}
 	stage(Composing)
 	llmStart := r.now()
 	var llmErr error
 	if e.Kind == store.KindTranscribe {
 		e.Result, _, llmErr = r.cleanUp(text, nil)
-		if r.useFallback(llmErr) {
-			r.swapFallback(llmErr)
+		if r.useFallback(llmErr) && r.swapFallback(llmErr) {
 			e.Result, _, llmErr = r.cleanUp(text, nil)
 		}
+		e.Result = r.expandSnippets(text, e.Result)
 		if llmErr != nil {
 			// As a session: the text as recognised, with the warning.
 			e.LLMMS = r.now().Sub(llmStart).Milliseconds()

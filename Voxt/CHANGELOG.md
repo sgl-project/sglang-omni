@@ -5,6 +5,76 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Added
+- **Three more recording sounds** (#4582): Settings → Audio → Sound → Built-in lists Kalimba, Wood and Vibraphone after Soft, two soft notes that rise as a recording starts and fall as it stops, the soft sounds friends liked most. They are Voxt's own, so every build has them. The default stays Soft.
+
+- **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
+- **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke.
+- **Six cards to share from Looking back** (#4584): both Share buttons on Home grow under the pointer and throw stars when clicked. Looking back's Share opens six cards, one at a time: the highlights, the characters you dictated, your streak, your speed against typing, the time saved and your active days. Each has its own layout and look, on a color gradient or on colored paper, and comes in moving: numbers count up, the speed dial and the bars grow, and the little Voxt sways or blinks. Turn them with the arrows, the dots or the arrow keys, change a card's color, then copy it, save it as a picture, or post it to LinkedIn or X: the picture is copied, the window says to paste it with ⌘V, and a new post opens.
+- **Fold Looking back away** (#4570): click Home's Looking back title to fold its numbers to one row, and click again to open them. Share stays on the row, and Voxt remembers the choice.
+- **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
+- **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **Clean up while you speak** (#4592): when a language model cleans up Transcribe, Voxt sends it the sentences the speech model has written while you are still speaking, and after you stop it cleans only what is left, with the cleaned text before it as context; the two sentences just before are cleaned again with it, so that a correction said last still reaches them. When the final text is the one already cleaned, nothing is left to wait for. The Transcribe page's Clean up while you speak turns it off.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Spaces at a snippet's ends are dropped, and a space separates it from Chinese next to it, as in "发到 a@b.com，谢谢" (#4638); the snippet's own words stay as saved. Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
+
+### Changed
+
+- **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
+- **The pill keeps its width when you stop** (#4574): the dots take the waveform's place, and Use transcript takes the feature name's with them, so the row stays as wide and centred, and the microphone icon no longer jumps.
+- **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with its ⓘ in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
+- **Rewrite plays no recording sounds** (#4582): its card opens with the microphone, so you can see it, and you may only type.
+- **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
+- **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
+- **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
+- **Cleaned-up text is ready sooner after you stop** (#4618): when an internet language model cleans up Transcribe, Voxt asks it for the whole text while you pause and when you stop, and uses that answer when the final text is the same or differs only in punctuation or a word or two. It sends more requests than before, and the sentence-by-sentence cleaning of Clean up while you speak does not run with these models. With Clean up while you speak off, nothing is sent before you stop.
+- **Long English dictations are cleaned up in fewer pieces** (#4618): a piece is at most 300 words, not 300 characters.
+- **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
+
+### Fixed
+
+- **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
+- **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
+- **Reprocess transcript no longer deletes other meetings' recordings**: a finished meeting's recording is deleted once it is transcribed (unless Save each recording is on, or the meeting was in Recording mode). Choosing Reprocess transcript on such a meeting removed the whole folder of meeting recordings: those of Recording-mode meetings, of meetings waiting for Continue processing, and of a meeting being recorded. The menu item now shows only while the meeting still has its recording, and Continue processing on a meeting without one deletes nothing.
+- **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
+- **Changing a meeting's mode keeps it recording**: switching from Meeting to Recording or Subtitles while recording stopped every track, so the meeting went on with nothing recorded; switching to Meeting stopped the track the meeting already had. The tracks both modes have now carry on without a gap, and when the new one cannot start (system audio not allowed, say) the meeting stays in its mode.
+
+### 中文
+
+#### 新增
+- **多了三组录音提示音**（#4582）：设置 → 音频 → 音效 → 自带里，“轻柔”后面多了卡林巴、木琴和颤音琴：两个轻柔的音，开始录音时上行，停止时下行，是朋友们试听时最喜欢的三组。这些声音是 Voxt 自己的，所有版本都有。默认仍是“轻柔”。
+
+- **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
+- **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。
+- **回顾可以分享六张卡片**（#4584）：首页的两个“分享”按钮在指针下会变大，点击时冒出星星。回顾的“分享”打开六张卡片，一次看一张：总览、口述字数、连续天数、口述和打字的速度对比、节省时间、活跃天数。每张版式和配色都不同，渐变底和彩纸底交替，出现时会动：数字滚动，速度表盘和柱条慢慢长出来，小 Voxt 晃一晃或眨眨眼。用两侧箭头、圆点或方向键翻页，可以给当前这张换个颜色，再复制、保存成图片，或发到 LinkedIn、X：图片会先复制好，窗口提示按 ⌘V 粘贴，再打开新帖子。
+- **回顾可以收起**（#4570）：点首页“回顾”的标题，把数字收成一行，再点一下展开。“分享”留在这一行，Voxt 会记住你的选择。
+- **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
+- **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **边说边整理**（#4592）：转录用语言模型整理时，你还在说话，Voxt 就把语音识别模型已经写出的句子发给语言模型；停止后只整理剩下的部分，并带上整理好的前文；紧挨着的前两句会跟它一起重新整理，最后说的改口也能改到前面。最终文字就是已经整理过的那段时，停止后不用再等语言模型。可以在转录页关闭“边说边整理”。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。片段两头多余的空格会去掉，和中文挨着的地方补一个空格，比如“发到 a@b.com，谢谢”（#4638）；片段本身的文字不变。目前只用于转录。
+
+#### 变更
+
+- **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
+- **停止后浮窗不再跳**（#4574）：圆点接替波形的位置，“用识别原文”出现时和圆点一起接替功能名的位置，整行宽度不变、仍然居中，麦克风图标不再跳动。
+- **词典页更清楚**（#4597）：和片段页一样改成一栏。标题下一行说明这个页面做什么；词条放在一张卡片里，每条下面是可能听成的写法和备注，开关在右边；点词条就能编辑，指针移上去才出现删除。建议单独一张卡片，按钮是“添加”。词典的几个开关（使用词典、识别热词、语言模型术语表、从我的改正中学习）和“扫描历史”移进“词典设置”（“添加词条”旁边的齿轮），每个开关的 ⓘ 讲清它的作用，取代原来折叠的“词典的用法”；词典关掉时页面上会提示，并有“打开”按钮。有两个以上词典配置时，当前配置显示在标题旁边，点开可以切换、重命名或删除；“新建词典配置…”在 ⋯ 菜单里。词条对话框里的“别名”改叫“可能听成”。
+- **改写不再响提示音**（#4582）：按下改写，卡片和麦克风一起打开，看得见，也可以只打字。
+- **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
+- **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
+- **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
+- **整理好的文字出来得更快**（#4618）：互联网上的语言模型整理转录时，你一停顿、一停止，Voxt 就先请求整理全文；最终文字和当时一样，或只差标点、一两个词，就直接用那份回答。请求会比以前多；用这些模型时，“边说边整理”不再按句进行。关掉“边说边整理”，停止前就什么都不发。
+- **长英文听写整理时切得更少**（#4618）：每段最多 300 个单词，不再按 300 个字符算。
+- **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
+
+#### 修复
+
+- **回顾里的数字不再被截断**（#4570）：窗口较窄时，英文界面的速度会显示成“2… characters a min…”。现在数字、单位和标题都不会被截断：放得下就一行四张，放不下就两两一行。
+- **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
+- **「重新整理」不再删除其他会议的录音**：会议整理完后，录音会被删除（开了「保存每段录音」或用的是录音模式除外）。对这样的会议选「重新整理」，整个会议录音文件夹都会被删掉：录音模式会议的录音、等待「继续整理」的录音、正在录的会议都在里面。现在只有还留着录音的会议才显示这一项；对没有录音的会议点「继续整理」也不会删任何文件。
+- **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
+- **会议中切换模式不再停录**：录音时从「会议」切到「录音」或「字幕」，所有音轨都会停下，会议继续计时却什么都没录；切到「会议」时，原有的音轨也会停下。现在两种模式都有的音轨不中断；新音轨启动不了（比如未允许系统音频）时，会议保持原来的模式继续录。
+
+## [2.1.3] - 2026-11-22
+
+### Added
 
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
 - **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
@@ -14,9 +84,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Transcribe's clean-up follows its rules better on small local models** (#4459): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Language-model setup and Transcribe clean-up are easier to understand** (#3875): the setup guide says where to paste an API key and how to test the connection, and Transcribe explains that a prompt can translate or reformat dictation.
 - **Return finishes a recording of every feature, with its switch in Settings → Shortcuts**: Return finished only a Transcribe recording, and its switch was on Transcribe's page. The switch is now "Return finishes a recording" under the shortcuts in Settings → Shortcuts, and it covers Transcribe, Translate and Rewrite (not notes): on (the default), Return stops the recording and goes nowhere else; off, Return reaches the app as usual, and in the Rewrite card it adds a line instead of sending. A choice made on Transcribe's page carries over.
-- **Transcribe's clean-up follows its rules better on small local models** (#4383): the clean-up example is back, as the last part of the language model's instructions. Small local models now remove more fillers and self-corrections (on AASR-Bench, Qwen3-4B 67.5 → 72.3 and Qwen3-30B-A3B 64.9 → 71.3, out of 100). The example is no longer an earlier turn of the conversation, so a short dictation such as "be concise" is still inserted as you said it (#4228).
 - **Transcribe writes spelled-out words correctly and drops the spelling-out** (#4361): when you explain a word as you dictate it ("Smith, S-M-I-T-H", "Catherine with a C, not a K", 我姓章，立早章), the language model now uses the explanation to pick the spelling or the characters, and leaves the explanation out of the result. Before, the explanation often stayed in the text.
 - **A custom accent color no longer tints whole pages** (#4186): with a custom color, light-mode pages stay white and cards and the sidebar stay neutral; the color still applies to controls, waveforms and selection highlights, and the default palette and Dark mode are unchanged. The collapsed Color row in appearance settings shows Default or Custom and unfolds the color controls.
 - **Switch to a remote backup language model**: Switch models when one fails now follows the Language models page's order through both servers on this Mac and external APIs, instead of skipping every external API. The switch stays off by default; its help text and Settings → Privacy say that the fallback provider receives the same request. Upgrading turns off a switch saved by 2.1.2, whose promise was local-only, so remote fallback needs a fresh opt-in. Translate's explicitly selected fallback still goes first, and a used-up plan still does not switch.
@@ -66,9 +136,9 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **本地小模型的转录清理更守规则**（#4459）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **语言模型设置和转录整理更好懂**（#3875）：新手引导说明在哪里粘贴 API Key、如何测试连接；转录页说明可以通过提示词翻译或重新整理口述内容。
 - **回车可以结束所有功能的录音，开关移到设置 → 快捷键**：原来回车只能结束转录的录音，开关在转录页。现在开关叫“按回车结束录音”，放在设置 → 快捷键的快捷键列表下面，对转录、翻译、改写都有效（笔记除外）：打开时（默认），录音中按回车会结束录音，这个回车不会再交给别的 App；关闭时，回车照常交给前台 App，改写卡片里按回车只换行，不发送。原来在转录页做的选择会保留。
-- **本地小模型的转录清理更守规则**（#4383）：清理示例回来了，写在给语言模型的指令的最后。本地小模型删掉的语气词和自我修正更多（AASR-Bench 满分 100：Qwen3-4B 67.5 → 72.3，Qwen3-30B-A3B 64.9 → 71.3）。示例不再是上一轮对话，所以“简洁一点”这样的短口述仍按你说的插入（#4228）。
 - **转录会按拼读解释写对字，并删掉解释本身**（#4361）：口述时解释某个字怎么写或某个词怎么拼（“我姓章，立早章”“陈是耳东陈”“Smith，S-M-I-T-H”），语言模型会按解释选对字或拼写，结果里不再留下这段解释。以前这段解释常常原样留在文字里。
 - **自定义强调色不再给整个页面染色**（#4186）：选了自定义颜色后，浅色模式的页面保持白色，卡片和侧栏保持中性色；颜色仍用于控件、波形和选中高亮，默认配色和深色模式不变。外观设置里收起的“颜色”一行显示“默认”或“自定义”，展开后才出现颜色控件。
 - **出错时切换到远程备用语言模型**：“模型出错时换一个”现在按语言模型页的顺序使用本机服务和外部 API，不再跳过所有外部 API。开关仍默认关闭，开关说明和“设置 → 隐私”都会明确备用服务会收到同一份请求。2.1.2 里的开关只承诺本机切换，升级后会先关闭，用户明确同意远程数据去向后再打开。翻译明确选择的备用模型仍然优先，套餐额度用完时仍不切换。

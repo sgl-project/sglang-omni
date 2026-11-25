@@ -21,4 +21,9 @@ type homeActions interface {
 	fixHomeReadiness(fix string)
 	activityBack()
 	activityForward()
+	// openShare opens the share card (share_card.go).
+	openShare()
+	// setInsightsClosed folds Looking back to its title row, or opens it.
+	setInsightsClosed(closed bool)
+	insightsActions
 }

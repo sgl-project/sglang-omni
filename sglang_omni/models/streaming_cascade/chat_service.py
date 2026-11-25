@@ -1,23 +1,48 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Launch SGLang's chat server with a qwen3_coder tool call parser that streams string arguments and reads a call a continued assistant message opened.
+"""Launch SGLang's chat server with tool call parsing that streams the arguments of a call while the model writes them.
 
-Run it in place of python -m sglang.launch_server, with the same arguments.
+For qwen3_coder it releases string arguments and reads a call a continued assistant message opened; for Inkling it releases the arguments object of a call. Run it in place of python -m sglang.launch_server, with the same arguments.
 """
 
+import codecs
 import json
+import re
 import runpy
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 
-from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest, Tool
+from sglang.srt.entrypoints.openai import serving_inkling
+from sglang.srt.entrypoints.openai.protocol import (
+    ChatCompletionRequest,
+    FunctionResponse,
+    Tool,
+    ToolCall,
+)
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
+from sglang.srt.entrypoints.openai.serving_inkling import InklingChatEncodingAdapter
 from sglang.srt.function_call.core_types import StreamingParseResult, ToolCallItem
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 from sglang.srt.function_call.json_array_parser import JsonArrayParser
 from sglang.srt.function_call.qwen3_coder_detector import Qwen3CoderDetector
+from sglang.srt.parser.inkling_output import (  # noqa: leading-underscore  # the delta SGLang's parser builds
+    InklingOutputDelta,
+    InklingOutputParser,
+    InklingToolCall,
+    _DeltaBuilder,
+)
+from sglang.srt.parser.inkling_renderer import load_tml_renderers
 
 STRING_TYPES = frozenset({"string", "str", "text", "varchar", "char"})
 TOOL_CALL_START = "<tool_call>"
 TOOL_CALL_END = "</tool_call>"
+# What an Inkling call's payload writes before its arguments object: {"name":"tts_start","args": and the brace that opens the arguments, which the match leaves in place.
+INKLING_CALL_HEAD = re.compile(
+    r'\s*\{\s*"name"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"args"\s*:\s*(?=\{)'
+)
+# What may still close an Inkling call at the end of the payload that arrived: the brace that closes the payload, and whitespace around it.
+INKLING_CALL_TAIL = re.compile(r"\s*\}?\s*\Z")
+# An Inkling control token as a continued assistant message writes it, with its name captured.
+INKLING_CONTROL_TOKEN = re.compile(r"<\|([a-z_]+)\|>")
+INKLING_MESSAGE_MODEL = "<|message_model|>"
 # SGLang's own streamed tool call parsing, before main replaces it with stream_continued_call.
 SGLANG_TOOL_CALL_STREAM = (
     OpenAIServingChat._process_tool_call_stream  # noqa: leading-underscore
@@ -245,6 +270,215 @@ class StreamingQwen3CoderDetector(Qwen3CoderDetector):
         return self.advance(length)
 
 
+class StreamingInklingOutputParser(InklingOutputParser):
+    """InklingOutputParser whose streamed calls release their arguments while the model writes them.
+
+    note (wenyao): SGLang's parser sends an Inkling call only at its end_message token, so the text of a tts_start call reached the cascade once the whole reply was written. While feed reads a call, this one sends the call's name as soon as the payload reaches its arguments, then each piece of the arguments, holding back only the brace that may close the payload. A call whose name does not come before its arguments, or that arrives in the last step, is sent whole at its end, as SGLang sends it.
+    """
+
+    def __init__(self, *, opening_ids: Sequence[int] = (), **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.invoke_tool_json_id = (
+            self._tml.tokenizer.encode_special(  # noqa: leading-underscore
+                "content_invoke_tool_json"
+            )
+        )
+        # True inside feed, the only place a call streams: SGLang reads a response that is not streamed with finish alone.
+        self.is_feeding = False
+        # Where the streaming call's arguments start in its payload; None while no call streams.
+        self.arguments_start: int | None = None
+        # How much of the streaming call's arguments was sent.
+        self.sent_length = 0
+        # The prompt ended inside a call the request opened, so the sampled tokens carry no header; replay the opening as SGLang replays a continued text block's opener, uncounted and unsent.
+        for token_id in opening_ids:
+            self._parse(token_id, _DeltaBuilder())  # noqa: leading-underscore
+
+    def feed(self, token_ids: Sequence[int]) -> InklingOutputDelta:
+        self.is_feeding = True
+        delta = super().feed(token_ids)
+        self.is_feeding = False
+        return delta
+
+    def _parse(
+        self, token_id: int, delta: _DeltaBuilder
+    ) -> None:  # noqa: leading-underscore
+        super()._parse(token_id, delta)  # noqa: leading-underscore
+        if (
+            self.is_feeding
+            and self._parse_tool_calls  # noqa: leading-underscore
+            and self._model_authored  # noqa: leading-underscore
+            and self._content_kind_id()  # noqa: leading-underscore
+            == self.invoke_tool_json_id
+        ):
+            self.release_arguments(delta)
+        else:
+            pass
+
+    def release_arguments(self, delta: _DeltaBuilder) -> None:
+        """Send the call's name once its payload reaches the arguments, then the arguments that arrived since."""
+        payload = self.payload_text(final=False)
+        if self.arguments_start is None:
+            head = INKLING_CALL_HEAD.match(payload)
+            if head is None:
+                return
+            else:
+                pass
+            try:
+                name = json.loads(f'"{head.group(1)}"')
+            except json.JSONDecodeError:
+                return
+            self.arguments_start = head.end()
+            self.sent_length = 0
+            delta.tool_calls.append(self.call_piece(name=name, arguments=""))
+        else:
+            pass
+        arguments = payload[self.arguments_start :]
+        end = INKLING_CALL_TAIL.search(arguments).start()
+        if end > self.sent_length:
+            delta.tool_calls.append(
+                self.call_piece(arguments=arguments[self.sent_length : end])
+            )
+            self.sent_length = end
+        else:
+            pass
+
+    def _tool_call(
+        self, message: object
+    ) -> InklingToolCall:  # noqa: leading-underscore
+        if self.arguments_start is None:
+            return super()._tool_call(message)  # noqa: leading-underscore
+        else:
+            pass
+        arguments = (
+            self.payload_text(final=True)
+            .rstrip()
+            .removesuffix("}")
+            .rstrip()[self.arguments_start :]
+        )
+        rest = arguments[self.sent_length :]
+        self.arguments_start = None
+        return self.call_piece(arguments=rest)
+
+    def _recover_message(  # noqa: leading-underscore
+        self, delta: _DeltaBuilder, exc: Exception, *, block_open: bool = False
+    ) -> None:
+        # A payload that TML rejects is surfaced as text, and the next call starts afresh.
+        self.arguments_start = None
+        super()._recover_message(  # noqa: leading-underscore
+            delta, exc, block_open=block_open
+        )
+
+    def call_piece(self, *, arguments: str, name: str | None = None) -> InklingToolCall:
+        """A piece of the call being written: its name with no arguments first, then pieces of its arguments with no name."""
+        return InklingToolCall(
+            index=self._num_tool_calls,  # noqa: leading-underscore
+            name=name,
+            arguments=arguments,
+        )
+
+    def payload_text(self, *, final: bool) -> str:
+        """The call's payload that arrived, without its end_message token and, unless final, without a character whose bytes have not all arrived."""
+        token_ids = self._payload_ids()  # noqa: leading-underscore
+        if (
+            token_ids and token_ids[-1] == self._end_message_id
+        ):  # noqa: leading-underscore
+            token_ids = token_ids[:-1]
+        else:
+            pass
+        payload = self._tml.tokenizer.decode_bytes(  # noqa: leading-underscore
+            token_ids
+        )
+        return codecs.getincrementaldecoder("utf-8")(errors="replace").decode(
+            payload, final=final
+        )
+
+
+class StreamingInklingChatEncodingAdapter(InklingChatEncodingAdapter):
+    """InklingChatEncodingAdapter that sends the pieces of a streamed call as an OpenAI stream does: the id and name with the first piece, the arguments alone after it.
+
+    It also reads a continued assistant message written with Inkling's control tokens as <|name|> that ends inside a call, such as the cascade's required_call_opening: the model writes the call's arguments without reasoning first.
+    """
+
+    def encode_messages(
+        self,
+        *,
+        messages: list[dict[str, object]],
+        request: ChatCompletionRequest,
+        **kwargs: object,
+    ) -> list[int]:
+        opening_ids = self.call_opening_ids(request)
+        if opening_ids is None:
+            return super().encode_messages(messages=messages, request=request, **kwargs)
+        else:
+            # note (wenyao): the opened call is the whole reply; without this stop the model went on after it to reason and answer again in 21 of 120 probe replies.
+            end_message = load_tml_renderers(
+                self._spec  # noqa: leading-underscore
+            ).tokenizer.encode_special("end_message")
+            request.stop_token_ids = [*(request.stop_token_ids or ()), end_message]
+            # note (wenyao): SGLang continues only a text block, whose prefix it encodes as ordinary text; the opened call follows the other turns as tokens instead.
+            return [
+                *super().encode_messages(
+                    messages=messages[:-1], request=request, **kwargs
+                ),
+                *opening_ids,
+            ]
+
+    def _new_output_parser(  # noqa: leading-underscore
+        self, request: ChatCompletionRequest
+    ) -> InklingOutputParser:
+        opening_ids = self.call_opening_ids(request)
+        if opening_ids is None:
+            return super()._new_output_parser(request)  # noqa: leading-underscore
+        else:
+            return StreamingInklingOutputParser(
+                separate_reasoning=self._separate_reasoning  # noqa: leading-underscore
+                and request.separate_reasoning,
+                parse_tool_calls=self._hooks.tool_call_parsing_active(  # noqa: leading-underscore
+                    request
+                ),
+                stream_reasoning=request.stream_reasoning,
+                spec=self._spec,  # noqa: leading-underscore
+                opening_ids=opening_ids,
+            )
+
+    def call_opening_ids(self, request: ChatCompletionRequest) -> list[int] | None:
+        """The tokens of a continued assistant message written with Inkling's control tokens; None when the request continues no such message."""
+        final_message = request.messages[-1].model_dump() if request.messages else {}
+        content = final_message.get("content")
+        if not (
+            request.continue_final_message
+            and final_message.get("role") == "assistant"
+            and isinstance(content, str)
+            and content.startswith(INKLING_MESSAGE_MODEL)
+        ):
+            return None
+        else:
+            pass
+        tokenizer = load_tml_renderers(self._spec).tokenizer  # noqa: leading-underscore
+        opening_ids = []
+        # split keeps each control token's name at the odd positions.
+        for position, piece in enumerate(INKLING_CONTROL_TOKEN.split(content)):
+            if position % 2:
+                opening_ids.append(tokenizer.encode_special(piece))
+            elif piece:
+                opening_ids.extend(tokenizer.encode_ordinary(piece))
+            else:
+                pass
+        return opening_ids
+
+    def _tool_call(  # noqa: leading-underscore
+        self, call: InklingToolCall, history_tool_calls_cnt: int
+    ) -> ToolCall:
+        if call.name is None:
+            return ToolCall(
+                index=call.index, function=FunctionResponse(arguments=call.arguments)
+            )
+        else:
+            return super()._tool_call(  # noqa: leading-underscore
+                call, history_tool_calls_cnt
+            )
+
+
 async def stream_continued_call(
     serving_chat: OpenAIServingChat,
     index: int,
@@ -294,6 +528,9 @@ def main() -> None:
     OpenAIServingChat._process_tool_call_stream = (  # noqa: leading-underscore
         stream_continued_call
     )
+    # note (wenyao): With --reasoning-parser inkling, SGLang streams Inkling's output through these two classes, which read control tokens by ID, and not through a tool call parser.
+    serving_inkling.InklingOutputParser = StreamingInklingOutputParser
+    serving_inkling.InklingChatEncodingAdapter = StreamingInklingChatEncodingAdapter
     runpy.run_module("sglang.launch_server", run_name="__main__", alter_sys=True)
 
 

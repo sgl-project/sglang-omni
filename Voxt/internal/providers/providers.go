@@ -10,20 +10,23 @@
 // main thread with internal/secrets) and a hasKey function for the
 // decisions that only need to know whether one is saved.
 //
-// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), codexauth, llm, local,
-// settings.
+// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), codexauth, core, llm,
+// local, settings.
 package providers
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -84,6 +87,33 @@ func Model(p settings.Provider) string {
 	}
 	pr, _ := llm.LookupPreset(p.ID)
 	return pr.DefaultModel
+}
+
+// localNames are the endings of names that are not on the internet: mDNS,
+// a router's, RFC 8375's and ICANN's private ones, and a tailnet's.
+var localNames = []string{".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".ts.net"}
+
+// sharedNet is the shared address range (RFC 6598), which tailnets use.
+var sharedNet = net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
+
+// overNetwork says a setup's server is on the internet, not this Mac or its
+// local network, by its address or its name's spelling: names are not
+// looked up.
+func overNetwork(p settings.Provider) bool {
+	pr, err := Config(p).Resolve()
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(pr.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !sharedNet.Contains(ip)
+	}
+	return strings.Contains(host, ".") && !core.IsLoopback(host) &&
+		!slices.ContainsFunc(localNames, func(end string) bool { return strings.HasSuffix(host, end) })
 }
 
 // What a setup can lack (Missing).

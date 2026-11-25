@@ -75,7 +75,19 @@ class SpeculativeTargetWorker:
             output = self.model_runner.forward(forward_batch=forward_batch)
             requests = self.verify_requests
             logits = output.logits_output.next_token_logits
-            if self.omni_runner is not None and requests and logits is not None:
+            # note (wilsonzheng0327): a compact verify's graph epilogue copies the logits
+            # before these hooks would run, so the scheduler admits under it only requests
+            # whose hooks change nothing (speculative_request_error).
+            is_compact_verify = (
+                getattr(forward_batch.spec_info, "ragged_verify_layout", None)
+                is not None
+            )
+            if (
+                self.omni_runner is not None
+                and requests
+                and logits is not None
+                and not is_compact_verify
+            ):
                 assert logits.shape[0] % len(requests) == 0, (
                     f"{logits.shape[0]} verify rows do not split over "
                     f"{len(requests)} requests"

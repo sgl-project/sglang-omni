@@ -23,6 +23,12 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		layers = append(layers, layer)
 	}
 	add("custom", strings.TrimSpace(Render(full, vars, flags)))
+	if in.Task == Transcribe && strings.TrimSpace(in.Before) != "" {
+		add("before", render("before", nil))
+	}
+	if in.Task == Transcribe && in.Snippets {
+		add("snippets", render("snippets", nil))
+	}
 	if in.Task == Transcribe && in.Cleanup {
 		cleanup := render("cleanup", nil)
 		heading := strings.SplitN(cleanup, "\n", 2)[0]
@@ -64,7 +70,7 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		}
 		out.User = out.withGlossary(RewriteMessage(in.Instruction, in.Text, in.Typed))
 	} else {
-		out.User = out.withGlossary(UserMessage(in.Text))
+		out.User = out.withGlossary(userMessage(in))
 		if input, answer, ok := Example(in); ok {
 			out.History = []Message{{Role: "user", Content: UserMessage(input)}, {Role: "assistant", Content: answer}}
 		}

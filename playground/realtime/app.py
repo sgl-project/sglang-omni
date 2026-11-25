@@ -20,6 +20,7 @@ from scipy.signal import resample_poly
 
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
+DEFAULT_PRESET_ROOT = ROOT / "assets" / "minicpmo" / "presets"
 logger = logging.getLogger(__name__)
 REFERENCE_SAMPLE_RATE_HZ = 16000
 # Note (ruoyu): Deterministic and quick on MiniCPM-o, sent only where declared.
@@ -179,7 +180,11 @@ def load_reference(relative_path: str) -> dict:
     }
 
 
-def create_app(api_base: str, model_name: str | None = None) -> web.Application:
+def create_app(
+    api_base: str,
+    model_name: str | None = None,
+    preset_root: Path = DEFAULT_PRESET_ROOT,
+) -> web.Application:
     app = web.Application()
 
     async def prepare(application: web.Application) -> None:
@@ -256,9 +261,7 @@ def create_app(api_base: str, model_name: str | None = None) -> web.Application:
     presets = {}
     for mode in ("audio_duplex", "omni"):
         presets[mode] = []
-        for path in sorted(
-            (ROOT / "assets" / "minicpmo" / "presets" / mode).glob("*.yaml")
-        ):
+        for path in sorted((preset_root / mode).glob("*.yaml")):
             preset = yaml.safe_load(path.read_text())
             reference_path = preset.pop("ref_audio_path", None)
             if reference_path:
@@ -318,9 +321,15 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--model-name", default=None)
+    parser.add_argument(
+        "--preset-root",
+        type=Path,
+        default=DEFAULT_PRESET_ROOT,
+        help="directory of <mode>/*.yaml presets, whose first is the page's default",
+    )
     args = parser.parse_args()
     web.run_app(
-        create_app(args.api_base.rstrip("/"), args.model_name),
+        create_app(args.api_base.rstrip("/"), args.model_name, args.preset_root),
         host=args.host,
         port=args.port,
     )

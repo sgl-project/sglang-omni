@@ -1,0 +1,29 @@
+{
+  "name": "snippets-empty",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [],
+    "examples": [
+      {
+        "trigger": "我的工作邮箱",
+        "hint": "name@company.com"
+      },
+      {
+        "trigger": "我的办公地址",
+        "hint": "上海市浦东新区世纪大道 100 号"
+      },
+      {
+        "trigger": "我的个人会议链接",
+        "hint": "https://zoom.us/j/1234567890"
+      },
+      {
+        "trigger": "整理想法提示词",
+        "hint": "把这些零散的想法整理成清楚通顺的一段话，不要添加新内容。"
+      }
+    ],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

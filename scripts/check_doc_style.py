@@ -20,6 +20,7 @@ RST_DIRECTIVE_PATTERN = re.compile(r"\.\.\s+([\w-]+)::(?:\s+(.*))?$")
 GLOB_TOKEN_PATTERN = re.compile(r"\[[!]?\]?[^]]*\]|\*\*|\*|\?|.")
 LITERAL_DIRECTIVE_NAMES = {"code", "code-block", "sourcecode", "parsed-literal", "raw"}
 TOCTREE_EXEMPTIONS = {
+    "cookbook/qwen3_omni/tuning.md": "Linked from the Qwen3-Omni cookbook; intentionally omitted from sidebar navigation.",
     "README.md": "Repository overview, separate from the published manual.",
     "cookbook/fishaudio_drama3/benchmarks.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
     "cookbook/fishaudio_drama3/platforms.md": "Linked from the Fish Audio Drama 3 cookbook; intentionally omitted from sidebar navigation.",
