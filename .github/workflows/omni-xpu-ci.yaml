@@ -245,10 +245,16 @@ jobs:
           # $XPU_CI_MODEL_CACHE is a host Hugging Face cache for the model
           # serving lane. Unset is the safe default: that lane then finds no
           # checkpoint and skips every model by name, rather than downloading
-          # tens of GB onto a runner.
+          # tens of GB onto a runner. Only its hub/ is mounted, read-only: the
+          # rest of HF_HOME has to stay writable, because Transformers writes a
+          # trust_remote_code checkpoint's code to modules/ even when offline.
           cache_mount=()
           if [ -n "${XPU_CI_MODEL_CACHE:-}" ]; then
-            cache_mount=(-v "${XPU_CI_MODEL_CACHE}:/root/.cache/huggingface:ro")
+            if [ -d "${XPU_CI_MODEL_CACHE}/hub" ]; then
+              cache_mount=(-v "${XPU_CI_MODEL_CACHE}/hub:/root/.cache/huggingface/hub:ro")
+            else
+              echo "::warning::XPU_CI_MODEL_CACHE=${XPU_CI_MODEL_CACHE} has no hub/; mounting no model cache"
+            fi
           fi
           docker run -dt \
             --name "${CONTAINER_NAME}" \

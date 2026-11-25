@@ -74,11 +74,10 @@ def probe(cards: list[int]) -> dict:
     try:
         stdout, stderr = proc.communicate(timeout=600)
     except subprocess.TimeoutExpired:
-        stop_group(proc)
         pytest.fail(
             f"the probe did not finish within 600 s on cards {cards}: a collective hung"
         )
-    else:
+    finally:
         stop_group(proc)
     lines = [line for line in stdout.splitlines() if line.startswith("RESULT ")]
     assert (

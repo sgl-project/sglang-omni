@@ -283,7 +283,7 @@ each entry carries its own floor and the run prints the one it used.
 |---|---|
 | `--record` | write this environment's entry instead of checking; `--fresh` re-measures rows already recorded |
 | `--launches N` | restart the server N times and anchor the recorded speed at the **slowest**, so a fast mode reads as an improvement rather than firing the gate |
-| `--card-pool 3,6` | restrict to specific cards; each model takes what its topology needs |
+| `--card-pool 3,6` | restrict to specific cards, by physical id; each model takes what its topology needs. The default is every card the process can see, within any inherited `ZE_AFFINITY_MASK` |
 | `--idle-mib N` | refuse a card already holding more than N MiB (default 1024) |
 | `--idle-wait-s N` | wait that long for a busy card instead of refusing it; a recording sweep can wait, a check should not |
 | `--max-checkpoint-gib N` | skip a model whose checkpoint is larger than this, cached or not (default 100; only Ming-flash-omni exceeds it) |

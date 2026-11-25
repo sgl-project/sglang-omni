@@ -976,17 +976,34 @@ class CardsBusy(RuntimeError):
     """
 
 
+def visible_cards() -> list[int]:
+    """Physical ids of the cards this process may use, in the order torch numbers them.
+
+    Level Zero applies ZE_AFFINITY_MASK in ascending order, so under an inherited mask of
+    4,5 torch's device 0 is physical card 4. Without a mask, every card torch sees.
+    """
+    mask = os.environ.get("ZE_AFFINITY_MASK", "").strip()
+    if mask:
+        return sorted({int(part) for part in mask.split(",") if part.strip()})
+    else:
+        import torch
+
+        return list(range(torch.xpu.device_count()))
+
+
 def cards_in_use(cards: str) -> dict[str, float]:
     """Megabytes already allocated on each card, device-wide so a neighbour's work shows.
 
     A measurement taken while someone else holds the card is not a slow run, it is a different machine, and alternating A/B runs on quiet cards are what tell the two apart.
     """
+    visible = visible_cards()
+    index = {card: visible.index(int(card)) for card in cards.split(",")}
     used: dict[str, float] = {}
     try:
         import torch
 
-        for card in cards.split(","):
-            free, total = torch.xpu.mem_get_info(int(card))
+        for card, device in index.items():
+            free, total = torch.xpu.mem_get_info(device)
             used[card] = round((total - free) / 1024**2, 1)
     except Exception as exc:
         print(f"    cannot read card memory ({exc}); proceeding without the idle check")
@@ -1417,8 +1434,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--card-pool",
-        default="0,1,2,3,4,5,6,7",
-        help="cards this run may claim; each model takes what its topology needs",
+        default="",
+        help="cards this run may claim, by physical id; each model takes what its topology "
+        "needs (default: every card this process can see, within any inherited "
+        "ZE_AFFINITY_MASK)",
     )
     parser.add_argument(
         "--close-tolerance",
@@ -1534,7 +1553,25 @@ def main() -> int:
             parser.error(f"--serve-extra wants <model key>=<args>, got {item!r}")
         extras[key] = tuple(shlex.split(argument_text))
 
-    pool = [int(c) for c in args.card_pool.split(",") if c.strip()]
+    mask = os.environ.get("ZE_AFFINITY_MASK", "").strip()
+    try:
+        visible = visible_cards()
+    except ValueError:
+        parser.error(f"ZE_AFFINITY_MASK={mask!r} names sub-devices; give whole cards")
+    pool = (
+        [int(c) for c in args.card_pool.split(",") if c.strip()]
+        if args.card_pool
+        else visible
+    )
+    outside = sorted(set(pool) - set(visible))
+    if outside:
+        parser.error(
+            f"--card-pool {args.card_pool} names card(s) {outside} this process cannot use; "
+            f"it can use {visible}" + (f" (ZE_AFFINITY_MASK={mask})" if mask else "")
+        )
+    else:
+        pass
+    print(f"card pool {pool}", flush=True)
     fingerprint = environment_fingerprint(args.host_label)
     env_key = fingerprint_key(fingerprint)
     print(f"environment {env_key}: {json.dumps(fingerprint)}")
