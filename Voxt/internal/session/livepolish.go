@@ -152,7 +152,13 @@ func (r *run) endLive() {
 // speaks); or the language model is served on this Mac, where its requests
 // would share the GPU with the speech model while the user speaks and
 // beside the Final after Stop.
+//
+// Nor where the head start asks the whole text at every pause (headstart.go):
+// it is ahead of the sentences this would clean one by one.
 func newLivePolish(r *run) *livePolish {
+	if r.head.enabled {
+		return nil
+	}
 	r.m.mu.Lock()
 	client, llmInfo, llmCtx := r.svc.LLM, r.svc.LLMInfo, r.llmCtx
 	r.m.mu.Unlock()

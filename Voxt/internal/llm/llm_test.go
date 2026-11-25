@@ -80,8 +80,8 @@ func TestRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Attempts != 3 || len(slept) != 2 || slept[0] != 2*time.Second {
-		t.Fatalf("attempts %d slept %v", resp.Attempts, slept)
+	if resp.Attempts != 3 || !resp.RateLimited || len(slept) != 2 || slept[0] != 2*time.Second {
+		t.Fatalf("attempts %d, rate limited %v, slept %v", resp.Attempts, resp.RateLimited, slept)
 	}
 	if slept[1] < 500*time.Millisecond || slept[1] > time.Second {
 		t.Fatalf("backoff %v", slept[1])
@@ -89,6 +89,30 @@ func TestRetries(t *testing.T) {
 	snap := m.Snapshot()
 	if len(snap) != 1 || snap[0].Calls != 1 || snap[0].Attempts != 3 || snap[0].Skill != SkillTranslateText || snap[0].Usage.TotalTokens != 18 {
 		t.Fatalf("meter %+v", snap)
+	}
+}
+
+// TestRateLimited: a response says whether an attempt was refused for the
+// rate limit, not only that there was a retry.
+func TestRateLimited(t *testing.T) {
+	limit, busy := step{err: HTTPError("fake", "m", 429, "", 0)}, step{err: HTTPError("fake", "m", 503, "busy", 0)}
+	for _, tc := range []struct {
+		name  string
+		steps []step
+		want  bool
+	}{
+		{"answered", []step{text("done")}, false},
+		{"another retry", []step{busy, text("done")}, false},
+		{"a 429, then answered", []step{limit, text("done")}, true},
+		{"a 429, then failed", []step{limit, busy}, true},
+		{"failed", []step{busy}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Client{Backend: &fakeBackend{steps: tc.steps}, Sleep: noSleep, Retry: RetryPolicy{MaxAttempts: 2}}
+			if resp, _ := c.Chat(context.Background(), Request{Messages: msgs("x")}); resp.RateLimited != tc.want {
+				t.Errorf("rate limited %v, want %v", resp.RateLimited, tc.want)
+			}
+		})
 	}
 }
 

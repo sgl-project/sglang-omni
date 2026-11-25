@@ -137,11 +137,6 @@ type Problem struct {
 	Degraded bool
 }
 
-// Model names a model a session used.
-type Model struct {
-	ID, Name, Model string
-}
-
 // Timings are a session's stage times. Sent is how much of the
 // recording (Audio) the speech model got: less without the silence the
 // local voice activity detection left out (0 when it got none, or

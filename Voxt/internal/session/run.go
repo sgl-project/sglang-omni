@@ -124,6 +124,10 @@ type run struct {
 	liveOnce sync.Once
 	live     *livePolish
 	liveOff  bool
+	// head asks the language model about the live text ahead of the Final
+	// (headstart.go); silent tells the recording loop of the user's pauses.
+	head   headStart
+	silent chan bool
 }
 
 type capResult struct {

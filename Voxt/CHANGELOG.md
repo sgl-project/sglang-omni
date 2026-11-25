@@ -23,6 +23,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 - **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
 - **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
+- **Cleaned-up text is ready sooner after you stop** (#4618): when an internet language model cleans up Transcribe, Voxt asks it for the whole text while you pause and when you stop, and uses that answer when the final text is the same or differs only in punctuation or a word or two. It sends more requests than before, and the sentence-by-sentence cleaning of Clean up while you speak does not run with these models. With Clean up while you speak off, nothing is sent before you stop.
+- **Long English dictations are cleaned up in fewer pieces** (#4618): a piece is at most 300 words, not 300 characters.
 - **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
 
 ### Fixed
@@ -54,6 +56,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
 - **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
+- **整理好的文字出来得更快**（#4618）：互联网上的语言模型整理转录时，你一停顿、一停止，Voxt 就先请求整理全文；最终文字和当时一样，或只差标点、一两个词，就直接用那份回答。请求会比以前多；用这些模型时，“边说边整理”不再按句进行。关掉“边说边整理”，停止前就什么都不发。
+- **长英文听写整理时切得更少**（#4618）：每段最多 300 个单词，不再按 300 个字符算。
 - **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
 
 #### 修复
