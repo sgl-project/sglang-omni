@@ -620,6 +620,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-3-0-asr-tiny-speech-to-text-single-xpu">Ming-3.0-ASR-Tiny (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hy-simulmt-speech-translation-multi-xpu-tensor-parallel">Hy-SimulMT (speech translation, multi-XPU tensor parallel)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel">Nemotron Transcribe (speech-to-text, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>
@@ -868,6 +869,28 @@ curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>
 </div>
 <p>Decode graphs capture on XPU for this model and stay on by default, as on CUDA. On the four-rank layout above the tensor-parallel all-reduce is recorded in that capture, checked by replaying a captured all-reduce against its eager result on every rank. That measurement does not carry to wider layouts: the oneCCL 2022.1.1 which <code class="docutils literal notranslate"><span class="pre">torch==2.14.0+xpu</span></code> pins has been seen elsewhere to drop a captured collective without raising, which a decode graph then replays as a no-op, so re-check that before raising <code class="docutils literal notranslate"><span class="pre">--asr.tp_size</span></code> and pass <code class="docutils literal notranslate"><span class="pre">--asr.engine.disable_cuda_graph</span> <span class="pre">true</span></code> if it does not hold.</p>
 <p><strong>Expected result:</strong> The JSON response contains the translated text in <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
+</section>
+<section id="nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel">
+<h3>Nemotron Transcribe (speech-to-text, multi-XPU tensor parallel)<a class="headerlink" href="#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel" title="Link to this heading">#</a></h3>
+<p>The 62.9 GiB bf16 checkpoint does not fit one 24 GB card, so the single-GPU configuration in the <a class="reference internal" href="../cookbook/nemotron_transcribe.html"><span class="std std-doc">cookbook</span></a> needs tensor parallelism here. Four cards are the minimum: each rank then holds 16.11 GiB of weights, which includes its own copy of the audio perception encoder, and <code class="docutils literal notranslate"><span class="pre">--mem-fraction-static</span> <span class="pre">0.75</span></code> leaves room for the 0.74 GiB mamba cache and a 1.08 GiB KV cache (378101 tokens), measured on Arc Pro B60. Without that fraction the stage refuses to start with “Loaded weights leave no GPU memory for the KV cache”.</p>
+<p><strong>Launch</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-path<span class="w"> </span>/path/to/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--asr.tp_size<span class="w"> </span><span class="m">4</span><span class="w"> </span>--asr.gpu<span class="w"> </span><span class="s2">"[0, 1, 2, 3]"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mem-fraction-static<span class="w"> </span><span class="m">0</span>.75<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p><strong>Request</strong></p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-s<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"file=@tests/data/query_to_cars.wav"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"model=/path/to/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="s2">"response_format=json"</span>
+</pre></div>
+</div>
+<p>Decode graphs capture on XPU for this model and stay on by default, as on CUDA; the four ranks capture batch sizes 1 to 64 in 14 seconds. The pre-LM audio encoder stays off above one rank, because admission waits on each rank’s own encode and the ranks would otherwise admit a request in different steps; each rank encodes inside the forward instead, so a four-rank server encodes the same waveform four times. The audio embedding cache then holds 512 MiB per rank, enough for the longest accepted upload, because the forward would otherwise re-encode the whole upload on every prefill chunk; <code class="docutils literal notranslate"><span class="pre">--asr.factory.mm_embedding_cache_size_bytes</span></code> sets another budget and 0 turns the cache off.</p>
+<p>Triton compiles and tunes the decoder’s mamba kernels on the first requests, which costs 108 to 232 seconds on an idle host and is not a hang. Those results live in <code class="docutils literal notranslate"><span class="pre">~/.cache/sglang/triton</span></code>, so once it is populated a server reaches its steady-state latency within a few requests. Exclude the first requests of a fresh cache from any measurement.</p>
+<p><strong>Expected result:</strong> The JSON response contains <code class="docutils literal notranslate"><span class="pre">How</span> <span class="pre">many</span> <span class="pre">cars</span> <span class="pre">are</span> <span class="pre">there</span> <span class="pre">in</span> <span class="pre">the</span> <span class="pre">picture?</span></code> under <code class="docutils literal notranslate"><span class="pre">text</span></code>.</p>
 </section>
 <section id="qwen3-tts-text-to-speech-single-xpu">
 <h3>Qwen3-TTS (text-to-speech, single XPU)<a class="headerlink" href="#qwen3-tts-text-to-speech-single-xpu" title="Link to this heading">#</a></h3>
@@ -1447,6 +1470,7 @@ Qwen3-Omni thinker across 8 cards with tensor parallelism).</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-3-5-asr-speech-to-text-single-xpu">Nemotron 3.5 ASR (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#ming-3-0-asr-tiny-speech-to-text-single-xpu">Ming-3.0-ASR-Tiny (speech-to-text, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hy-simulmt-speech-translation-multi-xpu-tensor-parallel">Hy-SimulMT (speech translation, multi-XPU tensor parallel)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel">Nemotron Transcribe (speech-to-text, multi-XPU tensor parallel)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#qwen3-tts-text-to-speech-single-xpu">Qwen3-TTS (text-to-speech, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#auk-speech-generation-and-editing-single-xpu">AuK (speech generation and editing, single XPU)</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fun-cosyvoice3-text-to-speech-single-xpu">Fun-CosyVoice3 (text-to-speech, single XPU)</a></li>

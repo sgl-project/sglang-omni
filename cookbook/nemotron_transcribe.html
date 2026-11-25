@@ -633,6 +633,7 @@
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 </pre></div>
 </div>
+<p>For Intel GPUs, follow the <a class="reference internal" href="../other_platforms/installation_xpu.html#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel"><span class="std std-ref">Nemotron Transcribe XPU recipe</span></a>: 24 GB cards need the stage sharded across four of them.</p>
 <p>The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B<span class="w"> </span><span class="se">\</span>
@@ -672,7 +673,7 @@
 <td><p>Decoder prefill chunk in tokens</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">--asr.factory.mm_embedding_cache_size_bytes</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0</span></code>, 512 MiB per rank above one rank</p></td>
 <td><p>Audio embedding cache capacity</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">--asr.factory.compile_perception</span></code></p></td>
