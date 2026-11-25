@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 class ThinkerModelRunner(ModelRunner):
+    gates_audio_output_lookahead: bool = True
+
     def __init__(
         self,
         tp_worker: ModelWorker,
@@ -38,6 +40,7 @@ class ThinkerModelRunner(ModelRunner):
         capture_prompt_hidden_states: bool,
     ) -> None:
         super().__init__(tp_worker, output_processor)
+        self.gates_audio_output_lookahead = capture_prompt_hidden_states
 
         model = self.model
         self.outer_model = model.thinker
@@ -582,7 +585,10 @@ class ThinkerModelRunner(ModelRunner):
                 )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             except AttributeError:
                 data = None
-            if data is None or should_generate_audio_output(data.stage_payload):
+            if data is None or (
+                self.gates_audio_output_lookahead
+                and should_generate_audio_output(data.stage_payload)
+            ):
                 return False
             else:
                 pass

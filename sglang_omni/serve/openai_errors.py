@@ -70,6 +70,11 @@ _BAD_REQUEST_MARKERS = (
     "Native generation request ",
     "Native chat request rejected: ",
     "Invalid UMM request: ",
+    "PD does not support structured-output sampling",
+    "PD does not support custom logit processors",
+    "PD does not transfer retained streaming-session state",
+    "PD cannot transfer an empty prompt",
+    "Qwen3-Omni text-pd variant supports only text output modality",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(

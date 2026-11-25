@@ -20,6 +20,7 @@ from multiprocessing.connection import Connection
 import pytest
 import torch
 
+import sglang_omni.relay.cuda_ipc as cuda_ipc_module
 from sglang_omni.comm.kv_transfer import KVBufferRegion, KVPool
 from sglang_omni.relay.cuda_ipc import (
     ContiguousSlotAllocator,
@@ -37,6 +38,11 @@ PAGED_BUFFER_SPECS = (
     ("keys", torch.float16, 40, 4, 6),
     ("values", torch.float32, 72, 2, 3),
 )
+PAGED_MLA_BUFFER_SPECS = (("kv_latent", torch.float16, 128, 8, 12),)
+PAGED_LAYOUT_SPECS: dict[str, tuple[tuple[str, torch.dtype, int, int, int], ...]] = {
+    "mha": PAGED_BUFFER_SPECS,
+    "mla": PAGED_MLA_BUFFER_SPECS,
+}
 PAGED_OUTER_GUARD = 252
 PAGED_DESTINATION_GUARD = 253
 PAGED_MESSAGE_TIMEOUT_S = 120
@@ -261,7 +267,10 @@ class GatedCopyEvent:
 
 
 def make_copy_owning_get(
-    event: GatedCopyEvent, executor: ThreadPoolExecutor
+    event: GatedCopyEvent,
+    executor: ThreadPoolExecutor,
+    *,
+    held_references: tuple[torch.Tensor, ...] = (),
 ) -> CudaIpcGetOperation:
     # A negative device index makes torch.cuda.device a no-op, so this runs on CPU.
     return CudaIpcGetOperation(
@@ -273,6 +282,7 @@ def make_copy_owning_get(
         size=0,
         device_index=-1,
         wait_executor=executor,
+        held_references=held_references,
         finish_on_interrupt=True,
     )
 
@@ -285,12 +295,14 @@ def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
 ) -> None:
     event = GatedCopyEvent()
     executor = ThreadPoolExecutor(max_workers=1)
+    pinned_reference = (torch.zeros(4, dtype=torch.uint8),)
 
     async def run() -> None:
         timeout = 0.01 if interruption.startswith("timeout") else 30.0
-        task = asyncio.create_task(
-            make_copy_owning_get(event, executor).wait_for_completion(timeout=timeout)
+        operation = make_copy_owning_get(
+            event, executor, held_references=pinned_reference
         )
+        task = asyncio.create_task(operation.wait_for_completion(timeout=timeout))
         try:
             await asyncio.sleep(0.05)
             if interruption == "timeout_then_cancel":
@@ -301,6 +313,7 @@ def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
                 task.cancel()
             await asyncio.sleep(0.05)
             assert not task.done(), "receive returned while its GPU copy was running"
+            assert operation.held_references == pinned_reference
         finally:
             event.copy_done.set()
 
@@ -311,11 +324,33 @@ def test_cuda_ipc_get_waits_for_launched_copy_through_interruptions(
         )
         with pytest.raises(expected):
             await task
+        assert operation.held_references == ()
 
     try:
         asyncio.run(run())
     finally:
         executor.shutdown(wait=True)
+
+
+def test_cuda_ipc_get_kv_pages_requires_sgl_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cuda_ipc_module, "transfer_kv_per_layer_mla", None)
+    relay = CudaIpcRelay(engine_id="receiver", device="cuda:0", pool_size_mb=1)
+    try:
+        with pytest.raises(RuntimeError, match="transfer_kv_per_layer_mla"):
+            asyncio.run(
+                relay.get_kv_pages(
+                    {"engine_id": "sender", "cuda_ipc_kv": {}},
+                    destination_pool_id="destination-pool",
+                    source_page_indices=(0,),
+                    destination_page_indices=(0,),
+                    request_id="missing-kernel",
+                )
+            )
+        assert relay.kv_copy_stream is None
+    finally:
+        relay.close()
 
 
 def test_cuda_ipc_relay_close_keeps_queued_copy_waits(monkeypatch) -> None:
@@ -508,6 +543,10 @@ def make_paged_pool(
     *,
     device: torch.device,
     source: bool,
+    buffer_specs: tuple[
+        tuple[str, torch.dtype, int, int, int], ...
+    ] = PAGED_BUFFER_SPECS,
+    populate_source: bool = True,
 ) -> tuple[KVPool, tuple[torch.Tensor, ...]]:
     buffers = []
     backings = []
@@ -517,7 +556,7 @@ def make_paged_pool(
         bytes_per_page,
         prefix_elements,
         suffix_elements,
-    ) in enumerate(PAGED_BUFFER_SPECS):
+    ) in enumerate(buffer_specs):
         element_size = torch.empty((), dtype=dtype).element_size()
         region_bytes = PAGED_PAGE_COUNT * bytes_per_page
         assert region_bytes % element_size == 0
@@ -536,7 +575,7 @@ def make_paged_pool(
         )
         assert region.tensor.storage_offset() == prefix_elements
         assert region.byte_view().storage_offset() == prefix_elements * element_size
-        if source:
+        if source and populate_source:
             region.byte_view().copy_(
                 paged_pattern(
                     buffer_index,
@@ -707,13 +746,20 @@ def wait_for_receiver_close(
         raise RuntimeError(f"expected receiver cleanup message, received {kind!r}")
 
 
-def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_sender(
+    gpu: int,
+    connection: Connection,
+    result_q: mp.Queue,
+    layout_kind: str = "mha",
+    use_explicit_ready_event: bool = False,
+) -> None:
     relay = None
     source_shared = False
     error: str | None = None
     try:
         torch.cuda.set_device(gpu)
         device = torch.device(f"cuda:{gpu}")
+        buffer_specs = PAGED_LAYOUT_SPECS[layout_kind]
         relay = CudaIpcRelay(
             engine_id="paged-sender",
             device=str(device),
@@ -723,22 +769,47 @@ def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
             "source-pool",
             device=device,
             source=True,
+            buffer_specs=buffer_specs,
+            populate_source=not use_explicit_ready_event,
         )
         relay.register_kv_pool(pool)
         destination_ref = recv_paged_message(connection, "destination")
 
         async def run() -> None:
             nonlocal source_shared
+            ready_event: torch.cuda.Event | None = None
+            producer_stream: torch.cuda.Stream | None = None
+            if use_explicit_ready_event:
+                torch.cuda.current_stream(device).synchronize()
+                producer_stream = torch.cuda.Stream(device=device)
+                ready_event = torch.cuda.Event(interprocess=True)
+                with torch.cuda.stream(producer_stream):
+                    torch.cuda._sleep(
+                        100_000_000
+                    )  # noqa: leading-underscore  # upstream name
+                    for buffer_index, region in enumerate(pool.buffers):
+                        region.byte_view().copy_(
+                            paged_pattern(
+                                buffer_index,
+                                region.bytes_per_page,
+                                device=device,
+                            ),
+                            non_blocking=True,
+                        )
+                    ready_event.record(producer_stream)
             op = await relay.put_kv_pages(
                 source_pool_id=pool.pool_id,
                 source_page_indices=PAGED_SOURCE_INDICES,
                 destination_ref=destination_ref,
+                ready_event=ready_event,
             )
             connection.send(("metadata", op.metadata))
             source_shared = True
             recv_paged_message(connection, "ack")
             op.mark_receiver_done()
             await op.wait_for_completion(timeout=PAGED_MESSAGE_TIMEOUT_S)
+            if producer_stream is not None:
+                producer_stream.synchronize()
 
         asyncio.run(run())
         assert_source_pool_unchanged(pool, backings)
@@ -770,12 +841,18 @@ def paged_sender(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
         )
 
 
-def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None:
+def paged_receiver(
+    gpu: int,
+    connection: Connection,
+    result_q: mp.Queue,
+    layout_kind: str = "mha",
+) -> None:
     relay = None
     error: str | None = None
     try:
         torch.cuda.set_device(gpu)
         device = torch.device(f"cuda:{gpu}")
+        buffer_specs = PAGED_LAYOUT_SPECS[layout_kind]
         relay = CudaIpcRelay(
             engine_id="paged-receiver",
             device=str(device),
@@ -785,19 +862,21 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
             "destination-pool",
             device=device,
             source=False,
+            buffer_specs=buffer_specs,
         )
         relay.register_kv_pool(pool)
         connection.send(("destination", relay.prepare_kv_destination(pool.pool_id)))
         metadata = recv_paged_message(connection, "metadata")
         expected_size = len(PAGED_SOURCE_INDICES) * sum(
-            bytes_per_page for _, _, bytes_per_page, _, _ in PAGED_BUFFER_SPECS
+            bytes_per_page for _, _, bytes_per_page, _, _ in buffer_specs
         )
         assert metadata["transfer_info"]["size"] == expected_size
         storages = metadata["cuda_ipc_kv"]["storages"]
-        assert len(storages) == len(PAGED_BUFFER_SPECS)
+        assert len(storages) == len(buffer_specs)
         assert all(int(storage["tensor_offset"]) > 0 for storage in storages)
 
         async def run() -> None:
+            assert relay.kv_copy_stream is None
             op = await relay.get_kv_pages(
                 metadata,
                 destination_pool_id=pool.pool_id,
@@ -805,6 +884,8 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
                 destination_page_indices=PAGED_DESTINATION_INDICES,
                 request_id="paged-round-trip",
             )
+            assert relay.kv_copy_stream is not None
+            assert relay.kv_copy_stream is not torch.cuda.current_stream(device)
             await op.wait_for_completion(timeout=PAGED_MESSAGE_TIMEOUT_S)
 
         asyncio.run(run())
@@ -832,7 +913,12 @@ def paged_receiver(gpu: int, connection: Connection, result_q: mp.Queue) -> None
         )
 
 
-def run_paged_case(gpu: int) -> None:
+def run_paged_case(
+    gpu: int,
+    *,
+    layout_kind: str = "mha",
+    use_explicit_ready_event: bool = False,
+) -> None:
     assert PAGED_SOURCE_INDICES != PAGED_DESTINATION_INDICES
     assert len(PAGED_SOURCE_INDICES) == len(PAGED_DESTINATION_INDICES)
     assert len(set(PAGED_SOURCE_INDICES)) == len(PAGED_SOURCE_INDICES)
@@ -844,11 +930,11 @@ def run_paged_case(gpu: int) -> None:
     result_q = ctx.Queue()
     sender = ctx.Process(
         target=paged_sender,
-        args=(gpu, sender_connection, result_q),
+        args=(gpu, sender_connection, result_q, layout_kind, use_explicit_ready_event),
     )
     receiver = ctx.Process(
         target=paged_receiver,
-        args=(gpu, receiver_connection, result_q),
+        args=(gpu, receiver_connection, result_q, layout_kind),
     )
     sender.start()
     receiver.start()
@@ -895,8 +981,23 @@ def test_cuda_ipc_same_gpu_round_trip() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets() -> None:
-    run_paged_case(0)
+@pytest.mark.parametrize(
+    ("layout_kind", "use_explicit_ready_event"),
+    [
+        ("mha", False),
+        ("mha", True),
+        ("mla", True),
+    ],
+)
+def test_cuda_ipc_paged_multi_buffer_round_trip_with_storage_offsets(
+    layout_kind: str,
+    use_explicit_ready_event: bool,
+) -> None:
+    run_paged_case(
+        0,
+        layout_kind=layout_kind,
+        use_explicit_ready_event=use_explicit_ready_event,
+    )
 
 
 @pytest.mark.accelerator

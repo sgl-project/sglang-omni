@@ -11,6 +11,18 @@ import torch
 
 from sglang_omni.proto import KVBufferSpec, KVPoolLayout, KVTransferPrepareMessage
 
+DEFAULT_KV_POOL_ID = "kv"
+
+
+class KVCommitObserver(Protocol):
+    """Stage-level hook invoked right before a received KV transfer commits."""
+
+    def __call__(self, request: KVTransferPrepareMessage) -> None: ...
+
+
+class KVTransferCancelled(RuntimeError):
+    """Request-scoped cancellation of an outbound paged-KV transfer."""
+
 
 @dataclass(frozen=True)
 class KVBufferRegion:
@@ -67,6 +79,12 @@ class KVPool:
     buffers: tuple[KVBufferRegion, ...]
 
     def __post_init__(self) -> None:
+        if self.page_size <= 0:
+            raise ValueError(
+                f"KV pool page_size must be positive, got {self.page_size}"
+            )
+        else:
+            pass
         devices = {buffer.tensor.device for buffer in self.buffers}
         if len(devices) != 1:
             raise ValueError("all KV pool buffers must live on the same device")
@@ -92,6 +110,10 @@ class KVPool:
         )
 
     def validate_page_indices(self, page_indices: tuple[int, ...]) -> None:
+        if not page_indices:
+            raise ValueError("KV page indices must not be empty")
+        else:
+            pass
         if min(page_indices) < 0:
             raise ValueError("KV page indices must be non-negative")
         else:
@@ -118,11 +140,17 @@ class KVPageDestination:
 class KVReceiver(Protocol):
     """Request-scoped allocation lifecycle owned by the receiving stage.
 
-    A successful ``commit`` transfers responsibility for releasing the pages
-    from the transfer engine to the receiver's normal request lifecycle.
+    A successful commit transfers responsibility for releasing the pages from the transfer engine to the receiver's normal request lifecycle.
     """
 
-    def reserve(self, request: KVTransferPrepareMessage) -> KVPageDestination: ...
+    async def reserve(
+        self,
+        request: KVTransferPrepareMessage,
+        *,
+        timeout_seconds: float,
+    ) -> KVPageDestination: ...
+
+    def cancel_request_waiters(self, request_id: str) -> None: ...
 
     def commit(
         self,
@@ -144,15 +172,16 @@ class KVPageLease(Protocol):
     def release(self) -> None: ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class KVPageTransfer:
     """One scheduler-requested page transfer handled by its owning stage."""
 
     request_id: str
     transfer_id: str
     source_pool_id: str
-    target_pool_id: str
     source_page_indices: tuple[int, ...]
-    to_stage: str
+    target_pool_id: str | None = None
+    to_stage: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
     lease: KVPageLease | None = None
+    ready_event: torch.Event | None = None

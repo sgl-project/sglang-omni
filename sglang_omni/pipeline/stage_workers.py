@@ -108,6 +108,7 @@ class StageLaunchConfig:
 
     # Routing: static next stage(s)
     next_stages: str | list[str] | None = None
+    kv_transfer_to: str | None = None
     route_fn: str | None = None
     is_terminal: bool = False
 
@@ -118,7 +119,7 @@ class StageLaunchConfig:
     project_payload: dict[str, str] = field(default_factory=dict)
 
     # Communication pool/options. Transport selection belongs to CommRouter.
-    comm_config: dict[str, int | str | None] = field(default_factory=dict)
+    comm_config: dict[str, int | float | str | None] = field(default_factory=dict)
 
     # Unix socket of the stage's HTTP routes, set on the instance that serves
     # them (the single stage or the TP leader) when the stage declares any.
@@ -1236,6 +1237,7 @@ def construct_stage(
         disable_direct_cuda_ipc_payload=spec.disable_direct_cuda_ipc_payload,
         tp_fanout=tp_fanout,
         is_terminal=spec.is_terminal,
+        kv_transfer_to=spec.kv_transfer_to,
         replica_topology=spec.replica_topology or None,
         allow_child_processes=spec.allow_child_processes,
         http_socket_path=spec.http_socket_path,

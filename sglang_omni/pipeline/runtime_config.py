@@ -13,7 +13,7 @@ from pathlib import Path
 import zmq
 
 from sglang_omni.config.placement import StagePlacementPlan, build_stage_placement_plan
-from sglang_omni.config.schema import PipelineConfig, StageConfig
+from sglang_omni.config.schema import CommConfig, PipelineConfig, StageConfig
 from sglang_omni.config.topology import (
     LogicalProcessPlan,
     ProcessTopologyPlan,
@@ -23,6 +23,7 @@ from sglang_omni.config.topology import (
 from sglang_omni.pipeline.replicas import (
     ReplicaTopology,
     expand_replica_stages,
+    parse_replica_instance_name,
     validate_device_assignment,
 )
 
@@ -174,30 +175,37 @@ def prepare_pipeline_runtime(
 
 def build_comm_config(
     stage_cfg: StageConfig,
-) -> dict:
-    comm_cfg = stage_cfg.comm
-    if comm_cfg is not None:
-        return {
-            "slot_size_mb": comm_cfg.slot_size_mb,
-            "credits": comm_cfg.credits,
-            "cuda_ipc_slot_size_kb": comm_cfg.cuda_ipc_slot_size_kb,
-            "cuda_ipc_pool_size_mb": comm_cfg.cuda_ipc_pool_size_mb,
-            "mooncake_protocol": comm_cfg.mooncake_protocol,
-            "mooncake_hostname": comm_cfg.mooncake_hostname,
-            "mooncake_device_name": comm_cfg.mooncake_device_name,
-        }
+) -> dict[str, int | float | str | None]:
+    comm_config = stage_cfg.comm if stage_cfg.comm is not None else CommConfig()
+    return {
+        "slot_size_mb": comm_config.slot_size_mb,
+        "credits": comm_config.credits,
+        "cuda_ipc_slot_size_kb": comm_config.cuda_ipc_slot_size_kb,
+        "cuda_ipc_pool_size_mb": comm_config.cuda_ipc_pool_size_mb,
+        "mooncake_protocol": comm_config.mooncake_protocol,
+        "mooncake_hostname": comm_config.mooncake_hostname,
+        "mooncake_device_name": comm_config.mooncake_device_name,
+        "prealloc_timeout_seconds": comm_config.prealloc_timeout_seconds,
+    }
+
+
+def kv_participating_stage_names(stages: list[StageConfig]) -> set[str]:
+    """Return expanded stage names that send or receive paged KV transfers."""
+    logical_targets = {
+        stage.kv_transfer_to for stage in stages if stage.kv_transfer_to is not None
+    }
+    if not logical_targets:
+        return set()
     else:
         pass
-
-    return {
-        "slot_size_mb": 512,
-        "credits": 2,
-        "cuda_ipc_slot_size_kb": 64,
-        "cuda_ipc_pool_size_mb": None,
-        "mooncake_protocol": "rdma",
-        "mooncake_hostname": None,
-        "mooncake_device_name": "",
-    }
+    participants: set[str] = set()
+    for stage in stages:
+        logical_name, _ = parse_replica_instance_name(stage.name)
+        if stage.kv_transfer_to is not None or logical_name in logical_targets:
+            participants.add(stage.name)
+        else:
+            pass
+    return participants
 
 
 def allocate_endpoints(
@@ -207,6 +215,7 @@ def allocate_endpoints(
 ) -> dict[str, str]:
     validate_ipc_endpoint_budget(stages=stages, ipc_base_dir=ipc_base_dir)
     base_dir = ipc_base_dir
+    kv_stages = kv_participating_stage_names(stages)
     endpoints = {
         "completion": f"ipc://{base_dir}/completion.sock",
         "abort": f"ipc://{base_dir}/abort.sock",
@@ -219,9 +228,12 @@ def allocate_endpoints(
             endpoints[f"http_{stage.name}"] = f"{base_dir}/http_{stage.name}.sock"
         else:
             pass
-        for tp_rank in range(stage.tp_size):
-            endpoint_name = f"comm_{stage.name}_rank{tp_rank}"
-            endpoints[endpoint_name] = f"ipc://{base_dir}/{endpoint_name}.sock"
+        if stage.name in kv_stages:
+            for tp_rank in range(stage.tp_size):
+                endpoint_name = f"comm_{stage.name}_rank{tp_rank}"
+                endpoints[endpoint_name] = f"ipc://{base_dir}/{endpoint_name}.sock"
+        else:
+            pass
     return endpoints
 
 
@@ -279,10 +291,13 @@ def validate_ipc_endpoint_budget(
 
 
 def longest_endpoint_suffix_len(stages: list[StageConfig]) -> int:
+    kv_stages = kv_participating_stage_names(stages)
     suffixes = [len("/completion.sock"), len("/abort.sock")]
     suffixes.extend(len(f"/stage_{stage.name}.sock") for stage in stages)
     suffixes.extend(
-        len(f"/comm_{stage.name}_rank{stage.tp_size - 1}.sock") for stage in stages
+        len(f"/comm_{stage.name}_rank{stage.tp_size - 1}.sock")
+        for stage in stages
+        if stage.name in kv_stages
     )
     return max(suffixes)
 
