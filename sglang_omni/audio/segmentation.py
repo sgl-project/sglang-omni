@@ -44,7 +44,16 @@ class UtteranceSegmenter:
         event_type = control_type(chunk)
         if chunk.modality == AUDIO and not chunk.payload:
             return []
-        elif event_type == SEGMENTATION_MODE:
+        elif chunk.modality == AUDIO:
+            if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
+                raise ValueError("utterance audio must be 16 kHz mono pcm16 bytes")
+            elif len(chunk.payload) % 2:
+                raise ValueError("PCM16 byte length must contain whole samples")
+            else:
+                pass
+        else:
+            pass
+        if event_type == SEGMENTATION_MODE:
             enabled = chunk.payload.get("enabled")
             if not isinstance(enabled, bool):
                 raise ValueError("segmentation mode needs a boolean enabled field")
@@ -136,12 +145,8 @@ class UtteranceSegmenter:
     def slice_audio_from_sample(
         self, chunk: TimedChunk, start_sample: int
     ) -> TimedChunk | None:
-        if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
-            raise ValueError("utterance audio must be 16 kHz mono pcm16 bytes")
-        elif len(chunk.payload) % 2:
-            raise ValueError("PCM16 byte length must contain whole samples")
-        else:
-            pass
+        assert chunk.format == PCM16
+        assert isinstance(chunk.payload, bytes)
         chunk_start_sample = self.sample_at_time_ms(chunk.t_start_ms)
         chunk_sample_count = len(chunk.payload) // 2
         chunk_end_sample = chunk_start_sample + chunk_sample_count

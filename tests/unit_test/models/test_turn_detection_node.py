@@ -1037,11 +1037,7 @@ def test_the_qwen_dialog_queues_a_held_pause_as_one_turn() -> None:
     fused_output = held_pause_then_end()
     for chunk in fused_output:
         hooks.append(chunk, StagePayload("input", OmniRequest(None), {}), context)
-    expected_pcm = b"".join(
-        chunk.payload
-        for chunk in fused_output
-        if chunk.modality == AUDIO and isinstance(chunk.payload, bytes)
-    )
+    expected_pcm = pcm_frames([True] * 25 + [False] * 8 + [True] * 4 + [False] * 7)
     units = [chunk for chunk in outputs if chunk.format == UNIT_FORMAT]
     assert [control_type(chunk) or chunk.format for chunk in outputs] == [
         TURN_QUEUED,

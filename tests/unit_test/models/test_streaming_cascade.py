@@ -1373,7 +1373,17 @@ def test_segmenter_gates_on_speech_controls():
     assert segmenter.finish() == []
 
 
-def test_segmenter_rejects_unsupported_audio_when_slicing_lookback() -> None:
+@pytest.mark.parametrize(
+    ("segmentation_enabled", "open_utterance"),
+    [
+        pytest.param(True, False, id="automatic-held-audio"),
+        pytest.param(True, True, id="automatic-open-utterance"),
+        pytest.param(False, False, id="manual-mode"),
+    ],
+)
+def test_segmenter_rejects_unsupported_audio_at_ingestion(
+    segmentation_enabled: bool, open_utterance: bool
+) -> None:
     segmenter = UtteranceSegmenter()
     segmenter.step(
         TimedChunk(
@@ -1381,16 +1391,35 @@ def test_segmenter_rejects_unsupported_audio_when_slicing_lookback() -> None:
             0,
             0,
             0,
-            {"type": SEGMENTATION_MODE, "enabled": True},
+            {"type": SEGMENTATION_MODE, "enabled": segmentation_enabled},
             format=SESSION_CONTROL_INTERNAL,
         )
     )
-    segmenter.step(TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM_F32))
+    if open_utterance:
+        segmenter.step(control_chunk(SPEECH_STARTED, t_ms=0))
+    else:
+        pass
 
     with pytest.raises(
         ValueError, match="utterance audio must be 16 kHz mono pcm16 bytes"
     ):
-        segmenter.step(control_chunk(SPEECH_STARTED, t_ms=50))
+        segmenter.step(TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM_F32))
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_message"),
+    [
+        pytest.param({"invalid": "payload"}, "16 kHz mono pcm16 bytes", id="non-bytes"),
+        pytest.param(b"\x00", "whole samples", id="odd-pcm16"),
+    ],
+)
+def test_segmenter_rejects_malformed_pcm_at_ingestion(
+    payload: bytes | dict[str, str], error_message: str
+) -> None:
+    segmenter = UtteranceSegmenter()
+
+    with pytest.raises(ValueError, match=error_message):
+        segmenter.step(TimedChunk(AUDIO, 0, 100, 0, payload, format=PCM16))
 
 
 class CapturingUtteranceRecognizer(UtteranceRecognizer):
