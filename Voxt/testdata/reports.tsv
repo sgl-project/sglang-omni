@@ -62,3 +62,4 @@ report	fix	symptom	level	check
 #4605	#4607	The recording overlay follows the pointer to another display instead of the foreground app's focused-window display	L	TestOverlayDisplayPrefersFocusedWindow
 #4605	#4607	A kept answer card on another display pulls the recording pill away from the foreground app	L	TestPillAnchorKeepsFocusedDisplayBesideKeptCard
 #4605	#4607	Without Accessibility, the recording overlay still follows the pointer instead of the window server's front window	L	TestFocusedWindowFrameFallsBackToWindowServer
+#4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut

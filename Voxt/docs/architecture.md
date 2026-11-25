@@ -259,7 +259,7 @@ hotkey.event (helper) ─▶ helperNotified ─▶ hotkeyFired ─▶ hotkey.Rou
          (internal/vad: a stream gets nothing before the speech, an upload no silence around it; no speech: nothing is sent)
          (the recording kept in the history is the original)
    dict.Replace: the dictionary's aliases ─▶ their terms (the history keeps the text as recognised)
-compose.BuildParts (+ the Scene layer, the glossary): one request, or one per piece where the language changes or over 300 characters
+compose.BuildParts (+ the Scene layer, the glossary): one request, or one per piece where the language changes or over 300 words (a Chinese character is a word)
        ─▶ a chat per part (no separate first-token deadline, 5 s between tokens, a cap growing with the piece; behavior.md 5.5), streaming into the draft ─▶ compose.Clean, compose.JoinParts
          (a part fails: its text as recognised, a warning)
    deliver.Insert: textio.focus (the app in front now) ─▶ textio.paste {targetPid: that app, press: the group's auto key only in the start app, verifyMs: 1000}   (or the answer card)

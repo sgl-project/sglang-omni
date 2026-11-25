@@ -276,7 +276,7 @@ func TestClockAndTail(t *testing.T) {
 // edge, the first layout.FadeW of it fading in, the rest whole.
 func TestFadeSpans(t *testing.T) {
 	measure := func(s string) float32 { return float32(len([]rune(s))) * 10 } // 10 a letter
-	shown, at, spans := fadeSpans("abcdefghij", 25, measure)
+	shown, at, spans := fadeSpans("abcdefghij", 25, ovLiveAlpha, measure)
 	if shown != "cdefghij" || at != 20 {
 		t.Fatalf("shown %q at %v", shown, at)
 	}
@@ -292,7 +292,7 @@ func TestFadeSpans(t *testing.T) {
 	if b.String() != shown || spans[0].Color.A > 80 || spans[len(spans)-1].Color != ovLiveColor || spans[len(spans)-1].Text != "fghij" {
 		t.Errorf("spans %+v", spans)
 	}
-	if shown, at, _ := fadeSpans("abc", 0, measure); shown != "abc" || at != 0 {
+	if shown, at, _ := fadeSpans("abc", 0, ovLiveAlpha, measure); shown != "abc" || at != 0 {
 		t.Errorf("not scrolled: %q %v", shown, at)
 	}
 }
