@@ -117,8 +117,9 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
   };
   DraftStatistics draft_statistics;
   if (draft_.has_value()) {
-    draft_statistics = draft_->Decode(model_.decoder(), embeddings,
-                                      max_new_tokens, 0, commit, cancel);
+    draft_statistics =
+        draft_->Decode(model_.decoder(), embeddings, max_new_tokens,
+                       /*prefill_step_tokens=*/0, commit, cancel);
   } else {
     std::vector<KVCache> caches = model_.decoder().NewCaches();
     mx::array next_token = mx::argmax(model_.decoder().LastLogits(
@@ -162,12 +163,11 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
           ? request_budget
           : kDefaultMaxNewTokens * static_cast<int>(windows.size());
   TranscriptionResult combined;
+  combined.finish_reason = FinishReason::kStop;
   std::vector<std::string> parts;
-  int generated_token_count = 0;
-  FinishReason finish_reason = FinishReason::kStop;
   for (const auto &[start, end] : windows) {
     if (remaining_tokens <= 0) {
-      finish_reason = FinishReason::kLength;
+      combined.finish_reason = FinishReason::kLength;
       break;
     } else {
     }
@@ -188,21 +188,19 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
       parts.push_back(window.text);
     }
-    generated_token_count += window.generated_token_count;
+    combined.generated_token_count += window.generated_token_count;
     combined.verify_round_count += window.verify_round_count;
     combined.proposed_draft_token_count += window.proposed_draft_token_count;
     combined.accepted_draft_token_count += window.accepted_draft_token_count;
     remaining_tokens -= window.generated_token_count;
     if (window.finish_reason == FinishReason::kLength) {
-      finish_reason = FinishReason::kLength;
+      combined.finish_reason = FinishReason::kLength;
     } else {
     }
     mx::clear_cache();
   }
   combined.text = omni_common::JoinTranscriptParts(parts);
   combined.language = options.language;
-  combined.generated_token_count = generated_token_count;
-  combined.finish_reason = finish_reason;
   if (windows.size() > 1) {
     combined.window_texts = parts;
   } else {

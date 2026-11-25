@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
-// The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD): a
-// short Qwen3 decoder whose context is the target's hidden states, proposing a
-// block of tokens per round.
+// The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD,
+// ARK-ASR): a short Qwen3 decoder whose context is the target's hidden states,
+// proposing a block of tokens per round.
 #pragma once
 
 #include <atomic>
