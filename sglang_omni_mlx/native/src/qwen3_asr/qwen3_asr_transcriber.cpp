@@ -508,10 +508,10 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
       chunk_options.max_new_tokens = remaining_tokens;
     } else {
     }
-    const TranscriptionResult chunk = TranscribeWindow(
-        std::vector<float>(samples.begin() + start_sample,
-                           samples.begin() + end_sample),
-        chunk_options, cancel, nullptr);
+    const TranscriptionResult chunk =
+        TranscribeWindow(std::vector<float>(samples.begin() + start_sample,
+                                            samples.begin() + end_sample),
+                         chunk_options, cancel, nullptr);
     texts.push_back(chunk.text);
     if (!merged.language.has_value()) {
       merged.language = chunk.language;
