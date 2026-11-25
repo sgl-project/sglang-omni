@@ -27,7 +27,7 @@ from sglang_omni.utils.device import resolve_concrete_device
 
 logger = logging.getLogger(__name__)
 
-# note (ruilin): one batch covers the DiT, a single-chunk decode and a multi-chunk decode, so serving starts compiled.
+# note (ruilin): one batch covers the DiT, a single-chunk decode and a multi-chunk decode, so serving starts compiled; the graphs are recorded after it.
 WARMUP_REQUESTS = [
     GenerationRequest(prompt="Warm piano chords", duration_seconds=4.0, seed=0),
     GenerationRequest(prompt="Warm piano chords", duration_seconds=30.0, seed=0),
@@ -90,12 +90,14 @@ def create_generation_executor(
             runtime.text_encoder,
             graph_backend=graph_backend,
             max_batch_size=max_batch_size,
+            prompt_length=runtime.conditioner.max_length,
         )
-    if enable_torch_compile:
+    if enable_torch_compile or graph_backend is not None:
         warmup_start_seconds = time.perf_counter()
         runtime.generate(WARMUP_REQUESTS)
+        runtime.capture_graphs()
         logger.info(
-            f"Stable Audio 3 blocks compiled in {time.perf_counter() - warmup_start_seconds:.1f}s"
+            f"Stable Audio 3 warmed up in {time.perf_counter() - warmup_start_seconds:.1f}s"
         )
     else:
         pass

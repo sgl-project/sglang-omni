@@ -24,6 +24,7 @@ from sglang_omni.models.stable_audio3.dit import DiffusionTransformer, Transform
 from sglang_omni.models.stable_audio3.layers import AttentionBackend
 from sglang_omni.models.stable_audio3.model_config import (
     MAX_DURATION_SECONDS,
+    MIN_DURATION_SECONDS,
     StableAudio3Config,
 )
 
@@ -227,6 +228,28 @@ class StableAudio3Runtime:
             block.forward = MethodType(dit_block, block)
         for block in self.decoder.decoder.resampling.transformers:
             block.forward = MethodType(decoder_block, block)
+
+    @torch.inference_mode()
+    def capture_graphs(self) -> None:
+        """Records every graph bucket a request can reach, so no request waits on a capture."""
+        if self.prompt_graphs is None:
+            pass
+        else:
+            self.prompt_graphs.capture_buckets()
+        if self.dit_graphs is None:
+            pass
+        else:
+            # note (ruilin): the DiT graphs record against condition buffers that the first bound batch sizes, and the shortest request fits every bucket.
+            self.generate(
+                [
+                    GenerationRequest(
+                        prompt="Warm piano chords",
+                        duration_seconds=MIN_DURATION_SECONDS,
+                        seed=0,
+                    )
+                ]
+            )
+            self.dit_graphs.capture_buckets(self.latent_length(MIN_DURATION_SECONDS))
 
     def encode_text(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor

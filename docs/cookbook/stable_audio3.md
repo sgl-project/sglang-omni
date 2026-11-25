@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
 
 One GPU stage runs the prompt encoder, the diffusion transformer and the decoder. Like the official inference, the transformer and decoder run in fp16 and the prompt encoder in bf16. Requests that arrive together are generated as one batch of up to `--generation.factory.max_batch_size` requests (default 8). Each request keeps its own duration and seed, so batching does not change its audio. A batch runs in groups of similar length, so a short request is not padded to a long one.
 
-The transformer and decoder blocks are compiled at startup, which takes about 15 seconds the first time, and the prompt encoder and short-clip diffusion steps replay CUDA graphs. `--generation.factory.enable_torch_compile false` and `--generation.factory.enable_cuda_graph false` turn them off.
+At startup the transformer and decoder blocks are compiled and CUDA graphs are recorded for the prompt encoder and the short-clip diffusion steps, which takes about 25 seconds the first time; requests only replay them. `--generation.factory.enable_torch_compile false` and `--generation.factory.enable_cuda_graph false` turn them off.
 
 ## Generate audio
 

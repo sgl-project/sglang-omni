@@ -20,6 +20,7 @@ from sglang_omni.models.stable_audio3.cuda_graphs import (
     PromptEncoderCudaGraphRunner,
     bucket_batch,
     bucket_latents,
+    serving_batch_buckets,
 )
 from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
 from sglang_omni.models.stable_audio3.layers import AttentionBackend
@@ -360,7 +361,7 @@ def test_grouped_generation_matches_one_batch(
 
 @pytest.mark.accelerator
 def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds() -> None:
-    """Compiled blocks replayed from CUDA graphs stay close to eager, and a batch padded up to its bucket returns the same bits after a longer, fuller batch left its data in the padding."""
+    """Graphs recorded at startup are the only ones serving uses; replayed compiled blocks stay close to eager, and a padded batch returns the same bits after a fuller batch left its data in the padding."""
     device = require_device_streams()
     if not (current_platform.is_cuda() and _is_fa3_supported(device)):
         pytest.skip("the flash backend needs FlashAttention 3")
@@ -383,13 +384,24 @@ def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds() 
         runtime.dit, graph_backend=graph_backend, max_batch_size=8
     )
     runtime.prompt_graphs = PromptEncoderCudaGraphRunner(
-        runtime.text_encoder, graph_backend=graph_backend, max_batch_size=8
+        runtime.text_encoder,
+        graph_backend=graph_backend,
+        max_batch_size=8,
+        prompt_length=runtime.conditioner.max_length,
     )
+    runtime.capture_graphs()
+    recorded = (set(runtime.dit_graphs.graphs), set(runtime.prompt_graphs.graphs))
     graphed = runtime.generate(padded_batch)
     runtime.generate(fuller_batch)
     graphed_after_fuller = runtime.generate(padded_batch)
-    # note (ruilin): both batches share one bucket of each runner, so the second replay sees the fuller batch's leftovers.
-    assert (len(runtime.dit_graphs.graphs), len(runtime.prompt_graphs.graphs)) == (1, 1)
+    # note (ruilin): both batches replay one DiT bucket, so the second padded run sees the fuller batch's leftovers.
+    shared_bucket = (4, bucket_latents(runtime.latent_length(9.5)))
+    assert bucket_latents(runtime.latent_length(9.0)) == shared_bucket[1]
+    assert shared_bucket in runtime.dit_graphs.graphs
+    assert (
+        set(runtime.dit_graphs.graphs),
+        set(runtime.prompt_graphs.graphs),
+    ) == recorded
     for eager_audio, graphed_audio, later_audio in zip(
         eager, graphed, graphed_after_fuller, strict=True
     ):
@@ -403,13 +415,15 @@ def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds() 
 
 @pytest.mark.parametrize("max_batch_size", [3, 8, 16])
 def test_batch_buckets_fit_every_batch_the_stage_sends(max_batch_size: int) -> None:
-    """A graph bucket holds the whole batch and never exceeds the stage batch its buffers are sized for."""
+    """A graph bucket holds the whole batch, never exceeds the stage batch its buffers are sized for, and is one the startup capture records."""
+    recorded = serving_batch_buckets(max_batch_size)
     for batch_size in range(1, max_batch_size + 2):
         bucket = bucket_batch(batch_size, max_batch_size)
         if batch_size > max_batch_size:
             assert bucket is None
         else:
             assert batch_size <= bucket <= max_batch_size
+            assert bucket in recorded
 
 
 def test_latent_buckets_hold_every_length_within_the_graph_budget() -> None:

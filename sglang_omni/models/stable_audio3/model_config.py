@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, ValidationError
 MODEL_CONFIG_FILENAME = "model_config.json"
 # note (ruilin): the Medium checkpoint's sample_size, 16777216 samples at 44.1 kHz.
 MAX_DURATION_SECONDS = 380.0
+# note (ruilin): about one latent frame (4096 samples); without a floor a tiny duration rounds to an empty WAV.
+MIN_DURATION_SECONDS = 0.1
 # note (ruilin): the Medium model_config.json omits the encoder chunk_size, so the encoder runs at this default.
 DEFAULT_ENCODER_CHUNK_SIZE = 32
 

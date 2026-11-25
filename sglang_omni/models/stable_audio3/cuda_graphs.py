@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Bucketed CUDA graphs for the Stable Audio 3 prompt encoder and DiT step; each bucket records one graph on first use and later calls replay it.
+"""Bucketed CUDA graphs for the Stable Audio 3 prompt encoder and DiT step; every bucket is recorded before serving and requests only replay.
 
 Rows pad up to the batch bucket and latents up to the length bucket; each row's keys stop at its own key length, so padding never reaches a real row.
 """
@@ -29,7 +29,7 @@ BATCH_BUCKETS = (1, 2, 4, 8)
 LATENT_BUCKET_STEP = 32
 # note (ruilin): on H200 a short-clip DiT step launches about 1700 small kernels with the GPU busy a fifth of the time and stays near 20 ms up to about 2000 tokens, then turns GPU-bound; past that a graph saves about 3 ms and bucket padding can cost more.
 MAX_GRAPH_TOKENS = 2048
-# note (ruilin): a bucket captured mid-serving must not take the memory the decoder and later batches still need; 3 GB is the floor the other model-owned graphs in this repository use.
+# note (ruilin): graphs must leave the decoder and the largest batch their memory; 3 GB is the floor the other model-owned graphs in this repository use.
 MIN_FREE_GB = 3.0
 WARMUP_ITERATIONS = 2
 
@@ -79,6 +79,18 @@ def bucket_batch(batch_size: int, max_batch_size: int) -> int | None:
         else:
             pass
     return max_batch_size if batch_size <= max_batch_size else None
+
+
+def serving_batch_buckets(max_batch_size: int) -> list[int]:
+    """Every bucket bucket_batch picks for a batch the stage can send, largest first."""
+    return sorted(
+        {
+            bucket
+            for batch_size in range(1, max_batch_size + 1)
+            if (bucket := bucket_batch(batch_size, max_batch_size)) is not None
+        },
+        reverse=True,
+    )
 
 
 def bucket_latents(latent_length: int) -> int:
@@ -141,48 +153,49 @@ class PromptEncoderCudaGraphRunner:
         *,
         graph_backend: DeviceGraphBackend,
         max_batch_size: int,
+        prompt_length: int,
     ) -> None:
         self.text_encoder: T5GemmaEncoderModel = text_encoder
         self.graph_backend: DeviceGraphBackend = graph_backend
         self.max_batch_size: int = max_batch_size
+        self.prompt_length: int = prompt_length
         self.device: torch.device = next(text_encoder.parameters()).device
         self.graphs: dict[int, PromptGraph] = {}
-        self.failed_buckets: set[int] = set()
         self.pool: DeviceGraphPool = graph_backend.graph_pool_handle()
+
+    def capture_buckets(self) -> None:
+        """Records every batch bucket; after a failed capture the rest run eager."""
+        for batch_bucket in serving_batch_buckets(self.max_batch_size):
+            prompt_graph = self.capture(batch_bucket)
+            if prompt_graph is None:
+                return
+            else:
+                self.graphs[batch_bucket] = prompt_graph
 
     def encode(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> torch.Tensor:
         """Hidden states for the prompts; the result is a view the next call overwrites."""
-        batch_size = input_ids.shape[0]
+        batch_size, prompt_length = input_ids.shape
         batch_bucket = bucket_batch(batch_size, self.max_batch_size)
-        if batch_bucket is None or batch_bucket in self.failed_buckets:
-            prompt_graph = None
-        elif batch_bucket in self.graphs:
+        if batch_bucket in self.graphs and prompt_length == self.prompt_length:
             prompt_graph = self.graphs[batch_bucket]
-        else:
-            prompt_graph = self.capture(batch_bucket, input_ids.shape[1])
-            if prompt_graph is None:
-                self.failed_buckets.add(batch_bucket)
-            else:
-                self.graphs[batch_bucket] = prompt_graph
-        if prompt_graph is None:
-            return self.text_encoder(
-                input_ids=input_ids, attention_mask=attention_mask
-            ).last_hidden_state
-        else:
             prompt_graph.input_ids[:batch_size].copy_(input_ids)
             prompt_graph.attention_mask[:batch_size].copy_(attention_mask)
             prompt_graph.graph.replay()
             return prompt_graph.hidden_states[:batch_size]
+        else:
+            return self.text_encoder(
+                input_ids=input_ids, attention_mask=attention_mask
+            ).last_hidden_state
 
-    def capture(self, batch_bucket: int, prompt_length: int) -> PromptGraph | None:
+    def capture(self, batch_bucket: int) -> PromptGraph | None:
         # note (ruilin): padded rows keep every token visible, so their attention stays finite.
         input_ids = torch.zeros(
-            batch_bucket, prompt_length, device=self.device, dtype=torch.long
+            batch_bucket, self.prompt_length, device=self.device, dtype=torch.long
         )
         attention_mask = torch.ones(
-            batch_bucket, prompt_length, device=self.device, dtype=torch.bool
+            batch_bucket, self.prompt_length, device=self.device, dtype=torch.bool
         )
         captured = capture_graph(
             lambda: self.text_encoder(
@@ -223,9 +236,37 @@ class DiTCudaGraphRunner:
         self.dtype: torch.dtype = reference_parameter.dtype
         self.num_memory_tokens: int = dit.transformer.memory_tokens.shape[0]
         self.graphs: dict[tuple[int, int], StepGraph] = {}
-        self.failed_buckets: set[tuple[int, int]] = set()
         self.pool: DeviceGraphPool = graph_backend.graph_pool_handle()
         self.conditions: ConditionBuffers | None = None
+
+    def within_budget(self, batch_bucket: int, latent_bucket: int) -> bool:
+        return (
+            batch_bucket * (latent_bucket + self.num_memory_tokens) <= MAX_GRAPH_TOKENS
+        )
+
+    def capture_buckets(self, min_latent_length: int) -> None:
+        """Records every bucket a request can reach within the token budget, largest first so smaller graphs reuse the pool; after a failed capture the rest run eager."""
+        if self.conditions is None:
+            raise ValueError(
+                "bind one batch before capturing, so the condition buffers exist"
+            )
+        else:
+            pass
+        for batch_bucket in serving_batch_buckets(self.max_batch_size):
+            latent_buckets = range(
+                bucket_latents(min_latent_length),
+                MAX_GRAPH_TOKENS + 1,
+                LATENT_BUCKET_STEP,
+            )
+            for latent_bucket in reversed(latent_buckets):
+                if self.within_budget(batch_bucket, latent_bucket):
+                    step_graph = self.capture(batch_bucket, latent_bucket)
+                    if step_graph is None:
+                        return
+                    else:
+                        self.graphs[(batch_bucket, latent_bucket)] = step_graph
+                else:
+                    pass
 
     def bind(
         self, conditions: SamplingConditions, batch_size: int, latent_length: int
@@ -233,30 +274,16 @@ class DiTCudaGraphRunner:
         """Loads this batch's conditions and returns its graphed step, or None to run eager."""
         batch_bucket = bucket_batch(batch_size, self.max_batch_size)
         latent_bucket = bucket_latents(latent_length)
-        if (
-            batch_bucket is None
-            or batch_bucket * (latent_bucket + self.num_memory_tokens)
-            > MAX_GRAPH_TOKENS
-        ):
+        if batch_bucket is None or not self.within_budget(batch_bucket, latent_bucket):
             return None
         else:
             pass
-        bucket_shape = (batch_bucket, latent_bucket)
-        if bucket_shape in self.failed_buckets:
-            return None
-        else:
-            pass
+        # note (ruilin): loaded even when the bucket has no graph, so the startup warmup sizes the buffers capture_buckets records against.
         self.load_conditions(conditions, batch_size)
-        if bucket_shape in self.graphs:
-            step_graph = self.graphs[bucket_shape]
+        if (batch_bucket, latent_bucket) in self.graphs:
+            step_graph = self.graphs[(batch_bucket, latent_bucket)]
         else:
-            captured = self.capture(batch_bucket, latent_bucket)
-            if captured is None:
-                self.failed_buckets.add(bucket_shape)
-                return None
-            else:
-                step_graph = captured
-                self.graphs[bucket_shape] = step_graph
+            return None
 
         def step(latents: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
             step_graph.latents[:batch_size, :, :latent_length].copy_(latents)

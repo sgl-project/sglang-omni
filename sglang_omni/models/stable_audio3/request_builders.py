@@ -5,14 +5,15 @@ import random
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sglang_omni.models.stable_audio3.model_config import MAX_DURATION_SECONDS
+from sglang_omni.models.stable_audio3.model_config import (
+    MAX_DURATION_SECONDS,
+    MIN_DURATION_SECONDS,
+)
 from sglang_omni.models.stable_audio3.payload_types import StableAudio3State
 from sglang_omni.proto.request import StagePayload
 
 GENERATION_STAGE = "generation"
 DEFAULT_DURATION_SECONDS = 120.0
-# note (ruilin): about one latent frame (4096 samples); without a floor a tiny duration rounds to an empty WAV.
-MIN_DURATION_SECONDS = 0.1
 # note (ruilin): seeds stay within a signed 64-bit integer, the range every client and torch.Generator.manual_seed accept.
 SEED_LIMIT = 2**63
 # note (ruilin): the API layer answers 400 to errors that carry this prefix.
