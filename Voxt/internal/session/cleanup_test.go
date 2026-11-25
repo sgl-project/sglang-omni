@@ -166,10 +166,11 @@ func TestOnlyTheCleanedText(t *testing.T) {
 // about recognition ambiguities and stutters, then the cleaned sentence.
 // Only the cleaned text is streamed into the card, shown and inserted.
 func TestCleanedTextWithoutCommentary(t *testing.T) {
-	text := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
-	cleaned := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
-	// The reported reply, with its blank lines.
-	deliberation := "Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n"
+	text := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。"
+	cleaned := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。"
+	// The reply has the reported shape: deliberation in English with
+	// quoted input fragments, blank lines, then the cleaned text.
+	deliberation := "Let me look at this again. \"初稿\" might be a mishearing - I want to double-check. The speaker could mean \"初稿\" as in a first draft, or it might be something else entirely. I will keep it as written since I cannot decide.\n\nAlso \"不不需要\" reads like a repeated word - \"不，不需要\" should become \"不需要\".\n\n"
 	model := &fakeLLM{text: deliberation + cleaned, chunk: 3, pause: 5 * time.Millisecond}
 	h := newHarness(t, &fakeFile{text: text}, model, nil)
 	h.speak(h.start(), 5)
@@ -181,8 +182,8 @@ func TestCleanedTextWithoutCommentary(t *testing.T) {
 		// The first sentence may show while it is typed; once it
 		// completes and shows itself foreign, nothing of the
 		// deliberation streams.
-		if strings.Contains(s.Draft, "re-read.") || strings.Contains(s.Draft, "misrecognition") ||
-			strings.Contains(s.Draft, "reconsider") || strings.Contains(s.Draft, "stutter") {
+		if strings.Contains(s.Draft, "again.") || strings.Contains(s.Draft, "mishearing") ||
+			strings.Contains(s.Draft, "repeated word") || strings.Contains(s.Draft, "double-check") {
 			t.Errorf("a draft with the deliberation: %q", s.Draft)
 		}
 	}

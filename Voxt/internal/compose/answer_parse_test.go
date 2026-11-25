@@ -168,40 +168,42 @@ func TestCleanOutput(t *testing.T) {
 		// A tag-less answer to the built-in contract keeps only the
 		// cleaned text's span: the contract allows nothing around it,
 		// so the model's deliberation before or after goes (#4086).
-		// This is the reported reply, with its blank lines.
-		{"Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。", false},
+		// The reply has the reported shape: deliberation in English
+		// with quoted input fragments, blank lines, then the cleaned
+		// text.
+		{"Let me look at this again. \"初稿\" might be a mishearing - I want to double-check. The speaker could mean \"初稿\" as in a first draft, or it might be something else entirely. I will keep it as written since I cannot decide.\n\nAlso \"不不需要\" reads like a repeated word - \"不，不需要\" should become \"不需要\".\n\n我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。", false},
 		{"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation.",
 			"we need to ship the release on friday, uh, and tell the team tomorrow",
 			"We need to ship the release on Friday and tell the team tomorrow.", false},
 		// …near the input's length or far past it, and even a finished
 		// deliberation sentence before the cleaned text.
-		{"Wait, I need to re-read. The release is Friday.", "the release is friday. tell the quality team", "The release is Friday.", false},
+		{"Let me look at this again. The release is Friday.", "the release is friday. tell the quality team", "The release is Friday.", false},
 		// A short dictation is covered the same way: the deliberation
 		// before or after the cleaned text goes…
-		{"Wait, I need to re-read. Hello.", "hello", "Hello.", false},
+		{"Let me look at this again. Hello.", "hello", "Hello.", false},
 		{"Hello. I fixed the typo.", "hello", "Hello.", false},
 		// …down to an exact short cleaned answer (Hi., Yes., 你好。)…
-		{"Wait, I need to re-read. Hi.", "hi", "Hi.", false},
-		{"Wait, I need to re-read. Yes.", "yes", "Yes.", false},
-		{"Wait, I need to re-read. 你好。", "你好", "你好。", false},
+		{"Let me look at this again. Hi.", "hi", "Hi.", false},
+		{"Let me look at this again. Yes.", "yes", "Yes.", false},
+		{"Let me look at this again. 你好。", "你好", "你好。", false},
 		// …while a connector that is not the input (OK, 嗯) does not
 		// anchor, so it cannot shield the deliberation after it…
-		{"OK. Let me reconsider. 我觉得现在的时变已经非常快了。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。", false},
+		{"OK. Let me think once more. 我们周五要交方案初稿。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。",
+			"我们周五要交方案初稿。", false},
 		// …and one next to the cleaned text stays with it.
-		{"嗯。我觉得现在的时变已经非常快了。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"嗯。我觉得现在的时变已经非常快了。", false},
+		{"嗯。我们周五要交方案初稿。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。",
+			"嗯。我们周五要交方案初稿。", false},
 		// …while a legitimate short answer keeps its added words when
 		// nothing anchors the input (there is nothing to trim to).
 		{"Hello world.", "hello", "Hello world.", false},
 		// Near the input's own length the answer is trusted as it is…
-		{"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。", false},
+		{"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。",
+			"我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。", false},
 		// …and so is a wholesale rewrite nothing like the input: no
 		// sentence is the cleaned text, so there is nothing to trim to.
 		{"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。",
@@ -284,19 +286,20 @@ func TestPartialOutput(t *testing.T) {
 	// more of the deliberation streams. A sentence still being typed
 	// passes through — it may be the cleaned text's start, and the
 	// draft corrects when it completes.
-	const input = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
-	const cleaned = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
-	// The reported reply, with its blank lines.
-	const tagless = "Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n" + cleaned
-	if got := PartialOutput("Wait, I need to re-read.", input, false); got != "" {
+	const input = "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。"
+	const cleaned = "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。"
+	// The reply has the reported shape: deliberation in English with
+	// quoted input fragments, blank lines, then the cleaned text.
+	const tagless = "Let me look at this again. \"初稿\" might be a mishearing - I want to double-check. The speaker could mean \"初稿\" as in a first draft, or it might be something else entirely. I will keep it as written since I cannot decide.\n\nAlso \"不不需要\" reads like a repeated word - \"不，不需要\" should become \"不需要\".\n\n" + cleaned
+	if got := PartialOutput("Let me look at this again.", input, false); got != "" {
 		t.Errorf("a completed deliberation sentence = %q, want hidden", got)
 	}
 	// A short dictation is covered the same way: the finished
 	// deliberation sentence hides, the cleaned text shows.
-	if got := PartialOutput("Wait, I need to re-read. ", "hello", false); got != "" {
+	if got := PartialOutput("Let me look at this again. ", "hello", false); got != "" {
 		t.Errorf("a completed deliberation sentence for a short input = %q, want hidden", got)
 	}
-	if got := PartialOutput("Wait, I need to re-read. Hello.", "hello", false); got != "Hello." {
+	if got := PartialOutput("Let me look at this again. Hello.", "hello", false); got != "Hello." {
 		t.Errorf("the short dictation's cleaned text = %q, want %q", got, "Hello.")
 	}
 	if got := PartialOutput("Hello.", "hello", false); got != "Hello." {
@@ -306,9 +309,9 @@ func TestPartialOutput(t *testing.T) {
 	// shows, while its unfinished typing passes through and the
 	// finished deliberation sentence before it hides.
 	for _, tc := range []struct{ out, in, want string }{
-		{"Wait, I need to re-read. Hi.", "hi", "Hi."},
-		{"Wait, I need to re-read. Yes.", "yes", "Yes."},
-		{"Wait, I need to re-read. 你好。", "你好", "你好。"},
+		{"Let me look at this again. Hi.", "hi", "Hi."},
+		{"Let me look at this again. Yes.", "yes", "Yes."},
+		{"Let me look at this again. 你好。", "你好", "你好。"},
 	} {
 		if got := PartialOutput(tc.out, tc.in, false); got != tc.want {
 			t.Errorf("PartialOutput(%q) = %q, want %q", tc.out, got, tc.want)
@@ -320,11 +323,11 @@ func TestPartialOutput(t *testing.T) {
 	runes := []rune(tagless)
 	for i := 1; i <= len(runes); i++ {
 		got := PartialOutput(string(runes[:i]), input, false)
-		if strings.Contains(got, "re-read.") || strings.Contains(got, "misrecognition") || strings.Contains(got, "reconsider") ||
-			strings.Contains(got, "stutter") || strings.Contains(got, "self-correction") || strings.Contains(got, "time-varying") {
+		if strings.Contains(got, "again.") || strings.Contains(got, "mishearing") || strings.Contains(got, "double-check") ||
+			strings.Contains(got, "repeated word") || strings.Contains(got, "cannot decide") {
 			t.Fatalf("at %d: the deliberation in the draft %q", i, got)
 		}
-		if anchor := strings.Index(got, "我觉得"); anchor >= 0 && !strings.HasPrefix(cleaned, got[anchor:]) {
+		if anchor := strings.Index(got, "我们"); anchor >= 0 && !strings.HasPrefix(cleaned, got[anchor:]) {
 			t.Fatalf("at %d: draft %q is not the cleaned text's start", i, got)
 		}
 	}
@@ -336,13 +339,13 @@ func TestPartialOutput(t *testing.T) {
 	// length too: the draft is the cleaned text's span from the
 	// anchor on, as CleanOutput makes of the final text.
 	const nearIn = "the release is friday. tell the quality team"
-	if got := PartialOutput("Wait, I need to re-read. ", nearIn, false); got != "" {
+	if got := PartialOutput("Let me look at this again. ", nearIn, false); got != "" {
 		t.Errorf("the finished deliberation sentence = %q, want hidden", got)
 	}
-	if got := PartialOutput("Wait, I need to re-read. The rel", nearIn, false); got != "The rel" {
+	if got := PartialOutput("Let me look at this again. The rel", nearIn, false); got != "The rel" {
 		t.Errorf("the cleaned text after the deliberation = %q, want its start shown", got)
 	}
-	if got := PartialOutput("Wait, I need to re-read. The release is Friday.", nearIn, false); got != "The release is Friday." {
+	if got := PartialOutput("Let me look at this again. The release is Friday.", nearIn, false); got != "The release is Friday." {
 		t.Errorf("the near-length sequence = %q, want the cleaned text", got)
 	}
 	// Streaming and final agree: a finished sentence after the
