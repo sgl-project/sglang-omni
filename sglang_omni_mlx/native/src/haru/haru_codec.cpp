@@ -7,320 +7,220 @@ namespace mx = mlx::core;
 
 namespace {
 
-// x sliced to [begin, end) along axis.
-mx::array SliceAxis(const mx::array &x, int axis, int begin, int end) {
-  mx::Shape start(x.ndim(), 0);
-  mx::Shape stop = x.shape();
-  start[axis] = begin;
-  stop[axis] = end;
-  return mx::slice(x, start, stop);
-}
+constexpr int kBlockKernel = 7;
 
-// The causal depthwise mixer of a block as one Metal kernel: the array form
-// costs seven float32 dispatches over [T, C] and is several times slower on a
-// GPU.
-const mx::fast::CustomKernelFunction &MixerKernel() {
-  static const auto kernel = mx::fast::metal_kernel(
-      "haru_causal_depthwise_mixer", {"x", "n", "state", "w", "bias", "gamma"},
-      {"out", "new_state"}, R"(
-  uint c = thread_position_in_grid.x;
-  uint r = thread_position_in_grid.y;
-  if (c >= C) return;
-  if (r < T) {
-    float acc = float(bias[c]);
-    for (int k = 0; k < K; ++k) {
-      int i = int(r) + k - (K - 1);
-      float v = i < 0 ? float(state[(i + K - 1) * C + c]) : float(n[i * C + c]);
-      acc += float(w[c * K + k]) * v;
-    }
-    out[r * C + c] =
-        static_cast<OutT>(float(x[r * C + c]) + float(gamma[c]) * acc);
-  } else {
-    int src = int(r);  // concat(state, n) row that becomes new_state row r - T
-    new_state[(r - T) * C + c] =
-        src < K - 1 ? state[src * C + c] : n[(src - (K - 1)) * C + c];
-  }
-)");
-  return kernel;
-}
-
-enum class Kind { Conv, ConvTranspose, Block };
-
-struct Layer {
-  Kind kind;
-  std::string prefix;
-  int in_ch = 0;
-  int out_ch = 0;
-  int kernel = 0;
-  int stride = 1;
-  int state_rows = 0;
-  int state_cols = 0;
-};
-
-// The encoder's layer sequence.
-std::vector<Layer> EncoderLayers(const CodecConfig &config) {
-  const int c = config.base_channels;
-  const int n = static_cast<int>(config.ratios.size());
-  std::vector<Layer> layers;
-  layers.push_back({Kind::Conv, "codec.encoder.stem", 1, c, 7, 1, 6, 1});
-  for (int i = 0; i <= n; ++i) {
-    const int ch = c << i;
-    if (i > 0) {
-      const int stride = config.ratios[n - i]; // ratios reversed
-      layers.push_back({Kind::Conv,
-                        "codec.encoder.down." + std::to_string(i - 1), ch >> 1,
-                        ch, 2 * stride, stride, stride, ch >> 1});
-    }
-    for (int b = 0; b < config.encoder_depths[i]; ++b) {
-      layers.push_back({Kind::Block,
-                        "codec.encoder.stages." + std::to_string(i) + "." +
-                            std::to_string(b),
-                        ch, ch, 0, 1, 6, ch});
-    }
-  }
-  layers.push_back({Kind::Conv, "codec.encoder.head", c << n, config.latent_dim,
-                    7, 1, 6, c << n});
-  return layers;
-}
-
-std::vector<Layer> DecoderLayers(const CodecConfig &config) {
-  const int c = config.base_channels;
-  const int n = static_cast<int>(config.ratios.size());
-  std::vector<Layer> layers;
-  layers.push_back({Kind::Conv, "codec.decoder.stem", config.latent_dim, c << n,
-                    7, 1, 6, config.latent_dim});
-  for (int i = 0; i <= n; ++i) {
-    const int ch = c << (n - i);
-    if (i > 0) {
-      const int stride = config.ratios[i - 1];
-      // up[i-1]: in c<<(n-i+1), out c<<(n-i); state is [stride, out].
-      layers.push_back({Kind::ConvTranspose,
-                        "codec.decoder.up." + std::to_string(i - 1), ch << 1,
-                        ch, 0, stride, stride, ch});
-    }
-    for (int b = 0; b < config.decoder_depths[i]; ++b) {
-      layers.push_back({Kind::Block,
-                        "codec.decoder.stages." + std::to_string(i) + "." +
-                            std::to_string(b),
-                        ch, ch, 0, 1, 6, ch});
-    }
-  }
-  layers.push_back({Kind::Conv, "codec.decoder.head", c, 1, 7, 1, 6, c});
-  return layers;
+mx::array SliceRows(const mx::array &x, int begin, int end) {
+  return mx::slice(x, mx::Shape{begin, 0}, mx::Shape{end, x.shape(1)});
 }
 
 } // namespace
 
+void PrepareCodecWeights(omni_common::WeightMap &weights) {
+  std::vector<std::string> names;
+  for (const auto &[name, weight] : weights) {
+    if (name.starts_with("codec.") && name.ends_with(".weight") &&
+        weight.ndim() == 3 && !name.starts_with("codec.decoder.up.")) {
+      names.push_back(name);
+    }
+  }
+  for (const std::string &name : names) {
+    const mx::array stored = weights.at(name); // [out, in, kernel]
+    const int output_channels = stored.shape(0);
+    if (name.ends_with(".conv.weight")) {
+      // The block's residual gain is folded into its depthwise filter.
+      const std::string block = name.substr(0, name.size() - 12);
+      const mx::array gain =
+          mx::astype(weights.at(block + ".gamma"), mx::float32);
+      const mx::array filter =
+          mx::astype(mx::transpose(stored, {0, 2, 1}), mx::float32);
+      const mx::array bias = weights.at(block + ".conv.bias");
+      weights.insert_or_assign(
+          name,
+          mx::astype(
+              mx::multiply(filter, mx::reshape(gain, {output_channels, 1, 1})),
+              stored.dtype()));
+      weights.insert_or_assign(
+          block + ".conv.bias",
+          mx::astype(mx::multiply(bias, gain), bias.dtype()));
+      weights.erase(block + ".gamma");
+    } else {
+      weights.insert_or_assign(
+          name,
+          mx::reshape(mx::transpose(stored, {2, 1, 0}),
+                      {stored.shape(2) * stored.shape(1), output_channels}));
+    }
+  }
+}
+
 VibeVoiceCodec::VibeVoiceCodec(const omni_common::Checkpoint &checkpoint,
                                const CodecConfig &config)
-    : checkpoint_(checkpoint), config_(config) {}
+    : checkpoint_(checkpoint), config_(config) {
+  const int stage_count = static_cast<int>(config.ratios.size());
+  const int context = kBlockKernel - 1;
+  const int widest = config.base_channels << stage_count;
+  encoder_layers_.push_back({LayerKind::kConvolution, "codec.encoder.stem",
+                             kBlockKernel, 1, context, 1});
+  decoder_layers_.push_back({LayerKind::kConvolution, "codec.decoder.stem",
+                             kBlockKernel, 1, context, config.latent_dim});
+  for (int stage = 0; stage <= stage_count; ++stage) {
+    const std::string index = std::to_string(stage);
+    const int encoder_channels = config.base_channels << stage;
+    const int decoder_channels = widest >> stage;
+    if (stage > 0) {
+      const std::string previous = std::to_string(stage - 1);
+      const int encoder_stride = config.ratios[stage_count - stage];
+      encoder_layers_.push_back({LayerKind::kConvolution,
+                                 "codec.encoder.down." + previous,
+                                 2 * encoder_stride, encoder_stride,
+                                 encoder_stride, encoder_channels / 2});
+      const int decoder_stride = config.ratios[stage - 1];
+      decoder_layers_.push_back({LayerKind::kTransposedConvolution,
+                                 "codec.decoder.up." + previous,
+                                 2 * decoder_stride, decoder_stride,
+                                 decoder_stride, decoder_channels});
+    }
+    for (int block = 0; block < config.encoder_depths[stage]; ++block) {
+      encoder_layers_.push_back(
+          {LayerKind::kBlock,
+           "codec.encoder.stages." + index + "." + std::to_string(block),
+           kBlockKernel, 1, context, encoder_channels});
+    }
+    for (int block = 0; block < config.decoder_depths[stage]; ++block) {
+      decoder_layers_.push_back(
+          {LayerKind::kBlock,
+           "codec.decoder.stages." + index + "." + std::to_string(block),
+           kBlockKernel, 1, context, decoder_channels});
+    }
+  }
+  encoder_layers_.push_back({LayerKind::kConvolution, "codec.encoder.head",
+                             kBlockKernel, 1, context, widest});
+  decoder_layers_.push_back({LayerKind::kConvolution, "codec.decoder.head",
+                             kBlockKernel, 1, context, config.base_channels});
+}
 
-VibeVoiceCodec::State VibeVoiceCodec::InitEncoderState() const {
+VibeVoiceCodec::State
+VibeVoiceCodec::InitState(const std::vector<Layer> &layers) const {
   State state;
-  const auto dtype = checkpoint_.Weight("codec.encoder.stem.weight").dtype();
-  for (const auto &layer : EncoderLayers(config_)) {
-    state.push_back(mx::zeros({layer.state_rows, layer.state_cols}, dtype));
+  const mx::Dtype dtype =
+      checkpoint_.Weight(layers.front().prefix + ".weight").dtype();
+  for (const Layer &layer : layers) {
+    state.push_back(mx::zeros({layer.state_rows, layer.state_columns}, dtype));
   }
   return state;
+}
+
+VibeVoiceCodec::State VibeVoiceCodec::InitEncoderState() const {
+  return InitState(encoder_layers_);
 }
 
 VibeVoiceCodec::State VibeVoiceCodec::InitDecoderState() const {
-  State state;
-  const auto dtype = checkpoint_.Weight("codec.decoder.stem.weight").dtype();
-  for (const auto &layer : DecoderLayers(config_)) {
-    state.push_back(mx::zeros({layer.state_rows, layer.state_cols}, dtype));
-  }
-  return state;
+  return InitState(decoder_layers_);
 }
 
-std::pair<mx::array, mx::array>
-VibeVoiceCodec::Conv(const mx::array &x, const mx::array &state,
-                     const std::string &prefix, int stride, int kernel) const {
-  const mx::array raw = checkpoint_.Weight(prefix + ".weight"); // [out, in, k]
-  const int out_ch = raw.shape(0);
-  const int in_ch = raw.shape(1);
-  auto cached = conv_weights_.find(prefix);
-  if (cached == conv_weights_.end()) {
-    // The model evaluates the conv as a matmul over windows: [k * in, out].
-    // Preparing it once keeps the transpose out of the frame loop.
-    mx::array prepared = mx::transpose(
-        mx::reshape(mx::transpose(raw, {0, 2, 1}), {out_ch, kernel * in_ch}));
-    mx::eval(prepared);
-    cached = conv_weights_.emplace(prefix, prepared).first;
-  }
-  const mx::array &weight = cached->second;
-
-  mx::array input = x;
-  const int tail = x.shape(0) % stride;
-  if (tail) {
-    input = mx::pad(
-        x, std::vector<std::pair<int, int>>{{0, stride - tail}, {0, 0}});
-  }
-  const mx::array context = mx::concatenate({state, input}, 0); // [T+ctx, in]
-
-  const auto build_windows = [&]() -> mx::array {
-    if (stride == 1) {
-      const int steps = input.shape(0);
-      std::vector<mx::array> taps;
-      taps.reserve(kernel);
-      for (int k = 0; k < kernel; ++k) {
-        taps.push_back(
-            mx::slice(context, mx::Shape{k, 0}, mx::Shape{k + steps, in_ch}));
-      }
-      return mx::concatenate(taps, 1); // [steps, k*in]
+VibeVoiceCodec::LayerOutput VibeVoiceCodec::Convolve(const mx::array &x,
+                                                     const mx::array &state,
+                                                     const Layer &layer) const {
+  const int stride = layer.stride;
+  const int input_channels = x.shape(1);
+  const int remainder = x.shape(0) % stride;
+  const mx::array input =
+      remainder == 0 ? x
+                     : mx::pad(x, std::vector<std::pair<int, int>>{
+                                      {0, stride - remainder}, {0, 0}});
+  const mx::array context = mx::concatenate({state, input}, 0);
+  std::vector<mx::array> window_parts;
+  if (stride == 1) {
+    for (int tap = 0; tap < layer.kernel; ++tap) {
+      window_parts.push_back(SliceRows(context, tap, tap + input.shape(0)));
     }
-    const int hops = context.shape(0) / stride;
-    const mx::array reshaped =
-        mx::reshape(context, {hops, stride * in_ch}); // [hops, stride*in]
-    return mx::concatenate(
-        {mx::slice(reshaped, mx::Shape{0, 0},
-                   mx::Shape{hops - 1, stride * in_ch}),
-         mx::slice(reshaped, mx::Shape{1, 0}, mx::Shape{hops, stride * in_ch})},
-        1);
-  };
-  const mx::array windows = build_windows();
-  const mx::array out =
-      mx::addmm(checkpoint_.Weight(prefix + ".bias"), windows, weight);
-  const int context_len = kernel - stride;
-  const mx::array next =
-      mx::slice(context, mx::Shape{context.shape(0) - context_len, 0},
-                mx::Shape{context.shape(0), in_ch});
-  return {out, next};
-}
-
-std::pair<mx::array, mx::array>
-VibeVoiceCodec::ConvTranspose(const mx::array &x, const mx::array &state,
-                              const std::string &prefix, int stride) const {
-  const mx::array raw = checkpoint_.Weight(prefix + ".weight"); // [in, out, k]
-  const int in_ch = raw.shape(0);
-  const int out_ch = raw.shape(1);
-  const int kernel = raw.shape(2);
-  const mx::array weight =
-      mx::reshape(mx::transpose(raw, {1, 2, 0}), {out_ch * kernel, in_ch});
-
-  const int steps = x.shape(0);
-  // [steps, out * kernel] -> [steps, out, 2, stride] -> [steps, 2, stride,
-  // out].
-  const mx::array y =
-      mx::transpose(mx::reshape(mx::matmul(x, mx::transpose(weight)),
-                                {steps, out_ch, 2, stride}),
-                    {0, 2, 3, 1});
-  const mx::array first =
-      mx::squeeze(SliceAxis(y, 1, 0, 1), 1); // [steps, stride, out]
-  const mx::array second =
-      mx::squeeze(SliceAxis(y, 1, 1, 2), 1); // [steps, stride, out]
-  const mx::array overlap =
-      mx::concatenate({mx::expand_dims(state, 0),
-                       mx::slice(second, mx::Shape{0, 0, 0},
-                                 mx::Shape{steps - 1, stride, out_ch})},
-                      0);
-  const mx::array out =
-      mx::add(mx::reshape(mx::add(first, overlap), {-1, out_ch}),
-              checkpoint_.Weight(prefix + ".bias"));
-  const mx::array next =
-      mx::squeeze(mx::slice(second, mx::Shape{steps - 1, 0, 0},
-                            mx::Shape{steps, stride, out_ch}),
-                  0);
-  return {out, next};
-}
-
-std::pair<mx::array, mx::array>
-VibeVoiceCodec::Block(const mx::array &x, const mx::array &state,
-                      const std::string &prefix) const {
-  const int dim = x.shape(1);
-  const int steps = x.shape(0);
-  constexpr int kKernel = 7;
-  const mx::array n = mx::fast::rms_norm(
-      x, checkpoint_.Weight(prefix + ".norm.weight"), config_.norm_eps);
-  // The checkpoint stores the depthwise filter as [dim, 1, 7]; the model
-  // evaluates it as [dim, 7] (one row per channel).
-  const mx::array raw_conv = checkpoint_.Weight(prefix + ".conv.weight");
-  const mx::array weight = mx::reshape(mx::transpose(raw_conv, {0, 2, 1}),
-                                       {raw_conv.shape(0), raw_conv.shape(2)});
-  const mx::array gamma = checkpoint_.Weight(prefix + ".gamma");
-  const mx::array bias = checkpoint_.Weight(prefix + ".conv.bias");
-  mx::array mixed = x;
-  mx::array next = state;
-  if (mx::default_device() == mx::Device::gpu) {
-    const std::vector<mx::array> outputs = MixerKernel()(
-        {x, n, state, weight, bias, gamma}, {{steps, dim}, {kKernel - 1, dim}},
-        {x.dtype(), state.dtype()}, {dim, steps + kKernel - 1, 1},
-        {std::min(dim, 256), 1, 1},
-        {{"OutT", x.dtype()}, {"T", steps}, {"C", dim}, {"K", kKernel}},
-        std::nullopt, false, {});
-    mixed = outputs[0];
-    next = outputs[1];
   } else {
-    const mx::array context = mx::concatenate({state, n}, 0); // [steps+6, dim]
-    const mx::array taps = mx::astype(context, mx::float32);
-    const mx::array w = mx::astype(weight, mx::float32);
-    const mx::array g = mx::astype(gamma, mx::float32);
-    mx::array acc = mx::astype(bias, mx::float32);
-    for (int k = 0; k < kKernel; ++k) {
-      const mx::array tap =
-          mx::slice(taps, mx::Shape{k, 0}, mx::Shape{k + steps, dim});
-      const mx::array w_k = mx::reshape(
-          mx::slice(w, mx::Shape{0, k}, mx::Shape{dim, k + 1}), {1, dim});
-      acc = mx::add(acc, mx::multiply(tap, w_k));
-    }
-    mixed = mx::astype(
-        mx::add(mx::astype(x, mx::float32), mx::multiply(g, acc)), x.dtype());
-    next = mx::slice(context, mx::Shape{steps, 0},
-                     mx::Shape{steps + kKernel - 1, dim});
+    const int hops = context.shape(0) / stride;
+    const mx::array hop_rows =
+        mx::reshape(context, {hops, stride * input_channels});
+    window_parts = {SliceRows(hop_rows, 0, hops - 1),
+                    SliceRows(hop_rows, 1, hops)};
   }
-
-  const mx::array h = mx::fast::rms_norm(
-      mixed, checkpoint_.Weight(prefix + ".ffn_norm.weight"), config_.norm_eps);
-  const mx::array ffn = checkpoint_.Linear(
-      omni_common::Gelu(checkpoint_.Linear(h, prefix + ".fc1")),
-      prefix + ".fc2");
-  return {mx::add(mixed,
-                  mx::multiply(checkpoint_.Weight(prefix + ".ffn_gamma"), ffn)),
-          next};
+  return {mx::addmm(checkpoint_.Weight(layer.prefix + ".bias"),
+                    mx::concatenate(window_parts, 1),
+                    checkpoint_.Weight(layer.prefix + ".weight")),
+          SliceRows(context, context.shape(0) - layer.state_rows,
+                    context.shape(0))};
 }
 
-mx::array VibeVoiceCodec::Encode(const mx::array &audio, State &state) const {
-  const auto layers = EncoderLayers(config_);
-  mx::array x =
-      mx::astype(mx::reshape(audio, {-1, 1}),
-                 checkpoint_.Weight("codec.encoder.stem.weight").dtype());
-  for (size_t i = 0; i < layers.size(); ++i) {
-    const auto &layer = layers[i];
-    if (layer.kind == Kind::Conv) {
-      auto [y, s] = Conv(x, state[i], layer.prefix, layer.stride, layer.kernel);
-      x = y;
-      state[i] = s;
-    } else {
-      auto [y, s] = Block(x, state[i], layer.prefix);
-      x = y;
-      state[i] = s;
-    }
+VibeVoiceCodec::LayerOutput
+VibeVoiceCodec::ConvolveTransposed(const mx::array &x, const mx::array &state,
+                                   const Layer &layer) const {
+  const mx::array &stored =
+      checkpoint_.Weight(layer.prefix + ".weight"); // [in, out, kernel]
+  const int stride = layer.stride;
+  const int output_channels = stored.shape(1);
+  const int steps = x.shape(0);
+  // [steps, out * kernel] -> [2, steps, stride, out]: each step's window as
+  // the part it starts and the part that overlaps the next step.
+  const mx::array windows = mx::transpose(
+      mx::reshape(mx::matmul(x, mx::reshape(stored, {stored.shape(0), -1})),
+                  {steps, output_channels, 2, stride}),
+      {2, 0, 3, 1});
+  const mx::array starts = mx::take(windows, 0, 0);
+  const mx::array tails = mx::take(windows, 1, 0);
+  const mx::array overlaps = mx::concatenate(
+      {mx::expand_dims(state, 0),
+       mx::slice(tails, mx::Shape{0, 0, 0},
+                 mx::Shape{steps - 1, stride, output_channels})},
+      0);
+  return {mx::add(mx::reshape(mx::add(starts, overlaps), {-1, output_channels}),
+                  checkpoint_.Weight(layer.prefix + ".bias")),
+          mx::take(tails, steps - 1, 0)};
+}
+
+VibeVoiceCodec::LayerOutput VibeVoiceCodec::Block(const mx::array &x,
+                                                  const mx::array &state,
+                                                  const Layer &layer) const {
+  const std::string &prefix = layer.prefix;
+  const mx::array context = mx::concatenate(
+      {state, checkpoint_.RmsNorm(x, prefix + ".norm", config_.norm_eps)}, 0);
+  const mx::array mixed = mx::add(
+      x, mx::squeeze(checkpoint_.Conv1d(mx::expand_dims(context, 0),
+                                        prefix + ".conv", 1, 0, 1, x.shape(1)),
+                     0));
+  const mx::array feed_forward = checkpoint_.Linear(
+      omni_common::Gelu(checkpoint_.Linear(
+          checkpoint_.RmsNorm(mixed, prefix + ".ffn_norm", config_.norm_eps),
+          prefix + ".fc1")),
+      prefix + ".fc2");
+  return {mx::add(mixed, mx::multiply(checkpoint_.Weight(prefix + ".ffn_gamma"),
+                                      feed_forward)),
+          SliceRows(context, x.shape(0), context.shape(0))};
+}
+
+mx::array VibeVoiceCodec::Run(const std::vector<Layer> &layers, mx::array x,
+                              State &state) const {
+  for (size_t index = 0; index < layers.size(); ++index) {
+    const Layer &layer = layers[index];
+    const LayerOutput layer_output =
+        layer.kind == LayerKind::kConvolution ? Convolve(x, state[index], layer)
+        : layer.kind == LayerKind::kTransposedConvolution
+            ? ConvolveTransposed(x, state[index], layer)
+            : Block(x, state[index], layer);
+    x = layer_output.output;
+    state[index] = layer_output.next_state;
   }
   return mx::astype(x, mx::float32);
 }
 
+mx::array VibeVoiceCodec::Encode(const mx::array &audio, State &state) const {
+  return Run(encoder_layers_,
+             mx::astype(mx::reshape(audio, {-1, 1}), state.front().dtype()),
+             state);
+}
+
 mx::array VibeVoiceCodec::Decode(const mx::array &latents, State &state) const {
-  const auto layers = DecoderLayers(config_);
-  mx::array x =
-      mx::astype(mx::reshape(latents, {-1, latents.shape(-1)}),
-                 checkpoint_.Weight("codec.decoder.stem.weight").dtype());
-  for (size_t i = 0; i < layers.size(); ++i) {
-    const auto &layer = layers[i];
-    if (layer.kind == Kind::Conv) {
-      auto [y, s] = Conv(x, state[i], layer.prefix, layer.stride, layer.kernel);
-      x = y;
-      state[i] = s;
-    } else if (layer.kind == Kind::ConvTranspose) {
-      auto [y, s] = ConvTranspose(x, state[i], layer.prefix, layer.stride);
-      x = y;
-      state[i] = s;
-    } else {
-      auto [y, s] = Block(x, state[i], layer.prefix);
-      x = y;
-      state[i] = s;
-    }
-  }
-  return mx::astype(mx::reshape(x, {-1}), mx::float32);
+  return mx::reshape(
+      Run(decoder_layers_,
+          mx::astype(mx::reshape(latents, {-1, latents.shape(-1)}),
+                     state.front().dtype()),
+          state),
+      {-1});
 }
 
 mx::array VibeVoiceCodec::Sample(const mx::array &mean,

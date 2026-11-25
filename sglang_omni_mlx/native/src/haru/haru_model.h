@@ -5,7 +5,6 @@
 #pragma once
 
 #include <filesystem>
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -31,25 +30,20 @@ struct LayerCache {
 
 class HaruModel {
 public:
-  // quantize_bits: 8 to quantize the backbone's Linear weights and the
-  // embedding table at load; 0 keeps the checkpoint's precision.
-  explicit HaruModel(const std::filesystem::path &model_directory,
-                     int quantize_bits = 0);
+  // The backbone and its embedding table are quantized at load.
+  explicit HaruModel(const std::filesystem::path &model_directory);
+  HaruModel(const HaruModel &) = delete;
+  HaruModel &operator=(const HaruModel &) = delete;
 
   const HaruConfig &config() const { return config_; }
   const omni_common::Checkpoint &checkpoint() const { return checkpoint_; }
-  VibeVoiceCodec &codec() { return codec_; }
   const VibeVoiceCodec &codec() const { return codec_; }
-  MeanFlowHead &head() { return head_; }
   const MeanFlowHead &head() const { return head_; }
+  // The codec latent [D] of digital silence.
+  const mx::array &silence_latent() const { return silence_latent_; }
+  // [vocab] added to the logits to leave only tokens that speak.
+  const mx::array &speech_token_mask() const { return speech_token_mask_; }
 
-private:
-  // Reads config.json once: the same parameters feed the typed config and the
-  // checkpoint's layer lookup.
-  HaruModel(const std::filesystem::path &model_directory,
-            const nlohmann::json &parameters, int quantize_bits);
-
-public:
   // Empty per-layer caches for one conversation.
   std::vector<LayerCache> NewCaches() const;
 
@@ -74,6 +68,9 @@ public:
   mx::array UnscaleLatents(const mx::array &normalized) const;
 
 private:
+  HaruModel(const std::filesystem::path &model_directory,
+            const nlohmann::json &parameters);
+
   // The zero-centred RMSNorm gain of prefix as the float32 1 + w the model
   // uses (bfloat16 only resolves 1/128 near 1).
   mx::array NormGain(const std::string &prefix) const;
@@ -99,8 +96,8 @@ private:
   mx::array latent_bias_;
   VibeVoiceCodec codec_;
   MeanFlowHead head_;
-  // conv1d weights already in MLX's [out, kernel, in] layout, built once.
-  mutable std::map<std::string, mx::array> conv_weights_;
+  mx::array silence_latent_;
+  mx::array speech_token_mask_;
 };
 
 } // namespace haru

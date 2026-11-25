@@ -98,29 +98,6 @@ set_source_files_properties(src/common/audio_chunks.cpp
 set_source_files_properties(src/common/fastconformer.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 
-# Haru: a full-duplex spoken dialogue model (Qwen3.5 backbone + VibeVoice
-# codec + MeanFlow head). The configuration lands first; the model follows.
-add_library(haru STATIC
-  src/haru/haru_config.cpp
-  src/haru/haru_model.cpp
-  src/haru/haru_codec.cpp
-  src/haru/haru_head.cpp
-  src/haru/haru_session.cpp
-  src/haru/haru_audio.cpp
-  src/haru/haru_realtime.cpp)
-target_include_directories(haru PUBLIC src)
-# The reference preparation resamples through audio_resample.
-target_link_libraries(haru PUBLIC common audio_resample civetweb-c-library)
-target_compile_options(haru PUBLIC ${MLX_CXX_FLAGS} PRIVATE -Wall -Wextra)
-
-add_executable(haru_session_probe tools/haru_session_probe.cpp)
-target_link_libraries(haru_session_probe PRIVATE haru)
-
-add_executable(haru_server src/haru/haru_server.cpp)
-target_link_libraries(haru_server PRIVATE haru asr_service)
-
-install(TARGETS haru_server haru_session_probe RUNTIME DESTINATION bin)
-
 add_library(qwen3_asr STATIC
   src/qwen3_asr/qwen3_audio.cpp
   src/qwen3_asr/qwen3_asr_model.cpp
@@ -186,6 +163,27 @@ foreach(runtime_file ${MLX_RUNTIME_FILES})
   file(REAL_PATH "${runtime_file}" resolved_file)
   install(FILES "${resolved_file}" DESTINATION bin)
 endforeach()
+
+# Haru: full-duplex spoken dialogue on /v1/realtime (a Qwen3.5 backbone, the
+# VibeVoice codec and a MeanFlow head), and the tool its golden runs.
+add_library(haru STATIC
+  src/haru/haru_config.cpp
+  src/haru/haru_model.cpp
+  src/haru/haru_codec.cpp
+  src/haru/haru_head.cpp
+  src/haru/haru_session.cpp
+  src/haru/haru_audio.cpp
+  src/haru/haru_realtime.cpp)
+target_link_libraries(haru PUBLIC omni_service)
+target_compile_options(haru PRIVATE -Wall -Wextra)
+add_executable(haru_server src/haru/haru_server.cpp)
+target_link_libraries(haru_server PRIVATE haru asr_service)
+add_executable(haru_session_probe tools/haru_session_probe.cpp)
+target_link_libraries(haru_session_probe PRIVATE haru)
+set_target_properties(haru_server haru_session_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS haru_server haru_session_probe RUNTIME DESTINATION bin)
 
 # Note (khazic): Whisper: whisper_server, with qwen3_asr_server's API without realtime, and
 # its parity tool. Both reuse the WAV decoder, form parser and byte-level

@@ -30,7 +30,7 @@ mx::array HeadRmsNorm(const mx::array &x, float eps) {
 }
 
 // The sinusoidal frequency basis [128], shared by every scalar embedding.
-mx::array BuildFreqs() {
+mx::array Frequencies() {
   const int half = kFrequencyDim / 2;
   const mx::array index = mx::arange(0, half, mx::float32);
   return mx::exp(mx::multiply(
@@ -42,14 +42,22 @@ mx::array BuildFreqs() {
 
 MeanFlowHead::MeanFlowHead(const omni_common::Checkpoint &checkpoint,
                            const HeadConfig &config)
-    : checkpoint_(checkpoint), config_(config), freqs_(BuildFreqs()) {}
+    : checkpoint_(checkpoint), config_(config),
+      dtype_(checkpoint.Weight("head.cond_proj.weight").dtype()),
+      frequencies_(Frequencies()),
+      time_embedding_(ScalarEmbed("head.t_embed", 0.0f)),
+      interval_embedding_(ScalarEmbed("head.dt_embed", config.interval_embed)),
+      step_embedding_(ScalarEmbed("head.h_embed", 1.0f / config.num_steps)) {
+  mx::eval({time_embedding_, interval_embedding_, step_embedding_});
+}
 
-mx::array MeanFlowHead::ScalarEmbed(const std::string &prefix, float value,
-                                    mx::Dtype dtype) const {
-  const mx::array args =
-      mx::multiply(mx::array(value, dtype), freqs_); // [1, 128]
-  const mx::array features = mx::astype(
-      mx::concatenate({mx::cos(args), mx::sin(args)}, -1), dtype); // [1, 256]
+mx::array MeanFlowHead::ScalarEmbed(const std::string &prefix,
+                                    float value) const {
+  const mx::array angles =
+      mx::multiply(mx::array(value, dtype_), frequencies_); // [128]
+  const mx::array features =
+      mx::astype(mx::concatenate({mx::cos(angles), mx::sin(angles)}, -1),
+                 dtype_); // [256]
   const mx::array h = checkpoint_.Linear(features, prefix + ".fc1");
   return checkpoint_.Linear(omni_common::Silu(h), prefix + ".fc2");
 }
@@ -92,27 +100,21 @@ mx::array MeanFlowHead::Velocity(const mx::array &z, const mx::array &c) const {
 
 mx::array MeanFlowHead::Sample(const mx::array &hidden, const mx::array &noise,
                                float guidance) const {
-  const mx::Dtype dtype = noise.dtype();
-  const int steps = config_.num_steps; // 1
-  const float step_size = 1.0f / steps;
-  const mx::array time_embed = ScalarEmbed("head.t_embed", 0.0f, dtype);
-  const mx::array interval =
-      ScalarEmbed("head.dt_embed", config_.interval_embed, dtype);
-  const mx::array step = ScalarEmbed("head.h_embed", step_size, dtype);
-  const mx::array omega =
-      ScalarEmbed("head.omega_embed", 1.0f - 1.0f / guidance, dtype);
-
-  const mx::array cond = checkpoint_.Linear(hidden, "head.cond_proj");
-  mx::array z = noise;
-  for (int i = 0; i < steps; ++i) {
-    mx::array c = mx::add(cond, time_embed);
-    c = mx::add(c, interval);
-    c = mx::add(c, step);
-    c = mx::add(c, omega);
-    z = mx::add(z, mx::multiply(omni_common::Scalar(step_size, z.dtype()),
-                                Velocity(z, c)));
+  const float step_size = 1.0f / config_.num_steps;
+  mx::array conditioning =
+      mx::add(checkpoint_.Linear(hidden, "head.cond_proj"), time_embedding_);
+  conditioning = mx::add(conditioning, interval_embedding_);
+  conditioning = mx::add(conditioning, step_embedding_);
+  conditioning = mx::add(
+      conditioning, ScalarEmbed("head.omega_embed", 1.0f - 1.0f / guidance));
+  // Float32 noise would promote every matmul of the velocity network.
+  mx::array latents = mx::astype(noise, dtype_);
+  for (int step = 0; step < config_.num_steps; ++step) {
+    latents = mx::add(
+        latents, mx::multiply(omni_common::Scalar(step_size, latents.dtype()),
+                              Velocity(latents, conditioning)));
   }
-  return z;
+  return latents;
 }
 
 } // namespace haru

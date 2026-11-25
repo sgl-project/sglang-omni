@@ -24,7 +24,6 @@ struct DuplexConfig {
   float top_p = 1.0f;
   bool speak_first = false;
   int max_frames = 27000;
-  bool dry = true;
   int seed = -1; // -1 draws a fresh seed
 };
 
@@ -38,7 +37,7 @@ struct Frame {
 
 class DuplexSession {
 public:
-  DuplexSession(HaruModel &model, const omni_common::Tokenizer &tokenizer,
+  DuplexSession(const HaruModel &model, const omni_common::Tokenizer &tokenizer,
                 const DuplexConfig &config);
 
   // Runs the prompt (system card + voice reference) and returns model frame 0.
@@ -49,25 +48,21 @@ public:
 
 private:
   Frame Emit(const mx::array &hidden);
-  mx::array PreparedLogits(const mx::array &hlast);
+  mx::array PreparedLogits(const mx::array &last_hidden);
   mx::array SampleToken(const mx::array &logits);
   std::string Detokenize(int token);
   // A fresh random key: split the session key, keep the first half and use the
   // second. The session never touches MLX's global random state.
   mx::array NextKey();
 
-  HaruModel &model_;
-  mx::Dtype head_dtype_;
-  VibeVoiceCodec &codec_;
-  MeanFlowHead &head_;
+  const HaruModel &model_;
+  const VibeVoiceCodec &codec_;
+  const MeanFlowHead &head_;
   const omni_common::Tokenizer &tokenizer_;
   DuplexConfig config_;
 
   int pad_id_, eop_id_, eos_id_;
   mx::array silent_ids_; // [pad, eop]
-  // 0 everywhere, -inf at PAD/EOP/EOS: added to the logits while a
-  // forced-text reply keeps those tokens out.
-  mx::array force_text_mask_;
 
   std::vector<LayerCache> caches_;
   VibeVoiceCodec::State encoder_state_;

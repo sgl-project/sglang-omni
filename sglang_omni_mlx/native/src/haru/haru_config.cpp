@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "haru/haru_config.h"
 
-#include <fstream>
-
 namespace haru {
 
 namespace {
@@ -73,41 +71,56 @@ TextConfig ParseText(const nlohmann::json &lm) {
 
 CodecConfig ParseCodec(const nlohmann::json &codec) {
   CodecConfig out;
-  if (codec.contains("latent_dim"))
+  if (codec.contains("latent_dim")) {
     out.latent_dim = codec["latent_dim"].get<int>();
-  if (codec.contains("base_channels"))
+  }
+  if (codec.contains("base_channels")) {
     out.base_channels = codec["base_channels"].get<int>();
-  if (codec.contains("ratios"))
+  }
+  if (codec.contains("ratios")) {
     out.ratios = IntVector(codec, "ratios");
-  if (codec.contains("encoder_depths"))
+  }
+  if (codec.contains("encoder_depths")) {
     out.encoder_depths = IntVector(codec, "encoder_depths");
-  if (codec.contains("decoder_depths"))
+  }
+  if (codec.contains("decoder_depths")) {
     out.decoder_depths = IntVector(codec, "decoder_depths");
-  if (codec.contains("norm_eps"))
+  }
+  if (codec.contains("norm_eps")) {
     out.norm_eps = codec["norm_eps"].get<float>();
-  if (codec.contains("latent_std"))
+  }
+  if (codec.contains("latent_std")) {
     out.latent_std = codec["latent_std"].get<float>();
+  }
   return out;
 }
 
 HeadConfig ParseHead(const nlohmann::json &head) {
   HeadConfig out;
-  if (head.contains("hidden_size"))
+  if (head.contains("hidden_size")) {
     out.hidden_size = head["hidden_size"].get<int>();
-  if (head.contains("latent_dim"))
+  }
+  if (head.contains("latent_dim")) {
     out.latent_dim = head["latent_dim"].get<int>();
-  if (head.contains("num_layers"))
+  }
+  if (head.contains("num_layers")) {
     out.num_layers = head["num_layers"].get<int>();
-  if (head.contains("ffn_ratio"))
+  }
+  if (head.contains("ffn_ratio")) {
     out.ffn_ratio = head["ffn_ratio"].get<float>();
-  if (head.contains("norm_eps"))
+  }
+  if (head.contains("norm_eps")) {
     out.norm_eps = head["norm_eps"].get<float>();
-  if (head.contains("interval_embed"))
+  }
+  if (head.contains("interval_embed")) {
     out.interval_embed = head["interval_embed"].get<float>();
-  if (head.contains("num_steps"))
+  }
+  if (head.contains("num_steps")) {
     out.num_steps = head["num_steps"].get<int>();
-  if (head.contains("guidance_scale"))
+  }
+  if (head.contains("guidance_scale")) {
     out.guidance_scale = head["guidance_scale"].get<float>();
+  }
   if (head.contains("guidance_range") && head["guidance_range"].is_array()) {
     out.guidance_range = {head["guidance_range"][0].get<float>(),
                           head["guidance_range"][1].get<float>()};
@@ -148,16 +161,6 @@ HaruConfig HaruConfig::FromDict(const nlohmann::json &params) {
     throw std::invalid_argument("codec ratios do not match frame_samples");
   }
   return config;
-}
-
-HaruConfig HaruConfig::FromFile(const std::filesystem::path &path) {
-  std::ifstream file(path);
-  if (!file.is_open()) {
-    throw std::invalid_argument("cannot open config: " + path.string());
-  }
-  nlohmann::json params;
-  file >> params;
-  return FromDict(params);
 }
 
 } // namespace haru

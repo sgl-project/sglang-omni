@@ -5,9 +5,7 @@
 // with identical results.
 #pragma once
 
-#include <map>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "common/layers.h"
@@ -17,6 +15,11 @@
 namespace haru {
 
 namespace mx = mlx::core;
+
+// Rewrites the stored codec weights as the codec multiplies by them: dense
+// convolutions as [kernel * in, out], and depthwise ones as [channels, kernel,
+// 1] with the block's residual gain folded in.
+void PrepareCodecWeights(omni_common::WeightMap &weights);
 
 class VibeVoiceCodec {
 public:
@@ -37,27 +40,38 @@ public:
   mx::array Sample(const mx::array &mean, const mx::array &key) const;
 
 private:
-  // One causal dense conv as a matmul over its input windows. The checkpoint
-  // stores [out, in, kernel]; the model evaluates [out, kernel * in].
-  // Returns (output, next state).
-  std::pair<mx::array, mx::array> Conv(const mx::array &x,
-                                       const mx::array &state,
-                                       const std::string &prefix, int stride,
-                                       int kernel) const;
-  // One transposed conv with overlap-add; state is the carried tail.
-  std::pair<mx::array, mx::array> ConvTranspose(const mx::array &x,
-                                                const mx::array &state,
-                                                const std::string &prefix,
-                                                int stride) const;
-  // One depthwise-causal-conv + MLP block.
-  std::pair<mx::array, mx::array> Block(const mx::array &x,
-                                        const mx::array &state,
-                                        const std::string &prefix) const;
+  enum class LayerKind { kConvolution, kTransposedConvolution, kBlock };
+  struct Layer {
+    LayerKind kind;
+    std::string prefix;
+    int kernel;
+    int stride;
+    // The shape of the layer's left context.
+    int state_rows;
+    int state_columns;
+  };
+  struct LayerOutput {
+    mx::array output;
+    mx::array next_state;
+  };
+
+  State InitState(const std::vector<Layer> &layers) const;
+  mx::array Run(const std::vector<Layer> &layers, mx::array x,
+                State &state) const;
+  // One causal dense convolution as a matmul over its input windows.
+  LayerOutput Convolve(const mx::array &x, const mx::array &state,
+                       const Layer &layer) const;
+  // One transposed convolution with overlap-add; state is the carried tail.
+  LayerOutput ConvolveTransposed(const mx::array &x, const mx::array &state,
+                                 const Layer &layer) const;
+  // One causal depthwise convolution and feed-forward block.
+  LayerOutput Block(const mx::array &x, const mx::array &state,
+                    const Layer &layer) const;
 
   const omni_common::Checkpoint &checkpoint_;
-  // [kernel * in, out] per conv prefix, built and evaluated once.
-  mutable std::map<std::string, mx::array> conv_weights_;
   CodecConfig config_;
+  std::vector<Layer> encoder_layers_;
+  std::vector<Layer> decoder_layers_;
 };
 
 } // namespace haru

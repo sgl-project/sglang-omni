@@ -2,6 +2,7 @@
 #include "haru/haru_model.h"
 
 #include <cmath>
+#include <limits>
 
 namespace haru {
 
@@ -63,52 +64,77 @@ mx::array SliceAxis(const mx::array &x, int axis, int begin, int end) {
   return mx::slice(x, start, stop);
 }
 
+constexpr int kQuantizationGroupSize = 64;
+constexpr int kQuantizationBits = 8;
+constexpr int kSilenceFrames = 16;
+
+omni_common::WeightMap
+LoadWeights(const std::filesystem::path &model_directory) {
+  omni_common::WeightMap weights =
+      omni_common::LoadSafetensors(model_directory);
+  PrepareCodecWeights(weights);
+  std::vector<mx::array> prepared;
+  for (auto &[name, weight] : weights) {
+    if (name.ends_with(".conv1d.weight")) {
+      // Stored as [out, in, kernel]; MLX convolves with [out, kernel, in].
+      weight = mx::contiguous(mx::transpose(weight, {0, 2, 1}));
+      prepared.push_back(weight);
+    } else if (name.starts_with("codec.")) {
+      prepared.push_back(weight);
+    }
+  }
+  mx::eval(prepared);
+  return weights;
+}
+
+// The latent the codec settles on for digital silence.
+mx::array SilenceLatent(const VibeVoiceCodec &codec, const HaruConfig &config) {
+  VibeVoiceCodec::State state = codec.InitEncoderState();
+  const mx::array latents = codec.Encode(
+      mx::zeros({kSilenceFrames * config.frame_samples}, mx::float32), state);
+  const mx::array silence_latent = mx::take(latents, kSilenceFrames - 1, 0);
+  mx::eval(silence_latent);
+  return silence_latent;
+}
+
+// Added to the logits to keep a forced text token out of PAD, EOP and EOS.
+mx::array SpeechTokenMask(const HaruConfig &config) {
+  std::vector<float> mask(static_cast<size_t>(config.lm.vocab_size), 0.0f);
+  for (const int token :
+       {config.pad_token_id, config.eop_token_id, config.eos_token_id}) {
+    if (token >= 0) {
+      mask[static_cast<size_t>(token)] =
+          -std::numeric_limits<float>::infinity();
+    }
+  }
+  return mx::array(mask.data(), {config.lm.vocab_size}, mx::float32);
+}
+
 } // namespace
 
-HaruModel::HaruModel(const std::filesystem::path &model_directory,
-                     int quantize_bits)
+HaruModel::HaruModel(const std::filesystem::path &model_directory)
     : HaruModel(model_directory,
-                omni_common::ReadJson(model_directory / "config.json"),
-                quantize_bits) {}
+                omni_common::ReadJson(model_directory / "config.json")) {}
 
 HaruModel::HaruModel(const std::filesystem::path &model_directory,
-                     const nlohmann::json &parameters, int quantize_bits)
+                     const nlohmann::json &parameters)
     : config_(HaruConfig::FromDict(parameters)),
-      checkpoint_(omni_common::LoadSafetensors(model_directory), parameters),
+      checkpoint_(omni_common::QuantizedCheckpoint(
+          LoadWeights(model_directory), parameters, kQuantizationGroupSize,
+          [](const std::string &name) {
+            return name.starts_with("lm.") ? kQuantizationBits : 0;
+          })),
       layer_count_(config_.lm.num_layers()),
       rotary_dims_(static_cast<int>(config_.lm.head_dim *
                                     config_.lm.partial_rotary_factor)),
       latent_scale_(
           mx::astype(checkpoint_.Weight("latent_scale"), mx::float32)),
       latent_bias_(mx::astype(checkpoint_.Weight("latent_bias"), mx::float32)),
-      codec_(checkpoint_, config_.codec), head_(checkpoint_, config_.head) {
-  linear_layers_.reserve(static_cast<size_t>(layer_count_));
+      codec_(checkpoint_, config_.codec), head_(checkpoint_, config_.head),
+      silence_latent_(SilenceLatent(codec_, config_)),
+      speech_token_mask_(SpeechTokenMask(config_)) {
   for (const std::string &kind : config_.lm.layer_types) {
     linear_layers_.push_back(kind == kLinear);
-  }
-  if (quantize_bits == 0) {
-    return;
-  }
-  checkpoint_.QuantizeLinear("lm.embed_tokens", 64, quantize_bits);
-  for (int layer = 0; layer < layer_count_; ++layer) {
-    const std::string prefix = "lm.layers." + std::to_string(layer);
-    const std::string block =
-        linear_layers_[layer] ? prefix + ".linear_attn" : prefix + ".self_attn";
-    if (linear_layers_[layer]) {
-      checkpoint_.QuantizeLinear(block + ".in_proj_qkv", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".in_proj_z", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".in_proj_b", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".in_proj_a", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".out_proj", 64, quantize_bits);
-    } else {
-      checkpoint_.QuantizeLinear(block + ".q_proj", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".k_proj", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".v_proj", 64, quantize_bits);
-      checkpoint_.QuantizeLinear(block + ".o_proj", 64, quantize_bits);
-    }
-    checkpoint_.QuantizeLinear(prefix + ".mlp.gate_proj", 64, quantize_bits);
-    checkpoint_.QuantizeLinear(prefix + ".mlp.up_proj", 64, quantize_bits);
-    checkpoint_.QuantizeLinear(prefix + ".mlp.down_proj", 64, quantize_bits);
   }
 }
 
@@ -206,19 +232,8 @@ mx::array HaruModel::GatedDeltaLayer(const mx::array &x,
   cache.convolution_state = mx::contiguous(
       SliceAxis(convolution_input, 1, convolution_input.shape(1) - kept,
                 convolution_input.shape(1)));
-  // The checkpoint stores [out, in, kernel]; MLX conv1d takes [out, kernel,
-  // in], so transpose once and keep the materialized weight.
-  const std::string weight_name = prefix + ".conv1d.weight";
-  auto found = conv_weights_.find(weight_name);
-  if (found == conv_weights_.end()) {
-    mx::array prepared =
-        mx::transpose(checkpoint_.Weight(weight_name), {0, 2, 1});
-    mx::eval(prepared);
-    found = conv_weights_.emplace(weight_name, std::move(prepared)).first;
-  }
-  const mx::array &conv_weight = found->second;
-  const mx::array convolved = omni_common::Silu(
-      mx::conv1d(convolution_input, conv_weight, 1, 0, 1, convolution_dim));
+  const mx::array convolved = omni_common::Silu(checkpoint_.Conv1d(
+      convolution_input, prefix + ".conv1d", 1, 0, 1, convolution_dim));
 
   const double inverse_scale = std::pow(key_head_dim, -0.5);
   const float l2_norm_eps =

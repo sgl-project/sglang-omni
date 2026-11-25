@@ -4,7 +4,6 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -92,7 +91,6 @@ struct HaruConfig {
   }
   int hidden_size() const { return lm.hidden_size; }
 
-  static HaruConfig FromFile(const std::filesystem::path &path);
   static HaruConfig FromDict(const nlohmann::json &params);
 };
 
