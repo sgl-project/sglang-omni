@@ -26,6 +26,14 @@ var loopback = &http.Client{Transport: &http.Transport{
 	IdleConnTimeout:     30 * time.Second,
 }}
 
+// prior is what a live session already has for a Final: the preview's text
+// of a recording the Final starts with, whose beginning the server keeps while
+// decoding agrees, and the session, whose encoded audio it reuses ("" none).
+// Of the rest after the pieces the session has what it prefilled from where
+// the last one ended, and no text. All of it only saves work: the text is
+// decoding's.
+type prior struct{ text, session string }
+
 // finalRequest is one request of a Final.
 type finalRequest struct {
 	pcm       []byte // PCM16 mono at 16 kHz
@@ -33,7 +41,8 @@ type finalRequest struct {
 	context   string
 	maxTokens int
 	layout    string
-	preview   bool // a provisional request with faster disconnect detection
+	preview   bool  // a provisional request with faster disconnect detection
+	known     prior // what the live session has of the audio
 }
 
 // finalResult is a request's answer.
@@ -77,6 +86,12 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 	}
 	if r.layout != "" {
 		field("audio_layout", r.layout)
+	}
+	if r.known.text != "" {
+		field("guessed_text", r.known.text)
+	}
+	if r.known.session != "" {
+		field("realtime_session", r.known.session)
 	}
 	fw, _ := w.CreateFormFile("file", "audio.wav")
 	_, _ = fw.Write(asr.WAV(r.pcm, sampleRate))

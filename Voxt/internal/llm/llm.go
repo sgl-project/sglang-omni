@@ -76,6 +76,10 @@ type Request struct {
 	// order, on the calling goroutine, before Chat returns. It must not
 	// block for long. The Response still carries the whole text.
 	OnDelta func(delta string)
+	// RetryPrivateStream may authorize a retry after OnDelta emitted output.
+	// The caller must atomically discard that output and confirm it has not
+	// been exposed. Nil preserves the default of not retrying streamed output.
+	RetryPrivateStream func() bool
 
 	// Timeout bounds one attempt (0: the Client's default).
 	Timeout time.Duration
@@ -103,10 +107,13 @@ type Request struct {
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.
 type Usage struct {
-	PromptTokens     int  `json:"promptTokens"`
-	CompletionTokens int  `json:"completionTokens"`
-	TotalTokens      int  `json:"totalTokens"`
-	Estimated        bool `json:"estimated,omitempty"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	// note (luojiaxuan): CachedTokens are the prompt tokens the service read from its prompt
+	// cache, when it says (OpenAI's prompt_tokens_details); 0 otherwise.
+	CachedTokens int  `json:"cachedTokens,omitempty"`
+	Estimated    bool `json:"estimated,omitempty"`
 }
 
 // Add returns u + v.
@@ -115,6 +122,7 @@ func (u Usage) Add(v Usage) Usage {
 		PromptTokens:     u.PromptTokens + v.PromptTokens,
 		CompletionTokens: u.CompletionTokens + v.CompletionTokens,
 		TotalTokens:      u.TotalTokens + v.TotalTokens,
+		CachedTokens:     u.CachedTokens + v.CachedTokens,
 		Estimated:        u.Estimated || v.Estimated,
 	}
 }
@@ -136,6 +144,7 @@ type Response struct {
 	Usage        Usage
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
+	RateLimited  bool          // an attempt was refused for the rate limit (Client.Chat, also with an error)
 	Repairs      int           // JSON repair turns (Client.JSON)
 	// ImagesDropped: the model refused the images and the answer came
 	// from the text alone (only the session may claim an image went).
@@ -164,4 +173,11 @@ type Backend interface {
 // message's text does not matter.
 type Prefiller interface {
 	Prefill(ctx context.Context, req Request) error
+}
+
+// Connector is a model on a server: Connect opens the connection its next
+// chat will use, so that the chat does not wait for the handshakes. It
+// sends nothing of the user's.
+type Connector interface {
+	Connect(ctx context.Context) error
 }

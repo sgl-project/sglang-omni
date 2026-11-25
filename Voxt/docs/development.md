@@ -22,6 +22,14 @@ go tool mygo build                   # build/darwin-arm64/Voxt.app and its disk 
 
 The helper must be built before `go tool mygo build` or `mygo dev`: `mygo.json` gives it its entitlements and fails without it. Without the Omni runtime the app runs but cannot recognise speech (or point `VOXTNEW_OMNI_RUNTIME` at one built with `scripts/build-omni.sh --out DIR`).
 
+**Developer-only Cleanup latency experiment:** the default is disabled and nothing is saved in user settings. After building the app, launch the actual macOS bundle with a Stop-relative fallback threshold in milliseconds:
+
+```sh
+open --env VOXT_EXPERIMENT_CLEANUP_FALLBACK_MS=1500 build/darwin-arm64/Voxt.app
+```
+
+Use `0` to disable it. Values from 1 to 60000 enable the experiment; invalid or larger values are ignored with a warning in the session log. The option applies only to ordinary Transcribe dictation.
+
 **The release build** is one command, on the Mac: `scripts/release.sh` builds the helper and the Omni runtime, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it; over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image and signed update files on a draft GitHub release. Local builds without a feed keep the GitHub update check. See [docs/release.md](release.md).
 
 From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.

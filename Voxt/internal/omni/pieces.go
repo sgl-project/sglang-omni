@@ -2,6 +2,7 @@ package omni
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -60,6 +61,7 @@ func (s *live) recognisePieces(language string, b bias) {
 			continue
 		}
 		piece := audio[start : start+cut*2]
+		s.startFinalAt((start + cut*2) / 2)
 		begin := time.Now()
 		var r finalResult
 		var err error
@@ -98,6 +100,26 @@ func (s *live) recognisePieces(language string, b bias) {
 		}
 		s.a.rt.logf("info", "%s: piece %d of the recording, %v of audio from %v, in %v", s.a.spec.ID, n,
 			asr.Duration(piece, sampleRate).Round(10*time.Millisecond), asr.Duration(audio[:start], sampleRate).Round(10*time.Millisecond), took.Round(time.Millisecond))
+	}
+}
+
+// earlyPieces is Qwen3-ASR's policy when the session works on the pieces
+// while it records (asr.StreamRequest.EarlyPieces): the first at 20 s.
+var earlyPieces = Pieces{After: 20 * time.Second, Min: 10 * time.Second, Target: 15 * time.Second, Max: 25 * time.Second}
+
+// startFinalAt tells the server the sample the Final starts from once the
+// piece before it is recognised: it prefills the audio from there on while
+// the recording goes on.
+func (s *live) startFinalAt(sample int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.a.spec.Kind != kindQwen3ASR || s.session == "" || !s.preview || s.finished || s.ended {
+		return
+	}
+	msg, _ := json.Marshal(map[string]any{"type": "input_audio_buffer.final_start", "start_sample": sample})
+	select {
+	case s.out <- msg:
+	default:
 	}
 }
 
