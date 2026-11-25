@@ -1164,15 +1164,39 @@ def load_validated_failure_ledger(ledger_path: Path) -> dict[str, str]:
             return validated_ledger
 
 
+def parse_json_object_rows(
+    raw_rows: list[JsonValue], source_path: Path
+) -> list[dict[str, JsonValue]]:
+    typed_rows: list[dict[str, JsonValue]] = []
+    for row_index, entry in enumerate(raw_rows):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"{source_path} element at index {row_index} must be a JSON object"
+            )
+        else:
+            typed_rows.append(entry)
+    return typed_rows
+
+
 def is_compatible_saved_run_manifest(
     saved_manifest: dict[str, JsonValue],
     current_manifest: dict[str, JsonValue],
 ) -> bool:
-    if set(saved_manifest) != set(current_manifest):
+    comparable_saved = {
+        key: value
+        for key, value in saved_manifest.items()
+        if key != "concurrency_history"
+    }
+    comparable_current = {
+        key: value
+        for key, value in current_manifest.items()
+        if key != "concurrency_history"
+    }
+    if set(comparable_saved) != set(comparable_current):
         return False
     else:
-        for field_name, current_value in current_manifest.items():
-            saved_value = saved_manifest.get(field_name)
+        for field_name, current_value in comparable_current.items():
+            saved_value = comparable_saved.get(field_name)
             if field_name == "session_timeout_seconds":
                 if (
                     not isinstance(saved_value, (int, float))
@@ -1180,6 +1204,17 @@ def is_compatible_saved_run_manifest(
                     or not isinstance(current_value, (int, float))
                     or type(current_value) is bool
                     or float(current_value) < float(saved_value)
+                ):
+                    return False
+                else:
+                    pass
+            elif field_name in ("max_concurrency", "warmup_sessions"):
+                expected_min = 1 if field_name == "max_concurrency" else 0
+                if (
+                    type(saved_value) is not int
+                    or saved_value < expected_min
+                    or type(current_value) is not int
+                    or current_value < expected_min
                 ):
                     return False
                 else:
@@ -1315,20 +1350,19 @@ async def run_generate_phase(
             json.dumps(seeds, sort_keys=True).encode("utf-8")
         ).hexdigest(),
     }
+    existing_manifest: dict[str, JsonValue] | None = None
     if run_manifest_path.is_file():
-        existing_manifest = read_json_file(run_manifest_path)
+        loaded_manifest = read_json_file(run_manifest_path)
         if not isinstance(
-            existing_manifest, dict
-        ) or not is_compatible_saved_run_manifest(existing_manifest, run_manifest):
+            loaded_manifest, dict
+        ) or not is_compatible_saved_run_manifest(loaded_manifest, run_manifest):
             raise ValueError(
                 f"Run configuration in {run_manifest_path} changed; choose a new --output-dir"
             )
-        elif existing_manifest != run_manifest:
-            write_json_atomic(run_manifest_path, run_manifest)
         else:
-            pass
+            existing_manifest = loaded_manifest
     else:
-        write_json_atomic(run_manifest_path, run_manifest)
+        pass
 
     saved_reports = load_saved_reports(report_path)
     pending_scenarios: list[DuplexMpeScenarioRecord] = []
@@ -1355,6 +1389,11 @@ async def run_generate_phase(
             pending_scenarios.append(scenario)
 
     if not pending_scenarios:
+        if existing_manifest is None:
+            run_manifest["concurrency_history"] = [config.max_concurrency]
+            write_json_atomic(run_manifest_path, run_manifest)
+        else:
+            pass
         if failures_path.is_file():
             failures_path.unlink()
         else:
@@ -1364,11 +1403,41 @@ async def run_generate_phase(
         )
         return GeneratePhaseResult(reports_by_id=saved_reports, failed_scenarios={})
     else:
-        pass
+        prior_history: list[int] = []
+        if existing_manifest is not None:
+            raw_history = existing_manifest.get("concurrency_history")
+            if isinstance(raw_history, list):
+                for item in raw_history:
+                    if type(item) is int and item >= 1 and item not in prior_history:
+                        prior_history.append(item)
+                    else:
+                        pass
+            else:
+                pass
+            saved_concurrency = existing_manifest.get("max_concurrency")
+            if (
+                type(saved_concurrency) is int
+                and saved_concurrency >= 1
+                and saved_concurrency not in prior_history
+            ):
+                prior_history.append(saved_concurrency)
+            else:
+                pass
+        else:
+            pass
+        if config.max_concurrency not in prior_history:
+            prior_history.append(config.max_concurrency)
+        else:
+            pass
+        run_manifest["concurrency_history"] = [int(level) for level in prior_history]
+        if existing_manifest != run_manifest:
+            write_json_atomic(run_manifest_path, run_manifest)
+        else:
+            pass
 
     if config.warmup_sessions > 0:
         warmup_directory = output_dir / "warmup"
-        warmup_scenario = pending_scenarios[0]
+        warmup_scenario = scenarios[0]
         logger.info(
             f"Running {config.warmup_sessions} unscored warmup session(s) on "
             f"{warmup_scenario.scenario_id} ..."
@@ -1377,14 +1446,43 @@ async def run_generate_phase(
 
         async def run_warmup_one(warmup_index: int) -> None:
             async with warmup_semaphore:
-                await run_realtime_scenario(
-                    warmup_scenario,
-                    dataset_root=dataset_root,
-                    endpoint_spec=endpoint_spec,
-                    output_audio_path=warmup_directory / f"warmup_{warmup_index}.wav",
-                    session_timeout_seconds=config.session_timeout_seconds,
-                    seed_mapping=seeds,
-                )
+                try:
+                    await run_realtime_scenario(
+                        warmup_scenario,
+                        dataset_root=dataset_root,
+                        endpoint_spec=endpoint_spec,
+                        output_audio_path=warmup_directory
+                        / f"warmup_{warmup_index}.wav",
+                        session_timeout_seconds=config.session_timeout_seconds,
+                        seed_mapping=seeds,
+                    )
+                except (
+                    OSError,
+                    ProtocolSessionError,
+                    RuntimeError,
+                    TimeoutError,
+                    ValueError,
+                    httpx.HTTPError,
+                    websockets.WebSocketException,
+                ) as exc:
+                    warmup_reason = (
+                        str(exc)
+                        if isinstance(
+                            exc,
+                            (
+                                ProtocolSessionError,
+                                RuntimeError,
+                                TimeoutError,
+                                ValueError,
+                            ),
+                        )
+                        and str(exc)
+                        else summarize_transport_exception(exc)
+                    )
+                    logger.warning(
+                        f"Warmup session {warmup_index} failed ({warmup_reason}); "
+                        "continuing to measured scenarios"
+                    )
 
         await asyncio.gather(
             *(run_warmup_one(index) for index in range(config.warmup_sessions))
@@ -1430,6 +1528,7 @@ async def run_generate_phase(
                         exc,
                         (ProtocolSessionError, RuntimeError, TimeoutError, ValueError),
                     )
+                    and str(exc)
                     else summarize_transport_exception(exc)
                 )
                 async with save_lock:
@@ -1444,6 +1543,7 @@ async def run_generate_phase(
                 return
 
             async with save_lock:
+                scenario_report["recorded_concurrency"] = config.max_concurrency
                 saved_reports[scenario.scenario_id] = scenario_report
                 failed_scenarios.pop(scenario.scenario_id, None)
                 await asyncio.to_thread(
@@ -1523,16 +1623,16 @@ async def run_duplex_mpe_evaluation(
         failed_scenarios = dict(generate_result.failed_scenarios)
     else:
         raw_failures = load_validated_failure_ledger(failures_path)
-        failed_scenarios = {
-            scenario_key: reason
-            for scenario_key, reason in raw_failures.items()
-            if scenario_key in scenarios_by_id
-        }
         all_saved = load_saved_reports(report_path)
         reports_by_id = {
             scenario_id: all_saved[scenario_id]
             for scenario_id in scenarios_by_id
             if scenario_id in all_saved
+        }
+        failed_scenarios = {
+            scenario_key: reason
+            for scenario_key, reason in raw_failures.items()
+            if scenario_key in scenarios_by_id and scenario_key not in reports_by_id
         }
         if not reports_by_id:
             raise FileNotFoundError(
@@ -1719,15 +1819,17 @@ async def run_duplex_mpe_evaluation(
             raise ValueError(f"{transcribed_path} must contain a JSON array")
         else:
             has_transcribed_cache = True
-            all_transcribed_rows = [
-                row for row in raw_transcribed if isinstance(row, dict)
-            ]
+            all_transcribed_rows = parse_json_object_rows(
+                raw_transcribed, transcribed_path
+            )
+            allow_partial_asr = config.phase == "score"
             selected_transcribed_map = validate_transcribed_against_tasks(
                 semantic_tasks,
                 all_transcribed_rows,
                 expected_asr_model=expected_offline_asr_model,
                 expected_asr_endpoint_sha256=expected_offline_asr_endpoint_sha256,
                 allowed_unselected_task_keys=allowed_unselected_task_keys,
+                allow_partial=allow_partial_asr,
             )
             transcribed_tasks = list(selected_transcribed_map.values())
     else:
@@ -1801,7 +1903,7 @@ async def run_duplex_mpe_evaluation(
         if not isinstance(raw_labels, list):
             raise ValueError(f"{labels_path} must contain a JSON array")
         else:
-            raw_verdict_rows = [row for row in raw_labels if isinstance(row, dict)]
+            raw_verdict_rows = parse_json_object_rows(raw_labels, labels_path)
             if raw_verdict_rows:
                 if not has_transcribed_cache:
                     raise ValueError(
@@ -1809,7 +1911,9 @@ async def run_duplex_mpe_evaluation(
                     )
                 else:
                     indexed_transcribed = validate_transcribed_against_tasks(
-                        semantic_tasks, transcribed_tasks
+                        semantic_tasks,
+                        transcribed_tasks,
+                        allow_partial=(config.phase == "score"),
                     )
                     expected_judge_endpoint_sha256 = (
                         hashlib.sha256(
@@ -1853,7 +1957,9 @@ async def run_duplex_mpe_evaluation(
 
     if transcribed_tasks:
         validated_transcribed = validate_transcribed_against_tasks(
-            semantic_tasks, transcribed_tasks
+            semantic_tasks,
+            transcribed_tasks,
+            allow_partial=(config.phase == "score"),
         )
         verdict_keys_present: set[tuple[str, int, str]] = {
             (str(row["scenario_id"]), int(row["turn_index"]), str(row["kind"]))
@@ -1878,6 +1984,18 @@ async def run_duplex_mpe_evaluation(
                 pass
     else:
         pass
+
+    final_resolved_selected_keys = {
+        semantic_task_key(row)
+        for row in verdicts
+        if semantic_task_key(row) in expected_selected_task_keys
+    }
+    failed_semantic_task_keys = tuple(
+        key
+        for key in failed_semantic_task_keys
+        if key in expected_selected_task_keys
+        and key not in final_resolved_selected_keys
+    )
 
     if config.verify_retained_audio:
         verify_retained_assistant_audio(reports_by_id, audio_directory)
@@ -1988,9 +2106,7 @@ async def run_duplex_mpe_evaluation(
         else:
             pass
     has_pending_semantics = pending_semantic_count > 0
-    resolved_selected_verdict_count = sum(
-        1 for row in verdicts if semantic_task_key(row) in expected_selected_task_keys
-    )
+    resolved_selected_verdict_count = len(final_resolved_selected_keys)
 
     is_run_complete = (
         (not missing_scenarios)
@@ -2008,6 +2124,16 @@ async def run_duplex_mpe_evaluation(
         saved_run_manifest.get("max_concurrency")
         if type(saved_run_manifest.get("max_concurrency")) is int
         else config.max_concurrency
+    )
+    raw_concurrency_history = saved_run_manifest.get("concurrency_history")
+    effective_concurrency_history: list[JsonValue] | None = (
+        [
+            int(item)
+            for item in raw_concurrency_history
+            if type(item) is int and item >= 1
+        ]
+        if isinstance(raw_concurrency_history, list)
+        else None
     )
     effective_warmup_sessions = (
         saved_run_manifest.get("warmup_sessions")
@@ -2085,6 +2211,7 @@ async def run_duplex_mpe_evaluation(
         "evaluation_mode": evaluation_mode,
         "turn_detection": effective_turn_detection,
         "max_concurrency": effective_concurrency,
+        "concurrency_history": effective_concurrency_history,
         "warmup_sessions": effective_warmup_sessions,
         "session_timeout_seconds": effective_session_timeout_seconds,
         "max_pacing_lag_ms": max_observed_pacing_lag_ms,
@@ -2118,17 +2245,25 @@ async def run_duplex_mpe_evaluation(
         evaluation_input_sha256=evaluation_input_sha256,
     )
 
+    unattempted_scenarios = sorted(
+        set(scenarios_by_id) - set(reports_by_id) - set(failed_scenarios)
+    )
+    unattempted_semantic_keys = (
+        expected_selected_task_keys
+        - final_resolved_selected_keys
+        - set(failed_semantic_task_keys)
+    )
     markdown_table = format_markdown_score_table(
         scored_metrics,
         interaction_protocol=effective_protocol,
         turn_detection=effective_turn_detection,
         selected_scenarios=len(scenarios_by_id),
         completed_scenarios=len(reports_by_id),
-        missing_scenarios=len(missing_scenarios),
+        missing_scenarios=len(unattempted_scenarios),
         failed_scenarios=len(failed_scenarios),
         required_semantic_tasks=len(expected_selected_task_keys),
         resolved_semantic_tasks=resolved_selected_verdict_count,
-        pending_semantic_tasks=pending_semantic_count,
+        pending_semantic_tasks=len(unattempted_semantic_keys),
         failed_semantic_tasks=len(failed_semantic_task_keys),
         is_run_complete=is_run_complete,
     )

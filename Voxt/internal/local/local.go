@@ -55,6 +55,9 @@ type Model struct {
 	// Stream: a speech model that recognises while the user speaks, so
 	// the text shows as it comes (Voxt 1.x's Realtime tag).
 	Stream bool
+	// Remote: a language model reached over the internet, whose requests can
+	// run side by side; a server on this Mac or its network has one queue.
+	Remote bool
 }
 
 // For says whether m serves feature ("transcribe", "translate",

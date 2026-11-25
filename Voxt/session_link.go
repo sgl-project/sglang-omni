@@ -34,6 +34,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -51,6 +52,8 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// wave plays sess's levels out for the waveform (overlayWave).
+	wave layout.WavePlay
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
@@ -194,6 +197,12 @@ func (a *app) openSessions() {
 	lib := a.lib
 	logs := a.logs
 	st := a.settings
+	cleanupLatency, cleanupDiagnostic := cleanupLatencyFromEnv()
+	if cleanupDiagnostic != "" {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: cleanupDiagnostic})
+	} else if cleanupLatency.AutoFallbackAfter > 0 {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "experimental cleanup fallback enabled: " + cleanupLatency.AutoFallbackAfter.String() + " after Stop"})
+	}
 	a.mgr = session.New(session.Config{
 		Audio:  session.HelperAudio{H: sup},
 		Text:   a.textIO(), // family_runtime.go: the family's paste rule
@@ -223,14 +232,15 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
-		Snippets: snippetsReader(lib.store.Documents()),
-		Notes:    lib.store.Notes(),
-		Settings: st.Get,
-		Locale:   i18n.Locale,
-		Scene:    a.sceneConfig(), // appenhance.go
-		Self:     os.Getpid(),
-		Activate: func(pid int) bool { ok, _ := activateTarget(pid); return ok },
-		OnChange: func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
+		Snippets:       snippetsReader(lib.store.Documents()),
+		Notes:          lib.store.Notes(),
+		Settings:       st.Get,
+		Locale:         i18n.Locale,
+		Scene:          a.sceneConfig(), // appenhance.go
+		CleanupLatency: cleanupLatency,
+		Self:           os.Getpid(),
+		Activate:       func(pid int) bool { ok, _ := activateTarget(pid); return ok },
+		OnChange:       func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
 		Log: func(level, msg string) {
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: sessionSource, Message: msg})
 		},
@@ -323,7 +333,7 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 
 // sessionModel is how a session (and its history entry) names a model.
 func sessionModel(m local.Model) session.Model {
-	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID}
+	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID, Remote: m.Remote}
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
@@ -339,6 +349,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	a.wave.Feed(s.ID, s.Levels, s.LevelCount, time.Now())
 	if a.box.open {
 		if s.ID == a.box.session {
 			if s.Selection != "" {
