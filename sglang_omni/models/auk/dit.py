@@ -13,14 +13,13 @@ from typing import NamedTuple
 import torch
 import torch.nn.functional as F
 from torch import nn
-from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
+from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb, rotate_half
 
 
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
 
-    freqs and scale are what x_transformers returns; cos and sin are set only
-    where the fused Q/K kernel runs.
+    Blocks can share the cosine and sine tables for this axis.
     """
 
     freqs: torch.Tensor
@@ -211,13 +210,28 @@ class Attention(nn.Module):
     def apply_rope(
         q: torch.Tensor, k: torch.Tensor, rope: Rope
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        q_scale, k_scale = (
-            (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
-        )
-        return (
-            apply_rotary_pos_emb(q, rope.freqs, q_scale),
-            apply_rotary_pos_emb(k, rope.freqs, k_scale),
-        )
+        if (
+            rope.cos is not None
+            and rope.sin is not None
+            and rope.freqs.ndim == 3
+            and isinstance(rope.scale, (float, int))
+            and rope.scale == 1
+            and rope.freqs.shape[-2:] == q.shape[-2:]
+        ):
+            cosine = rope.cos.unsqueeze(1)
+            sine = rope.sin.unsqueeze(1)
+            return (
+                (q * cosine + rotate_half(q) * sine).to(q.dtype),
+                (k * cosine + rotate_half(k) * sine).to(k.dtype),
+            )
+        else:
+            q_scale, k_scale = (
+                (rope.scale, rope.scale**-1.0) if rope.scale is not None else (1.0, 1.0)
+            )
+            return (
+                apply_rotary_pos_emb(q, rope.freqs, q_scale),
+                apply_rotary_pos_emb(k, rope.freqs, k_scale),
+            )
 
     @staticmethod
     def attend(q, k, v, bias: torch.Tensor | None):
@@ -578,19 +592,23 @@ class AuKDit(nn.Module):
     def build_rope(self, seq_len: int, positions: torch.Tensor | None = None) -> Rope:
         """Rotary tables for one axis, over a length or at explicit positions.
 
-        The fused kernel's cos and sin are built here, once per step for all of
-        the blocks, so that a compiled block reads them as plain tensors.
+        The fused kernel and NPU eager path share trig tables across blocks.
         """
         freqs, scale = (
             self.rotary_embed.forward_from_seq_len(seq_len)
             if positions is None
             else self.rotary_embed(positions)
         )
-        if self.qk_fusion is None:
-            return Rope(freqs, scale)
+        reuse_npu_tables = (
+            freqs.device.type == "npu"
+            and freqs.ndim == 3
+            and isinstance(scale, (float, int))
+            and scale == 1
+        )
+        if self.qk_fusion is not None or reuse_npu_tables:
+            return Rope(freqs, scale, freqs.cos(), freqs.sin())
         else:
-            pass
-        return Rope(freqs, scale, freqs.cos(), freqs.sin())
+            return Rope(freqs, scale)
 
     def embed_audio(
         self,
