@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The realtime demo's startup warmup against two native full-duplex deployments."""
+"""The realtime demo's startup warmup against native full-duplex deployments."""
 
 from __future__ import annotations
 
@@ -137,6 +137,20 @@ class ScriptedUpstream:
 async def warm_up(upstream: ScriptedUpstream, playground: ModuleType) -> None:
     async with TestServer(upstream.application()) as server:
         await playground.warmup(str(server.make_url("/")).rstrip("/"))
+
+
+@pytest.mark.asyncio
+async def test_warmup_accepts_a_fixed_system_prompt(playground: ModuleType) -> None:
+    upstream = ScriptedUpstream(
+        "fixed-prompt",
+        Capabilities(
+            output_modalities=("audio",),
+            supports_custom_instructions=False,
+        ),
+    )
+    await warm_up(upstream, playground)
+    assert "instructions" not in upstream.session_updates[0]
+    assert upstream.accepted_end_ms == [8000]
 
 
 @pytest.mark.asyncio

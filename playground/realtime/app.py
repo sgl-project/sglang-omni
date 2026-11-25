@@ -81,6 +81,13 @@ async def warmup(api_base: str) -> None:
         modes = (
             (False, True) if "image" in capabilities["input_modalities"] else (False,)
         )
+        session = {"output_modalities": ["audio"], "sglang": extension}
+        if capabilities.get("supports_custom_instructions", True):
+            session["instructions"] = (
+                "You are a helpful voice assistant. Reply briefly to what you hear."
+            )
+        else:
+            pass
         for with_image in modes:
             mode = "video" if with_image else "audio"
             logger.info(f"Warming up {mode} conversation and speech generation")
@@ -103,11 +110,7 @@ async def warmup(api_base: str) -> None:
                                 {
                                     "type": "session.update",
                                     "event_id": "warmup-config",
-                                    "session": {
-                                        "instructions": "You are a helpful voice assistant. Reply briefly to what you hear.",
-                                        "output_modalities": ["audio"],
-                                        "sglang": extension,
-                                    },
+                                    "session": session,
                                 }
                             )
                         elif kind == "session.updated":

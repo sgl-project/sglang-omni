@@ -179,6 +179,7 @@ class GrantedCapabilities(TypedDict, total=False):
     strict_order: bool
     sampling_parameters: list[str]
     supports_reference_audio: bool
+    supports_custom_instructions: bool
     supports_instruction_updates: bool
     supports_sampling_updates: bool
     skips_screen_blocks: bool

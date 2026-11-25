@@ -129,6 +129,7 @@ export class Settings {
       this.capabilities = null;
     }
     if (this.capabilities) {
+      this.editableInstructions &&= this.capabilities.supports_custom_instructions !== false;
       this.storeKey = `${STORE_PREFIX}:${this.capabilities.model}`;
       this.state = { ...this.defaults(), ...load(this.storeKey) };
     }
