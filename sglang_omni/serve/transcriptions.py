@@ -17,6 +17,7 @@ from sglang_omni.config import ResolvedAudioChunking
 from sglang_omni.serve import speech_to_text
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
+    TranscriptionHypothesis,
     TranscriptionResponse,
     TranscriptionUsage,
     build_sglext,
@@ -135,7 +136,12 @@ def register_transcriptions(app: FastAPI) -> None:
 
         chunking: ResolvedAudioChunking = app.state.audio_chunking
 
-        if form.stream:
+        if form.stream and (form.beam_width or 1) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="beam_width > 1 returns final transcripts only; set stream=false",
+            )
+        elif form.stream:
             speech_to_text.validate_speech_to_text_response_format(
                 form.response_format,
                 stream=True,
@@ -268,7 +274,15 @@ async def transcribe_planned_upload(
     default_model: str = app.state.model_name
     chunking: ResolvedAudioChunking = app.state.audio_chunking
 
-    if (
+    if plan is not None and (form.beam_width or 1) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "beam_width > 1 does not support audio long enough to be split into "
+                "chunks, because per-chunk N-best lists do not form an N-best for the file"
+            ),
+        )
+    elif (
         plan is not None
         and form.response_format.strip().lower()
         in speech_to_text.SEGMENT_RESPONSE_FORMATS
@@ -296,6 +310,8 @@ async def transcribe_planned_upload(
             repetition_penalty=form.repetition_penalty,
             max_new_tokens=form.max_new_tokens,
             segment_timestamps=segment_timestamps,
+            beam_width=form.beam_width,
+            beam_search_diversity_rate=form.beam_search_diversity_rate,
         )
         result = await speech_to_text.complete_speech_to_text_request(
             request,
@@ -303,6 +319,22 @@ async def transcribe_planned_upload(
             gen_req,
             request_id=request_id,
             error_log_message="Error transcribing audio for request %s",
+        )
+        adapter = speech_to_text.resolve_speech_to_text_adapter(
+            getattr(app.state, "architectures", None)
+        )
+        n_best = (
+            None
+            if result.n_best is None
+            else [
+                TranscriptionHypothesis(
+                    text=adapter.postprocess_text(hypothesis.text),
+                    cum_logprob=hypothesis.cum_logprob,
+                    score=hypothesis.score,
+                    finish_reason=hypothesis.finish_reason,
+                )
+                for hypothesis in result.n_best
+            ]
         )
         return speech_to_text.assemble_speech_to_text_response(
             text=result.text,
@@ -316,7 +348,7 @@ async def transcribe_planned_upload(
             response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
             finish_reason=result.finish_reason,
             sglext=build_sglext(
-                form.return_spec_tokens_details, result.spec_tokens_details
+                form.return_spec_tokens_details, result.spec_tokens_details, n_best
             ),
         )
     else:

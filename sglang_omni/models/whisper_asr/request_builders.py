@@ -18,15 +18,18 @@ from sglang.srt.managers.schedule_batch import (
 from sglang.srt.sampling.sampling_params import SamplingParams
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
+from sglang_omni.models.whisper_asr.beam_rules import WhisperBeamLogitRules
 from sglang_omni.models.whisper_asr.config import WHISPER_MAX_INPUT_SECONDS
 from sglang_omni.models.whisper_asr.encoder_service import WhisperPreLMEncoderService
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampLogitProcessor,
+    WhisperTimestampParams,
 )
 from sglang_omni.preprocessing.transcription import prepare_audio
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.exact_text_streaming import ExactTextStreamState
 from sglang_omni.scheduling.sglang_backend import SGLangARRequestData
+from sglang_omni.scheduling.types import BeamSearchSettings
 
 _WHISPER_SAMPLE_RATE = 16000
 
@@ -181,6 +184,14 @@ def make_whisper_scheduler_adapters(
     Callable[[WhisperASRRequestData], StagePayload],
 ]:
     logit_bias = build_logit_bias(generation_config)
+    suppress_token_ids = [
+        int(token_id)
+        for token_id in generation_config.suppress_tokens or []
+        if token_id >= 0
+    ]
+    begin_suppress_token_ids = [
+        int(token_id) for token_id in generation_config.begin_suppress_tokens or []
+    ]
     # note (Dayuxiaoshui): set_prefix_tokens mutates shared tokenizer state
     # across request-build workers.
     tokenizer_lock = Lock()
@@ -234,6 +245,25 @@ def make_whisper_scheduler_adapters(
         language = resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
+        raw_beam_width = params.get("beam_width")
+        beam_width = 1 if raw_beam_width is None else int(raw_beam_width)
+        beam_search_diversity_rate = float(
+            params.get("beam_search_diversity_rate") or 0.0
+        )
+        if beam_width < 1:
+            raise ValueError(f"beam_width must be at least 1, got {beam_width}")
+        elif beam_width > 1 and temperature > 0.0:
+            raise ValueError(
+                "beam_width > 1 needs temperature 0; beam search is deterministic"
+            )
+        elif beam_width > 1 and detect_language:
+            raise ValueError("beam_width > 1 does not support detect_language")
+        elif beam_width > 1 and bool(params.get("stream")):
+            raise ValueError(
+                "beam_width > 1 returns final transcripts only; set stream to false"
+            )
+        else:
+            pass
         if detect_language:
             prompt_token_ids = [sot_token_id]
             request_max_new_tokens = 1
@@ -339,6 +369,30 @@ def make_whisper_scheduler_adapters(
         )
         req.multimodal_inputs = mm_inputs
         req._codec_suppress_tokens = None  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+        beam_search = (
+            None
+            if beam_width == 1
+            else BeamSearchSettings(
+                beam_width=beam_width,
+                diversity_rate=beam_search_diversity_rate,
+                logit_rules=WhisperBeamLogitRules(
+                    suppress_token_ids=suppress_token_ids,
+                    begin_suppress_token_ids=begin_suppress_token_ids,
+                    timestamp_params=(
+                        WhisperTimestampParams(
+                            segment_timestamps=True,
+                            timestamp_begin_id=timestamp_begin_id,
+                            no_timestamps_token_id=no_timestamps_token_id,
+                            eos_token_id=eos_token_id,
+                            max_initial_timestamp_index=max_initial_timestamp_index,
+                            __req__=req,
+                        )
+                        if segment_timestamps
+                        else None
+                    ),
+                ),
+            )
+        )
 
         return WhisperASRRequestData(
             input_ids=torch.tensor(input_ids, dtype=torch.long),
@@ -352,19 +406,39 @@ def make_whisper_scheduler_adapters(
             segment_timestamps=segment_timestamps,
             engine_start_s=time.perf_counter(),
             stage_payload=payload,
+            beam_search=beam_search,
         )
+
+    def render_transcript(output_ids: list[int], segment_timestamps: bool) -> str:
+        if segment_timestamps:
+            return render_timestamped_text(
+                tokenizer, output_ids, timestamp_begin_id=timestamp_begin_id
+            )
+        else:
+            return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
 
     def result_adapter(data: WhisperASRRequestData) -> StagePayload:
         payload = data.stage_payload
         output_ids = list(data.output_ids or [])
         if data.detect_language:
             text = id_to_language.get(output_ids[0], "") if output_ids else ""
-        elif data.segment_timestamps:
-            text = render_timestamped_text(
-                tokenizer, output_ids, timestamp_begin_id=timestamp_begin_id
-            )
         else:
-            text = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+            text = render_transcript(output_ids, data.segment_timestamps)
+        n_best = (
+            None
+            if data.beam_hypotheses is None
+            else [
+                {
+                    "text": render_transcript(
+                        hypothesis.token_ids, data.segment_timestamps
+                    ),
+                    "cum_logprob": hypothesis.cumulative_logprob,
+                    "score": hypothesis.score,
+                    "finish_reason": hypothesis.finish_reason,
+                }
+                for hypothesis in data.beam_hypotheses
+            ]
+        )
         engine_time_s = (
             time.perf_counter() - data.engine_start_s if data.engine_start_s else 0.0
         )
@@ -379,6 +453,7 @@ def make_whisper_scheduler_adapters(
                 "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
                 "spec_tokens_details": data.spec_tokens_details,
+                "n_best": n_best,
                 "modality": "text",
             },
         )

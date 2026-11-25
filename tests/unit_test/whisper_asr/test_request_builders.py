@@ -19,6 +19,8 @@ from sglang_omni.models.whisper_asr.request_builders import (
     make_whisper_scheduler_adapters,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.types import BeamHypothesis
+from sglang_omni.serve.openai_errors import generation_error_status_code
 
 SOT_PREV = 50361
 PREFIX = [50258, 50259, 50359, 50363]
@@ -28,6 +30,7 @@ ENCODER_TOKEN_COUNT = 4
 def generation_config() -> SimpleNamespace:
     return SimpleNamespace(
         suppress_tokens=None,
+        begin_suppress_tokens=None,
         max_length=None,
         no_timestamps_token_id=50363,
         max_initial_timestamp_index=50,
@@ -536,3 +539,111 @@ def test_request_builder_pre_lm_cache_hit_skips_mel(monkeypatch) -> None:
     assert torch.equal(
         item.precomputed_embeddings, torch.full((ENCODER_TOKEN_COUNT, 2), 7.0)
     )
+
+
+@pytest.mark.parametrize(
+    "params,message",
+    [
+        ({"beam_width": 0}, "beam_width must be at least 1"),
+        ({"beam_width": 5, "temperature": 0.7}, "needs temperature 0"),
+        ({"beam_width": 5, "detect_language": True}, "detect_language"),
+        ({"beam_width": 5, "stream": True}, "final transcripts only"),
+    ],
+)
+def test_request_builder_rejects_beam_options_it_cannot_honor(
+    monkeypatch, params: dict, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message) as raised:
+        build(monkeypatch, params)
+
+    assert generation_error_status_code(raised.value) == 400
+
+
+def test_beam_request_carries_whisper_rules_for_its_beams(monkeypatch) -> None:
+    """Beams are scored with the suppress, begin-suppress and timestamp rules that the greedy path applies through sampling."""
+    monkeypatch.setattr(
+        transcription,
+        "load_audio",
+        lambda source, **kwargs: np.zeros(1600, dtype=np.float32),
+    )
+    config = generation_config()
+    config.suppress_tokens = [7, 9]
+    config.begin_suppress_tokens = [220, FakeTokenizer.eos_token_id]
+    request_builder, _ = make_whisper_scheduler_adapters(
+        processor=SimpleNamespace(
+            feature_extractor=lambda audio, *, sampling_rate, return_tensors: (
+                SimpleNamespace(input_features=torch.zeros((1, 128, 3000)))
+            )
+        ),
+        tokenizer=FakeTokenizer(),
+        generation_config=config,
+        encoder_token_count=ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+
+    data = request_builder(
+        make_payload(
+            {
+                "beam_width": 5,
+                "beam_search_diversity_rate": 0.3,
+                "segment_timestamps": True,
+            }
+        )
+    )
+    greedy = request_builder(make_payload())
+
+    assert greedy.beam_search is None
+    assert data.beam_search.beam_width == 5
+    assert data.beam_search.diversity_rate == 0.3
+    rules = data.beam_search.logit_rules
+    assert rules.suppress_token_ids == [7, 9]
+    assert rules.begin_suppress_token_ids == [220, FakeTokenizer.eos_token_id]
+    assert rules.timestamp_params["timestamp_begin_id"] == 50364
+    assert rules.timestamp_params["max_initial_timestamp_index"] == 50
+
+
+def test_result_adapter_returns_the_n_best_in_score_order() -> None:
+    _, result_adapter = make_whisper_scheduler_adapters(
+        processor=SimpleNamespace(),
+        tokenizer=FakeTokenizer(),
+        generation_config=generation_config(),
+        encoder_token_count=ENCODER_TOKEN_COUNT,
+        max_new_tokens=32,
+    )
+    data = whisper_request_builders.WhisperASRRequestData(
+        output_ids=[50364, 7, 8, 50414],
+        stage_payload=make_payload(),
+        segment_timestamps=True,
+    )
+    data.beam_hypotheses = [
+        BeamHypothesis(
+            token_ids=[50364, 7, 8, 50414],
+            cumulative_logprob=-1.5,
+            score=-0.3,
+            finish_reason="stop",
+        ),
+        BeamHypothesis(
+            token_ids=[50364, 7, 9],
+            cumulative_logprob=-2.0,
+            score=-0.6,
+            finish_reason="length",
+        ),
+    ]
+
+    result = result_adapter(data).data
+
+    assert result["text"] == "<|0.00|>7 8<|1.00|>"
+    assert result["n_best"] == [
+        {
+            "text": "<|0.00|>7 8<|1.00|>",
+            "cum_logprob": -1.5,
+            "score": -0.3,
+            "finish_reason": "stop",
+        },
+        {
+            "text": "<|0.00|>7 9",
+            "cum_logprob": -2.0,
+            "score": -0.6,
+            "finish_reason": "length",
+        },
+    ]

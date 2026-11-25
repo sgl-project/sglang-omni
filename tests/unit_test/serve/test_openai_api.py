@@ -23,7 +23,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.client import Client, ClientError, GenerateChunk
 from sglang_omni.client.audio import encode_audio, encode_pcm
 from sglang_omni.client.client import StreamedStopTrimmer, extract_inputs
-from sglang_omni.client.types import GenerateRequest, UsageInfo
+from sglang_omni.client.types import GenerateRequest, TranscriptHypothesis, UsageInfo
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import CompleteMessage, OmniRequest, StreamMessage
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
@@ -4728,6 +4728,105 @@ class WhisperTimestampTranscriptionClient(SuccessfulTranscriptionClient):
             request_id="transcription-1",
             text="<|0.00|>hello there.<|1.20|>",
         )
+
+
+class WhisperBeamTranscriptionClient(SuccessfulTranscriptionClient):
+    async def completion(self, request, *, request_id, audio_format="wav"):
+        from sglang_omni.client.types import CompletionResult
+
+        del request_id, audio_format
+        self.requests.append(request)
+        return CompletionResult(
+            request_id="transcription-1",
+            text="<|0.00|>hello there.<|1.20|>",
+            n_best=[
+                TranscriptHypothesis(
+                    text="<|0.00|>hello there.<|1.20|>",
+                    cum_logprob=-1.25,
+                    score=-0.25,
+                    finish_reason="stop",
+                ),
+                TranscriptHypothesis(
+                    text="<|0.00|>hello, there.<|1.20|>",
+                    cum_logprob=-2.5,
+                    score=-0.42,
+                    finish_reason="stop",
+                ),
+            ],
+        )
+
+
+def test_transcription_returns_the_n_best_in_sglext() -> None:
+    transcription_client = WhisperBeamTranscriptionClient()
+    client = TestClient(
+        create_app(
+            transcription_client,
+            model_name="openai/whisper-large-v3",
+            architectures=["WhisperForConditionalGeneration"],
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={
+            "model": "openai/whisper-large-v3",
+            "beam_width": "2",
+            "beam_search_diversity_rate": "0.3",
+        },
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "hello there."
+    assert response.json()["sglext"] == {
+        "n_best": [
+            {
+                "text": "hello there.",
+                "cum_logprob": -1.25,
+                "score": -0.25,
+                "finish_reason": "stop",
+            },
+            {
+                "text": "hello, there.",
+                "cum_logprob": -2.5,
+                "score": -0.42,
+                "finish_reason": "stop",
+            },
+        ]
+    }
+    extra_params = transcription_client.requests[0].extra_params
+    assert extra_params["beam_width"] == 2
+    assert extra_params["beam_search_diversity_rate"] == 0.3
+
+
+@pytest.mark.parametrize(
+    "form,upload,message",
+    [
+        ({"stream": "true"}, b"RIFF", "final transcripts only"),
+        ({}, None, "split into chunks"),
+    ],
+)
+def test_transcription_rejects_beam_requests_without_one_final_n_best(
+    form: dict[str, str], upload: bytes | None, message: str
+) -> None:
+    transcription_client = WhisperBeamTranscriptionClient()
+    client = TestClient(chunking_app(transcription_client))
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": "asr", "beam_width": "5", **form},
+        files={
+            "file": (
+                "sample.wav",
+                wav_upload(2.5) if upload is None else upload,
+                "audio/wav",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert message in response.json()["detail"]
+    assert transcription_client.requests == []
 
 
 def test_transcription_srt_returns_whisper_timestamp_segments() -> None:
