@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MLX Metal CI's label gate requires run-mlx-metal-ci and skips Markdown-only PRs."""
+"""Mac Metal CI's label gate requires run-mac-metal-ci and skips Markdown-only PRs."""
 
 import importlib
 import json
@@ -16,7 +16,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = yaml.safe_load(
-    (REPO_ROOT / ".github/workflows/mlx-metal-ci.yaml").read_text()
+    (REPO_ROOT / ".github/workflows/mac-metal-ci.yaml").read_text()
 )
 STEPS = {step["name"]: step for step in WORKFLOW["jobs"]["preflight"]["steps"]}
 
@@ -51,12 +51,12 @@ def resolve_stage_step(
     return result, output_path.read_text()
 
 
-def test_mlx_metal_label_selects_only_mlx_metal_workflow(
+def test_mac_metal_label_selects_only_mac_metal_workflow(
     resolver: ModuleType,
 ) -> None:
-    labels = frozenset({"run-mlx-metal-ci"})
-    assert resolver.select_workflows(labels) == frozenset({"MLX Metal CI"})
-    assert resolver.build_labels_by_target()["mlx-metal"] == labels
+    labels = frozenset({"run-mac-metal-ci"})
+    assert resolver.select_workflows(labels) == frozenset({"Mac Metal CI"})
+    assert resolver.build_labels_by_target()["mac-metal"] == labels
 
 
 def test_markdown_only_pr_without_label_passes_and_skips_metal_job(
@@ -64,7 +64,7 @@ def test_markdown_only_pr_without_label_passes_and_skips_metal_job(
 ) -> None:
     result, outputs = resolve_stage_step(tmp_path, [], "false")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "run_mlx_metal=false" in outputs.splitlines()
+    assert "run_mac_metal=false" in outputs.splitlines()
     assert "::error::" not in result.stdout
 
 
@@ -77,11 +77,11 @@ def test_code_pr_without_label_fails_gate(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("labels", "expected_output"),
     [
-        (["run-mlx-metal-ci"], "run_mlx_metal=true"),
-        (["run-mac-ci"], "run_mlx_metal=false"),
+        (["run-mac-metal-ci"], "run_mac_metal=true"),
+        (["run-mac-ci"], "run_mac_metal=false"),
     ],
 )
-def test_label_resolution_decouples_mac_and_mlx_metal(
+def test_label_resolution_decouples_mac_and_mac_metal(
     tmp_path: Path, labels: list[str], expected_output: str
 ) -> None:
     result, outputs = resolve_stage_step(tmp_path, labels, "true")
@@ -95,7 +95,7 @@ def test_label_resolution_decouples_mac_and_mlx_metal(
     [
         (["sglang_omni_mlx/native/README.md"], "false"),
         (["sglang_omni_mlx/native/src/qwen3_asr/qwen3_asr_server.cpp"], "true"),
-        ([".github/workflows/mlx-metal-ci.yaml"], "true"),
+        ([".github/workflows/mac-metal-ci.yaml"], "true"),
     ],
 )
 def test_has_mlx_changes_output(

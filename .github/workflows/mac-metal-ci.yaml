@@ -1,10 +1,10 @@
-name: MLX Metal CI
+name: Mac Metal CI
 
 # Builds the native MLX runtime (sglang_omni_mlx/native) on a self-hosted Apple
 # Silicon runner with Metal GPU access, then runs the real-model API suites and
 # golden accuracy checks in sglang_omni_mlx/native/ci.
 #
-# Pull requests must opt in via the `run-mlx-metal-ci` label (resolved through
+# Pull requests must opt in via the `run-mac-metal-ci` label (resolved through
 # .github/scripts/resolve_ci_labels.py) and pass lint + mergeability before any
 # code executes on the self-hosted runner. Model checkpoints, the frozen 392-clip
 # corpus, ccache, and the pinned MLX build are persisted in a host cache
@@ -15,7 +15,7 @@ on:
     types: [opened, labeled, synchronize, reopened, ready_for_review]
     paths:
       - "sglang_omni_mlx/**"
-      - ".github/workflows/mlx-metal-ci.yaml"
+      - ".github/workflows/mac-metal-ci.yaml"
   workflow_dispatch:
     inputs:
       suite:
@@ -28,10 +28,6 @@ on:
           - api
           - golden
 
-concurrency:
-  group: mlx-metal-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
   checks: read
@@ -39,12 +35,15 @@ permissions:
 
 jobs:
   preflight:
-    name: mlx-metal-ci-gate
+    name: mac-metal-ci-gate
+    concurrency:
+      group: mac-metal-ci-preflight-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       exact_sha: ${{ github.event_name == 'pull_request' && steps.pr.outputs.exact_sha || github.sha }}
-      run_mlx_metal: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mlx_metal }}
+      run_mac_metal: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac_metal }}
       has_mlx_changes: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.has_mlx_changes }}
     steps:
       - name: Fetch latest PR gate state
@@ -62,7 +61,7 @@ jobs:
             const labels = pr.data.labels.map((label) => label.name);
             core.setOutput("labels", JSON.stringify(labels));
             core.setOutput("draft", pr.data.draft ? "true" : "false");
-            core.setOutput("is_selected", labels.includes("run-mlx-metal-ci"));
+            core.setOutput("is_selected", labels.includes("run-mac-metal-ci"));
             core.setOutput("exact_sha", pr.data.head.sha);
 
             const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
@@ -74,7 +73,7 @@ jobs:
             const changedPaths = changedFiles.flatMap((file) =>
               file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]
             );
-            const hasWorkflowChanges = changedPaths.includes(".github/workflows/mlx-metal-ci.yaml");
+            const hasWorkflowChanges = changedPaths.includes(".github/workflows/mac-metal-ci.yaml");
             const hasMlxChanges =
               hasWorkflowChanges ||
               changedPaths.some((path) => path.startsWith("sglang_omni_mlx/") && !path.endsWith(".md"));
@@ -83,7 +82,7 @@ jobs:
       - name: Block draft PR
         if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
         run: |
-          echo "PR is draft. Blocking MLX Metal CI."
+          echo "PR is draft. Blocking Mac Metal CI."
           exit 1
 
       - name: Checkout CI label rules
@@ -107,33 +106,33 @@ jobs:
             exit 0
           fi
           if [ "${HAS_MLX_CHANGES}" != "true" ]; then
-            echo "::notice::Only Markdown changed under sglang_omni_mlx/: skipping MLX Metal CI."
-            echo "run_mlx_metal=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Only Markdown changed under sglang_omni_mlx/: skipping Mac Metal CI."
+            echo "run_mac_metal=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
           echo "${resolved}"
           exit 1
 
       - name: Check PR lint and mergeability
-        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mlx_metal == 'true' && steps.pr.outputs.has_mlx_changes == 'true' }}
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac_metal == 'true' && steps.pr.outputs.has_mlx_changes == 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python .github/scripts/pr_ci_gate.py
 
-  mlx-metal:
+  mac-metal:
     name: native MLX Metal (API + golden)
     needs: [preflight]
-    if: needs.preflight.outputs.run_mlx_metal == 'true' && needs.preflight.outputs.has_mlx_changes == 'true'
+    if: needs.preflight.outputs.run_mac_metal == 'true' && needs.preflight.outputs.has_mlx_changes == 'true'
     # Serialize GPU runs on the Apple Silicon host so concurrent PRs do not contend for unified memory.
     concurrency:
-      group: mlx-metal-runner-serial
+      group: mac-metal-runner-serial
       cancel-in-progress: false
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 240
     permissions:
       contents: read
     env:
-      TEST_SUITE: ${{ inputs.suite || 'all' }}
+      TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
     steps:
       - name: Checkout exact SHA
         uses: actions/checkout@v4
@@ -170,7 +169,7 @@ jobs:
             "${cache_root}/ccache" \
             "${build_work}" \
             "${RUNNER_TEMP}/runtime" \
-            "${RUNNER_TEMP}/mlx-metal-reports"
+            "${RUNNER_TEMP}/mac-metal-reports"
 
           # Invalidate the persisted MLX build cache whenever Xcode, SDK, or Metal compiler changes.
           toolchain_stamp="$(printf '%s\n%s\n%s\n' "${developer_dir}" "${sdk_version}" "${metal_version}")"
@@ -191,7 +190,7 @@ jobs:
             echo "MLX_BUILD_WORK=${build_work}"
             echo "NATIVE_RUNTIME_BIN=${RUNNER_TEMP}/runtime/bin"
             echo "TEST_VENV=${cache_root}/ci-venv"
-            echo "MLX_METAL_REPORT_DIR=${RUNNER_TEMP}/mlx-metal-reports"
+            echo "MAC_METAL_REPORT_DIR=${RUNNER_TEMP}/mac-metal-reports"
           } >> "${GITHUB_ENV}"
 
           echo "Host chip: $(sysctl -n machdep.cpu.brand_string)"
@@ -234,7 +233,7 @@ jobs:
           set -euo pipefail
           export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
           "${TEST_VENV}/bin/python" -m pytest -v \
-            --junitxml="${MLX_METAL_REPORT_DIR}/core-api-junit.xml" \
+            --junitxml="${MAC_METAL_REPORT_DIR}/core-api-junit.xml" \
             sglang_omni_mlx/native/ci/test_check_golden.py \
             sglang_omni_mlx/native/ci/test_server_api.py \
             sglang_omni_mlx/native/ci/test_vad_api.py \
@@ -247,7 +246,7 @@ jobs:
           set -euo pipefail
           export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
           "${TEST_VENV}/bin/python" -m pytest -v \
-            --junitxml="${MLX_METAL_REPORT_DIR}/extended-api-junit.xml" \
+            --junitxml="${MAC_METAL_REPORT_DIR}/extended-api-junit.xml" \
             sglang_omni_mlx/native/ci/test_model_servers.py \
             sglang_omni_mlx/native/ci/test_parakeet_api.py \
             sglang_omni_mlx/native/ci/test_cosyvoice3_api.py \
@@ -277,7 +276,7 @@ jobs:
               --runtime-bin "${NATIVE_RUNTIME_BIN}" \
               --data-root "${CI_DATA_ROOT}" \
               --golden "${golden}"
-          done 2>&1 | tee "${MLX_METAL_REPORT_DIR}/core-golden.log"
+          done 2>&1 | tee "${MAC_METAL_REPORT_DIR}/core-golden.log"
 
       - name: Run extended model golden checks
         if: ${{ env.TEST_SUITE == 'all' || env.TEST_SUITE == 'golden' }}
@@ -304,13 +303,13 @@ jobs:
                 --data-root "${CI_DATA_ROOT}" \
                 --golden "${golden}"
             fi
-          done 2>&1 | tee "${MLX_METAL_REPORT_DIR}/extended-golden.log"
+          done 2>&1 | tee "${MAC_METAL_REPORT_DIR}/extended-golden.log"
 
-      - name: Upload MLX Metal CI reports
+      - name: Upload Mac Metal CI reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-metal-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/mlx-metal-reports
+          name: mac-metal-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-metal-reports
           if-no-files-found: warn
           retention-days: 7

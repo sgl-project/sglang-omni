@@ -8,7 +8,7 @@ run-asr-ci covers two stages (MOSS-TD multi-speaker and SeedTTS), and a model
 label alone runs only its own. TTS runs Higgs serving stress with run-tts-ci,
 or when the Higgs label selects it. A model label never selects MPS, so Higgs
 and MOSS labels, shared by TTS and MPS, select only TTS. Every stage except
-Mac and MLX Metal also runs PR Test on H100. run-lint-only satisfies the gate
+Mac and Mac Metal also runs PR Test on H100. run-lint-only satisfies the gate
 and runs no self-hosted job. A selected stage without a model label draws its
 model at random.
 """
@@ -168,9 +168,9 @@ CI_STAGES: tuple[CiStage, ...] = (
         random_presets=(),
     ),
     CiStage(
-        name="mlx_metal",
-        label="run-mlx-metal-ci",
-        workflow="MLX Metal CI",
+        name="mac_metal",
+        label="run-mac-metal-ci",
+        workflow="Mac Metal CI",
         runs_pr_test=False,
         preset_by_model_label={},
         random_presets=(),
