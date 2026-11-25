@@ -28,5 +28,5 @@
   "Thinking level: %s": "思考强度：%s",
   "Transcription": "转录结果",
   "Text": "文字",
-  "Session %d. Each session keeps its own card and conversation; switch with %s.": "会话 %d。每个会话有自己的卡片和对话，按 %s 切换。"
+  "Session %d. Switch sessions with %s.": "会话 %d。按 %s 切换会话。"
 }

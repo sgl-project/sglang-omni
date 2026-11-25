@@ -21,6 +21,7 @@ import (
 
 type settingsShortcutsLocalUI struct {
 	strictShortcuts, returnFinishes bool
+	sessionsOn                      bool
 	sessions                        [3]keyRow
 	sessionEditing                  [3]bool
 }
@@ -61,8 +62,18 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 			shortcutRow(c, row, actions, state.AccessibilityInstalled, keysWidth)
 		}
 	})
-	caption(c, i18n.T("Sessions keep separate answer cards and conversations. A session's shortcut switches Rewrite, Translate and Transcribe to it."))
+	settingRow(c, "sc-sessions", i18n.T("Sessions (experimental)"), i18n.T("Sessions keep separate answer cards and conversations. A session's shortcut switches Rewrite, Translate and Transcribe to it."), func() {
+		if ui.Switch(c.Key("sc-sessions-switch"), &local.sessionsOn).Label(i18n.T("Sessions (experimental)")).Changed() {
+			actions.setSessionsOn(local.sessionsOn)
+		}
+	})
+	if state.SessionUse != "" {
+		caption(c, state.SessionUse)
+	}
 	for i := range state.Sessions {
+		if !state.SessionsOn {
+			break
+		}
 		slot := &state.Sessions[i]
 		settingRowUnder(c, "sc-session-"+strconv.Itoa(i+1), slot.Title, "", func() {
 			if local.sessionEditing[i] {

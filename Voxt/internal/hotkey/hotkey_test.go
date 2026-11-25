@@ -99,6 +99,10 @@ func TestOverlaps(t *testing.T) {
 
 func TestBuildDefaults(t *testing.T) {
 	f := settings.Defaults().Features
+	if off := Build(f, []string{Transcribe}); len(off.Bindings) != 3 || len(off.Carbon) != 1 || HotkeysOf(f, Sessions[0]) != nil {
+		t.Fatalf("sessions are off by default: %+v", off.Bindings)
+	}
+	f.SessionsOn = true
 	p := Build(f, []string{Transcribe})
 	if len(p.Bindings) != 6 {
 		t.Fatalf("bindings %+v", p.Bindings)
@@ -359,10 +363,11 @@ func TestCheck(t *testing.T) {
 		Rewrite: settings.Rewrite{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Control+Command+V", ""),
 		}}},
-		PasteLast: hk("Command+Control+V", ""),
-		Note:      hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
-		Cancel:    hk("Fn", ""),
-		Sessions:  [3]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
+		PasteLast:  hk("Command+Control+V", ""),
+		Note:       hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
+		Cancel:     hk("Fn", ""),
+		Sessions:   [3]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
+		SessionsOn: true,
 	}
 	got := map[string]Problem{}
 	for _, p := range Check(f) {

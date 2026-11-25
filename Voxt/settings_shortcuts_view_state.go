@@ -50,6 +50,9 @@ type settingsShortcutsViewState struct {
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
 	Sessions               []sessionSlotViewState         `json:"sessions"`
+	SessionsOn             bool                           `json:"sessions_on,omitempty"`
+	// SessionUse says how often the user switched sessions, once they did.
+	SessionUse string `json:"session_use,omitempty"`
 }
 
 type settingsShortcutsStateInput struct {
@@ -57,6 +60,8 @@ type settingsShortcutsStateInput struct {
 	FamilyConflicts        []shortcuts.Conflict
 	AccessibilityInstalled bool
 	HelperRecordsKeys      bool
+	SessionSwitches        int
+	SessionReturns         int
 }
 
 func buildSettingsShortcutsViewState(translator *i18n.Translator, input settingsShortcutsStateInput) settingsShortcutsViewState {
@@ -64,6 +69,7 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 		AccessibilityInstalled: input.AccessibilityInstalled,
 		StrictShortcuts:        input.Features.StrictShortcuts,
 		ReturnFinishes:         input.Features.ReturnFinishes,
+		SessionsOn:             input.Features.SessionsOn,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}
 	for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
@@ -91,6 +97,9 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 			Recorder: recorder,
 			Problems: uitext.HotkeyProblemsFor(translator, input.Features, id)[0],
 		})
+	}
+	if input.SessionSwitches > 0 {
+		state.SessionUse = translator.T("Switched sessions %d times, %d of them back to a session with a card. Counted on this Mac only.", input.SessionSwitches, input.SessionReturns)
 	}
 	return state
 }

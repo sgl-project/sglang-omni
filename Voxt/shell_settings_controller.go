@@ -171,6 +171,7 @@ func (a *app) loadSettingsForm() {
 	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
 	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
+	f.sessionsOn = s.Features.SessionsOn
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
 	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection

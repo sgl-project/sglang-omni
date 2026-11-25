@@ -61,9 +61,18 @@ func (a *app) switchSlot(n int) {
 	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
 	a.notice = nil
 	a.resurface()
-	if a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes {
+	guide := a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes
+	a.updateSettings(func(s *settings.Settings) {
+		s.Setup.SessionSwitchTotal++
+		if p.answer.open {
+			s.Setup.SessionReturns++
+		}
+		if guide {
+			s.Setup.SessionSwitches++
+		}
+	})
+	if guide {
 		// The first switches teach sessions, beside a card that came back too.
-		a.updateSettings(func(s *settings.Settings) { s.Setup.SessionSwitches++ })
 		a.showNotice(sessionNotice{text: sessionGuide(n, a.prefs.Features.Sessions), ok: true})
 	} else if !a.answer.open && !a.bgVisible() {
 		a.showNotice(sessionNotice{text: i18n.T("Session %d", n+1), ok: true})
@@ -73,8 +82,8 @@ func (a *app) switchSlot(n int) {
 	a.overlaySync()
 }
 
-// sessionGuide is a first switch's notice: the session's name, what a
-// session keeps, and the shortcuts that switch.
+// sessionGuide is a first switch's notice: the session's name and the
+// shortcuts that switch, short enough for the notice's one line.
 func sessionGuide(n int, sessions [slotCount]settings.Hotkey) string {
 	var keys []string
 	for _, h := range sessions {
@@ -82,7 +91,7 @@ func sessionGuide(n int, sessions [slotCount]settings.Hotkey) string {
 			keys = append(keys, uitext.HotkeyGlyphs(h.Keys))
 		}
 	}
-	return i18n.T("Session %d. Each session keeps its own card and conversation; switch with %s.", n+1, strings.Join(keys, " "))
+	return i18n.T("Session %d. Switch sessions with %s.", n+1, strings.Join(keys, " "))
 }
 
 // parkAnswer gives an ended backgrounded answer its card in its own

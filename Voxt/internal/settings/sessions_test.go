@@ -20,7 +20,7 @@ func TestSessionShortcuts(t *testing.T) {
 		{Keys: DefaultSession2, Trigger: TriggerTap},
 		{Keys: DefaultSession3, Trigger: TriggerTap},
 	}
-	if err != nil || s.Features.Sessions != want {
+	if err != nil || s.Features.Sessions != want || s.Features.SessionsOn {
 		t.Fatalf("older document: %+v %v", s.Features.Sessions, err)
 	}
 	// Round trip: a document that has sessions keeps them, one off slot too.

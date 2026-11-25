@@ -279,5 +279,7 @@
   "%s seconds": "%s 秒",
   "Opening speed": "开场动画速度",
   "Slower": "更慢",
-  "Faster": "更快"
+  "Faster": "更快",
+  "Sessions (experimental)": "会话（实验功能）",
+  "Switched sessions %d times, %d of them back to a session with a card. Counted on this Mac only.": "已切换会话 %d 次，其中 %d 次回到有卡片的会话。只在这台 Mac 上统计。"
 }

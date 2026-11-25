@@ -28,6 +28,9 @@ type Features struct {
 	// that slot, each keeping its own answer card and conversation (the
 	// multi-session prototype, #4005). Only taps.
 	Sessions [3]Hotkey `json:"sessions,omitzero"`
+	// SessionsOn turns the session shortcuts on. Off by default: sessions
+	// are an experiment until people are seen to go back and forth.
+	SessionsOn bool `json:"sessionsOn,omitempty"`
 	// ReturnFinishes stops a Transcribe, Translate or Rewrite recording
 	// when Return is pressed (Settings → Shortcuts); the key is consumed,
 	// not sent after the text is inserted. Not a note's. Off: Return goes

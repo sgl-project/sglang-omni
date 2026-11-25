@@ -321,6 +321,11 @@ type Setup struct {
 	// SessionGuideTimes: until then the switch's notice says how
 	// sessions work.
 	SessionSwitches int `json:"sessionSwitches,omitempty"`
+	// SessionSwitchTotal counts every session switch and SessionReturns
+	// those that came back to a session holding a card: how often people
+	// go back and forth (#4005). They stay on this Mac.
+	SessionSwitchTotal int `json:"sessionSwitchTotal,omitempty"`
+	SessionReturns     int `json:"sessionReturns,omitempty"`
 }
 
 // SessionGuideTimes is how many session switches explain sessions.

@@ -23,6 +23,7 @@ func (a *app) shortcutsSettingsModel() settingsShortcutsViewState {
 	return buildSettingsShortcutsViewState(i18n.CurrentTranslator(), settingsShortcutsStateInput{
 		Features: a.prefs.Features, FamilyConflicts: a.famConflicts, AccessibilityInstalled: a.hotkeys.Installed,
 		HelperRecordsKeys: a.helperRecordsKeys(),
+		SessionSwitches:   a.prefs.Setup.SessionSwitchTotal, SessionReturns: a.prefs.Setup.SessionReturns,
 	})
 }
 
@@ -35,6 +36,17 @@ func (a *app) setSessionKeys(slot int, keys string) {
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Sessions[slot] = settings.Hotkey{Keys: keys, Trigger: settings.TriggerTap}
 	})
+}
+
+// setSessionsOn turns the session shortcuts on or off. Off goes back to
+// Session 1 and drops the session labels; parked cards wait for on.
+func (a *app) setSessionsOn(on bool) {
+	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = on })
+	if !on {
+		a.switchSlot(0)
+		a.notice = nil
+		a.slotsUsed = a.slot != 0 // a switch that could not happen keeps its label
+	}
 }
 
 func (a *app) openShortcutPermissions() {

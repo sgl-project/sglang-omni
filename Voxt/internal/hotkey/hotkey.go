@@ -374,7 +374,7 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 		return f.Meeting.Hotkeys
 	}
 	if slot, ok := SessionSlot(feature); ok {
-		if f.Sessions[slot].Keys == "" {
+		if !f.SessionsOn || f.Sessions[slot].Keys == "" {
 			return nil
 		}
 		return []settings.Hotkey{f.Sessions[slot]}
@@ -455,7 +455,7 @@ func Build(f settings.Features, enabled []string) Plan {
 		add(Note, f.Note, proto.BehaviorTap)
 	}
 	for i, id := range Sessions {
-		if f.Sessions[i].Keys != "" {
+		if f.SessionsOn && f.Sessions[i].Keys != "" {
 			add(id, f.Sessions[i], proto.BehaviorTap)
 		}
 	}

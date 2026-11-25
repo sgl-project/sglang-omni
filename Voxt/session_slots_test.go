@@ -236,13 +236,13 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 func TestSessionGuideFirstSwitches(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
-	guide := "Session 2. Each session keeps its own card and conversation; switch with ⌃⌥1 ⌃⌥2 ⌃⌥3."
+	guide := "Session 2. Switch sessions with ⌃⌥1 ⌃⌥2 ⌃⌥3."
 	tap(a, "session-2", textEditApp)
 	if a.notice == nil || a.notice.text != guide {
 		t.Fatalf("first switch: notice %+v", a.notice)
 	}
 	tap(a, "session-1", textEditApp) // session 1's card comes back
-	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "keeps its own card") {
+	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "Switch sessions with") {
 		t.Fatalf("second switch, card back %v: notice %+v", a.answer.open, a.notice)
 	}
 	tap(a, "session-2", textEditApp)
@@ -251,6 +251,15 @@ func TestSessionGuideFirstSwitches(t *testing.T) {
 	}
 	if got := a.prefs.Setup.SessionSwitches; got != settings.SessionGuideTimes {
 		t.Fatalf("switches counted %d, want %d", got, settings.SessionGuideTimes)
+	}
+	// Every switch counts, and the one back to Session 1's card as a return.
+	if s := a.prefs.Setup; s.SessionSwitchTotal != 3 || s.SessionReturns != 1 {
+		t.Fatalf("use counted %d switches, %d returns", s.SessionSwitchTotal, s.SessionReturns)
+	}
+	// Turning sessions off goes back to Session 1 without a label.
+	a.setSessionsOn(false)
+	if a.slot != 0 || a.slotsUsed || !a.answer.open || a.cachedCard().Session != "" {
+		t.Fatalf("off: slot=%d slotsUsed=%v card=%v label=%q", a.slot, a.slotsUsed, a.answer.open, a.cachedCard().Session)
 	}
 }
 

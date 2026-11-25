@@ -78,6 +78,7 @@ type settingsShortcutsActions interface {
 	setStrictShortcuts(on bool)
 	setReturnFinishes(on bool)
 	setSessionKeys(slot int, keys string)
+	setSessionsOn(on bool)
 }
 
 type keyRecorderActions interface {

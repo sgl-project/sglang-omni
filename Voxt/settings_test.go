@@ -432,6 +432,17 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 func TestSessionShortcutsSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
+	scrollToText(tt, "Sessions (experimental)")
+	if has(tt, "Session 1") || a.settings.Get().Features.SessionsOn {
+		t.Fatalf("sessions are off by default: %q", firstTexts(tt))
+	}
+	if err := tt.ClickControl("Sessions (experimental)"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Features.SessionsOn {
+		t.Fatal("the switch did not turn sessions on")
+	}
 	for _, s := range []string{"Session 1", "Session 2", "Session 3", "⌃⌥1"} {
 		if !has(tt, s) {
 			t.Errorf("no %q: %q", s, firstTexts(tt))
