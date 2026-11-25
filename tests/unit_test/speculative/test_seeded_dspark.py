@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""MiniCPM-o routes seeded rounds without changing ordinary DSpark execution."""
+"""The DSpark worker routes seeded rounds without changing ordinary DSpark execution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from sglang.srt.environ import envs
 from sglang.srt.managers.utils import GenerationBatchResult
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.models.dspark import VanillaMarkov
@@ -17,11 +16,10 @@ from sglang.srt.speculative.dspark_components.dspark_draft import DraftBlockProp
 from sglang.srt.speculative.dspark_components.dspark_verify import TargetVerifyExecutor
 from sglang.srt.speculative.dspark_components.dspark_worker_v2 import DSparkWorkerV2
 
-from sglang_omni.models.minicpm_o import dspark_worker
-from sglang_omni.models.minicpm_o.bootstrap import create_thinker_scheduler
-from sglang_omni.models.minicpm_o.dspark_worker import (
-    MiniCPMDSparkWorker,
+from sglang_omni.speculative import seeded_dspark
+from sglang_omni.speculative.seeded_dspark import (
     SeededDraftProposer,
+    SeededDSparkWorker,
     SeededVerifyExecutor,
 )
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
@@ -83,14 +81,14 @@ def test_worker_seed_capability_tracks_supported_configuration(
 
     monkeypatch.setattr(DSparkWorkerV2, "__init__", initialize)
     monkeypatch.setattr(
-        dspark_worker,
+        seeded_dspark,
         "get_parallel",
         lambda: SimpleNamespace(tp_size=tensor_parallel_size),
     )
     proposer, verifier = Mock(), Mock()
-    monkeypatch.setattr(dspark_worker, "SeededDraftProposer", proposer)
-    monkeypatch.setattr(dspark_worker, "SeededVerifyExecutor", verifier)
-    worker = MiniCPMDSparkWorker(
+    monkeypatch.setattr(seeded_dspark, "SeededDraftProposer", proposer)
+    monkeypatch.setattr(seeded_dspark, "SeededVerifyExecutor", verifier)
+    worker = SeededDSparkWorker(
         server_args=None, gpu_id=0, nccl_port=0, target_worker=Mock(random_seed=42)
     )
     assert worker.supports_request_seed is supported
@@ -118,11 +116,11 @@ def test_rank_without_draft_initializes_only_native_graphs(
 
     monkeypatch.setattr(DSparkWorkerV2, "__init__", initialize)
     monkeypatch.setattr(
-        dspark_worker, "get_parallel", lambda: SimpleNamespace(tp_size=1)
+        seeded_dspark, "get_parallel", lambda: SimpleNamespace(tp_size=1)
     )
     native_graphs = Mock()
     monkeypatch.setattr(DSparkWorkerV2, "init_cuda_graphs", native_graphs)
-    worker = MiniCPMDSparkWorker(
+    worker = SeededDSparkWorker(
         server_args=None, gpu_id=0, nccl_port=0, target_worker=None
     )
     assert not worker.supports_request_seed
@@ -130,8 +128,8 @@ def test_rank_without_draft_initializes_only_native_graphs(
     native_graphs.assert_called_once()
 
 
-def worker_and_batch(seed: int | None) -> tuple[MiniCPMDSparkWorker, SimpleNamespace]:
-    worker = object.__new__(MiniCPMDSparkWorker)
+def worker_and_batch(seed: int | None) -> tuple[SeededDSparkWorker, SimpleNamespace]:
+    worker = object.__new__(SeededDSparkWorker)
     worker.supports_request_seed = True
     worker._proposer = object.__new__(
         DraftBlockProposer
@@ -203,8 +201,8 @@ def test_native_round_preserves_components_and_callback(
     def forward(
         self: DSparkWorkerV2,
         current: SimpleNamespace,
-        on_publish: dspark_worker.PublishLengths | None = None,
-        grammar_barrier: dspark_worker.GrammarBarrier | None = None,
+        on_publish: seeded_dspark.PublishLengths | None = None,
+        grammar_barrier: seeded_dspark.GrammarBarrier | None = None,
         *,
         pp_proxy_tensors: None = None,
     ) -> GenerationBatchResult:
@@ -219,7 +217,7 @@ def test_native_round_preserves_components_and_callback(
         on_publish(current.seq_lens)
         return result
 
-    monkeypatch.setattr(dspark_worker, "prepare_seeded_batch", forbidden_seed_staging)
+    monkeypatch.setattr(seeded_dspark, "prepare_seeded_batch", forbidden_seed_staging)
     monkeypatch.setattr(DSparkWorkerV2, "forward_batch_generation", forward)
     assert worker.forward_batch_generation(batch, publications.append) is result
     assert publications == [batch.seq_lens]
@@ -241,8 +239,8 @@ def test_seeded_round_restores_components_and_drops_temporary_state(
     def forward(
         self: DSparkWorkerV2,
         current: SimpleNamespace,
-        on_publish: dspark_worker.PublishLengths | None = None,
-        grammar_barrier: dspark_worker.GrammarBarrier | None = None,
+        on_publish: seeded_dspark.PublishLengths | None = None,
+        grammar_barrier: seeded_dspark.GrammarBarrier | None = None,
         *,
         pp_proxy_tensors: None = None,
     ) -> GenerationBatchResult:
@@ -314,8 +312,8 @@ def test_switching_rounds_keeps_graph_sampling_parameters_current(
     def forward(
         self: DSparkWorkerV2,
         current: SimpleNamespace,
-        on_publish: dspark_worker.PublishLengths | None = None,
-        grammar_barrier: dspark_worker.GrammarBarrier | None = None,
+        on_publish: seeded_dspark.PublishLengths | None = None,
+        grammar_barrier: seeded_dspark.GrammarBarrier | None = None,
         *,
         pp_proxy_tensors: None = None,
     ) -> GenerationBatchResult:
@@ -339,66 +337,4 @@ def test_switching_rounds_keeps_graph_sampling_parameters_current(
     assert sampler.stage_sampling_params.call_count == 4
     assert (
         sampler.stage_sampling_params.call_args.kwargs["sampling_info"] is seeded_info
-    )
-
-
-@pytest.mark.parametrize(
-    "algorithm,supports_seed,expected_worker,ignores_seed",
-    [
-        ("DSPARK", True, MiniCPMDSparkWorker, False),
-        ("DSPARK", False, MiniCPMDSparkWorker, True),
-        ("DFLASH", False, None, True),
-    ],
-)
-def test_bootstrap_advertises_seed_only_for_supported_dspark_worker(
-    monkeypatch: pytest.MonkeyPatch,
-    algorithm: str,
-    supports_seed: bool,
-    expected_worker: type[MiniCPMDSparkWorker] | None,
-    ignores_seed: bool,
-) -> None:
-    server_args = SimpleNamespace(
-        disable_cuda_graph=True, speculative_algorithm=algorithm
-    )
-    worker = SimpleNamespace(
-        speculative_worker=SimpleNamespace(supports_request_seed=supports_seed)
-    )
-    config = SimpleNamespace(model_path="unused", vocab_size=17)
-    infrastructure = Mock(return_value=(worker, None, None, None, config))
-    tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: 1)
-    runner = SimpleNamespace(
-        speculative_ignores_request_seed=True, reset_request=Mock()
-    )
-    scheduler = Mock()
-    monkeypatch.setattr(
-        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
-    )
-    monkeypatch.setattr(
-        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure", infrastructure
-    )
-    monkeypatch.setattr(
-        "sglang.srt.utils.hf_transformers_utils.get_tokenizer",
-        Mock(return_value=tokenizer),
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.minicpm_o.thinker_model_runner.MiniCPMOThinkerModelRunner",
-        Mock(return_value=runner),
-    )
-    monkeypatch.setattr(
-        "sglang_omni.models.minicpm_o.request_builders.make_thinker_scheduler_adapters",
-        Mock(return_value=(None, None)),
-    )
-    monkeypatch.setattr(
-        "sglang_omni.scheduling.omni_scheduler.OmniScheduler", scheduler
-    )
-
-    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
-        assert create_thinker_scheduler(server_args) is scheduler.return_value
-    assert (
-        infrastructure.call_args.kwargs.get("speculative_worker_class")
-        is expected_worker
-    )
-    assert (
-        scheduler.call_args.kwargs["model_runner"].speculative_ignores_request_seed
-        is ignores_seed
     )

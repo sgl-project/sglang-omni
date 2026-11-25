@@ -16,12 +16,12 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     SPECULATIVE_HIDDEN_ROWS,
 )
-from sglang_omni.models.minicpm_o.dspark_worker import MiniCPMDSparkWorker
 from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     get_decode_cuda_graph_bs,
     get_decode_cuda_graph_max_bs,
 )
+from sglang_omni.speculative.seeded_dspark import SeededDSparkWorker
 
 if TYPE_CHECKING:
     from sglang.srt.server_args import ServerArgs
@@ -233,7 +233,7 @@ def create_thinker_scheduler(
             defer_cuda_graph_capture=defer_cuda_graph_capture,
             supports_speculative_decoding=True,
             speculative_worker_class=(
-                MiniCPMDSparkWorker if speculative_algorithm.is_dspark() else None
+                SeededDSparkWorker if speculative_algorithm.is_dspark() else None
             ),
             enable_async_decode=enable_async_decode,
             before_memory_pool=configure_talker_capture,

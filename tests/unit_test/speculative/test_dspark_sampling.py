@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-seeded proposal and rejection sampling for the MiniCPM-o thinker."""
+"""Request-seeded proposal and rejection sampling for VanillaMarkov drafts."""
 
 from __future__ import annotations
 
@@ -8,11 +8,6 @@ import math
 import pytest
 import torch
 
-from sglang_omni.models.minicpm_o.speculative_sampling import (
-    prepare_seeded_batch,
-    sample_draft_block,
-    verify_draft_block,
-)
 from sglang_omni.sampling.speculative_noise import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
@@ -20,6 +15,11 @@ from sglang_omni.sampling.speculative_noise import (
     RESIDUAL_NOISE_SEED_SALT,
     seeded_exponential_noise,
     seeded_uniform_noise,
+)
+from sglang_omni.speculative.dspark_sampling import (
+    prepare_seeded_batch,
+    sample_draft_block,
+    verify_draft_block,
 )
 
 CUDA_REQUIRED = pytest.mark.skipif(

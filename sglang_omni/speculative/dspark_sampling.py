@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-seeded sampling for the thinker's single-device VanillaMarkov draft."""
+"""Request-seeded sampling for single-device VanillaMarkov drafts."""
 
 from __future__ import annotations
 

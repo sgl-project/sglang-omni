@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request-seeded DSpark rounds for the MiniCPM-o thinker."""
+"""Request-seeded DSpark rounds for single-device VanillaMarkov drafts."""
 
 from __future__ import annotations
 
@@ -36,14 +36,6 @@ from sglang.srt.speculative.dspark_components.dspark_worker_v2 import DSparkWork
 from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 from sglang.srt.speculative.spec_tp_sync import SpecTpSyncSite
 
-from sglang_omni.models.minicpm_o.components.sglang_thinker import (
-    MiniCPMOThinkerForCausalLM,
-)
-from sglang_omni.models.minicpm_o.speculative_sampling import (
-    prepare_seeded_batch,
-    sample_draft_block,
-    verify_draft_block,
-)
 from sglang_omni.sampling.speculative_noise import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
@@ -51,6 +43,11 @@ from sglang_omni.sampling.speculative_noise import (
     RESIDUAL_NOISE_SEED_SALT,
     seeded_exponential_noise,
     seeded_uniform_noise,
+)
+from sglang_omni.speculative.dspark_sampling import (
+    prepare_seeded_batch,
+    sample_draft_block,
+    verify_draft_block,
 )
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
@@ -76,7 +73,7 @@ class SeededDraftProposer(DraftBlockProposer):
         verify_window: VerifyWindow,
         bs: int,
         device: str,
-        target_model: MiniCPMOThinkerForCausalLM,
+        target_model: torch.nn.Module,
         sampling_info: SamplingBatchInfo,
         anchor_prepared: bool = False,
     ) -> DraftProposal:
@@ -240,7 +237,7 @@ class SeededVerifyExecutor(TargetVerifyExecutor):
         )  # noqa: leading-underscore  # upstream spelling
 
 
-class MiniCPMDSparkWorker(DSparkWorkerV2):
+class SeededDSparkWorker(DSparkWorkerV2):
     supports_request_seed: bool = False
     seeded_proposer: SeededDraftProposer
     seeded_verifier: SeededVerifyExecutor

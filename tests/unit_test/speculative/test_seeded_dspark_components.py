@@ -17,15 +17,15 @@ from sglang.srt.speculative.dspark_components.dspark_draft import (
 )
 from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 
-from sglang_omni.models.minicpm_o import dspark_worker
-from sglang_omni.models.minicpm_o.dspark_worker import (
-    SeededDraftProposer,
-    SeededVerifyExecutor,
-)
 from sglang_omni.sampling.speculative_noise import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
     RESIDUAL_NOISE_SEED_SALT,
+)
+from sglang_omni.speculative import seeded_dspark
+from sglang_omni.speculative.seeded_dspark import (
+    SeededDraftProposer,
+    SeededVerifyExecutor,
 )
 
 
@@ -58,8 +58,8 @@ def device(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> s
             assert positions.tolist() == [17, 29]
             return torch.full((seeds.numel(), column_count), 0.5)
 
-        monkeypatch.setattr(dspark_worker, "seeded_uniform_noise", fixed_draws)
-        monkeypatch.setattr(dspark_worker, "seeded_exponential_noise", fixed_draws)
+        monkeypatch.setattr(seeded_dspark, "seeded_uniform_noise", fixed_draws)
+        monkeypatch.setattr(seeded_dspark, "seeded_exponential_noise", fixed_draws)
     else:
         pass
     return request.param
@@ -155,10 +155,10 @@ def test_seeded_proposal_and_verification_keep_committed_token_prefix(
     )
     monkeypatch.setattr(proposer, "_run_forward", Mock(return_value=forward))
     monkeypatch.setattr(proposer, "_base_logits_context", nullcontext)
-    exponential_draws = Mock(wraps=dspark_worker.seeded_exponential_noise)
-    acceptance_draws = Mock(wraps=dspark_worker.seeded_uniform_noise)
-    monkeypatch.setattr(dspark_worker, "seeded_exponential_noise", exponential_draws)
-    monkeypatch.setattr(dspark_worker, "seeded_uniform_noise", acceptance_draws)
+    exponential_draws = Mock(wraps=seeded_dspark.seeded_exponential_noise)
+    acceptance_draws = Mock(wraps=seeded_dspark.seeded_uniform_noise)
+    monkeypatch.setattr(seeded_dspark, "seeded_exponential_noise", exponential_draws)
+    monkeypatch.setattr(seeded_dspark, "seeded_uniform_noise", acceptance_draws)
     proposal = proposer.propose(
         batch=None,
         draft_input=None,
