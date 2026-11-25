@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <stdexcept>
 
 #include "common/audio.h"
@@ -16,6 +17,17 @@ using omni_common::SpeakerSegment;
 using omni_common::SpeakerSegmentsJson;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
+
+namespace omni_common {
+
+int64_t MillisecondsSinceEpoch(
+    const std::chrono::steady_clock::time_point &time_point) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             time_point.time_since_epoch())
+      .count();
+}
+
+} // namespace omni_common
 
 namespace {
 
@@ -93,10 +105,10 @@ bool MossRealtimeSession::Handle(const nlohmann::json &message) {
 }
 
 void MossRealtimeSession::Append(const nlohmann::json &audio) {
+  const auto append_started = std::chrono::steady_clock::now();
   const std::optional<std::vector<float>> appended = AppendedSamples(audio);
   if (!appended.has_value()) {
     return;
-  } else {
   }
   std::optional<Decode> decode;
   MossOptions options;
@@ -111,20 +123,46 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
       return;
     }
   }
-  omni_server::Transcription job = DecodeJob(*decode, std::move(options));
+  auto timing = std::make_shared<::omni_common::MossPreviewTiming>();
+  const auto decision_started = std::chrono::steady_clock::now();
+  timing->window_id = decode->window_id;
+  timing->kind = decode->kind == DecodeKind::kPreview ? "preview" : "final";
+  timing->audio_sample_count = static_cast<int>(decode->samples.size());
+  timing->append_at_ms = omni_common::MillisecondsSinceEpoch(append_started);
+  timing->decision_at_ms =
+      omni_common::MillisecondsSinceEpoch(decision_started);
+  timing->submit_at_ms =
+      omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
+  timing->min_preview_samples = kMinPreviewSamples;
+  omni_server::Transcription job =
+      DecodeJob(*decode, std::move(options), timing);
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   worker_.Submit(
       std::move(job), cancel_,
-      [weak_self, decode = std::move(*decode)](
-          std::optional<TranscriptionResult> result, std::exception_ptr error) {
+      [weak_self, decode = std::move(*decode),
+       timing](std::optional<TranscriptionResult> result,
+               std::exception_ptr error) mutable {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
         } else if (error) {
           self->ReportDecodeFailure(error);
         } else {
+          timing->transcribe_at_ms = omni_common::MillisecondsSinceEpoch(
+              std::chrono::steady_clock::now());
+          timing->verify_round_count = result->verify_round_count;
+          timing->proposed_draft_token_count =
+              result->proposed_draft_token_count;
+          timing->accepted_draft_token_count =
+              result->accepted_draft_token_count;
           self->Publish(decode, *result);
+          // Stamped after Publish so publish_at_ms - transcribe_at_ms is the
+          // real publish cost; the event line goes out once it is complete.
+          timing->publish_at_ms = omni_common::MillisecondsSinceEpoch(
+              std::chrono::steady_clock::now());
+          std::cerr << ::omni_common::MossPreviewTimingJson(*timing).dump()
+                    << "\n";
         }
         {
           std::lock_guard<std::mutex> lock(self->mutex_);
@@ -199,11 +237,17 @@ MossOptions MossRealtimeSession::DecodeOptions(const Decode &decode) const {
   return options;
 }
 
-omni_server::Transcription
-MossRealtimeSession::DecodeJob(const Decode &decode,
-                               MossOptions options) const {
+omni_server::Transcription MossRealtimeSession::DecodeJob(
+    const Decode &decode, MossOptions options,
+    std::shared_ptr<::omni_common::MossPreviewTiming> timing) const {
   return [&transcriber = transcriber_, samples = decode.samples,
-          options = std::move(options)](const std::atomic<bool> &cancel) {
+          options = std::move(options),
+          timing](const std::atomic<bool> &cancel) {
+    if (timing) {
+      timing->transcribe_started_at_ms =
+          omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
+    } else {
+    }
     return transcriber.Transcribe(samples, options, cancel);
   };
 }
