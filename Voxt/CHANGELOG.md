@@ -4,10 +4,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
-### Changed
-
-- **Faster meeting proofreading on reasoning models**: each proofreading batch now asks the language model to bound its reasoning (low effort), which keeps the same prompt and output format but avoids long hidden-reasoning waits and empty answers on services that reason at length; a service without that field sees no change, and one that rejects it gets the request again without it.
-
 ### Added
 
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
@@ -21,6 +17,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Faster meeting proofreading on reasoning models**: each proofreading batch now asks the language model to bound its reasoning (low effort), which keeps the same prompt and output format but avoids long hidden-reasoning waits and empty answers on services that reason at length; a service without that field sees no change, and one that rejects it gets the request again without it.
 - **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
 - **The pill keeps its width when you stop** (#4574): the dots take the waveform's place, and Use transcript takes the feature name's with them, so the row stays as wide and centred, and the microphone icon no longer jumps.
 - **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with its ⓘ in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
