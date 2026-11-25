@@ -177,6 +177,13 @@ func TestCleanOutput(t *testing.T) {
 		// …near the input's length or far past it, and even a finished
 		// deliberation sentence before the cleaned text.
 		{"Wait, I need to re-read. The release is Friday.", "the release is friday. tell the quality team", "The release is Friday.", false},
+		// A short dictation is covered the same way: the deliberation
+		// before or after the cleaned text goes…
+		{"Wait, I need to re-read. Hello.", "hello", "Hello.", false},
+		{"Hello. I fixed the typo.", "hello", "Hello.", false},
+		// …while a legitimate short answer keeps its added words when
+		// nothing anchors the input (there is nothing to trim to).
+		{"Hello world.", "hello", "Hello world.", false},
 		// Near the input's own length the answer is trusted as it is…
 		{"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
@@ -268,6 +275,17 @@ func TestPartialOutput(t *testing.T) {
 	const tagless = `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". ` + cleaned
 	if got := PartialOutput("Wait, I need to re-read.", input, false); got != "" {
 		t.Errorf("a completed deliberation sentence = %q, want hidden", got)
+	}
+	// A short dictation is covered the same way: the finished
+	// deliberation sentence hides, the cleaned text shows.
+	if got := PartialOutput("Wait, I need to re-read. ", "hello", false); got != "" {
+		t.Errorf("a completed deliberation sentence for a short input = %q, want hidden", got)
+	}
+	if got := PartialOutput("Wait, I need to re-read. Hello.", "hello", false); got != "Hello." {
+		t.Errorf("the short dictation's cleaned text = %q, want %q", got, "Hello.")
+	}
+	if got := PartialOutput("Hello.", "hello", false); got != "Hello." {
+		t.Errorf("a legitimate short answer = %q, want it whole", got)
 	}
 	runes := []rune(tagless)
 	for i := 1; i <= len(runes); i++ {

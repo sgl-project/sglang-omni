@@ -80,7 +80,9 @@ func sentences(s string) []string {
 // outside the span; both are rare next to the reported leak.
 func cleanedSpan(s, input string) (string, bool) {
 	in := folded(input)
-	if len([]rune(in)) < 8 {
+	if len([]rune(in)) < 2 {
+		// Under two runes the input has no bigrams, so no sentence can
+		// be told from the model's words: keep the text as it is.
 		return "", false
 	}
 	segs := sentences(s)
@@ -130,11 +132,11 @@ func terminated(seg string) bool {
 // of it has anchored: the model's deliberation, which the draft hides
 // (#4086). A sentence still being typed passes through — it may be the
 // cleaned text's start, and the draft corrects when it completes. An
-// input too short to tell its material, or carrying control markup of
-// its own, keeps the text as it is.
+// input too short for bigrams, or carrying control markup of its own,
+// keeps the text as it is.
 func deliberating(s, input string) bool {
 	in := folded(input)
-	if len([]rune(in)) < 8 || markupInput(input) {
+	if len([]rune(in)) < 2 || markupInput(input) {
 		return false
 	}
 	for _, seg := range sentences(s) {
