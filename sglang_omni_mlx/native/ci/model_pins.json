@@ -250,5 +250,24 @@
       "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
       "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
     }
+  },
+  "FunAudioLLM/Fun-ASR-Nano-2512-hf": {
+    "revision": "7ef6cafdc445b5beff0b730cbeb51952c793ca6e",
+    "files": {
+      "config.json": "a2179cec35f10675fca8ac0ed37019fb5a6a158c9d7daa60c62971d0bf589f80",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "model.safetensors": "1bbb6dcc5d8b75084a399d48c4d4b0f3aa1d3f09f2616ae40ed2c4fba03d89c9",
+      "processor_config.json": "4bbe26c6109b27e4b7fd68008a4e8f60e519b326b59dadba00725ea5678a6b93",
+      "tokenizer.json": "be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506",
+      "tokenizer_config.json": "1d8065984f39c1d9dd8aaf754bbeda44f270110563a1afc729e183739cda8d12",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
+  "wilsonzheng0327/Fun-ASR-Nano-dflash": {
+    "revision": "b3cb091f554c88274378d549d7e7d3c5a13052e6",
+    "files": {
+      "config.json": "a6b9f54c2b94f189ef751d79166775fec356d44b2ea224fcd76774b1c0fb78bc",
+      "model.safetensors": "536aeb19f14222901767fe6d42d5779774fcbb61c282511b5f50e4415a0e10a1"
+    }
   }
 }

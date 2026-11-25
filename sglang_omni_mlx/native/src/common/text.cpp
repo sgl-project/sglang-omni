@@ -81,6 +81,46 @@ size_t CodePointCount(const std::string &text) {
       }));
 }
 
+namespace {
+
+constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
+    {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
+    {0x2E80, 0x303F}, {0x3040, 0x30FF}, {0x3400, 0x9FFF},
+    {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
+};
+
+} // namespace
+
+bool IsSpacedScript(uint32_t code_point) {
+  if (IsUnicodeSpace(code_point)) {
+    return false;
+  } else {
+  }
+  for (const auto &[low, high] : kUnspacedScriptRanges) {
+    if (code_point >= low && code_point <= high) {
+      return false;
+    } else {
+    }
+  }
+  return true;
+}
+
+std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
+  std::string joined;
+  for (const std::string &raw_part : parts) {
+    const std::string part = StripUnicodeWhitespace(raw_part);
+    if (part.empty()) {
+      continue;
+    } else if (!joined.empty() && IsSpacedScript(CodePoints(joined).back()) &&
+               IsSpacedScript(CodePoints(part).front())) {
+      joined += " " + part;
+    } else {
+      joined += part;
+    }
+  }
+  return joined;
+}
+
 std::string StripUnicodeWhitespace(const std::string &text) {
   const std::vector<uint32_t> code_points = CodePoints(text);
   size_t begin_cp = 0;
