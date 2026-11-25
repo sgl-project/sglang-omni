@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +101,28 @@ func TestLivePieces(t *testing.T) {
 			t.Errorf("piece %d ends %d samples into a stretch of speech", i+1, in)
 		}
 	}
+	// The rest starts after the recording: it gets the session for what its
+	// server prefilled, and not the preview's text.
+	if r := finals[4]; r.Fields["realtime_session"] != "fake-session" || r.Fields["guessed_text"] != "" {
+		t.Errorf("the rest: %+v", r.Fields)
+	}
+	for i, r := range finals[:4] {
+		if r.Fields["realtime_session"] != "" || r.Fields["guessed_text"] != "" {
+			t.Errorf("piece %d: %+v", i+1, r.Fields)
+		}
+	}
+	// Each piece's end is where the server starts the Final's prefill.
+	st.Close()
+	f.rt.Close() // the server records its live sessions before it exits
+	var ends []string
+	at = 0
+	for _, r := range finals[:4] {
+		at += r.Samples
+		ends = append(ends, strconv.Itoa(at))
+	}
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["final_start"] != strings.Join(ends, ",") {
+		t.Errorf("live %+v, want the Final's starts %v", l, ends)
+	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
 	}
@@ -140,6 +163,10 @@ func TestLivePiecesEvents(t *testing.T) {
 		if !strings.HasPrefix(final.Text, p) {
 			t.Errorf("%q is not a prefix of the final %q", p, final.Text)
 		}
+	}
+	// Without a dictionary the rest still has its windows to reuse.
+	if r := f.records("final"); r[len(r)-1].Fields["realtime_session"] != "fake-session" {
+		t.Errorf("the rest without a dictionary: %+v", r[len(r)-1].Fields)
 	}
 }
 

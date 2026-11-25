@@ -69,6 +69,7 @@ from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.ragged_verify import ragged_verify_compact_enabled
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
@@ -2498,6 +2499,23 @@ class OmniScheduler(Generic[RequestDataT]):
                 f"Speculative decoding does not support "
                 f"{', '.join(unsupported_options)}. Unset them for this request."
             )
+        elif (
+            self.draft_algorithm == SpeculativeAlgorithm.DSPARK
+            and ragged_verify_compact_enabled()
+            and (
+                sampling_params.repetition_penalty != 1.0
+                or self.model_runner.verify_rows_take_logits_hooks(
+                    [SchedulerRequest(request_id=request.rid, data=request_data)]
+                )
+            )
+        ):
+            # note (wilsonzheng0327): the graph epilogue copies a compact verify's logits
+            # before the shared verify hooks would scale them.
+            return (
+                "Speculative decoding does not support repetition_penalty, "
+                "length_penalty or codec suppression under a compact verify. Unset "
+                "them for this request, or serve with SGLANG_RAGGED_VERIFY_MODE=static."
+            )
         else:
             return None
 
@@ -3038,6 +3056,9 @@ class OmniScheduler(Generic[RequestDataT]):
                     batch,
                     is_prefill=is_prefill,
                     num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                    verify_layout=getattr(
+                        batch.spec_info, "ragged_verify_layout", None
+                    ),
                 )
                 self.model_runner.record_speculative_output(
                     batch, result, is_prefill=is_prefill
@@ -3071,6 +3092,8 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+            # note (0xtoward): the worker leaves its verify input on the batch; a compact verify's layout rides on it.
+            verify_layout=getattr(batch.spec_info, "ragged_verify_layout", None),
         )
         self.model_runner.record_speculative_output(
             batch, result, is_prefill=is_prefill
@@ -3081,9 +3104,11 @@ class OmniScheduler(Generic[RequestDataT]):
             new_sequence_lengths is not None
             and new_sequence_lengths is not batch.seq_lens
         ):
-            batch.seq_lens = new_sequence_lengths
+            # note (0xtoward): the worker may hand out a view of a buffer that its
+            # next verify rewrites mid-step (sglang#42465), so the batch keeps a copy.
+            batch.seq_lens = new_sequence_lengths.clone()
             if batch.seq_lens_cpu is not None:
-                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                batch.seq_lens_cpu = batch.seq_lens.to("cpu")
                 batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
             else:
                 pass

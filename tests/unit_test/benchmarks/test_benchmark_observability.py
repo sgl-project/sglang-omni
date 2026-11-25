@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import logging
 import time
 from dataclasses import replace
 
+import aiohttp
 import httpx
 import pytest
+from aiohttp import web
 
 from benchmarks.benchmarker.conditions import (
     SWEEP_METRIC_NAMES,
@@ -35,7 +38,10 @@ from benchmarks.eval.benchmark_omni_streaming_ttft import (
     streaming_ttft_payload,
 )
 from benchmarks.realtime_asr.client import SessionTrace, _sender
-from benchmarks.tasks.audio_understanding import _build_request_payload
+from benchmarks.tasks.audio_understanding import (
+    _build_request_payload,
+    make_mmsu_send_fn,
+)
 from benchmarks.tasks.tts import TalkerSamplingParams, talker_sampling_params
 from benchmarks.tasks.video_understanding import make_video_send_fn
 from benchmarks.tasks.visual_understand import make_mmmu_send_fn
@@ -419,3 +425,87 @@ async def test_rollout_request_uses_per_index_seed_and_talker() -> None:
     await send_fn(session, sample)
     assert session.payloads[0]["seed"] == 11
     assert session.payloads[0]["talker_temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("benchmark", ["mmmu", "mmsu"])
+@pytest.mark.parametrize("ending", ["complete", "truncated", "error"])
+async def test_omni_text_stream_preserves_text_usage_and_failure(
+    benchmark: str, ending: str
+) -> None:
+    """A partial or failed stream cannot become a successful scored answer."""
+
+    async def respond(request: web.Request) -> web.Response:
+        payload = await request.json()
+        assert payload["stream"] is True
+        assert payload["modalities"] == ["text"]
+        events = [
+            {"choices": [{"delta": {"role": "assistant", "content": ""}}]},
+            {"choices": [{"delta": {"content": "Answer: "}}]},
+            {"choices": [{"delta": {"content": "A"}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"prompt_tokens": 12, "completion_tokens": 3}},
+            {
+                "choices": [],
+                "sglext": {"spec_tokens_details": {"spec_accept_length": 2}},
+            },
+        ]
+        if ending == "error":
+            events.append({"error": {"message": "verify failed"}})
+        body = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+        if ending == "complete":
+            body += "data: [DONE]\n\n"
+        return web.Response(text=body, content_type="text/event-stream")
+
+    application = web.Application()
+    application.router.add_post("/v1/chat/completions", respond)
+    runner = web.AppRunner(application)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = runner.addresses[0][1]
+    url = f"http://127.0.0.1:{port}/v1/chat/completions"
+    if benchmark == "mmmu":
+        sample = MMMUSample(
+            sample_id="sample",
+            question="Question",
+            options=["yes", "no"],
+            answer="A",
+            image_data_uris=(),
+            subject="test",
+            prompt="Question",
+        )
+        send = make_mmmu_send_fn("model", url, stream=True)
+    else:
+        sample = MmsuSample(
+            sample_id="sample",
+            audio_path="sample.wav",
+            question="Question",
+            choices=["yes", "no"],
+            answer_text="yes",
+            answer_index=0,
+            task_name="test",
+            category="test",
+            sub_category="",
+            sub_sub_category="",
+            linguistics_sub_discipline="",
+        )
+        send = make_mmsu_send_fn("model", url, stream=True)
+    try:
+        async with aiohttp.ClientSession() as session:
+            result = await send(session, sample)
+    finally:
+        await runner.cleanup()
+    if ending == "complete":
+        assert result.is_success
+        assert result.text == "Answer: A"
+        assert result.prompt_tokens == 12
+        assert result.completion_tokens == 3
+        assert result.finish_reason is FinishReason.STOP
+        assert 0 <= result.text_ttft_s <= result.latency_s
+    else:
+        assert not result.is_success
+        assert (
+            "[DONE]" in result.error
+            if ending == "truncated"
+            else "verify failed" in result.error
+        )

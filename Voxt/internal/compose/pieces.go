@@ -44,6 +44,9 @@ type Part struct {
 // Every part has the whole input's system prompt and its piece as the user
 // message (after the glossary picked from the whole text, when it is there):
 // the parts share their prefix, which the model's prompt cache keeps.
+//
+// note (luojiaxuan): with Input.Before, each part's user message opens with
+// the cleaned text before the input (before.go).
 func BuildParts(in Input) ([]Part, error) {
 	out, err := Build(in)
 	if err != nil {
@@ -55,8 +58,9 @@ func BuildParts(in Input) ([]Part, error) {
 	pieces := LanguagePieces(in.Text)
 	parts := make([]Part, len(pieces))
 	for i, p := range pieces {
-		o := out
-		o.User = out.withGlossary(UserMessage(p.Text))
+		o, piece := out, in
+		piece.Text = p.Text
+		o.User = out.withGlossary(userMessage(piece))
 		parts[i] = Part{Output: o, Piece: p}
 	}
 	return parts, nil
