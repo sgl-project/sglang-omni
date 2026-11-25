@@ -34,6 +34,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -51,6 +52,8 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// wave plays sess's levels out for the waveform (overlayWave).
+	wave layout.WavePlay
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
@@ -362,6 +365,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	a.wave.Feed(s.ID, s.Levels, s.LevelCount, time.Now())
 	if a.box.open {
 		if s.ID == a.box.session {
 			if s.Selection != "" {

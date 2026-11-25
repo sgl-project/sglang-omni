@@ -108,6 +108,18 @@ func Place(wa mygo.Rectangle, o settings.Overlay, w, h int) (int, int) {
 	return x, y
 }
 
+// LoaderDotsW is the working pill's loader: five dots of 5, 4 apart.
+const LoaderDotsW = 5*5 + 4*4
+
+// LoaderSlotW is the loader's slot in the working pill when capsules
+// (capsules DIPs wide, the Gaps between them in) follow it: the room the
+// feature's name (title DIPs wide) and the waveform's slot had in the
+// recording pill, less the capsules', so that the row is as wide as it was;
+// at least the dots.
+func LoaderSlotW(title, capsules float32) float32 {
+	return max(LoaderDotsW, title+WaveSlotW-capsules)
+}
+
 // RowWidth is the width of the pill's row before the recording time: the
 // icon and waveform, then the group's name when one matched (scene DIPs wide,
 // at most SceneMaxW; 0 for none).
@@ -267,14 +279,17 @@ const (
 	WaveW       = session.Bars*WaveBarW + (session.Bars-1)*WaveBarGap // 88.7
 )
 
+// Wave is the waveform's bars, 0–1 each, the newest last.
+type Wave = [session.Bars]float64
+
 // WaveBars turns the last levels (session.Level, oldest first, about 20
 // a second) into the bars' heights, 0–1: each level lifted so that quiet
 // speech shows and room noise does not, then followed quickly as it rises
 // and slowly as it falls (Voxt's waveform: rise 0.82, fall 0.24 a frame),
 // so the bars swell with a word and ebb after it. Missing levels (the
 // recording's first second) are 0.
-func WaveBars(levels []float64) [session.Bars]float64 {
-	var out [session.Bars]float64
+func WaveBars(levels []float64) Wave {
+	var out Wave
 	pad := session.Bars - len(levels)
 	if pad < 0 {
 		levels, pad = levels[-pad:], 0
@@ -283,16 +298,24 @@ func WaveBars(levels []float64) [session.Bars]float64 {
 	for i := range session.Bars {
 		x := 0.0
 		if i >= pad {
-			x = waveLift(levels[i-pad])
+			x = levels[i-pad]
 		}
-		if x >= s {
-			s += (x - s) * 0.82
-		} else {
-			s += (x - s) * 0.24
-		}
-		out[i] = min(max(s, 0), 1)
+		s = waveFollow(s, x)
+		out[i] = s
 	}
 	return out
+}
+
+// waveFollow is the bar after s for the next level: lifted, then met
+// quickly from below and slowly from above.
+func waveFollow(s, level float64) float64 {
+	x := waveLift(level)
+	if x >= s {
+		s += (x - s) * 0.82
+	} else {
+		s += (x - s) * 0.24
+	}
+	return min(max(s, 0), 1)
 }
 
 // waveLift maps a level (0 at −60 dBFS, 1 at 0 dBFS) to a bar: below

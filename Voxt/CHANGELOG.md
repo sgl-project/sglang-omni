@@ -20,10 +20,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 
 - **MOSS-Transcribe-Diarize is the recommended speech model** (#4067): the setup guide and Home now download MOSS-Transcribe-Diarize with its 262 MB DFlash draft (2.1 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. It knows Chinese and English. It takes no dictionary or Speech context while it recognises: while every feature uses such a model, the Speech models page says so under Speech context, which meeting transcript correction still reads, and your dictionary still guides the language model's clean-up. Qwen3-ASR stays on the Speech models page, and a Qwen3-ASR another ActNow app installed is offered in the guide instead of a download. A model you chose for a feature stays as chosen.
+- **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
+- **The pill keeps its width when you stop** (#4574): the dots take the waveform's place, and Use transcript takes the feature name's with them, so the row stays as wide and centred, and the microphone icon no longer jumps.
 - **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with its ⓘ in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 - **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
 - **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
+- **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
 
 ### Fixed
 
@@ -52,10 +55,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 
 - **推荐的语音识别模型改为 MOSS-Transcribe-Diarize**（#4067）：设置引导和首页现在下载 MOSS-Transcribe-Diarize 及其 262 MB 的 DFlash 草稿（共 2.1 GB），一开始就开着转录加速；装好后“自动”优先用它。它支持中文和英语，识别时不用词典和识别上下文：所有功能都用这类模型时，语音识别模型页在“识别上下文”下注明这一点，会议转录稿校对仍会读它，词典仍用于语言模型整理。Qwen3-ASR 仍在语音识别模型页上，其他 ActNow app 装过的 Qwen3-ASR 会在引导里作为不用下载的选择。你在功能里明确选过的模型不变。
+- **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
+- **停止后浮窗不再跳**（#4574）：圆点接替波形的位置，“用识别原文”出现时和圆点一起接替功能名的位置，整行宽度不变、仍然居中，麦克风图标不再跳动。
 - **词典页更清楚**（#4597）：和片段页一样改成一栏。标题下一行说明这个页面做什么；词条放在一张卡片里，每条下面是可能听成的写法和备注，开关在右边；点词条就能编辑，指针移上去才出现删除。建议单独一张卡片，按钮是“添加”。词典的几个开关（使用词典、识别热词、语言模型术语表、从我的改正中学习）和“扫描历史”移进“词典设置”（“添加词条”旁边的齿轮），每个开关的 ⓘ 讲清它的作用，取代原来折叠的“词典的用法”；词典关掉时页面上会提示，并有“打开”按钮。有两个以上词典配置时，当前配置显示在标题旁边，点开可以切换、重命名或删除；“新建词典配置…”在 ⋯ 菜单里。词条对话框里的“别名”改叫“可能听成”。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
 - **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
+- **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
 
 #### 修复
 
