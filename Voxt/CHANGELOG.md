@@ -84,6 +84,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
+- **Offline Final timing breaks out speech detection, PCM compaction, multipart upload, HTTP headers and event-stream reading**: content-free timing events share one request ID, with no transcript or audio content.
 - **Faster transcription for Qwen3-ASR 1.7B (6bit)**: its card gets the Faster transcription switch, using the same 726 MB draft as 1.7B (8bit), downloaded once for both. It stays off until you switch it on: the draft came with the 8bit's download, which never said yes for the 6bit.
 - **Transcribe clean-up per app group** (#3893): choose Use default, On or Off in App enhancement. Keep clean-up off globally and enable it for messaging apps, or disable it for terminals while keeping it on elsewhere. Off skips the language model. Existing groups keep using the global setting.
 - **History details resize and remember their width** (#4186): drag the divider between the entry list and the details from 290 to 350 DIP; the arrow keys adjust it, a double-click resets it, and narrow windows keep the drawer.
@@ -137,6 +138,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
+- **离线 Final 计时拆分语音检测、PCM 压缩、multipart 上传、HTTP 响应头和事件流读取**：计时事件使用同一个请求 ID，不含转写文本或音频内容。
 - **Qwen3-ASR 1.7B (6bit) 支持转录加速**：卡片上有了转录加速开关，与 1.7B (8bit) 共用同一个 726 MB 的草稿模型，下载一次两个都能用。默认保持关闭：草稿是随 8bit 下载的，并没有替 6bit 答应过开启。
 - **按 App 分组设置转录整理**（#3893）：在应用增强中选择“使用默认值”“已开启”或“已关闭”。可以全局关闭整理，只为聊天 App 开启，也可以全局开启、为终端关闭。关闭时跳过语言模型。已有分组继续使用全局设置。
 - **历史详情可以调宽并记住宽度**（#4186）：拖动列表和详情之间的分隔条，宽度在 290 到 350 DIP 之间；方向键微调，双击复原，窗口较窄时仍是抽屉样式。
