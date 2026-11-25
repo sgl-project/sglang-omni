@@ -552,30 +552,28 @@ def test_request_settings_override_server_settings_per_key(
 
 
 @pytest.mark.parametrize(
-    ("cache_dit_params", "request_options", "message"),
+    ("cache_dit_params", "message"),
     [
         (
             {"unknown_knob": 1},
-            {},
             r"Unknown cache_dit_params keys: \['unknown_knob'\]\. Valid keys: "
             r"\['Bn_compute_blocks', 'Fn_compute_blocks', 'max_continuous_cached_steps', "
             r"'max_warmup_steps', 'residual_diff_threshold'\]\.$",
         ),
-        ({"enable_dmd": True}, {}, "does not support"),
-        ({"secondary": {}}, {}, "does not support"),
-        ({"enable_taylorseer": True}, {}, "DBCache settings only"),
-        ({"taylorseer_order": 2}, {}, "DBCache settings only"),
-        ({"scm_preset": "fast"}, {}, "DBCache settings only"),
-        ({"scm_policy": "static"}, {}, "DBCache settings only"),
+        ({"enable_dmd": True}, "does not support"),
+        ({"secondary": {}}, "does not support"),
+        ({"enable_taylorseer": True}, "DBCache settings only"),
+        ({"taylorseer_order": 2}, "DBCache settings only"),
+        ({"scm_preset": "fast"}, "DBCache settings only"),
+        ({"scm_policy": "static"}, "DBCache settings only"),
         (
             {"scm_compute_bins": [2], "scm_cache_bins": [2]},
-            {},
             "DBCache settings only",
         ),
-        ({"Fn_compute_blocks": 0}, {}, "Fn_compute_blocks"),
-        ({"Bn_compute_blocks": True}, {}, "Bn_compute_blocks"),
-        ({"residual_diff_threshold": 1.5}, {}, "residual_diff_threshold"),
-        ({"Fn_compute_blocks": 2, "Bn_compute_blocks": 1}, {}, "decoder layers"),
+        ({"Fn_compute_blocks": 0}, "Fn_compute_blocks"),
+        ({"Bn_compute_blocks": True}, "Bn_compute_blocks"),
+        ({"residual_diff_threshold": 1.5}, "residual_diff_threshold"),
+        ({"Fn_compute_blocks": 2, "Bn_compute_blocks": 1}, "decoder layers"),
     ],
 )
 @pytest.mark.parametrize("switch_source", ["request", "server"])
@@ -583,7 +581,6 @@ def test_unservable_cache_dit_requests_are_rejected(
     monkeypatch: pytest.MonkeyPatch,
     checkpoint_path: str,
     cache_dit_params: dict[str, JsonValue] | None,
-    request_options: dict[str, JsonValue],
     message: str,
     switch_source: str,
 ) -> None:
@@ -591,21 +588,15 @@ def test_unservable_cache_dit_requests_are_rejected(
         monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
     else:
         pass
-    edit = bool(request_options.get("edit", False))
-    sampling_options = {
-        name: value for name, value in request_options.items() if name != "edit"
-    }
 
     def sampling_params(enable_cache_dit: bool | None) -> SenseNovaU1SamplingParams:
         return SenseNovaU1SamplingParams(
-            prompt="edit" if edit else "a red apple",
-            image_path="reference.png" if edit else None,
+            prompt="a red apple",
             width=64,
             height=64,
             num_inference_steps=STEPS,
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
-            **sampling_options,
         )
 
     rejected = sampling_params(True if switch_source == "request" else None)
@@ -616,22 +607,30 @@ def test_unservable_cache_dit_requests_are_rejected(
     assert (accepted.enable_cache_dit, accepted.cache_dit_params) == (False, None)
 
 
-UNSUPPORTED_GUIDANCE = [
-    pytest.param(
-        {"edit": True, "img_cfg_scale": 2.0},
-        "editing with three guidance branches, where img_cfg_scale is neither 1 "
-        "nor equal to guidance_scale",
-        id="three-branch-edit",
-    ),
-    pytest.param(
-        {"cfg_interval": (0.0, 0.5)},
-        r"guidance on only part of the steps, with cfg_interval other than \(0\.0, 1\.0\)",
-        id="partial-cfg-interval",
-    ),
-]
+THREE_BRANCH_EDIT = {
+    "prompt": "edit",
+    "image_path": "reference.png",
+    "img_cfg_scale": 2.0,
+}
+PARTIAL_CFG_INTERVAL = {"prompt": "a red apple", "cfg_interval": (0.0, 0.5)}
 
 
-@pytest.mark.parametrize(("request_options", "message"), UNSUPPORTED_GUIDANCE)
+@pytest.mark.parametrize(
+    ("request_options", "message"),
+    [
+        pytest.param(
+            THREE_BRANCH_EDIT,
+            "editing with three guidance branches, where img_cfg_scale is neither 1 "
+            "nor equal to guidance_scale",
+            id="three-branch-edit",
+        ),
+        pytest.param(
+            PARTIAL_CFG_INTERVAL,
+            r"guidance on only part of the steps, with cfg_interval other than \(0\.0, 1\.0\)",
+            id="partial-cfg-interval",
+        ),
+    ],
+)
 def test_unsupported_guidance_fails_only_an_explicit_enable(
     monkeypatch: pytest.MonkeyPatch,
     checkpoint_path: str,
@@ -640,21 +639,15 @@ def test_unsupported_guidance_fails_only_an_explicit_enable(
 ) -> None:
     """The server switch runs unsupported guidance uncached; only a request's own enable is refused."""
     monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
-    edit = bool(request_options.get("edit", False))
-    sampling_options = {
-        name: value for name, value in request_options.items() if name != "edit"
-    }
 
     def sampling_params(enable_cache_dit: bool | None) -> SenseNovaU1SamplingParams:
         return SenseNovaU1SamplingParams(
-            prompt="edit" if edit else "a red apple",
-            image_path="reference.png" if edit else None,
             width=64,
             height=64,
             num_inference_steps=STEPS,
             enable_cache_dit=enable_cache_dit,
             cache_dit_params={"residual_diff_threshold": 0.5},
-            **sampling_options,
+            **request_options,
         )
 
     explicit = sampling_params(True)
@@ -676,32 +669,29 @@ def test_unsupported_guidance_fails_only_an_explicit_enable(
         ({"Fn_compute_blocks": 2, "Bn_compute_blocks": 1}, "decoder layers"),
     ],
 )
-@pytest.mark.parametrize(("request_options", "guidance_message"), UNSUPPORTED_GUIDANCE)
+@pytest.mark.parametrize(
+    "request_options",
+    [THREE_BRANCH_EDIT, PARTIAL_CFG_INTERVAL],
+    ids=["three-branch-edit", "partial-cfg-interval"],
+)
 def test_server_switch_still_rejects_invalid_settings_with_unsupported_guidance(
     monkeypatch: pytest.MonkeyPatch,
     checkpoint_path: str,
     cache_dit_params: dict[str, JsonValue],
     message: str,
     request_options: dict[str, JsonValue],
-    guidance_message: str,
 ) -> None:
     """Falling back to an uncached run must not hide settings that would fail a cached one."""
     monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
-    edit = bool(request_options.get("edit", False))
-    sampling_options = {
-        name: value for name, value in request_options.items() if name != "edit"
-    }
 
     def sampling_params(enable_cache_dit: bool | None) -> SenseNovaU1SamplingParams:
         return SenseNovaU1SamplingParams(
-            prompt="edit" if edit else "a red apple",
-            image_path="reference.png" if edit else None,
             width=64,
             height=64,
             num_inference_steps=STEPS,
             enable_cache_dit=enable_cache_dit,
             cache_dit_params=cache_dit_params,
-            **sampling_options,
+            **request_options,
         )
 
     defaulted = sampling_params(None)
