@@ -11,13 +11,17 @@ import pytest
 from benchmarks.duplex.v15_audio import reconstruct_output
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client.client import Client
-from sglang_omni.models.qwen3_omni_d2.config import Qwen3OmniD2PipelineConfig
+from sglang_omni.models.qwen3_omni_d2.config import (
+    MAX_SESSIONS,
+    Qwen3OmniD2PipelineConfig,
+)
 from sglang_omni.models.qwen3_omni_d2.realtime import (
     D2OutputConverter,
     create_realtime_deployment,
 )
-from sglang_omni.models.qwen3_omni_d2.runtime import D2Frame, D2Runtime
-from sglang_omni.models.qwen3_omni_d2.stages import D2SessionHooks, D2SessionScheduler
+from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
+from sglang_omni.models.qwen3_omni_d2.session import D2Frame
+from sglang_omni.models.qwen3_omni_d2.stages import D2SessionHooks
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -27,6 +31,7 @@ from sglang_omni.proto.session import (
     SessionOperationKind,
     TimedChunk,
 )
+from sglang_omni.scheduling.session import SessionScheduler
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     ResponseFinished,
@@ -37,8 +42,16 @@ from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.types import RuntimeLimits
 
 
+def duplex_stage(runtime: D2Runtime, interval_ms: int) -> SessionScheduler:
+    return SessionScheduler(
+        D2SessionHooks(runtime, interval_ms),
+        max_open_sessions=MAX_SESSIONS,
+        max_concurrency=1,
+    )
+
+
 def submit(
-    stage: D2SessionScheduler,
+    stage: SessionScheduler,
     identity: SessionIdentity,
     operation: SessionOperationKind,
     chunk: TimedChunk | None = None,
@@ -79,7 +92,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
         playback(3, "!"),
     ]
     runtime.step.return_value = frames
-    stage = D2SessionScheduler(D2SessionHooks(runtime, interval_ms=320))
+    stage = duplex_stage(runtime, interval_ms=320)
     identity = SessionIdentity("conversation")
     submit(stage, identity, "open")
     pcm16 = b"\xfe\x80" * 4800 + bytes(640)
@@ -145,7 +158,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
 
 def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) -> None:
     runtime = Mock(spec=D2Runtime)
-    stage = D2SessionScheduler(D2SessionHooks(runtime, interval_ms=80))
+    stage = duplex_stage(runtime, interval_ms=80)
     (tmp_path / "d2.json").write_text(
         '{"format":"d2.release.v1","family":"qwen","latency_ms":80}'
     )
@@ -169,7 +182,6 @@ def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) 
         submit(
             stage, identity, "append", TimedChunk("audio", 80, 1, 1, bytes(32), "pcm16")
         )
-    runtime.close_session.assert_called_once_with()
     submit(stage, reopened, "open")
     convert = deployment.adapter_factory().output_converter
     runtime.step.return_value = [playback(0, "fresh")]
@@ -191,4 +203,4 @@ def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) 
     assert first[0].response_id != second[0].response_id
     assert isinstance(second[-1], ResponseFinished) and second[-1].text == "fresh"
     submit(stage, reopened, "close")
-    assert runtime.close_session.call_count == 2
+    assert runtime.open_session.call_count == 2

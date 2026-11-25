@@ -146,7 +146,6 @@ def test_cached_release_serves_without_repository_metadata_files(
     scheduler = create_scheduler(
         f"example/d2@{revision}",
         device="cpu",
-        runtime_python="python",
         kv_budget=128,
         seed=1,
         language="auto",

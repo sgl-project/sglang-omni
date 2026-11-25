@@ -9,6 +9,7 @@ from sglang_omni.models.qwen3_omni_d2.config import (
     NATIVE_FRAME_MS,
     D2Language,
 )
+from sglang_omni.models.qwen3_omni_d2.release import RELEASE_FILES
 from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -32,16 +33,9 @@ class D2SessionHooks(SessionHooks):
         )
 
     def warm_up_serving_thread(self) -> None:
-        """Compile the fixed system prompt and first interval before admitting a caller."""
-        try:
-            self.runtime.open_session()
-            try:
-                self.runtime.step(bytes(self.input_bytes_per_interval))
-            finally:
-                self.runtime.close_session()
-        except BaseException:
-            self.runtime.shutdown()
-            raise
+        """Run the system prompt and one silent interval on the serving thread before admitting a caller."""
+        self.runtime.open_session()
+        self.runtime.step(bytes(self.input_bytes_per_interval))
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.runtime.open_session()
@@ -80,34 +74,19 @@ class D2SessionHooks(SessionHooks):
         return payload
 
     def close(self, session_identity: SessionIdentity) -> None:
-        self.runtime.close_session()
-
-
-class D2SessionScheduler(SessionScheduler):
-    def __init__(self, hooks: D2SessionHooks) -> None:
-        super().__init__(hooks, max_open_sessions=MAX_SESSIONS, max_concurrency=1)
-        self.runtime = hooks.runtime
-
-    def start(self) -> None:
-        try:
-            super().start()
-        finally:
-            self.runtime.shutdown()
+        """Nothing outlives a conversation: the next open resets the fixed caches."""
 
 
 def create_scheduler(
     model_path: str,
     *,
-    runtime_python: str,
     kv_budget: int,
     seed: int,
     language: D2Language,
     device: str | None = None,
     gpu_id: int | None = None,
-) -> D2SessionScheduler:
-    release_directory = resolve_checkpoint(
-        model_path, allow_patterns=["d2.json", "d2.safetensors", "encoder.safetensors"]
-    )
+) -> SessionScheduler:
+    release_directory = resolve_checkpoint(model_path, allow_patterns=RELEASE_FILES)
     interval_ms = qwen_d2_interval_ms(release_directory)
     if interval_ms is None:
         raise ValueError("Expected a Qwen3-Omni D2 release with a d2.json manifest")
@@ -115,9 +94,12 @@ def create_scheduler(
         runtime = D2Runtime(
             model_path=release_directory,
             device=str(resolve_concrete_device(device, gpu_id)),
-            runtime_python=runtime_python,
             kv_budget=kv_budget,
             seed=seed,
             language=language,
         )
-        return D2SessionScheduler(D2SessionHooks(runtime, interval_ms))
+        return SessionScheduler(
+            D2SessionHooks(runtime, interval_ms),
+            max_open_sessions=MAX_SESSIONS,
+            max_concurrency=1,
+        )

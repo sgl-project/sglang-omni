@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Choose a Mandarin opening word from the D2 Thinker's legal lexical tokens."""
+"""Mandarin replies: a Mandarin system prompt and a Han opening word in place of a Latin one."""
 
 import unicodedata
 
 import torch
 from tokenizers import Tokenizer
+
+MANDARIN_PROMPT = "你是一位普通话语音助手。即使问题很短，也用有主语和谓语的完整中文句子，让听众单凭声音就能听懂。在回答中自然提到问题的主题，不只说孤立的一个字、字母或数字。说一次，答完就安静等待。"
 
 
 def is_han(character: str) -> bool:
@@ -17,7 +19,7 @@ class MandarinOpening:
     def __init__(
         self,
         tokenizer: Tokenizer,
-        excluded_ids: set[int],
+        excluded_ids: frozenset[int],
         response_id: int,
         device: torch.device,
     ) -> None:

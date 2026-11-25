@@ -1,105 +1,85 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Session-scoped access to the D2 GPU worker in its own Python environment."""
+"""The resident D2 model and its captured graphs, serving one conversation at a time."""
 
-import os
-import socket
-import subprocess
-import threading
-from multiprocessing.connection import Connection
-from pathlib import Path
+import logging
 
-from pydantic import BaseModel, ConfigDict, Field
+import torch
 
 from sglang_omni.admission import ContextExhaustedError
-from sglang_omni.models.qwen3_omni_d2.config import D2Language
+from sglang_omni.models.qwen3_omni_d2.config import NATIVE_FRAME_MS, D2Language
+from sglang_omni.models.qwen3_omni_d2.mandarin import MANDARIN_PROMPT, MandarinOpening
+from sglang_omni.models.qwen3_omni_d2.release import load_d2_model, resolve_release
+from sglang_omni.models.qwen3_omni_d2.session import D2Frame, D2Session
+from sglang_omni.utils.device import device_guard
 
+logger = logging.getLogger(__name__)
 
-class D2Frame(BaseModel):
-    """Playback and Thinker output for one native frame."""
-
-    model_config = ConfigDict(val_json_bytes="base64")
-
-    pcm16: bytes
-    text_delta: str
-    sequence: int
-    is_interruption: bool
-
-
-class WorkerReply(BaseModel):
-    frames: list[D2Frame] = Field(default_factory=list)
-    error: str | None = None
+CONVERSATION_PROMPT = (
+    "You are a helpful spoken conversational assistant. "
+    "Respond naturally when the user finishes speaking."
+)
+# Environment audio, delayed self audio and text each take one Thinker token per frame.
+THINKER_TOKENS_PER_FRAME = 3
 
 
 class D2Runtime:
-    """Keep a single resident model and serialize access to its captured graphs."""
+    """Load the release once; each conversation reuses the same fixed caches and graphs."""
 
     def __init__(
         self,
         model_path: str,
         device: str,
-        runtime_python: str,
         kv_budget: int,
         seed: int,
         language: D2Language,
     ) -> None:
-        self.operation_lock = threading.Lock()
-        stage_socket, worker_socket = socket.socketpair()
-        with stage_socket, worker_socket:
-            self.process = subprocess.Popen(
-                [
-                    runtime_python,
-                    "-I",
-                    str(Path(__file__).with_name("worker")),
-                    str(worker_socket.fileno()),
-                    str(os.getpid()),
-                    model_path,
-                    device,
-                    str(kv_budget),
-                    str(seed),
-                    language,
-                ],
-                pass_fds=(worker_socket.fileno(),),
+        self.device = torch.device(device)
+        with torch.no_grad(), device_guard(self.device):
+            model = load_d2_model(resolve_release(model_path), self.device)
+            prompt = MANDARIN_PROMPT if language == "zh" else CONVERSATION_PROMPT
+            prompt_token_ids = model.tokenizer.encode(
+                f"<|im_start|>system\n{prompt}<|im_end|>\n", add_special_tokens=False
             )
-            self.connection = Connection(stage_socket.detach())
-        try:
-            self.receive_reply()
-        except BaseException:
-            self.shutdown()
-            raise
-
-    def receive_reply(self) -> list[D2Frame]:
-        try:
-            reply = WorkerReply.model_validate_json(self.connection.recv_bytes())
-        except (EOFError, ConnectionResetError) as error:
-            raise RuntimeError(
-                "The D2 worker exited. Check the stage logs and runtime_python environment."
-            ) from error
-        if reply.error is None:
-            return reply.frames
-        elif reply.error.startswith(f"{ContextExhaustedError.CODE}:"):
-            raise ContextExhaustedError(reply.error)
-        else:
-            raise RuntimeError(reply.error)
-
-    def execute(self, command: bytes) -> list[D2Frame]:
-        with self.operation_lock:
-            self.connection.send_bytes(command)
-            return self.receive_reply()
+            interval_tokens = THINKER_TOKENS_PER_FRAME * model.interval_frames
+            capacity_frames = kv_budget // interval_tokens * model.interval_frames
+            self.max_frames = (
+                (THINKER_TOKENS_PER_FRAME * capacity_frames - len(prompt_token_ids))
+                // interval_tokens
+                * model.interval_frames
+            )
+            if self.max_frames < model.interval_frames:
+                raise ValueError(
+                    "D2 KV budget cannot hold the system prompt and one interval"
+                )
+            elif language == "zh":
+                tokenizer = model.tokenizer
+                opening = MandarinOpening(
+                    tokenizer.backend_tokenizer,
+                    model.special_token_ids,
+                    model.response_token_id,
+                    self.device,
+                )
+            else:
+                opening = None
+            self.session = D2Session(
+                model, capacity_frames, prompt_token_ids, seed, opening
+            )
+        self.interval_frames = model.interval_frames
+        logger.info(
+            f"Qwen3-Omni D2 ready: {model.interval_frames * NATIVE_FRAME_MS} ms interval, "
+            f"{self.max_frames} frames per conversation, language={language}"
+        )
 
     def open_session(self) -> None:
-        self.execute(b"open")
+        with torch.no_grad(), device_guard(self.device):
+            self.session.reset()
 
     def step(self, pcm16: bytes) -> list[D2Frame]:
-        return self.execute(b"pcm:" + pcm16)
-
-    def close_session(self) -> None:
-        self.execute(b"close")
-
-    def shutdown(self) -> None:
-        with self.operation_lock:
-            self.connection.close()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+        """Advance one interval; the fixed Thinker cache bounds the conversation length."""
+        if self.session.frames + self.interval_frames > self.max_frames:
+            raise ContextExhaustedError(
+                f"{ContextExhaustedError.CODE}: D2 session reached its fixed context limit"
+            )
+        else:
+            with torch.no_grad(), device_guard(self.device):
+                return self.session.step(pcm16)

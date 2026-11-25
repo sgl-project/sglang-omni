@@ -6,7 +6,7 @@ import torch
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from sglang_omni.models.qwen3_omni_d2.worker.mandarin_tokens import MandarinOpening
+from sglang_omni.models.qwen3_omni_d2.mandarin import MandarinOpening
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def opening() -> MandarinOpening:
         "�",
     ]
     tokenizer = Tokenizer(WordLevel({piece: i for i, piece in enumerate(pieces)}))
-    return MandarinOpening(tokenizer, {0, 1, 2, 8}, 1, torch.device("cpu"))
+    return MandarinOpening(tokenizer, frozenset({0, 1, 2, 8}), 1, torch.device("cpu"))
 
 
 def test_mandarin_first_word_after_response(opening: MandarinOpening) -> None:

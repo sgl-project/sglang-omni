@@ -1,34 +1,24 @@
 # Qwen3-Omni D2
 
-Qwen3-Omni D2 listens and speaks on the same audio timeline. SGLang-Omni serves a single conversation over `/v1/realtime`. The D2 worker owns the causal audio encoder, Thinker and Talker caches, Code2Wav and delayed self-audio feedback. [Paper](https://arxiv.org/abs/2610.17124) · [Official implementation](https://github.com/penguinfish1688/D2-dialogue-to-duplex/tree/13ac442f013665a2b9cfd882c5966ccdeda3594a/qwen3-omni-D2)
+Qwen3-Omni D2 listens and speaks on the same audio timeline. SGLang-Omni serves a single conversation over `/v1/realtime`. One stage process owns the causal audio encoders, Thinker, Talker, CodePredictor and Code2Wav, their fixed KV caches and the delayed self-audio feedback. [Paper](https://arxiv.org/abs/2610.17124) · [Official implementation](https://github.com/penguinfish1688/D2-dialogue-to-duplex/tree/13ac442f013665a2b9cfd882c5966ccdeda3594a/qwen3-omni-D2)
 
 ## Install and launch
 
-Install SGLang-Omni in its [CUDA environment](../get_started/installation.md). Create a second Python 3.12 environment for the D2 worker. Its release pins PyTorch 2.11 and Transformers 5.13. Inference uses BF16 and compiled CUDA graphs. The authors recommend an RTX PRO 6000 Blackwell with 96 GB of GPU memory, 96 GB of system RAM, a C++ compiler and Python development headers.
+Install SGLang-Omni in its [CUDA environment](../get_started/installation.md). D2 runs inside the Omni environment with the PyTorch and Transformers versions Omni pins; no separate D2 package or second environment is needed. Inference uses BF16 and CUDA graphs over fixed KV caches. The weights take about 70 GB of GPU memory, so use one GPU with at least 96 GB. The captured expert kernels need a Hopper GPU such as an H200.
 
-```bash
-git clone https://github.com/penguinfish1688/D2-dialogue-to-duplex.git
-git -C D2-dialogue-to-duplex checkout 13ac442f013665a2b9cfd882c5966ccdeda3594a
-uv venv --python 3.12 .venv-d2
-uv pip install --python .venv-d2/bin/python \
-  -c D2-dialogue-to-duplex/qwen3-omni-D2/configs/requirements.txt \
-  './D2-dialogue-to-duplex[qwen]'
-```
-
-Run the server from the Omni environment. The pinned 80 ms release downloads the D2 adapter, distilled encoder and the Qwen3-Omni-30B-A3B-Instruct revision named in its manifest. Set `HF_HOME` to a cache with room for at least 73 GB. The first launch also compiles GPU kernels.
+The pinned 80 ms release downloads the D2 adapter, distilled encoder and the Qwen3-Omni-30B-A3B-Instruct revision named in its manifest. Set `HF_HOME` to a cache with room for at least 73 GB. Loading the base model and capturing the graphs can exceed the default 600 s startup stall limit on a cold cache, so raise `SGLANG_OMNI_STARTUP_TIMEOUT`.
 
 ```bash
 D2_REV=0237f21b29d2a762750ddee08e37ec4fe8e00473
-sgl-omni serve \
+SGLANG_OMNI_STARTUP_TIMEOUT=1800 sgl-omni serve \
   --model-path "penguinfish1688/dialogue-to-duplex@${D2_REV}" \
-  --duplex.factory.runtime_python "$PWD/.venv-d2/bin/python" \
   --enable-realtime --port 8000
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
 This command starts D2 with Mandarin spoken replies. To select Mandarin explicitly, pass `--language=zh`. Use `--language=auto` to let the original checkpoint choose its response language. A pipeline YAML accepts the same top-level field (`language: zh` or `language: auto`). The setting applies to every conversation on that server.
 
-In Mandarin mode, D2 uses a Mandarin system prompt. If the Thinker would start a reply with a Latin word, the worker selects its highest-scoring allowed token beginning with two Chinese characters. The Talker synthesizes that choice directly. The model controls listening, interruptions and the rest of the reply.
+In Mandarin mode, D2 uses a Mandarin system prompt. If the Thinker would start a reply with a Latin word, the stage selects its highest-scoring allowed token beginning with two Chinese characters. The Talker synthesizes that choice directly. The model controls listening, interruptions and the rest of the reply.
 
 A local D2 release directory containing `d2.json`, `encoder.safetensors` and `d2.safetensors` also works as `--model-path`. The manifest selects the input interval. The 80 ms release consumes 1,280 input samples per interval. Other Qwen D2 revisions use 160, 320, 640 or 1040 ms intervals. The internal playback frame is always 80 ms.
 
@@ -56,23 +46,15 @@ When testing another D2 release, use the matching replay profile, for example `q
 
 ## Reference comparison
 
-To reproduce the comparisons below, launch Omni with `--language=auto` so it uses the same prompt and decoding policy as the reference runtime.
-
-On one RTX PRO 6000 Blackwell, a question asking for the sum of two and two produced the transcript “4” in the 80 ms release with seed 1337. The 160,166 input samples included trailing silence. Omni streamed 125 of 126 frames before input EOS, and all 241,920 output samples matched the official runtime byte for byte. A second session on the same server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). User speech resumed during the smartphone answer, D2 emitted an interrupt at 9.92 s on the media timeline, and its next reply discussed smartwatches.
-
-Each public checkpoint also answered the arithmetic question over WebSocket. Output length reflects padding the last input interval. The 80 ms and 320 ms runs included a separate official inference run with the same seed and input.
-
-| Checkpoint | Input intervals | Received 80 ms frames | Output samples at 24 kHz | Reference PCM |
-| --- | ---: | ---: | ---: | --- |
-| [80 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/0237f21b29d2a762750ddee08e37ec4fe8e00473) | 126 | 126 | 241,920 | Exact match |
-| [160 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/1f772b9aab3acac649bf6b972bef3ec71b635ef7) | 63 | 126 | 241,920 | Unmeasured |
-| [320 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/93d6ec8ba5068671d9199889bcbfa07b0d115606) | 32 | 128 | 245,760 | Exact match |
-| [640 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/c15b678d53073a2787ba5e3292f88793363c315f) | 16 | 128 | 245,760 | Unmeasured |
-| [1040 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/cbddf68f3b601593ea1d0cbda2163a53cffed151) | 10 | 130 | 249,600 | Unmeasured |
-
-To compare your own recording, stop the Omni server to release its GPU, then run the reference with the same input, revision, seed and trailing silence. It writes the waveform and a JSON file of per-frame events next to it.
+To reproduce a comparison, launch Omni with `--language=auto` so it uses the same prompt and decoding policy as the official runtime. Then stop the Omni server to release its GPU and run the official implementation on the same input, revision, seed and trailing silence. It needs its own Python 3.12 environment because it pins PyTorch 2.11 and Transformers 5.13. It writes the waveform and a JSON file of per-frame events next to it.
 
 ```bash
+git clone https://github.com/penguinfish1688/D2-dialogue-to-duplex.git
+git -C D2-dialogue-to-duplex checkout 13ac442f013665a2b9cfd882c5966ccdeda3594a
+uv venv --python 3.12 .venv-d2
+uv pip install --python .venv-d2/bin/python \
+  -c D2-dialogue-to-duplex/qwen3-omni-D2/configs/requirements.txt \
+  './D2-dialogue-to-duplex[qwen]'
 .venv-d2/bin/d2-qwen infer --model penguinfish1688/dialogue-to-duplex \
   --revision "$D2_REV" --seed 1337 --kv-budget 2048 --tail-seconds 0 \
   --input question-with-silence.wav --output d2-reference.wav

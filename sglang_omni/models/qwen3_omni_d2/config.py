@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """One GPU owns the D2 encoder, decoder caches and delayed playback feedback."""
 
-import sys
 from typing import ClassVar, Literal
 
 from pydantic import Field
@@ -17,7 +16,6 @@ D2Language = Literal["zh", "auto"]
 
 
 class D2FactoryArgs(FactoryArgs):
-    runtime_python: str = Field(default_factory=lambda: sys.executable, min_length=1)
     kv_budget: int = Field(default=2048, ge=128)
     seed: int = 1337
 
@@ -32,7 +30,6 @@ def duplex_stages() -> list[StageConfig]:
             name="duplex",
             process="duplex",
             gpu=0,
-            allow_child_processes=True,
             factory_path="sglang_omni.models.qwen3_omni_d2.stages.create_scheduler",
             terminal=True,
         )

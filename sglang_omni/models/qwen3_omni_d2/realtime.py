@@ -10,7 +10,7 @@ from sglang_omni.models.qwen3_omni_d2.config import (
     OUTPUT_SAMPLE_RATE_HZ,
     Qwen3OmniD2PipelineConfig,
 )
-from sglang_omni.models.qwen3_omni_d2.runtime import D2Frame
+from sglang_omni.models.qwen3_omni_d2.session import D2Frame
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
