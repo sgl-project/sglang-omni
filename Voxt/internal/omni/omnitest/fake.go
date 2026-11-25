@@ -80,9 +80,6 @@ type Opts struct {
 	// LiveDrop: the realtime socket closes at transcription.done without
 	// its answer, as a server that crashed.
 	LiveDrop bool
-	// note (chenye): LiveLateCandidate sends a provisional segment when the
-	// HTTP Final starts, while its authoritative answer is pending.
-	LiveLateCandidate bool
 	// LiveSegDelay slows the realtime partials after the first: the
 	// server's recognition of the later audio lags behind the socket.
 	LiveSegDelay time.Duration
@@ -119,7 +116,6 @@ func Env(o Opts) []string {
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
-	v.Set("livelatecandidate", strconv.FormatBool(o.LiveLateCandidate))
 	v.Set("livesegdelay", o.LiveSegDelay.String())
 	v.Set("livestall", strconv.FormatBool(o.LiveStall))
 	return []string{EnvFake + "=" + v.Encode()}
@@ -142,7 +138,6 @@ func opts() Opts {
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
-	o.LiveLateCandidate, _ = strconv.ParseBool(v.Get("livelatecandidate"))
 	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
 	o.LiveStall, _ = strconv.ParseBool(v.Get("livestall"))
 	if o.Text == "" {

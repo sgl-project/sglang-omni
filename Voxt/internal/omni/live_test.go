@@ -148,47 +148,30 @@ func TestLateCandidatesAreOptIn(t *testing.T) {
 		{"LiveResult", kindQwen3ASR, asr.StreamRequest{LatePartials: true, LiveResult: true}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := wantsLateCandidates(tc.request, true, tc.kind); got != tc.want {
-				t.Fatalf("late candidate eligibility %v, want %v", got, tc.want)
+			rt := NewRuntime(Config{IdleTimeout: -1})
+			t.Cleanup(rt.Close)
+			proc := &process{}
+			server := newServer(rt, Spec{ID: "candidate-test"}, "", "")
+			server.proc, server.leases = proc, 1
+			stream := &live{
+				a: &ASR{spec: Spec{Kind: tc.kind}}, ctx: context.Background(), cancel: func() {},
+				l: &lease{s: server, p: proc}, events: make(chan asr.Event, eventBuffer), finished: true,
+				lateCandidates: wantsLateCandidates(tc.request, true, tc.kind),
 			}
-			f := newFake(t, omnitest.Opts{LiveLateCandidate: true}, nil)
-			a := f.asr(t, ASRFast)
-			a.spec.Kind = tc.kind
-			tc.request.SampleRate = 16000
-			st, err := a.Open(context.Background(), tc.request)
-			if err != nil {
-				t.Fatal(err)
+			if stream.lateCandidates != tc.want {
+				t.Fatalf("late candidate eligibility %v, want %v", stream.lateCandidates, tc.want)
 			}
-			sendAll(t, st, tone(500*time.Millisecond, 0.3))
-			select {
-			case event := <-st.Events():
-				if event.Kind != asr.EventPartial {
-					t.Fatalf("ordinary partial %+v", event)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the ordinary partial was not emitted before Finish")
-			}
-			if err := st.Finish(); err != nil {
-				t.Fatal(err)
-			}
-			events := drain(t, st)
-			candidates := 0
-			for _, event := range events {
-				if event.Kind == asr.EventCandidate {
-					candidates++
-				}
-			}
-			want := 0
+			stream.handleSegment(realtimeEvent{Index: 1, Segment: 0, Text: "late transcript"})
+			stream.end(asr.Event{Kind: asr.EventFinal, Text: "authoritative transcript"})
+			events := drain(t, stream)
 			if tc.want {
-				want = 1
+				if len(events) != 2 || events[0].Kind != asr.EventCandidate || events[0].Text != "late transcript" {
+					t.Fatalf("candidate was not delivered before Final: %+v", events)
+				}
+			} else if len(events) != 1 {
+				t.Fatalf("ineligible candidate was emitted: %+v", events)
 			}
-			if candidates != want {
-				t.Errorf("%d candidates, want %d: %+v", candidates, want, events)
-			}
-			if len(events) == 0 {
-				t.Fatal("the stream closed without a terminal event")
-			}
-			if last := events[len(events)-1]; last.Kind != asr.EventFinal {
+			if last := events[len(events)-1]; last.Kind != asr.EventFinal || last.Text != "authoritative transcript" {
 				t.Fatalf("terminal event %+v", last)
 			}
 		})

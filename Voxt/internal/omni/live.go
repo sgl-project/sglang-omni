@@ -351,14 +351,7 @@ func (s *live) read() {
 			s.completed <- s.a.plainText(ev.Text)
 			return
 		case "transcription.segment":
-			s.mu.Lock()
-			text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
-			if ok && !s.finished {
-				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
-			} else if ok && text != "" && s.lateCandidates && s.ctx.Err() == nil {
-				s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
-			}
-			s.mu.Unlock()
+			s.handleSegment(ev)
 		case "error":
 			s.mu.Lock()
 			s.stopPreview("the server said " + ev.code())
@@ -366,6 +359,17 @@ func (s *live) read() {
 			s.conn.CloseNow()
 			return
 		}
+	}
+}
+
+func (s *live) handleSegment(ev realtimeEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
+	if ok && !s.finished {
+		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+	} else if ok && text != "" && s.lateCandidates && s.ctx.Err() == nil {
+		s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
 	}
 }
 

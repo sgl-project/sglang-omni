@@ -77,10 +77,9 @@ type headPart struct {
 }
 
 type headPlan struct {
-	heard   string
-	cleaned string
-	rest    string
-	parts   []headPart
+	heard string
+	rest  string
+	parts []headPart
 }
 
 type headGeneration struct {
@@ -186,7 +185,7 @@ func (h *headStart) normalize(live string) (headText, bool) {
 
 func (h *headStart) prepare(text headText) (headPlan, bool, bool) {
 	r := h.r
-	plan := headPlan{heard: text.heard, cleaned: text.cleaned}
+	plan := headPlan{heard: text.heard}
 	rest, ok := r.earlyCleanup().rest(text.cleaned)
 	if _, whole := snippet.Whole(text.cleaned, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
 		return plan, false, true
@@ -408,9 +407,25 @@ func (h *headStart) near(req llm.Request, text string) (*headCall, []spokenWord,
 // under way when there is one for it. Goroutine-safe.
 func (r *run) askPart(ctx context.Context, req llm.Request, text string) (llm.Response, error) {
 	h := &r.head
-	if c := h.find(req); c != nil && !h.failedLate(c) {
+	if c := h.find(req); c != nil && (!c.late || !h.failedLate(c)) {
 		r.logf("debug", "the language model was asked about this part ahead of the final text")
-		return c.join(req.OnDelta)
+		if !c.late {
+			return c.join(req.OnDelta)
+		}
+		resp, err := c.join(nil)
+		if err == nil {
+			c.mu.Lock()
+			deltas := c.held.String()
+			c.held.Reset()
+			c.mu.Unlock()
+			if deltas != "" && req.OnDelta != nil {
+				req.OnDelta(deltas)
+			}
+			return resp, nil
+		}
+		if ctx.Err() != nil || r.ctx.Err() != nil || !r.cleanupMayContinue() {
+			return resp, err
+		}
 	}
 	if c, old, changes := h.near(req, text); c != nil {
 		if resp, err, ok := h.reuse(c, old, changes, req, text); ok {
@@ -473,11 +488,8 @@ func (h *headStart) callError(c *headCall) (bool, error) {
 }
 
 func (h *headStart) failedLate(c *headCall) bool {
-	if !c.late {
-		return false
-	}
 	done, err := h.callError(c)
-	return done && err != nil
+	return c.late && done && err != nil
 }
 
 // join streams the answer so far and the rest into onDelta, and returns
