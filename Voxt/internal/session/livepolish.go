@@ -80,9 +80,17 @@ type liveResult struct {
 // it answered.
 type liveFlight struct {
 	liveResult
-	cancel context.CancelFunc
-	done   chan struct{}
-	ok     bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	updates      chan struct{}
+	parts        []compose.Part
+	answers      []string
+	partIndex    int
+	delta        strings.Builder
+	detached     bool
+	streamClosed bool
+	ok           bool
 }
 
 // note (luojiaxuan): hearLive takes a live text of the recording (asr.EventPartial) to the
@@ -269,18 +277,19 @@ func (lp *livePolish) work() {
 			return
 		}
 		ctx, cancel := context.WithCancel(lp.ctx)
-		f := &liveFlight{liveResult: job, cancel: cancel, done: make(chan struct{})}
+		f := &liveFlight{liveResult: job, ctx: ctx, cancel: cancel, done: make(chan struct{}), updates: make(chan struct{}, 1)}
 		lp.flight = f
 		lp.cond.Broadcast()
 		before := liveContext(joinResults(lp.blocks, lp.text))
 		lp.mu.Unlock()
 		start := time.Now()
-		res, err := lp.clean(ctx, job, before)
+		res, err := lp.clean(ctx, job, before, f)
 		cancelled := ctx.Err() != nil // note (luojiaxuan): before cancel: a failure of the service is not a cancellation
 		cancel()
 		lp.mu.Lock()
 		lp.flight = nil
 		f.liveResult, f.ok = res, err == nil
+		f.streamClosed = true
 		switch {
 		case lp.closed:
 			// note (luojiaxuan): finish took what it keeps without waiting for this request; a late answer is only the awaited flight's (f).
@@ -303,7 +312,7 @@ func (lp *livePolish) work() {
 
 // note (luojiaxuan): clean asks the language model to clean job's stretch, after before (the
 // blocks' cleaned text, "" for the first block).
-func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) (liveResult, error) {
+func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, flight *liveFlight) (liveResult, error) {
 	r := lp.r
 	in := r.transcribeInput(job.src)
 	in.Before = before
@@ -312,7 +321,13 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 		return job, err
 	}
 	job.parts = parts
-	for _, p := range parts {
+	lp.mu.Lock()
+	flight.parts = slices.Clone(parts)
+	flight.partIndex = 0
+	flight.delta.Reset()
+	lp.notifyFlightLocked(flight)
+	lp.mu.Unlock()
+	for partIndex, p := range parts {
 		if err := ctx.Err(); err != nil {
 			return job, err
 		}
@@ -321,14 +336,46 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 		lp.mu.Unlock()
 		req := r.m.cfg.llmDeadlines(llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: job.chars},
 			utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout))
+		lp.mu.Lock()
+		flight.partIndex = partIndex
+		flight.delta.Reset()
+		lp.mu.Unlock()
+		// Client.Chat suppresses retries after this callback emits; retrying could mix attempts in the adopted buffer.
+		req.OnDelta = func(delta string) {
+			if delta == "" {
+				return
+			}
+			lp.mu.Lock()
+			if !flight.detached && !flight.streamClosed && flight.partIndex == partIndex {
+				flight.delta.WriteString(delta)
+				lp.notifyFlightLocked(flight)
+			}
+			lp.mu.Unlock()
+		}
 		reqCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 		resp, err := lp.llm.Chat(reqCtx, req) // note (luojiaxuan): no picture and no snapshot change: newLivePolish runs only without a picture
 		cancel()
 		if err != nil {
 			return job, err
 		}
-		job.answers = append(job.answers, compose.CleanOutput(resp.Text, p.Text))
+		answer := compose.CleanOutput(resp.Text, p.Text)
+		job.answers = append(job.answers, answer)
 		job.usage = job.usage.Add(resp.Usage)
+		lp.mu.Lock()
+		if !flight.detached {
+			flight.answers = append(flight.answers, answer)
+			flight.partIndex = partIndex + 1
+			flight.delta.Reset()
+			lp.notifyFlightLocked(flight)
+		}
+		lp.mu.Unlock()
 	}
 	return job, nil
+}
+
+func (lp *livePolish) notifyFlightLocked(flight *liveFlight) {
+	select {
+	case flight.updates <- struct{}{}:
+	default:
+	}
 }

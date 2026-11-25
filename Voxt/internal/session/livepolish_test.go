@@ -13,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // note (luojiaxuan): liveLLM answers a clean-up with its input in brackets. A request whose
@@ -33,6 +34,13 @@ func newLiveLLM() *liveLLM {
 // note (luojiaxuan): liveCleanUp is r's first clean-up of the final text:
 // its text and error.
 func liveCleanUp(r *run, text string) (string, error) {
+	r.m.mu.Lock()
+	if r.m.cur == nil {
+		r.m.cur = r
+		r.m.rev++
+		r.m.snap = Snapshot{Rev: r.m.rev, ID: r.id, Kind: store.KindTranscribe, State: Composing}
+	}
+	r.m.mu.Unlock()
 	out := r.cleanUpFirst(text)
 	return out.text, out.err
 }
