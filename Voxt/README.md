@@ -158,6 +158,8 @@ Voxt is a Go app on [MyGo](https://github.com/egoist/mygo), with a small Swift h
 - [Build from source, sign and test](docs/development.md)
 - [How to send a change](CONTRIBUTING.md), and [the architecture](docs/architecture.md)
 
+For changes to Voxt, the Linux Go checks run when the pull request is ready for review and carries the `run-mac-ci` label.
+
 ## Acknowledgements
 
 Voxt 2 takes the place of the Swift [Voxt](https://github.com/hehehai/voxt) 1.x. It started from [Auralink](https://github.com/hehehai/Auralink) by the same author, with the interface of [AudioSmith](https://github.com/hehehai/AudioSmith). Third-party code, runtimes and their licences are listed in [NOTICE](NOTICE); the models are downloaded under their own licences.
