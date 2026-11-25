@@ -10,11 +10,6 @@ from sglang.kernels.ops.sampling.murmur_hash import fmix32, murmur3_mix, murmur_
 from sglang.srt.layers.sampler import multinomial_with_seed
 from triton.language.extra import libdevice
 
-from sglang_omni.sampling.fused_seeded_sample import (
-    MAX_FUSED_SAMPLE_VOCAB,
-    sample_seeded_fused,
-)
-
 _UINT32_MAX_F64 = tl.constexpr(float(torch.iinfo(torch.uint32).max))
 
 
@@ -221,9 +216,7 @@ def sample_seeded_branchless(
 
 
 __all__ = [
-    "MAX_FUSED_SAMPLE_VOCAB",
     "multinomial_with_seed_and_token_ids",
     "sample_seeded_branchless",
-    "sample_seeded_fused",
     "seeded_gumbel_argmax",
 ]

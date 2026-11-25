@@ -4,26 +4,27 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
 import math
 from collections.abc import Mapping
-from pathlib import Path
+from dataclasses import dataclass
 
-import av
-import numpy as np
 import torch
-from PIL import Image
 from transformers import AutoProcessor, ProcessorMixin
-from transformers.video_processing_utils import BaseVideoProcessor
-from transformers.video_utils import VideoMetadata
 
-from sglang_omni.models.lfm3_audio.io import DEFAULT_MAX_NEW_TOKENS, Lfm3AudioState
+from sglang_omni.models.lfm3_audio.media import (
+    REQUEST_ERROR_PREFIX,
+    Media,
+    load_video_bytes,
+    load_video_frames,
+    part_source,
+)
+from sglang_omni.models.lfm3_audio.payload_types import (
+    DEFAULT_MAX_NEW_TOKENS,
+    Lfm3AudioState,
+)
 from sglang_omni.preprocessing.audio import ensure_audio_list_async
-from sglang_omni.preprocessing.base import MediaIO, is_url
 from sglang_omni.preprocessing.image import ensure_image_list_async
-from sglang_omni.preprocessing.resource_connector import get_global_resource_connector
-from sglang_omni.proto import StagePayload
+from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import load_state, store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
@@ -43,8 +44,14 @@ INTERLEAVED_SYSTEM_PROMPT = "Respond with interleaved text and audio."
 AUDIO_PART_TYPES = frozenset({"audio", "audio_url", "input_audio"})
 IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
 VIDEO_PART_TYPES = frozenset({"video", "video_url"})
-# note (ruilin): the API layer answers 400 to errors that carry this prefix.
-REQUEST_ERROR_PREFIX = "LFM3 request:"
+# Undecodable bytes, a bad data URL or a path outside the media policy: the request's fault.
+MEDIA_READ_ERRORS = (OSError, ValueError, RuntimeError)
+# Extra media lists a chat request may carry beside its messages, appended to the last message.
+EXTRA_MEDIA_KEYS = (
+    ("audio", ("audio", "audios")),
+    ("image", ("image", "images")),
+    ("video", ("video", "videos")),
+)
 
 
 def load_processor(model_path: str) -> ProcessorMixin:
@@ -91,101 +98,6 @@ def as_messages(inputs: object) -> list[dict[str, object]]:
         return [dict(message) for message in messages]
 
 
-def part_source(part: Mapping[str, object], kind: str) -> object:
-    """The media of a content part: input_audio data, else the kind_url field (an object with a url, or a string), else the kind field."""
-    if kind == "audio" and part.get("type") == "input_audio":
-        audio = part["input_audio"]
-        if not isinstance(audio, Mapping) or "data" not in audio:
-            raise ValueError(f"{REQUEST_ERROR_PREFIX} input_audio needs a data field")
-        else:
-            pass
-        return f"data:audio/{audio.get('format', 'wav')};base64,{audio['data']}"
-    else:
-        value = part.get(f"{kind}_url", part.get(kind, part.get(f"input_{kind}")))
-        source = value.get("url") if isinstance(value, Mapping) else value
-        if source is None:
-            raise ValueError(
-                f"{REQUEST_ERROR_PREFIX} a {part.get('type')} content part needs its {kind}"
-            )
-        else:
-            return source
-
-
-class VideoBytesIO(MediaIO[bytes]):
-    """A video's encoded bytes, read through the resource connector's media policy."""
-
-    def load_bytes(self, data: bytes) -> bytes:
-        return data
-
-    def load_base64(self, media_type: str, data: str) -> bytes:
-        del media_type
-        return base64.b64decode(data, validate=True)
-
-    def load_file(self, filepath: Path) -> bytes:
-        return filepath.read_bytes()
-
-
-async def load_video_bytes(source: object) -> bytes:
-    """A video URL (http, data or file) or local path, under the server's media policy."""
-    connector = get_global_resource_connector()
-    if isinstance(source, str) and is_url(source):
-        return await connector.load_resource_async(source, VideoBytesIO())
-    elif isinstance(source, (str, Path)):
-        return connector.load_local_path(source, VideoBytesIO())
-    else:
-        raise ValueError(
-            f"{REQUEST_ERROR_PREFIX} unsupported video input {type(source).__name__}"
-        )
-
-
-def load_video_frames(
-    video_bytes: bytes, video_processor: BaseVideoProcessor
-) -> tuple[np.ndarray, VideoMetadata]:
-    """The frames the checkpoint's video processor samples, decoded with PyAV, and their metadata.
-
-    Only the sampled frames are kept; the metadata carries their indices and the clip's fps, from which the processor writes the frame timestamps.
-    """
-    with av.open(io.BytesIO(video_bytes)) as container:
-        stream = container.streams.video[0]
-        fps = float(stream.average_rate or stream.base_rate or 0) or None
-        total_frames = stream.frames or sum(
-            1 for packet in container.demux(stream) if packet.size
-        )
-    if not total_frames:
-        raise ValueError(f"{REQUEST_ERROR_PREFIX} no frames in the video")
-    else:
-        pass
-    frame_indices = [
-        int(index)
-        for index in video_processor.sample_frames(
-            VideoMetadata(total_num_frames=total_frames, fps=fps)
-        )
-    ]
-    # note (ruilin): the sampled indices are distinct and increasing, so one pass keeps only them, in order.
-    wanted_indices = set(frame_indices)
-    decoded_frames: list[np.ndarray] = []
-    with av.open(io.BytesIO(video_bytes)) as container:
-        for index, frame in enumerate(container.decode(video=0)):
-            if index in wanted_indices:
-                decoded_frames.append(frame.to_ndarray(format="rgb24"))
-            else:
-                pass
-            if index >= frame_indices[-1]:
-                break
-            else:
-                pass
-    if len(decoded_frames) != len(frame_indices):
-        raise ValueError(
-            f"LFM3 decoded {len(decoded_frames)} of {len(frame_indices)} sampled video frames"
-        )
-    else:
-        pass
-    metadata = VideoMetadata(
-        total_num_frames=total_frames, fps=fps, frames_indices=frame_indices
-    )
-    return np.stack(decoded_frames), metadata
-
-
 def is_finite_number(value: object) -> bool:
     return (
         isinstance(value, (int, float))
@@ -194,8 +106,19 @@ def is_finite_number(value: object) -> bool:
     )
 
 
-def audio_sampling(params: Mapping[str, object], is_tts: bool) -> dict[str, object]:
-    """Speech-frame sampling: a TTS request's sampling fields, or a chat request's talker_ fields."""
+@dataclass(frozen=True, kw_only=True)
+class SpeechSamplingParams:
+    """The request's speech-frame sampling fields; None takes the checkpoint's default."""
+
+    temperature: float | None
+    top_k: int | None
+    repetition_penalty: float | None
+
+
+def speech_sampling_params(
+    params: Mapping[str, object], is_tts: bool
+) -> SpeechSamplingParams:
+    """A TTS request's sampling fields, or a chat request's talker_ fields, checked before they reach the batch."""
     prefix = "" if is_tts else "talker_"
     temperature = params.get(f"{prefix}temperature")
     top_k = params.get(f"{prefix}top_k")
@@ -220,43 +143,57 @@ def audio_sampling(params: Mapping[str, object], is_tts: bool) -> dict[str, obje
             f"{REQUEST_ERROR_PREFIX} {prefix}repetition_penalty must be a number > 0"
         )
     else:
-        pass
-    return {
-        "audio_temperature": temperature,
-        "audio_top_k": top_k,
-        "audio_repetition_penalty": repetition_penalty,
+        return SpeechSamplingParams(
+            temperature=temperature,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+        )
+
+
+def text_sampling_params(params: Mapping[str, object]) -> dict[str, object]:
+    """A chat request's text sampling fields, checked against the ranges the engine accepts."""
+    checks = {
+        "temperature": lambda value: is_finite_number(value) and value >= 0,
+        "top_p": lambda value: is_finite_number(value) and 0 < value <= 1,
+        "top_k": lambda value: isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= -1,
+        "min_p": lambda value: is_finite_number(value) and 0 <= value <= 1,
+        "repetition_penalty": lambda value: is_finite_number(value) and 0 < value <= 2,
     }
-
-
-class Media:
-    """A request's input clips (16 kHz), images and videos, in placeholder order."""
-
-    def __init__(self) -> None:
-        self.audio: list[np.ndarray] = []
-        self.images: list[Image.Image] = []
-        self.videos: list[np.ndarray] = []
-        self.video_metadata: list[VideoMetadata] = []
-
-    def processor_inputs(self) -> dict[str, object]:
-        inputs: dict[str, object] = {}
-        if self.audio:
-            inputs["audio"] = self.audio
+    sampling = {}
+    for name, in_range in checks.items():
+        value = params.get(name)
+        if value is None:
+            continue
+        elif not in_range(value):
+            raise ValueError(f"{REQUEST_ERROR_PREFIX} {name}={value!r} is out of range")
         else:
-            pass
-        if self.images:
-            inputs["images"] = self.images
-        else:
-            pass
-        if self.videos:
-            # Already sampled by load_video_frames, with their indices in the metadata.
-            inputs.update(
-                videos=self.videos,
-                video_metadata=self.video_metadata,
-                do_sample_frames=False,
-            )
-        else:
-            pass
-        return inputs
+            sampling[name] = value
+    return sampling
+
+
+def request_seed(params: Mapping[str, object]) -> int | None:
+    seed = params.get("seed")
+    if seed is None or (
+        isinstance(seed, int) and not isinstance(seed, bool) and 0 <= seed < 2**63
+    ):
+        return seed
+    else:
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} seed must be an integer in [0, 2**63)"
+        )
+
+
+def tts_messages(
+    request: OmniRequest, tts_params: Mapping[str, object]
+) -> list[dict[str, object]]:
+    inputs = request.inputs
+    text = inputs if isinstance(inputs, str) else (inputs or {}).get("text", "")
+    return [
+        {"role": "system", "content": tts_system_prompt(tts_params)},
+        {"role": "user", "content": text},
+    ]
 
 
 class Lfm3AudioPreprocessor:
@@ -272,7 +209,6 @@ class Lfm3AudioPreprocessor:
         request = payload.request
         params = request.params or {}
         metadata = request.metadata or {}
-        tts_params = metadata.get("tts_params") or {}
         is_tts = metadata.get("task") == "tts"
         if (
             params.get("stop")
@@ -284,52 +220,14 @@ class Lfm3AudioPreprocessor:
             )
         else:
             pass
-        speech_sampling_fields = audio_sampling(params, is_tts)
+        speech_sampling = speech_sampling_params(params, is_tts)
         media = Media()
         if is_tts:
-            inputs = request.inputs
-            text = inputs if isinstance(inputs, str) else (inputs or {}).get("text", "")
-            messages = [
-                {"role": "system", "content": tts_system_prompt(tts_params)},
-                {"role": "user", "content": text},
-            ]
-            marker = AUDIO_START
-            text_only = False
+            messages = tts_messages(request, metadata.get("tts_params") or {})
+            # note (ruilin): TTS answers in speech only; its text stays greedy.
+            marker, text_only, text_sampling = AUDIO_START, False, {}
         else:
-            messages = as_messages(request.inputs)
-            for message in messages:
-                content = message.get("content")
-                if isinstance(content, list):
-                    if not all(isinstance(part, Mapping) for part in content):
-                        raise ValueError(
-                            f"{REQUEST_ERROR_PREFIX} message content parts must be objects"
-                        )
-                    else:
-                        pass
-                    message["content"] = [
-                        await self.read_part(dict(part), media) for part in content
-                    ]
-                else:
-                    pass
-            extra = request.inputs if isinstance(request.inputs, dict) else {}
-            for kind, keys in (
-                ("audio", ("audio", "audios")),
-                ("image", ("image", "images")),
-                ("video", ("video", "videos")),
-            ):
-                sources = next((extra[key] for key in keys if extra.get(key)), None)
-                if sources is None:
-                    continue
-                else:
-                    pass
-                for source in sources if isinstance(sources, list) else [sources]:
-                    part = await self.read_part({"type": kind, kind: source}, media)
-                    last_content = messages[-1].get("content") or []
-                    messages[-1]["content"] = (
-                        [{"type": "text", "text": last_content}]
-                        if isinstance(last_content, str)
-                        else list(last_content)
-                    ) + [part]
+            messages = await self.chat_messages(request, media)
             speaks = "audio" in (metadata.get("output_modalities") or [])
             if speaks and not any(
                 message.get("role") == "system" for message in messages
@@ -341,34 +239,12 @@ class Lfm3AudioPreprocessor:
                 pass
             marker = MIXED_START if speaks else NO_THINKING
             text_only = not speaks
-        rendered = self.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False
-        )
-        # note (ruilin): LFM3-Omni's template already opens the answer with an empty reasoning block.
-        if marker == NO_THINKING and rendered.endswith(NO_THINKING):
-            marker = ""
-        else:
-            pass
+            text_sampling = text_sampling_params(params)
         encoded = self.processor(
-            text=rendered + marker,
+            text=self.render_prompt(messages, marker),
             sampling_rate=INPUT_SAMPLE_RATE,
             return_tensors="pt",
             **media.processor_inputs(),
-        )
-        text_sampling = (
-            {}
-            if is_tts
-            else {
-                name: params[name]
-                for name in (
-                    "temperature",
-                    "top_p",
-                    "top_k",
-                    "min_p",
-                    "repetition_penalty",
-                )
-                if params.get(name) is not None
-            }
         )
         state = Lfm3AudioState(
             input_ids=encoded["input_ids"][0].tolist(),
@@ -379,12 +255,61 @@ class Lfm3AudioPreprocessor:
             pixel_values_videos=encoded.get("pixel_values_videos"),
             video_grid_thw=encoded.get("video_grid_thw"),
             text_only=text_only,
-            max_new_tokens=int(params.get("max_new_tokens") or DEFAULT_MAX_NEW_TOKENS),
-            seed=params.get("seed"),
+            max_new_tokens=params.get("max_new_tokens") or DEFAULT_MAX_NEW_TOKENS,
+            seed=request_seed(params),
+            audio_temperature=speech_sampling.temperature,
+            audio_top_k=speech_sampling.top_k,
+            audio_repetition_penalty=speech_sampling.repetition_penalty,
             **text_sampling,
-            **speech_sampling_fields,
         )
         return store_state(payload, state)
+
+    def render_prompt(self, messages: list[dict[str, object]], marker: str) -> str:
+        """The chat template's prompt, opened with the answer's mode marker."""
+        rendered = self.tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+        # note (ruilin): LFM3-Omni's template already opens the answer with an empty reasoning block.
+        if marker == NO_THINKING and rendered.endswith(NO_THINKING):
+            return rendered
+        else:
+            return rendered + marker
+
+    async def chat_messages(
+        self, request: OmniRequest, media: Media
+    ) -> list[dict[str, object]]:
+        """The request's messages with every media part loaded into media and replaced by its placeholder."""
+        messages = as_messages(request.inputs)
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, list):
+                if not all(isinstance(part, Mapping) for part in content):
+                    raise ValueError(
+                        f"{REQUEST_ERROR_PREFIX} message content parts must be objects"
+                    )
+                else:
+                    pass
+                message["content"] = [
+                    await self.read_part(dict(part), media) for part in content
+                ]
+            else:
+                pass
+        extra = request.inputs if isinstance(request.inputs, dict) else {}
+        for kind, keys in EXTRA_MEDIA_KEYS:
+            sources = next((extra[key] for key in keys if extra.get(key)), None)
+            if sources is None:
+                continue
+            else:
+                pass
+            for source in sources if isinstance(sources, list) else [sources]:
+                part = await self.read_part({"type": kind, kind: source}, media)
+                last_content = messages[-1].get("content") or []
+                messages[-1]["content"] = (
+                    [{"type": "text", "text": last_content}]
+                    if isinstance(last_content, str)
+                    else list(last_content)
+                ) + [part]
+        return messages
 
     async def read_part(
         self, part: dict[str, object], media: Media
@@ -392,34 +317,45 @@ class Lfm3AudioPreprocessor:
         """Load a content part's audio, image or video; the template gets a bare placeholder part."""
         kind = part.get("type")
         if kind in AUDIO_PART_TYPES:
-            media.audio.extend(
-                await ensure_audio_list_async(
-                    part_source(part, "audio"), target_sr=INPUT_SAMPLE_RATE
-                )
-            )
-            return {"type": "audio"}
-        elif kind in IMAGE_PART_TYPES or kind in VIDEO_PART_TYPES:
-            if not self.has_vision:
-                raise ValueError(
-                    f"{REQUEST_ERROR_PREFIX} this checkpoint takes text and audio; images and videos need LFM3-Omni"
-                )
-            else:
-                pass
-            if kind in IMAGE_PART_TYPES:
-                media.images.extend(
-                    await ensure_image_list_async(part_source(part, "image"))
-                )
-                return {"type": "image"}
-            else:
-                video_bytes = await load_video_bytes(part_source(part, "video"))
-                frames, metadata = await asyncio.to_thread(
-                    load_video_frames, video_bytes, self.processor.video_processor
-                )
-                media.videos.append(frames)
-                media.video_metadata.append(metadata)
-                return {"type": "video"}
+            media_kind = "audio"
+        elif kind in IMAGE_PART_TYPES:
+            media_kind = "image"
+        elif kind in VIDEO_PART_TYPES:
+            media_kind = "video"
         else:
             return part
+        if media_kind != "audio" and not self.has_vision:
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} this checkpoint takes text and audio; images and videos need LFM3-Omni"
+            )
+        else:
+            pass
+        source = part_source(part, media_kind)
+        try:
+            await self.load_media(media_kind, source, media)
+        except MEDIA_READ_ERRORS as error:
+            if str(error).startswith(REQUEST_ERROR_PREFIX):
+                raise
+            else:
+                raise ValueError(
+                    f"{REQUEST_ERROR_PREFIX} could not read the {media_kind} input: {error}"
+                ) from error
+        return {"type": media_kind}
+
+    async def load_media(self, media_kind: str, source: object, media: Media) -> None:
+        if media_kind == "audio":
+            media.audio.extend(
+                await ensure_audio_list_async(source, target_sr=INPUT_SAMPLE_RATE)
+            )
+        elif media_kind == "image":
+            media.images.extend(await ensure_image_list_async(source))
+        else:
+            video_bytes = await load_video_bytes(source)
+            frames, metadata = await asyncio.to_thread(
+                load_video_frames, video_bytes, self.processor.video_processor
+            )
+            media.videos.append(frames)
+            media.video_metadata.append(metadata)
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:

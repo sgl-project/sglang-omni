@@ -7,13 +7,13 @@ import pytest
 import torch
 from transformers.generation.logits_process import RepetitionPenaltyLogitsProcessor
 
-from sglang_omni.models.lfm3_audio.depth import (
+from sglang_omni.models.lfm3_audio.depth import Lfm3DepthDecoder
+from sglang_omni.models.lfm3_audio.depth_cuda_graph import Lfm3DepthCudaGraphs
+from sglang_omni.models.lfm3_audio.frame_sampling import (
     FrameSampling,
-    Lfm3DepthDecoder,
     sample_frames,
     seeded_frame_codes,
 )
-from sglang_omni.models.lfm3_audio.depth_cuda_graph import Lfm3DepthCudaGraphs
 from sglang_omni.models.lfm3_audio.generation import GenerationMode, SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
 from sglang_omni.platforms import current_platform

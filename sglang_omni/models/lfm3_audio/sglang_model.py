@@ -221,7 +221,7 @@ class Lfm3AudioSGLangModel(nn.Module):
         logits = F.linear(
             hidden_states, self.language_model.embed_tokens.weight
         ).float()
-        # Media placeholders never come out of the text head; text-only rows cannot open speech.
+        # note (ruilin): media placeholders never come out of the text head; text-only rows cannot open speech.
         logits.index_fill_(1, self.placeholder_token_ids, float("-inf"))
         rows = logits.shape[0]
         text_only = self.text_only_buffer[:rows, None]
@@ -239,6 +239,7 @@ class Lfm3AudioSGLangModel(nn.Module):
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         parameters = dict(self.named_parameters())
+        depth_parameters = dict(self.depth_decoder.named_parameters())
         backbone_parameters = {
             name[len("language_model.") :]: parameter
             for name, parameter in parameters.items()
@@ -264,7 +265,7 @@ class Lfm3AudioSGLangModel(nn.Module):
                 # note (ruilin): LFM3-Audio stores the tied text head; the token embedding is the same tensor.
                 continue
             elif name.startswith(DEPTH_PREFIXES):
-                if self.depth_decoder.load_weight(name, tensor):
+                if self.depth_decoder.load_weight(name, tensor, depth_parameters):
                     loaded.add("depth_decoder." + name)
                 else:
                     unexpected.append(checkpoint_name)

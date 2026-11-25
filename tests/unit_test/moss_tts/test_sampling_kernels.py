@@ -140,10 +140,8 @@ def fused_case(vocab: int, temp: float, top_p: float, top_k: int, tie: bool):
 def test_sample_seeded_fused_matches_branchless(
     vocab: int, temp: float, top_p: float, top_k: int, tie: bool
 ) -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     gen = torch.Generator(device=device).manual_seed(20260821)
@@ -173,10 +171,8 @@ def test_sample_seeded_fused_matches_branchless(
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_seeded_fused_mixed_rows_and_greedy_fallback() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     gen = torch.Generator(device=device).manual_seed(7)
@@ -203,7 +199,7 @@ def test_sample_seeded_fused_mixed_rows_and_greedy_fallback() -> None:
 
 
 def test_sample_seeded_fused_rejects_large_vocab() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
+    from sglang_omni.sampling.fused_seeded_sample import (
         MAX_FUSED_SAMPLE_VOCAB,
         sample_seeded_fused,
     )
@@ -229,10 +225,8 @@ def test_sample_seeded_fused_nucleus_knife_edges() -> None:
     """Away from fp32 knife edges the mask matches bit-for-bit; exactly at a
     cumulative-probability boundary the kept set may differ by the boundary
     token only, so the sample must stay inside the top-k prefix."""
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab, k = 1025, 25
@@ -268,10 +262,8 @@ def test_sample_seeded_fused_nucleus_knife_edges() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_seeded_fused_signed_zero_and_nonfinite() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab = 64
@@ -293,10 +285,8 @@ def test_sample_seeded_fused_signed_zero_and_nonfinite() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_seeded_fused_hash_endpoint() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     logits = torch.tensor([[-100.0, 0.0]], device=device)
@@ -318,10 +308,8 @@ def test_sample_seeded_fused_hash_endpoint() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_seeded_fused_input_hardening() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     empty = sample_seeded_fused(
@@ -367,10 +355,8 @@ def test_sample_seeded_fused_masked_lane_hash_endpoint() -> None:
     a capped gumbel, so the masked lane stays at -inf instead of the NaN the
     uncapped endpoint used to produce. The fused kernel must follow the baseline
     either way (parity, not top-k membership, is the contract)."""
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab = 64
@@ -392,10 +378,8 @@ def test_sample_seeded_fused_masked_lane_hash_endpoint() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
 def test_sample_seeded_fused_signed_zero_orderings_and_nonfinite() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab = 64
@@ -426,7 +410,7 @@ def test_sample_seeded_fused_signed_zero_orderings_and_nonfinite() -> None:
 
 
 def test_sample_seeded_fused_rejects_complex_top_k() -> None:
-    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_fused
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     if not torch.cuda.is_available():
         pytest.skip("CUDA is required")
@@ -447,10 +431,8 @@ def test_sample_seeded_fused_signed_zero_nucleus_boundary() -> None:
     """top_p=0.2 keeps only the FIRST sorted zero, so which of +0.0/-0.0 sorts
     first decides the nucleus mask; fused must match baseline for both input
     orders."""
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab = 64
@@ -480,10 +462,8 @@ def test_sample_seeded_fused_nan_rows_match_baseline(temp: float, kind: str) -> 
     """A NaN row falls back to torch.argmax in the baseline, which ranks NaN
     above every number; the fused kernel must land on the same token id and
     never on the reduction sentinel."""
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     vocab = 64
@@ -519,10 +499,8 @@ def test_tied_two_token_head_agrees_across_sampling_paths() -> None:
     branchless fallback, and the eager `_sample_tokens` path taken when an audio
     repetition penalty is set or the batch outgrows the frame graph."""
     from sglang_omni.models.moss_tts.model_runner import MossTTSModelRunner
-    from sglang_omni.models.moss_tts.sampling_kernels import (
-        sample_seeded_branchless,
-        sample_seeded_fused,
-    )
+    from sglang_omni.models.moss_tts.sampling_kernels import sample_seeded_branchless
+    from sglang_omni.sampling.fused_seeded_sample import sample_seeded_fused
 
     device = torch.device("cuda")
     logits = torch.full((1, 2), 2.0, device=device)

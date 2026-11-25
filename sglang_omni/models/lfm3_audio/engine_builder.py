@@ -16,15 +16,15 @@ from sglang.srt.server_args import ServerArgs
 from transformers import AutoConfig
 
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.lfm3_audio.depth import SpeechSampler
 from sglang_omni.models.lfm3_audio.depth_cuda_graph import Lfm3DepthCudaGraphs
+from sglang_omni.models.lfm3_audio.frame_sampling import SpeechSampler
 from sglang_omni.models.lfm3_audio.hf_config import (
     CHECKPOINT_FILE_NAME,
     MODEL_TYPE,
     SGLANG_ARCHITECTURE,
     Lfm3SGLangConfig,
+    SpeechSamplingDefaults,
     lfm3_config_from_checkpoint,
-    lfm3_tokens_from_checkpoint,
     speech_defaults_from_checkpoint,
 )
 from sglang_omni.models.lfm3_audio.model_runner import Lfm3AudioModelRunner
@@ -74,11 +74,13 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         )
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
+        # note (ruilin): read from the checkpoint by resolve_checkpoint, which build() calls first.
+        self.speech_defaults: SpeechSamplingDefaults | None = None
 
     def resolve_checkpoint(self, model_path: str) -> str:
         """A directory the SGLang loader reads: the backbone config plus the checkpoint's weights."""
         source_checkpoint_dir = resolve_checkpoint(model_path)
-        self.source_checkpoint_dir = source_checkpoint_dir
+        self.speech_defaults = speech_defaults_from_checkpoint(source_checkpoint_dir)
         config = lfm3_config_from_checkpoint(source_checkpoint_dir)
         config.checkpoint_dir = os.path.abspath(source_checkpoint_dir)
         loader_dir = tempfile.mkdtemp(prefix="lfm3_sglang_")
@@ -186,14 +188,19 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
             graph_backend,
             hidden_size=model.config.hidden_size,
             schedule=model.tokens.maskgit_schedule,
-            repetition_window=speech_defaults_from_checkpoint(
-                self.source_checkpoint_dir
-            ).repetition_window,
+            repetition_window=self.speech_defaults.repetition_window,
         )
-        if self.speech_sampler is SpeechSampler.EXACT:
-            graphs.capture_pass_graphs(batch_sizes)
-        else:
-            graphs.capture_frame_graphs(batch_sizes)
+        try:
+            if self.speech_sampler is SpeechSampler.EXACT:
+                graphs.capture_pass_graphs(batch_sizes)
+            else:
+                graphs.capture_frame_graphs(batch_sizes)
+        except RuntimeError:
+            logger.warning(
+                "LFM3 depth CUDA graph capture failed; speech frames run eagerly",
+                exc_info=True,
+            )
+            return
         model.depth_graphs = graphs
 
     def make_model_runner(
@@ -205,9 +212,7 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
             model_worker,
             output_proc,
             speech_sampler=self.speech_sampler,
-            repetition_window=speech_defaults_from_checkpoint(
-                self.source_checkpoint_dir
-            ).repetition_window,
+            repetition_window=self.speech_defaults.repetition_window,
         )
 
     def extra_scheduler_kwargs(self) -> SchedulerExtras[Lfm3AudioRequestData]:
@@ -229,9 +234,9 @@ class Lfm3AudioEngineBuilder(TtsEngineBuilder[Lfm3AudioRequestData]):
         Callable[[Lfm3AudioRequestData], StagePayload],
     ]:
         return make_adapters(
-            model=model,
-            tokens=lfm3_tokens_from_checkpoint(self.source_checkpoint_dir),
-            speech_defaults=speech_defaults_from_checkpoint(self.source_checkpoint_dir),
+            vocab_size=model.config.vocab_size,
+            tokens=model.tokens,
+            speech_defaults=self.speech_defaults,
             device=self.device,
         )
 

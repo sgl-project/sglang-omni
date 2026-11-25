@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-backbone = pytest.importorskip("sglang_omni.models.lfm3_audio.backbone")
+short_conv = pytest.importorskip("sglang_omni.models.lfm3_audio.short_conv")
 
 
 def test_conv_decode_padding_rows_write_only_the_dummy_slot() -> None:
@@ -21,7 +21,7 @@ def test_conv_decode_padding_rows_write_only_the_dummy_slot() -> None:
     inputs = torch.randn(4, channels)
     slots = torch.tensor([2, 4, -1, -1])
 
-    outputs = backbone.Lfm3ShortConv.conv_decode(conv, inputs, conv_state, slots)
+    outputs = short_conv.Lfm3ShortConv.conv_decode(conv, inputs, conv_state, slots)
 
     for row, slot in enumerate([2, 4]):
         window = torch.cat([live[slot], inputs[row, :, None]], dim=-1)
@@ -82,7 +82,7 @@ def test_conv_prefill_matches_one_request_at_a_time() -> None:
         conv, inputs, expected_state, slots, starts, continues
     )
 
-    outputs = backbone.Lfm3ShortConv.conv_prefill(
+    outputs = short_conv.Lfm3ShortConv.conv_prefill(
         SimpleNamespace(conv_kernel=kernel, **vars(conv)),
         inputs,
         conv_state,

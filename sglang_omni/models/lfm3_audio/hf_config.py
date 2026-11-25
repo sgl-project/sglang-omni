@@ -22,7 +22,7 @@ RopeParameters = dict[str, float | str]
 
 @dataclass(frozen=True)
 class Lfm3AudioTokens:
-    """Special token ids and speech constants of a released checkpoint."""
+    """Special token ids and speech constants; the defaults are the released checkpoints' values, which LFM3-Audio's export config leaves out."""
 
     audio_token_id: int = 125031
     audio_out_token_id: int = 125032
@@ -85,11 +85,12 @@ class Lfm3SGLangConfig(Lfm2Config):
         self.sliding_window = sliding_window
         self.use_sandwich_norm = use_sandwich_norm
         # note (ruilin): a saved config carries the per-layer-type RoPE as lfm3_rope_parameters; rope_parameters is LFM2's single table.
-        if lfm3_rope_parameters is None and rope_parameters is not None:
-            if set(rope_parameters) <= set(ATTENTION_LAYER_TYPES):
-                lfm3_rope_parameters = rope_parameters
-            else:
-                pass
+        if (
+            lfm3_rope_parameters is None
+            and rope_parameters is not None
+            and set(rope_parameters) <= set(ATTENTION_LAYER_TYPES)
+        ):
+            lfm3_rope_parameters = rope_parameters
         else:
             pass
         self.lfm3_rope_parameters = lfm3_rope_parameters or {}
@@ -210,7 +211,7 @@ def load_generation_config(checkpoint_dir: str) -> dict[str, object]:
 
 
 def lfm3_tokens_from_checkpoint(checkpoint_dir: str) -> Lfm3AudioTokens:
-    """Token ids and speech constants; LFM3-Audio's export config omits the token ids, which are the class defaults."""
+    """Token ids and speech constants of either checkpoint layout."""
     checkpoint_config = load_checkpoint_config(checkpoint_dir)
     defaults = Lfm3AudioTokens()
     speech = speech_constants(checkpoint_config)

@@ -1,23 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-"""CPU tests of the LFM3 prompt and media helpers of the preprocessing stage."""
+"""CPU tests of the LFM3 preprocessing stage's prompt and sampling helpers."""
 
 from __future__ import annotations
 
 import asyncio
-import io
-from pathlib import Path
+import subprocess
+import sys
 
-import av
-import numpy as np
 import pytest
-from transformers.video_utils import VideoMetadata
 
 from sglang_omni.models.lfm3_audio import stages
-from sglang_omni.preprocessing.resource_connector import (
-    MediaPolicyError,
-    MultiModalResourceConnector,
-    resource_connector_scope,
-)
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
@@ -46,16 +38,14 @@ def test_tts_rejects_unknown_voices() -> None:
 def test_speech_sampling_fields_of_tts_and_chat() -> None:
     """A TTS request's sampling fields, and only a chat request's talker fields, drive the speech frames."""
     params = {"temperature": 0.7, "top_k": 64, "talker_temperature": 0.0}
-    assert stages.audio_sampling(params, is_tts=True) == {
-        "audio_temperature": 0.7,
-        "audio_top_k": 64,
-        "audio_repetition_penalty": None,
-    }
-    assert stages.audio_sampling(params, is_tts=False) == {
-        "audio_temperature": 0.0,
-        "audio_top_k": None,
-        "audio_repetition_penalty": None,
-    }
+    assert stages.speech_sampling_params(
+        params, is_tts=True
+    ) == stages.SpeechSamplingParams(temperature=0.7, top_k=64, repetition_penalty=None)
+    assert stages.speech_sampling_params(
+        params, is_tts=False
+    ) == stages.SpeechSamplingParams(
+        temperature=0.0, top_k=None, repetition_penalty=None
+    )
 
 
 @pytest.mark.parametrize(
@@ -75,35 +65,13 @@ def test_speech_sampling_values_the_sampler_rejects_are_request_errors(
 ) -> None:
     """The frame sampler runs on the whole batch: a repetition penalty of 0 or a negative temperature raised inside it and failed every request of the batch. The request alone is now answered with a 400."""
     with pytest.raises(ValueError) as tts_error:
-        stages.audio_sampling(params, is_tts=True)
+        stages.speech_sampling_params(params, is_tts=True)
     with pytest.raises(ValueError, match="talker_") as chat_error:
-        stages.audio_sampling(
+        stages.speech_sampling_params(
             {f"talker_{name}": value for name, value in params.items()}, is_tts=False
         )
     assert is_bad_request_error(tts_error.value)
     assert is_bad_request_error(chat_error.value)
-
-
-@pytest.mark.parametrize(
-    ("part", "kind", "source"),
-    [
-        (
-            {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "mp3"}},
-            "audio",
-            "data:audio/mp3;base64,AAAA",
-        ),
-        ({"type": "image_url", "image_url": {"url": "a.png"}}, "image", "a.png"),
-        ({"type": "video_url", "video_url": "b.mp4"}, "video", "b.mp4"),
-        ({"type": "image", "image": "c.png"}, "image", "c.png"),
-    ],
-)
-def test_content_part_sources(part: dict[str, object], kind: str, source: str) -> None:
-    assert stages.part_source(part, kind) == source
-
-
-def test_content_part_without_media_is_a_request_error() -> None:
-    with pytest.raises(ValueError, match="needs its video"):
-        stages.part_source({"type": "video_url"}, "video")
 
 
 def test_token_id_prompts_are_a_request_error() -> None:
@@ -111,37 +79,74 @@ def test_token_id_prompts_are_a_request_error() -> None:
         stages.as_messages([1, 2, 3])
 
 
-def test_local_video_paths_follow_the_media_policy(tmp_path: Path) -> None:
-    """A bare video path outside allowed_local_media_path is refused before it is read."""
-    allowed = tmp_path / "allowed"
-    allowed.mkdir()
-    outside = tmp_path / "secret.mp4"
-    outside.write_bytes(b"not a video")
-    connector = MultiModalResourceConnector(allowed_local_media_path=str(allowed))
-    with resource_connector_scope(connector), pytest.raises(MediaPolicyError):
-        asyncio.run(stages.load_video_bytes(str(outside)))
+def test_the_codec_process_imports_no_engine_code() -> None:
+    """The codec decode runs in its own process; loading its stage must not pull in the AR engine."""
+    script = (
+        "import sys, sglang_omni.models.lfm3_audio.config, sglang_omni.models.lfm3_audio.stages; "
+        "print(chr(10).join(sorted(sys.modules)))"
+    )
+    modules = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    ).stdout.split()
+    engine_modules = [
+        module
+        for module in modules
+        if module.startswith(("sglang.srt.managers", "sglang.srt.model_executor"))
+        or module
+        in (
+            "sglang_omni.models.lfm3_audio.engine_builder",
+            "sglang_omni.models.lfm3_audio.model_runner",
+            "sglang_omni.models.lfm3_audio.sglang_model",
+        )
+    ]
+    assert engine_modules == []
 
 
-def test_video_frames_are_the_sampled_ones_in_order() -> None:
-    buffer = io.BytesIO()
-    with av.open(buffer, mode="w", format="mp4") as container:
-        stream = container.add_stream("mpeg4", rate=8)
-        stream.width, stream.height, stream.pix_fmt = 32, 32, "yuv420p"
-        for index in range(10):
-            image = np.full((32, 32, 3), index * 25, dtype=np.uint8)
-            for packet in stream.encode(
-                av.VideoFrame.from_ndarray(image, format="rgb24")
-            ):
-                container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"temperature": -1.0},
+        {"temperature": float("nan")},
+        {"top_p": 0},
+        {"top_p": 1.5},
+        {"top_k": -5},
+        {"min_p": 2},
+        {"repetition_penalty": 0},
+        {"repetition_penalty": 2.5},
+    ],
+)
+def test_text_sampling_values_the_engine_rejects_are_request_errors(
+    params: dict[str, object],
+) -> None:
+    """The engine checks these ranges only after dispatch, where a bad value was a 500."""
+    with pytest.raises(ValueError) as error:
+        stages.text_sampling_params(params)
+    assert is_bad_request_error(error.value)
 
-    class EveryThirdFrame:
-        def sample_frames(self, metadata: VideoMetadata) -> list[int]:
-            return list(range(0, metadata.total_num_frames, 3))
 
-    frames, metadata = stages.load_video_frames(buffer.getvalue(), EveryThirdFrame())
-    assert metadata.total_num_frames == 10 and metadata.fps == 8
-    assert metadata.frames_indices == [0, 3, 6, 9]
-    brightness = [int(frame.mean().round()) for frame in frames]
-    assert brightness == pytest.approx([0, 75, 150, 225], abs=4)
+def test_text_sampling_keeps_the_values_in_range() -> None:
+    params = {"temperature": 0.7, "top_k": -1, "top_p": 1, "seed": 3}
+    assert stages.text_sampling_params(params) == {
+        "temperature": 0.7,
+        "top_k": -1,
+        "top_p": 1,
+    }
+
+
+@pytest.mark.parametrize("seed", [-1, 2**63, 2**70, "7", True])
+def test_seeds_outside_int64_are_request_errors(seed: object) -> None:
+    with pytest.raises(ValueError) as error:
+        stages.request_seed({"seed": seed})
+    assert is_bad_request_error(error.value)
+
+
+def test_an_undecodable_image_is_a_request_error() -> None:
+    preprocessor = stages.Lfm3AudioPreprocessor.__new__(stages.Lfm3AudioPreprocessor)
+    preprocessor.has_vision = True
+    part = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,iVBORw0KGgpub3QgYSBwbmc="},
+    }
+    with pytest.raises(ValueError, match="could not read the image") as error:
+        asyncio.run(preprocessor.read_part(part, stages.Media()))
+    assert is_bad_request_error(error.value)

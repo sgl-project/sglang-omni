@@ -149,7 +149,7 @@ def test_tts_pipeline_state_round_trips_preserve_payload_fields() -> None:
     from sglang_omni.models.dots_tts.payload_types import DotsTTSState
     from sglang_omni.models.fishaudio_s2_pro.payload_types import S2ProState
     from sglang_omni.models.higgs_tts.payload_types import HiggsTtsState
-    from sglang_omni.models.lfm3_audio.io import Lfm3AudioState
+    from sglang_omni.models.lfm3_audio.payload_types import Lfm3AudioState
     from sglang_omni.models.ming_tts.payload_types import MingTTSState
     from sglang_omni.models.moss_tts.payload_types import MossTTSState
     from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState

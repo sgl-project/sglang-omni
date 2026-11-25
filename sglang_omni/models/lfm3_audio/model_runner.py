@@ -13,24 +13,34 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
-from sglang_omni.models.lfm3_audio.depth import (
+from sglang_omni.models.lfm3_audio.frame_sampling import (
     FrameSampling,
     SpeechSampler,
     sample_frames,
     seeded_frame_codes,
 )
+from sglang_omni.models.lfm3_audio.prompt_embeds import (
+    encode_prompts,
+    prefill_input_embeds,
+)
 from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
 from sglang_omni.models.lfm3_audio.sglang_model import Lfm3AudioSGLangModel
 from sglang_omni.models.lfm3_audio.speech_pool import (
-    MODE_CODES,
+    CODES_COLUMN,
+    EMITTED_ID_COLUMN,
+    SAMPLED_ID_COLUMN,
+    TOOK_FRAME_COLUMN,
     SpeechStatePool,
     advance_speech,
+    host_state,
+    pack_step,
+    state_columns,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.scheduling.types import SchedulerRequest
 
 
-class Lfm3AudioModelRunner(ModelRunner):
+class Lfm3AudioModelRunner(ModelRunner[Lfm3AudioRequestData]):
     """A request keeps its prompt embeddings and fed frame codes, so a retracted request replays its prompt and output in one prefill."""
 
     model: Lfm3AudioSGLangModel
@@ -97,120 +107,18 @@ class Lfm3AudioModelRunner(ModelRunner):
     ) -> None:
         del schedule_batch
         self.write_text_only_rows(requests)
-        embedding_rows = [self.prefill_input_embeds(request) for request in requests]
+        encode_prompts(
+            self.model,
+            [
+                request.data
+                for request in requests
+                if request.data.prefill_input_embeds is None
+            ],
+        )
+        embedding_rows = [
+            prefill_input_embeds(self.model, request) for request in requests
+        ]
         forward_batch.input_embeds = torch.cat(embedding_rows, dim=0)
-
-    def prefill_input_embeds(self, request: SchedulerRequest) -> torch.Tensor:
-        """The prompt's embeddings, followed on a replay by the inputs of the tokens generated before the retraction."""
-        request_data: Lfm3AudioRequestData = request.data
-        sglang_request = request_data.req
-        if sglang_request.prefix_len != 0:
-            raise RuntimeError(
-                "LFM3 prefills a request whole; serve it with the radix cache off"
-            )
-        else:
-            pass
-        if request_data.prefill_input_embeds is None:
-            request_data.prefill_input_embeds = self.prompt_input_embeds(request_data)
-        else:
-            pass
-        prompt_embeds = request_data.prefill_input_embeds
-        output_ids = sglang_request.output_ids
-        if sglang_request.extend_len != prompt_embeds.shape[0] + len(output_ids):
-            raise RuntimeError(
-                f"LFM3 prefill of {request.request_id} covers {sglang_request.extend_len} positions, "
-                f"not its {prompt_embeds.shape[0]} prompt and {len(output_ids)} output tokens; "
-                "serve it with chunked prefill off"
-            )
-        elif not output_ids:
-            return prompt_embeds
-        else:
-            pass
-        output_id_tensor = torch.tensor(output_ids, device=prompt_embeds.device)
-        output_embeds = self.model.get_input_embeddings()(output_id_tensor)
-        is_frame = output_id_tensor == self.tokens.audio_out_token_id
-        if int(is_frame.sum()) != len(request_data.feedback_frame_codes):
-            raise RuntimeError(
-                f"LFM3 replay of {request.request_id} has {int(is_frame.sum())} frame positions "
-                f"for {len(request_data.feedback_frame_codes)} fed frames"
-            )
-        elif request_data.feedback_frame_codes:
-            output_embeds[is_frame] = self.model.frame_embeddings(
-                torch.stack(request_data.feedback_frame_codes).to(output_embeds.device)
-            ).to(output_embeds.dtype)
-        else:
-            pass
-        # note (ruilin): the queued embedding of the last frame is in output_embeds now.
-        request_data.pending_feedback_queue.clear()
-        return torch.cat([prompt_embeds, output_embeds], dim=0)
-
-    def prompt_input_embeds(self, request_data: Lfm3AudioRequestData) -> torch.Tensor:
-        """Token embeddings of the prompt with its audio, image and video embeddings at their placeholders."""
-        embed_tokens = self.model.get_input_embeddings()
-        token_ids = request_data.input_ids.to(embed_tokens.weight.device)
-        prompt_embeds = embed_tokens(token_ids)
-        for placeholder_token_id, media_embeds in self.encode_media(
-            request_data, token_ids.device
-        ):
-            positions = (token_ids == placeholder_token_id).nonzero(as_tuple=True)[0]
-            if positions.numel() != media_embeds.shape[0]:
-                raise ValueError(
-                    f"{positions.numel()} placeholders of token {placeholder_token_id} for "
-                    f"{media_embeds.shape[0]} media embeddings"
-                )
-            else:
-                pass
-            prompt_embeds[positions] = media_embeds.to(prompt_embeds.dtype)
-        return prompt_embeds.detach()
-
-    def encode_media(
-        self, request_data: Lfm3AudioRequestData, device: torch.device
-    ) -> list[tuple[int, torch.Tensor]]:
-        """(placeholder token id, embeddings) of the request's audio clips, images and videos; consumes the inputs."""
-        media: list[tuple[int, torch.Tensor]] = []
-        tokens = self.tokens
-        if request_data.input_features is not None:
-            media.append(
-                (
-                    tokens.audio_token_id,
-                    self.model.encode_audio(
-                        request_data.input_features.to(device),
-                        request_data.feature_attention_mask.to(device),
-                    ),
-                )
-            )
-        else:
-            pass
-        for placeholder_token_id, pixel_values, grid_thw in (
-            (
-                tokens.image_token_id,
-                request_data.pixel_values,
-                request_data.image_grid_thw,
-            ),
-            (
-                tokens.video_token_id,
-                request_data.pixel_values_videos,
-                request_data.video_grid_thw,
-            ),
-        ):
-            if pixel_values is not None:
-                media.append(
-                    (
-                        placeholder_token_id,
-                        self.model.encode_vision(
-                            pixel_values.to(device), grid_thw.to(device)
-                        ),
-                    )
-                )
-            else:
-                pass
-        request_data.input_features = None
-        request_data.feature_attention_mask = None
-        request_data.pixel_values = None
-        request_data.image_grid_thw = None
-        request_data.pixel_values_videos = None
-        request_data.video_grid_thw = None
-        return media
 
     def next_decode_input(self, request_data: Lfm3AudioRequestData) -> torch.Tensor:
         """The embedding the request's last output feeds back: its speech frame, else its text token."""
@@ -374,28 +282,7 @@ class Lfm3AudioModelRunner(ModelRunner):
         )
         pool.next_input_embeds.index_copy_(0, slots, next_inputs)
         result.next_token_ids = step.token_ids
-        advanced_rows = step.rows
-        packed = torch.cat(
-            [
-                step.token_ids[:, None].long(),
-                sampled_ids[:, None].long(),
-                step.needs_frame[:, None].long(),
-                step.fed_codes,
-                torch.stack(
-                    [
-                        advanced_rows.mode,
-                        advanced_rows.speaking.long(),
-                        advanced_rows.text_done.long(),
-                        advanced_rows.finished.long(),
-                        advanced_rows.slots_left,
-                        advanced_rows.frames_sampled,
-                        advanced_rows.history_len,
-                    ],
-                    dim=1,
-                ),
-            ],
-            dim=1,
-        )
+        packed = pack_step(step, sampled_ids)
         if non_blocking:
             host_rows = self.next_host_staging(packed.shape, packed.dtype)[:batch_size]
             host_rows.copy_(packed, non_blocking=True)
@@ -409,17 +296,21 @@ class Lfm3AudioModelRunner(ModelRunner):
         result: GenerationBatchResult,
         requests: list[SchedulerRequest],
     ) -> None:
-        """Replay a launched step on the host SpeechState, which outputs and replays read, and check the device state it reached."""
-        self.stage_token_ids(result, host_rows[:, 0])
-        num_codebooks = self.tokens.num_codebooks
+        """Replay a launched step on the host SpeechState.
+
+        Outputs, finishing and retraction replays read the host state, so it follows every device step; comparing the state both reach catches a divergence between the two implementations at the step it happens.
+        """
+        self.stage_token_ids(result, host_rows[:, EMITTED_ID_COLUMN])
+        codes_end = CODES_COLUMN + self.tokens.num_codebooks
+        device_state_columns = state_columns(self.tokens.num_codebooks)
         for row, request in enumerate(requests):
-            request_data: Lfm3AudioRequestData = request.data
+            request_data = request.data
             if request_data.req.finished() or self.req_is_retracted(request_data.req):
                 continue
             else:
                 pass
             speech = request_data.speech
-            took_frame = bool(host_rows[row, 2])
+            took_frame = bool(host_rows[row, TOOK_FRAME_COLUMN])
             if speech.needs_frame() != took_frame:
                 raise RuntimeError(
                     f"LFM3 speech state of {request.request_id} diverged: the device "
@@ -429,26 +320,19 @@ class Lfm3AudioModelRunner(ModelRunner):
                 pass
             was_interleaving = speech.interleaving
             if took_frame:
-                fed_codes = speech.apply_frame(host_rows[row, 3 : 3 + num_codebooks])
+                fed_codes = speech.apply_frame(host_rows[row, CODES_COLUMN:codes_end])
                 speech.sampling.frames_sampled += 1
                 request_data.feedback_frame_codes.append(fed_codes)
             else:
-                speech.apply_text(int(host_rows[row, 1]), self.tokens.eos_token_ids)
+                speech.apply_text(
+                    int(host_rows[row, SAMPLED_ID_COLUMN]), self.tokens.eos_token_ids
+                )
             speech.advance_slot(was_interleaving)
-            history = speech.sampling.history
-            host_state = [
-                MODE_CODES[speech.mode],
-                int(speech.speaking),
-                int(speech.text_done),
-                int(speech.finished),
-                speech.slots_left,
-                speech.sampling.frames_sampled,
-                0 if history is None else history.shape[0],
-            ]
-            if host_rows[row, 3 + num_codebooks :].tolist() != host_state:
+            device_state = host_rows[row, device_state_columns].tolist()
+            if device_state != host_state(speech):
                 raise RuntimeError(
                     f"LFM3 speech state of {request.request_id} diverged: device "
-                    f"{host_rows[row, 3 + num_codebooks:].tolist()}, host {host_state}"
+                    f"{device_state}, host {host_state(speech)}"
                 )
             else:
                 pass
@@ -477,23 +361,23 @@ class Lfm3AudioModelRunner(ModelRunner):
         sampled_token_ids = result.next_token_ids
         host_token_ids = sampled_token_ids.tolist()
         speeches = [request.data.speech for request in requests]
-        speaking_rows = [
+        frame_rows = [
             row for row, speech in enumerate(speeches) if speech.needs_frame()
         ]
         frames = None
-        if speaking_rows:
+        if frame_rows:
             frames = self.sample_speaking_frames(
                 hidden_states.index_select(
-                    0, torch.tensor(speaking_rows, device=hidden_states.device)
+                    0, torch.tensor(frame_rows, device=hidden_states.device)
                 ),
-                [speeches[row].sampling for row in speaking_rows],
+                [speeches[row].sampling for row in frame_rows],
             )
         else:
             pass
         next_token_ids = list(host_token_ids)
         feedback_rows: list[int] = []
         feedback_codes: list[torch.Tensor] = []
-        frame_index_of_row = {row: index for index, row in enumerate(speaking_rows)}
+        frame_index_of_row = {row: index for index, row in enumerate(frame_rows)}
         for row, speech in enumerate(speeches):
             was_interleaving = speech.interleaving
             frame_index = frame_index_of_row.get(row)

@@ -7,18 +7,20 @@ A request is in text, speech (after audio_start) or interleaved (after mixed_sta
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import IntEnum
 
 import torch
 
-from sglang_omni.models.lfm3_audio.depth import FrameSampling
+from sglang_omni.models.lfm3_audio.frame_sampling import FrameSampling
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
 
 
-class GenerationMode(str, Enum):
-    TEXT = "text"
-    AUDIO = "audio"
-    INTERLEAVED = "interleaved"
+class GenerationMode(IntEnum):
+    """Also the mode codes of the device speech state (speech_pool.py)."""
+
+    TEXT = 0
+    AUDIO = 1
+    INTERLEAVED = 2
 
 
 @dataclass(kw_only=True)
@@ -29,7 +31,8 @@ class SpeechState:
     text_only: bool = False
     speaking: bool = False
     text_done: bool = False
-    slots_left: int = 6
+    # Slots left in the current interleaved block, text or speech.
+    slots_left: int
     finished: bool = False
     # The generated ids as the checkpoint's generate returns them: text tokens and one audio_out per emitted frame.
     text_out: list[int] = field(default_factory=list)
@@ -97,7 +100,7 @@ class SpeechState:
         elif token_id in eos_token_ids:
             self.finished = True
         elif interleaving:
-            # Mode markers only open a block; inside one they are ordinary text.
+            # note (ruilin): mode markers only open a block; inside one they are ordinary text.
             pass
         elif token_id == tokens.audio_start_token_id:
             self.mode = GenerationMode.AUDIO

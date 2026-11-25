@@ -13,11 +13,11 @@ import torch
 from sglang_omni.models.lfm3_audio.generation import GenerationMode, SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
 
-MODE_CODES = {
-    GenerationMode.TEXT: 0,
-    GenerationMode.AUDIO: 1,
-    GenerationMode.INTERLEAVED: 2,
-}
+# Columns of a packed step (pack_step): the emitted id, the sampled id, whether the row took a frame, the fed codes, then the advanced state (state_columns).
+EMITTED_ID_COLUMN = 0
+SAMPLED_ID_COLUMN = 1
+TOOK_FRAME_COLUMN = 2
+CODES_COLUMN = 3
 
 
 @dataclass(kw_only=True)
@@ -53,7 +53,7 @@ class SpeechRows:
                 padding = history[:1].expand(window - history.shape[0], -1)
                 histories.append(torch.cat([padding, history]))
         return cls(
-            mode=torch.tensor([MODE_CODES[state.mode] for state in states]),
+            mode=torch.tensor([int(state.mode) for state in states]),
             speaking=torch.tensor([state.speaking for state in states]),
             text_done=torch.tensor([state.text_done for state in states]),
             finished=torch.tensor([state.finished for state in states]),
@@ -154,10 +154,10 @@ class SpeechStep:
     fed_codes: torch.Tensor
 
 
-def speaking_rows(rows: SpeechRows) -> torch.Tensor:
+def needs_frame_mask(rows: SpeechRows) -> torch.Tensor:
     """Rows that take a frame this step (SpeechState.needs_frame)."""
-    audio = rows.mode == MODE_CODES[GenerationMode.AUDIO]
-    interleaving = rows.mode == MODE_CODES[GenerationMode.INTERLEAVED]
+    audio = rows.mode == GenerationMode.AUDIO
+    interleaving = rows.mode == GenerationMode.INTERLEAVED
     return ~rows.finished & (audio | (interleaving & rows.speaking))
 
 
@@ -172,12 +172,12 @@ def advance_speech(
 
     codes holds a frame for every row; only the speaking rows use theirs.
     """
-    text_mode = MODE_CODES[GenerationMode.TEXT]
-    interleaved = MODE_CODES[GenerationMode.INTERLEAVED]
-    needs_frame = speaking_rows(rows)
+    text_mode = GenerationMode.TEXT
+    interleaved = GenerationMode.INTERLEAVED
+    needs_frame = needs_frame_mask(rows)
     was_interleaving = rows.mode == interleaved
 
-    # A frame row: an end-of-speech frame returns to text, any other joins the repetition history.
+    # note (ruilin): a frame row: an end-of-speech frame returns to text, any other joins the repetition history.
     eos_frame = needs_frame & (codes == tokens.audio_eos_code).any(-1)
     fed_codes = torch.where(
         eos_frame[:, None], torch.full_like(codes, tokens.audio_eos_code), codes
@@ -197,7 +197,7 @@ def advance_speech(
     )
     mode = torch.where(eos_frame, text_mode, rows.mode)
 
-    # A text row: text_end ends the text of an interleaved block and the turn otherwise; an end id ends the turn; outside a block, mode markers open one.
+    # note (ruilin): a text row: text_end ends the text of an interleaved block and the turn otherwise; an end id ends the turn; outside a block, mode markers open one.
     text = ~needs_frame
     is_text_end = sampled_ids == tokens.text_end_token_id
     # note (ruilin): compared one id at a time, since a device tensor built from the host ids would block on the stream.
@@ -211,7 +211,7 @@ def advance_speech(
     opens_block = opens & (sampled_ids == tokens.mixed_start_token_id)
     mode = torch.where(
         opens_audio,
-        MODE_CODES[GenerationMode.AUDIO],
+        GenerationMode.AUDIO,
         torch.where(opens_block, interleaved, mode),
     )
     speaking = torch.where(
@@ -223,7 +223,6 @@ def advance_speech(
     slots_left = torch.where(opens_block, tokens.interleaved_n_text, rows.slots_left)
     finished = rows.finished | ends_turn
 
-    # Count the interleaved slot the step started in.
     counted = was_interleaving & ~text_done
     slots_left = slots_left - counted.long()
     flips = counted & (slots_left == 0)
@@ -255,3 +254,48 @@ def advance_speech(
         needs_frame=needs_frame,
         fed_codes=fed_codes,
     )
+
+
+def pack_step(step: SpeechStep, sampled_ids: torch.Tensor) -> torch.Tensor:
+    """One int64 row per request for the host: the step's ids and frame, then its advanced state (state_columns)."""
+    rows = step.rows
+    return torch.cat(
+        [
+            step.token_ids[:, None].long(),
+            sampled_ids[:, None].long(),
+            step.needs_frame[:, None].long(),
+            step.fed_codes,
+            torch.stack(
+                [
+                    rows.mode,
+                    rows.speaking.long(),
+                    rows.text_done.long(),
+                    rows.finished.long(),
+                    rows.slots_left,
+                    rows.frames_sampled,
+                    rows.history_len,
+                ],
+                dim=1,
+            ),
+        ],
+        dim=1,
+    )
+
+
+def state_columns(num_codebooks: int) -> slice:
+    """The packed step's advanced-state columns, in host_state order."""
+    return slice(CODES_COLUMN + num_codebooks, None)
+
+
+def host_state(state: SpeechState) -> list[int]:
+    """A host SpeechState as the advanced-state columns of a packed step."""
+    history = state.sampling.history
+    return [
+        int(state.mode),
+        int(state.speaking),
+        int(state.text_done),
+        int(state.finished),
+        state.slots_left,
+        state.sampling.frames_sampled,
+        0 if history is None else history.shape[0],
+    ]

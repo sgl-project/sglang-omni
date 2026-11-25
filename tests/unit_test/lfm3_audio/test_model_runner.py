@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import types
 from dataclasses import fields
 
@@ -11,11 +12,15 @@ import torch
 from torch import nn
 
 from sglang_omni.models.lfm3_audio import model_runner as model_runner_module
-from sglang_omni.models.lfm3_audio.depth import FrameSampling, SpeechSampler
 from sglang_omni.models.lfm3_audio.engine_builder import Lfm3AudioEngineBuilder
+from sglang_omni.models.lfm3_audio.frame_sampling import FrameSampling, SpeechSampler
 from sglang_omni.models.lfm3_audio.generation import SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
 from sglang_omni.models.lfm3_audio.model_runner import Lfm3AudioModelRunner
+from sglang_omni.models.lfm3_audio.prompt_embeds import (
+    encode_prompts,
+    prefill_input_embeds,
+)
 from sglang_omni.models.lfm3_audio.request_builders import Lfm3AudioRequestData
 from sglang_omni.models.lfm3_audio.speech_pool import SpeechRows, SpeechStatePool
 from sglang_omni.scheduling.types import SchedulerRequest
@@ -38,6 +43,7 @@ def make_runner() -> Lfm3AudioModelRunner:
         text_only_buffer=torch.zeros(2, dtype=torch.bool),
         depth_decoder=None,
         depth_graphs=None,
+        tokens=TOKENS,
     )
     runner.tokens = TOKENS
     runner.stop_token_id = TOKENS.eos_token_ids[0]
@@ -154,7 +160,8 @@ def test_retracted_request_replays_the_inputs_its_decode_steps_fed(
     runner = make_runner()
     request = make_request("speech", TOKENS.audio_start_token_id)
     sglang_request = request.data.req
-    prompt_embeds = runner.prefill_input_embeds(request)
+    encode_prompts(runner.model, [request.data])
+    prompt_embeds = prefill_input_embeds(runner.model, request)
     fed_inputs = []
     for code in (3, 4):
         frame = torch.full((1, TOKENS.num_codebooks), code)
@@ -172,7 +179,7 @@ def test_retracted_request_replays_the_inputs_its_decode_steps_fed(
     fed_inputs.append(request.data.pending_feedback_queue[0].clone())
 
     sglang_request.extend_len = 3 + len(sglang_request.output_ids)
-    replay = runner.prefill_input_embeds(request)
+    replay = prefill_input_embeds(runner.model, request)
 
     assert sglang_request.output_ids == [TOKENS.audio_out_token_id] * 3
     assert torch.allclose(replay, torch.cat([prompt_embeds, torch.stack(fed_inputs)]))
@@ -382,3 +389,72 @@ def test_engine_refuses_unsupported_server_settings(
         builder.validate_before_infrastructure(
             types.SimpleNamespace(**{**SUPPORTED_SETTINGS, **override})
         )
+
+
+def test_one_encoder_call_per_kind_serves_every_request_of_the_batch() -> None:
+    """Clips of different lengths are padded into one audio call and images share one vision call; each prompt gets its own rows at its placeholders."""
+    tokens = dataclasses.replace(TOKENS, image_token_id=900, video_token_id=901)
+    audio, image = tokens.audio_token_id, tokens.image_token_id
+    calls = {"audio": 0, "vision": 0}
+
+    def encode_audio(
+        features: torch.Tensor, feature_mask: torch.Tensor
+    ) -> torch.Tensor:
+        calls["audio"] += 1
+        rows = [
+            clip[0, : int(mask.sum())] for clip, mask in zip(features, feature_mask)
+        ]
+        return torch.cat(rows)[:, None].expand(-1, HIDDEN_SIZE)
+
+    def encode_vision(
+        pixel_values: torch.Tensor, grid_thw: torch.Tensor
+    ) -> torch.Tensor:
+        calls["vision"] += 1
+        return pixel_values[:, :1].expand(-1, HIDDEN_SIZE)
+
+    model = types.SimpleNamespace(
+        get_input_embeddings=lambda: nn.Embedding(200_000, HIDDEN_SIZE),
+        tokens=tokens,
+        encode_audio=encode_audio,
+        encode_vision=encode_vision,
+    )
+
+    def request_data(prompt: list[int], frames: int | None, patches: int | None):
+        return Lfm3AudioRequestData(
+            input_ids=torch.tensor(prompt),
+            input_features=(
+                None
+                if frames is None
+                else torch.arange(1.0, frames + 1)[None, None].expand(1, 2, frames) * 10
+                + len(prompt)
+            ),
+            feature_attention_mask=None if frames is None else torch.ones(1, frames),
+            pixel_values=(
+                None
+                if patches is None
+                else torch.full((patches, 3), -float(len(prompt)))
+            ),
+            image_grid_thw=None if patches is None else torch.tensor([[1, 1, patches]]),
+        )
+
+    short_clip = request_data([1, audio, audio, audio, 2], frames=3, patches=None)
+    clip_and_image = request_data([audio] * 5 + [image, image, 3], frames=5, patches=2)
+    text = request_data([4, 5], frames=None, patches=None)
+    batch = [short_clip, clip_and_image, text]
+
+    encode_prompts(model, batch)
+
+    assert calls == {"audio": 1, "vision": 1}
+    assert short_clip.prefill_input_embeds[1:4, 0].tolist() == [15.0, 25.0, 35.0]
+    assert clip_and_image.prefill_input_embeds[:5, 0].tolist() == [
+        18.0,
+        28.0,
+        38.0,
+        48.0,
+        58.0,
+    ]
+    assert clip_and_image.prefill_input_embeds[5:7, 0].tolist() == [-8.0, -8.0]
+    assert text.prefill_input_embeds.shape == (2, HIDDEN_SIZE)
+    assert all(
+        data.input_features is None and data.pixel_values is None for data in batch
+    )

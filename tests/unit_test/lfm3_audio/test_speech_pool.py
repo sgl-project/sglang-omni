@@ -7,7 +7,7 @@ from dataclasses import fields
 
 import torch
 
-from sglang_omni.models.lfm3_audio.depth import FrameSampling
+from sglang_omni.models.lfm3_audio.frame_sampling import FrameSampling
 from sglang_omni.models.lfm3_audio.generation import SpeechState
 from sglang_omni.models.lfm3_audio.hf_config import Lfm3AudioTokens
 from sglang_omni.models.lfm3_audio.speech_pool import (

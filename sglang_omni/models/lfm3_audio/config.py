@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 from typing import ClassVar
 
 from sglang_omni.config import (
@@ -11,11 +12,15 @@ from sglang_omni.config import (
     PipelineConfig,
     StageConfig,
 )
+from sglang_omni.serve.protocol import ChatCompletionRequest, ChatMessage
+from sglang_omni.serve.server_warmup import warmup_tone_wav_bytes
 
 PACKAGE = "sglang_omni.models.lfm3_audio"
 PREPROCESSING_STAGE = "preprocessing"
 GENERATION_STAGE = "generation"
 DECODE_STAGE = "decode"
+# Enough for one interleaved block of text and speech frames, so the codec runs too.
+WARMUP_MAX_TOKENS = 32
 
 
 class Lfm3AudioPipelineConfig(PipelineConfig):
@@ -26,6 +31,10 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
         "Lfm3OmniForConditionalGeneration",
     )
     requires_model_capabilities: ClassVar[bool] = True
+    # note (ruilin): the first prefill compiles the extend attention kernels, which held the first request about 2 s.
+    server_warmup_request_factory: ClassVar[str] = (
+        f"{PACKAGE}.config.build_server_warmup_request"
+    )
     supported_speech_fields: ClassVar[frozenset[str] | None] = frozenset(
         {
             "model",
@@ -65,18 +74,17 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 speech_sampler="seeded",
                 enable_async_decode=True,
-                # note (ruilin): each prefill drains the pending decode step and runs eagerly, which bounds the engine loop at high concurrency. Holding new requests up to 30 ms (or until 32 wait) gave 46.3 vs 40.5 req/s at concurrency 64 on SeedTTS EN, H100, and 13.1 vs 13.6 at 8.
+                # note (ruilin): each prefill drains the pending decode step, so new requests wait briefly to prefill together.
                 prefill_coalesce_requests=32,
                 prefill_coalesce_wait_ms=30.0,
             ),
-            # Same KV pool as the in-process default (about 2.0M tokens on an H100).
             gpu_memory_fraction=0.70,
             gpu=0,
             next=DECODE_STAGE,
         ),
         StageConfig(
             name=DECODE_STAGE,
-            # note (ruilin): in the engine's process the codec shares the interpreter with the scheduler loop; on its own it served 61 vs 46 req/s at concurrency 64 on SeedTTS EN, H100 (14.9 vs 12.8 at 8, 78.7 vs 48.9 at 128).
+            # note (ruilin): its own process keeps the codec off the engine's scheduler loop.
             process="decode",
             factory_path=f"{PACKAGE}.stages.create_decode_executor",
             gpu_memory_fraction=0.15,
@@ -84,6 +92,30 @@ class Lfm3AudioPipelineConfig(PipelineConfig):
             terminal=True,
         ),
     ]
+
+
+def build_server_warmup_request(
+    pipeline_config: Lfm3AudioPipelineConfig,
+) -> ChatCompletionRequest:
+    """A second of audio answered in text and speech: the audio encoder, prefill, decode and the codec run once before the server reports ready."""
+    del pipeline_config
+    tone_base64 = base64.b64encode(warmup_tone_wav_bytes()).decode("ascii")
+    return ChatCompletionRequest(
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": tone_base64, "format": "wav"},
+                    },
+                    {"type": "text", "text": "Describe this sound."},
+                ],
+            )
+        ],
+        modalities=["text", "audio"],
+        max_tokens=WARMUP_MAX_TOKENS,
+    )
 
 
 EntryClass = Lfm3AudioPipelineConfig

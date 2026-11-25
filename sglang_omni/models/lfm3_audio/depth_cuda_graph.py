@@ -6,6 +6,7 @@ The exact sampler replays one depth pass (hidden states, codes and mask to logit
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,7 +14,8 @@ from typing import Protocol
 
 import torch
 
-from sglang_omni.models.lfm3_audio.depth import Lfm3DepthDecoder, seeded_frame_codes
+from sglang_omni.models.lfm3_audio.depth import Lfm3DepthDecoder
+from sglang_omni.models.lfm3_audio.frame_sampling import seeded_frame_codes
 from sglang_omni.platforms.device_graph import (
     DeviceGraphBackend,
     DeviceGraphPool,
@@ -64,6 +66,11 @@ class SeededFrameGraph:
     codes: torch.Tensor
 
 
+def largest_first(batch_sizes: Sequence[int]) -> list[int]:
+    """Capture buckets from the largest, so the smaller graphs reuse its pool memory."""
+    return sorted(set(batch_sizes), reverse=True)
+
+
 class Lfm3DepthCudaGraphs:
     """Captures and replays the depth graphs; a batch above the largest bucket runs eagerly."""
 
@@ -82,8 +89,7 @@ class Lfm3DepthCudaGraphs:
         self.schedule = list(schedule)
         self.repetition_window = repetition_window
         self.num_codebooks = sum(schedule)
-        reference = decoder.mask_embedding
-        self.device = reference.device
+        self.device = decoder.mask_embedding.device
         self.dtype = decoder.depth_linear.weight.dtype
         self.pool: DeviceGraphPool | None = None
         self.pass_graphs: dict[int, DepthPassGraph] = {}
@@ -93,13 +99,14 @@ class Lfm3DepthCudaGraphs:
         self, compute: GraphCompute
     ) -> tuple[ReplayableGraph, torch.Tensor]:
         """The captured graph and the static tensor its replays write."""
-        stream = torch.cuda.Stream(device=self.device)
-        stream.wait_stream(torch.cuda.current_stream(self.device))
-        with torch.cuda.stream(stream):
+        device_module = torch.get_device_module(self.device)
+        stream = device_module.Stream(device=self.device)
+        stream.wait_stream(device_module.current_stream(self.device))
+        with device_module.stream(stream):
             for _ in range(WARMUP_ITERATIONS):
                 compute()
-        torch.cuda.current_stream(self.device).wait_stream(stream)
-        torch.cuda.synchronize(self.device)
+        device_module.current_stream(self.device).wait_stream(stream)
+        stream.synchronize()
         with self.graph_backend.capture(
             pool=self.pool, thread_local_errors=True
         ) as graph:
@@ -109,7 +116,7 @@ class Lfm3DepthCudaGraphs:
     @torch.no_grad()
     def capture_pass_graphs(self, batch_sizes: Sequence[int]) -> None:
         self.pool = self.graph_backend.graph_pool_handle()
-        for bucket in sorted({int(size) for size in batch_sizes}, reverse=True):
+        for bucket in largest_first(batch_sizes):
             hidden_states = torch.zeros(
                 bucket, self.hidden_size, device=self.device, dtype=self.dtype
             )
@@ -118,7 +125,7 @@ class Lfm3DepthCudaGraphs:
             )
             masked = torch.ones_like(codes, dtype=torch.bool)
             graph, logits = self.warm_up_and_capture(
-                PassCompute(self.decoder, hidden_states, codes, masked)
+                functools.partial(self.decoder, hidden_states, codes, masked)
             )
             self.pass_graphs[bucket] = DepthPassGraph(
                 graph=graph,
@@ -134,7 +141,7 @@ class Lfm3DepthCudaGraphs:
     @torch.no_grad()
     def capture_frame_graphs(self, batch_sizes: Sequence[int]) -> None:
         self.pool = self.graph_backend.graph_pool_handle()
-        for bucket in sorted({int(size) for size in batch_sizes}, reverse=True):
+        for bucket in largest_first(batch_sizes):
             inputs = SeededFrameInputs(
                 hidden_states=torch.zeros(
                     bucket, self.hidden_size, device=self.device, dtype=self.dtype
@@ -155,7 +162,18 @@ class Lfm3DepthCudaGraphs:
                 ),
             )
             graph, codes = self.warm_up_and_capture(
-                FrameCompute(self.decoder, inputs, self.schedule)
+                functools.partial(
+                    seeded_frame_codes,
+                    self.decoder,
+                    inputs.hidden_states,
+                    inputs.seeds,
+                    inputs.frame_positions,
+                    inputs.temperature,
+                    inputs.top_k,
+                    inputs.repetition_penalty,
+                    inputs.history,
+                    self.schedule,
+                )
             )
             self.frame_graphs[bucket] = SeededFrameGraph(
                 graph=graph, inputs=inputs, codes=codes
@@ -217,47 +235,5 @@ class Lfm3DepthCudaGraphs:
         inputs.repetition_penalty[:rows].copy_(repetition_penalty)
         inputs.history[:rows].copy_(history)
         frame_graph.graph.replay()
-        return frame_graph.codes[:rows].clone()
-
-
-class PassCompute:
-    def __init__(
-        self,
-        decoder: Lfm3DepthDecoder,
-        hidden_states: torch.Tensor,
-        codes: torch.Tensor,
-        masked: torch.Tensor,
-    ) -> None:
-        self.decoder = decoder
-        self.hidden_states = hidden_states
-        self.codes = codes
-        self.masked = masked
-
-    def __call__(self) -> torch.Tensor:
-        return self.decoder(self.hidden_states, self.codes, self.masked)
-
-
-class FrameCompute:
-    def __init__(
-        self,
-        decoder: Lfm3DepthDecoder,
-        inputs: SeededFrameInputs,
-        schedule: Sequence[int],
-    ) -> None:
-        self.decoder = decoder
-        self.inputs = inputs
-        self.schedule = schedule
-
-    def __call__(self) -> torch.Tensor:
-        inputs = self.inputs
-        return seeded_frame_codes(
-            self.decoder,
-            inputs.hidden_states,
-            inputs.seeds,
-            inputs.frame_positions,
-            inputs.temperature,
-            inputs.top_k,
-            inputs.repetition_penalty,
-            inputs.history,
-            self.schedule,
-        )
+        # note (ruilin): the step consumes these codes into new tensors before the next replay on the same stream.
+        return frame_graph.codes[:rows]
