@@ -214,8 +214,19 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context) {
     should_prefill_final_ = false;
     std::shared_ptr<RefreshReuse> final_reuse =
         std::exchange(final_reuse_, nullptr);
-    return final_reuse != nullptr ? FinalReuse{std::move(final_reuse), true}
-                                  : FinalReuse{recording_reuse_, false};
+    FinalReuse reuse = final_reuse != nullptr
+                           ? FinalReuse{std::move(final_reuse), true}
+                           : FinalReuse{recording_reuse_, false};
+    // Only use an auto-language preview of the same recording start. A
+    // committed segment or a moved Final start can leave a different tail.
+    if (!language_.has_value() && final_start_sample_ == 0 &&
+        committed_.empty() && !finalizing_ && segment_.has_value() &&
+        segment_->start_sample == 0 && !segment_->ran_out_of_tokens &&
+        segment_->language.has_value() && !segment_->transcript.empty()) {
+      reuse.auto_language_guess =
+          FinalPreviewGuess{*segment_->language, segment_->transcript};
+    }
+    return reuse;
   }
 }
 

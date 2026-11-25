@@ -88,6 +88,19 @@ public:
                   options.context)
             : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
+      // Voxt cannot send a text-only guess for automatic language detection:
+      // the decoder first generates its language header. The session has
+      // that language from the preview. Verify the whole proposed output
+      // through the existing guessed-token path; leave options.language
+      // unset so the Final still detects the language itself.
+      if (!options.language.has_value() && !guessed_text.has_value() &&
+          options.repetition_penalty == 1.0f &&
+          !omni_common::FormFlag(asr_service::TextField(form, "preview")) &&
+          final_reuse.auto_language_guess.has_value()) {
+        const auto &guess = *final_reuse.auto_language_guess;
+        options.guessed_token_ids =
+            transcriber_.AutoLanguageGuesses(guess.language, guess.text);
+      }
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
         // note (XXXXRT666): a copy the refreshes keep using shares the

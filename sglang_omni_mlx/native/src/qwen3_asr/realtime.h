@@ -31,11 +31,19 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds);
 
+// A preview's detected language and text are guesses, not a language hint
+// or a committed transcript prefix for the authoritative Final.
+struct FinalPreviewGuess {
+  std::string language;
+  std::string text;
+};
+
 // What a session holds of a Final's audio: taken, and no longer extended by
 // the session, or shared with its refreshes.
 struct FinalReuse {
   std::shared_ptr<RefreshReuse> reuse;
   bool is_taken = false;
+  std::optional<FinalPreviewGuess> auto_language_guess = std::nullopt;
 };
 
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
