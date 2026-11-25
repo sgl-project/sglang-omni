@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from multiprocessing.queues import Queue
 from typing import Literal
 
@@ -127,7 +128,7 @@ async def test_accepted_input_snapshots_mutable_payload(linear_pair, monkeypatch
     async def submit(stage, endpoint, message):
         session_operation = find_session_operation(message.data.request.metadata)
         if session_operation is not None and session_operation.operation == "append":
-            submitted.append(session_operation.chunk.payload)
+            submitted.extend(chunk.payload for chunk in session_operation.chunks)
         return await original(stage, endpoint, message)
 
     monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", submit)
@@ -164,32 +165,19 @@ async def test_next_input_is_accepted_while_one_unit_is_in_flight(
     )
     entered, release = asyncio.Event(), asyncio.Event()
     append_seqs: list[int] = []
-    original = coordinator.submit_session_operation
+    submit = coordinator.control_plane.submit_to_stage
 
-    async def hold_first_append(
-        session: Session,
-        operation: Literal["open", "read", "append", "control", "close"],
-        *,
-        owner: str | None = None,
-        chunk: TimedChunk | None = None,
-        request_id: str | None = None,
-        should_preempt: bool = False,
-    ) -> str:
-        if operation == "append" and chunk is not None:
-            append_seqs.append(chunk.seq)
-            if chunk.seq == 0:
+    async def hold_first_append(stage, endpoint, message):
+        operation = find_session_operation(message.data.request.metadata)
+        if operation is not None and operation.operation == "append":
+            (appended_chunk,) = operation.chunks
+            append_seqs.append(appended_chunk.seq)
+            if appended_chunk.seq == 0:
                 entered.set()
                 await release.wait()
-        return await original(
-            session,
-            operation,
-            owner=owner,
-            chunk=chunk,
-            request_id=request_id,
-            should_preempt=should_preempt,
-        )
+        await submit(stage, endpoint, message)
 
-    monkeypatch.setattr(coordinator, "submit_session_operation", hold_first_append)
+    monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", hold_first_append)
     outputs = coordinator.session_outputs(session_identity)
     try:
         assert await coordinator.append_session(session_identity, chunk(0)) == 0
@@ -329,7 +317,7 @@ async def test_a_control_stops_at_the_owners_a_close_overtakes(
         operation: SessionOperationKind,
         *,
         owner: str | None = None,
-        chunk: TimedChunk | None = None,
+        chunks: TimedChunk | Sequence[TimedChunk] = (),
         request_id: str | None = None,
         should_preempt: bool = False,
         preempted_request_ids: tuple[str, ...] = (),
@@ -338,7 +326,7 @@ async def test_a_control_stops_at_the_owners_a_close_overtakes(
             session,
             operation,
             owner=owner,
-            chunk=chunk,
+            chunks=chunks,
             request_id=request_id,
             should_preempt=should_preempt,
             preempted_request_ids=preempted_request_ids,

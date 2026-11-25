@@ -199,7 +199,7 @@ def test_route_session_input_records_authoritative_ar_bypass(
         operation="append",
         session_identity=identity,
         stages=("ar-stage",),
-        chunk=chunk,
+        chunks=(chunk,),
     )
     payload = StagePayload(
         request_id="request-route",

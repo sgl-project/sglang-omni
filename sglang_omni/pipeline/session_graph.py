@@ -290,6 +290,7 @@ class SessionGraphRunner(CoordinatorSessions):
                     ),
                     session_id=f"{session_id}:{name}",
                     is_node=True,
+                    should_batch_appends=node.should_batch_appends,
                 )
         except BaseException:
             for identity in reversed(list(nodes.values())):
@@ -464,9 +465,9 @@ class SessionGraphRunner(CoordinatorSessions):
         inbox as its fragments start to enter; the client's input was
         admitted within the same bound.
         """
-        identity = graph.nodes[name]
+        session = self.get_session(graph.nodes[name])
         inbox = graph.inboxes[name]
-        max_chunk_bytes = self.sessions[identity.id].limits.max_chunk_bytes
+        max_chunk_bytes = session.limits.max_chunk_bytes
         seq = 0
         deadline: float | None = None
         while True:
@@ -512,7 +513,13 @@ class SessionGraphRunner(CoordinatorSessions):
             else:
                 pass
             try:
-                await self.append_session(identity, replace(chunk, seq=seq))
+                self.enqueue_session_input(
+                    session,
+                    replace(chunk, seq=seq),
+                    input_kind=(
+                        "client" if client_seq is not None else "inter_stage_chunk"
+                    ),
+                )
             except QueueFullError:
                 deadline = self.full_input_deadline(graph, name, seq, deadline)
                 await asyncio.sleep(FULL_QUEUE_RETRY_S)
@@ -539,15 +546,17 @@ class SessionGraphRunner(CoordinatorSessions):
         no more of its fragments enter, and the first owner drops the ones
         it holds when input of another turn arrives.
         """
-        identity = graph.nodes[name]
-        fragments = fragment_chunk(
-            chunk, seq, self.sessions[identity.id].limits.max_chunk_bytes
-        )
+        session = self.get_session(graph.nodes[name])
+        fragments = fragment_chunk(chunk, seq, session.limits.max_chunk_bytes)
         fragment, continues = next(fragments)
         deadline: float | None = None
         while not self.is_interrupted(graph, name, chunk):
             try:
-                await self.append_session(identity, fragment, continues=continues)
+                self.enqueue_session_input(
+                    session,
+                    fragment,
+                    input_kind="fragment" if continues else "final_fragment",
+                )
             except QueueFullError:
                 deadline = self.full_input_deadline(graph, name, fragment.seq, deadline)
                 await asyncio.sleep(FULL_QUEUE_RETRY_S)

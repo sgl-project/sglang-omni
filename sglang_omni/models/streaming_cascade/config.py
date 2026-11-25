@@ -687,11 +687,8 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         nodes = {}
         for name, node in self.session_nodes.items():
             inputs = []
-            consumes = (
-                COMPONENTS.kind(node.kind).consumes | {SESSION_CONTROL}
-                if node.kind
-                else None
-            )
+            kind = COMPONENTS.kind(node.kind) if node.kind else None
+            consumes = kind.consumes | {SESSION_CONTROL} if kind else None
             for entry in node.inputs:
                 if isinstance(entry, SessionControlEdgeConfig):
                     continue
@@ -717,6 +714,7 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
             nodes[name] = SessionNode(
                 stages=(name,) if node.kind else tuple(node.stages),
                 inputs=tuple(inputs),
+                should_batch_appends=kind is not None and kind.should_batch_appends,
                 controls=tuple(
                     entry.edge()
                     for entry in node.inputs

@@ -2026,7 +2026,9 @@ def test_result_resources_survive_partial_fanout():
 
 def session_append_payload(request_id: str, stages: tuple[str, ...]) -> StagePayload:
     chunk = TimedChunk("text", 0, 0, 1, {"text": "hi"}, format="text.delta", turn=1)
-    operation = SessionOperation("append", SessionIdentity("tts"), stages, chunk)
+    operation = SessionOperation(
+        "append", SessionIdentity("tts"), stages, chunks=(chunk,)
+    )
     payload = make_stage_payload(request_id=request_id, data={"codes": [1]})
     payload.request.metadata[SESSION_METADATA_KEY] = operation.to_dict()
     return payload

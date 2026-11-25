@@ -70,7 +70,7 @@ class SessionOperationDict(TypedDict):
     operation: SessionOperationKind
     session_identity: SessionIdentityDict
     stages: list[str]
-    chunk: TimedChunkDict | None
+    chunks: list[TimedChunkDict]
     should_preempt: bool
     preempted_request_ids: NotRequired[list[str]]
 
@@ -234,6 +234,8 @@ class SessionNode:
     stages: tuple[str, ...]
     inputs: tuple[str | DataEdge, ...]
     controls: tuple[ControlEdge, ...] = ()
+    # Single-stage components that publish on read can share one transport completion across eligible consecutive appends.
+    should_batch_appends: bool = False
 
     def edges(self) -> dict[str, frozenset[str] | None]:
         """Formats taken from each source; None takes every format."""
@@ -285,6 +287,10 @@ class SessionGraph:
         for name, node in self.nodes.items():
             if not node.stages or not (node.inputs or node.controls):
                 raise ValueError(f"node {name!r} needs a stage route and inputs")
+            else:
+                pass
+            if node.should_batch_appends and len(node.stages) != 1:
+                raise ValueError(f"node {name!r} needs a single stage to batch appends")
             else:
                 pass
             sources = set(node.edges()) | {edge.source for edge in node.controls}
@@ -415,11 +421,11 @@ class SessionLimits:
 class SessionOperation:
     """Coordinator-to-stage session operation, carried in request metadata.
 
-    An append carries the input chunk; a control carries its event as the
-    chunk and targets one stage, and with should_preempt that stage cancels
-    the session's in-flight appends as soon as the control arrives. A graph's
-    interrupt also names its turn's appends in preempted_request_ids; each
-    stage it reaches aborts them, dropping their results and anything they
+    An append carries a nonempty sequence of input chunks; a control carries
+    its event as the chunk and targets one stage, and with should_preempt that
+    stage cancels the session's in-flight appends as soon as the control arrives.
+    A graph's interrupt also names its turn's appends in preempted_request_ids;
+    each stage it reaches aborts them, dropping their results and anything they
     send it later. A read
     targets the terminal owner and stays open until the close answers it; the
     chunks the stage emits outside an append stream on it. A fragment carries
@@ -431,16 +437,26 @@ class SessionOperation:
     operation: SessionOperationKind
     session_identity: SessionIdentity
     stages: tuple[str, ...]
-    chunk: TimedChunk | None = None
+    chunks: tuple[TimedChunk, ...] = ()
     should_preempt: bool = False
     preempted_request_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.operation == "append" and not self.chunks:
+            raise ValueError("an append requires a nonempty chunks sequence")
+        elif self.operation in ("control", "fragment") and len(self.chunks) != 1:
+            raise ValueError(f"a {self.operation} requires one chunk")
+        elif self.operation in ("open", "read", "close") and self.chunks:
+            raise ValueError(f"{self.operation} cannot carry chunks")
+        else:
+            pass
 
     def to_dict(self) -> SessionOperationDict:
         fields: SessionOperationDict = {
             "operation": self.operation,
             "session_identity": self.session_identity.to_dict(),
             "stages": list(self.stages),
-            "chunk": None if self.chunk is None else self.chunk.to_dict(),
+            "chunks": [chunk.to_dict() for chunk in self.chunks],
             "should_preempt": self.should_preempt,
         }
         if self.preempted_request_ids:
@@ -453,6 +469,8 @@ class SessionOperation:
     def from_dict(cls, data: object) -> SessionOperation:
         if not isinstance(data, dict):
             raise ValueError("session operation must be an object")
+        elif "chunks" not in data:
+            raise ValueError("session operation requires a chunks field")
         else:
             return msgspec.convert(
                 data, type=cls, strict=True, builtin_types=BUILTIN_TYPES

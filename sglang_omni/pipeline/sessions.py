@@ -8,7 +8,7 @@ import logging
 import math
 import uuid
 from collections import Counter, deque
-from collections.abc import AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal, Protocol
 
@@ -36,9 +36,11 @@ from sglang_omni.proto.session import (
     TimedChunk,
     wire_size,
 )
-from sglang_omni.proto.streams import INTERRUPT, TURN_DONE, control_type
+from sglang_omni.proto.streams import CONTROL, INTERRUPT, TURN_DONE, control_type
 
 logger = logging.getLogger(__name__)
+
+SessionInputKind = Literal["client", "inter_stage_chunk", "fragment", "final_fragment"]
 
 
 class SessionStreamHandler(Protocol):
@@ -51,7 +53,17 @@ class PendingSessionChunk:
     encoded_bytes: int
     request_id: str
     # note (luojiaxuan): the chunk is a fragment the next input continues; it goes only to the route's first owner.
-    continues: bool
+    # continues: bool
+    input_kind: SessionInputKind
+
+
+def is_batchable_chunk(pending: PendingSessionChunk) -> bool:
+    chunk = pending.chunk
+    return (
+        pending.input_kind == "inter_stage_chunk"
+        and chunk.modality != CONTROL
+        and chunk.turn is not None
+    )
 
 
 def check_timing(chunk: TimedChunk, modality_end_ms: dict[str, float] | None) -> None:
@@ -333,6 +345,7 @@ class CoordinatorSessions:
         limits: SessionLimits | None,
         session_id: str | None,
         is_node: bool = False,
+        should_batch_appends: bool = False,
     ) -> SessionIdentity:
         """Open fixed owners in upstream order before accepting input; a client route begins at entry_stage."""
         if (
@@ -385,7 +398,9 @@ class CoordinatorSessions:
                 self.owned_session_task(self.close_session_state(session))
             )
             raise
-        session.pump = asyncio.create_task(self.pump_session(session))
+        session.pump = asyncio.create_task(
+            self.pump_session(session, should_batch_appends=should_batch_appends)
+        )
         return session.session_identity
 
     def resolve_route_owners(
@@ -432,20 +447,33 @@ class CoordinatorSessions:
         *,
         ready_timestamp_ns: int | None = None,
         ready_run_id: str | None = None,
-        continues: bool = False,
     ) -> int:
-        """Accept input in global seq order, independently of output consumption.
-
-        Rejected input keeps its seq for retry; accepted input must not be
-        resubmitted. A chunk that `continues` is a fragment of a graph node's
-        chunk over max_chunk_bytes, and the next input continues it.
+        """
+        Accept client input in global seq order, independently of output consumption.
+        A rejected input keeps its seq for retry. Submit each accepted input only once.
         """
         graph = self.graphs.get(session_identity.id)
         if graph is not None and graph.session_identity == session_identity:
             return self.append_graph(graph, chunk)
         else:
             pass
-        session = self.get_session(session_identity)
+        return self.enqueue_session_input(
+            self.get_session(session_identity),
+            chunk,
+            input_kind="client",
+            ready_timestamp_ns=ready_timestamp_ns,
+            ready_run_id=ready_run_id,
+        )
+
+    def enqueue_session_input(
+        self,
+        session: Session,
+        chunk: TimedChunk,
+        *,
+        input_kind: SessionInputKind,
+        ready_timestamp_ns: int | None = None,
+        ready_run_id: str | None = None,
+    ) -> int:
         if session.is_closing or session.is_closed:
             raise RuntimeError("session is closing")
         else:
@@ -471,7 +499,7 @@ class CoordinatorSessions:
                 chunk=chunk,
                 encoded_bytes=encoded_bytes,
                 request_id=request_id,
-                continues=continues,
+                input_kind=input_kind,
             )
         )
         session.pending_count += 1
@@ -609,13 +637,16 @@ class CoordinatorSessions:
         session.next_output += 1
         session.output_wake.set()
 
-    async def pump_session(self, session: Session) -> None:
+    async def pump_session(self, session: Session, should_batch_appends: bool) -> None:
+        def can_dispatch_next_chunk() -> bool:
+            return bool(session.pending) and (
+                not session.control_barriers
+                or session.pending[0].chunk.seq < session.control_barriers[0][0]
+            )
+
         try:
             while not session.is_closing:
-                if not session.pending or (
-                    session.control_barriers
-                    and session.pending[0].chunk.seq >= session.control_barriers[0][0]
-                ):
+                if not can_dispatch_next_chunk():
                     session.wake.clear()
                     try:
                         await asyncio.wait_for(
@@ -631,14 +662,36 @@ class CoordinatorSessions:
                     pass
                 pending_chunk = session.pending.popleft()
                 chunk = pending_chunk.chunk
+                batch_chunks = [pending_chunk]
+                batch_bytes = pending_chunk.encoded_bytes
+                if should_batch_appends and is_batchable_chunk(pending_chunk):
+                    while can_dispatch_next_chunk():
+                        candidate = session.pending[0]
+                        appended_bytes = batch_bytes + candidate.encoded_bytes
+                        if (
+                            not is_batchable_chunk(candidate)
+                            or candidate.chunk.turn != chunk.turn
+                            or appended_bytes > session.limits.max_chunk_bytes
+                        ):
+                            break
+                        else:
+                            pass
+                        batch_chunks.append(session.pending.popleft())
+                        batch_bytes = appended_bytes
+                else:
+                    pass
                 session.in_flight_append = "accepted"
                 try:
-                    operation = "fragment" if pending_chunk.continues else "append"
+                    operation: SessionOperationKind = (
+                        "fragment"
+                        if pending_chunk.input_kind == "fragment"
+                        else "append"
+                    )
                     request_id = await self.submit_session_operation(
                         session,
                         operation,
-                        owner=session.stages[0] if pending_chunk.continues else None,
-                        chunk=chunk,
+                        owner=session.stages[0] if operation == "fragment" else None,
+                        chunks=tuple(item.chunk for item in batch_chunks),
                         request_id=pending_chunk.request_id,
                     )
                     if operation == "append":
@@ -648,17 +701,18 @@ class CoordinatorSessions:
                     session.in_flight_append = "submitted"
                     session.wake.set()
                     await self.finish_session_operation(session, operation, request_id)
-                    self.emit_session_output(
-                        session,
-                        pending_chunk.request_id,
-                        chunk.seq,
-                        replace(chunk, payload=None),
-                        kind="input_done",
-                    )
+                    for item in batch_chunks:
+                        self.emit_session_output(
+                            session,
+                            item.request_id,
+                            item.chunk.seq,
+                            replace(item.chunk, payload=None),
+                            kind="input_done",
+                        )
                 finally:
                     session.in_flight_append = None
-                    session.pending_count -= 1
-                    session.pending_bytes -= pending_chunk.encoded_bytes
+                    session.pending_count -= len(batch_chunks)
+                    session.pending_bytes -= batch_bytes
                     session.wake.set()
         except Exception as exc:
             self.fail_session(session, exc)
@@ -765,7 +819,7 @@ class CoordinatorSessions:
                     session,
                     "control",
                     owner=owner,
-                    chunk=event,
+                    chunks=event,
                     should_preempt=should_preempt,
                     preempted_request_ids=preempted_request_ids,
                 )
@@ -786,7 +840,7 @@ class CoordinatorSessions:
         operation: SessionOperationKind,
         *,
         owner: str | None = None,
-        chunk: TimedChunk | None = None,
+        chunks: TimedChunk | Sequence[TimedChunk] = (),
         request_id: str | None = None,
         should_preempt: bool = False,
         preempted_request_ids: tuple[str, ...] = (),
@@ -795,7 +849,7 @@ class CoordinatorSessions:
             session,
             operation,
             owner=owner,
-            chunk=chunk,
+            chunks=chunks,
             request_id=request_id,
             should_preempt=should_preempt,
             preempted_request_ids=preempted_request_ids,
@@ -808,7 +862,7 @@ class CoordinatorSessions:
         operation: SessionOperationKind,
         *,
         owner: str | None = None,
-        chunk: TimedChunk | None = None,
+        chunks: TimedChunk | Sequence[TimedChunk] = (),
         request_id: str | None = None,
         should_preempt: bool = False,
         preempted_request_ids: tuple[str, ...] = (),
@@ -819,7 +873,7 @@ class CoordinatorSessions:
             operation=operation,
             session_identity=session_identity,
             stages=session.stages,
-            chunk=chunk,
+            chunks=(chunks,) if isinstance(chunks, TimedChunk) else tuple(chunks),
             should_preempt=should_preempt,
             preempted_request_ids=preempted_request_ids,
         )
@@ -840,7 +894,9 @@ class CoordinatorSessions:
             def emit_operation_output(message: StreamMessage) -> None:
                 # Note (Junnan Li): A read's chunk belongs to the latest input the session accepted.
                 input_seq = (
-                    chunk.seq if chunk is not None else max(session.next_input - 1, 0)
+                    session_operation.chunks[0].seq
+                    if operation == "append"
+                    else max(session.next_input - 1, 0)
                 )
                 try:
                     self.emit_session_output(

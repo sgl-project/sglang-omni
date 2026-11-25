@@ -143,7 +143,7 @@ class SessionPools:
                 "append",
                 SessionIdentity(session_id),
                 ("text",),
-                TimedChunk("text", 0, 0, 0, {}, format="text_delta"),
+                chunks=(TimedChunk("text", 0, 0, 0, {}, format="text_delta"),),
             ),
         )
         request = Req(

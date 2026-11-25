@@ -324,22 +324,23 @@ class ARSessionBridge:
                 session.output_read = payload
                 return []
         elif operation_kind == "control":
-            assert operation.chunk is not None, "control operation carries no event"
+            (event,) = operation.chunks
+            assert event is not None, "control operation carries no event"
             if operation.should_preempt and session.unit is not None:
                 self.cancel(session.unit.request_id)
             else:
                 pass
-            self.adapter.control(session_identity, operation.chunk)
+            self.adapter.control(session_identity, event)
             payload.data = {"controlled": True}
             return [payload]
         else:
             raise ValueError("unknown session operation")
 
     def accept(self, payload: StagePayload, operation: SessionOperation) -> SessionUnit:
-        chunk = operation.chunk
-        assert (
-            chunk is not None
-        ), f"session append {payload.request_id} requires a chunk"
+        if len(operation.chunks) != 1:
+            raise ValueError("AR session requires one chunk per append")
+        else:
+            (chunk,) = operation.chunks
         session_identity = operation.session_identity
         session = self.sessions.get(session_identity.id)
         if session is None or session_identity != session.session_identity:

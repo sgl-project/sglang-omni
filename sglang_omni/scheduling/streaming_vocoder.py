@@ -239,7 +239,16 @@ class StreamingVocoderBase(
         """A Session's open, read, close and control are answered here; an interrupt drops the units of its turn."""
         requests: list[IncomingMessage] = []
         for message in batch:
-            operation = find_session_operation(message.data.request.metadata)
+            try:
+                operation = find_session_operation(message.data.request.metadata)
+                if operation is not None and len(operation.chunks) > 1:
+                    raise ValueError("vocoder requires one chunk per append")
+                else:
+                    pass
+            except ValueError as exc:
+                self.emit_error(message.request_id, exc)
+                self.abort(message.request_id)
+                continue
             if operation is None or operation.operation == "append":
                 requests.append(message)
                 continue
@@ -265,12 +274,12 @@ class StreamingVocoderBase(
                     pass
                 self.answer_session_operation(message, {"closed": True})
             elif operation.operation == "control":
-                event = operation.chunk
+                (event,) = operation.chunks
                 if control_type(event) == INTERRUPT and event.turn is not None:
                     for request_id, unit in list(self.session_appends.items()):
                         if (
                             unit.session_identity == operation.session_identity
-                            and unit.chunk.turn == event.turn
+                            and unit.chunks[0].turn == event.turn
                         ):
                             self.abort(request_id)
                         else:
@@ -393,7 +402,7 @@ class StreamingVocoderBase(
         else:
             pass
         operation = self.session_appends.get(request_id)
-        if operation is not None and operation.chunk.format == SESSION_CONTROL:
+        if operation is not None and operation.chunks[0].format == SESSION_CONTROL:
             return self.finish_session_control(request_id, payload, state)
         else:
             pass
@@ -459,7 +468,7 @@ class StreamingVocoderBase(
     def reply_progress_message(
         self, request_id: str, operation: SessionOperation
     ) -> OutgoingMessage:
-        chunk = operation.chunk
+        chunk = operation.chunks[0]
         session_id = operation.session_identity.id
         turn, text_end, audio_ms = self.reply_progress.get(session_id, (None, 0, 0.0))
         if turn != chunk.turn:
@@ -493,7 +502,7 @@ class StreamingVocoderBase(
     ) -> list[OutgoingMessage]:
         """Relay an appended control to the client once every unit appended before it has finished."""
         operation = self.session_appends[request_id]
-        chunk = operation.chunk
+        chunk = operation.chunks[0]
         session_id = operation.session_identity.id
         if self.reply_progress.get(session_id, (None,))[0] == chunk.turn:
             del self.reply_progress[session_id]
@@ -716,10 +725,10 @@ class StreamingVocoderBase(
                 AUDIO,
                 self.session_unit_audio_ms[request_id],
                 duration_ms,
-                operation.chunk.seq,
+                operation.chunks[0].seq,
                 samples.astype("<f4").tobytes(),
                 format=PCM_F32,
-                turn=operation.chunk.turn,
+                turn=operation.chunks[0].turn,
             )
             self.session_unit_audio_ms[request_id] += duration_ms
             return OutgoingMessage(
@@ -732,7 +741,7 @@ class StreamingVocoderBase(
     def is_reply_unit(self, operation: SessionOperation) -> bool:
         return (
             self.reply_unit_format is not None
-            and operation.chunk.format == self.reply_unit_format
+            and operation.chunks[0].format == self.reply_unit_format
         )
 
     def reply_unit_start(
@@ -761,10 +770,10 @@ class StreamingVocoderBase(
             CONTROL,
             0,
             0,
-            operation.chunk.seq,
+            operation.chunks[0].seq,
             payload,
             format=SESSION_CONTROL,
-            turn=operation.chunk.turn,
+            turn=operation.chunks[0].turn,
         )
         return OutgoingMessage(
             request_id=request_id,

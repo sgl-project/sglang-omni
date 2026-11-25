@@ -226,7 +226,7 @@ def session_payload(
         "append",
         SessionIdentity(session_id),
         ("tiny",),
-        TimedChunk("text", 0, 0, 0, {}, format="text_delta"),
+        chunks=(TimedChunk("text", 0, 0, 0, {}, format="text_delta"),),
     )
     return StagePayload(
         request_id,

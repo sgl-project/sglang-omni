@@ -127,7 +127,9 @@ def test_state_budget_is_per_session():
         request = OmniRequest(
             None,
             metadata=operation_metadata(
-                operation, SessionIdentity(sid), TimedChunk("audio", 0, 20, 0, b"x")
+                operation,
+                SessionIdentity(sid),
+                TimedChunk("audio", 0, 20, 0, b"x") if operation == "append" else None,
             ),
         )
         return compute_registered(scheduler, StagePayload(sid + operation, request, {}))
@@ -356,7 +358,7 @@ def test_the_first_stage_restores_a_chunk_from_its_fragments_for_the_append():
     assert hooks.appended == [restored]
     # note (luojiaxuan): the stages after this one read the restored chunk from the operation the append carries.
     carried = SessionOperation.from_dict(result.request.metadata[SESSION_METADATA_KEY])
-    assert carried.chunk == restored
+    assert carried.chunks == (restored,)
     small = replace(unit(2, 256), seq=last.seq + 1)
     run_operation(scheduler, "append", small)
     assert hooks.appended[-1] == small
@@ -409,7 +411,7 @@ def session_stage_payload(
             metadata=operation_metadata(
                 operation,
                 SessionIdentity("session"),
-                TimedChunk("audio", 0, 20, 0, b"x"),
+                TimedChunk("audio", 0, 20, 0, b"x") if operation == "append" else None,
             ),
         ),
         {},
@@ -879,7 +881,7 @@ def test_ar_session_control_preserves_session(should_preempt: bool) -> None:
     bridge.sessions[identity.id] = session
     bridge.accept(
         StagePayload("append", OmniRequest(None), {}),
-        SessionOperation("append", identity, ("thinker",), event),
+        SessionOperation("append", identity, ("thinker",), chunks=(event,)),
     )
     payload = StagePayload(
         "control",
@@ -904,7 +906,9 @@ def test_ar_session_control_preserves_session(should_preempt: bool) -> None:
         with pytest.raises(ValueError, match="unknown|stale"):
             bridge.apply_operation(
                 payload,
-                SessionOperation("control", invalid_identity, ("thinker",), event),
+                SessionOperation(
+                    "control", invalid_identity, ("thinker",), chunks=(event,)
+                ),
             )
 
 
@@ -930,7 +934,7 @@ def test_ar_bridge_binds_the_native_request_and_hands_an_aborted_unit_to_the_ada
     unit = bridge.accept(
         payload,
         SessionOperation(
-            "append", identity, ("thinker",), TimedChunk("text", 0, 0, 0, {})
+            "append", identity, ("thinker",), chunks=(TimedChunk("text", 0, 0, 0, {}),)
         ),
     )
     request = Req("unit", "", [30], SamplingParams(max_new_tokens=1), vocab_size=100)
@@ -1045,7 +1049,10 @@ def rewinding_bridge(
     unit = bridge.accept(
         payload,
         SessionOperation(
-            "append", identity, ("thinker",), TimedChunk("audio", 2000, 1000, 2, b"")
+            "append",
+            identity,
+            ("thinker",),
+            chunks=(TimedChunk("audio", 2000, 1000, 2, b""),),
         ),
     )
     return bridge, unit, payload

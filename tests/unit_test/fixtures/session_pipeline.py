@@ -459,7 +459,7 @@ def operation_metadata(
         operation=operation,
         session_identity=session_identity,
         stages=("source",),
-        chunk=chunk,
+        chunks=(chunk,) if chunk is not None else (),
         should_preempt=should_preempt,
     )
     return {SESSION_METADATA_KEY: session_operation.to_dict()}

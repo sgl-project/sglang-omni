@@ -47,8 +47,8 @@ import asyncio
 import queue
 import threading
 import time
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Generator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Protocol
@@ -180,6 +180,25 @@ class StageSession:
         ]
         self.fragments = []
         return fragments
+
+    def restore_append_chunks(
+        self, payload: StagePayload, operation: SessionOperation
+    ) -> tuple[TimedChunk, ...]:
+        """Restore the first chunk and forward the same restored input to downstream stages."""
+        chunks = operation.chunks
+        fragments = self.take_fragments(chunks[0])
+        if fragments:
+            chunks = (join_fragments([*fragments, chunks[0]]), *chunks[1:])
+            payload.request = replace(
+                payload.request,
+                metadata={
+                    **payload.request.metadata,
+                    SESSION_METADATA_KEY: replace(operation, chunks=chunks).to_dict(),
+                },
+            )
+        else:
+            pass
+        return chunks
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -505,9 +524,10 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             # note (ruoyu): An accepted append parsed this metadata in register_operation, so it cannot raise here.
             session_operation = find_session_operation(message.data.request.metadata)
             assert isinstance(self.session_hooks, BatchedSessionHooks)
-            assert session_operation is not None and session_operation.chunk is not None
-            return self.session_hooks.gathers_peers(
-                message.data, session_operation.chunk
+            assert session_operation is not None
+            chunks = session_operation.chunks
+            return len(chunks) == 1 and self.session_hooks.gathers_peers(
+                message.data, chunks[0]
             )
 
     def compute_batch(
@@ -726,7 +746,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                     elif operation == "read":
                         raise ValueError("session already has an output reader")
                     elif operation == "fragment":
-                        fragment = session_operation.chunk
+                        (fragment,) = session_operation.chunks
                         assert (
                             fragment is not None
                         ), "fragment operation carries no chunk"
@@ -737,71 +757,50 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                         payload.data = {"held": True}
                         return payload
                     elif operation == "control":
-                        assert (
-                            session_operation.chunk is not None
-                        ), "control operation carries no event"
-                        self.session_hooks.control(
-                            session_identity, session_operation.chunk
-                        )
+                        (event,) = session_operation.chunks
+                        assert event is not None, "control operation carries no event"
+                        self.session_hooks.control(session_identity, event)
                         payload.data = {"controlled": True}
                         return payload
                     else:
-                        append = self.start_append(payload, session_operation, session)
-                        try:
-                            emit_session_stage_started(
-                                request_id=payload.request_id,
-                                session_identity=session_identity,
-                                input_chunk=append.chunk,
-                            )
-                            updated_payload = self.session_hooks.append(
-                                append.chunk, append.payload, append.context
-                            )
-                            self.check_usage(session_identity)
-                            return updated_payload
-                        except BaseException:
-                            # note (Junnan Li): A later unit of this session may already be queued; closing keeps it off the state this unit left behind.
-                            self.close_session(session_identity, session)
-                            raise
-                        finally:
-                            with self.session_table_lock:
-                                self.append_cancel_events.pop(payload.request_id, None)
+                        chunks = session.restore_append_chunks(
+                            payload, session_operation
+                        )
+                        with self.append_context(
+                            payload.request_id, session_identity
+                        ) as context:
+                            try:
+                                for chunk in chunks:
+                                    if self.is_aborted(payload.request_id):
+                                        break
+                                    else:
+                                        pass
+                                    emit_session_stage_started(
+                                        request_id=payload.request_id,
+                                        session_identity=session_identity,
+                                        input_chunk=chunk,
+                                    )
+                                    payload = self.session_hooks.append(
+                                        chunk, payload, context
+                                    )
+                                    self.check_usage(session_identity)
+                                return payload
+                            except BaseException:
+                                # note (Junnan Li): A later unit of this session may already be queued; closing keeps it off the state this unit left behind.
+                                self.close_session(session_identity, session)
+                                raise
 
-    def start_append(
-        self,
-        payload: StagePayload,
-        session_operation: SessionOperation,
-        session: StageSession,
-    ) -> SessionAppend:
-        input_chunk = session_operation.chunk
-        assert input_chunk is not None, "append operation carries no chunk"
-        fragments = session.take_fragments(input_chunk)
-        if fragments:
-            input_chunk = join_fragments([*fragments, input_chunk])
-            # note (luojiaxuan): the stages after this one read the append's chunk from the operation it carries.
-            payload.request = replace(
-                payload.request,
-                metadata={
-                    **payload.request.metadata,
-                    SESSION_METADATA_KEY: replace(
-                        session_operation, chunk=input_chunk
-                    ).to_dict(),
-                },
-            )
-        else:
-            pass
+    @contextmanager
+    def append_context(
+        self, request_id: str, session_identity: SessionIdentity
+    ) -> Generator[SessionContext, None, None]:
         cancel_event = threading.Event()
-        with self.session_table_lock:
-            self.append_cancel_events[payload.request_id] = cancel_event
-        if self.is_aborted(payload.request_id):
-            cancel_event.set()
-        else:
-            pass
 
         def emit_chunk(chunk: TimedChunk) -> None:
             if not cancel_event.is_set():
                 self.outbox.put(
                     OutgoingMessage(
-                        request_id=payload.request_id,
+                        request_id=request_id,
                         type="stream",
                         data=chunk.to_dict(),
                         metadata={"modality": chunk.modality},
@@ -810,15 +809,21 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             else:
                 pass
 
-        return SessionAppend(
-            chunk=input_chunk,
-            payload=payload,
-            context=SessionContext(
-                session_identity=session_operation.session_identity,
+        with self.session_table_lock:
+            self.append_cancel_events[request_id] = cancel_event
+        try:
+            if self.is_aborted(request_id):
+                cancel_event.set()
+            else:
+                pass
+            yield SessionContext(
+                session_identity=session_identity,
                 cancelled=cancel_event,
                 emit=emit_chunk,
-            ),
-        )
+            )
+        finally:
+            with self.session_table_lock:
+                self.append_cancel_events.pop(request_id, None)
 
     def compute_appends(
         self, appends: list[tuple[StagePayload, SessionOperation]]
@@ -834,7 +839,7 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             results[append.payload.request_id] = exc
 
         try:
-            with ExitStack() as held_locks:
+            with ExitStack() as stack:
                 for payload, session_operation in appends:
                     with self.session_table_lock:
                         session = self.open_sessions.get(
@@ -845,14 +850,29 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
                             "unknown session open index"
                         )
                     else:
-                        held_locks.enter_context(session.lock)
+                        stack.enter_context(session.lock)
                         if self.is_shutting_down:
                             results[payload.request_id] = RuntimeError(
                                 "session scheduler is stopping"
                             )
+                        elif len(session_operation.chunks) != 1:
+                            results[payload.request_id] = ValueError(
+                                "cross-session batching requires one chunk per append"
+                            )
                         else:
+                            (chunk,) = session.restore_append_chunks(
+                                payload, session_operation
+                            )
+                            context = stack.enter_context(
+                                self.append_context(
+                                    payload.request_id,
+                                    session_operation.session_identity,
+                                )
+                            )
                             started.append(
-                                self.start_append(payload, session_operation, session)
+                                SessionAppend(
+                                    chunk=chunk, payload=payload, context=context
+                                )
                             )
                             started_sessions.append(session)
                 if started:
@@ -891,9 +911,6 @@ class SessionScheduler(SimpleScheduler[StagePayload, StagePayload]):
             for payload, _ in appends:
                 results.setdefault(payload.request_id, exc)
         finally:
-            with self.session_table_lock:
-                for append in started:
-                    self.append_cancel_events.pop(append.payload.request_id, None)
             for payload, session_operation in appends:
                 self.settle_operation(
                     payload.request_id, session_operation.session_identity
