@@ -598,17 +598,36 @@ func TestWidePageCentered(t *testing.T) {
 	if math.Abs(float64(guide.X+guide.W-(history.X+history.W))) > 1 {
 		t.Errorf("Setup guide ends at %.0f, the column's Open History at %.0f", guide.X+guide.W, history.X+history.W)
 	}
-	// A page of lists keeps a wider body in the middle, its header lined
-	// up with it too.
+	// Dictionary is one column too: its views and search sit in the
+	// middle, and the header's Add term ends where the search does.
 	a.navigate("/dictionary")
 	frames(tt)
-	search, ok1 := tt.Find("Search dictionary")
-	add, ok2 := tt.Find("Add term")
-	if !ok1 || !ok2 {
-		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)
+	views, ok1 := tt.Find("Dictionary view")
+	search, ok2 := tt.Find("Search dictionary")
+	add, ok3 := tt.Find("Add term")
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatalf("Dictionary: found views %v, search %v, Add term %v", ok1, ok2, ok3)
 	}
-	left, right = search.X-sidebarWidth, w-(add.X+add.W)
+	left, right = views.X-sidebarWidth, w-(search.X+search.W)
+	if math.Abs(float64(left-right)) > 20 || left < 300 {
+		t.Errorf("Dictionary: %.0f from the sidebar to the views, %.0f from the search to the window's edge", left, right)
+	}
+	// Find gives Add term's text; the button's padding takes it on to the
+	// search's edge.
+	if gap := (search.X + search.W) - (add.X + add.W); gap < 0 || gap > 16 {
+		t.Errorf("Dictionary: Add term's text ends at %.0f, the search at %.0f", add.X+add.W, search.X+search.W)
+	}
+	// A page of lists keeps a wider body in the middle, its header lined
+	// up with it too.
+	a.navigate("/app-enhancement")
+	frames(tt)
+	groups, ok1 := tt.Find("Groups")
+	browsers, ok2 := tt.Find("Browsers")
+	if !ok1 || !ok2 {
+		t.Fatalf("App enhancement: found Groups %v, Browsers %v", ok1, ok2)
+	}
+	left, right = groups.X-sidebarWidth, w-(browsers.X+browsers.W)
 	if math.Abs(float64(left-right)) > 30 || left < 150 {
-		t.Errorf("Dictionary: %.0f from the sidebar to the search, %.0f from Add term to the window's edge", left, right)
+		t.Errorf("App enhancement: %.0f from the sidebar to the groups, %.0f from Browsers to the window's edge", left, right)
 	}
 }

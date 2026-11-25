@@ -198,6 +198,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.dictionaryUI.query = state.Query
 		host.dictionaryUI.tab = state.Tab
 		host.dictionaryUI.scanOpen = state.ScanOpen
+		host.dictionaryUI.settingsOpen = state.SettingsOpen
 		host.dictionaryUI.notes = speechContextState{text: state.NotesText, seen: state.NotesText}
 		host.dictionaryUI.notesQuery = state.NotesQuery
 		host.dictionaryUI.notesFind.cur = state.NotesFindCurrent
@@ -521,7 +522,17 @@ func (host *meetingDemoHost) setInsightsClosed(closed bool) {
 func (host *meetingDemoHost) closeInsightsShare()   { host.record("closeInsightsShare") }
 func (host *meetingDemoHost) shuffleInsightsShare() { host.record("shuffleInsightsShare") }
 func (host *meetingDemoHost) copyInsightsShare()    { host.record("copyInsightsShare") }
-func (host *meetingDemoHost) activityForward()      { host.record("activityForward") }
+func (host *meetingDemoHost) saveInsightsShare()    { host.record("saveInsightsShare") }
+func (host *meetingDemoHost) postInsightsShare(site string) {
+	host.record("postInsightsShare %s", site)
+}
+func (host *meetingDemoHost) turnInsightsShare(by int) {
+	host.record("turnInsightsShare %d", by)
+}
+func (host *meetingDemoHost) showInsightsShare(card int) {
+	host.record("showInsightsShare %d", card)
+}
+func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
 
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }

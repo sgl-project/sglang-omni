@@ -30,7 +30,7 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
 	centeredPageHeaderBy(c, pageMaxW, i18n.T("Home"), func() { homeMascot(c, state.Outfit) }, func() {
-		if ghostIconButton(c.Key("home-share"), icons.Share, i18n.T("Share")).Label(i18n.T("Share a card of Voxt and you")).Clicked() {
+		if shareSparkleButton(c.Key("home-share"), i18n.T("Share a card of Voxt and you"), i18n.T("Share"), true) {
 			actions.openShare()
 		}
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {

@@ -217,7 +217,8 @@
         "cleanup": {
           "enhance": true,
           "cleanup": true,
-          "structure": false
+          "structure": false,
+          "while_speaking": true
         },
         "asr_status": {
           "key": "rw-asr-model",
