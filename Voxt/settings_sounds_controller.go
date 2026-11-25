@@ -9,16 +9,16 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// The recording's cues: Voxt's own Kalimba (two soft notes that rise as
-// recording starts and fall as it stops: the pair users liked most of the
-// soft cues they tried, 11-24; the family's Pebble and Nib before, Tally
-// and Wrap's beeps until 11-10, which users found harsh). Pop and Tink
-// stand in for a sound this build lacks.
+// The recording's cues: the family's Pebble and Nib (a soft tap as
+// recording starts, a short tick as it stops; Tally and Wrap's beeps
+// until 11-10, which users found harsh), Voxt's Pop and Tink in a build
+// without the family's sounds. Voxt's own pairs (internal/cues) are
+// choices, not the default.
 var (
 	recordStartEvent = sounds.Event{ID: "record.start", Name: sounds.Text{En: "Recording starts", Zh: "开始录音"},
-		Default: "soft-kalimba-start", Fallback: "Pop", Uses: []string{"record.start"}}
+		Default: "pebble", Fallback: "Pop", Uses: []string{"record.start"}}
 	recordStopEvent = sounds.Event{ID: "record.stop", Name: sounds.Text{En: "Recording stops", Zh: "结束录音"},
-		Default: "soft-kalimba-stop", Fallback: "Tink", Uses: []string{"record.stop"}}
+		Default: "nib", Fallback: "Tink", Uses: []string{"record.stop"}}
 )
 
 // soundsState is the cues' sounds and the previews of Settings → Audio →
@@ -37,11 +37,9 @@ type soundsState struct {
 	// read once (sysRead); tests set them.
 	sysSounds []string
 	sysRead   bool
-	// cuePlayer plays the cues and the previews (the Mac's output,
-	// cueOutput; a silent one in tests).
+	// cuePlayer plays the cues and the previews (the Mac's output; a
+	// silent one in tests).
 	cuePlayer *sounds.Player
-	// stopTail ends the stop cue with the wait it covers (stop_cue.go).
-	stopTail stopCueTail
 	// startSound starts a sound and returns what stops it (cuePlayer, on
 	// a goroutine); tests record the sounds instead.
 	startSound func(sounds.Target) (stop func())
@@ -52,7 +50,7 @@ type soundsState struct {
 // replace soundCat (testSounds) and the player's output.
 func (a *app) openSounds() {
 	a.soundCat = loadCueSounds()
-	a.cuePlayer = sounds.NewPlayer(a.soundCat, newCueOutput(a.soundCat))
+	a.cuePlayer = sounds.NewPlayer(a.soundCat, nil)
 	a.startSound = a.startPreview
 }
 
@@ -127,26 +125,16 @@ func soundLabelWithTranslator(translator *i18n.Translator, catalog *sounds.Catal
 // before the system's output is muted): its file's length, or startCueMax
 // for a system sound of unknown length.
 func (a *app) playCueWait(t sounds.Target) {
-	if d, ok := a.playCue(t); ok {
-		time.Sleep(d)
+	if _, err := a.cuePlayer.Play(t); err != nil {
+		return
 	}
-}
-
-// playCue starts t and returns how long it plays (playCueWait), telling
-// stopTail of the start: a stop cue ends with the wait (stop_cue.go).
-func (a *app) playCue(t sounds.Target) (time.Duration, bool) {
-	v, err := a.cuePlayer.Play(t)
-	if err != nil {
-		return 0, false
-	}
-	a.stopTail.started(t, v)
 	d := startCueMax
 	if s, ok := a.soundCat.Sound(t.Name); ok && t.Kind == sounds.KindCatalog {
 		d = time.Duration(s.Duration * float64(time.Second))
 	} else if l := t.Length(a.soundCat); l > 0 {
 		d = l
 	}
-	return d, true
+	time.Sleep(d)
 }
 
 // startPreview is cuePlayer for previews: what stops the sound (nothing

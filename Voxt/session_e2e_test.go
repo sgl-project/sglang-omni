@@ -508,11 +508,6 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			a := newSessionApp(t, ev, func(s *settings.Settings) {
 				set(s)
 				s.History.KeepCount = 50
-				// No cues: without a window a.async runs inline, so the
-				// start cue would hold this app for its length (Kalimba's
-				// 0.61 s) and the cancel at 500 ms would prune before Home
-				// first counts today.
-				s.Audio.Sounds = false
 			}, keys)
 			base := time.Now()
 			midnight := time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, base.Location())

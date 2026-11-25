@@ -143,7 +143,6 @@ func (a *app) recordingAudio(was, s session.Snapshot) {
 	sound := a.cueTarget(cue)
 	sounds := cue != noCue && sound.Kind != sounds.KindNone && a.playSound != nil
 	play := a.playSound
-	a.followStopCue(cue, s, sound, sounds) // stop_cue.go: the stop cue lasts as long as the wait
 	if id := a.muting; id != "" && (s.ID != id || s.State != session.Recording) {
 		a.muting = ""
 		a.clearMuteNote(id)

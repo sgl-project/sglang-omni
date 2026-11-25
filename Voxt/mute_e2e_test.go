@@ -32,25 +32,21 @@ func TestSessionMutesOutput(t *testing.T) {
 	// held the mute through the model's work would hold it until the
 	// answer, which this request withholds meanwhile.
 	const releaseBound = 2 * time.Second
-	// recordFor (ms) outlasts the start cue and the mute's wait for it
-	// (startCueWait: Kalimba's audible 0.57 s and cueMargin), so each
-	// recording is muted before it stops.
-	const recordFor = 1100
 	for _, tc := range []struct {
 		name, opts string
 		setup      func(t *testing.T) (func(*settings.Settings), *fakeLocal)
 		events     []string
 		end        session.State
 	}{
-		{name: "transcribe, whole recording", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(recordFor, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "transcribe, whole recording", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(500, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
 		{name: "transcribe, stream", setup: func(t *testing.T) (func(*settings.Settings), *fakeLocal) {
 			return func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 			}, &fakeLocal{ASRP: fakeStreamer{final: "你好，VoxtNew"}}
-		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(recordFor+100, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(recordFor, "translate/0", proto.PhaseTrigger)}, end: session.Done},
+		}, events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(600, "transcribe/0", proto.PhaseTrigger)}, end: session.Done},
+		{name: "translate by voice", events: []string{hotkeyLine(0, "translate/0", proto.PhaseTrigger), hotkeyLine(500, "translate/0", proto.PhaseTrigger)}, end: session.Done},
 		{name: "rewrite", opts: "readonly", events: []string{hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger)}, end: session.Done},
-		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(recordFor-100, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
+		{name: "cancelled", events: []string{hotkeyLine(0, "transcribe/0", proto.PhaseTrigger), hotkeyLine(400, proto.HotkeyCancel, proto.PhaseTrigger)}, end: session.Cancelled},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := filepath.Join(t.TempDir(), "output.json")

@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/cues"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -47,9 +48,9 @@ func (r *soundsRig) takePlays() []string {
 }
 
 // TestSoundSource: Sound offers Built-in, macOS and None. Built-in lists
-// Voxt's own pairs, Kalimba chosen by default, then the family's this
-// build has; macOS
-// has a line per cue with its sound and Try, Pop and Tink until the user
+// the pairs this build has, Soft (Pebble → Nib) chosen by default and
+// Voxt's own Kalimba, Wood and Vibraphone after it; macOS has a line per
+// cue with its sound and Try, Pop and Tink until the user
 // picks; None turns the sounds off and hides the rest; Built-in again gives
 // the default pair back.
 func TestSoundSource(t *testing.T) {
@@ -79,7 +80,7 @@ func TestSoundSource(t *testing.T) {
 		t.Fatalf("None: %+v %q", r.settings.Get().Audio, firstTexts(r.tt))
 	}
 	click(t, r.tt, "Built-in")
-	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "" || s.StopSound != "" || !has(r.tt, "Kalimba") {
+	if s := r.settings.Get().Audio; !s.Sounds || s.StartSound != "" || s.StopSound != "" || !has(r.tt, "Pebble → Nib") {
 		t.Errorf("Built-in again: %+v", s)
 	}
 }
@@ -120,6 +121,27 @@ func TestSoundPairs(t *testing.T) {
 	}
 }
 
+// TestSoundSourceWithoutFamily: in a build without the family's sounds,
+// Built-in chooses the first pair the build has, Voxt's Kalimba, not the
+// default Soft it lacks (which would play macOS's Pop and Tink).
+func TestSoundSourceWithoutFamily(t *testing.T) {
+	r := newSoundsRig(t)
+	cat, err := cues.Load(nil, "sounds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.soundCat, r.cuePlayer = cat, sounds.NewPlayer(cat, sounds.Silent{})
+	r.setSoundSource(soundSystem)
+	r.setSoundSource(soundBuiltIn)
+	if s := r.settings.Get().Audio; s.StartSound != "soft-kalimba-start" || s.StopSound != "soft-kalimba-stop" {
+		t.Errorf("Built-in without the family's sounds: %q, %q", s.StartSound, s.StopSound)
+	}
+	r.setSoundSource(soundBuiltIn) // a choice the build has stays
+	if s := r.settings.Get().Audio; s.StartSound != "soft-kalimba-start" {
+		t.Errorf("Built-in again: %q", s.StartSound)
+	}
+}
+
 // TestSoundsVolume: Volume offers the steps, the one nearest to a volume
 // set before shown; choosing one sets the cues' volume.
 func TestSoundsVolume(t *testing.T) {
@@ -157,8 +179,8 @@ func TestSoundsVolume(t *testing.T) {
 func TestSoundsTryAccent(t *testing.T) {
 	r := newSoundsRig(t)
 	r.trySound(startCue)
-	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"soft-kalimba-start"}) {
-		t.Fatal("Try did not play Kalimba")
+	if r.sounds.previewing != recordStartEvent.ID || !slices.Equal(r.takePlays(), []string{"pebble"}) {
+		t.Fatal("Try did not play Pebble")
 	}
 	r.ft.advance(previewMin - 1)
 	if r.sounds.previewing == "" {
@@ -169,8 +191,7 @@ func TestSoundsTryAccent(t *testing.T) {
 	if r.sounds.previewing == "" {
 		t.Fatal("the first preview's timer ended the second's accent")
 	}
-	kalimba, _ := r.soundCat.Sound("soft-kalimba-start")
-	r.ft.advance(kalimba.Length() + cueMargin) // Kalimba's audible part and the margin, longer than previewMin
+	r.ft.advance(previewMin)
 	frames(r.tt)
 	if r.sounds.previewing != "" {
 		t.Fatal("the accent stayed")
@@ -231,7 +252,7 @@ func TestSoundsWhileRecording(t *testing.T) {
 		t.Fatalf("muted %v, state %s, muting %q, plays %q", r.muted(), r.sess.State, r.muting, plays)
 	}
 	r.feed("s1", session.Recognizing)
-	if got := r.takeCues(); !slices.Equal(got, []string{"soft-kalimba-start:audible", "soft-kalimba-stop:audible"}) {
+	if got := r.takeCues(); !slices.Equal(got, []string{"pebble:audible", "nib:audible"}) {
 		t.Fatalf("cues %v", got)
 	}
 }

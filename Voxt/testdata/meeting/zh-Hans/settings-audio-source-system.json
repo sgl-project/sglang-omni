@@ -123,6 +123,16 @@
             "remaining": 0
           },
           {
+            "start": "pebble",
+            "stop": "nib",
+            "name": "轻柔",
+            "sounds": "卵石 → 笔尖",
+            "play_label": "试听“轻柔”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
             "start": "soft-kalimba-start",
             "stop": "soft-kalimba-stop",
             "name": "卡林巴",
@@ -148,16 +158,6 @@
             "name": "颤音琴",
             "sounds": "毛线槌，带轻微颤动",
             "play_label": "试听“颤音琴”",
-            "chosen": false,
-            "playing": false,
-            "remaining": 0
-          },
-          {
-            "start": "pebble",
-            "stop": "nib",
-            "name": "轻柔",
-            "sounds": "卵石 → 笔尖",
-            "play_label": "试听“轻柔”",
             "chosen": false,
             "playing": false,
             "remaining": 0

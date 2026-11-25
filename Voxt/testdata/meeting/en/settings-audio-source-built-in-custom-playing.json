@@ -123,6 +123,16 @@
             "remaining": 1250000000
           },
           {
+            "start": "pebble",
+            "stop": "nib",
+            "name": "Soft",
+            "sounds": "Pebble → Nib",
+            "play_label": "Play Soft",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
             "start": "soft-kalimba-start",
             "stop": "soft-kalimba-stop",
             "name": "Kalimba",
@@ -148,16 +158,6 @@
             "name": "Vibraphone",
             "sounds": "Yarn mallets, a light shimmer",
             "play_label": "Play Vibraphone",
-            "chosen": false,
-            "playing": false,
-            "remaining": 0
-          },
-          {
-            "start": "pebble",
-            "stop": "nib",
-            "name": "Soft",
-            "sounds": "Pebble → Nib",
-            "play_label": "Play Soft",
             "chosen": false,
             "playing": false,
             "remaining": 0
