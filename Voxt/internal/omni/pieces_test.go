@@ -33,7 +33,11 @@ func piecesASR(t *testing.T, f *fake) *ASR {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := f.asr(t, ASRAccurate).WithVAD(v)
+	return piecesScale(f.asr(t, ASRAccurate).WithVAD(v))
+}
+
+// piecesScale sets a's pieces to the tests' scale.
+func piecesScale(a *ASR) *ASR {
 	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
 	a.spec.ASR.PauseMin = 150 * time.Millisecond
 	return a
@@ -125,6 +129,33 @@ func TestLivePieces(t *testing.T) {
 	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
+	}
+}
+
+// TestLivePiecesWithoutSilero: without Silero the energy detector finds
+// the pauses, so the pieces are still cut in them as soon as they are
+// due, not only once PieceMax of audio waits (which left up to PieceMax
+// for after Stop).
+func TestLivePiecesWithoutSilero(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesScale(f.asr(t, ASRAccurate))
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "zh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2.5 s: a piece is due (1.5 s), PieceMax (3 s) is not reached.
+	pcm := append(speechAndPauses(1), tone(800*time.Millisecond, 0.3)...)
+	sendAll(t, st, pcm)
+	f.waitLogged(t, "piece 1 of the recording")
+	if r := f.records("final"); len(r) != 1 || r[0].Samples < samplesOf(1200*time.Millisecond) || r[0].Samples > samplesOf(1700*time.Millisecond) {
+		t.Fatalf("pieces %+v, want one that ends in the pause (1.2–1.7 s)", r)
+	}
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	if last := evs[len(evs)-1]; last.Kind != asr.EventFinal || last.Text != "p1 p2" {
+		t.Fatalf("final %+v", last)
 	}
 }
 

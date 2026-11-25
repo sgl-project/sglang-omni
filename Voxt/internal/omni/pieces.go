@@ -130,10 +130,9 @@ func padPiece(pcm []byte, t *ASRTuning) []byte {
 
 // findCut is where the next piece of pending (the audio not yet
 // recognised, PCM16) ends, in samples: the middle of the longest pause
-// of at least PauseMin between PieceMin and PieceMax into it (Silero's;
-// without it, or when it fails, none is found), else, once pending
-// reaches PieceMax, the quietest CutWindow there. False: wait for more
-// audio.
+// of at least PauseMin between PieceMin and PieceMax into it, else, once
+// pending reaches PieceMax, the quietest CutWindow there. False: wait for
+// more audio.
 func (s *live) findCut(pending []byte) (int, bool) {
 	t := s.a.spec.ASR
 	total := len(pending) / 2
@@ -141,22 +140,31 @@ func (s *live) findCut(pending []byte) (int, bool) {
 	if to <= from {
 		return 0, false
 	}
-	if s.a.vad != nil {
-		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
-		segs, err := s.a.vad.Speech(ctx, pending[from*2:to*2], sampleRate)
-		cancel()
-		if err == nil {
-			if at, ok := longestPause(segs, to-from, samplesOf(t.PauseMin), to == total); ok {
-				return from + at, true
-			}
-		} else if s.ctx.Err() == nil {
-			s.a.rt.logf("warning", "%s: looking for a pause to cut the recording at: %v", s.a.spec.ID, err)
-		}
+	if at, ok := longestPause(s.speechIn(pending[from*2:to*2]), to-from, samplesOf(t.PauseMin), to == total); ok {
+		return from + at, true
 	}
 	if total < samplesOf(t.PieceMax) {
 		return 0, false
 	}
 	return quietest(pending, from, to, max(samplesOf(t.CutWindow), 1)), true
+}
+
+// speechIn is the speech in pcm: Silero's segments, else (no Silero, or
+// it failed) the energy detector's, so that a Mac without Silero still
+// cuts in pauses instead of only at PieceMax.
+func (s *live) speechIn(pcm []byte) []vad.Segment {
+	if s.a.vad != nil {
+		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
+		segs, err := s.a.vad.Speech(ctx, pcm, sampleRate)
+		cancel()
+		if err == nil {
+			return segs
+		}
+		if s.ctx.Err() == nil {
+			s.a.rt.logf("warning", "%s: looking for a pause to cut the recording at: %v", s.a.spec.ID, err)
+		}
+	}
+	return vad.Analyze(pcm, sampleRate, vad.Defaults()).Segments
 }
 
 // longestPause is the middle of the longest pause of at least minPause

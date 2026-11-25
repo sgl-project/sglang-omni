@@ -29,6 +29,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Reprocess transcript no longer deletes other meetings' recordings**: a finished meeting's recording is deleted once it is transcribed (unless Save each recording is on, or the meeting was in Recording mode). Choosing Reprocess transcript on such a meeting removed the whole folder of meeting recordings: those of Recording-mode meetings, of meetings waiting for Continue processing, and of a meeting being recorded. The menu item now shows only while the meeting still has its recording, and Continue processing on a meeting without one deletes nothing.
 - **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
 - **Changing a meeting's mode keeps it recording**: switching from Meeting to Recording or Subtitles while recording stopped every track, so the meeting went on with nothing recorded; switching to Meeting stopped the track the meeting already had. The tracks both modes have now carry on without a gap, and when the new one cannot start (system audio not allowed, say) the meeting stays in its mode.
+- **Long dictations without Silero are cut in pauses**: a local speech model brought over from Voxt 1.x or the Hugging Face cache came without Silero VAD, and then a long dictation was cut only once the longest piece had built up, at its quietest tenth of a second, sometimes through a word. Voxt now finds the pauses with its own voice detector, as elsewhere without Silero. On fast Chinese, Whisper Large v3 Turbo's errors fell from 19% to 12%, and the audio left for after you stop from 16 to 8 seconds.
 
 ### 中文
 
@@ -57,6 +58,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **「重新整理」不再删除其他会议的录音**：会议整理完后，录音会被删除（开了「保存每段录音」或用的是录音模式除外）。对这样的会议选「重新整理」，整个会议录音文件夹都会被删掉：录音模式会议的录音、等待「继续整理」的录音、正在录的会议都在里面。现在只有还留着录音的会议才显示这一项；对没有录音的会议点「继续整理」也不会删任何文件。
 - **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
 - **会议中切换模式不再停录**：录音时从「会议」切到「录音」或「字幕」，所有音轨都会停下，会议继续计时却什么都没录；切到「会议」时，原有的音轨也会停下。现在两种模式都有的音轨不中断；新音轨启动不了（比如未允许系统音频）时，会议保持原来的模式继续录。
+- **没装 Silero 时，长口述也切在停顿处**：从 Voxt 1.x 或 Hugging Face 缓存导入的本地语音识别模型不带 Silero VAD，长口述要攒满最长的一段才切一刀，切在最安静的 0.1 秒，有时切断一个字。现在用 Voxt 自己的语音检测找停顿，和其他没有 Silero 的地方一样。语速快的中文上，Whisper Large v3 Turbo 的错误率从 19% 降到 12%，停止后剩下要识别的音频从 16 秒降到 8 秒。
 
 ## [2.1.3] - 2026-11-22
 
