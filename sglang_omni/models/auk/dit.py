@@ -15,6 +15,8 @@ import torch.nn.functional as F
 from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
+from sglang_omni.lora.capability import MergedLoRASpec
+
 
 class Rope(NamedTuple):
     """Rotary tables for one axis of the sequence.
@@ -748,3 +750,21 @@ class AuKDit(nn.Module):
 
         x = x[:, text_len + prompt_len :]
         return self.proj_out(self.norm_out(x, t))
+
+    def merged_lora_spec(self) -> MergedLoRASpec:
+        """Declare engine-side merged LoRA bindings for the AuK DiT backbone."""
+        packed: dict[str, tuple[str, ...]] = {
+            "to_qkv": ("to_q", "to_k", "to_v"),
+            "linear_in": ("gate_proj", "up_proj"),
+        }
+        if len(self.transformer_blocks) > 0:
+            packed["to_qkv_c"] = ("to_q_c", "to_k_c", "to_v_c")
+        else:
+            pass
+        return MergedLoRASpec(
+            target_module_root="",
+            packed_modules_mapping=packed,
+            name_aliases={"to_out": "to_out.0"},
+            strip_prefixes=("dit.", "transformer."),
+            allow_plain_linear=True,
+        )

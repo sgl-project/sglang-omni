@@ -619,6 +619,69 @@ class ModelWorker:
         success, message = method(recv_req)
         return bool(success), str(message)
 
+    def start_lora_update(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        update_id = payload.get("update_id")
+        if not isinstance(update_id, str) or not update_id.strip():
+            return False, "update_id is required"
+        else:
+            pass
+        success, message, _data = self.model_runner.start_lora_update(update_id)
+        return bool(success), str(message)
+
+    def update_lora_weights(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        update_id = payload.get("update_id")
+        if not isinstance(update_id, str) or not update_id.strip():
+            return False, "update_id is required"
+        else:
+            pass
+        success, message, _data = self.model_runner.update_lora_weights(
+            update_id, dict(payload)
+        )
+        return bool(success), str(message)
+
+    def finish_lora_update(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        update_id = payload.get("update_id")
+        if not isinstance(update_id, str) or not update_id.strip():
+            return False, "update_id is required"
+        else:
+            pass
+        success, message, _data = self.model_runner.finish_lora_update(update_id)
+        if success:
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                override_server_args(
+                    self.server_args,
+                    "sglang-omni-lora-update",
+                    weight_version=weight_version,
+                )
+            else:
+                pass
+        else:
+            pass
+        return bool(success), str(message)
+
+    def abort_lora_update(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        raw_id = payload.get("update_id")
+        update_id = str(raw_id) if raw_id is not None else None
+        success, message, _data = self.model_runner.abort_lora_update(update_id)
+        return bool(success), str(message)
+
+    def restore_base_weights(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        success, message, _data = self.model_runner.restore_base_weights()
+        if success:
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                override_server_args(
+                    self.server_args,
+                    "sglang-omni-lora-restore",
+                    weight_version=weight_version,
+                )
+            else:
+                pass
+        else:
+            pass
+        return bool(success), str(message)
+
 
 def resolve_nccl_port() -> int:
     master_port = os.environ.get("MASTER_PORT")

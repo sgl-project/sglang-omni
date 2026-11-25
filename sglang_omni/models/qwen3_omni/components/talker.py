@@ -20,6 +20,7 @@ from sglang.srt.utils import add_prefix
 from sglang.srt.utils.common import async_h2d
 from torch import nn
 
+from sglang_omni.lora.capability import MergedLoRASpec
 from sglang_omni.models.qwen3_omni.components.thinker_model import (
     Qwen3OmniMoeThinkerTextAttention,
     Qwen3OmniMoeThinkerTextDecoderLayer,
@@ -2077,3 +2078,23 @@ class Qwen3OmniTalker(nn.Module):
                 param.weight_loader(param, loaded_weight)
             else:
                 pass
+
+    def merged_lora_spec(self) -> MergedLoRASpec:
+        """Declare engine-side merged LoRA bindings for the talker AR backbone."""
+        packed: dict[str, tuple[str, ...]] = {
+            "qkv_proj": ("q_proj", "k_proj", "v_proj"),
+        }
+        has_dense_gate_up = any(
+            name.rsplit(".", 1)[-1] == "gate_up_proj"
+            for name, _ in self.model.named_modules()
+        )
+        if has_dense_gate_up:
+            packed["gate_up_proj"] = ("gate_proj", "up_proj")
+        else:
+            pass
+        return MergedLoRASpec(
+            target_module_root="model",
+            packed_modules_mapping=packed,
+            strip_prefixes=("talker.model.", "model."),
+            allow_plain_linear=False,
+        )
