@@ -8,7 +8,7 @@ from threading import get_ident
 from typing import Literal
 
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
-from sglang.srt.managers.schedule_policy import SchedulePolicy
+from sglang.srt.managers.schedule_policy import CacheAgnosticPolicy, SchedulePolicy
 from sglang.srt.mem_cache.prefill_budget import PrefillBudget
 from sglang.srt.runtime_context import get_schedule
 from typing_extensions import Unpack
@@ -45,21 +45,26 @@ class MiniMaxMusic3SchedulePolicy(SchedulePolicy):
         processed_tokens: int = 0,
     ) -> None:
         super().calc_priority(waiting_queue, running_batch, processed_tokens)
-        # note (ruiling): a policy such as random places each row alone, and the runner needs the two rows of a request next to each other.
-        twins = {req.rid: req for req in waiting_queue if is_cfg_uncond_rid(req.rid)}
-        paired = {cfg_uncond_rid(req.rid) for req in waiting_queue} & twins.keys()
-        ordered: list[Req] = []
-        for req in waiting_queue:
-            if req.rid in paired:
-                continue
-            else:
-                ordered.append(req)
-            twin_rid = cfg_uncond_rid(req.rid)
-            if twin_rid in paired:
-                ordered.append(twins[twin_rid])
-            else:
-                pass
-        waiting_queue[:] = ordered
+        if self.policy != CacheAgnosticPolicy.FCFS or self.enable_priority_scheduling:
+            # note (ruiling): a policy such as random places each row alone, and the runner needs the two rows of a request next to each other.
+            twins = {
+                req.rid: req for req in waiting_queue if is_cfg_uncond_rid(req.rid)
+            }
+            paired = {cfg_uncond_rid(req.rid) for req in waiting_queue} & twins.keys()
+            ordered: list[Req] = []
+            for req in waiting_queue:
+                if req.rid in paired:
+                    continue
+                else:
+                    ordered.append(req)
+                twin_rid = cfg_uncond_rid(req.rid)
+                if twin_rid in paired:
+                    ordered.append(twins[twin_rid])
+                else:
+                    pass
+            waiting_queue[:] = ordered
+        else:
+            pass
         if running_batch is None:
             return
         else:

@@ -164,6 +164,10 @@ def admit_prefill(
         if request not in adder.can_run_list
     ]
     return NextBatchPlan(
-        batch_to_run=ScheduleBatch(reqs=adder.can_run_list, batch_is_full=False),
+        batch_to_run=(
+            ScheduleBatch(reqs=adder.can_run_list, batch_is_full=False)
+            if adder.can_run_list
+            else None
+        ),
         running_batch=running_batch,
     )

@@ -9,17 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
-from sglang.srt.managers.schedule_policy import CacheAgnosticPolicy, SchedulePolicy
+from sglang.srt.managers.schedule_policy import CacheAgnosticPolicy
 from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.models.minimax_music3.scheduler import (
-    MiniMaxMusic3SchedulePolicy,
-    MiniMaxMusic3Scheduler,
-)
+from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
     MiniMaxMusic3SGLangRequestData,
-    cfg_uncond_rid,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
@@ -29,40 +25,6 @@ from tests.unit_test.fixtures.minimax_music3_scheduler import (
 )
 
 pytest_plugins = ("tests.unit_test.fixtures.minimax_music3_scheduler",)
-
-
-def queued_request(request_id: str) -> Req:
-    return Req(
-        rid=request_id,
-        origin_input_text="",
-        origin_input_ids=[1, 2],
-        sampling_params=SamplingParams(max_new_tokens=1),
-    )
-
-
-def cfg_pair(request_id: str) -> list[Req]:
-    return [queued_request(request_id), queued_request(cfg_uncond_rid(request_id))]
-
-
-def test_cfg_pairs_stay_together_when_the_policy_reorders_the_queue(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """schedule_policy=random placed each row alone, and the runner rejects a batch whose pairs are not adjacent."""
-    queue = [*cfg_pair("a"), *cfg_pair("b")]
-
-    def calc_priority(
-        policy: SchedulePolicy,
-        waiting_queue: list[Req],
-        running_batch: ScheduleBatch | None,
-        processed_tokens: int,
-    ) -> None:
-        # An order random.shuffle can produce.
-        waiting_queue[:] = [waiting_queue[index] for index in (3, 0, 2, 1)]
-
-    monkeypatch.setattr(SchedulePolicy, "calc_priority", calc_priority)
-    policy = MiniMaxMusic3SchedulePolicy.__new__(MiniMaxMusic3SchedulePolicy)
-    policy.calc_priority(queue, None, 0)
-    assert [req.rid for req in queue] == ["a", "a-cfg", "b", "b-cfg"]
 
 
 def test_finished_unconditioned_row_ends_its_model_path(
@@ -96,7 +58,12 @@ def test_finished_unconditioned_row_ends_its_model_path(
     scheduler.aborted_request_ids = set()
     scheduler.first_emit_done = set()
     scheduler.prefill_end_done = set()
-    conditioned = queued_request("a")
+    conditioned = Req(
+        rid="a",
+        origin_input_text="",
+        origin_input_ids=[1, 2],
+        sampling_params=SamplingParams(max_new_tokens=1),
+    )
     scheduler.stream_output([conditioned, twin])
     assert twin.omni_data is None
     scheduler.stream_output([conditioned, twin])
@@ -136,12 +103,12 @@ def test_random_order_and_request_cap_preserve_pairs_until_queue_drains(
     scheduler.policy.policy = CacheAgnosticPolicy.RANDOM
     shuffled_queues: list[list[Req]] = []
 
-    def reverse_rows(waiting_queue: list[Req]) -> None:
+    def separate_pairs(waiting_queue: list[Req]) -> None:
         shuffled_queues.append(waiting_queue.copy())
-        waiting_queue.reverse()
+        waiting_queue[:] = waiting_queue[::-2] + waiting_queue[-2::-2]
 
     monkeypatch.setattr(
-        "sglang.srt.managers.schedule_policy.random.shuffle", reverse_rows
+        "sglang.srt.managers.schedule_policy.random.shuffle", separate_pairs
     )
     requests = paired_requests([128] * 3, 10)
     scheduler.waiting_queue = requests.copy()

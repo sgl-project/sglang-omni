@@ -110,7 +110,7 @@ def test_serial_offload_owns_the_pair_selected_after_sorting(
     assert scheduler.waiting_queue == requests[:2]
     coordinator.begin_dit_handoff(requests[2].rid)
     plan = scheduler.get_new_batch_prefill(ScheduleBatch(reqs=[], batch_is_full=False))
-    assert plan.batch_to_run.reqs == []
+    assert plan.batch_to_run is None
     assert scheduler.waiting_queue == requests[:2]
 
 
@@ -138,7 +138,7 @@ def test_sorted_pairs_wait_for_running_kv_then_resume(
     scheduler.waiting_queue = requests.copy()
     running_batch = ScheduleBatch(reqs=running_requests, batch_is_full=False)
     plan = scheduler.get_new_batch_prefill(running_batch)
-    assert plan.batch_to_run.reqs == []
+    assert plan.batch_to_run is None
     assert scheduler.waiting_queue == requests[2:] + requests[:2]
     for pages in allocated_pages:
         scheduler.token_to_kv_pool_allocator.free(pages)
@@ -148,15 +148,11 @@ def test_sorted_pairs_wait_for_running_kv_then_resume(
     assert scheduler.waiting_queue == requests[:2]
 
 
-@pytest.mark.parametrize("exit_after_ordering", ["none", "empty", "error"])
-@pytest.mark.parametrize("existing_owner", [False, True])
-def test_deferred_pairs_and_input_budget_restored_on_early_exit(
-    scheduler: MiniMaxMusic3Scheduler,
-    monkeypatch: pytest.MonkeyPatch,
-    exit_after_ordering: Literal["none", "empty", "error"],
-    existing_owner: bool,
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_prefill_exception_restores_queue_budget_and_releases_new_owner(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An early exit after ordering must not lose parked pairs or enlarged budgets."""
+    """An interrupted prefill must restore deferred pairs, budget, and ownership."""
     requests = paired_requests([128, 128], 10)
     scheduler.waiting_queue = requests.copy()
     scheduler.max_prefill_tokens = 100
@@ -166,44 +162,32 @@ def test_deferred_pairs_and_input_budget_restored_on_early_exit(
         "sglang_omni.models.minimax_music3.scheduler.get_coordinator",
         lambda: coordinator,
     )
-    if existing_owner:
-        assert coordinator.try_acquire_ar(requests[0].rid)
-    else:
-        pass
 
     def stop_after_ordering(
         scheduler: MiniMaxMusic3Scheduler, running_batch: ScheduleBatch
     ) -> NextBatchPlan:
         scheduler.policy.calc_priority(scheduler.waiting_queue, running_batch)
-        if exit_after_ordering == "error":
-            raise RuntimeError("Prefill interrupted")
-        elif exit_after_ordering == "empty":
-            return NextBatchPlan(
-                batch_to_run=ScheduleBatch(reqs=[], batch_is_full=False),
-                running_batch=running_batch,
-            )
-        else:
-            return NextBatchPlan(batch_to_run=None, running_batch=running_batch)
+        assert coordinator.owner_request_id == requests[0].rid
+        raise RuntimeError("Prefill interrupted")
 
     monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", stop_after_ordering)
     running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
-    if exit_after_ordering == "error":
-        with pytest.raises(RuntimeError, match="Prefill interrupted"):
-            scheduler.get_new_batch_prefill(running_batch)
-    else:
-        plan = scheduler.get_new_batch_prefill(running_batch)
-        assert plan.batch_to_run is None or plan.batch_to_run.reqs == []
+    with pytest.raises(RuntimeError, match="Prefill interrupted"):
+        scheduler.get_new_batch_prefill(running_batch)
     assert scheduler.waiting_queue == requests
     assert scheduler.max_prefill_tokens == 100
-    if existing_owner:
-        assert coordinator.owner_request_id == requests[0].rid
-    else:
-        assert coordinator.owner_request_id is None
-        assert coordinator.try_acquire_ar("next-request")
+    assert coordinator.owner_request_id is None
 
 
-def test_rejected_prefill_releases_owner_and_allows_next_request(
-    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("scheduler", "existing_owner"),
+    [(16, False), (128, False), (16, True)],
+    indirect=["scheduler"],
+)
+def test_rejected_prefill_preserves_prior_ownership(
+    scheduler: MiniMaxMusic3Scheduler,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_owner: bool,
 ) -> None:
     """A pair rejected by the adder retained AR ownership and blocked later requests."""
     coordinator = SerialOffloadCoordinator()
@@ -216,6 +200,11 @@ def test_rejected_prefill_releases_owner_and_allows_next_request(
     requests = paired_requests([128, 128], 10)
     scheduler.waiting_queue = requests.copy()
     scheduler.max_prefill_tokens = 100
+    if existing_owner:
+        assert coordinator.try_acquire_ar(requests[0].rid)
+    else:
+        pass
+    expected_owner = coordinator.owner_request_id
     allocated_pages: list[torch.Tensor] = []
     verdicts: list[AddReqResult] = []
     add_one_request = PrefillAdder.add_one_req
@@ -242,12 +231,20 @@ def test_rejected_prefill_releases_owner_and_allows_next_request(
         )
         plan = scheduler.get_new_batch_prefill(running_batch)
     assert verdicts == [AddReqResult.NO_TOKEN]
-    assert plan.batch_to_run.reqs == []
+    assert plan.batch_to_run is None
     assert scheduler.waiting_queue == requests
     assert scheduler.max_prefill_tokens == 100
-    assert coordinator.owner_request_id is None
+    assert coordinator.owner_request_id == expected_owner
     for allocation in allocated_pages:
         scheduler.token_to_kv_pool_allocator.free(allocation)
+    if existing_owner:
+        assert (
+            scheduler.get_new_batch_prefill(running_batch).batch_to_run.reqs
+            == requests[:2]
+        )
+        return
+    else:
+        pass
     scheduler.abort(requests[0].rid)
     assert scheduler.waiting_queue == requests[2:]
     plan = scheduler.get_new_batch_prefill(running_batch)
@@ -319,7 +316,7 @@ def test_enqueue_checks_pair_capacity_before_queueing_both_rows(
         assert scheduler.request_kv_capacity_error(cond) is None
         monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
         running_batch = ScheduleBatch(reqs=[], batch_is_full=False)
-        assert scheduler.get_new_batch_prefill(running_batch).batch_to_run.reqs == []
+        assert scheduler.get_new_batch_prefill(running_batch).batch_to_run is None
         assert scheduler.waiting_queue == [cond, uncond]
         scheduler.token_to_kv_pool_allocator.free(allocated)
         assert scheduler.get_new_batch_prefill(running_batch).batch_to_run.reqs == [
