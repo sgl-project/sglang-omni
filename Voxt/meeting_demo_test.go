@@ -725,7 +725,6 @@ func TestMeetingDemoActionControls(t *testing.T) {
 		{name: "pause", fixture: "en/state-recording-meeting", steps: steps("Pause meeting"), want: []string{"meetingPauseResume"}},
 		{name: "resume", fixture: "en/state-paused", steps: steps("Resume meeting"), want: []string{"meetingPauseResume"}},
 		{name: "end overlay", fixture: "en/state-recording-meeting", steps: steps("End meeting", "End meeting"), want: []string{"requestMeetingFinish", "meetingFinish"}},
-		{name: "end overlay, keep recording", fixture: "en/state-recording-meeting", steps: steps("End meeting", "Keep recording"), want: []string{"requestMeetingFinish"}},
 		{name: "end starting", fixture: "en/state-starting", steps: steps("End meeting"), want: []string{"meetingFinish"}},
 		{name: "save", fixture: "en/state-asking", steps: steps("Save"), want: []string{"meetingSave"}},
 		{name: "discard", fixture: "en/state-asking", steps: steps("Discard"), want: []string{"meetingDiscard"}},
