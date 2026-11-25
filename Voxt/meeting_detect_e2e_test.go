@@ -88,6 +88,8 @@ func TestMeetingDetectAutoStartEndToEnd(t *testing.T) {
 	if s.ask.view.Visible {
 		t.Fatal("automatic, and the card asks")
 	}
+	// Words first: one ended before any would ask "Started by mistake?".
+	s.pump("its live text", func() bool { return len(s.meetSnap.Live) > 0 || len(s.meetSnap.Segments) > 0 })
 	s.meetingFinish()
 	s.pump("its end", func() bool { return !s.meetingActive() })
 }
@@ -160,6 +162,7 @@ func TestMeetingDetectDuringDictationEndToEnd(t *testing.T) {
 	if len(s.toasts) != 0 || s.ask.startAfter != "" {
 		t.Fatalf("the meeting after the dictation: toasts %q, waiting for %q", s.toasts, s.ask.startAfter)
 	}
+	s.pump("its live text", func() bool { return len(s.meetSnap.Live) > 0 || len(s.meetSnap.Segments) > 0 })
 	s.meetingFinish()
 	s.pump("its end", func() bool { return !s.meetingActive() })
 }
@@ -185,6 +188,13 @@ func TestMeetingDetectEndedEndToEnd(t *testing.T) {
 		t.Fatal("the recording ended by itself")
 	}
 	s.startDetectedMeeting()
+	// A silent meeting this short heard no words: it asks "Started by
+	// mistake?" (a real one is 5 minutes old by now, past MistakeWithin).
+	s.pump("the question", func() bool { return s.meetSnap.State == meeting.StateAsking })
+	if !s.meetSnap.Mistake {
+		t.Fatalf("a silent short meeting: %+v", s.meetSnap)
+	}
+	s.meetingSave()
 	s.pump("the recording's end", func() bool { return !s.meetingActive() })
 	list, err := s.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
 	if err != nil || len(list) != 1 || s.ask.view.Visible {

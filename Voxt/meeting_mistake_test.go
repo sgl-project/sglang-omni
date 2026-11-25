@@ -66,7 +66,10 @@ func holdMeeting(s *sessionApp) {
 	s.pump("the meeting", func() bool { return s.meetSnap.State == meeting.StateRecording })
 	s.pump("its live text", func() bool { return len(s.meetSnap.Live) > 0 || len(s.meetSnap.Segments) > 0 })
 	s.meetingFinish()
-	s.pump("its end", func() bool { return s.meetSnap.State != meeting.StateRecording })
+	// End shows "finishing" at once; the question or the filing follows.
+	s.pump("its end", func() bool {
+		return s.meetSnap.State != meeting.StateRecording && s.meetSnap.State != meeting.StateFinishing
+	})
 }
 
 func meetingRows(t *testing.T, s *sessionApp) []store.Meeting {
@@ -85,8 +88,8 @@ func TestMeetingMistakeEndToEnd(t *testing.T) {
 	t.Run("discard", func(t *testing.T) {
 		s := meetingOfWords(t, "hi")
 		holdMeeting(s)
-		if s.meetSnap.State != meeting.StateAsking || !s.meetSnap.Mistake {
-			t.Fatalf("one word: %s, mistake %v", s.meetSnap.State, s.meetSnap.Mistake)
+		if s.meetSnap.State != meeting.StateAsking || !s.meetSnap.Mistake || s.meetSnap.Stage != "" {
+			t.Fatalf("one word: %s (stage %q), mistake %v", s.meetSnap.State, s.meetSnap.Stage, s.meetSnap.Mistake)
 		}
 		if view := s.meetOvView; !view.ShowAsking || view.AskingText != "Started by mistake?" {
 			t.Fatalf("the overlay: %+v", view)

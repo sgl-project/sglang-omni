@@ -280,7 +280,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	mistake := m.cfg.ASR != nil && elapsed < MistakeWithin && heardWords(m.snap.Segments, m.snap.Live) < MistakeWords
 	if !keep || mistake {
 		m.state = StateAsking
-		m.snap.State = StateAsking
+		m.snap.State, m.snap.Stage = StateAsking, "" // no longer saving: it asks
 		m.snap.Mistake = mistake
 		mt.Status = store.MeetingAsking
 		m.mu.Unlock()
