@@ -31,6 +31,18 @@ python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 
 For Intel GPUs, follow the [AuK XPU recipe](../other_platforms/installation_xpu.md#auk-speech-generation-and-editing-single-xpu).
 
+## Ascend NPU
+
+AuK runs on a single Ascend 910 with the default pipeline configuration:
+
+```bash
+sgl-omni serve \
+  --model-path tencent/AuK \
+  --port 8000
+```
+
+Follow the [NPU installation guide](../other_platforms/installation_npu.md) to set up the environment.
+
 ## Apple Silicon
 
 AuK and AuK-Flash run on the standalone native MLX server. Build it, then point it at local copies of the published `tencent/AuK-Flash` (or `tencent/AuK`) and `Qwen/Qwen2.5-Omni-3B` repositories:
@@ -125,7 +137,7 @@ Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.
 
 The DiT stores its weights in BF16 and runs without autocast by default (`--auk_engine.factory.weight_dtype bfloat16`), which removes the per-step FP32-to-BF16 weight casts. Set `--auk_engine.factory.weight_dtype float32` to keep FP32 weights with BF16 autocast instead; that is the upstream-exact recipe the parity test compares against, at roughly 1.3x the sampling time. The ODE state is integrated in FP32 in both modes.
 
-Two further sampling-speed options are on by default. `--auk_engine.factory.enable_dit_torch_compile` compiles each transformer block once for all blocks of its kind, folding the modulation, gating, and normalization chain into the matmul stream. `--auk_engine.factory.enable_dit_cuda_graph` captures one whole Euler step as a CUDA graph and replays it for every NFE step: only the noised latent and the timestep change between steps, so one capture serves a whole trajectory, and every later request whose shape it covers. Set either to `false` to fall back. The graph removes op-issue time and nothing else, so what it is worth depends on whether issuing a step costs more than running it; benchmark it on your own card before assuming it does.
+Two sampling-speed options are available. `--auk_engine.factory.enable_dit_torch_compile` compiles each transformer block once for all blocks of its kind, folding the modulation, gating, and normalization chain into the matmul stream. It is enabled by default except on Ascend NPU, where Inductor compilation fails on the tested torch_npu stack; set it to `true` to opt in. `--auk_engine.factory.enable_dit_cuda_graph` captures one whole Euler step and replays it for every NFE step: CUDA uses a CUDA graph and Ascend NPU uses its NPU graph backend. Only the noised latent and timestep change between steps, so one capture serves a whole trajectory and every later request whose shape it covers. Graph capture is enabled by default on Ascend NPU. On the tested Ascend910_9362, capture used about 7.6 GiB of additional device memory, and its performance varied with request concurrency and graph coverage. Set either option to `false` to fall back. Graphs remove op-issue time and nothing else, so their value depends on whether issuing a step costs more than running it; benchmark on your own card before assuming a gain.
 
 Graph capture requires padding, so a batch pads up to a declared capture shape -- a `(batch, frames, reference frames, text tokens)` tuple -- and only to one that covers it on every axis. The default list is the cross product of five frame rungs (192 to 768 frames, roughly 4s to 15s of audio), two conditioning profiles (an instruction alone, and a cloned voice carrying its reference's own tokens), and batch sizes 1 and 2; set your own with `--auk_engine.factory.dit_cuda_graph_capture_shapes`. A batch no declared shape covers -- a long reference, a wide batch -- runs the step eagerly and unpadded, since padding only pays for itself when it buys a replay.
 
