@@ -85,9 +85,9 @@ The draft reserves 13% of the KV pool. The draft checkpoint sets the default blo
 
 ### Prefill Coalescing
 
-ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch. Synchronous DFlash defaults to four request-build workers and a 0.5 ms coalescing deadline. No draft and opt-in speculative overlap retain two workers and a 32 ms deadline. The request threshold is 16 when coalescing is enabled. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers` and `prefill_coalesce_wait_ms` settings take precedence.
+Without the draft, ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch: two request-build workers, a 32 ms deadline and a threshold of 16 requests. Opt-in speculative overlap keeps these defaults. Synchronous DFlash instead uses four workers, starts each request's build when the request arrives, and does not hold prefills. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers`, `prefill_coalesce_wait_ms` and `early_request_builds` settings take precedence, and an explicit `prefill_coalesce_wait_ms` brings the hold back under DFlash.
 
-With the 0.5 ms default, 20 streaming comparisons against no draft on one H100 (SeedTTS EN/ZH, prefix cache off/on, c1–c16) showed 1.38–2.36x throughput, lower E2E p95 at every load and at most +3.02 ms TTFT p95. Six repeated ZH comparisons at c4/c8/c16 with the cache off and on stayed within +2.53 ms TTFT p95; see [#4165](https://github.com/sgl-project/sglang-omni/pull/4165) for the complete results.
+With these defaults, the draft against no draft on two H100s run at the same time (SeedTTS, streamed, prefix cache off, EN c1–c16 and ZH c4–c16) gave 1.4–2.2x throughput, lower E2E p95 at every load, and first-text p95 at most 0.8 ms later. With the earlier 0.5 ms hold and builds started by the scheduler loop, the same runs put c8 first text 17–22 ms later.
 
 For example, to use the 32 ms no-draft deadline with DFlash:
 

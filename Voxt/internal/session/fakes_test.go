@@ -209,14 +209,17 @@ func (f *fakeAudio) lateEvents(id string) {
 
 // fakeStreamer streams: a partial per frame, the final on Finish.
 type fakeStreamer struct {
-	final    string
-	openErr  error
-	finalErr error         // the stream fails instead of answering
-	errAfter int           // the stream fails after this many sends
-	hang     bool          // no final after Finish
-	openWait time.Duration // Open takes this long
-	openGate chan struct{} // Open waits for it to close (nil: no wait)
-	silent   bool          // no partials
+	final         string
+	openErr       error
+	finalErr      error           // the stream fails instead of answering
+	errAfter      int             // the stream fails after this many sends
+	hang          bool            // no final after Finish
+	openWait      time.Duration   // Open takes this long
+	openGate      chan struct{}   // Open waits for it to close (nil: no wait)
+	finishGate    <-chan struct{} // Finish waits for it to close (nil: no wait)
+	finishStarted chan struct{}   // signalled once Finish begins
+	finishEmitted chan bool       // whether Finish emitted its Final event
+	silent        bool            // no partials
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
@@ -319,6 +322,26 @@ func (s *fakeStream) Send(pcm []byte) error {
 func (s *fakeStream) Salvage() string { return s.f.salvage }
 
 func (s *fakeStream) Finish() error {
+	defer func() {
+		if s.f.finishEmitted != nil {
+			s.mu.Lock()
+			emitted := s.done
+			s.mu.Unlock()
+			select {
+			case s.f.finishEmitted <- emitted:
+			default:
+			}
+		}
+	}()
+	if s.f.finishStarted != nil {
+		select {
+		case s.f.finishStarted <- struct{}{}:
+		default:
+		}
+	}
+	if s.f.finishGate != nil {
+		<-s.f.finishGate
+	}
 	switch {
 	case s.f.hang:
 	case s.f.finalErr != nil:
@@ -345,6 +368,7 @@ func (s *fakeStream) Events() <-chan asr.Event { return s.events }
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
 	text string
+	said string // the language it reports (asr.Result.Lang)
 	err  error
 	hang bool
 
@@ -370,7 +394,7 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
 	}
-	return asr.Result{Text: f.text, Model: "fake-file"}, f.err
+	return asr.Result{Text: f.text, Lang: f.said, Model: "fake-file"}, f.err
 }
 
 // fakeLLM answers chats: text, or texts in turn (the last repeats),
@@ -381,6 +405,7 @@ type fakeLLM struct {
 	texts     []string
 	err       error
 	failOn    int
+	failDelta string
 	hang      bool
 	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
 	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
@@ -413,6 +438,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	failDelta := f.failDelta
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
 	if hang {
@@ -423,6 +449,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		return llm.Response{}, ctx.Err()
 	}
 	if failed {
+		if req.OnDelta != nil && failDelta != "" {
+			req.OnDelta(failDelta)
+		}
 		return llm.Response{}, f.err
 	}
 	if req.OnDelta == nil && f.pause > 0 {

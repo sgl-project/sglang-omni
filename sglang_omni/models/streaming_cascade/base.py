@@ -43,6 +43,10 @@ SENTENCE_END = re.compile(r"[.!?;。！？；…]+[\"')\]”’」』）]*$")
 CJK_SENTENCE_END = re.compile(r"[。！？；…]+[\"')\]”’」』）]*(?=\S)")
 # note (luojiaxuan): A word ending in a comma, colon or dash ends a clause, where a sentence too long for one speech request is cut when the cut may fall there.
 CLAUSE_END = re.compile(r"[,:，、：—–]+[\"')\]”’」』）]*$")
+# note (Haoling Pu): a reply puts what the user should read, not hear, between <screen> and </screen>; a block still being written runs to the end of the text.
+SCREEN_BLOCK = re.compile(
+    r"<screen>.*?(?:</screen>|\Z)|</screen>", re.DOTALL | re.IGNORECASE
+)
 
 
 class StreamComponent:
@@ -444,18 +448,23 @@ def sentence_end(text: str, max_words: int, *, is_complete: bool = False) -> int
 
 async def sentences(
     inputs: AsyncIterator[TimedChunk], max_words: int
-) -> AsyncIterator[str]:
-    """The reply text cut into the spans sent to speech, each with its own spacing, so the spans join back to the text."""
+) -> AsyncIterator[tuple[str, bool]]:
+    """The reply text cut into the spans sent to speech, each with its own spacing so the spans join back to the text, and whether the span ends its sentence rather than at a cut by max_words."""
     pending = ""
     async for text in texts(inputs):
         pending += text
         while (end := sentence_end(pending, max_words)) is not None:
-            yield pending[:end]
+            yield pending[:end], end == first_sentence_end(pending, False)
             pending = pending[end:]
     while pending:
         end = sentence_end(pending, max_words, is_complete=True)
-        yield pending[:end]
+        yield pending[:end], end == first_sentence_end(pending, True)
         pending = pending[end:]
+
+
+def blank_screen_blocks(text: str) -> str:
+    """The text with every screen block, its tags included, and every stray closing tag turned into spaces, so the rest keeps its character offsets."""
+    return SCREEN_BLOCK.sub(lambda block: " " * len(block.group()), text)
 
 
 class ComponentConfig(BaseModel):

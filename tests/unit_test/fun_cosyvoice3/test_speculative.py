@@ -13,10 +13,12 @@ from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import ScheduleBatch
 from sglang.srt.model_executor.forward_batch_info import ForwardMode, PPProxyTensors
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.dspark_components import dspark_draft as sglang_dspark_draft
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.speculative.spec_tp_sync import SpecTpSync
 from sglang.srt.utils import DynamicGradMode
 from torch._dynamo.utils import counters
@@ -1024,18 +1026,20 @@ def test_scheduler_admits_the_default_repetition_penalty_under_dspark() -> None:
     """Every default request sets repetition_penalty, which the DSpark verify applies."""
     scheduler = object.__new__(OmniScheduler)
     scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
     scheduler.model_runner = object.__new__(FunCosyVoice3ModelRunner)
     request = SimpleNamespace(
         sampling_params=SamplingParams(repetition_penalty=1.21),
         return_hidden_states=False,
     )
 
-    assert (
-        scheduler.speculative_request_error(
-            request, SimpleNamespace(return_logprob=False)
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        assert (
+            scheduler.speculative_request_error(
+                request, SimpleNamespace(return_logprob=False)
+            )
+            is None
         )
-        is None
-    )
 
 
 def test_drafting_routes_only_a_mirrored_head_through_its_own_block_draw(

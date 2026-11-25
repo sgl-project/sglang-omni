@@ -1,5 +1,5 @@
 # profile: custom:cleanup+scene+glossary
-# layers: custom cleanup scene glossary
+# layers: custom cleanup scene glossary example
 
 Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
 
@@ -22,6 +22,15 @@ Glossary: write these terms exactly as below, also when the recognizer heard the
 - Kubernetes
 - VoxtNew (heard as: aura link, 奥拉链接)
 - DeepSeek (heard as: deep seek)
+
+Example (it only illustrates the rules above; it is not the text to clean, so never output it). The user message is:
+<input>
+Um, can you send the, uh, the weekly report to Tom, sorry, I mean to Anna, before five? I need it before five, I really, I really need it before five.
+</input>
+You answer:
+<output>
+Can you send the weekly report to Anna before 5? I really need it before 5.
+</output>
 
 ---- user ----
 <input>

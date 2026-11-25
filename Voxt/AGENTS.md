@@ -15,7 +15,7 @@ These rules apply inside `Voxt/`. The repository's root `AGENTS.md` and its codi
 - **Voxt and Auralink are sources.** Both are the same author's, Apache-2.0 for VoxtNew: port their code where it fits (Voxt's Omni runtime lifecycle, model request policies and prompts; Auralink's everything else), written our way (one session owner, a layered prompt composer, pure logic apart from platform code), and record a behaviour that differs from Voxt's in `docs/behavior.md` (Voxt / VoxtNew / why).
 - **Use AudioSmith's UI kit.** Build pages from `ui_kit.go` and the tokens in `ui_tokens.go` (one ink primary button per view, the accent for state only, Solar icons, `settingRow` with ⓘ help). New icons: add the name to `internal/icons/names.txt`, then `go generate ./internal/icons`.
 - **Pure domain logic in `internal/`, platform code behind narrow interfaces** (the helper, `permission`, the local runtimes), with fakes for tests: everything must be testable on Linux. A runtime's client is tested against a fake server on loopback.
-- **The helper protocol** changes in every place at once: `internal/helper/proto`, the Swift types (`helper/Sources/VoxtNewHelperKit/Wire*.swift`), `helper/Fixtures`, the fake helper (`internal/helper/helpertest`) and `docs/helper-protocol.md`. Go and Swift tests decode the same fixtures.
+- **The helper protocol** changes in every place at once: `internal/helper/proto`, the Swift types (`helper/Sources/VoxtNewHelperKit/Wire*.swift`), `helper/Fixtures`, the fake helper (`internal/helper/helpertest`) and `docs/helper-protocol.md`. Go and Swift tests decode the same fixtures; `TestDocsNameEveryMethod` checks that the page names every method.
 - **The helper does, Go decides**: policy (when ⌘C may run, delays, keys after a paste, which device) goes in the params; the helper keeps no settings. The same holds for the speech models' runtime: Go supervises it and chooses the parameters.
 - **Files stay small**: at most 600 lines of code (aim for 400), 800 of tests; split by topic into `<area>_<part>.go`. `internal/archtest` checks the sizes (a ratchet over `allowlist.txt`) and the import layering (`imports.txt` lists every internal → internal import: add a line for a new one). Refactors that move code prove it with `declhash` and `scripts/snapshots.sh check` (docs/architecture.md, "Code structure rules").
 - **Licence**: VoxtNew is Apache-2.0, as the repository. Third-party code, data, models' runtimes or artwork need a licence compatible with it and an entry in `NOTICE`, with its licence text in `LICENSES/` (a new Go module: its licence file in `LICENSES/go/`). No per-file licence headers.
@@ -31,7 +31,7 @@ Code:
 - **The app calls every function.** A test calls the function the app calls. Delete a wrapper that only its own test reaches and move that test to the real function; keep shared fakes and helpers. Compare `deadcode -tags=meetingdemo,updatecheck ./...` with `deadcode -test -tags=meetingdemo,updatecheck ./...` and review the functions only the first command lists.
 - **A removal is complete in one PR**: the callers, helpers, strings and translations, doc links and environment switches of what is removed go with it.
 - **An unchecked error is written down**: `_ = f()` with a one-line reason. On a path that moves or deletes the user's data, each error is handled or logged.
-- **Every `VOXTNEW_*` environment switch is documented** by the PR that adds it: what it does and who sets it (`docs/development.md`, or the doc of its area).
+- **Every `VOXTNEW_*` environment switch has a row in `docs/development.md`** (`TestDocsEnvironmentVariables`) from the PR that adds it: what it does and who sets it.
 - **The helper builds without compiler warnings.** Mac CI's Helper builds without warnings step fails on any `warning:` in the helper build log.
 
 Tests:
@@ -78,7 +78,7 @@ MAC_DIR=code/VoxtNew-logsel scripts/mac.sh scripts/mac-logs-shots.sh  # the logs
 MAC_DIR=code/VoxtNew-xyz scripts/mac.sh scripts/mac-regress.sh  # the real speech models ($HUB, ~/voxtnew-runtime): Swift tests, omni, quick eval, app smoke
 scripts/mac.sh 'VOXTNEW_EVAL=1 VOXTNEW_OMNI_RUNTIME=$HOME/voxtnew-runtime/omni go test -run TestEval -v .'  # the eval (docs/eval.md)
 scripts/vendor-mygo.sh --check                               # third_party/mygo is MyGo + our patches
-scripts/release-preflight.sh 2.1.2                           # before a stable tag, read-only: versions, CHANGELOG section, download links, unnamed pull requests, certificate date
+scripts/release-preflight.sh 2.1.3                           # before a stable tag, read-only: versions, CHANGELOG section, download links, unnamed pull requests, certificate date
 scripts/snapshots.sh check                                   # every snapshot, pixel for pixel, against the merge base
 GOMAXPROCS=1 scripts/w0-snapshots.sh check                   # the same comparison, accepting the measured PNG noise in scripts/w0-snapshots-noisy.list (docs/architecture.md, Testing)
 VOXTNEW_UPDATE_GOLDEN=1 go test -count=1 -run '^TestMeetingViewStateGolden$' .  # regenerate meeting, history, session, updates, home, onboarding, app enhancement, dictionary, remote, models, feature, settings and shell fixtures in English and Chinese

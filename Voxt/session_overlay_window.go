@@ -24,21 +24,23 @@ type overlayState struct {
 			id string
 			w  int
 		}
-		textW       map[ovSized]ovMeasured
-		area        mygo.Rectangle
-		dragged     struct{ x, y int }
-		style       mygo.VibrancyStyle
-		passThrough bool
-		reveal      bool
-		fade        int
-		epoch       time.Time
-		native      bool
-		front       overlayFront // a preview floats; the answer card takes the front
-		stream      streamReveal
-		projection  sessionOverlayProjection
-		layout      sessionOverlayLayout
-		lang        langMenuState
-		ui          sessionOverlayLocalUI
+		textW          map[ovSized]ovMeasured
+		area           mygo.Rectangle
+		dragged        struct{ x, y int }
+		cardDragged    struct{ x, y int }
+		cardDraggedSet bool
+		style          mygo.VibrancyStyle
+		passThrough    bool
+		reveal         bool
+		fade           int
+		epoch          time.Time
+		native         bool
+		front          overlayFront // a preview floats; the answer card takes the front
+		stream         streamReveal
+		projection     sessionOverlayProjection
+		layout         sessionOverlayLayout
+		lang           langMenuState
+		ui             sessionOverlayLocalUI
 	}
 	// pill is the session pill's own window, for while the answer card
 	// holds the overlay window (wall 116, session_pill_window.go).
@@ -141,6 +143,20 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
+// sessionOverlayWindowOptions leaves StateKey empty because the pill and
+// card share this window; restored bounds would move the next mode.
+func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := cardWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	opts.X, opts.Y = frame.X, frame.Y
+	return opts
+}
+
+func (a *app) saveCardDrag() {
+	a.ov.cardDragged = a.ov.dragged
+	a.ov.cardDraggedSet = true
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
 	if a.box.open {
@@ -151,6 +167,14 @@ func (a *app) overlaySync() {
 	mode := a.overlayModeNow()
 	defer a.pillOverlaySync(mode) // the session pill's own window (wall 116)
 	was := a.ov.shown
+	if mode == ovAnswer && a.ov.mode != ovAnswer && a.ov.cardDraggedSet {
+		a.ov.dragged = a.ov.cardDragged
+	} else if mode != ovAnswer && a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
+	if (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && (mode == ovHidden || mode == ovNotice) && !a.ov.cardDraggedSet {
+		a.saveCardDrag()
+	}
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
@@ -198,16 +222,19 @@ func (a *app) overlaySync() {
 			a,
 			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 			func() sessionOverlayAnimation {
-				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()}
+				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave()}
 			},
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
+		opts := sessionOverlayWindowOptions(frame, hudContent(content))
 		a.ov.win = mygo.NewWindow(opts)
 		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
 		a.ov.passThrough = false
+		a.overlayDraggedAt(a.ov.win.ContentBounds())
+		frame = a.overlayFrame(width, height)
+		a.ov.frame = frame
+		moved = true
 	}
 	a.syncPassThrough()
 	if !was {
@@ -276,7 +303,18 @@ func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	} else {
 		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	}
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 	a.syncLangMenu()
+}
+
+func (a *app) overlayDraggedAt(bounds mygo.Rectangle) {
+	x, y := layout.Place(a.ov.area, a.prefs.Overlay, bounds.Width, bounds.Height)
+	a.ov.dragged.x, a.ov.dragged.y = bounds.X-x, bounds.Y-y
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 }
 
 func (a *app) syncPassThrough() {
@@ -398,6 +436,20 @@ func (a *app) closeOverlay() {
 }
 
 func (a *app) overlayMotion() bool { return a.overlayNative() && !a.prefs.Appearance.ReduceMotion }
+
+// overlayWave gives the waveform's bars at a time, gliding between the
+// levels as they come (a.wave, fed in sessionChanged as they arrive), for
+// the waveform's drawing to ask at every frame it paints; nil when nothing
+// records or nothing moves, and the bars are the levels' own. It feeds the
+// player too, which changes nothing for levels it has and shows a snapshot
+// set without sessionChanged (the overlay's check) as it is.
+func (a *app) overlayWave() func(time.Time) layout.Wave {
+	if !a.overlayMotion() || a.sess.State != session.Recording {
+		return nil
+	}
+	a.wave.Feed(a.sess.ID, a.sess.Levels, a.sess.LevelCount, time.Now())
+	return a.wave.Bars
+}
 
 func (a *app) overlayPhase() float64 {
 	if !a.overlayMotion() || a.ov.epoch.IsZero() {

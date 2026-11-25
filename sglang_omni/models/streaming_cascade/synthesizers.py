@@ -12,6 +12,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from sglang_omni.models.streaming_cascade.base import (
+    SENTENCE_END,
     SPEECH_SAMPLE_RATE_HZ,
     ComponentConfig,
     Replier,
@@ -19,6 +20,7 @@ from sglang_omni.models.streaming_cascade.base import (
     StreamComponent,
     audio_chunk,
     bearer_headers,
+    blank_screen_blocks,
     control_chunk,
     iterate,
     replying,
@@ -62,6 +64,10 @@ SPEECH_PREROLL_S = 0.05
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
 TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+# note (Haoling Pu): sentences() cuts after a title such as "Dr.", but the name after it belongs to the same sentence.
+TITLE_BEFORE_NAME = re.compile(
+    r"(?:^|\s)(?:Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Capt|Col|Gen|Lt|Sgt)\.$"
+)
 BARE_URL = re.compile(
     r"(?<![A-Za-z0-9])(?:https?://|www\.)(?:www\.)?([A-Za-z0-9.-]+)(?::[0-9]+)?(?:[/?#][!-{}~]*?)??(?=[.,!?;:)\]]*(?:[^!-~]|[|]|$))"
 )
@@ -97,10 +103,17 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. sentence_pause_ms of silence goes before
+    the audio of each sentence after the reply's first audio, but not inside a
+    sentence cut by max_sentence_words, after a title such as Dr., or after
+    a sentence end inside a screen block that skip_screen_blocks leaves out,
+    and a sentence that plays nothing sends none.
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
+    skip_screen_blocks leaves out of every request what the reply writes
+    between <screen> and </screen>, a block still open included, and a
+    stray </screen>.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -113,6 +126,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
     drop_quiet_start: bool = False
+    sentence_pause_ms: float = Field(default=0, ge=0)
+    skip_screen_blocks: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -422,13 +437,24 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
+        reply_text = ""
         text_end = 0
         audio_ms = 0.0
+        pause_samples = round(
+            self.config.sentence_pause_ms * self.sample_rate_hz / 1000
+        )
+        follows_sentence_end = True
         delta_styles: list[tuple[int, str | None]] = []
-        async for span in sentences(
+        async for span, ends_sentence in sentences(
             self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
-            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            reply_text += span
+            if self.config.skip_screen_blocks:
+                # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
+                spoken = blank_screen_blocks(reply_text)[text_end:]
+            else:
+                spoken = span
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", spoken))
             text = TABLE_PIPE.sub(
                 ", ",
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
@@ -440,6 +466,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             emit(
                 control_chunk(REPLY_SENTENCE, turn=turn, **with_language({}, language))
             )
+            # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
+            is_pause_due = bool(audio_ms and pause_samples and follows_sentence_end)
+            plays_audio = False
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
                 # note (Haoling Pu): a span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
@@ -450,10 +479,36 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                     if text_start <= spoken_start
                 )
                 async for samples in self.speak(sentence, language, style):
+                    if is_pause_due:
+                        audio_ms += pause_samples * 1000 / self.sample_rate_hz
+                        emit(
+                            audio_chunk(
+                                np.zeros(pause_samples, dtype="<f4"),
+                                self.sample_rate_hz,
+                                turn,
+                            )
+                        )
+                        is_pause_due = False
+                    else:
+                        pass
+                    plays_audio = True
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
             else:
                 pass
+            heard = spoken.rstrip()
+            if TITLE_BEFORE_NAME.search(heard):
+                ends_heard_sentence = False
+            elif len(heard) < len(span.rstrip()):
+                # note (Haoling Pu): a span that ends inside a screen block ends a sentence for the pause only where the words heard before the block do, so a period on the screen adds no silence.
+                ends_heard_sentence = bool(SENTENCE_END.search(heard))
+            else:
+                ends_heard_sentence = ends_sentence
+            if plays_audio:
+                follows_sentence_end = ends_heard_sentence
+            else:
+                # note (Haoling Pu): a span that plays nothing, with no word in it or dropped whole by drop_quiet_start, sends no pause, so a sentence end before it or at its end still puts one pause before the next audio.
+                follows_sentence_end = follows_sentence_end or ends_heard_sentence
             text_end += len(span)
             self.progress(emit, turn, text_end, audio_ms)
 
