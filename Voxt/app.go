@@ -42,6 +42,7 @@ import (
 //	historyAccessState history_access_controller.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
 //	dictionarySocketState dictionary_socket.go  `Voxt dictionary import`'s socket
+//	triggerSocketState trigger_socket.go  `Voxt toggle` and `Voxt cancel`'s socket
 //	meetingState        meeting_link.go meetings (dev builds)
 //	meetingOverlayState meeting_overlay_window.go the meeting floating window
 //	meetingsState       meetings_controller.go the Meetings page (dev builds)
@@ -94,6 +95,7 @@ type app struct {
 	transcribeSocketState
 	mainTranscript transcriptPreview // transcript_preview_controller.go
 	dictionarySocketState
+	triggerSocketState
 	meetingState
 	meetingOverlayState
 	meetingsState
@@ -148,6 +150,7 @@ func (a *app) quit() {
 	a.closeHistoryAccess() // history_access.go: the socket goes first
 	a.closeTranscribeSocket()
 	a.closeDictionarySocket()
+	a.closeTriggerSocket()
 	if a.stopLearning != nil {
 		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
 	}

@@ -156,6 +156,7 @@ func main() {
 		a.openHistoryAccess()    // history_access.go: the socket, when the setting is on
 		a.openTranscribeSocket() // transcribe_socket.go: `Voxt transcribe`
 		a.openDictionarySocket() // dictionary_socket.go: `Voxt dictionary import`
+		a.openTriggerSocket()    // trigger_socket.go: `Voxt toggle` and `Voxt cancel`
 		a.announceURL = announce.URL
 		a.checkAnnouncements() // announcements.go
 		mygo.App.OnSecondInstance(func([]string, string) { a.post(a.showMainWindow) })
