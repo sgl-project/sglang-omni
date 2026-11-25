@@ -96,12 +96,28 @@ func (a *app) nameSession(id int, name string) {
 		if runes := []rune(name); len(runes) > sessionNameMax {
 			name = string(runes[:sessionNameMax])
 		}
-		if name != "" {
-			a.slots[n].name = name
-		}
+		a.slots[n].name = name
 	}
 	a.endRename()
 	a.buildTrayMenu()
+}
+
+// renameCurrentSession is the menu bar's Rename session: the current
+// session's card comes on screen with its title to type. It is the way
+// to rename the only session, which has no row until then.
+func (a *app) renameCurrentSession() {
+	a.showSession(a.slot)
+	if !a.answer.open && !a.emptyCard && !a.box.open {
+		return
+	}
+	a.renameSession(a.slot)
+	// The menu is no click on the card, so the card takes the keys here.
+	switch {
+	case a.box.open && a.box.win != nil:
+		a.box.win.Focus()
+	case a.ov.win != nil:
+		a.ov.win.Focus()
+	}
 }
 
 // endRename ends the typing and keeps the title as it was.

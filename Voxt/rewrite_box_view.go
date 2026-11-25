@@ -118,8 +118,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					actions.close()
 				}
 			})
-			sessionRow(context, state.Sessions, 0, actions.card, actions.cardLocal().Card)
-			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			if !sessionRow(context, state.Sessions, 0, actions.card, actions.cardLocal().Card) {
+				ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			}
 
 			if state.Subtitle != "" {
 				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {

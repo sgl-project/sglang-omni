@@ -166,15 +166,29 @@ func (a *app) deleteSession(id int) {
 	a.overlaySync()
 }
 
-// sessionChips is the card's session row: nothing with sessions off.
+// sessionChips is the card's session row: nothing with sessions off or
+// one session only, so that card is as it is without sessions (a new
+// session then starts from the menu bar, and so does renaming the only
+// one, which brings the row for as long as the title is typed). The other sessions' titles
+// are cut to sessionShortMax; the chip's tooltip has the whole one.
 func (a *app) sessionChips() []sessionChipViewState {
 	if !a.prefs.Features.SessionsOn {
 		return nil
 	}
 	list := a.sessions()
+	if len(list) < 2 && !a.renaming {
+		return nil
+	}
 	chips := make([]sessionChipViewState, len(list))
 	for i, p := range list {
-		chips[i] = sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
+		chip := sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
+		if chip.Renaming {
+			chip.Title = p.title // the field's placeholder: what an empty name gives
+		}
+		if short := cutTitle(chip.Title, sessionShortMax); !chip.Current && !chip.Renaming && short != chip.Title {
+			chip.Title, chip.Full = short, chip.Title
+		}
+		chips[i] = chip
 	}
 	return chips
 }
@@ -200,17 +214,23 @@ func (a *app) sessionsMenu(act func(func()) func(*mygo.MenuItem, *mygo.Window)) 
 		label := strconv.Itoa(i+1) + " " + cmpOr(cmpOr(p.name, p.title), i18n.T("New session"))
 		items = append(items, &mygo.MenuItem{Label: label, Type: mygo.MenuItemCheckbox, Checked: id == a.slot, Click: act(func() { a.showSession(id) })})
 	}
-	return items
+	return append(items,
+		&mygo.MenuItem{Label: i18n.T("New session"), Click: act(a.newSession)},
+		&mygo.MenuItem{Label: i18n.T("Rename session"), Click: act(a.renameCurrentSession)})
 }
 
-// sessionTitleMax is how many characters of a title a chip shows.
-const sessionTitleMax = 18
+// sessionTitleMax is how many characters of a title the current
+// session's chip shows, sessionShortMax the other sessions' chips.
+const sessionTitleMax, sessionShortMax = 18, 8
 
 // sessionTitle is text as a chip's title: one line, cut short.
 func sessionTitle(text string) string {
-	text = strings.Join(strings.Fields(text), " ")
-	if runes := []rune(text); len(runes) > sessionTitleMax {
-		text = strings.TrimSpace(string(runes[:sessionTitleMax])) + "…"
+	return cutTitle(strings.Join(strings.Fields(text), " "), sessionTitleMax)
+}
+
+func cutTitle(text string, most int) string {
+	if runes := []rune(text); len(runes) > most {
+		text = strings.TrimSpace(string(runes[:most])) + "…"
 	}
 	return text
 }

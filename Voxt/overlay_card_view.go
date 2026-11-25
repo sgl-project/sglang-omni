@@ -26,8 +26,9 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
-		sessionRow(context, card.Sessions, layout.CardSessionsH-sessionChipH, actions, local.Card)
-		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		if !sessionRow(context, card.Sessions, layout.CardSessionsH+layout.CardRuleTop+1-sessionChipH, actions, local.Card) {
+			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+		}
 		cardAttachView(context, card, local)
 		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
 		cardSizeButton(context, card, actions)

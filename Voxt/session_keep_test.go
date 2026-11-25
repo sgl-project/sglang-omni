@@ -102,7 +102,7 @@ func TestSessionsSurviveRestart(t *testing.T) {
 		t.Fatalf("restored: current %d, %+v", a.slot, a.slots)
 	}
 	labels, items := menuLabels(a)
-	if got := strings.Join(labels, " | "); got != "Sessions | 1 Docs status* | 2 My haiku" {
+	if got := strings.Join(labels, " | "); got != "Sessions | 1 Docs status* | 2 My haiku | New session | Rename session" {
 		t.Fatalf("menu: %q", got)
 	}
 	// The current session's card waits in it until it is asked for.
@@ -114,7 +114,7 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	if a.slot != 1 || !a.answer.open || a.answer.text != "two" {
 		t.Fatalf("session 2 from the menu: slot %d, %+v", a.slot, a.answer)
 	}
-	if got := chipLine(a); got != "1 Docs status | 2 My haiku*" {
+	if got := chipLine(a); got != "1 Docs sta… | 2 My haiku*" {
 		t.Fatalf("row: %q", got)
 	}
 	if labels, _ := menuLabels(a); labels[2] != "2 My haiku*" {
@@ -245,7 +245,7 @@ func TestDeletedEntryUntitlesSession(t *testing.T) {
 		t.Fatal("the card on screen closed")
 	}
 	labels, _ := menuLabels(a)
-	if got := strings.Join(labels, " | "); got != "Sessions | 1 New session* | 2 My haiku" {
+	if got := strings.Join(labels, " | "); got != "Sessions | 1 New session* | 2 My haiku | New session | Rename session" {
 		t.Fatalf("menu: %q", got)
 	}
 }

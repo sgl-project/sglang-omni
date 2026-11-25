@@ -242,14 +242,20 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	_, off, _ := a.cardSize()
 	sessionsOn(a)
 	a.overlaySync()
+	// One session: the card is as it is with sessions off.
+	if _, on, _ := a.cardSize(); on != off || chipLine(a) != "" || a.boxViewState().Sessions != nil {
+		t.Fatalf("one session: card height %d, %d without sessions, row %q", on, off, chipLine(a))
+	}
+	// A second one brings the row, CardSessionsH taller, on both cards.
+	a.slots = append(a.slots, parkedSlot{id: 9, title: "A long title here"})
+	a.overlaySync()
 	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH {
 		t.Fatalf("card height %d with the session row, %d without", on, off)
 	}
-	if got := chipLine(a); got != "1*" {
-		t.Fatalf("session row %q", got)
-	}
-	if len(a.boxViewState().Sessions) != 1 {
-		t.Fatal("the Rewrite card has no session row")
+	// The other session's title is cut short; the tooltip has all of it.
+	chips := a.boxViewState().Sessions
+	if len(chips) != 2 || chips[1].Title != "A long t…" || chips[1].Full != "A long title here" || chips[0].Full != "" {
+		t.Fatalf("session row %+v", chips)
 	}
 }
 
@@ -373,17 +379,38 @@ func TestSessionTitleAndRename(t *testing.T) {
 	if got := chipLine(a); got != "1 | 2 Haiku draft*" {
 		t.Fatalf("renamed: %q", got)
 	}
-	// Nothing typed keeps the name.
+	// While it is typed the field shows the automatic title, and nothing
+	// typed gives that title back.
 	a.renameSession(1)
+	if chips := a.sessionChips(); !chips[1].Renaming || chips[1].Title != a.slots[1].title {
+		t.Fatalf("renaming: %+v", chips)
+	}
 	a.nameSession(1, " ")
-	if got := chipLine(a); got != "1 | 2 Haiku draft*" || a.renaming {
+	if got := chipLine(a); got != strings.TrimSpace("1 | 2 "+a.slots[1].title)+"*" || a.slots[1].name != "" || a.renaming {
 		t.Fatalf("empty name: %q renaming=%v", got, a.renaming)
 	}
+	// The only session is renamed from the menu bar: its card comes on
+	// screen with the row for as long as the title is typed.
+	a.deleteSession(0)
+	if got := chipLine(a); got != "" {
+		t.Fatalf("one session has a row: %q", got)
+	}
+	a.renameCurrentSession()
+	if chips := a.sessionChips(); len(chips) != 1 || !chips[0].Renaming || !(a.answer.open || a.emptyCard) {
+		t.Fatalf("rename from the menu: %+v open=%v empty=%v", chips, a.answer.open, a.emptyCard)
+	}
+	a.nameSession(a.slot, "Only one")
+	if labels, _ := menuLabels(a); chipLine(a) != "" || labels[1] != "1 Only one*" {
+		t.Fatalf("named: row %q menu %q", chipLine(a), labels)
+	}
+	a.newSession()
+	a.switchSession(a.slots[0].id)
 	// A title that arrives for a deleted session is dropped.
+	late := a.slots[1].id
 	a.slots[1].titled = "x"
-	a.deleteSession(1)
-	a.setSessionTitle(1, "x", "Late")
-	if got := chipLine(a); got != "1*" {
+	a.deleteSession(late)
+	a.setSessionTitle(late, "x", "Late")
+	if got := chipLine(a); got != "" || a.slots[0].title == "Late" {
 		t.Fatalf("after the delete: %q", got)
 	}
 }

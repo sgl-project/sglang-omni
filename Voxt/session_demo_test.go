@@ -115,7 +115,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 			}
 		}},
 		{name: "session row", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"switchSession", "newSession", "deleteSession"},
-			steps: steps("Session 2", "New session", "Delete session 2"), want: []string{"switchSession 7", "newSession", "deleteSession 7"}},
+			steps: steps("Session 2", "New session", "Delete session 1"), want: []string{"switchSession 7", "newSession", "deleteSession 3"}},
 		{name: "only session", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
 			host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Current: true}}
 		}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
