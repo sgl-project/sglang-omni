@@ -1,73 +1,78 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Haru golden: a seeded full-duplex session's token stream through
-haru_session_probe.
-
-Haru is full-duplex, so its golden is not a corpus transcript or a text-to-speech
-request: it is the token sequence the model emits for one seeded session (a
-synthetic 16 kHz voice reference, a character card, speak-first, then three
-silent user frames). Each chip that has golden outputs must give that sequence
-exactly; another chip is gated on the same comparison against the first
-reference chip.
-"""
+"""Haru golden: a seeded greedy full-duplex session through haru_session_probe. A chip with golden outputs must give every case's tokens and, when the golden holds one, its audio hash exactly; another chip, whose GPU arithmetic may sample other tokens, only as many frames."""
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
+
+
+class HaruCase(TypedDict):
+    seed: int
 
 
 class HaruOutputs(TypedDict):
     tokens: list[int]
-    audio_sha256: str
-    turn2_tokens: list[int]
-    turn2_audio_sha256: str
+    audio_sha256: NotRequired[str]
 
 
-def synthesize(runtime_bin: Path, model_directory: Path, case: dict) -> HaruOutputs:
-    """Run one seeded session and return its token stream and decoded audio hash."""
-    seed = case.get("seed", 42)
-    command = [
-        str(runtime_bin / "haru_session_probe"),
-        str(model_directory),
-        str(seed),
-    ]
-    if case.get("quantize"):
-        command.append(str(case["quantize"]))
+class HaruDevice(TypedDict):
+    metrics: dict[str, float]
+    clips: dict[str, HaruOutputs]
+
+
+class HaruGolden(TypedDict):
+    model: str
+    kind: str
+    tool: str
+    cases: dict[str, HaruCase]
+    devices: dict[str, HaruDevice]
+
+
+def synthesize(runtime_bin: Path, model_directory: Path, case: HaruCase) -> HaruOutputs:
+    """Run one seeded session and return its tokens and audio hash."""
     completed = subprocess.run(
-        command,
+        [
+            str(runtime_bin / "haru_session_probe"),
+            str(model_directory),
+            str(case["seed"]),
+        ],
         capture_output=True,
         text=True,
         check=True,
     )
     lines = completed.stdout.splitlines()
     return {
-        "tokens": [
-            int(line.split("token ")[1].split()[0])
-            for line in lines
-            if "token " in line
-        ],
+        "tokens": [int(line.split()[3]) for line in lines if line.startswith("frame ")],
         "audio_sha256": next(
-            line.split("audio_sha256 ")[1]
-            for line in lines
-            if line.startswith("audio_sha256 ")
-        ),
-        "turn2_tokens": [
-            int(value)
-            for line in lines
-            if line.startswith("turn2_tokens ")
-            for value in line.split("turn2_tokens ")[1].split()
-        ],
-        "turn2_audio_sha256": next(
-            line.split("turn2_audio_sha256 ")[1]
-            for line in lines
-            if line.startswith("turn2_audio_sha256 ")
+            line.split()[1] for line in lines if line.startswith("audio_sha256 ")
         ),
     }
 
 
+def difference(
+    expected: HaruOutputs, actual: HaruOutputs | None, is_exact: bool
+) -> str | None:
+    """How actual departs from expected, or None when it does not."""
+    if actual is None:
+        return "was not run"
+    elif len(actual["tokens"]) != len(expected["tokens"]):
+        return f"has {len(actual['tokens'])} frames, not {len(expected['tokens'])}"
+    elif not is_exact:
+        return None
+    elif actual["tokens"] != expected["tokens"]:
+        return "has other tokens"
+    elif "audio_sha256" in expected and (
+        actual.get("audio_sha256") != expected["audio_sha256"]
+    ):
+        return "decodes to other audio"
+    else:
+        return None
+
+
 def check(
-    golden: dict, device: str, results: dict[str, HaruOutputs]
+    golden: HaruGolden, device: str, results: dict[str, HaruOutputs]
 ) -> tuple[list[str], list[str]]:
     """Returns (report lines, failures)."""
     devices = golden["devices"]
@@ -75,40 +80,28 @@ def check(
         return [f"### {golden['model']} on {device}"], [
             "the golden file has no outputs"
         ]
-    reference_device = device if device in devices else next(iter(devices))
+    else:
+        reference_device = device if device in devices else next(iter(devices))
     reference = devices[reference_device]["clips"]
-    failures = []
-    identical = 0
-    for case_id, want in reference.items():
-        actual = results.get(case_id)
-        if actual is None:
-            failures.append(f"`{case_id}` was not run")
-        elif actual.get("tokens") != want.get("tokens"):
-            failures.append(f"`{case_id}` token stream differs")
-        elif actual.get("audio_sha256") != want.get("audio_sha256"):
-            failures.append(f"`{case_id}` decoded audio differs")
-        elif "turn2_tokens" in want and actual.get("turn2_tokens") != want.get(
-            "turn2_tokens"
-        ):
-            failures.append(f"`{case_id}` second turn token stream differs")
-        elif actual.get("turn2_audio_sha256") != want.get("turn2_audio_sha256"):
-            failures.append(f"`{case_id}` second turn audio differs")
-        else:
-            identical += 1
-    failures += [
+    is_exact = device in devices
+    differences = {
+        case_id: difference(expected, results.get(case_id), is_exact)
+        for case_id, expected in reference.items()
+    }
+    failures = [
         f"`{case_id}` has no golden output"
         for case_id in golden["cases"]
         if case_id not in reference
+    ] + [
+        f"`{case_id}` {found}"
+        for case_id, found in differences.items()
+        if found is not None
     ]
-    mode = (
-        "exact"
-        if device in devices
-        else f"no golden outputs for this chip; compared against {reference_device}"
-    )
+    mode = "exact" if is_exact else "no golden outputs for this chip; frame counts only"
     lines = [
         f"### {golden['model']} on {device}",
         "",
-        f"Golden cases identical to {reference_device}: "
-        f"{identical}/{len(reference)} ({mode})",
+        f"Golden cases matching {reference_device}: "
+        f"{sum(found is None for found in differences.values())}/{len(reference)} ({mode})",
     ]
     return lines, failures

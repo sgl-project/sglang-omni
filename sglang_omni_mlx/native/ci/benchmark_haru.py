@@ -2,12 +2,13 @@
 """Measure haru_server's realtime path through the public WebSocket API.
 
 Haru is full-duplex, so the model's cost is not a request's latency but a frame's:
-after a session starts, every 3200-sample input frame costs one model step, which
-emits one 133 ms audio frame. This benchmark reports that step cost (ms/frame and
-real-time factor) and the time to the session's first audio frame, and along the
-way checks the receipts a full-duplex client relies on: one accepted per append,
-a drained receipt whose consumed and accepted durations agree, a completed
-response, and the same seed replaying the same audio.
+after a session starts, every 133 ms input frame costs one model step, which emits
+one 133 ms audio frame. This benchmark streams 400 ms native units, reports that
+step cost (ms/frame and real-time factor) and the time to the session's first audio
+frame, and along the way checks the receipts a full-duplex client relies on: one
+accepted per append, one unit receipt per unit, a drained receipt whose consumed and
+accepted durations agree, a completed response, and the same seed replaying the same
+audio.
 
 The run needs only the native runtime: no Python model code, no MLX bindings.
 
@@ -42,11 +43,9 @@ from websockets.sync.client import connect
 from sglang_omni_mlx.native.tests.native_server import SupervisedServer
 
 MODEL_REPO = "higurashi-ai/Haru-4B"
-# One full-duplex frame is 3200 16-bit samples at 24 kHz.
-SAMPLE_RATE = 24000
-FRAME_SAMPLES = 3200
-FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
-FRAME_SECONDS_DEFAULT = FRAME_SECONDS
+# The model emits 3200-sample frames at 24 kHz, three per 400 ms native unit.
+FRAME_SECONDS = 3200 / 24000
+UNIT_MILLISECONDS = 400
 EVENT_TIMEOUT_SECONDS = 120
 # Two sessions with one seed must replay the same audio; compare their digests.
 REPEAT_SESSIONS = 2
@@ -59,7 +58,7 @@ class Session:
     index: int
     update_s: float
     first_audio_s: float
-    input_frames: int = 0
+    input_units: int = 0
     deltas: int = 0
     step_seconds: list[float] = field(default_factory=list)
     audio_seconds: float = 0.0
@@ -85,28 +84,34 @@ class Session:
         return self.response_s / self.audio_seconds if self.audio_seconds else 0.0
 
 
-def silence_frames(count: int) -> list[bytes]:
-    return [b"\x00\x00" * FRAME_SAMPLES for _ in range(count)]
+def unit_samples(sample_rate: int) -> int:
+    return sample_rate * UNIT_MILLISECONDS // 1000
 
 
-def frames_from_wav(path: Path, count: int) -> list[bytes]:
-    """`count` frames of a 24 kHz mono 16-bit WAV, looped when it is shorter."""
+def silence_units(count: int, sample_rate: int) -> list[bytes]:
+    return [b"\x00\x00" * unit_samples(sample_rate)] * count
+
+
+def units_from_wav(path: Path, count: int, sample_rate: int) -> list[bytes]:
+    """The first count units of a mono 16-bit WAV, looped when it is shorter."""
     with wave.open(str(path)) as reader:
         if (reader.getnchannels(), reader.getsampwidth(), reader.getframerate()) != (
             1,
             2,
-            SAMPLE_RATE,
+            sample_rate,
         ):
-            raise SystemExit(
-                f"{path} must be 24 kHz mono 16-bit PCM; the server frames at 24 kHz"
-            )
+            raise SystemExit(f"{path} must be {sample_rate} Hz mono 16-bit PCM")
+        else:
+            pass
         pcm = reader.readframes(reader.getnframes())
-    width = FRAME_SAMPLES * 2
-    starts = range(0, len(pcm) - width + 1, width)
-    frames = [pcm[start : start + width] for start in starts]
-    if not frames:
-        raise SystemExit(f"{path} is shorter than one {width // 2}-sample frame")
-    return [frames[index % len(frames)] for index in range(count)]
+    width = unit_samples(sample_rate) * 2
+    units = [
+        pcm[start : start + width] for start in range(0, len(pcm) - width + 1, width)
+    ]
+    if not units:
+        raise SystemExit(f"{path} is shorter than one {UNIT_MILLISECONDS} ms unit")
+    else:
+        return [units[index % len(units)] for index in range(count)]
 
 
 def receive_until(socket, stop_types: set[str]) -> list[dict]:
@@ -152,10 +157,9 @@ def run_session(
     server: SupervisedServer,
     index: int,
     seed: int,
-    inputs: list[bytes],
-    tail: int,
+    units: list[bytes],
 ) -> Session:
-    """Stream `inputs` and then `tail` silent frames through one session."""
+    """Stream units through one session, one append each."""
     with connect(f"ws://127.0.0.1:{server.port}/v1/realtime", max_size=None) as socket:
         created = json.loads(socket.recv(timeout=EVENT_TIMEOUT_SECONDS))
         assert created["type"] == "session.created", created
@@ -177,7 +181,7 @@ def run_session(
             index=index,
             update_s=update_seconds,
             first_audio_s=0.0,
-            input_frames=len(inputs),
+            input_units=len(units),
         )
         capabilities = updated["capabilities"]
         session.checks["realtime_capabilities"] = (
@@ -194,22 +198,22 @@ def run_session(
         samples: list[bytes] = []
         transcript_parts: list[str] = []
         started = time.perf_counter()
-        appends = 0
-        frames = len(inputs) + tail
-        # A turn ends in silence: the model answers once the user stops talking,
-        # so the frames after the input are part of the turn.
-        for pcm in inputs + silence_frames(tail):
+        appends = len(units)
+        input_ms = appends * float(UNIT_MILLISECONDS)
+        for sequence, pcm in enumerate(units):
             socket.send(
                 json.dumps(
                     {
                         "type": "input_audio_buffer.append",
-                        "event_id": f"bench-append-{index}-{appends}",
+                        "event_id": f"bench-append-{index}-{sequence}",
                         "audio": base64.b64encode(pcm).decode(),
-                        "sglang": {"seq": appends, "t_start_ms": appends * 400.0},
+                        "sglang": {
+                            "seq": sequence,
+                            "t_start_ms": sequence * float(UNIT_MILLISECONDS),
+                        },
                     }
                 )
             )
-            appends += 1
         # An input's end drains what the frames above produced, so the received
         # audio is read after it rather than before.
         socket.send(
@@ -217,13 +221,14 @@ def run_session(
                 {
                     "type": "sglang.input_audio.end",
                     "event_id": f"bench-end-{index}",
-                    "sglang": {"seq": appends, "t_start_ms": appends * 400.0},
+                    "sglang": {"seq": appends, "t_start_ms": input_ms},
                 }
             )
         )
 
         delta_times: list[float] = []
         accepted_seqs: list[int] = []
+        unit_durations_ms: list[float] = []
         accepted_end_ms = 0.0
         drained: dict = {}
         done: dict = {}
@@ -241,10 +246,11 @@ def run_session(
             elif kind == "sglang.input_audio.accepted":
                 accepted_seqs.append(event["seq"])
                 accepted_end_ms = event["accepted_end_ms"]
+            elif kind == "sglang.unit.done":
+                unit_durations_ms.append(event["sglang"]["media_time"]["duration_ms"])
             elif kind == "sglang.input_audio.ended":
                 end_acknowledged = (
-                    abs(float(event["accepted_end_ms"]) - frames * FRAME_SECONDS * 1000)
-                    < 1e-6
+                    abs(float(event["accepted_end_ms"]) - input_ms) < 1e-6
                     and event["tail_policy"] == "pad"
                 )
             elif kind == "response.done":
@@ -269,8 +275,11 @@ def run_session(
             range(appends)
         )
         session.checks["accepted_end_matches_input"] = (
-            abs(accepted_end_ms - frames * FRAME_SECONDS * 1000) < 1e-6
+            abs(accepted_end_ms - input_ms) < 1e-6
         )
+        session.checks["one_receipt_per_unit"] = unit_durations_ms == [
+            float(UNIT_MILLISECONDS)
+        ] * len(units)
         session.checks["response_completed"] = bool(done) and (
             done["response"]["status"] == "completed"
             and done["response"]["status_details"]["reason"] == "stop"
@@ -339,15 +348,15 @@ def report(sessions: list[Session], startup_s: float, arguments) -> dict:
         "device": device(),
         "python": platform.python_version(),
         "model": arguments.model_repo,
-        "quantize": arguments.quantize,
+        "input_sample_rate": arguments.input_sample_rate,
         "seed": arguments.seed,
-        "frames_per_session": arguments.frames,
+        "units_per_session": arguments.units,
         "input": str(arguments.input_wav) if arguments.input_wav else "silence",
         "sessions": [
             {
                 "index": session.index,
                 "frames": session.frames,
-                "input_frames": session.input_frames,
+                "input_units": session.input_units,
                 "session_update_s": round(session.update_s, 4),
                 "first_audio_s": round(session.first_audio_s, 4),
                 "ms_per_frame": round(session.ms_per_frame, 2),
@@ -372,17 +381,16 @@ def main() -> None:
     parser.add_argument("--runtime-bin", type=Path, required=True)
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--model-repo", default=MODEL_REPO)
-    parser.add_argument("--quantize", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--input-sample-rate",
         type=int,
         choices=(16000, 24000),
         default=24000,
-        help="rate of the frames this script sends; FDB's clients use 16000",
+        help="rate of the audio this script sends",
     )
     parser.add_argument(
-        "--frames", type=int, default=24, help="input frames per session"
+        "--units", type=int, default=8, help="400 ms input units per session"
     )
     parser.add_argument(
         "--sessions", type=int, default=3, help="first is cold, the rest warm"
@@ -390,7 +398,7 @@ def main() -> None:
     parser.add_argument(
         "--input-wav",
         type=Path,
-        help="24 kHz mono 16-bit WAV to stream; silence when omitted",
+        help="mono 16-bit WAV at the input rate to stream; silence when omitted",
     )
     parser.add_argument(
         "--tail-seconds",
@@ -406,7 +414,8 @@ def main() -> None:
     )
     arguments = parser.parse_args()
 
-    flags = ["--quantize", str(arguments.quantize)]
+    sample_rate = arguments.input_sample_rate
+    flags = ["--input-sample-rate", str(sample_rate)]
     if arguments.reference_audio:
         flags += ["--reference-audio", str(arguments.reference_audio)]
     if arguments.instructions_file:
@@ -414,24 +423,21 @@ def main() -> None:
     model_directory = (
         arguments.data_root / "models" / arguments.model_repo.replace("/", "_")
     )
-    global SAMPLE_RATE, FRAME_SAMPLES, FRAME_SECONDS
-    SAMPLE_RATE = arguments.input_sample_rate
-    FRAME_SAMPLES = round(SAMPLE_RATE * FRAME_SECONDS_DEFAULT)
-    FRAME_SECONDS = FRAME_SAMPLES / SAMPLE_RATE
-    flags += ["--input-sample-rate", str(SAMPLE_RATE)]
-    tail = round(arguments.tail_seconds / FRAME_SECONDS)
+    tail_units = round(arguments.tail_seconds * 1000 / UNIT_MILLISECONDS)
     server = SupervisedServer(
         arguments.runtime_bin / "haru_server", "haru", model_directory, tuple(flags)
     )
     startup_s = float(server.first_event["startup_s"])
     try:
         inputs = (
-            frames_from_wav(arguments.input_wav, arguments.frames)
+            units_from_wav(arguments.input_wav, arguments.units, sample_rate)
             if arguments.input_wav
-            else silence_frames(arguments.frames)
+            else silence_units(arguments.units, sample_rate)
         )
+        # A turn ends in silence: the model answers once the user stops talking.
+        units = inputs + silence_units(tail_units, sample_rate)
         sessions = [
-            run_session(server, index, arguments.seed, inputs, tail)
+            run_session(server, index, arguments.seed, units)
             for index in range(arguments.sessions)
         ]
     finally:

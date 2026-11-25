@@ -27,6 +27,8 @@ pytestmark = pytest.mark.skipif(
 HARU_REPO = "higurashi-ai/Haru-4B"
 # One full-duplex frame is 3200 16-bit samples at 24 kHz.
 FRAME_SAMPLES = 3200
+# One native unit, 400 ms, is 6400 samples at 16 kHz.
+UNIT_SAMPLES_16KHZ = 6400
 
 
 def haru_directory() -> Path:
@@ -35,7 +37,16 @@ def haru_directory() -> Path:
 
 @pytest.fixture(scope="module")
 def haru_server() -> Iterator[Server]:
-    running = Server("haru_server", "haru", haru_directory(), ("--quantize", "8"))
+    running = Server("haru_server", "haru", haru_directory())
+    yield running
+    running.stop()
+
+
+@pytest.fixture(scope="module")
+def haru_server_16khz() -> Iterator[Server]:
+    running = Server(
+        "haru_server", "haru", haru_directory(), ("--input-sample-rate", "16000")
+    )
     yield running
     running.stop()
 
@@ -125,7 +136,6 @@ VALID_SAMPLING = {
     "top_p": 1.0,
     "guidance_scale": 1.5,
     "seed": 42,
-    "speak_first": False,
 }
 
 
@@ -203,3 +213,90 @@ def test_haru_same_seed_replays_the_same_turn(haru_server: Server) -> None:
     second = turn()
     assert first[1], "the turn produced no audio to compare"
     assert first == second
+
+
+def assert_rejects(socket, event: str, code: str) -> None:
+    socket.send(event)
+    reply = json.loads(socket.recv())
+    assert reply["type"] == "error"
+    assert reply["error"]["type"] == "invalid_request_error"
+    assert reply["error"]["code"] == code
+
+
+def test_haru_rejects_audio_before_the_session_update(haru_server: Server) -> None:
+    with connect(f"ws://127.0.0.1:{haru_server.port}/v1/realtime") as socket:
+        assert json.loads(socket.recv())["type"] == "session.created"
+        assert_rejects(
+            socket, append_event(b"\x00\x00" * FRAME_SAMPLES), "invalid_state"
+        )
+
+
+def test_haru_rejects_a_second_session_update(haru_server: Server) -> None:
+    with connect(f"ws://127.0.0.1:{haru_server.port}/v1/realtime") as socket:
+        assert update_session(socket, {})["type"] == "session.updated"
+        assert_rejects(
+            socket,
+            json.dumps({"type": "session.update", "session": {}}),
+            "invalid_state",
+        )
+
+
+def test_haru_rejects_audio_after_the_input_end(haru_server: Server) -> None:
+    with connect(f"ws://127.0.0.1:{haru_server.port}/v1/realtime") as socket:
+        assert update_session(socket, {})["type"] == "session.updated"
+        socket.send(json.dumps({"type": "sglang.input_audio.end"}))
+        events_until(socket, {"sglang.input_audio.drained"})
+        assert_rejects(
+            socket, append_event(b"\x00\x00" * FRAME_SAMPLES), "invalid_state"
+        )
+
+
+@pytest.mark.parametrize(
+    "reference_audio",
+    [
+        {"media_type": "audio/wav"},
+        {"media_type": "audio/wav", "data": "not base64"},
+        {"media_type": "audio/mpeg", "data": "UklGRg=="},
+        {"media_type": "audio/wav", "data": "UklGRg=="},
+    ],
+)
+def test_haru_rejects_a_bad_reference_and_keeps_the_session(
+    haru_server: Server, reference_audio: dict[str, str]
+) -> None:
+    with connect(f"ws://127.0.0.1:{haru_server.port}/v1/realtime") as socket:
+        reply = update_session(socket, {"sglang": {"reference_audio": reference_audio}})
+        assert reply["type"] == "error"
+        assert reply["error"]["code"] == "invalid_reference_audio"
+        socket.send(json.dumps({"type": "session.update", "session": {}}))
+        assert json.loads(socket.recv())["type"] == "session.updated"
+
+
+@pytest.mark.parametrize(
+    "input_format", ["pcm16", {"type": "audio/pcm", "rate": 16000}]
+)
+def test_haru_rejects_an_input_format_it_does_not_take(
+    haru_server: Server, input_format: str | dict[str, str | int]
+) -> None:
+    with connect(f"ws://127.0.0.1:{haru_server.port}/v1/realtime") as socket:
+        reply = update_session(socket, {"audio": {"input": {"format": input_format}}})
+        assert reply["type"] == "error"
+        assert reply["error"]["code"] == "invalid_input_audio_format"
+
+
+@pytest.mark.parametrize("sample_count", [2 * UNIT_SAMPLES_16KHZ, 16000, 6416])
+def test_haru_sends_one_receipt_per_unit_of_16khz_input(
+    haru_server_16khz: Server, sample_count: int
+) -> None:
+    """The resampler finishes the last frame only once the input ends."""
+    with connect(f"ws://127.0.0.1:{haru_server_16khz.port}/v1/realtime") as socket:
+        assert update_session(socket, {})["type"] == "session.updated"
+        socket.send(append_event(b"\x00\x00" * sample_count))
+        socket.send(json.dumps({"type": "sglang.input_audio.end"}))
+        events = events_until(socket, {"sglang.input_audio.drained"}, limit=512)
+        durations_ms = [
+            event["sglang"]["media_time"]["duration_ms"]
+            for event in events
+            if event["type"] == "sglang.unit.done"
+        ]
+        assert sum(durations_ms) == sample_count / 16
+        assert len(durations_ms) == -(-sample_count // UNIT_SAMPLES_16KHZ)
