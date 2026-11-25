@@ -34,6 +34,12 @@ type Params struct {
 	PreRollMS   int     // streaming gate: audio sent from before the onset: 300
 	MaxHoldMS   int     // streaming gate: opens anyway after this much leading audio: 5000
 	InitFloorDB float64 // the noise floor before any frame: -50
+	// SpeechRiseMS is the noise floor's time constant going up during
+	// speech; 0 (the default) keeps it still then, so a noise that grows
+	// suddenly is kept as speech, the safe way to be wrong for a
+	// dictation. A meeting, hours long in a room, sets it: a steady noise
+	// becomes its floor in seconds instead of reading as speech for good.
+	SpeechRiseMS int
 }
 
 // Defaults are the tuned parameters.
@@ -178,6 +184,8 @@ type Detector struct {
 	onsetN    int // frames above the onset threshold that start speech
 	hangN     int // frames below the offset threshold that end it
 	riseAlpha float64
+	// speechRise is riseAlpha during speech (0: the floor stays).
+	speechRise float64
 
 	floor    float64
 	peak     float64
@@ -203,16 +211,24 @@ func NewDetector(rate int, p Params) *Detector {
 	frame := max(rate*p.FrameMS/1000, 1)
 	frames := func(ms int) int { return max((ms+p.FrameMS/2)/p.FrameMS, 1) }
 	return &Detector{
-		p:         p,
-		rate:      rate,
-		frame:     frame,
-		onsetN:    frames(p.OnsetMS),
-		hangN:     frames(p.HangoverMS),
-		riseAlpha: 1 - math.Exp(-float64(p.FrameMS)/riseTauMS),
-		floor:     p.InitFloorDB,
-		peak:      minDB,
-		first:     -1,
+		p:          p,
+		rate:       rate,
+		frame:      frame,
+		onsetN:     frames(p.OnsetMS),
+		hangN:      frames(p.HangoverMS),
+		riseAlpha:  1 - math.Exp(-float64(p.FrameMS)/riseTauMS),
+		speechRise: speechRise(p),
+		floor:      p.InitFloorDB,
+		peak:       minDB,
+		first:      -1,
 	}
+}
+
+func speechRise(p Params) float64 {
+	if p.SpeechRiseMS <= 0 {
+		return 0
+	}
+	return 1 - math.Exp(-float64(p.FrameMS)/float64(p.SpeechRiseMS))
 }
 
 // Write feeds PCM; whole frames are analysed and an incomplete one
@@ -248,8 +264,13 @@ func (d *Detector) step(e float64) {
 			d.segs = append(d.segs, Segment{d.segStart, d.lastEnd})
 			d.speaking, d.run = false, 0
 		}
-		if e < d.floor && e > digitalSilenceDB {
+		switch {
+		case e <= digitalSilenceDB:
+			d.silenceFloor()
+		case e < d.floor:
 			d.floor += (e - d.floor) * fallRate
+		default:
+			d.floor += (e - d.floor) * d.speechRise
 		}
 		return
 	}
@@ -270,10 +291,22 @@ func (d *Detector) step(e float64) {
 	d.run = 0
 	switch {
 	case e <= digitalSilenceDB:
+		d.silenceFloor()
 	case e < d.floor:
 		d.floor += (e - d.floor) * fallRate
 	default:
 		d.floor += (e - d.floor) * d.riseAlpha
+	}
+}
+
+// silenceFloor takes a frame of digital silence. It leaves the floor
+// alone (a microphone's first zeros must not pull it to -120 dB), except
+// that a floor risen during speech (SpeechRiseMS) falls back towards
+// InitFloorDB: else, with silence between voices (a system track), each
+// voice would raise it until the next went unheard.
+func (d *Detector) silenceFloor() {
+	if d.speechRise > 0 && d.floor > d.p.InitFloorDB {
+		d.floor += (d.p.InitFloorDB - d.floor) * fallRate
 	}
 }
 
