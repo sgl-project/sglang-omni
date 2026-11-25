@@ -147,6 +147,56 @@ func TestHeadStart(t *testing.T) {
 	}
 }
 
+func TestHeadStartLateCandidateAfterCapture(t *testing.T) {
+	const transcript = "we ship the new build on friday"
+	model := newControlledLiveLLM(false)
+	t.Cleanup(model.close)
+	resolveGate, finishGate := make(chan struct{}), make(chan struct{})
+	streamer := &fakeStreamer{
+		final: transcript, silent: true, candidates: []string{transcript},
+		openStarted: make(chan struct{}, 1),
+		finishGate:  finishGate, finishStarted: make(chan struct{}, 1),
+	}
+	h := newHeadSession(t, streamer, model, nil)
+	h.resolveGate = resolveGate
+	id := h.start()
+	h.speak(id, 10)
+	h.rec.waitFor(t, "the captured recording", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.Timings.Audio > 0
+	})
+	close(resolveGate)
+	select {
+	case <-streamer.openStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ASR stream did not start opening after capture")
+	}
+	select {
+	case <-streamer.finishStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the ASR stream did not finish")
+	}
+	call := waitLiveCall(t, model, "the late ASR candidate")
+	if input := inputOf(call.request); input != transcript {
+		t.Errorf("asked about %q, want %q", input, transcript)
+	}
+	if !streamer.latePartialsRequested() {
+		t.Error("HeadStart did not opt in to late candidates")
+	}
+	for _, snapshot := range h.rec.all() {
+		if snapshot.ID == id && snapshot.Partial != "" {
+			t.Errorf("the advisory candidate became visible: %q", snapshot.Partial)
+		}
+	}
+	call.complete(t, "We ship the new build on Friday.", nil)
+	close(finishGate)
+	if end := h.rec.wait(t); end.Result != "We ship the new build on Friday." || end.Problem != nil {
+		t.Errorf("result %q, problem %+v", end.Result, end.Problem)
+	}
+	if n := model.requestCount(); n != 1 {
+		t.Errorf("%d requests, want the late request adopted by Final", n)
+	}
+}
+
 // TestHeadStartNothingEarly: nothing is asked before Stop when the user
 // turned that off, or the service limited the rate lately.
 func TestHeadStartNothingEarly(t *testing.T) {
@@ -172,6 +222,9 @@ func TestHeadStartNothingEarly(t *testing.T) {
 			h.m.Stop(h.id)
 			if end := h.rec.wait(t); end.Result != "Cleaned." || len(model.requests()) != 1 {
 				t.Errorf("result %q, %d requests", end.Result, len(model.requests()))
+			}
+			if h.streamer.latePartialsRequested() {
+				t.Error("disabled HeadStart opted in to late candidates")
 			}
 		})
 	}
@@ -252,6 +305,92 @@ func TestHeadStartFinalised(t *testing.T) {
 	if in := inputOf(waitLiveCall(t, model, "the request").request); in != "We moved the launch to Friday. then we left" {
 		t.Errorf("asked about %q", in)
 	}
+}
+
+func TestHeadStartLateCandidateBound(t *testing.T) {
+	model := newControlledLiveLLM(false)
+	t.Cleanup(model.close)
+	r := newHeadRun(t, model)
+	var calls []*controlledLiveCall
+	for _, live := range []string{"we ship a build", "we ship a build friday"} {
+		if !r.head.ask(live) {
+			t.Fatalf("not asked about %q", live)
+		}
+		calls = append(calls, waitLiveCall(t, model, live))
+	}
+	if !r.head.askCandidate("we ship a build friday tomorrow") {
+		t.Fatal("the late candidate was not asked")
+	}
+	calls = append(calls, waitLiveCall(t, model, "the late candidate"))
+	if r.head.askCandidate("we ship a build friday tomorrow morning") {
+		t.Error("a second late generation was started")
+	}
+	if n := model.requestCount(); n != 3 {
+		t.Errorf("%d requests, want two early and one late", n)
+	}
+	for i, call := range calls {
+		if call.ctx.Err() != nil {
+			t.Errorf("generation %d was evicted", i)
+		}
+	}
+	r.head.drop()
+	for _, call := range calls {
+		givenUp(t, call, "a retained request")
+	}
+}
+
+func TestHeadStartLateCandidateSkipsFullSet(t *testing.T) {
+	model := newControlledLiveLLM(false)
+	t.Cleanup(model.close)
+	r := newHeadRun(t, model)
+	var calls []*controlledLiveCall
+	for i := range headKeep {
+		live := fmt.Sprintf("we ship build %d", i)
+		if !r.head.ask(live) {
+			t.Fatalf("not asked about %q", live)
+		}
+		calls = append(calls, waitLiveCall(t, model, live))
+	}
+	if r.head.askCandidate("we ship build 2 tomorrow") {
+		t.Error("a late candidate evicted a full set of generations")
+	}
+	if n := model.requestCount(); n != headKeep {
+		t.Errorf("%d requests, want %d", n, headKeep)
+	}
+	for i, call := range calls {
+		if call.ctx.Err() != nil {
+			t.Errorf("generation %d was evicted", i)
+		}
+	}
+	r.head.drop()
+	for _, call := range calls {
+		givenUp(t, call, "a retained request")
+	}
+}
+
+func TestHeadStartLateCandidateSkipsUnusableText(t *testing.T) {
+	model := newControlledLiveLLM(false)
+	t.Cleanup(model.close)
+	r := newHeadRun(t, model)
+	if !r.head.ask("we ship") {
+		t.Fatal("the useful early request was not started")
+	}
+	call := waitLiveCall(t, model, "the useful early request")
+	if r.head.askCandidate("we ship") {
+		t.Error("a duplicate late candidate started another request")
+	}
+	r.head.hearFinal("we moved the launch")
+	if r.head.askCandidate("unrelated words") {
+		t.Error("an incompatible late candidate started a request")
+	}
+	if n := model.requestCount(); n != 1 {
+		t.Errorf("%d requests, want only the useful early request", n)
+	}
+	if call.ctx.Err() != nil {
+		t.Error("an unusable late candidate discarded the useful early request")
+	}
+	r.head.drop()
+	givenUp(t, call, "the useful early request")
 }
 
 // TestNoteRate: a service rests after it limited the rate, not after a

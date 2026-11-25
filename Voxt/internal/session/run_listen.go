@@ -151,7 +151,7 @@ func (r *run) listen() (string, bool) {
 	}
 	var (
 		word     string
-		heard    chan string
+		heard    chan heardText
 		said     string
 		endPause <-chan time.Time
 		quiet    bool // the user is silent
@@ -164,12 +164,12 @@ func (r *run) listen() (string, bool) {
 		}
 		r.startHead()
 		if word = r.endWord(); word != "" || r.head.enabled {
-			heard = make(chan string, 1)
+			heard = make(chan heardText, 1)
 			r.heard, r.silent = heard, make(chan bool, 1)
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult, EarlyPieces: r.earlyPieces()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult, EarlyPieces: r.earlyPieces(), LatePartials: r.head.enabled})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -239,7 +239,11 @@ func (r *run) listen() (string, bool) {
 				return "", false
 			}
 			early = &e // a final before the end: kept for the end
-		case text := <-heard:
+		case update := <-heard:
+			if update.candidate {
+				continue
+			}
+			text := update.text
 			if text != said {
 				said, endPause = text, nil
 				if _, ends := withoutEndWord(text, word); ends {
@@ -263,7 +267,10 @@ func (r *run) listen() (string, bool) {
 			r.stopRecording()
 		case <-stopCh:
 			select {
-			case said = <-heard:
+			case update := <-heard:
+				if !update.candidate {
+					said = update.text
+				}
 			default:
 			}
 			r.head.ask(said)
@@ -337,6 +344,7 @@ func (r *run) listen() (string, bool) {
 			return "", false
 		}
 		openDone = open()
+		r.head.ask(said)
 	}
 
 	// Recognition.
@@ -374,11 +382,45 @@ func (r *run) listen() (string, bool) {
 		case early != nil:
 			res, silent = early.res, early.silent
 		default:
-			select {
-			case e := <-finals:
-				res, err, silent = e.res, e.err, e.silent
-			case <-actx.Done():
-				err = r.ctxErr(actx)
+		recognition:
+			for {
+				select {
+				case e := <-finals:
+					res, err, silent = e.res, e.err, e.silent
+					break recognition
+				default:
+				}
+				select {
+				case <-actx.Done():
+					err = r.ctxErr(actx)
+					break recognition
+				default:
+				}
+				select {
+				case e := <-finals:
+					res, err, silent = e.res, e.err, e.silent
+					break recognition
+				case <-actx.Done():
+					err = r.ctxErr(actx)
+					break recognition
+				case update := <-heard:
+					if !update.candidate {
+						continue
+					}
+					select {
+					case e := <-finals:
+						res, err, silent = e.res, e.err, e.silent
+						break recognition
+					default:
+					}
+					select {
+					case <-actx.Done():
+						err = r.ctxErr(actx)
+						break recognition
+					default:
+					}
+					r.head.askCandidate(update.text)
+				}
 			}
 		}
 		if err != nil {
@@ -447,24 +489,6 @@ func (r *run) listen() (string, bool) {
 		return "", false
 	}
 	return raw, true
-}
-
-// salvage is the text a stream whose Final failed had (asr.Salvager:
-// its pieces or its preview), else the preview the snapshot shows.
-func (r *run) salvage(st asr.Stream) string {
-	if sv, ok := st.(asr.Salvager); ok {
-		if text := strings.TrimSpace(sv.Salvage()); text != "" {
-			return text
-		}
-	}
-	return strings.TrimSpace(r.m.snapshot(r).Partial)
-}
-
-// isCancelled reports whether a capture error is the end of a job that
-// Stop discarded (cancelled after Config.StopGrace).
-func isCancelled(err error, stopped bool) bool {
-	var pe *proto.Error
-	return stopped && errors.As(err, &pe) && pe.Code == proto.CodeCancelled
 }
 
 // warmLLM prepares the language model while the user speaks. A remote

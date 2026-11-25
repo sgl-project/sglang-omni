@@ -67,10 +67,12 @@ type live struct {
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
-	ended     bool // the last event was sent (or Close): events is closed
-	events    chan asr.Event
-	asm       assembler
-	once      sync.Once // release
+	// note (chenye): lateCandidates is on only while an opted-in Qwen3-ASR Final runs.
+	lateCandidates bool
+	ended          bool // the last event was sent (or Close): events is closed
+	events         chan asr.Event
+	asm            assembler
+	once           sync.Once // release
 	// wrapUpOnce runs the preview's wrap-up once (live_wrapup.go): a
 	// failed Final and a Salvage asked while the Final runs share it.
 	wrapUpOnce sync.Once
@@ -353,6 +355,8 @@ func (s *live) read() {
 			text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
 			if ok && !s.finished {
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+			} else if ok && text != "" && s.lateCandidates && s.ctx.Err() == nil {
+				s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
 			}
 			s.mu.Unlock()
 		case "error":
@@ -388,6 +392,7 @@ func (s *live) Finish() error {
 	}
 	s.preview = false
 	s.finalOnly = true
+	s.lateCandidates = s.req.LatePartials && s.conn != nil && s.a.spec.Kind == kindQwen3ASR && !s.req.LiveResult
 	s.mu.Unlock()
 	go s.finalPass(pcm)
 	return nil
@@ -402,6 +407,9 @@ func (s *live) Finish() error {
 func (s *live) Salvage() string {
 	s.mu.Lock()
 	finished := s.finished
+	if finished {
+		s.lateCandidates = false
+	}
 	s.mu.Unlock()
 	if finished {
 		s.wrapUpPreview()

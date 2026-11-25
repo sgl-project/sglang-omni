@@ -211,11 +211,12 @@ func (f *fakeAudio) lateEvents(id string) {
 type fakeStreamer struct {
 	final         string
 	openErr       error
-	finalErr      error           // the stream fails instead of answering
-	errAfter      int             // the stream fails after this many sends
-	hang          bool            // no final after Finish
-	openWait      time.Duration   // Open takes this long
-	openGate      chan struct{}   // Open waits for it to close (nil: no wait)
+	finalErr      error         // the stream fails instead of answering
+	errAfter      int           // the stream fails after this many sends
+	hang          bool          // no final after Finish
+	openWait      time.Duration // Open takes this long
+	openGate      chan struct{} // Open waits for it to close (nil: no wait)
+	openStarted   chan struct{}
 	finishGate    <-chan struct{} // Finish waits for it to close (nil: no wait)
 	finishStarted chan struct{}   // signalled once Finish begins
 	finishEmitted chan bool       // whether Finish emitted its Final event
@@ -225,21 +226,29 @@ type fakeStreamer struct {
 	partials []string
 	// pieces are the cumulative "final so far" texts it reports while
 	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
-	pieces  []string
-	salvage string    // the text its streams salvage (asr.Salvager), "" for none
-	onSend  func(int) // called after the i-th send (nil: not)
+	pieces     []string
+	candidates []string
+	salvage    string    // the text its streams salvage (asr.Salvager), "" for none
+	onSend     func(int) // called after the i-th send (nil: not)
 
 	mu      sync.Mutex
 	streams []*fakeStream
 	hints   []string
 	prompt  string // the last stream's prompt
 	// liveResult is the last stream's StreamRequest.LiveResult.
-	liveResult bool
+	liveResult          bool
+	latePartialsEnabled bool
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
 
 func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
+	if f.openStarted != nil {
+		select {
+		case f.openStarted <- struct{}{}:
+		default:
+		}
+	}
 	if f.openWait > 0 {
 		select {
 		case <-time.After(f.openWait):
@@ -260,9 +269,15 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
+	f.hints, f.prompt, f.liveResult, f.latePartialsEnabled = req.Hints, req.Prompt, req.LiveResult, req.LatePartials
 	f.mu.Unlock()
 	return s, nil
+}
+
+func (f *fakeStreamer) latePartialsRequested() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.latePartialsEnabled
 }
 
 type fakeStream struct {
@@ -341,6 +356,11 @@ func (s *fakeStream) Finish() error {
 		select {
 		case s.f.finishStarted <- struct{}{}:
 		default:
+		}
+	}
+	if s.f.latePartialsEnabled {
+		for _, text := range s.f.candidates {
+			s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
 		}
 	}
 	if s.f.finishGate != nil {

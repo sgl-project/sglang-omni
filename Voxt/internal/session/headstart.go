@@ -57,8 +57,9 @@ type headStart struct {
 	under   int    // its ThinkingOffUnder
 
 	// The session goroutine's.
-	text string // the text asked about last
-	asks int    // texts asked about while the user speaks
+	text      string // the text asked about last
+	asks      int    // texts asked about while the user speaks
+	lateAsked bool
 
 	mu    sync.Mutex
 	final string        // what the speech model finalised so far (asr.EventPiece)
@@ -145,6 +146,61 @@ func (h *headStart) ask(live string) bool {
 		text = dict.Replace(text, r.terms)
 	}
 	return h.send(text)
+}
+
+func (h *headStart) askCandidate(live string) bool {
+	r := h.r
+	ctx := r.currentLLMContext()
+	if !h.enabled || h.lateAsked || r.ctx.Err() != nil || ctx == nil || ctx.Err() != nil || !r.cleanupMayContinue() || r.m.resting(h.service) {
+		return false
+	}
+	h.mu.Lock()
+	room := len(h.gens) < headKeep
+	h.mu.Unlock()
+	if !room {
+		return false
+	}
+	text, ok := h.guess(live)
+	if !ok {
+		return false
+	}
+	text, _ = withoutEndWord(text, r.endWord())
+	if text == "" || text == h.text {
+		return false
+	}
+	if r.settings.Dictionary.Enabled {
+		text = dict.Replace(text, r.terms)
+	}
+	rest, ok := r.earlyCleanup().rest(text)
+	if _, whole := snippet.Whole(text, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
+		return false
+	}
+	parts, err := compose.BuildParts(r.transcribeInput(rest))
+	if err != nil {
+		return false
+	}
+	if r.ctx.Err() != nil || ctx.Err() != nil || !r.cleanupMayContinue() || r.m.resting(h.service) {
+		return false
+	}
+	var gen []*headCall
+	started := false
+	for _, p := range parts[:min(len(parts), partsTogether)] {
+		req := r.partRequest(text, p, nil, nil)
+		c := h.find(req)
+		if c == nil {
+			c = h.start(req, p.Text)
+			started = true
+		}
+		gen = append(gen, c)
+	}
+	h.text = text
+	if !started {
+		return false
+	}
+	h.lateAsked = true
+	h.push(gen)
+	r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(rest))
+	return true
 }
 
 // send sends the requests of text, its dictionary's aliases replaced, and

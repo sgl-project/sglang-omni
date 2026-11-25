@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -61,6 +62,24 @@ func (r *run) remoteRecognitionPrompt() string {
 
 func (r *run) speechLang() string {
 	return SpeechLang(r.settings, r.m.cfg.Locale())
+}
+
+// salvage is the text a stream whose Final failed had (asr.Salvager:
+// its pieces or its preview), else the preview the snapshot shows.
+func (r *run) salvage(st asr.Stream) string {
+	if sv, ok := st.(asr.Salvager); ok {
+		if text := strings.TrimSpace(sv.Salvage()); text != "" {
+			return text
+		}
+	}
+	return strings.TrimSpace(r.m.snapshot(r).Partial)
+}
+
+// isCancelled reports whether a capture error is the end of a job that
+// Stop discarded (cancelled after Config.StopGrace).
+func isCancelled(err error, stopped bool) bool {
+	var pe *proto.Error
+	return stopped && errors.As(err, &pe) && pe.Code == proto.CodeCancelled
 }
 
 // onAudio handles the recording's events (on the helper's reader
@@ -202,6 +221,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
 					r.hearLive(text)
+				case asr.EventCandidate:
+					r.hearCandidate(r.inScript(ev.Text, ""))
 				case asr.EventPiece:
 					r.hearPiece(r.inScript(ev.Text, ""))
 				case asr.EventFinal:
