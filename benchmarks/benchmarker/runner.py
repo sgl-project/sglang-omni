@@ -173,6 +173,7 @@ class BenchmarkRunner:
             slot_results: list[RequestResult | None] = [None] * len(samples)
             sample_iter = iter(enumerate(samples))
             worker_count = min(self.config.max_concurrency, len(samples))
+
             async def run_slot_worker() -> None:
                 for index, sample in sample_iter:
                     result = await send_fn(session, sample)
@@ -183,6 +184,7 @@ class BenchmarkRunner:
                     else:
                         pass
                     pbar.update(1)
+
             try:
                 await asyncio.gather(*(run_slot_worker() for _ in range(worker_count)))
             finally:
