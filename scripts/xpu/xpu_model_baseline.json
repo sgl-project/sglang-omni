@@ -12,6 +12,7 @@
           "atmost": {
             "word_error_rate": 0.0
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "how many cars are there in the picture"
@@ -160,6 +161,7 @@
           "atmost": {
             "word_error_rate": 0.0
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "how many cars are there in the picture"
@@ -285,6 +287,7 @@
           "atmost": {
             "word_error_rate": 0.25
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "145s01 how many cars are there in the picture441"
@@ -308,6 +311,7 @@
           "atmost": {
             "word_error_rate": 0.0
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "how many cars are there in the picture"
@@ -330,6 +334,7 @@
           "atmost": {
             "word_error_rate": 0.0
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "how many cars are there in the picture"
@@ -390,6 +395,7 @@
           "atmost": {
             "round_trip_wer": 0.0
           },
+          "cards": "0",
           "close": {
             "peak": 0.671844482421875,
             "rms": 0.07395322005512037
@@ -398,6 +404,7 @@
             "frames": 101760.0,
             "sample_rate": 24000.0
           },
+          "judge_cards": "1",
           "launches": 3,
           "speed": {
             "audio_seconds_per_wall_second": 3.475202281028334,
@@ -418,6 +425,7 @@
           "atmost": {
             "round_trip_wer": 0.0
           },
+          "cards": "0",
           "close": {
             "peak": 0.644500732421875,
             "rms": 0.09488002132009395
@@ -426,6 +434,7 @@
             "frames": 90240.0,
             "sample_rate": 24000.0
           },
+          "judge_cards": "1",
           "launches": 3,
           "speed": {
             "audio_seconds_per_wall_second": 3.4974612816798656,
@@ -446,6 +455,7 @@
           "atmost": {
             "round_trip_wer": 0.0
           },
+          "cards": "0",
           "close": {
             "peak": 0.703094482421875,
             "rms": 0.10604219254343715
@@ -454,6 +464,7 @@
             "frames": 63360.0,
             "sample_rate": 24000.0
           },
+          "judge_cards": "1",
           "launches": 3,
           "speed": {
             "audio_seconds_per_wall_second": 3.453610851818428,
@@ -474,6 +485,7 @@
           "atmost": {
             "word_error_rate": 0.0
           },
+          "cards": "0",
           "close": {},
           "exact": {
             "transcript": "how many cars are there in the picture"

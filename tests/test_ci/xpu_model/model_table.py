@@ -86,6 +86,8 @@ class XpuModel:
     device_args: tuple[tuple[str, tuple[str, ...]], ...] = ()
     # Why the device lane cannot serve this one; empty when it can.
     serving: str = ""
+    # The checkpoint revision the recipe was validated on; empty follows main.
+    revision: str = ""
 
     def serve_args_on(self, family: str) -> tuple[str, ...]:
         """The full recipe for a card of ``family``."""
@@ -96,6 +98,11 @@ class XpuModel:
             else:
                 continue
         return self.serve_args + extra
+
+    @property
+    def checkpoint_spec(self) -> str:
+        """The checkpoint's identity: the repo id, with the pinned revision when there is one."""
+        return f"{self.repo_id}@{self.revision}" if self.revision else self.repo_id
 
     @property
     def tp_size(self) -> int:
@@ -403,6 +410,7 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             "--latent_engine.engine.cuda_graph_max_bs",
             "4",
         ),
+        revision="c28105adc8228143392b4e346994ff613ee48a06",
     ),
     XpuModel(
         key="auk",

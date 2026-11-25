@@ -80,7 +80,7 @@ def mirror_roots() -> list[Path]:
     return [Path(root) for root in roots if root]
 
 
-def hub_cache_path(repo_id: str) -> str | None:
+def hub_cache_path(repo_id: str, revision: str = "") -> str | None:
     """A cached snapshot of ``repo_id``, or None.
 
     A complete snapshot first, then a usable one. ``local_files_only`` wants
@@ -95,7 +95,9 @@ def hub_cache_path(repo_id: str) -> str | None:
     except ImportError:  # pragma: no cover - huggingface_hub is a core dep
         return None
     try:
-        listed = snapshot_download(repo_id=repo_id, local_files_only=True)
+        listed = snapshot_download(
+            repo_id=repo_id, revision=revision or None, local_files_only=True
+        )
     except Exception as exc:
         logger.debug(f"{repo_id} has no complete snapshot in the Hub cache: {exc}")
     else:
@@ -113,16 +115,22 @@ def hub_cache_path(repo_id: str) -> str | None:
     snapshots = repo_dir / "snapshots"
     if not snapshots.is_dir():
         return None
+    elif revision:
+        # A pinned row takes that revision or nothing: any other snapshot is a
+        # checkpoint nobody validated the recipe on.
+        ref = repo_dir / "refs" / revision
+        wanted = ref.read_text().strip() if ref.is_file() else revision
+        candidates = [path for path in snapshots.iterdir() if path.name == wanted]
     else:
         main = repo_dir / "refs" / "main"
         pinned = main.read_text().strip() if main.is_file() else ""
-    # The revision main points at first, then the newest that holds a
-    # checkpoint: snapshot names are commit hashes, so their order means nothing.
-    candidates = sorted(
-        snapshots.iterdir(),
-        key=lambda path: (path.name == pinned, path.stat().st_mtime),
-        reverse=True,
-    )
+        # The revision main points at first, then the newest that holds a
+        # checkpoint: snapshot names are commit hashes, so their order means nothing.
+        candidates = sorted(
+            snapshots.iterdir(),
+            key=lambda path: (path.name == pinned, path.stat().st_mtime),
+            reverse=True,
+        )
     for path in candidates:
         if holds_a_checkpoint(path):
             logger.info(f"{repo_id}: serving the cached snapshot at {path}")
@@ -132,10 +140,10 @@ def hub_cache_path(repo_id: str) -> str | None:
     return None
 
 
-def download(repo_id: str) -> str:
+def download(repo_id: str, revision: str = "") -> str:
     from huggingface_hub import snapshot_download
 
-    return snapshot_download(repo_id=repo_id)
+    return snapshot_download(repo_id=repo_id, revision=revision or None)
 
 
 WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf")
@@ -195,6 +203,12 @@ def resolve_checkpoint(model: XpuModel) -> str:
         candidate = root / model.mirror_dirname
         if not candidate.exists():
             continue
+        elif model.revision:
+            logger.warning(
+                f"{candidate} is a plain copy with no revision, and {model.key} is pinned "
+                f"to {model.revision}; resolving it from the Hub cache instead"
+            )
+            continue
         elif holds_a_checkpoint(candidate):
             return str(candidate)
         else:
@@ -203,16 +217,16 @@ def resolve_checkpoint(model: XpuModel) -> str:
                 "or a missing shard); looking further"
             )
 
-    cached = hub_cache_path(model.repo_id)
+    cached = hub_cache_path(model.repo_id, model.revision)
     if cached is not None:
         return cached
 
     if os.environ.get(ALLOW_DOWNLOAD_ENV) == "1":
-        return download(model.repo_id)
+        return download(model.repo_id, model.revision)
 
     roots = ", ".join(str(root) for root in mirror_roots())
     pytest.skip(
-        f"{model.repo_id} is in neither the Hub cache nor a mirror ({roots}). "
+        f"{model.checkpoint_spec} is in neither the Hub cache nor a mirror ({roots}). "
         f"Warm the cache, point {model.checkpoint_env} at a local copy, or set "
         f"{ALLOW_DOWNLOAD_ENV}=1 to let this test download it."
     )

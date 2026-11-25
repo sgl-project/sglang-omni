@@ -226,8 +226,8 @@ cards in the mask (`ZE_AFFINITY_MASK=0,1` for two).
 | `qwen3-tts-cv` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 1 | `--config examples/configs/qwen3_tts_1_7b_customvoice.yaml` | - |
 | `dots-tts` | `dots-studio/dots.tts-soar` | 1 | `--config examples/configs/dots_tts_soar.yaml` | - |
 | `minimax-music3` | `MiniMaxAI/MiniMax-Music3` | 2 | `--mem-fraction-static 0.7 --minimax_music3_ar.engine.attention_backend triton` | - |
-| `ming-tts` | `inclusionAI/Ming-omni-tts-16.8B-A3B` | 2 | `--config examples/configs/ming_omni_tts.yaml --tts_engine.tp_size 2 --tts_engine.gpu [0, 1] --reference_encode.gpu 0 --audio_decode.gpu 0 --tts_engine.gpu_memory_fraction 0.78 --tts_engine.engine.mem_fraction_static 0.78` | - |
-| `qwen3-omni-text` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | 8 | `--thinker.engine.mem_fraction_static 0.435 --skip-server-warmup --text-only --thinker.process thinker --thinker.tp_size 8 --thinker.gpu [0, 1, 2, 3, 4, 5, 6, 7]` | - |
+| `ming-tts` | `inclusionAI/Ming-omni-tts-16.8B-A3B` | 2 | `--config examples/configs/ming_omni_tts.yaml --tts_engine.tp_size 2 --tts_engine.gpu '[0, 1]' --reference_encode.gpu 0 --audio_decode.gpu 0 --tts_engine.gpu_memory_fraction 0.78 --tts_engine.engine.mem_fraction_static 0.78` | - |
+| `qwen3-omni-text` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | 8 | `--thinker.engine.mem_fraction_static 0.435 --skip-server-warmup --text-only --thinker.process thinker --thinker.tp_size 8 --thinker.gpu '[0, 1, 2, 3, 4, 5, 6, 7]'` | - |
 | `moss-transcribe-diarize` | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | 1 | `--asr.engine.max_running_requests 16 --asr.engine.cuda_graph_max_bs 16 --asr.engine.enable_torch_compile false --mem-fraction-static 0.70` | - |
 | `nemotron35-asr` | `nvidia/nemotron-3.5-asr-streaming-0.6b` | 1 | none | - |
 | `arkasr` | `AutoArk-AI/ARK-ASR-3B` | 1 | none | - |
@@ -268,7 +268,8 @@ Three of those flags are workarounds with a known end:
   across every condition tested, including passes contaminated by another process on the card.
 - **A tight spread is not evidence of a good measurement.** A pass contaminated by a neighbour
   on the same card can read slow with a tight spread and no warning. Both tools now refuse a
-  card already in use, and the baseline flags a neighbour that arrives mid-run.
+  card already in use, and the baseline discards a run whose cards, its judge's included, are
+  still held by another process once its own servers have exited.
 - **Host CPU load is a variance source no gate sees.** A check against an unchanged baseline
   can come in past its floor with the cards idle and the host CPU saturated. Read `uptime`
   before believing a speed delta on a shared box.

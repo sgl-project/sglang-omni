@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shlex
 from datetime import date
 from pathlib import Path
 
@@ -135,14 +136,14 @@ def recipe_table() -> str:
         else:
             args = [str(arg) for arg in (row.get("serve_args") or ())]
         environment = row.get("env") or {}
-        flags = " ".join(args)
+        flags = shlex.join(args)
         if environment:
-            flags = " ".join(f"{k}={v}" for k, v in environment.items()) + (
-                f" (env) {flags}" if flags else " (env)"
-            )
+            flags = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in environment.items()
+            ) + (f" (env) {flags}" if flags else " (env)")
         else:
             pass
-        added = " ".join(extra_on_d270.get(row["key"], []))
+        added = shlex.join(extra_on_d270.get(row["key"], []))
         out.append(
             f"| `{row['key']}` | `{row['model_path']}` | {row.get('cards', 1)} | "
             f"{('`' + flags + '`') if flags else 'none'} | "
@@ -395,7 +396,8 @@ Three of those flags are workarounds with a known end:
   across every condition tested, including passes contaminated by another process on the card.
 - **A tight spread is not evidence of a good measurement.** A pass contaminated by a neighbour
   on the same card can read slow with a tight spread and no warning. Both tools now refuse a
-  card already in use, and the baseline flags a neighbour that arrives mid-run.
+  card already in use, and the baseline discards a run whose cards, its judge's included, are
+  still held by another process once its own servers have exited.
 - **Host CPU load is a variance source no gate sees.** A check against an unchanged baseline
   can come in past its floor with the cards idle and the host CPU saturated. Read `uptime`
   before believing a speed delta on a shared box.

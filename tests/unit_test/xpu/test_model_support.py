@@ -247,7 +247,13 @@ def baseline_rows() -> dict[str, dict]:
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "XpuModel":
             row = {}
             for keyword in node.keywords:
-                if keyword.arg in ("key", "serve_args", "env", "unservable"):
+                if keyword.arg in (
+                    "key",
+                    "model_path",
+                    "serve_args",
+                    "env",
+                    "unservable",
+                ):
                     row[keyword.arg] = ast.literal_eval(keyword.value)
                 else:
                     continue
@@ -286,6 +292,10 @@ def test_this_lane_and_the_baseline_serve_a_model_the_same_way(
     """The base recipe and environment, which every host serves with. A model
     the baseline cannot serve anywhere must be skipped here too; the reverse does
     not hold, since this lane also skips a checkpoint too large for a runner."""
+    assert row["model_path"] == model.checkpoint_spec, (
+        f"{model.key}: the baseline measures {row['model_path']}, this lane serves "
+        f"{model.checkpoint_spec}"
+    )
     assert tuple(row.get("serve_args", ())) == model.serve_args
     assert dict(row.get("env", {})) == dict(model.env)
     if row.get("unservable"):

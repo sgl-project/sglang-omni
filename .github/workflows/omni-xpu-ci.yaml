@@ -181,7 +181,8 @@ jobs:
       needs.preflight.result == 'success' &&
       needs.preflight.outputs.run_intel_xpu == 'true'
     runs-on: [self-hosted, intel-omni-bmg]
-    timeout-minutes: 120
+    # A dispatch builds the image (up to 90 min) and then serves every model (up to 240).
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 120 || 420 }}
     env:
       IMAGE_TAG: sglang-omni-xpu-ci:${{ github.event.pull_request.number || github.run_id }}-${{ needs.preflight.outputs.exact_sha }}
       CONTAINER_NAME: ci_omni_xpu_${{ github.event.pull_request.number || github.run_id }}_${{ github.run_attempt }}
@@ -309,8 +310,18 @@ jobs:
           # topology wants more cards than the runner has, or the table says
           # this image cannot serve it. So an incomplete runner reports what it
           # could not do instead of going red.
-          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
-            pytest tests/test_ci/xpu_model -m xpu_serving -v -rs
+          # torch 2.14.0+xpu pins oneCCL 2022.1.1, which records nothing for an all-reduce
+          # captured in an XPU graph, so every TP>1 decode graph answers wrong; 2022.1.2
+          # records it. The venv's python carries no RPATH, so oneCCL's plugin loader is
+          # pointed at the venv explicitly, ahead of any oneAPI copy on the library path.
+          docker exec "${CONTAINER_NAME}" \
+            pip install --no-cache-dir --no-deps oneccl==2022.1.2 oneccl-devel==2022.1.2
+          docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" bash -c '
+            set -euo pipefail
+            export CCL_ROOT="${VIRTUAL_ENV}"
+            export LD_LIBRARY_PATH="${VIRTUAL_ENV}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+            python -c "import importlib.metadata as m; print(\"oneccl\", m.version(\"oneccl\"))"
+            pytest tests/test_ci/xpu_model -m xpu_serving -v -rs'
 
       - name: Cleanup container and image
         if: always()

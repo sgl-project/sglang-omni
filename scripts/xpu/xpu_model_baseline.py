@@ -42,6 +42,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import socket
 import statistics
@@ -54,6 +55,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
+from huggingface_hub.constants import HF_HUB_CACHE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -110,6 +112,8 @@ class XpuModel:
     env: dict[str, str] = field(default_factory=dict)
     # Another model key, served alongside, that transcribes this model's audio back to text.
     judge: str = ""
+    # Further checkpoints the server loads by repo id, which prefetch and pruning must keep.
+    companions: tuple[str, ...] = ()
     startup_seconds: int = 900
 
 
@@ -334,6 +338,7 @@ MODELS: tuple[XpuModel, ...] = (
             "stage_params": {"auk_engine": {"gen_seconds": 4}},
         },
         judge="qwen3-asr",
+        companions=("Qwen/Qwen2.5-Omni-3B",),
     ),
     XpuModel(
         key="auk-flash",
@@ -346,6 +351,7 @@ MODELS: tuple[XpuModel, ...] = (
             "stage_params": {"auk_engine": {"gen_seconds": 4}},
         },
         judge="qwen3-asr",
+        companions=("Qwen/Qwen2.5-Omni-3B",),
     ),
     XpuModel(
         key="qwen3-tts-vd",
@@ -809,16 +815,25 @@ def existing_ancestor(path: str) -> str:
 
 
 def hub_cache_dir() -> str:
-    """The hub cache directory this host is using, which need not exist yet."""
-    cache = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
-    return os.path.join(existing_ancestor(cache), "hub")
+    """The hub cache huggingface_hub resolves, which need not exist yet.
+
+    The library's own answer, so HF_HUB_CACHE and HUGGINGFACE_HUB_CACHE outrank HF_HOME
+    here exactly as they do in the server. Only a capacity query walks up to an existing
+    ancestor; pruning and blob accounting use this path as it is.
+    """
+    return HF_HUB_CACHE
+
+
+def cache_volume_free_gib() -> float:
+    return shutil.disk_usage(existing_ancestor(hub_cache_dir())).free / 2**30
 
 
 def needed_checkpoints(model: XpuModel) -> list[str]:
     """The model paths one measurement has to have locally, including its judge."""
-    paths = [model.model_path]
+    paths = [model.model_path, *model.companions]
     if model.judge:
-        paths.append(MODEL_BY_KEY[model.judge].model_path)
+        judge = MODEL_BY_KEY[model.judge]
+        paths += [judge.model_path, *judge.companions]
     else:
         pass
     return paths
@@ -840,7 +855,7 @@ def prune_hub_cache(model: XpuModel) -> str:
     else:
         pass
     keep = {path.partition("@")[0] for path in needed_checkpoints(model)}
-    before = shutil.disk_usage("/").free / 2**30
+    before = cache_volume_free_gib()
     info = scan_cache_dir(cache)
     doomed = [
         revision.commit_hash
@@ -852,7 +867,7 @@ def prune_hub_cache(model: XpuModel) -> str:
         info.delete_revisions(*doomed).execute()
     else:
         pass
-    free_now = shutil.disk_usage("/").free / 2**30
+    free_now = cache_volume_free_gib()
     return (
         f"pruned {len(doomed)} revision(s), freed {free_now - before:.1f} GiB, "
         f"{free_now:.1f} GiB free"
@@ -871,7 +886,7 @@ def prefetch_checkpoints(model: XpuModel) -> str:
     for path in needed_checkpoints(model):
         repo, _, revision = path.partition("@")
         snapshot_download(repo, revision=revision or None, max_workers=8)
-    free_now = shutil.disk_usage("/").free / 2**30
+    free_now = cache_volume_free_gib()
     return f"fetched {len(needed_checkpoints(model))} checkpoint(s), {free_now:.1f} GiB free"
 
 
@@ -1020,6 +1035,12 @@ def measure_launches(
         return runs[0]
     folded = fold_samples(runs)
     folded["speed"] = pessimistic_speed(runs)
+    for field_name in ("cards", "judge_cards"):
+        layouts = sorted({run[field_name] for run in runs if run.get(field_name)})
+        if layouts:
+            folded[field_name] = " | ".join(layouts)
+        else:
+            pass
     # The worst within-run dispersion any launch showed, not the first launch's: this is
     # what the tolerance is derived from once the recorded value is the slowest launch,
     # so it should be the least favourable one observed rather than whichever ran first.
@@ -1054,6 +1075,23 @@ def pessimistic_speed(runs: list[dict]) -> dict[str, float]:
     return worst
 
 
+def settled_after_run(
+    cards: str, idle_mib: float, wait_s: int = 60
+) -> dict[str, float]:
+    """Card memory once this run's own servers have let go of it.
+
+    A stage worker frees its device memory a moment after its server exits, so a reading
+    taken straight after teardown can still hold this run's allocation. Whatever is left
+    after the wait belongs to another process, which arrived while the run was measuring.
+    """
+    deadline = time.time() + wait_s
+    used = cards_in_use(cards)
+    while any(mib > idle_mib for mib in used.values()) and time.time() < deadline:
+        time.sleep(5)
+        used = cards_in_use(cards)
+    return used
+
+
 def measure(
     model: XpuModel,
     pool: list[int],
@@ -1067,7 +1105,10 @@ def measure(
     servers = []
     taken: set[int] = set()
     cards = allocate_cards(pool, model.cards, taken)
-    busy_before = cards_in_use(cards)
+    judge = MODEL_BY_KEY[model.judge] if model.judge else None
+    judge_cards = allocate_cards(pool, judge.cards, taken) if judge else ""
+    layout = ",".join(part for part in (cards, judge_cards) if part)
+    busy_before = cards_in_use(layout)
     deadline = time.time() + idle_wait_s
     while True:
         noisy = {card: mib for card, mib in busy_before.items() if mib > idle_mib}
@@ -1085,17 +1126,16 @@ def measure(
             pass
         print(f"  waiting for {noisy} MiB to clear", flush=True)
         time.sleep(30)
-        busy_before = cards_in_use(cards)
+        busy_before = cards_in_use(layout)
     try:
         judge_url = ""
-        if model.judge:
-            judge = MODEL_BY_KEY[model.judge]
+        if judge:
             judge_proc, judge_url = launch(
-                judge,
-                allocate_cards(pool, judge.cards, taken),
-                extras.get(judge.key, ()),
+                judge, judge_cards, extras.get(judge.key, ())
             )
             servers.append(judge_proc)
+        else:
+            pass
         proc, base_url = launch(model, cards, extras.get(model.key, ()))
         servers.append(proc)
 
@@ -1118,9 +1158,23 @@ def measure(
         for proc in reversed(servers):
             stop_server(proc)
 
+    busy_after = settled_after_run(layout, idle_mib)
+    noisy_after = {card: mib for card, mib in busy_after.items() if mib > idle_mib}
+    if noisy_after:
+        raise CardsBusy(
+            f"card(s) still in use after this run's servers exited: {noisy_after} MiB, "
+            f"over the {idle_mib:g} MiB bar; another process arrived during the run, so "
+            "its numbers are not kept"
+        )
+    else:
+        pass
     folded = fold_samples(samples[warmups:])
     folded["cards"] = cards
-    folded["cards_used_mib"] = {"before": busy_before, "after": cards_in_use(cards)}
+    if judge_cards:
+        folded["judge_cards"] = judge_cards
+    else:
+        pass
+    folded["cards_used_mib"] = {"before": busy_before, "after": busy_after}
     return folded
 
 
@@ -1215,21 +1269,29 @@ def warming_drift(values: list[float]) -> tuple[float, float] | None:
 
 def compare(
     key: str, baseline: dict, observed: dict, tolerances: dict
-) -> tuple[list[str], list[str]]:
-    """Return regressions and improvements. A regression fails the run; an improvement does not.
+) -> tuple[list[str], list[str], list[str]]:
+    """Return regressions, improvements and notes. Only a regression fails the run.
 
     An improvement is reported rather than swallowed, because a baseline nobody re-records drifts into a floor so low it stops catching anything.
     """
     failures: list[str] = []
     gains: list[str] = []
+    notes: list[str] = []
 
     recorded_cards = baseline.get("cards")
     observed_cards = observed.get("cards")
-    if recorded_cards and observed_cards and recorded_cards != observed_cards:
-        gains.append(
+    if not recorded_cards:
+        notes.append(
+            f"{key}: recorded without its card assignment, so a change of card cannot be "
+            "detected; re-record this entry"
+        )
+    elif observed_cards and recorded_cards != observed_cards:
+        notes.append(
             f"{key}: recorded on card(s) {recorded_cards}, measured on {observed_cards}; "
             "speed is not comparable across cards on a host with uneven PCIe links"
         )
+    else:
+        pass
 
     for name, want in baseline.get("exact", {}).items():
         got = observed.get("exact", {}).get(name)
@@ -1278,7 +1340,7 @@ def compare(
                 f"{key}: {name} improved {-regression:.2%} "
                 f"(baseline {want:.6g}, observed {got:.6g})"
             )
-    return failures, gains
+    return failures, gains, notes
 
 
 def speed_tolerance_for(baseline: dict, name: str, tolerances: dict) -> float:
@@ -1470,7 +1532,7 @@ def main() -> int:
         key, _, argument_text = item.partition("=")
         if key not in MODEL_BY_KEY or not argument_text:
             parser.error(f"--serve-extra wants <model key>=<args>, got {item!r}")
-        extras[key] = tuple(argument_text.split())
+        extras[key] = tuple(shlex.split(argument_text))
 
     pool = [int(c) for c in args.card_pool.split(",") if c.strip()]
     fingerprint = environment_fingerprint(args.host_label)
@@ -1491,6 +1553,20 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    # A check measures the recipe the entry was recorded with: an environment recorded
+    # with a workaround is checked with it, and a flag given here still wins.
+    if not args.record:
+        restored = {
+            key: tuple(value)
+            for key, value in entry.get("serve_extra", {}).items()
+            if key not in extras
+        }
+        for key, value in sorted(restored.items()):
+            print(f"serve flags for {key}, from this entry: {shlex.join(value)}")
+        extras = {**restored, **extras}
+    else:
+        pass
 
     # An explicit flag wins, then whatever this environment recorded, then the built-in.
     # The recorded value used to be decorative: a check took the CLI default and ignored the
@@ -1552,6 +1628,7 @@ def main() -> int:
     results: dict[str, Any] = {}
     failures: list[str] = []
     gains: list[str] = []
+    notes: list[str] = []
     skipped: list[str] = []
     done = entry.get("models", {}) if args.record and not args.fresh else {}
     for index, key in enumerate(keys, start=1):
@@ -1569,8 +1646,13 @@ def main() -> int:
             continue
         # A topology the pool cannot host is absent, not broken: a four-card host skips the
         # TP=8 entry rather than reporting it as a failure.
-        if model.cards > len(pool):
-            reason = f"needs {model.cards} cards, pool has {len(pool)}"
+        judge_cards = MODEL_BY_KEY[model.judge].cards if model.judge else 0
+        if model.cards + judge_cards > len(pool):
+            reason = (
+                f"needs {model.cards} card(s)"
+                + (f" and {judge_cards} for its judge" if judge_cards else "")
+                + f", pool has {len(pool)}"
+            )
             print(f"  SKIPPED: {reason}", flush=True)
             skipped.append(f"{key}: {reason}")
             continue
@@ -1624,13 +1706,16 @@ def main() -> int:
                     f"{key}: absent from this environment's baseline; re-record to add it"
                 )
             else:
-                model_failures, model_gains = compare(
+                model_failures, model_gains, model_notes = compare(
                     key, entry["models"][key], observed, tolerances
                 )
                 failures += model_failures
                 gains += model_gains
+                notes += model_notes
                 for message in model_gains:
                     print(f"  IMPROVED {message.split(': ', 1)[1]}", flush=True)
+                for message in model_notes:
+                    print(f"  NOTE {message.split(': ', 1)[1]}", flush=True)
         print(
             f"  running tally: {len(results)} ok, {len(failures)} failed, {len(skipped)} skipped",
             flush=True,
@@ -1668,6 +1753,8 @@ def main() -> int:
             "  these beat the baseline: re-record so the floor rises with the code, "
             "or the gate stops catching anything."
         )
+    for message in notes:
+        print(f"NOTE        {message}")
     for message in skipped:
         print(f"SKIPPED     {message}")
     print(
