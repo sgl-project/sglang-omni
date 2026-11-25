@@ -109,6 +109,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **The opening plays at every start**: quit Voxt and open it again, and the opening plays. Reopening the window while Voxt runs, a start at login into the menu bar, and Reduce Motion skip it.
 - **Less repeated text** (#4172): Rewrite input bubbles omit the "You" heading, language-model groups omit repeated place tags, and notifications omit their time tooltips.
 - **Success and warning marks use the secondary grey**: their icons still distinguish those states, and recording and destructive actions keep red-orange.
+- **Meetings finish recognising sooner after they end**: the final pass over a stopped meeting sends up to a minute of continuous speech per recognition request, up from 22 seconds, so a pause-poor meeting needs fewer requests and pays each request's fixed wait less often. On a MacBook Air (M1, 8 GB), the recognition stage of a 10-minute public meeting recording took 62.5 s instead of 71.1 s.
 
 ### Fixed
 
@@ -165,6 +166,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **减少重复文字**（#4172）：改写输入气泡不再重复显示“你”，语言模型分组不再重复显示位置标签，通知不再显示时间悬浮提示。
 - **成功和警告标记改用次级灰色**：仍由图标区分状态，录音和破坏性操作继续使用红橙色。
 - **“重新检查”不再让权限行闪烁**（#4365）：在设置 → 权限和设置向导的权限一步，点“重新检查”或切回 Voxt 后，已授权的麦克风或语音识别会短暂显示“还没请求”。现在各行保持原样，直到辅助进程给出结果。
+- **会议结束后识别更快**：结束会议后的最终识别把每次请求的连续语音上限从 22 秒放宽到 1 分钟，停顿少的会议需要的请求更少，每个请求的固定等待也少付几次。MacBook Air（M1，8 GB）上，一段 10 分钟公开会议录音的识别阶段从 71.1 秒缩到 62.5 秒。
 
 #### 修复
 
