@@ -737,7 +737,7 @@ def test_mixed_sampling_graph_matches_eager_at_text_audio_boundaries(
         )
 
 
-def _audio_routing_state(
+def audio_routing_state(
     *, is_audio: bool, audio_end_step: int | None
 ) -> SimpleNamespace:
     return SimpleNamespace(is_audio=is_audio, audio_end_step=audio_end_step)
@@ -760,24 +760,24 @@ def test_text_draw_rows_skips_only_the_forced_countdown() -> None:
         (True, end, end + 1, True),
     ]
     for is_audio, audio_end_step, position, expected in cases:
-        data = _audio_routing_state(
-            is_audio=is_audio, audio_end_step=audio_end_step
+        data = audio_routing_state(is_audio=is_audio, audio_end_step=audio_end_step)
+        assert runner.needs_full_text_vocabulary(data, position) is expected, (
+            is_audio,
+            audio_end_step,
+            position,
         )
-        assert (
-            runner.needs_full_text_vocabulary(data, position) is expected
-        ), (is_audio, audio_end_step, position)
 
     device = torch.device("cpu")
     forced_audio = [
-        _audio_routing_state(is_audio=True, audio_end_step=end),
-        _audio_routing_state(is_audio=True, audio_end_step=end),
+        audio_routing_state(is_audio=True, audio_end_step=end),
+        audio_routing_state(is_audio=True, audio_end_step=end),
     ]
     rows = runner.text_draw_rows(forced_audio, [delay_row + 2, end], device)
     assert rows is not None
     assert rows.tolist() == [0]
     mixed = [
-        _audio_routing_state(is_audio=True, audio_end_step=end),
-        _audio_routing_state(is_audio=False, audio_end_step=None),
+        audio_routing_state(is_audio=True, audio_end_step=end),
+        audio_routing_state(is_audio=False, audio_end_step=None),
     ]
     rows = runner.text_draw_rows(mixed, [delay_row + 2, 0], device)
     assert rows is not None
@@ -812,15 +812,11 @@ def test_compacted_text_draw_matches_full_draw(
     seeds = torch.arange(states.shape[0], device=device, dtype=torch.long) + 7
     steps = torch.tensor([0, 2, 30, 31, 34, 35, 2], device=device)
     generator = torch.Generator(device=device).manual_seed(7)
-    text_logits = torch.randn(
-        states.shape[0], 32, generator=generator, device=device
-    )
+    text_logits = torch.randn(states.shape[0], 32, generator=generator, device=device)
     audio_logits = torch.randn(
         states.shape[0], n_vq, 8, generator=generator, device=device
     )
-    batch = DelayGraphBatch(
-        delay_state=states, seeds=seeds, generation_steps=steps
-    )
+    batch = DelayGraphBatch(delay_state=states, seeds=seeds, generation_steps=steps)
     full = sampler(text_logits, audio_logits, batch)
     compacted = sampler(text_logits[rows], audio_logits, batch, text_rows=rows)
     assert torch.equal(compacted.rows, full.rows)
@@ -861,15 +857,11 @@ def test_mixed_sampling_graph_compacted_text_draw_matches_full(
     seeds = torch.arange(batch_size, device=device, dtype=torch.long) + 321
     steps = torch.arange(batch_size, device=device, dtype=torch.long) + 40
     generator = torch.Generator(device=device).manual_seed(11)
-    text_logits = torch.randn(
-        batch_size, 128, device=device, generator=generator
-    )
+    text_logits = torch.randn(batch_size, 128, device=device, generator=generator)
     audio_logits = torch.randn(
         batch_size, n_vq, 1025, device=device, generator=generator
     )
-    batch = DelayGraphBatch(
-        delay_state=state, seeds=seeds, generation_steps=steps
-    )
+    batch = DelayGraphBatch(delay_state=state, seeds=seeds, generation_steps=steps)
     rows = torch.arange(text_count, device=device, dtype=torch.long)
     expected = graph.replay(text_logits, audio_logits, batch)
     compacted = graph.replay(text_logits, audio_logits, batch, text_rows=rows)

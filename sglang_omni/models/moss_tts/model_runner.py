@@ -158,9 +158,7 @@ class MossTTSModelRunner(ModelRunner):
         else:
             return self.can_use_mixed_sampling_cuda_graph(datas, is_audio=False)
 
-    def refresh_audio_boundaries(
-        self, datas: list[MossTTSSGLangRequestData]
-    ) -> None:
+    def refresh_audio_boundaries(self, datas: list[MossTTSSGLangRequestData]) -> None:
         """Track the forced ``audio_end`` row of the current delay countdown.
 
         The first ``delay_slot`` row after an ``audio_start`` starts a run of
@@ -242,11 +240,9 @@ class MossTTSModelRunner(ModelRunner):
         ]
         if len(indices) == len(datas):
             return None
-        if not indices:
-            # Every row is inside its forced Delay countdown and discards the
-            # drawn token. Run the narrowest compacted graph on one such row.
-            indices = [0]
-        return torch.tensor(indices, dtype=torch.long, device=device)
+        else:
+            # If all rows discard the token, replay the narrowest graph on row 0.
+            return torch.tensor(indices or [0], dtype=torch.long, device=device)
 
     def post_decode_launch(
         self,
@@ -267,11 +263,7 @@ class MossTTSModelRunner(ModelRunner):
         delay_states_before = [self.delay_state_tensor(data, device) for data in datas]
         sampling_steps_before = [int(data.sampling_steps) for data in datas]
         positions = [self.lookahead_position(data) for data in datas]
-        text_rows = (
-            None
-            if is_audio
-            else self.text_draw_rows(datas, positions, device)
-        )
+        text_rows = None if is_audio else self.text_draw_rows(datas, positions, device)
         for data, position in zip(datas, positions):
             data.sampling_steps = position + 1
         rows = self.sample_rows_graphed(
@@ -581,9 +573,7 @@ class MossTTSModelRunner(ModelRunner):
             )
         else:
             if text_rows is not None:
-                raise RuntimeError(
-                    "MOSS-TTS Delay audio graph does not draw text rows"
-                )
+                raise RuntimeError("MOSS-TTS Delay audio graph does not draw text rows")
             else:
                 pass
             sampled = self.model.sample_delay_graphed(

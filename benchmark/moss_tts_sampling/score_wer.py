@@ -77,7 +77,11 @@ def main() -> None:
         path = wav_dir / f"{row['index']:05d}_{row['sample_id']}.wav"
         if not path.exists():
             failures.append(
-                {"index": row["index"], "sample_id": row["sample_id"], "reason": "missing wav"}
+                {
+                    "index": row["index"],
+                    "sample_id": row["sample_id"],
+                    "reason": "missing wav",
+                }
             )
             continue
         try:

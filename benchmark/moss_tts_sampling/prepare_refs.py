@@ -52,7 +52,9 @@ def main() -> None:
 
     pathlib.Path(args.manifest).write_text(json.dumps(rows))
     total_ref = sum(row["ref_dur_s"] for row in rows)
-    print(f"wrote {len(rows)} refs, {total_ref:.1f}s reference audio -> {args.manifest}")
+    print(
+        f"wrote {len(rows)} refs, {total_ref:.1f}s reference audio -> {args.manifest}"
+    )
 
 
 if __name__ == "__main__":

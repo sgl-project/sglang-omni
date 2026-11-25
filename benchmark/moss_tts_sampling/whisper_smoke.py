@@ -18,7 +18,8 @@ def main() -> None:
     parser.add_argument("--device", default="npu:0")
     args = parser.parse_args()
 
-    rows = json.load(open(args.manifest))[:2]
+    with open(args.manifest, encoding="utf-8") as manifest:
+        rows = json.load(manifest)[:2]
     proc = WhisperProcessor.from_pretrained(
         args.model_path, language="en", task="transcribe"
     )
@@ -43,8 +44,12 @@ def main() -> None:
     t0 = time.perf_counter()
     with torch.inference_mode():
         gen = model.generate(
-            feats, language="en", task="transcribe", do_sample=False,
-            num_beams=1, max_new_tokens=444,
+            feats,
+            language="en",
+            task="transcribe",
+            do_sample=False,
+            num_beams=1,
+            max_new_tokens=444,
         )
     torch.npu.synchronize()
     print("gen_s", round(time.perf_counter() - t0, 2), flush=True)

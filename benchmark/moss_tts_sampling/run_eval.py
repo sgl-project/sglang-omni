@@ -31,9 +31,7 @@ def poll_memory(device_index: int, wrapper: str, npu_smi: str, stop, samples):
     cmd.extend([npu_smi, "info", "-t", "usages", "-i", str(device_index)])
     while not stop.is_set():
         try:
-            out = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=10
-            ).stdout
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout
             capacity_mb = None
             rate = None
             for line in out.splitlines():

@@ -257,9 +257,9 @@ class MossTTSDelaySamplingCudaGraphRunner:
         self,
         bucket: int,
     ) -> CapturedSamplingGraph:
-        return self._capture_callable(lambda: self.run_static(bucket))
+        return self.capture_callable(lambda: self.run_static(bucket))
 
-    def _capture_callable(
+    def capture_callable(
         self,
         step,
     ) -> CapturedSamplingGraph:
@@ -302,7 +302,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
             next_delay_state=output.next_delay_state,
         )
 
-    def _free_bytes(self) -> int:
+    def free_memory_bytes(self) -> int:
         free_bytes, _ = self.device_module.mem_get_info(self.model.device)
         return int(free_bytes)
 
@@ -330,7 +330,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         key = self.graph_key(batch_size)
         return key is not None and key in self.graphs
 
-    def _require_full_graph(self, batch_size: int) -> tuple[int, int]:
+    def require_full_graph(self, batch_size: int) -> tuple[int, int]:
         bucket = self.canonical_bucket(batch_size)
         key = self.graph_key(batch_size)
         if key is None or key not in self.graphs:
@@ -344,7 +344,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         return int(key), bucket
 
     @staticmethod
-    def _validate_audio_rows(
+    def validate_audio_rows(
         inputs: StaticSamplingInputs,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
@@ -368,7 +368,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
             pass
 
     @staticmethod
-    def _stage_audio_rows(
+    def stage_audio_rows(
         inputs: StaticSamplingInputs,
         audio_logits: torch.Tensor,
         batch: DelayGraphBatch,
@@ -395,7 +395,7 @@ class MossTTSDelaySamplingCudaGraphRunner:
         batch: DelayGraphBatch,
     ) -> DelaySamplingOutput:
         batch_size = int(control_logits.shape[0])
-        key, bucket = self._require_full_graph(batch_size)
+        key, bucket = self.require_full_graph(batch_size)
         inputs = self.require_inputs()
         expected_control_shape = (batch_size, int(inputs.control_logits.shape[1]))
         if tuple(control_logits.shape) != expected_control_shape:
@@ -405,13 +405,13 @@ class MossTTSDelaySamplingCudaGraphRunner:
             )
         else:
             pass
-        self._validate_audio_rows(inputs, audio_logits, batch, batch_size)
+        self.validate_audio_rows(inputs, audio_logits, batch, batch_size)
         inputs.control_logits[:batch_size].copy_(control_logits)
         if batch_size < bucket:
             inputs.control_logits[batch_size:bucket].zero_()
         else:
             pass
-        self._stage_audio_rows(inputs, audio_logits, batch, batch_size, bucket)
+        self.stage_audio_rows(inputs, audio_logits, batch, batch_size, bucket)
 
         captured = self.graphs[key]
         captured.graph.replay()
@@ -432,13 +432,13 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
     drawn token.
     """
 
-    _TEXT_ROW_BUCKETS = (1, 2, 4, 8, 16)
+    TEXT_ROW_BUCKETS = (1, 2, 4, 8, 16)
 
     def control_logit_columns(self) -> int:
         return int(self.model.config.vocab_size_list[0])
 
     def compacted_text_buckets(self, bucket: int) -> tuple[int, ...]:
-        return tuple(size for size in self._TEXT_ROW_BUCKETS if size < bucket)
+        return tuple(size for size in self.TEXT_ROW_BUCKETS if size < bucket)
 
     def run_static(
         self,
@@ -476,7 +476,7 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
                 continue
             else:
                 pass
-            if self._free_bytes() < _MIN_CAPTURE_FREE_BYTES:
+            if self.free_memory_bytes() < _MIN_CAPTURE_FREE_BYTES:
                 logger.warning(
                     "MOSS-TTS compacted text-draw graph capture skipped on "
                     f"{self.model.device}: free device memory is below the "
@@ -489,7 +489,7 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
             captured: dict[int, CapturedSamplingGraph] = {}
             for width in widths:
                 try:
-                    captured[width] = self._capture_callable(
+                    captured[width] = self.capture_callable(
                         lambda b=bucket, w=width: self.run_static(b, w)
                     )
                 except Exception as exc:
@@ -545,7 +545,7 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
         text_rows: torch.Tensor | None = None,
     ) -> DelaySamplingOutput:
         batch_size = int(audio_logits.shape[0])
-        key, bucket = self._require_full_graph(batch_size)
+        key, bucket = self.require_full_graph(batch_size)
         inputs = self.require_inputs()
         expected_columns = int(inputs.control_logits.shape[1])
         if int(control_logits.shape[0]) != batch_size:
@@ -562,9 +562,8 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
             )
         else:
             pass
-        self._validate_audio_rows(inputs, audio_logits, batch, batch_size)
+        self.validate_audio_rows(inputs, audio_logits, batch, batch_size)
 
-        width = None
         if text_rows is not None:
             text_rows = text_rows.to(torch.long).reshape(-1)
             text_count = int(text_rows.numel())
@@ -576,8 +575,10 @@ class MossTTSDelayMixedSamplingCudaGraphRunner(MossTTSDelaySamplingCudaGraphRunn
             else:
                 pass
             width = self.compacted_text_width(bucket, text_count)
+        else:
+            width = None
 
-        self._stage_audio_rows(inputs, audio_logits, batch, batch_size, bucket)
+        self.stage_audio_rows(inputs, audio_logits, batch, batch_size, bucket)
         if width is None:
             # Full-width graph: the sampler draws text for every bucket row, so
             # ``text_rows`` is ignored and only the control logits are staged.

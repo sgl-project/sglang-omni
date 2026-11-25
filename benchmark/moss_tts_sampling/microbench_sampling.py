@@ -10,10 +10,9 @@ import argparse
 import json
 import statistics
 import time
+from types import SimpleNamespace
 
 import torch
-
-from types import SimpleNamespace
 
 from sglang_omni.models.moss_tts.sampler import (
     DelayGraphBatch,
@@ -83,9 +82,7 @@ def main():
     )
 
     batch = args.batch
-    states = [[0, INT64_MAX, 0]] + [
-        [N_VQ, index + 1, 1] for index in range(1, batch)
-    ]
+    states = [[0, INT64_MAX, 0]] + [[N_VQ, index + 1, 1] for index in range(1, batch)]
     state = torch.tensor(states, dtype=torch.long, device=device)
     seeds = torch.arange(batch, device=device, dtype=torch.long) + 900000
     steps = torch.arange(batch, device=device, dtype=torch.long) + 30
