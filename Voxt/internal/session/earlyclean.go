@@ -114,8 +114,12 @@ func (e *earlyClean) finalize() {
 // stretches while it continues (asr.EventPiece): the stretch since the
 // last event goes to the early clean-up (Transcribe with the clean-up
 // on only; the final text repeats these stretches as its prefix).
+//
+// note (luojiaxuan): not when the user has the clean-up wait for Stop
+// (settings.Transcribe.CleanAfterStop); the live clean-up ends here.
 func (r *run) hearPiece(stable string) {
-	if r.req.Kind != store.KindTranscribe || !r.transcribeCleanup() {
+	r.endLive()
+	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
 		return
 	}
 	r.earlyCleanup().add(stable)
