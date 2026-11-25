@@ -14,6 +14,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store/sqlitestore"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 func testManagerHold(t *testing.T, modelHold interface{ Hold() (release func()) }) (*meeting.Manager, context.Context, *fakeClock, string) {
@@ -321,40 +322,60 @@ func TestSnapshotKeepsLevelHistory(t *testing.T) {
 	}
 }
 
-// Quiet counts the meeting's time since a track was last as loud as
-// SoundDBFS: a quiet room adds to it, a sound sets it back to 0.
+// Without Silero, Quiet goes by the level against the room's floor:
+// levels held SpeechOverFloorDB above the quietest part of the last half
+// minute set it back to 0; a lone loud level (a click) does not.
 func TestSnapshotQuiet(t *testing.T) {
-	mic := newFakeAudio(nil)
-	mic.levelsSent = make(chan struct{})
-	mic.levels = []float64{-20, -70, -70, -70, meeting.SoundDBFS, -70}
-	m, ctx, clk, _ := testManagerMic(t, mic, nil, false)
-	var quiet []time.Duration
-	mic.beforeLevel = func() {
-		quiet = append(quiet, m.Current().Quiet)
-		clk.Advance(time.Minute)
+	levels := slices.Repeat([]float64{-70}, 50)
+	levels = append(levels, -20) // a click
+	levels = append(levels, slices.Repeat([]float64{-70}, 50)...)
+	levels = append(levels, -20, -20, -20, -20, -20) // half a second of speech
+	levels = append(levels, slices.Repeat([]float64{-70}, 20)...)
+	quiet := quietOver(t, nil, levels)
+	if quiet[101] != 10100*time.Millisecond {
+		t.Fatalf("quiet %v after the click, want 10.1s", quiet[101])
 	}
-	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.Finish(ctx, id)
-	select {
-	case <-mic.levelsSent:
-	case <-time.After(2 * time.Second):
-		t.Fatal("microphone did not finish sending its level events")
-	}
-	quiet = append(quiet, m.Current().Quiet) // levels are taken in as they come
-	want := []time.Duration{0, 0, time.Minute, 2 * time.Minute, 3 * time.Minute, 0, time.Minute}
-	if !slices.Equal(quiet, want) {
-		t.Fatalf("quiet %v, want %v", quiet, want)
+	if got := quiet[len(quiet)-1]; got != 2*time.Second {
+		t.Fatalf("quiet %v after the speech, want 2s", got)
 	}
 }
 
-// A track with live recognition goes by its speech detector, not the
-// level: a room's steady noise above SoundDBFS still counts as quiet
-// (11-25: a MacBook microphone averaged -32 to -42 dBFS with nobody
-// speaking, so the end question never came).
-func TestSnapshotQuietGoesBySpeech(t *testing.T) {
+// A room's steady noise becomes its floor, however loud, so it counts as
+// quiet; speech over it does not (11-25: a MacBook microphone averaged -32
+// to -42 dBFS with nobody speaking, and -35 dBFS of noise read as speech
+// to the energy detector).
+func TestSnapshotQuietIgnoresSteadyNoise(t *testing.T) {
+	levels := slices.Repeat([]float64{-35}, 1200)                  // two minutes
+	levels = append(levels, -15, -15, -15, -15, -15)               // speech
+	levels = append(levels, slices.Repeat([]float64{-35}, 300)...) // half a minute
+	quiet := quietOver(t, &meetTestStreamer{text: "noise"}, levels)
+	if quiet[1200] != 2*time.Minute || quiet[len(quiet)-1] != 30*time.Second {
+		t.Fatalf("quiet %v before the speech and %v after it, want 2m and 30s", quiet[1200], quiet[len(quiet)-1])
+	}
+}
+
+// With Silero the live detector decides, not the level: loud levels it
+// hears no speech in add to Quiet.
+func TestSnapshotQuietGoesBySilero(t *testing.T) {
+	levels := slices.Repeat([]float64{-70, -10, -10, -10, -10, -70}, 10)
+	quiet := quietOver(t, &meetTestStreamer{text: "music"}, levels, noSpeech{})
+	if got := quiet[len(quiet)-1]; got != 6*time.Second {
+		t.Fatalf("quiet %v: Silero heard nobody for 6s", got)
+	}
+}
+
+type noSpeech struct{}
+
+func (noSpeech) Feed(pcm []byte) ([]float64, error) { return make([]float64, len(pcm)/1024), nil }
+func (noSpeech) Chunk() int                         { return 512 }
+func (noSpeech) Threshold() float64                 { return 0.5 }
+func (noSpeech) Close()                             {}
+
+// quietOver records a microphone-only meeting's Quiet before each of
+// levels, 100 ms apart, and after the last; streamer (nil: no recognition)
+// and vad (Silero) are its live recognition.
+func quietOver(t *testing.T, streamer *meetTestStreamer, levels []float64, vad ...vad.ModelStream) []time.Duration {
+	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
 	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
@@ -362,20 +383,30 @@ func TestSnapshotQuietGoesBySpeech(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	mic := newFakeAudio(make([]byte, asr.BytesPerSecond)) // a second of silence: no speech
+	mic := newFakeAudio(make([]byte, asr.BytesPerSecond)) // a second of silence
 	mic.levelsSent = make(chan struct{})
-	mic.levels = []float64{-30, -30, -30, -30}
+	mic.levels = levels
 	clk := newFakeClock(time.Unix(1_700_000_000, 0))
-	mic.beforeLevel = func() { clk.Advance(time.Minute) }
-	streamer := &meetTestStreamer{text: "noise"}
-	m := meeting.NewManager(meeting.Config{
+	cfg := meeting.Config{
 		Mic: mic, Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"), Now: clk.Now,
 		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
 		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
-		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
-			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
-		},
-	})
+	}
+	if streamer != nil {
+		cfg.ASR = func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			ta := meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}
+			if len(vad) > 0 {
+				ta.VAD = vad[0]
+			}
+			return ta, nil
+		}
+	}
+	m := meeting.NewManager(cfg)
+	var quiet []time.Duration
+	mic.beforeLevel = func() {
+		quiet = append(quiet, m.Current().Quiet)
+		clk.Advance(100 * time.Millisecond)
+	}
 	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +417,5 @@ func TestSnapshotQuietGoesBySpeech(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("microphone did not finish sending its level events")
 	}
-	if got := m.Current().Quiet; got != 4*time.Minute {
-		t.Fatalf("quiet %v after four minutes of -30 dBFS noise and no speech, want 4m", got)
-	}
+	return append(quiet, m.Current().Quiet) // levels are taken in as they come
 }

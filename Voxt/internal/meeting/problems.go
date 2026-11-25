@@ -14,12 +14,6 @@ const (
 	ProblemKeyTrackDegraded = "meeting.track.degraded."
 )
 
-// SoundDBFS is the level at which a track without live recognition hears
-// sound (Snapshot.Quiet). Tracks with it go by their speech detector
-// instead: a room's steady noise can stay above any fixed level (11-25:
-// a MacBook microphone averaged -32 to -42 dBFS with nobody speaking).
-const SoundDBFS = -45
-
 const (
 	silentLevelDBFS       = -120
 	systemSilenceDuration = 30 * time.Second

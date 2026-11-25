@@ -36,6 +36,7 @@ type trackTranscriber struct {
 	cutter   Cutter
 	file     asr.FileTranscriber
 	fileReq  asr.FileRequest
+	silero   bool // the live detector is Silero: it decides Quiet (noteSpeech)
 	pcmBytes int64
 	timeBase time.Duration
 
@@ -53,7 +54,7 @@ func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job strin
 	if err != nil {
 		return nil, err
 	}
-	tr := &trackTranscriber{mgr: m, src: src, job: job}
+	tr := &trackTranscriber{mgr: m, src: src, job: job, silero: ta.VAD != nil}
 	path := PickLivePath(ta.Caps)
 	tr.path = path
 	switch path {
@@ -105,17 +106,13 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 		if err := tr.live.Push(ctx, pcm); err != nil {
 			return err
 		}
-		if tr.live.spoke() != was {
+		if tr.silero && tr.live.spoke() != was {
 			tr.mgr.noteSpeech()
 		}
 		tr.mgr.updateLive(tr.src, tr.live.LiveText())
 		return nil
 	}
-	utterances := tr.cutter.Push(pcm)
-	if len(utterances) > 0 || tr.cutter.inUtter {
-		tr.mgr.noteSpeech()
-	}
-	for _, u := range utterances {
+	for _, u := range tr.cutter.Push(pcm) {
 		dur := u.End - u.Start
 		tr.queueDur += dur
 		tr.mgr.noteBacklog(tr.queueDur)

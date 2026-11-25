@@ -15,6 +15,8 @@ type track struct {
 	job        string
 	audio      session.Audio
 	stopping   bool
+	silero     bool      // its live recognition has Silero, which decides Quiet (noteSpeech)
+	floor      roomFloor // Quiet without Silero (quiet.go), under Manager.mu
 	transcribe *trackTranscriber
 	done       chan struct{} // closed once Record returned and its PCM is handled
 }
@@ -48,6 +50,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	if tx != nil {
 		m.mu.Lock()
 		m.tracks[src].transcribe = tx
+		m.tracks[src].silero = tx.silero
 		m.mu.Unlock()
 	}
 
@@ -105,8 +108,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				levels[src] = h[max(len(h)-session.Bars, 0):]
 				m.snap.Levels = levels
 				m.snap.Elapsed = m.timeline.Elapsed()
-				if ev.Level.RMS >= SoundDBFS && !m.hearsSpeechLocked(src) {
-					m.heard = m.snap.Elapsed // no speech detector on this track
+				if tr := m.tracks[src]; tr != nil && !tr.silero && tr.floor.heard(m.snap.Elapsed, ev.Level.RMS) {
+					m.heard = m.snap.Elapsed // no Silero on this track: its level over the room's floor
 				}
 				m.snap.Quiet = max(m.snap.Elapsed-m.heard, 0)
 				m.mu.Unlock()

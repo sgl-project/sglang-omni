@@ -532,21 +532,13 @@ func (m *Manager) stopTracksLocked(sources []Source) {
 	m.mu.Lock()
 }
 
-// noteSpeech is a track's speech detector hearing someone now
-// (Snapshot.Quiet).
+// noteSpeech is a track's Silero hearing someone now (Snapshot.Quiet).
 func (m *Manager) noteSpeech() {
 	m.mu.Lock()
 	if m.timeline != nil {
 		m.heard = m.timeline.Elapsed()
 	}
 	m.mu.Unlock()
-}
-
-// hearsSpeechLocked reports whether src's track has a speech detector:
-// live recognition, which calls noteSpeech.
-func (m *Manager) hearsSpeechLocked(src Source) bool {
-	tr := m.tracks[src]
-	return tr != nil && tr.transcribe != nil
 }
 
 func (m *Manager) noteLevel(src Source, level float64) {
