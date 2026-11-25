@@ -103,7 +103,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
-- **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording.
+- **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording. A microphone lost while its speech-recognition connection hangs (after sleep, or a network loss) reconnects after five seconds instead of recording nothing more. With the final pass turned off, a last line that takes longer than five seconds to transcribe after Stop is not saved.
 - **Reopened answer cards keep their moved position**: closing and reopening a card, including from Reopen card or after a retry, now restores its previous position instead of centering it. The position also survives recording and a failed automatic insertion that falls back to a card; the chosen card width still follows the feature setting, and the height still follows the answer.
 - **Rewrite and Translate read an image-only block selection**: selecting only an image block in a web editor (a Lark doc in Chrome) no longer reaches the language model as the single character U+FFFC with no content. Chrome reports such a selection to Accessibility as the object replacement character, which Voxt mistook for the selected text and never tried copying; Voxt now treats it as no reading, as it already does an all-whitespace reading, and copies with ⌘C instead.
 - **Translate accepts answers that keep Chinese input-tag names**: `<指令>` around a valid translation no longer counts as untranslated Chinese text; the tags stay in the delivered answer.
@@ -157,7 +157,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
-- **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。
+- **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。麦克风断开时如果语音识别连接卡住（睡眠唤醒后或断网），5 秒后照样重连，不会之后什么都录不到。关掉最终转写时，停止后超过 5 秒才转写出来的最后一句不会保存。
 - **重新打开的答案卡片保留拖动后的位置**：关闭再打开卡片，包括从「重新打开卡片」恢复或重试后，现在会回到之前的位置，不再回到屏幕中央。录音和自动插入失败后回落到卡片时，也会保留这个位置；卡片宽度仍按各功能的设置，高度仍随回答内容变化。
 - **改写和翻译能读到只含图片的块级选区**：在网页编辑器（Chrome 里的 Lark 文档）里只选中一个图片块，发给语言模型的内容不再只是一个 U+FFFC 字符。Chrome 把这样的选区经无障碍接口报成对象替代字符，Voxt 以前把它当成选中的文字，不再尝试复制；现在和全白的读取结果一样按没读到处理，改用 ⌘C 复制。
 - **翻译接受保留中文输入标签的回答**：有效译文外保留 `<指令>` 标签时，不再把标签当成未翻译的中文内容；标签原样保留在回答中。

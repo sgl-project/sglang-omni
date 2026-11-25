@@ -116,13 +116,30 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		}
 		pcm.close()
 		<-pumped
+		// Decided before the Final: a lost track must reconnect even when
+		// the streaming ASR connection hangs (wake from sleep, network loss).
+		m.mu.Lock()
+		lost := m.tracks[src] == tr && !tr.stopping
+		m.mu.Unlock()
 		if tx != nil {
-			// The capture's original error takes precedence over a Final teardown error.
-			_ = tx.finish(context.Background())
+			finished := make(chan struct{})
+			go func() {
+				// The capture's original error takes precedence over a Final teardown error.
+				_ = tx.finish(context.Background())
+				close(finished)
+			}()
+			if lost {
+				select {
+				case <-finished:
+				case <-time.After(lostFinalWait): // the late Final is dropped once the new track is installed
+				}
+			} else {
+				<-finished
+			}
 		}
 		close(done)
 		m.mu.Lock()
-		reconnect := m.tracks[src] == tr && !tr.stopping
+		reconnect := lost && m.tracks[src] == tr && !tr.stopping
 		m.mu.Unlock()
 		if reconnect {
 			m.handleTrackLost(ctx, src)
@@ -146,6 +163,10 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 }
 
+// lostFinalWait bounds how long a lost track waits for its transcriber's
+// Final before it reconnects.
+var lostFinalWait = 5 * time.Second
+
 // stop ends the capture first, so the transcriber sees its last PCM
 // before it finishes.
 func (t *track) stop() {
@@ -156,6 +177,7 @@ func (t *track) stop() {
 	select {
 	case <-t.done:
 	case <-ctx.Done(): // a helper that never answers Stop; its PCM pump may still be running
+		// shortcut: with the final pass off, a tail Final slower than this is lost (CHANGELOG #4409); wait for it there if users hit it.
 	}
 }
 
