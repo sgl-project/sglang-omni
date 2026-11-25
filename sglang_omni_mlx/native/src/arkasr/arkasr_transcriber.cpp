@@ -124,22 +124,7 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
     mx::array next_token = mx::argmax(model_.decoder().LastLogits(
         model_.decoder().Forward(embeddings, caches)));
     mx::async_eval({next_token});
-    bool finished = false;
-    while (!finished) {
-      if (cancel.load()) {
-        throw GenerationCancelled();
-      } else {
-      }
-      const mx::array token = next_token;
-      // Note (AzizbekMuminoff): the next step is queued before this token is
-      // read, so the GPU decodes while the stop rule is checked.
-      next_token =
-          mx::argmax(model_.decoder().LastLogits(model_.decoder().Forward(
-              model_.decoder().EmbedTokens(mx::reshape(token, {1, 1})),
-              caches)));
-      mx::async_eval({next_token});
-      finished = commit(static_cast<int>(token.item<uint32_t>()));
-    }
+    model_.decoder().DecodePlain(next_token, caches, 1.0f, commit, cancel);
   }
   std::vector<int> text_ids;
   std::copy_if(output_ids.begin(), output_ids.end(),
