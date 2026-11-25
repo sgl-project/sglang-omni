@@ -16,6 +16,7 @@ func (host *meetingDemoHost) testRemoteProvider(kind, id string) {
 }
 
 func (host *meetingDemoHost) chooseLLMWait(value string) { host.record("chooseLLMWait %q", value) }
+func (host *meetingDemoHost) setLLMSwitch(on bool)       { host.record("setLLMSwitch %t", on) }
 
 func (host *meetingDemoHost) openLLMDebug()       { host.record("openLLMDebug") }
 func (host *meetingDemoHost) testDialog()         { host.record("testDialog") }

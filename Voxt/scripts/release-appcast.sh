@@ -16,11 +16,14 @@
 #   scripts/release-appcast.sh assets 2.0.1        # Voxt-2.0.1-macOS.zip Voxt-2.0.1-arm64.dmg
 #   scripts/release-appcast.sh entry beta 2.0.1    # the update service's entry (beta or stable), JSON
 #   scripts/release-appcast.sh notes < NOTES.md    # the English release notes as HTML
+#   scripts/release-appcast.sh beta-changelog 2.1.2-beta.20261118.74 SHA < CHANGELOG.md   # CHANGELOG.md with the beta's section
 #   scripts/release-appcast.sh notes-by-locale < NOTES.md   # the release notes as HTML by locale, JSON
 #   scripts/release-appcast.sh items < appcast.xml # each item's sparkle:version and hardware requirement
 #   scripts/release-appcast.sh hardware-kept BUILD REPLY < APPCASTS   # fails unless the update service kept arm64
 #   scripts/release-appcast.sh feed-base        # Voxt 2's MyGo update feed base URL
 #   scripts/release-appcast.sh feed-url beta    # the channel's MyGo manifest URL (beta or stable)
+#   scripts/release-appcast.sh feed-offers stable 2.1.3 < RELEASES.json   # fails unless the app's feed resolves to voxt-v2.1.3
+#   scripts/release-appcast.sh feed-check stable 2.1.3 OWNER/REPO         # the same against GitHub, and reads the manifest
 #   scripts/release-appcast.sh github-manifest 2.0.1 OWNER/REPO < update-darwin-arm64.json
 #   scripts/release-appcast.sh cask 2.0.1 SHA256 OWNER/REPO   # Homebrew's Casks/voxt.rb
 set -euo pipefail
@@ -29,8 +32,10 @@ set -euo pipefail
 public_key="iMt1voRdgfUUpKxdY7DliGLaOl17gJFB8Jhlo5ox2eE="
 # Voxt 2 runs on Apple silicon only.
 hardware=arm64
-# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads.
-voxt2_feed="https://voxt.actnow.dev/updates/voxt2"
+# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads. They are the
+# update-darwin-arm64.json of each GitHub release: MyGo resolves {version} to the highest voxt-v
+# release, and under beta/ to the highest version of the releases and prereleases (patch 0021).
+voxt2_feed="https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}"
 
 usage() {
   sed -n 's/^#   //p' "$0" >&2
@@ -148,9 +153,15 @@ case "${1:-}" in
     (($# == 3)) || usage
     [[ "$2" =~ ^[0-9]+$ ]] || fail "'$2' is not a build number"
     # Only the appcast proves what Voxt 1.x will read: an API reply that kept
-    # the field does not prove the service renders it.
-    if items | grep -xF "$2 $hardware" >/dev/null; then
+    # the field does not prove the service renders it. The build is not in the
+    # appcast until it is made the latest, so before that an ok reply that kept
+    # the field counts when the appcast already renders it for another item.
+    rendered="$(items)"
+    if grep -xF "$2 $hardware" <<< "$rendered" >/dev/null; then
       echo "The appcast's item of build $2 has sparkle:hardwareRequirements $hardware"
+    elif jq -e --arg hw "$hardware" '.ok == true and .data.hardwareRequirements == $hw' <<< "$3" >/dev/null 2>&1 \
+      && grep -E " $hardware\$" <<< "$rendered" >/dev/null; then
+      echo "The update service kept hardwareRequirements $hardware and its appcast renders it"
     else
       echo "release-appcast.sh: the update service does not output hardwareRequirements yet, so Voxt 1.x on an Intel Mac would get a version it cannot open: add it on the server (/api/pkg/update, and <sparkle:hardwareRequirements>$hardware</sparkle:hardwareRequirements> in the appcast)" >&2
       exit 1
@@ -168,6 +179,40 @@ case "${1:-}" in
       *) fail "the Voxt 2 feed channel is beta or stable, got '$2'" ;;
     esac
     ;;
+  feed-offers)
+    # What MyGo's ResolveFeed does (patch 0021) with the first page of the repository's releases:
+    # the highest voxt-v version that is not a draft, prereleases only on the beta channel.
+    (($# == 3)) || usage
+    [[ "$2" == beta || "$2" == stable ]] || fail "the Voxt 2 feed channel is beta or stable, got '$2'"
+    build_number "${3%%-*}" >/dev/null
+    offered="$(jq -r --arg channel "$2" '
+      def key: ltrimstr("voxt-v") | split("-") as $p
+        | ($p[0] | split(".") | map(tonumber))
+          + [if ($p | length) > 1 then 0 else 1 end]
+          + (($p[1:] | join("-")) | split(".") | map(tonumber? // .));
+      [.[] | select((.draft | not) and (.tag_name | test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+(-.+)?$"))
+                    and ($channel == "beta" or (.prerelease | not))) | .tag_name]
+      | sort_by(key) | last // ""')"
+    [[ -n "$offered" ]] || fail "the $2 feed has no voxt-v release: Check for Updates would say up to date"
+    [[ "$offered" == "voxt-v$3" ]] || fail "the $2 feed offers $offered, not voxt-v$3"
+    echo "$offered"
+    ;;
+  feed-check)
+    # After a release is published: the feed the installed apps read must name it, with files that download.
+    (($# == 4)) || usage
+    [[ "$4" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$4' is not OWNER/REPO"
+    auth=()
+    [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+    tag="$(curl -fsSL --retry 3 ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/$4/releases?per_page=100" | "$0" feed-offers "$2" "$3")"
+    manifest="$(curl -fsSL --retry 3 "https://github.com/$4/releases/download/$tag/update-darwin-arm64.json")" ||
+      fail "$tag has no update-darwin-arm64.json: installed apps cannot update to it"
+    jq -e --arg version "$3" '.version == $version and .signature != "" and .size > 0' <<<"$manifest" >/dev/null ||
+      fail "the manifest of $tag is not a signed manifest of $3"
+    url="$(jq -r .url <<<"$manifest")"
+    size="$(curl -fsSLI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')"
+    [[ "$size" == "$(jq -r .size <<<"$manifest")" ]] || fail "$url is $size bytes, the manifest says $(jq -r .size <<<"$manifest")"
+    echo "The $2 feed offers Voxt $3: $url ($size bytes)"
+    ;;
   github-manifest)
     (($# == 3)) || usage
     build_number "$2" >/dev/null
@@ -177,6 +222,21 @@ case "${1:-}" in
        then error("not a signed update manifest of " + $version) else . end
        | .url = ($base + (.url | split("/") | last))
        | if .deltas then .deltas |= map(.url = ($base + (.url | split("/") | last))) else . end'
+    ;;
+  beta-changelog)
+    # MyGo signs an update only with notes under the exact version's heading, and a beta's version exists only in CI:
+    # put a section for it above the first one, holding Unreleased's notes, else a line naming the commit.
+    (($# == 3)) || usage
+    [[ "$2" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]{8}\.[0-9]+$ ]] || fail "'$2' is not a beta version"
+    changelog="$(cat)"
+    unreleased="$(awk '/^## /{f = index($0, "[Unreleased]") > 0; next} f' <<< "$changelog")"
+    [[ "$unreleased" =~ [^[:space:]] ]] || unreleased="A beta of Voxt built from main at $3."
+    # ENVIRON, not -v: awk would read backslashes in the notes as escapes.
+    heading="## [$2]" notes="$unreleased" awk '
+      !done && /^## / { print ENVIRON["heading"] "\n\n" ENVIRON["notes"] "\n"; done = 1 }
+      { print }
+      END { if (!done) print "\n" ENVIRON["heading"] "\n\n" ENVIRON["notes"] }
+    ' <<< "$changelog"
     ;;
   notes)
     (($# == 1)) || usage

@@ -84,11 +84,12 @@ type Entry struct {
 	// (appctx.Source); "" for none.
 	RuleSource string
 
-	// RawText is the recognised speech; SourceText the selected text
-	// (translate, rewrite); PromptText the spoken instruction (rewrite);
-	// Result what was delivered; TargetLang the translation's target.
+	// RawText is the recognised speech; SourceText the selected text and
+	// TypedText the Rewrite input box's typed text; PromptText the spoken
+	// instruction (rewrite); Result what was delivered; TargetLang the target.
 	RawText    string
 	SourceText string
+	TypedText  string
 	PromptText string
 	Result     string
 	Title      string // Rewrite's answer title; "" for other kinds and older entries
@@ -237,8 +238,11 @@ type DictionaryProfile struct {
 	Active bool
 }
 
-// Dictionary stores the active profile's terms.
+// Dictionary stores the active profile's terms. Lock covers a whole
+// read-modify-write sequence; every writer uses it, not only imports.
 type Dictionary interface {
+	Lock()
+	Unlock()
 	// Put inserts or replaces a term (by ID); another term in this profile
 	// with the same spelling (ignoring case) is core.ErrExists.
 	Put(ctx context.Context, t Term) error

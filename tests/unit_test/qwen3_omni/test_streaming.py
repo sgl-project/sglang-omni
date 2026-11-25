@@ -1070,18 +1070,10 @@ def test_client_completion_stream_audio_uses_chunk_sample_rate():
     assert struct.unpack("<I", wav[24:28])[0] == 48000
 
 
-def test_client_speech_forces_non_streaming_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sglang_omni.client import client as client_module
+def test_client_speech_forces_non_streaming_request() -> None:
     from sglang_omni.client.client import Client
     from sglang_omni.client.types import GenerateRequest
 
-    monkeypatch.setattr(
-        client_module,
-        "encode_audio",
-        lambda audio_data, **kwargs: (b"encoded-audio", "audio/wav"),
-    )
     coordinator = FakeCoordinatorForClient(
         [],
         submit_result={
@@ -1101,7 +1093,9 @@ def test_client_speech_forces_non_streaming_request(
         )
     )
 
-    assert result.audio_bytes == b"encoded-audio"
+    assert result.mime_type == "audio/wav"
+    assert result.sample_rate == 16000
+    assert struct.unpack("<I", result.audio_bytes[24:28])[0] == result.sample_rate
     assert coordinator.submitted_params == [
         {"stop": [], "stop_token_ids": [], "stream": False}
     ]

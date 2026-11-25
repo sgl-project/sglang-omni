@@ -1,22 +1,22 @@
 # Nemotron Transcribe
 
-[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
+[Nemotron Transcribe 30B-A4B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B) serves whole-file transcription through `/v1/audio/transcriptions`. A native PyTorch frontend, speech transformer, and Sortformer speaker-fusion encoder produce audio embeddings for SGLang's NemotronH decoder. The serving path does not require NeMo.
 
-This integration accepts consolidated NeMo SpeechLM checkpoints with the `NeMoSpeechLMForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. The checkpoint directory must contain its tokenizer files and model weights. The loader creates a small configuration shim and reads the original weights without copying them.
+This integration accepts consolidated NeMo SpeechLM checkpoints with the `Nemotron3_5TranscribeForConditionalGeneration` architecture, a NemotronH `llm_config`, and `perception` and `pe_encoder_config` sections. Earlier checkpoints using `NeMoSpeechLMForConditionalGeneration` are also supported. The [FP8 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-FP8) loads its decoder through SGLang's ModelOpt FP8 path. Its speech encoder stores 128 transformer linears as FP8 with static per-tensor weight and input scales; they run as FP8 GEMMs on CUDA GPUs with compute capability 8.9 or newer and are dequantized to BF16 elsewhere. Compile the encoder with `--asr.factory.compile_perception true` to fuse the activation quantization into neighboring kernels; an eager FP8 encoder is slower than BF16. The checkpoint directory must contain its tokenizer files and matching model weights from the same checkpoint revision. The loader creates a small configuration shim and reads the original weights without copying them.
 
 ## Serve a checkpoint
 
 Install SGLang-Omni following [Installation](../get_started/installation.md), then download the checkpoint:
 
 ```bash
-hf download nvidia/Nemotron-3.5-Transcribe-30B-A4B
+hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 ```
 
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --port 8000
@@ -36,6 +36,7 @@ The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to
 | `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
 | `--asr.factory.perception_cuda_graphs` | `false` | Capture encoder graphs; requires compilation |
+| `--asr.factory.perception_fp8` | `true` | Run an FP8 checkpoint's encoder linears as FP8 GEMMs; `false` dequantizes them to BF16 |
 
 Decoder CUDA graphs are enabled. Decoder compilation is unsupported in this integration; use encoder compilation to reduce launch overhead. Encoder batch size bounds activation memory separately from decoder concurrency. For longer audio or a smaller GPU, reduce the encoder batch size and choose a memory fraction that still fits the model weights.
 
@@ -58,7 +59,58 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=text
 ```
 
-Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, speculative decoding, and `/v1/realtime` are outside this integration.
+Set `stream=true` to receive text deltas as Server-Sent Events. The server encodes the uploaded audio before generating text; this is not live PCM streaming. Word timestamps, speaker-attributed output, translation, and `/v1/realtime` are outside this integration.
+
+## MTP decoding
+
+The checkpoint includes a multi-token prediction (MTP) layer that the decoder can use as a NEXTN draft, so decoding needs no separate draft model. MTP is off by default, and the launch above does not load it. Enable it with:
+
+```bash
+sgl-omni serve \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --model-name nemotron-transcribe \
+  --mem-fraction-static 0.85 \
+  --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634 \
+  --asr.engine.speculative_algorithm NEXTN \
+  --port 8000
+```
+
+The revision pins the checkpoint whose MTP layer was validated with this integration. The decoder and the draft load from the same snapshot, so leave `speculative_draft_model_path` and `speculative_draft_model_revision` unset. The draft proposes 3 tokens per step by default (`speculative_num_steps 3`, `speculative_num_draft_tokens 4`).
+
+On one H100 80 GB, the launch above runs out of memory at startup: to roll the Mamba layers back after verify, SGLang keeps an fp32 SSM state per draft token for every decoder slot. Limit the decoder to 8 slots. Each request then keeps 8,996 KV tokens, in line with the 9,199 tokens per request of the default launch without the draft (64 slots):
+
+```bash
+sgl-omni serve \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
+  --model-name nemotron-transcribe \
+  --mem-fraction-static 0.85 \
+  --asr.engine.max_running_requests 8 \
+  --asr.engine.revision c17667641642c4265ff2b7037dd101b7d4567634 \
+  --asr.engine.speculative_algorithm NEXTN \
+  --port 8000
+```
+
+Usage notes:
+
+- Keep `speculative_eagle_topk 1` and set `speculative_num_draft_tokens` to `speculative_num_steps` plus one. The MTP layer drafts a single chain, and the launch fails with the setting to change otherwise.
+- `EAGLE` is accepted as another name for `NEXTN`. Separate draft models, EAGLE3, multi-layer EAGLE, and mixed chunking are rejected at launch.
+- The launch fails if the checkpoint is missing any `llm.mtp.*` tensor the draft needs, or has one the draft cannot place.
+- To disable MTP in a config that enables it, add `--asr.engine.disable_speculative_decoding true`.
+- Send the form field `return_spec_tokens_details=true` to get `sglext.spec_tokens_details` with the acceptance statistics on `json` and `verbose_json` responses.
+
+- `--asr.engine.speculative_num_steps 7` raised the H200 speedup at concurrency 16 to 1.30x, but its rollback state takes 23.5 GB, and an H100 then starts with at most 4 slots.
+
+Speed against the same server without a draft, on one H200 with BF16, SGLang 0.5.23 and greedy decoding. The corpus is the full SeedTTS English set (666 clips) with `--unique-audio`:
+
+| Client concurrency | No draft RTFx | MTP RTFx | Speedup |
+| --- | ---: | ---: | ---: |
+| 1 | 30.2 | 37.5 | 1.24x |
+| 8 | 74.4 | 95.7 | 1.29x |
+| 16 | 115.3 | 137.5 | 1.19x |
+
+Each verify step accepts 3.82 tokens on average, out of a possible 4, and 95.4% of drafts are accepted. Averaged over the three concurrencies, corpus WER is 0.977% without the draft and 0.952% with it. Verify and plain decode run different kernels, so a near-tie token can flip and a few transcripts differ. The mean absolute WER change between the two modes is at most 0.043 percentage points, close to the 0.023 to 0.030 points between two runs without the draft.
+
+On one H100 80 GB with 8 slots, on the first 50 SeedTTS English clips, MTP raised RTFx at concurrency 1 from 39.4 to 55.5 (1.41x). At 8 concurrent requests it reached 141.7 RTFx, while the server without a draft reached 247.1 at 64. On an H100, use the draft for latency at low load and leave it off for peak throughput.
 
 ## Compile the encoder
 
@@ -68,7 +120,7 @@ Enable compilation and encoder CUDA graphs independently of decoder graphs:
 SGLANG_FLASHINFER_AUTOTUNE_EXTEND=1 \
 SGLANG_FLASHINFER_AUTOTUNE_CACHE=0 \
 sgl-omni serve \
-  --model-path nvidia/Nemotron-3.5-Transcribe-30B-A4B \
+  --model-path nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B \
   --model-name nemotron-transcribe \
   --mem-fraction-static 0.85 \
   --asr.engine.max_running_requests 16 \

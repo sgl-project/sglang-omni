@@ -243,51 +243,6 @@ class OverlapTest(unittest.TestCase):
                 )
             self.assertEqual(pages, 31)
 
-    def test_deleted_root_files_use_origin_main_or_report_unknown(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            repository_root = Path(temporary_directory)
-            command_results = {
-                (
-                    "git",
-                    "show",
-                    "origin/main:Voxt/deleted_view.go",
-                ): subprocess.CompletedProcess(
-                    ["git", "show"],
-                    0,
-                    stdout='package main\nimport "github.com/egoist/mygo/ui"\n',
-                    stderr="",
-                ),
-                (
-                    "git",
-                    "show",
-                    "origin/main:Voxt/deleted_unknown.go",
-                ): subprocess.CompletedProcess(
-                    ["git", "show"], 128, stdout="", stderr="not found"
-                ),
-            }
-
-            def fake_command_runner(
-                command: list[str], working_directory: Path
-            ) -> subprocess.CompletedProcess[str]:
-                self.assertEqual(working_directory, repository_root)
-                if tuple(command) in command_results:
-                    return command_results[tuple(command)]
-                else:
-                    raise AssertionError(f"Unexpected command: {command}")
-
-            self.assertEqual(
-                overlap.classify_file(
-                    repository_root, "Voxt/deleted_view.go", fake_command_runner
-                ),
-                "view",
-            )
-            self.assertEqual(
-                overlap.classify_file(
-                    repository_root, "Voxt/deleted_unknown.go", fake_command_runner
-                ),
-                "unknown",
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

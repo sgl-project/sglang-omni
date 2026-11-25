@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Compose the native SenseNova text-to-image pipeline."""
+"""Compose the SenseNova generation and editing pipeline."""
 from __future__ import annotations
 
 import logging
+import os
 
 import torch
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
-from sglang.multimodal_gen.runtime.pipelines_core.stages import InputValidationStage
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase
 
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
+from sglang_omni.models.sensenova_u1.native.image_edit import SenseNovaU1InputStage
 from sglang_omni.models.sensenova_u1.native.loader import load_model_and_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,13 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
             dict[str, torch.nn.Module | PreTrainedTokenizerBase] | None
         ) = None,
     ) -> dict[str, torch.nn.Module | PreTrainedTokenizerBase]:
+        if not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & os.environ.keys():
+            # note (Richard Wang): Edit prefix attention buffers change size per query and fragment fixed segments.
+            torch._C._accelerator_setAllocatorSettings(  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
+                "expandable_segments:True"
+            )
+        else:
+            pass
         if loaded_modules is not None and {"model", "tokenizer"} <= set(loaded_modules):
             return loaded_modules
         else:
@@ -39,7 +47,7 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:
-        self.add_stage(InputValidationStage())
+        self.add_stage(SenseNovaU1InputStage())
         self.add_stage(
             SenseNovaU1GenerationStage(
                 model=self.get_module("model"),

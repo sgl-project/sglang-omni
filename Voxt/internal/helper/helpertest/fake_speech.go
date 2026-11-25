@@ -50,6 +50,9 @@ func (f *fake) speechRecognize(m proto.Message) {
 	if text == "" {
 		text = speechText
 	}
+	if f.has("speech-empty") {
+		text = "" // nothing heard: no partial, and an empty result at the end
+	}
 	f.mu.Lock()
 	f.speech[m.ID] = &speechJob{words: strings.Fields(text)}
 	f.mu.Unlock()

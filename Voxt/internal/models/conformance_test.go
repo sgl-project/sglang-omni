@@ -14,13 +14,83 @@ import (
 	"time"
 
 	"github.com/hehehai/actnowkit/conformance"
+	"github.com/hehehai/actnowkit/hfhub"
 	fammodels "github.com/hehehai/actnowkit/models"
 )
 
 func TestFamilyConformance(t *testing.T) {
-	conformance.Run(t, func(t testing.TB, fx *conformance.Fixture, bundleID string) any {
+	newApp := func(t testing.TB, fx *conformance.Fixture, bundleID string) any {
 		return &adapter{fx: fx, bundleID: bundleID}
-	})
+	}
+	for _, scenario := range conformance.Scenarios {
+		if scenario.Name == "ResumeOtherAppsDownload" {
+			scenario.Run = resumeOtherAppsDownload
+		}
+		t.Run(scenario.Name, func(t *testing.T) {
+			fx := conformance.New(t)
+			scenario.Run(t, fx, newApp)
+		})
+	}
+}
+
+var repoResume = conformance.TestRepo("mlx-community/test-resume", "4444444444444444444444444444444444444444", 3<<20)
+
+// resumeOtherAppsDownload cancels after the peer writes a partial blob. A
+// separate fake Hub keeps late peer traffic out of the app's byte count.
+func resumeOtherAppsDownload(t testing.TB, fx *conformance.Fixture, newApp conformance.Factory) {
+	app := newApp(t, fx, conformance.AppUnderTest).(conformance.Downloader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	peerHub := conformance.NewFakeHub(repoResume)
+	defer peerHub.Close()
+	const cut = 2 << 20
+	reached, release := peerHub.Pause(repoResume.Ref.Repo, "model.safetensors", cut)
+	peerCtx, cancelPeer := context.WithCancel(ctx)
+	peer := hfhub.New(hfhub.Options{Store: fx.Peer(conformance.PeerSmith), Endpoints: []string{peerHub.URL}, ReserveBytes: -1})
+	entry := hfhub.Entry{ID: "whisper", Repo: repoResume.Ref.Repo, Revision: repoResume.Ref.Revision, Files: []hfhub.File{{Path: "model.safetensors"}}}
+	peerErr := make(chan error, 1)
+	go func() {
+		peerErr <- peer.Download(peerCtx, entry, nil)
+	}()
+	select {
+	case <-reached:
+	case <-ctx.Done():
+		t.Fatal("the peer never reached the pause")
+	}
+	plan, err := peer.Plan(ctx, entry)
+	if err != nil {
+		t.Fatalf("plan the remaining download: %v", err)
+	}
+	for plan.Bytes != plan.TotalBytes-cut {
+		if plan.Bytes < plan.TotalBytes-cut {
+			t.Fatalf("the peer wrote past the pause: %d of %d bytes left", plan.Bytes, plan.TotalBytes)
+		}
+		plan, err = peer.Plan(ctx, entry)
+		if err != nil {
+			t.Fatalf("watch the partial download: %v", err)
+		}
+	}
+	cancelPeer()
+	<-peerErr
+	release()
+	if plan.Bytes == 0 || plan.Bytes >= plan.TotalBytes {
+		t.Fatalf("the peer left %d of %d bytes to download", plan.Bytes, plan.TotalBytes)
+	}
+	appHub := conformance.NewFakeHub(repoResume)
+	defer appHub.Close()
+	if err := app.Download(ctx, appHub.URL, repoResume.Ref); err != nil {
+		t.Fatalf("app download: %v", err)
+	}
+	if !fx.Installed(repoResume.Ref) {
+		t.Fatal("not installed")
+	}
+	again := appHub.ServedOf(repoResume.Ref.Repo, "model.safetensors")
+	if again != plan.Bytes {
+		t.Errorf("the app fetched %d bytes after cancellation left %d bytes to download: it did not resume the partial blob (.incomplete, §7.1)", again, plan.Bytes)
+	}
+	if left := fx.Incomplete(repoResume.Ref.Repo); len(left) > 0 {
+		t.Errorf("partial files left: %v", left)
+	}
 }
 
 // adapter is VoxtNew's Manager as conformance's ModelApp, Downloader and

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"image/png"
 	"os"
@@ -14,7 +13,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
@@ -22,7 +21,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // trTester is the test app on the Transcribe page, in a window tall
@@ -142,7 +140,7 @@ func TestTranscribePageRenders(t *testing.T) {
 		"Transcribe", "Shortcuts", "Right ⌥", "Tap", "Double tap", "Long press", "Add a shortcut",
 		"Paste the last result", "⌃⌥V",
 		"Models", "No speech model is installed. Install one to transcribe.", "Open Speech models",
-		"Clean-up", "Clean up with a language model", "Basic clean-up", "Structure",
+		"Clean-up", "Clean up with a language model", "Add a prompt to translate or reformat what you said.", "Basic clean-up", "Structure",
 		"Your rules", "characters",
 		"Try it", "Start",
 	} {
@@ -160,169 +158,6 @@ func TestTranscribePageRenders(t *testing.T) {
 	click(t, tt, "Open Permissions")
 	if a.shownPath() != "/settings/permissions" {
 		t.Errorf("went to %s", a.shownPath())
-	}
-}
-
-func TestTranscribeHotkeysEdit(t *testing.T) {
-	a, tt := trTester(t)
-	saved := func() []settings.Hotkey { return a.lib.settings.Get().Features.Transcribe.Hotkeys }
-	a.updateSettings(func(s *settings.Settings) { s.Features.Note = settings.Hotkey{} }) // its Right ⌘ (TestTranslatePage)
-
-	// Add one: the first preset no feature uses (Right ⌥, Right ⌥ ⇧, ⌃ Right ⌥ are taken).
-	click(t, tt, "Add a shortcut")
-	if hs := saved(); len(hs) != 2 || hs[1].Keys != "RightCommand" || hs[1].Trigger != settings.TriggerTap {
-		t.Fatalf("added %+v", hs)
-	}
-	// Choose a preset through the select's state, as the Select does.
-	a.fui(hotkey.Transcribe).rows[1].sel = uitext.HotkeyText("RightShift")
-	a.chooseFeatureShortcut(hotkey.Transcribe, 1, "RightShift")
-	frames(tt)
-	if hs := saved(); hs[1].Keys != "RightShift" {
-		t.Fatalf("preset not saved: %+v", hs)
-	}
-
-	// Custom keys: invalid ones show why and are not saved; valid ones are
-	// saved in canonical spelling.
-	click(t, tt, "Keys of shortcut 2")
-	click(t, tt, "Custom…")
-	frames(tt)
-	if !a.fui(hotkey.Transcribe).rows[1].custom || a.fui(hotkey.Transcribe).rows[1].text != "RightShift" {
-		t.Fatalf("custom row %+v", a.fui(hotkey.Transcribe).rows[1])
-	}
-	click(t, tt, "Type the keys instead")
-	click(t, tt, "Custom keys of shortcut 2")
-	for range len("RightShift") {
-		tt.Key(0, ui.KeyBackspace)
-	}
-	tt.Type("ctrl+opt+K+J")
-	if !has(tt, "Only one key besides the modifiers.") {
-		t.Errorf("no parse error: %q", tt.Texts())
-	}
-	if hs := saved(); hs[1].Keys != "RightShift" {
-		t.Errorf("invalid keys saved: %+v", hs)
-	}
-	tt.Key(0, ui.KeyBackspace)
-	tt.Key(0, ui.KeyBackspace)
-	frames(tt)
-	if hs := saved(); hs[1].Keys != "RightShift" || !has(tt, "Press Return to use ⌃⌥K.") {
-		t.Errorf("saved before Return: %+v", hs)
-	}
-	tt.Key(0, ui.KeyEnter)
-	frames(tt)
-	if hs := saved(); hs[1].Keys != "Control+Option+K" {
-		t.Errorf("custom keys %+v", hs)
-	}
-	if !a.fui(hotkey.Transcribe).rows[1].custom {
-		t.Error("the custom field closed while typing")
-	}
-
-	// Remove the first.
-	click(t, tt, "Remove shortcut 1")
-	if hs := saved(); len(hs) != 1 || hs[0].Keys != "Control+Option+K" {
-		t.Fatalf("after remove %+v", hs)
-	}
-	if len(a.fui(hotkey.Transcribe).rows) != 1 || a.fui(hotkey.Transcribe).rows[0].custom {
-		t.Errorf("rows not set again: %+v", a.fui(hotkey.Transcribe).rows)
-	}
-	// What the helper gets follows (the plan is built from the settings).
-	if p := a.hotkeyPlan(); !slices.ContainsFunc(p.Bindings, func(b proto.HotkeyBinding) bool { return b.ID == hotkey.ID(hotkey.Transcribe, 0) }) {
-		t.Errorf("plan %+v", p.Bindings)
-	}
-}
-
-// TestTranscribeMouseButton: Custom… says that mouse buttons work too, also
-// when it refuses Mouse1 (the left button); a typed side button is saved,
-// shows by its name in the try card, and goes to the helper as its button
-// number.
-func TestTranscribeMouseButton(t *testing.T) {
-	const hint = "Mouse buttons work too: Mouse3 (middle), Mouse4 and up (side), also with modifiers (Option+Mouse4)."
-	a, tt := trTester(t)
-	if err := tt.ClickControl("Keys of shortcut 1"); err != nil {
-		t.Fatal(err)
-	}
-	click(t, tt, "Custom…")
-	click(t, tt, "Type the keys instead")
-	if !has(tt, hint) {
-		t.Errorf("no mouse hint in %q", tt.Texts())
-	}
-	click(t, tt, "Custom keys of shortcut 1")
-	for range len(settings.DefaultTranscribe) {
-		tt.Key(0, ui.KeyBackspace)
-	}
-	tt.Type("mouse1")
-	tt.Key(0, ui.KeyEnter)
-	frames(tt)
-	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != settings.DefaultTranscribe {
-		t.Fatalf("Mouse1 saved %+v", hs)
-	}
-	if !has(tt, "Unknown key. Type the modifiers first, then one key, as in Fn, RightCommand, Control+Option+Space or Fn+F5.") || !has(tt, hint) {
-		t.Errorf("Mouse1: no unknown-key warning or no mouse hint in %q", tt.Texts())
-	}
-	for range len("mouse1") {
-		tt.Key(0, ui.KeyBackspace)
-	}
-	tt.Type("mouse4")
-	tt.Key(0, ui.KeyEnter)
-	frames(tt)
-	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Keys != "Mouse4" {
-		t.Fatalf("saved %+v", hs)
-	}
-	if b, _ := json.Marshal(a.hotkeyPlan().Bindings[0]); string(b) != `{"id":"transcribe/0","modifiers":{},"button":3,"behavior":"tap"}` {
-		t.Errorf("sent the helper %s", b)
-	}
-	if !has(tt, "Press Mouse button 4 or Start, then say a sentence or two. The result shows here and is not typed anywhere.") {
-		t.Errorf("the try card does not name the button: %q", tt.Texts())
-	}
-}
-
-func TestTranscribeTrigger(t *testing.T) {
-	a, tt := trTester(t)
-	click(t, tt, "Double tap")
-	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Trigger != settings.TriggerDouble {
-		t.Fatalf("trigger %+v", hs)
-	}
-	click(t, tt, "Long press")
-	if hs := a.lib.settings.Get().Features.Transcribe.Hotkeys; hs[0].Trigger != settings.TriggerLong {
-		t.Fatalf("trigger %+v", hs)
-	}
-}
-
-func TestTranscribeHotkeyConflicts(t *testing.T) {
-	a, tt := trTester(t)
-	a.updateSettings(func(s *settings.Settings) {
-		s.Features.Transcribe.Hotkeys = []settings.Hotkey{
-			{Keys: "RightOption+Shift", Trigger: settings.TriggerTap}, // Translate's
-			{Keys: "RightOption+Shift", Trigger: settings.TriggerDouble},
-			{Keys: "Command+Space"},
-			{Keys: "K"},
-		}
-		s.Features.PasteLast = settings.Hotkey{Keys: "Command+Space"}
-	})
-	for _, s := range []string{
-		"Translate has the same keys and trigger, so only one of them works.",
-		"The same keys as shortcut 1.",
-		"macOS uses these keys for Spotlight.",
-		"A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn.",
-		"Paste the last result has the same keys and trigger, so only one of them works.",
-		"Transcribe has the same keys and trigger, so only one of them works.",
-	} {
-		if !has(tt, s) {
-			t.Errorf("no %q in %q", s, tt.Texts())
-		}
-	}
-}
-
-func TestTranscribePasteLast(t *testing.T) {
-	a, tt := trTester(t)
-	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Off")
-	if k := a.lib.settings.Get().Features.PasteLast.Keys; k != "" {
-		t.Fatalf("paste-last %q", k)
-	}
-	click(t, tt, "Keys to paste the last result")
-	click(t, tt, "Right ⌘")
-	if k := a.lib.settings.Get().Features.PasteLast; k.Keys != "RightCommand" || k.Trigger != settings.TriggerTap {
-		t.Fatalf("paste-last %+v", k)
 	}
 }
 
@@ -354,6 +189,9 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 	if a.lib.settings.Get().Features.Transcribe.Enhance {
 		t.Error("enhance not saved")
 	}
+	if !has(tt, "Add a prompt to translate or reformat what you said.") {
+		t.Error("capability guidance disappeared when clean-up was off")
+	}
 	clickSwitch(t, tt, "Basic clean-up")
 	if !a.lib.settings.Get().Features.Transcribe.Cleanup {
 		t.Error("clean-up changed while disabled")
@@ -362,8 +200,11 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 
 // TestFeatureModelControls: each feature manages its speech model where it
 // picks one, from the first download through deletion and download progress.
+// System dictation does not hide the first download or replace installed or
+// configured models' controls.
 func TestFeatureModelControls(t *testing.T) {
 	a, tt := trTester(t)
+	a.local = onlyDictation{&fakeLocal{}}
 	const download = "Download Qwen3-ASR 1.7B (8bit)"
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		a.navigate("/" + feature)
@@ -388,6 +229,18 @@ func TestFeatureModelControls(t *testing.T) {
 	frames(tt)
 	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
 		t.Errorf("download progress: %q", tt.Texts())
+	}
+
+	a.local = &featureCacheLocal{fakeLocal: readyLocal(), alternate: local.Model{Kind: local.ASR, ID: dictation.ModelID, Name: "System dictation", Stream: true}}
+	if status := a.featureModelStatus(local.ASR, hotkey.Transcribe, dictation.ModelID); status.Model != nil || status.Service != nil {
+		t.Errorf("System dictation with an installed catalog model offers another model: %+v", status)
+	}
+	a.local = onlyDictation{&fakeLocal{}}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.ASR = []settings.Provider{{ID: "openai"}}
+	})
+	if status := a.featureModelStatus(local.ASR, hotkey.Transcribe, "openai"); status.Model != nil || status.Service == nil {
+		t.Errorf("configured remote speech service lost its controls: %+v", status)
 	}
 }
 

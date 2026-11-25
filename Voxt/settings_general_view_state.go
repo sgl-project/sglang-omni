@@ -69,7 +69,7 @@ func buildSettingsGeneralViewState(translator *i18n.Translator, prefs settings.S
 		}
 		state.AvailableLanguages = append(state.AvailableLanguages, settingsLanguageViewState{Code: code, Label: settingsLanguageLabel(translator, code)})
 	}
-	for _, featureID := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement} {
+	for _, featureID := range []string{settings.HideTranslate, settings.HideRewrite, settings.HideAppEnhancement, settings.HideNotes, settings.HideMeetings} {
 		state.Features = append(state.Features, settingsFeatureViewState{
 			ID: featureID, Title: settingsFeatureTitle(translator, featureID), Shown: !prefs.Features.IsHidden(featureID),
 		})
@@ -113,6 +113,10 @@ func settingsFeatureTitle(translator *i18n.Translator, featureID string) string 
 		return translator.T("Rewrite")
 	case settings.HideAppEnhancement:
 		return translator.T("App enhancement")
+	case settings.HideNotes:
+		return translator.T("Notes")
+	case settings.HideMeetings:
+		return translator.T("Meetings")
 	}
 	return featureID
 }

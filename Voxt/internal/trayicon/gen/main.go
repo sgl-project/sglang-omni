@@ -1,4 +1,4 @@
-// Command gen makes the menu bar icons of package trayicon from Voxt's
+// Command gen makes the menu bar icons of package trayicon from the brand
 // microphone (voxt.png): menubar.png and menubar-recording.png, 36×36
 // template images. With -preview DIR it also writes how they look on a
 // light and a dark menu bar, at 1× and 2×, magnified.
@@ -79,8 +79,8 @@ func encode(img image.Image) []byte {
 	return b.Bytes()
 }
 
-// render scales Voxt's microphone to 36×36 (Catmull-Rom; the whole
-// canvas, so its margins stay Voxt's), adds the recording dot if asked
+// render scales the brand microphone to 36×36 (Catmull-Rom; the whole
+// canvas, preserving its margins), adds the recording dot if asked
 // (drawn at the source's resolution, so it is scaled like the rest), and
 // keeps only the alpha: a template image is black and transparent.
 func render(src image.Image, recording bool) *image.NRGBA {

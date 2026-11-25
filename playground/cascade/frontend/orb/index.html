@@ -85,6 +85,11 @@
     .caption[data-below="true"] { --below: 1.2em; }
     .caption[data-fade="true"] { opacity: .3; }
     .caption .pending { color: var(--faint); }
+    .screen {
+      width: min(560px, 100%); max-height: 30dvh; margin: -12px 0 0; padding: 12px 16px; overflow-y: auto;
+      border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+      font: .95rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; text-align: left;
+    }
     .warning {
       position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: min(520px, calc(100% - 32px));
       padding: 10px 14px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--border);
@@ -180,6 +185,7 @@
     </button>
     <div id="statusLine" class="status-line" aria-live="polite"></div>
     <p id="caption" class="caption" aria-live="polite"></p>
+    <pre id="screen" class="screen" aria-label="On screen" aria-live="polite" hidden></pre>
   </main>
 
   <footer class="dock-wrap">

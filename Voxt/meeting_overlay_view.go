@@ -78,7 +78,7 @@ func meetingOverlayBodyHeight(rows []meetingOverlayTranscriptRow, textWidth int)
 		if row.First {
 			height += meetingOvWhoH + 2
 		}
-		_, textHeight := guessText(ovSized{row.Text, layout.CardTextSize, layout.CardTextWeight, float32(textWidth)})
+		_, textHeight := guessText(ovSized{row.Text, layout.CardTextSize, layout.CardTextWeight, float32(textWidth), ""})
 		height += int(math.Ceil(float64(textHeight)))
 	}
 	return height

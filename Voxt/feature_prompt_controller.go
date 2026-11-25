@@ -53,18 +53,6 @@ func (a *app) previewInput(feature string) compose.Input {
 	return previewInputFor(a.prefs, feature, a.fui(feature).prompt, i18n.CurrentTranslator())
 }
 
-func trySample() string {
-	return trySampleFor(i18n.CurrentTranslator())
-}
-
-func rewriteSample() (instruction, selection string) {
-	return rewriteSampleFor(i18n.CurrentTranslator())
-}
-
-func variableInfo(name string) string {
-	return variableInfoFor(i18n.CurrentTranslator(), name)
-}
-
 func featureVariables(feature string) []string {
 	if feature == hotkey.Translate {
 		return compose.VariableNames

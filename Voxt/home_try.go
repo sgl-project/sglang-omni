@@ -2,7 +2,8 @@ package main
 
 // Where a try runs (home_page.go): a shortcut pressed while VoxtNew is in
 // front starts a try on the page it shows, unless the user types in one of
-// its fields, and Home offers its Try area until the first result.
+// its fields. Home offers its Try area until the first result; after it,
+// a shortcut on Home is a session as in another app.
 
 import (
 	"os"
@@ -24,14 +25,15 @@ const (
 	placeHome                       // Home's Try area
 	placeFeature                    // the feature page's Try area
 	placeOnboarding                 // the setup guide's step
+	placeShare                      // the share card (share_card.go): any feature's result fills it
 )
 
 // tryPlace decides where a shortcut of kind, pressed with target in
 // front, runs: a try when target is VoxtNew and what shows has a Try
-// area for it (the setup guide's step, Home, the feature's page), and no
-// text field of the window has the focus: then a session types into that
-// field, as in another app (Voxt 1.x; FB10, a feature's rules being
-// edited).
+// area for it (the setup guide's step, Home while it offers one, the
+// feature's page), and no text field of the window has the focus: then a
+// session types into that field, as in another app (Voxt 1.x; FB10, a
+// feature's rules being edited).
 func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	if target.PID == 0 || target.PID != os.Getpid() {
 		return placeNone
@@ -45,8 +47,15 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 	if a.settingsOpen || a.textFocused() {
 		return placeNone
 	}
+	// The card shows only on Home: off it, a card left open takes nothing.
+	if a.share.open && a.share.studio == nil && a.router.Path() == "/home" {
+		return placeShare
+	}
 	switch a.router.Path() {
 	case "/home":
+		if !a.homeShowsTry(a.homeTrySession()) {
+			return placeNone // no Try area to show a try's result in (#4199)
+		}
 		return placeHome
 	case "/" + string(kind):
 		return placeFeature
@@ -64,6 +73,8 @@ func (a *app) tryStarted(place tryPlace, kind store.Kind, id string, n *sessionN
 		a.fui(string(kind)).block = n
 	case placeOnboarding:
 		a.obTryStarted(id, n) // onboarding.go
+	case placeShare:
+		a.shareTryStarted(id, n) // share_controller.go
 	}
 }
 

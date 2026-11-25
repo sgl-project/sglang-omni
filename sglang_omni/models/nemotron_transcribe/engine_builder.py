@@ -15,9 +15,12 @@ from sglang.kernels.ops.mamba.triton_ops import (
     initialize_mamba_selective_state_update_backend,
 )
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
+from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.server_args import ServerArgs
+from torch import nn
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.nemotron_transcribe.config import (
     DEFAULT_MAX_RUNNING_REQUESTS,
     EncoderCompileMode,
@@ -26,11 +29,20 @@ from sglang_omni.models.nemotron_transcribe.encoder_service import (
     NemotronTranscribePreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.nemotron_transcribe.fp8_linear import (
+    Fp8Linear,
+    dequantize_fp8_linears,
+    fp8_gemm_supported,
+)
 from sglang_omni.models.nemotron_transcribe.hf_config import (
     MODEL_ARCH_OVERRIDE,
     NemotronTranscribeConfig,
     register_nemotron_transcribe_hf_config,
 )
+from sglang_omni.models.nemotron_transcribe.model_runner import (
+    NemotronTranscribeModelRunner,
+)
+from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeMTPDraft
 from sglang_omni.models.nemotron_transcribe.request_builders import (
     NemotronTranscribeRequestData,
     RequestBuilder,
@@ -45,14 +57,20 @@ from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.engine_factory import (
     AsrEngineBuilder,
     GenerationDefaults,
     SchedulerExtras,
 )
 from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
+from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 
 logger = logging.getLogger(__name__)
+
+MTP_DEFAULT_NUM_STEPS = 3
+# note (scatyf3): SGLang resolves NEXTN to EAGLE, so both names select the same chain drafter.
+MTP_ALGORITHMS = ("EAGLE", "NEXTN")
 
 
 def create_checkpoint_shim(checkpoint_directory: Path) -> Path:
@@ -79,6 +97,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         context_length: int,
         max_audio_seconds: float | None,
         mem_fraction_static: float | None,
+        checkpoint_revision: str | None,
         mm_embedding_cache_size_bytes: int,
         chunked_prefill_size: int,
         encoder_max_batch_size: int,
@@ -92,6 +111,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         compile_perception: bool,
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
+        perception_fp8: bool,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -101,6 +121,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.context_length = context_length
         self.max_audio_seconds = max_audio_seconds
         self.mem_fraction_static = mem_fraction_static
+        self.checkpoint_revision = checkpoint_revision
         self.mm_embedding_cache_size_bytes = mm_embedding_cache_size_bytes
         self.chunked_prefill_size = chunked_prefill_size
         self.encoder_max_batch_size = encoder_max_batch_size
@@ -114,14 +135,18 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.compile_perception = compile_perception
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
+        self.perception_fp8 = bool(perception_fp8)
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
         self.should_wait_for_encode_fn: Callable[[], bool] | None = None
+        self.enable_mtp_draft = False
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
-        checkpoint_directory = Path(resolve_model_path(model_path))
+        checkpoint_directory = Path(
+            resolve_model_path(model_path, revision=self.checkpoint_revision)
+        )
         checkpoint_config = json.loads(
             (checkpoint_directory / "config.json").read_text()
         )
@@ -152,6 +177,97 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
             "cuda_graph_backend_prefill": CudaGraphBackend.DISABLED,
         }
 
+    def make_model_runner(
+        self,
+        model_worker: ModelWorker,
+        output_proc: SGLangOutputProcessor,
+    ) -> NemotronTranscribeModelRunner:
+        return NemotronTranscribeModelRunner(model_worker, output_proc)
+
+    def adjust_overrides(self, overrides: dict[str, object]) -> None:
+        algorithm = overrides.get("speculative_algorithm")
+        if algorithm is None:
+            return
+        elif not isinstance(algorithm, str) or algorithm.upper() not in MTP_ALGORITHMS:
+            raise ValueError(
+                "Nemotron Transcribe speculative decoding serves the checkpoint's "
+                f"native MTP layer; set speculative_algorithm NEXTN, not {algorithm}"
+            )
+        else:
+            pass
+        num_steps = overrides.get("speculative_num_steps")
+        if num_steps is None:
+            num_steps = MTP_DEFAULT_NUM_STEPS
+        elif (
+            isinstance(num_steps, bool)
+            or not isinstance(num_steps, int)
+            or num_steps < 1
+        ):
+            raise ValueError(
+                "Nemotron Transcribe MTP needs speculative_num_steps to be a positive "
+                f"integer, got {num_steps}"
+            )
+        else:
+            pass
+        num_draft_tokens = overrides.get("speculative_num_draft_tokens")
+        if num_draft_tokens is None:
+            num_draft_tokens = num_steps + 1
+        elif num_draft_tokens != num_steps + 1:
+            raise ValueError(
+                "Nemotron Transcribe MTP verifies its draft chain plus one bonus token; "
+                f"speculative_num_draft_tokens must be {num_steps + 1} for "
+                f"speculative_num_steps {num_steps}, got {num_draft_tokens}"
+            )
+        else:
+            pass
+        if overrides.get("speculative_draft_model_path") not in (
+            None,
+            self.checkpoint_dir,
+        ):
+            raise ValueError(
+                "the Nemotron Transcribe MTP draft lives in the target checkpoint; "
+                "leave speculative_draft_model_path unset"
+            )
+        elif overrides.get("speculative_draft_model_revision") not in (
+            None,
+            overrides.get("revision"),
+        ):
+            raise ValueError(
+                "the Nemotron Transcribe MTP draft loads from the target checkpoint "
+                "revision; set revision instead of speculative_draft_model_revision"
+            )
+        elif overrides.get("speculative_eagle_topk") not in (None, 1):
+            raise ValueError(
+                "Nemotron Transcribe MTP drafts a single token chain; "
+                "speculative_eagle_topk must be 1, got "
+                f"{overrides['speculative_eagle_topk']}"
+            )
+        elif overrides.get("enable_multi_layer_eagle"):
+            raise ValueError(
+                "the Nemotron Transcribe checkpoint has one MTP step; "
+                "enable_multi_layer_eagle is unsupported"
+            )
+        elif overrides.get("enable_mixed_chunk"):
+            raise ValueError("Nemotron Transcribe MTP requires enable_mixed_chunk off")
+        else:
+            pass
+        overrides.update(
+            speculative_draft_model_path=self.checkpoint_dir,
+            speculative_draft_model_revision=None,
+            speculative_eagle_topk=1,
+            speculative_num_steps=num_steps,
+            speculative_num_draft_tokens=num_draft_tokens,
+            enable_mixed_chunk=False,
+        )
+        ModelRegistry.models["NemotronHForCausalLMMTP"] = NemotronTranscribeMTPDraft
+        self.enable_mtp_draft = True
+
+    def infra_kwargs(self) -> InfrastructureOptions:
+        if self.enable_mtp_draft:
+            return {"supports_speculative_decoding": True}
+        else:
+            return {}
+
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
             raise ValueError(
@@ -173,6 +289,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         """The builder interface invokes this after decoder graph capture."""
         model.encoder_max_batch_size = self.encoder_max_batch_size
         init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+        self.select_fp8_perception(model.perception)
         if self.compile_perception:
             device = next(model.perception.parameters()).device
             model.perception.to(device=device)
@@ -187,6 +304,33 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
                     pass
         else:
             pass
+
+    def select_fp8_perception(self, perception: nn.Module) -> None:
+        perception.dequantize_fp8_on_load = True
+        fp8_linears = sum(
+            isinstance(child, Fp8Linear) for child in perception.modules()
+        )
+        if not fp8_linears:
+            return
+        else:
+            pass
+        device = next(perception.parameters()).device
+        if self.perception_fp8 and fp8_gemm_supported(device):
+            perception._derived_weight_cache_error = (  # noqa: leading-underscore - SGLang contract
+                "Online weight updates are unsupported while the Nemotron "
+                "Transcribe encoder runs FP8 GEMMs. Restart the server to load "
+                "new weights, or serve with --asr.factory.perception_fp8 false "
+                "to keep online updates."
+            )
+            logger.info(
+                f"Nemotron Transcribe encoder runs {fp8_linears} linears with FP8 GEMMs"
+            )
+        else:
+            dequantize_fp8_linears(perception)
+            logger.info(
+                f"Nemotron Transcribe encoder dequantized {fp8_linears} FP8 linears "
+                f"(perception_fp8={self.perception_fp8}, device={device})"
+            )
 
     def setup_runtime_resources(
         self,

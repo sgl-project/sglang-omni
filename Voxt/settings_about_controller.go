@@ -112,8 +112,12 @@ func (a *app) runSelfCheck() {
 		return
 	}
 	a.selfChecking = true
+	a.recheckPermissionsThen(a.selfCheckWith) // the permissions as read now
+}
+
+// selfCheckWith runs the self-check once the permissions were read.
+func (a *app) selfCheckWith() {
 	st, hs, data := a.lib.store, a.helperStatus(), a.dataDir()
-	a.recheckPermissions()
 	perms := a.perms
 	mods := a.modelCheckInput() // settings_about_models.go
 	translator := i18n.CurrentTranslator()

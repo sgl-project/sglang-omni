@@ -30,17 +30,19 @@ func (a *app) shownDraft(s session.Snapshot) string {
 }
 
 // paceDraft moves the shown draft on, a step every revealFrame, until it
-// caught up with the session's. overlaySync calls it.
+// caught up with the card's session's (the backgrounded answer's too).
+// overlaySync calls it.
 func (a *app) paceDraft() {
 	r := &a.ov.stream
-	if r.id != a.sess.ID {
-		*r = streamReveal{id: a.sess.ID}
+	s := a.cardSnapshot()
+	if r.id != s.ID {
+		*r = streamReveal{id: s.ID}
 	}
-	total := utf8.RuneCountInString(a.sess.Draft)
+	total := utf8.RuneCountInString(s.Draft)
 	// The model asked again (Translate's strict retry, a fallback, another
 	// thinking level): the new answer shows at the pace from its start.
 	r.shown = min(r.shown, total)
-	if r.ticking || r.shown >= total || !a.sess.State.Live() || !a.timersRun() || a.overlayModeNow() != ovAnswer {
+	if r.ticking || r.shown >= total || !s.State.Live() || !a.timersRun() || a.overlayModeNow() != ovAnswer {
 		return
 	}
 	r.ticking = true
@@ -50,7 +52,7 @@ func (a *app) paceDraft() {
 			return // another session's: its own steps run
 		}
 		r.ticking = false
-		r.shown = revealRunes(r.shown, utf8.RuneCountInString(a.sess.Draft), revealFrame)
+		r.shown = revealRunes(r.shown, utf8.RuneCountInString(a.cardSnapshot().Draft), revealFrame)
 		a.overlaySync()
 	})
 }

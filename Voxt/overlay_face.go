@@ -78,7 +78,7 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 			if state.Mode == ovRecording {
 				waveform(c, pill.Levels[:], pill.Heard, look)
 				if look.time {
-					ui.Box(c).Size(layout.TimeW, layout.RowH).Shrink(0).Center().Children(func() {
+					ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
 						ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
 					})
 				}
@@ -276,8 +276,8 @@ func overlayNotice(c *ui.Context, notice *sessionNoticeViewState, radius, alpha 
 	}
 }
 
-// The preview's background: a desktop picture (Voxt's, Apache-2.0: see
-// NOTICE), decoded once.
+// The preview's background: a desktop picture of our own (a soft gradient,
+// blue-violet to peach), decoded once.
 //
 //go:embed assets/overlay-preview-background.png
 var ovPreviewPNG []byte

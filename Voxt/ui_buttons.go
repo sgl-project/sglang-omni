@@ -141,14 +141,20 @@ func ghostBase(c *ui.Context) ui.Element {
 //
 //	if iconButton(c.Key("close"), icons.Close, i18n.T("Close")).Clicked() { … }
 func iconButton(c *ui.Context, ic icons.Icon, tip string) ui.Element {
+	return iconButtonSized(c, ic, tip, 28, 16)
+}
+
+// iconButtonSized is iconButton in a box of size DIPs, its icon glyph
+// DIPs: a smaller one sits in a row.
+func iconButtonSized(c *ui.Context, ic icons.Icon, tip string, size, glyph float32) ui.Element {
 	t := c.Theme()
-	b := ghostBase(c).Size(px(t, 28), px(t, 28)).Center().Label(tip).Tooltip(tip)
+	b := ghostBase(c).Size(px(t, size), px(t, size)).Center().Label(tip).Tooltip(tip)
 	b.Children(func() {
 		col := tok(t).Text2
 		if b.Hovered() {
 			col = tok(t).Text
 		}
-		ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(col)
+		ui.Icon(c, ic.Linear).Size(px(t, glyph), px(t, glyph)).TextColor(col)
 	})
 	return b
 }
