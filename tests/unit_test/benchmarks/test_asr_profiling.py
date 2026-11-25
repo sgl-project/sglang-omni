@@ -255,12 +255,13 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
 
     monkeypatch.setattr(seedtts_benchmark.time, "time", lambda: 123)
 
-    async def fake_run_repeat(args, samples, concurrency, repeat):
+    async def fake_run_repeat(args, samples, concurrency, repeat, *, session=None):
         repeat_call.update(
             args=args,
             samples=samples,
             concurrency=concurrency,
             repeat=repeat,
+            session=session,
         )
         return {"wall_clock_s": 2.0}
 
@@ -276,9 +277,10 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
     )
 
     samples = [object()]
+    fake_session = object()
     profile = asyncio.run(
         seedtts_benchmark._run_profiled_pass(
-            args, samples, concurrency=4
+            args, samples, concurrency=4, session=fake_session
         )  # noqa: leading-underscore  # production name
     )
 
@@ -295,6 +297,7 @@ def test_seedtts_profiled_pass_delegates_shared_lifecycle(
         "samples": samples,
         "concurrency": 4,
         "repeat": 0,
+        "session": fake_session,
     }
     assert profile == {"pass_metrics": {"wall_clock_s": 2.0}}
 
@@ -454,7 +457,7 @@ def test_server_identity_reports_models_best_effort(
 def test_profile_control_forwards_event_buffer_capacity_when_sized_for_pass(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payloads: list[dict] = []
+    payloads: list[dict[str, object]] = []
 
     def fake_post(url, *, json, timeout, proxies, headers):
         payloads.append(json)
@@ -478,7 +481,9 @@ def test_profile_control_forwards_event_buffer_capacity_when_sized_for_pass(
 
 
 @pytest.mark.asyncio
-async def test_wait_for_profile_flush_waits_for_all_status_sidecars(tmp_path) -> None:
+async def test_wait_for_profile_flush_waits_for_all_status_sidecars(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "events_asr_101.jsonl").write_text("")
     (tmp_path / "events_coordinator_102.jsonl").write_text("")
     (tmp_path / "run_status_101.json").write_text("{}")
@@ -488,6 +493,9 @@ async def test_wait_for_profile_flush_waits_for_all_status_sidecars(tmp_path) ->
         (tmp_path / "run_status_102.json").write_text("{}")
 
     publisher = asyncio.create_task(publish_second_status())
-    await asr_profiling.wait_for_profile_flush(str(tmp_path), timeout_seconds=1.0)
+    flushed = await asr_profiling.wait_for_profile_flush(
+        str(tmp_path), timeout_seconds=1.0
+    )
     await publisher
+    assert flushed is True
     assert (tmp_path / "run_status_102.json").is_file()
