@@ -198,6 +198,7 @@ def test_auk_platform_hooks_default_off_and_xpu_takes_its_measured_path() -> Non
         "enable_auk_dit_graph": (True, False),
         "enable_auk_fused_vae_activations": (False, True),
         "enable_auk_fused_qk_norm_rope": (False, True),
+        "enable_auk_precomputed_modulation": (False, True),
     }
     for hook, (default, xpu) in hooks.items():
         assert getattr(OmniPlatform(), hook)() is default

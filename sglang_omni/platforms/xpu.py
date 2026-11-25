@@ -88,6 +88,9 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
     def enable_auk_fused_qk_norm_rope(self) -> bool:
         return True
 
+    def enable_auk_precomputed_modulation(self) -> bool:
+        return True
+
     def enable_zonos2_torch_compile(self) -> bool:
         return False
 

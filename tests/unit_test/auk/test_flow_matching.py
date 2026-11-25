@@ -247,3 +247,77 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
     declining.batch = 2
     flow.sample_batch(items, steps=2, cfg_strength=2.0, step_graph=declining)
     assert set(widths) == {19}
+
+
+@pytest.mark.parametrize("cfg_strength", [0.0, 2.0])
+def test_precomputed_modulation_matches_the_per_step_modulation(
+    monkeypatch, cfg_strength
+):
+    from sglang_omni.models.auk import flow_matching
+    from sglang_omni.models.auk.dit import AuKDit
+    from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+
+    torch.manual_seed(11)
+    flow = AuKFlowMatching(
+        AuKDit(
+            dim=32,
+            heads=2,
+            dim_head=16,
+            latent_dim=8,
+            text_hidden_dim=16,
+            num_layers=2,
+            num_single_layers=2,
+        ),
+        num_llm_layers=2,
+    ).eval()
+    for parameter in flow.parameters():
+        torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    items = [
+        AuKSampleItem(
+            torch.randn(text, 16),
+            torch.ones(text, dtype=torch.bool),
+            frames,
+            torch.randn(ref, 8) if ref else None,
+            seed=seed,
+            ref_length=ref,
+        )
+        for text, frames, ref, seed in [(5, 19, 4, 1), (3, 15, 0, 3)]
+    ]
+    sampling = dict(steps=4, cfg_strength=cfg_strength)
+    expected = flow.sample_batch(items, **sampling)
+
+    tables = []
+    build_table = flow.transformer.modulation_table
+    monkeypatch.setattr(flow_matching.current_platform, "device_type", "cpu")
+    monkeypatch.setattr(
+        flow_matching.current_platform,
+        "enable_auk_precomputed_modulation",
+        lambda: True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        flow.transformer,
+        "modulation_table",
+        lambda times: tables.append(times) or build_table(times),
+    )
+    actual = flow.sample_batch(items, **sampling)
+
+    assert [times.numel() for times in tables] == ([4] if cfg_strength else [])
+    for output, reference in zip(actual, expected):
+        torch.testing.assert_close(output, reference, rtol=1e-6, atol=1e-6)
+
+
+def test_precomputed_modulation_step_hands_each_step_its_own_row():
+    from sglang_omni.models.auk.flow_matching import PrecomputedModulationStep
+
+    seen = []
+
+    def step(time, x, *, modulation=None):
+        seen.append((float(time), modulation))
+        return torch.ones_like(x)
+
+    table = ["row0", "row1", "row2"]
+    integrate(
+        PrecomputedModulationStep(step, table), torch.zeros(1), torch.linspace(0, 1, 4)
+    )
+    assert [row for _, row in seen] == table

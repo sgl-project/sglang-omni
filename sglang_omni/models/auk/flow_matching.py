@@ -8,14 +8,39 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from threading import Event
+from typing import Protocol
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
-from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.auk.dit import AuKDit, AuKModulation
 from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner, AuKStepReplay
+from sglang_omni.platforms import current_platform
+
+
+class AuKModulatedStepFn(Protocol):
+    def __call__(
+        self,
+        time: torch.Tensor,
+        x: torch.Tensor,
+        /,
+        *,
+        modulation: AuKModulation | None = None,
+    ) -> torch.Tensor: ...
+
+
+class PrecomputedModulationStep:
+    def __init__(self, step: AuKModulatedStepFn, table: list[AuKModulation]):
+        self.step = step
+        self.table = table
+        self.index = 0
+
+    def __call__(self, time: torch.Tensor, x: torch.Tensor, /) -> torch.Tensor:
+        modulation = self.table[self.index]
+        self.index += 1
+        return self.step(time, x, modulation=modulation)
 
 
 def request_generator(
@@ -241,8 +266,8 @@ class AuKFlowMatching(nn.Module):
             joint_positions=joint_positions,
         )
 
-        def step(inputs, t, x):
-            kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
+        def step(inputs, t, x, *, modulation=None):
+            kwargs = dict(inputs, x=x.to(weight_dtype), time=t, modulation=modulation)
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False
@@ -257,6 +282,14 @@ class AuKFlowMatching(nn.Module):
         fn = None
         if padding is not None:
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
+        elif (
+            cfg_strength >= 1e-5
+            and device.type == current_platform.device_type
+            and current_platform.enable_auk_precomputed_modulation()
+        ):
+            fn = PrecomputedModulationStep(
+                partial(step, inputs), self.transformer.modulation_table(t[:-1])
+            )
         else:
             pass
         try:
