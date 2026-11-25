@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, JsonValue
+from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.configs.sample.sampling_params import (
     DataType,
     SamplingParams,
@@ -135,6 +136,22 @@ class SenseNovaU1SamplingParams(SamplingParams):
             )
         else:
             pass
+        switched_on = (
+            envs.SGLANG_CACHE_DIT_ENABLED
+            if self.enable_cache_dit is None
+            else self.enable_cache_dit
+        )
+        if switched_on:
+            # note (Wes): check the settings before the guidance fallback, so a request the server runs uncached still gets a 400 for bad settings.
+            overrides = request_cache_dit_overrides(self.cache_dit_params)
+            config = resolve_cache_dit_config(overrides, int(self.num_inference_steps))
+            check_compute_blocks(
+                config.Fn_compute_blocks,
+                config.Bn_compute_blocks,
+                checkpoint_decoder_layer_count(model_path, revision),
+            )
+        else:
+            overrides = {}
         self.enable_cache_dit = resolve_cache_dit_switch(
             self.enable_cache_dit,
             branch_count=guidance_branch_count(
@@ -145,13 +162,6 @@ class SenseNovaU1SamplingParams(SamplingParams):
             cfg_interval=tuple(self.cfg_interval),
         )
         if self.enable_cache_dit:
-            overrides = request_cache_dit_overrides(self.cache_dit_params)
-            config = resolve_cache_dit_config(overrides, int(self.num_inference_steps))
-            check_compute_blocks(
-                config.Fn_compute_blocks,
-                config.Bn_compute_blocks,
-                checkpoint_decoder_layer_count(model_path, revision),
-            )
             self.cache_dit_params = overrides or None
         else:
             # note (Wes): a disabled request ignores its settings, so it batches with other disabled requests.

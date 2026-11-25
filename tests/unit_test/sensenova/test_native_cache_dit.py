@@ -668,6 +668,50 @@ def test_unsupported_guidance_fails_only_an_explicit_enable(
         assert (uncached.enable_cache_dit, uncached.cache_dit_params) == (False, None)
 
 
+@pytest.mark.parametrize(
+    ("cache_dit_params", "message"),
+    [
+        ({"unknown_key": 1}, r"Unknown cache_dit_params keys: \['unknown_key'\]"),
+        ({"residual_diff_threshold": 1.5}, "residual_diff_threshold"),
+        ({"Fn_compute_blocks": 2, "Bn_compute_blocks": 1}, "decoder layers"),
+    ],
+)
+@pytest.mark.parametrize(("request_options", "guidance_message"), UNSUPPORTED_GUIDANCE)
+def test_server_switch_still_rejects_invalid_settings_with_unsupported_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_path: str,
+    cache_dit_params: dict[str, JsonValue],
+    message: str,
+    request_options: dict[str, JsonValue],
+    guidance_message: str,
+) -> None:
+    """Falling back to an uncached run must not hide settings that would fail a cached one."""
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    edit = bool(request_options.get("edit", False))
+    sampling_options = {
+        name: value for name, value in request_options.items() if name != "edit"
+    }
+
+    def sampling_params(enable_cache_dit: bool | None) -> SenseNovaU1SamplingParams:
+        return SenseNovaU1SamplingParams(
+            prompt="edit" if edit else "a red apple",
+            image_path="reference.png" if edit else None,
+            width=64,
+            height=64,
+            num_inference_steps=STEPS,
+            enable_cache_dit=enable_cache_dit,
+            cache_dit_params=cache_dit_params,
+            **sampling_options,
+        )
+
+    defaulted = sampling_params(None)
+    with pytest.raises(ValueError, match=message):
+        defaulted.resolve_cache_dit(checkpoint_path, None)
+    disabled = sampling_params(False)
+    disabled.resolve_cache_dit(checkpoint_path, None)
+    assert (disabled.enable_cache_dit, disabled.cache_dit_params) == (False, None)
+
+
 def test_server_switch_runs_unsupported_guidance_uncached(
     monkeypatch: pytest.MonkeyPatch,
     new_stage: StageFactory,
