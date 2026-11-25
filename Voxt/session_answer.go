@@ -208,18 +208,29 @@ func (a *app) followUpWith(hold, typed string) bool {
 	// The box's pictures go with the follow-up too: the same bytes in
 	// the same position, so the server's prefix cache reuses them.
 	req.Images = card.images
+	var text string
+	var textSegments []boxTextSegment
+	var nextTextID int
 	if typed != "" {
 		req.Text = &session.TextInput{Raw: typed}
+		text, textSegments, nextTextID = a.box.text, a.box.textSegments, a.box.nextTextID
 		a.box.text, a.box.textSegments = "", nil // it is the instruction now, not text beside one
+		a.box.textSegmentsDirty = true
 		a.boxShare.store("", a.box.images)
 	}
 	if id, n := a.startSessionID(req); n != nil || id == "" {
 		a.followUp = ""
+		if typed != "" {
+			a.box.text, a.box.textSegments, a.box.nextTextID = text, textSegments, nextTextID
+			a.box.textSegmentsDirty = true
+			a.boxSync()
+		}
 	} else {
 		// The card turns into a conversation, which the follow-up's answer
 		// joins (Voxt's).
 		a.answer.conversation, a.answer.msg = true, ""
 		a.showBox(card.target, id)
+		a.box.typedFollowUp = typed != ""
 		a.overlaySync()
 	}
 	return true
