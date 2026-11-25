@@ -406,10 +406,10 @@ func (w *pauseWatch) hear(pcm []byte) {
 	}
 }
 
-// noteRate notes that a service limited the rate, when the request took
-// more than one attempt or was refused for it.
+// noteRate notes that a service limited the rate: it refused the request,
+// or an attempt of it, for that.
 func (m *Manager) noteRate(service string, resp llm.Response, err error) {
-	if llm.Code(err) != llm.CodeRateLimited && resp.Attempts <= 1 {
+	if llm.Code(err) != llm.CodeRateLimited && !resp.RateLimited {
 		return
 	}
 	m.mu.Lock()

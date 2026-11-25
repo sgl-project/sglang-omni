@@ -144,6 +144,7 @@ type Response struct {
 	Usage        Usage
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
+	RateLimited  bool          // an attempt was refused for the rate limit (Client.Chat, also with an error)
 	Repairs      int           // JSON repair turns (Client.JSON)
 	// ImagesDropped: the model refused the images and the answer came
 	// from the text alone (only the session may claim an image went).
