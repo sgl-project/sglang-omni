@@ -670,6 +670,9 @@ type fakeSelector struct {
 	steps     []string
 	err       error
 	delay     time.Duration
+	// held reads come first with the ⌘C skipped: the shortcut's keys
+	// are still down.
+	held int
 
 	mu    sync.Mutex
 	calls []proto.SelectionParams
@@ -689,6 +692,11 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	if f.err != nil {
 		return proto.SelectionResult{}, f.err
 	}
+	if f.mu.Lock(); len(f.calls) <= f.held {
+		f.mu.Unlock()
+		return proto.SelectionResult{Via: proto.ViaNone, MS: 800, Steps: []string{"focus=nil", "copy: skipped held=option"}}, nil
+	}
+	f.mu.Unlock()
 	switch {
 	case f.text != "":
 		return proto.SelectionResult{Text: f.text, Via: proto.ViaAX, MS: 2}, nil

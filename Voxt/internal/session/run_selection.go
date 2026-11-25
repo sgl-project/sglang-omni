@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -10,8 +12,9 @@ import (
 
 // readSelection reads the selected text of the app in front (Translate,
 // Rewrite) and puts it in the snapshot; "" for none, or when it could
-// not be read (the session goes on without one).
-func (r *run) readSelection() string {
+// not be read (the session goes on without one). listened, Rewrite's,
+// closes when the recording ends; nil reads once.
+func (r *run) readSelection(listened <-chan struct{}) string {
 	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
 	cfg := r.m.cfg
 	timeout, params := cfg.ReadTimeout, proto.SelectionParams{
@@ -24,9 +27,24 @@ func (r *run) readSelection() string {
 	if r.req.Kind == store.KindRewrite {
 		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
 	}
-	ctx, cancel := context.WithTimeout(r.ctx, timeout)
-	defer cancel()
-	res, err := cfg.Select.Selection(ctx, params)
+	read := func() (proto.SelectionResult, error) {
+		ctx, cancel := context.WithTimeout(r.ctx, timeout)
+		defer cancel()
+		return cfg.Select.Selection(ctx, params)
+	}
+	res, err := read()
+	// Rewrite reads while the user speaks: with the shortcut's keys still
+	// down (Option of a held Option+C) the helper skips the ⌘C, so read
+	// again until they lift, the last time once the recording ends (VX-141).
+	for last := false; listened != nil && err == nil && !last && copySkipped(res.Steps); res, err = read() {
+		select {
+		case <-r.ctx.Done():
+			return ""
+		case <-listened:
+			last = true
+		case <-time.After(selectionRetry):
+		}
+	}
 	if err != nil {
 		if r.ctx.Err() == nil {
 			r.logf("warning", "reading the selection: %v", err)
@@ -65,4 +83,13 @@ func (r *run) readSelection() string {
 	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
 	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
 	return text
+}
+
+// selectionRetry spaces Rewrite's reads while the shortcut's keys are
+// down; each read already waits selectionModifierWaitMS for them.
+const selectionRetry = 100 * time.Millisecond
+
+// copySkipped: the helper skipped its ⌘C because keys were held.
+func copySkipped(steps []string) bool {
+	return slices.ContainsFunc(steps, func(s string) bool { return strings.HasPrefix(s, "copy: skipped") })
 }

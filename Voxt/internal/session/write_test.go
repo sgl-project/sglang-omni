@@ -455,6 +455,49 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	}
 }
 
+// TestRewriteReadsTheSelectionOnceTheKeysLift: with a held Option+C in
+// an app whose selection only ⌘C reads (Slack), the first reads skip
+// the ⌘C while Option is down. Rewrite reads again until the keys lift
+// and rewrites the selection, not the clipboard's picture (VX-141); keys
+// still down when the recording ends get one last read, not a wait.
+func TestRewriteReadsTheSelectionOnceTheKeysLift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		held int
+		want string
+	}{
+		{name: "lifted", held: 1, want: "<selected_text>\nship friday?"},
+		{name: "still down", held: 1 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sel := &fakeSelector{copyText: "ship friday?", held: tc.held}
+			model := &fakeLLM{text: "We ship on Friday."}
+			h := newHarness(t, &fakeFile{text: " make it polite "}, model, func(c *Config, s *settings.Settings) {
+				c.Select = sel
+				s.Privacy.SendClipboardImage = true
+				c.ClipboardImage = func(context.Context) ([]byte, error) { return []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, nil }
+			})
+			id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 5)
+			end := h.rec.wait(t)
+			reqs := model.requests()
+			if end.State != Done || len(reqs) != 1 {
+				t.Fatalf("end %s %q, requests %d", end.State, end.Result, len(reqs))
+			}
+			got := reqs[0].Messages[len(reqs[0].Messages)-1].Content
+			if tc.want != "" && (!strings.Contains(got, tc.want) || len(reqs[0].Images) != 0) {
+				t.Errorf("request %q with %d images, want the selection and no picture", got, len(reqs[0].Images))
+			}
+			if tc.want == "" && strings.Contains(got, "<selected_text>") {
+				t.Errorf("request %q", got)
+			}
+		})
+	}
+}
+
 // TestTranslateSendsTheCopyBudget: Translate's read sends its ⌘C budget
 // explicitly — left at zero the helper's default applies, and the
 // deadline arithmetic of TestSelectionBudgetsFitTimeouts no longer
