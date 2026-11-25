@@ -14,7 +14,6 @@
 namespace arkasr {
 
 namespace mx = mlx::core;
-using omni_common::DraftPolicy;
 using omni_common::DraftStatistics;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
@@ -49,10 +48,8 @@ bool WindowIsAllZero(const std::vector<float> &samples,
 
 ArkTranscriber::ArkTranscriber(const std::filesystem::path &model_directory,
                                const std::filesystem::path &draft_directory,
-                               int draft_quantization_bits,
-                               DraftPolicy draft_policy)
-    : model_(model_directory), draft_policy_(draft_policy),
-      tokenizer_(model_directory),
+                               int draft_quantization_bits)
+    : model_(model_directory), tokenizer_(model_directory),
       prefix_embeddings_(PromptEmbeddings(kPromptPrefix)),
       suffix_embeddings_(PromptEmbeddings(kPromptSuffix)),
       end_of_turn_id_(tokenizer_.AddedTokenId(kEndOfTurn)) {
@@ -120,9 +117,8 @@ ArkTranscriber::TranscribeWindow(const std::vector<float> &samples,
   };
   DraftStatistics draft_statistics;
   if (draft_.has_value()) {
-    draft_statistics =
-        draft_->Decode(model_.decoder(), embeddings, max_new_tokens, 0, commit,
-                       cancel, draft_policy_);
+    draft_statistics = draft_->Decode(model_.decoder(), embeddings,
+                                      max_new_tokens, 0, commit, cancel);
   } else {
     std::vector<KVCache> caches = model_.decoder().NewCaches();
     mx::array next_token = mx::argmax(model_.decoder().LastLogits(

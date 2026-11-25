@@ -4,8 +4,7 @@
 // protocol.
 //
 //   arkasr_server --model-path DIR [--model-name NAME] [--host H] [--port P]
-//     [--draft-model-path DIR [--draft-bits 4|6|8]
-//     [--draft-policy adaptive|fixed]]
+//     [--draft-model-path DIR [--draft-bits 4|6|8]]
 //   arkasr_server --supervised --model-kind arkasr --model-directory DIR
 //
 // Request fields beside the audio: language (reported back; the model
@@ -24,10 +23,9 @@ class ArkModelService : public asr_service::ServedModel {
 public:
   ArkModelService(const std::filesystem::path &model_directory,
                   const std::filesystem::path &draft_directory,
-                  int draft_quantization_bits,
-                  omni_common::DraftPolicy draft_policy)
-      : transcriber_(model_directory, draft_directory, draft_quantization_bits,
-                     draft_policy) {}
+                  int draft_quantization_bits)
+      : transcriber_(model_directory, draft_directory,
+                     draft_quantization_bits) {}
 
   asr_service::Transcription
   Prepare(std::vector<float> samples,
@@ -54,16 +52,11 @@ private:
 int main(int argc, char **argv) {
   std::filesystem::path draft_directory;
   int draft_quantization_bits = 0;
-  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kFixed;
   asr_service::ServedKind kind;
   kind.model_kind = "arkasr";
   kind.flags = {
       {"--draft-model-path",
        [&](const std::string &value) { draft_directory = value; }},
-      {"--draft-policy",
-       [&](const std::string &value) {
-         draft_policy = omni_common::ParseDraftPolicy(value);
-       }},
       {"--draft-bits",
        [&](const std::string &value) {
          draft_quantization_bits = std::stoi(value);
@@ -80,8 +73,7 @@ int main(int argc, char **argv) {
   };
   kind.load = [&](const std::filesystem::path &model_directory) {
     return std::make_unique<ArkModelService>(model_directory, draft_directory,
-                                             draft_quantization_bits,
-                                             draft_policy);
+                                             draft_quantization_bits);
   };
   return asr_service::Serve(argc, argv, kind);
 }

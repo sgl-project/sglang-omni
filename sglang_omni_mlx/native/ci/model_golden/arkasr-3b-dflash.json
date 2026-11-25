@@ -4,8 +4,7 @@
  "request": {
   "draft_model_path": {
    "model": "wilsonzheng0327/ARK-ASR-3B-dflash"
-  },
-  "draft_policy": "fixed"
+  }
  },
  "language_by_clip_language": {
   "en": null,

@@ -3,8 +3,7 @@
 // line each, for parity checks against the reference implementation.
 //
 //   arkasr_transcribe --model-path DIR [--language L] [--max-new-tokens N]
-//     [--draft-model-path DIR [--draft-bits 4|6|8]
-//     [--draft-policy adaptive|fixed]] a.wav...
+//     [--draft-model-path DIR [--draft-bits 4|6|8]] a.wav...
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -24,7 +23,6 @@ int main(int argc, char **argv) {
   std::string model_path;
   std::string draft_model_path;
   int draft_quantization_bits = 0;
-  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kFixed;
   arkasr::ArkOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -37,8 +35,6 @@ int main(int argc, char **argv) {
       model_path = argv[++i];
     } else if (argument == "--draft-model-path") {
       draft_model_path = argv[++i];
-    } else if (argument == "--draft-policy") {
-      draft_policy = omni_common::ParseDraftPolicy(argv[++i]);
     } else if (argument == "--draft-bits") {
       draft_quantization_bits = std::stoi(argv[++i]);
     } else if (argument == "--language") {
@@ -60,8 +56,8 @@ int main(int argc, char **argv) {
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const arkasr::ArkTranscriber transcriber(
-      model_path, draft_model_path, draft_quantization_bits, draft_policy);
+  const arkasr::ArkTranscriber transcriber(model_path, draft_model_path,
+                                           draft_quantization_bits);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)

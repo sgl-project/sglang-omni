@@ -137,44 +137,37 @@ int main(int argc, char **argv) {
                 "exact zeros are padding)");
 
   nlohmann::json drafted_rows = nlohmann::json::array();
-  for (const omni_common::DraftPolicy policy :
-       {omni_common::DraftPolicy::kFixed,
-        omni_common::DraftPolicy::kAdaptive}) {
-    const auto compare = [&](const char *checkpoint,
-                             const arkasr::ArkTranscriber &plain_transcriber,
-                             const arkasr::ArkTranscriber &drafted_transcriber,
-                             std::optional<int> max_new_tokens) {
-      const omni_common::TranscriptionResult plain =
-          run(plain_transcriber, max_new_tokens);
-      const omni_common::TranscriptionResult drafted =
-          run(drafted_transcriber, max_new_tokens);
-      ok &= Require(drafted.text == plain.text &&
-                        drafted.generated_token_count ==
-                            plain.generated_token_count &&
-                        drafted.finish_reason == plain.finish_reason &&
-                        drafted.window_texts == plain.window_texts,
-                    "decoding with the draft must keep the plain decode's "
-                    "text, token count, finish reason and windows");
-      drafted_rows.push_back(
-          {{"checkpoint", checkpoint},
-           {"budget", max_new_tokens.has_value()
-                          ? nlohmann::json(*max_new_tokens)
-                          : nlohmann::json()},
-           {"policy",
-            policy == omni_common::DraftPolicy::kFixed ? "fixed" : "adaptive"},
-           {"tokens", drafted.generated_token_count},
-           {"verify_rounds", drafted.verify_round_count},
-           {"proposed", drafted.proposed_draft_token_count},
-           {"accepted", drafted.accepted_draft_token_count}});
-    };
-    const arkasr::ArkTranscriber drafted_loop(argv[1], argv[3], 0, policy);
-    compare("loop", loop, drafted_loop, 2);
-    compare("loop", loop, drafted_loop, std::nullopt);
-    compare("loop", loop, drafted_loop, 0);
-    const arkasr::ArkTranscriber drafted_stop(argv[2], argv[3], 0, policy);
-    compare("stop", stop, drafted_stop, std::nullopt);
-    compare("stop", stop, drafted_stop, 5);
-  }
+  const auto compare = [&](const char *checkpoint,
+                           const arkasr::ArkTranscriber &plain_transcriber,
+                           const arkasr::ArkTranscriber &drafted_transcriber,
+                           std::optional<int> max_new_tokens) {
+    const omni_common::TranscriptionResult plain =
+        run(plain_transcriber, max_new_tokens);
+    const omni_common::TranscriptionResult drafted =
+        run(drafted_transcriber, max_new_tokens);
+    ok &= Require(drafted.text == plain.text &&
+                      drafted.generated_token_count ==
+                          plain.generated_token_count &&
+                      drafted.finish_reason == plain.finish_reason &&
+                      drafted.window_texts == plain.window_texts,
+                  "decoding with the draft must keep the plain decode's "
+                  "text, token count, finish reason and windows");
+    drafted_rows.push_back(
+        {{"checkpoint", checkpoint},
+         {"budget", max_new_tokens.has_value() ? nlohmann::json(*max_new_tokens)
+                                               : nlohmann::json()},
+         {"tokens", drafted.generated_token_count},
+         {"verify_rounds", drafted.verify_round_count},
+         {"proposed", drafted.proposed_draft_token_count},
+         {"accepted", drafted.accepted_draft_token_count}});
+  };
+  const arkasr::ArkTranscriber drafted_loop(argv[1], argv[3]);
+  compare("loop", loop, drafted_loop, 2);
+  compare("loop", loop, drafted_loop, std::nullopt);
+  compare("loop", loop, drafted_loop, 0);
+  const arkasr::ArkTranscriber drafted_stop(argv[2], argv[3]);
+  compare("stop", stop, drafted_stop, std::nullopt);
+  compare("stop", stop, drafted_stop, 5);
 
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},

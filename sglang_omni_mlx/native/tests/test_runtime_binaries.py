@@ -137,7 +137,6 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
-        ("arkasr_server", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("arkasr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("arkasr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("qwen3_asr_server", ("--cache-limit-mb", "-2"), "--cache-limit-mb must be 0 to 1073741824"),
@@ -180,7 +179,6 @@ def test_invalid_server_flags_exit_before_the_load(
             for penalty in ("0", "-1", "nan", "inf")
         ],
         ("qwen3_asr_transcribe", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
-        ("arkasr_transcribe", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
         ("arkasr_transcribe", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("arkasr_transcribe", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
