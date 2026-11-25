@@ -17,7 +17,7 @@ func (r *run) insertSnippet(text string) bool {
 		return false
 	}
 	r.logf("info", "the snippet %s was inserted for its trigger", r.logText(s.Trigger))
-	r.finish(Done, nil, s.Text, r.transcribeOpts())
+	r.finish(Done, nil, snippet.Alone(s.Text), r.transcribeOpts())
 	return true
 }
 

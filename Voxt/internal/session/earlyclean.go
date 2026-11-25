@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -122,7 +123,30 @@ func (r *run) hearPiece(stable string) {
 	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
 		return
 	}
+	r.head.hearFinal(stable)
+	if r.head.enabled && asr.Duration(r.pcm.bytes(), asr.SampleRate) < earlyCleanAfter {
+		return // not yet long: the whole text goes in one request, which knows what is said later
+	}
 	r.earlyCleanup().add(stable)
+}
+
+// earlyCleanAfter is how long a recording is when its finalised stretches
+// are cleaned one by one, for a service that the head start serves.
+const earlyCleanAfter = 60 * time.Second
+
+// earlyPieces says whether stretches sooner are worth it: the head start
+// puts them before the live text, and a Final has less left to recognise.
+// Each stretch costs the speech model its dictionary, so only a short
+// one.
+func (r *run) earlyPieces() bool {
+	return r.head.enabled && r.head.under == 0 && len(r.glossary()) <= compose.GlossaryAllUpTo && len(r.hints()) <= compose.GlossaryAllUpTo
+}
+
+// working says whether stretches are still being cleaned.
+func (e *earlyClean) working() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return !e.broken && len(e.segs) < len(e.jobs)
 }
 
 // add queues the stretch the text grew by since the last event. The
@@ -183,13 +207,7 @@ func (e *earlyClean) work() {
 		e.stop()
 		return
 	}
-	thinkOffUnder := 0
-	for _, provider := range r.settings.Providers.LLM {
-		if provider.ID == llmInfo.ID {
-			thinkOffUnder = provider.Generation.ThinkingOffUnder
-			break
-		}
-	}
+	thinkOffUnder := r.thinkOffUnder(llmInfo.ID)
 	next := 0
 	for {
 		e.mu.Lock()
@@ -271,6 +289,18 @@ func (e *earlyClean) fail(err error) {
 		e.failed = err
 	}
 	e.mu.Unlock()
+}
+
+// rest is what Stop would leave of text to clean after the stretches
+// cleaned while the recording went on, and false when text does not start
+// with them.
+func (e *earlyClean) rest(text string) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.broken {
+		return text, true
+	}
+	return strings.CutPrefix(text, e.covered)
 }
 
 // completedCompatible returns only a full result whose segments were

@@ -27,6 +27,7 @@ SERVED_KINDS = {
     "music3_server": ("minimax_music3",),
     "ming3_audio_server": ("ming3_audio",),
     "ming_tts_server": ("ming_tts",),
+    "haru_server": ("haru",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
@@ -149,6 +150,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
         ("whisper_server", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
         ("whisper_server", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
+        ("haru_server", ("--warmup-frames", "-1"), "--warmup-frames must be >= 0"),
+        ("haru_server", ("--input-sample-rate", "8000"), "--input-sample-rate must be 16000 or 24000"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(

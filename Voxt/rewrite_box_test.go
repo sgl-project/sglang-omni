@@ -609,10 +609,9 @@ func TestRewriteBoxQueuedSendDiesWithTheBox(t *testing.T) {
 // picture is never left behind.
 func TestRewriteBoxSendWaitsForConversion(t *testing.T) {
 	chat := &fakeChat{text: "A shorter text."}
-	a := newBoxApp(t, boxScript(t), chat)
-	a.pump("the card and the microphone", func() bool {
-		return a.box.open && a.sess.State == session.Recording
-	})
+	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
+	a.pump("the card and the microphone", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(func() {
 		gen := a.boxGen
 		seq := a.boxReserve()
@@ -704,6 +703,7 @@ func TestRewriteBoxHotkeyStopWaitsForConversion(t *testing.T) {
 			chat := &fakeChat{text: "A shorter text."}
 			a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", tc.startPhase)), chat)
 			a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+			a.speak()
 			front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 			a.postQueue(func() {
 				gen := a.boxGen
@@ -734,6 +734,7 @@ func TestRewriteBoxDropOrderAcrossBatches(t *testing.T) {
 	chat := &fakeChat{text: "A shorter text."}
 	a := newBoxApp(t, script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger)), chat)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	slow, fast := boxJPEGOf(t, 8, 8), boxJPEGOf(t, 16, 16)
 	a.postQueue(func() {
 		gen := a.boxGen

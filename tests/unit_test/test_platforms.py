@@ -280,6 +280,64 @@ def test_a_platform_that_names_no_sdpa_backend_never_pins(
     assert calls == []
 
 
+def test_joint_rope_inplace_feeds_both_layouts_as_full_width_coefficients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Ascend op takes full-width cos/sin, so each layout expands its own way."""
+    calls: list[tuple[torch.Tensor, torch.Tensor, str]] = []
+    vendor = ModuleType("torch_npu")
+
+    def recording_rotary(
+        tensor: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        rotary_mode: str,
+    ) -> torch.Tensor:
+        calls.append((cos.clone(), sin.clone(), rotary_mode))
+        return tensor + 1.0
+
+    vendor.npu_rotary_mul = recording_rotary
+    monkeypatch.setitem(sys.modules, "torch_npu", vendor)
+
+    head_dim, rows = 4, 3
+    phase = torch.arange(rows * head_dim // 2, dtype=torch.float32).reshape(rows, -1)
+    sin = phase + 100.0
+    cache = torch.cat((phase, sin), dim=-1)
+    # Non-identity positions catch a kernel that gathers the cache by row index.
+    positions = torch.tensor([2, 0, 1])
+    gathered_cos, gathered_sin = phase[positions], sin[positions]
+    kernel = NPUOmniPlatform().get_joint_rope_inplace_kernel()
+    assert kernel is not None
+    query = torch.zeros(rows, 2, head_dim)
+    key = torch.zeros(rows, 1, head_dim)
+
+    kernel(query, key, cache, positions, is_neox=True)
+    assert [mode for _, _, mode in calls] == ["half", "half"]
+    half_cos, half_sin, _ = calls[0]
+    assert half_cos.shape == (1, rows, 1, head_dim)
+    assert torch.equal(
+        half_cos[0, :, 0], torch.cat((gathered_cos, gathered_cos), dim=-1)
+    )
+    assert torch.equal(
+        half_sin[0, :, 0], torch.cat((gathered_sin, gathered_sin), dim=-1)
+    )
+    # The op returns a changed tensor, so both in-place writes have to land.
+    assert torch.equal(query, torch.ones_like(query))
+    assert torch.equal(key, torch.ones_like(key))
+
+    calls.clear()
+    query.zero_()
+    key.zero_()
+    kernel(query, key, cache, positions, is_neox=False)
+    assert [mode for _, _, mode in calls] == ["interleave", "interleave"]
+    pair_cos, pair_sin, _ = calls[0]
+    assert pair_cos.shape == (1, rows, 1, head_dim)
+    assert torch.equal(pair_cos[0, :, 0], gathered_cos.repeat_interleave(2, dim=-1))
+    assert torch.equal(pair_sin[0, :, 0], gathered_sin.repeat_interleave(2, dim=-1))
+    assert torch.equal(query, torch.ones_like(query))
+    assert torch.equal(key, torch.ones_like(key))
+
+
 def test_the_pin_receives_exactly_the_backends_the_hook_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
