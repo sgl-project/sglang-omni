@@ -108,7 +108,15 @@ func TestMacE2EMeetingDetect(t *testing.T) {
 		t.Fatalf("while Voxt records: card %+v, toasts %q", s.ask.view, s.toasts)
 	}
 	s.meetingFinish()
-	s.pump("its end", func() bool { return !s.meetingActive() })
+	// Ended on its first words, the meeting asks "Started by mistake?"
+	// (fewer than meeting.MistakeWords): Keep files it.
+	s.pump("its end", func() bool {
+		return s.meetSnap.State != meeting.StateRecording && s.meetSnap.State != meeting.StateFinishing
+	})
+	if s.meetSnap.State == meeting.StateAsking && s.meetSnap.Mistake {
+		s.meetingSave()
+	}
+	s.pump("its filing", func() bool { return !s.meetingActive() })
 	list, err := s.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
 	if err != nil || len(list) != 1 || list[0].ID != id {
 		t.Fatalf("meetings kept: %+v %v", list, err)
