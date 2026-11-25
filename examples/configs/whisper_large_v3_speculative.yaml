@@ -9,5 +9,5 @@ stages:
       speculative_draft_model_path: wilsonzheng0327/Whisper-large-v3-distil-draft
       speculative_num_steps: 7
     factory:
-      # note (Haoling Pu): a smaller encoder batch cuts first streamed text at c16 under the draft (146 -> 124 ms on H100); the no-draft default stays 8 for throughput at high concurrency.
+      # note (Haoling Pu): under the draft, builds reach the encoder in bigger groups and every clip waits for its whole group; 2 shortens first text at c16.
       pre_lm_max_batch_size: 2
