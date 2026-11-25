@@ -562,7 +562,7 @@ func cmpOr(first, second string) string {
 }
 
 func (a *app) writingAnswer() bool {
-	if a.bgID != "" {
+	if a.bgVisible() {
 		s := a.bgSess
 		return s.State.Live() && s.Card && strings.TrimSpace(s.Draft) != ""
 	}

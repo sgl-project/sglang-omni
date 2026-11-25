@@ -253,3 +253,48 @@ func TestSessionGuideFirstSwitches(t *testing.T) {
 		t.Fatalf("switches counted %d, want %d", got, settings.SessionGuideTimes)
 	}
 }
+
+// TestSessionSlotCloseLeavesOtherSlotStreaming: closing Session 2's card
+// while Session 1's answer streams in the background closes that card
+// only; the stream goes on and finishes in Session 1.
+func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	tap(a, "session-2", textEditApp)
+	if a.bgID == "" || a.slot != 1 {
+		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
+	}
+	id := a.bgID
+	// Session 2 has an ended card of its own, and a card waiting under it.
+	a.answer = answerCard{open: true, id: "other", slot: 1, kind: store.KindTranslate, text: "bonjour"}
+	a.under = answerCard{open: true, id: "under", slot: 1, kind: store.KindTranslate, text: "hallo"}
+	if a.writingAnswer() {
+		t.Fatal("Session 2's card reads as Session 1's answer being written")
+	}
+	a.closeAnswer()
+	if a.answer.id != "under" {
+		t.Fatalf("the card under did not come back: %+v", a.answer)
+	}
+	a.closeAnswer()
+	if a.answer.open || a.bgID != id || !a.bgSess.State.Live() {
+		t.Fatalf("after the close: card open=%v bg=%q live=%v", a.answer.open, a.bgID, a.bgSess.State.Live())
+	}
+
+	// Session 1's stream is still there to stop, and ends as its card.
+	tap(a, "session-1", textEditApp)
+	a.pump("the stream visible again", func() bool { return a.ov.mode == ovAnswer })
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	a.pump("the answer's end", func() bool { return a.bgID == "" })
+	if c := a.answer; !c.open || c.text != full || c.slot != 0 {
+		t.Fatalf("session 1's card %+v", c)
+	}
+}

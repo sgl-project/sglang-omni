@@ -73,13 +73,14 @@ func (a *app) cardSnapshot() session.Snapshot {
 	return a.sess
 }
 
-// cancelCardSession cancels the session the card belongs to: the
-// backgrounded answer, or the live follow-up or redo.
+// cancelCardSession cancels the session the card belongs to: this
+// slot's backgrounded answer, or the live follow-up or redo. Another
+// slot's answer keeps streaming (#4005).
 func (a *app) cancelCardSession() {
 	if a.mgr == nil {
 		return
 	}
-	if a.bgID != "" {
+	if a.bgVisible() {
 		a.mgr.Cancel(a.bgID)
 		return
 	}
