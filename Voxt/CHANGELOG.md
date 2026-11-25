@@ -26,7 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
 - **Rewrite stays in your full-screen app** (#4586): pressed in an app in full screen, Rewrite switched you to a desktop to show its card. The card now opens over the full-screen app and takes your typing there; inserting the result goes back into that app.
-- **The Transcribe pill shows over full-screen apps** (#PRNUM): in an app in full screen, Transcribe recorded and typed but its pill never appeared. It now shows over the full-screen app, as on a desktop.
+- **The Transcribe pill shows over full-screen apps** (#4617): in an app in full screen, Transcribe recorded and typed but its pill never appeared. It now shows over the full-screen app, as on a desktop.
 - **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
 - **Reprocess transcript no longer deletes other meetings' recordings**: a finished meeting's recording is deleted once it is transcribed (unless Save each recording is on, or the meeting was in Recording mode). Choosing Reprocess transcript on such a meeting removed the whole folder of meeting recordings: those of Recording-mode meetings, of meetings waiting for Continue processing, and of a meeting being recorded. The menu item now shows only while the meeting still has its recording, and Continue processing on a meeting without one deletes nothing.
 - **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
@@ -56,7 +56,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 - **回顾里的数字不再被截断**（#4570）：窗口较窄时，英文界面的速度会显示成“2… characters a min…”。现在数字、单位和标题都不会被截断：放得下就一行四张，放不下就两两一行。
 - **改写不再把你从全屏 App 切走**（#4586）：在全屏的 App 里按改写，Voxt 会把你切到一个桌面去显示卡片。现在卡片直接出现在全屏 App 上面，可以在里面打字，插入结果也回到这个 App。
-- **全屏 App 里也能看到转录浮窗**（#PRNUM）：在全屏的 App 里转录，录音和输入都正常，但浮窗一直不出现。现在浮窗和在桌面上一样，显示在全屏 App 上面。
+- **全屏 App 里也能看到转录浮窗**（#4617）：在全屏的 App 里转录，录音和输入都正常，但浮窗一直不出现。现在浮窗和在桌面上一样，显示在全屏 App 上面。
 - **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
 - **「重新整理」不再删除其他会议的录音**：会议整理完后，录音会被删除（开了「保存每段录音」或用的是录音模式除外）。对这样的会议选「重新整理」，整个会议录音文件夹都会被删掉：录音模式会议的录音、等待「继续整理」的录音、正在录的会议都在里面。现在只有还留着录音的会议才显示这一项；对没有录音的会议点「继续整理」也不会删任何文件。
 - **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
