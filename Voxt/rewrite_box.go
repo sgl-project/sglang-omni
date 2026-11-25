@@ -20,6 +20,10 @@ package main
 // margins, a window manager moves it, and the user's next app covers it.
 // Closing it gives the front back to the app the user was in
 // (giveFrontBack); an insert activates that app first (deliver).
+// Over another app's full screen, where macOS shows no ordinary window of
+// an app with a Dock icon and VoxtNew taking the front would switch the
+// user to a desktop, the card is a panel instead (boxPanel): it shows
+// there and takes the keyboard without activating VoxtNew.
 //
 // A send that fails (a model that takes no images refuses them) brings
 // the card back with the error and everything kept: Enter sends again
@@ -100,6 +104,7 @@ type rewriteBox struct {
 	showTip   bool
 	win       boxWindow
 	winShown  bool
+	panel     bool // win is a panel, over another app's full screen (boxPanel)
 	style     mygo.VibrancyStyle
 	ui        rewriteBoxLocalUI
 }
@@ -180,6 +185,7 @@ type boxWindow interface {
 	Hide()
 	Destroy()
 	SetVibrancyStyle(mygo.VibrancyStyle)
+	IsOnActiveSpace() bool
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -261,10 +267,10 @@ func (a *app) boxAnswered() bool {
 // boxKeep keeps the card open for its answer once a session of its ends:
 // the input is emptied for the next follow-up.
 func (a *app) boxKeep() {
-	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
+	win, winShown, panel, style, area, frame, ui := a.box.win, a.box.winShown, a.box.panel, a.box.style, a.box.area, a.box.frame, a.box.ui
 	target, dragged, front := a.box.target, a.box.dragged, a.box.front
 	ui.segmentText = nil // Segment IDs restart with the emptied input.
-	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, panel: panel, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++

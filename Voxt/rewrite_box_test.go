@@ -509,13 +509,14 @@ func TestAnswerCardAttach(t *testing.T) {
 	}
 }
 
-// fakeBoxWindow records the panel's life (boxWindow).
+// fakeBoxWindow records the panel's life (boxWindow); offSpace: not on the user's Space.
 type fakeBoxWindow struct {
-	hidden, destroyed bool
-	style             mygo.VibrancyStyle
-	bounds            mygo.Rectangle
+	hidden, destroyed, offSpace bool
+	style                       mygo.VibrancyStyle
+	bounds                      mygo.Rectangle
 }
 
+func (f *fakeBoxWindow) IsOnActiveSpace() bool                 { return !f.offSpace }
 func (f *fakeBoxWindow) Invalidate()                           {}
 func (f *fakeBoxWindow) SetContentBounds(r mygo.Rectangle)     { f.bounds = r }
 func (f *fakeBoxWindow) Show()                                 {}
