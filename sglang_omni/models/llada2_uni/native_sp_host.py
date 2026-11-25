@@ -197,7 +197,7 @@ def create_native_decoder(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
-    runtime_gpu_ids: list[int],
+    runtime_gpu_ids: list[int] | None = None,
     dtype: str | torch.dtype | None = None,
     backend: str = "sglang",
     attention_backend: str = "fa",
@@ -216,6 +216,11 @@ def create_native_decoder(
         raise ValueError("Native SP decoder requires an indexed accelerator")
     else:
         pass
+    devices = (
+        list(runtime_gpu_ids)
+        if runtime_gpu_ids is not None
+        else [concrete_device.index]
+    )
     resolved_dtype = resolve_dtype(dtype)
     if resolved_dtype not in PRECISION_BY_DTYPE:
         raise ValueError(f"Unsupported native SP decoder dtype: {resolved_dtype}")
@@ -227,13 +232,13 @@ def create_native_decoder(
         raise ValueError("Native SP requires the sglang decoder backend")
     elif not attention_backend or attention_backend == "auto":
         raise ValueError("Native SP attention_backend must be explicit")
-    elif not runtime_gpu_ids or ring_degree < 1 or len(runtime_gpu_ids) % ring_degree:
+    elif not devices or ring_degree < 1 or len(devices) % ring_degree:
         raise ValueError("Ring degree must divide the number of decoder GPUs")
     else:
         pass
     LLaDA2ImageDecoder.validate_settings(decode_mode, num_steps, resolution_multiplier)
-    ulysses_degree = len(runtime_gpu_ids) // ring_degree
-    if len(runtime_gpu_ids) > 1:
+    ulysses_degree = len(devices) // ring_degree
+    if len(devices) > 1:
         require_joint_sp_support()
     else:
         pass
@@ -241,7 +246,7 @@ def create_native_decoder(
     decoder = NativeSPDecoder(
         model_path,
         concrete_device.index,
-        runtime_gpu_ids,
+        devices,
         ring_degree,
         dtype=resolved_dtype,
         attention_backend=attention_backend,
