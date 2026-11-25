@@ -65,7 +65,7 @@
         "soft"
       ],
       "duration": 0.614,
-      "audible": 0.567,
+      "audible": 0.568,
       "desc": {
         "en": "Thumb piano, plucked metal tines",
         "zh": "拇指琴，拨动金属簧片"
@@ -74,7 +74,7 @@
         "record.start"
       ],
       "pair": "soft-kalimba-stop",
-      "sha256": "45ac6829fd95b8adf6ce285c3258f06996cea9e75e2241f300d2b93f94f07043"
+      "sha256": "9584404c8de2a6aa3f51eb58ecc72a08f7ce2f660ab4d0403ac6de0de0d42e3a"
     },
     {
       "id": "soft-kalimba-stop",
@@ -98,7 +98,7 @@
         "record.stop"
       ],
       "pair": "soft-kalimba-start",
-      "sha256": "479c9154e94abe6a75d1e342dfbb323089bad71d9960799004454c6074c14534"
+      "sha256": "427507625c4cceec39a83189cdcc7d31da70af00fafa6bd1ca4778ffc34e7c77"
     },
     {
       "id": "soft-wood-start",

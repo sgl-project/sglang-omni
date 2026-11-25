@@ -169,7 +169,8 @@ func TestSoundsTryAccent(t *testing.T) {
 	if r.sounds.previewing == "" {
 		t.Fatal("the first preview's timer ended the second's accent")
 	}
-	r.ft.advance(567*time.Millisecond + cueMargin) // Kalimba's audible part and the margin, longer than previewMin
+	kalimba, _ := r.soundCat.Sound("soft-kalimba-start")
+	r.ft.advance(kalimba.Length() + cueMargin) // Kalimba's audible part and the margin, longer than previewMin
 	frames(r.tt)
 	if r.sounds.previewing != "" {
 		t.Fatal("the accent stayed")
