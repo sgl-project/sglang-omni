@@ -17,7 +17,7 @@ class MandarinRuntime(Runtime):
     def metadata(self) -> dict[str, JsonValue]:
         return {**super().metadata(), "system_prompt": MANDARIN_PROMPT}
 
-    def _load(self) -> None:
+    def _load(self) -> None:  # noqa: leading-underscore -- D2 runtime loading hook.
         super()._load()
         tokenizer = self.model.processor.tokenizer
         self.prompt = encode_system_prompt(tokenizer, MANDARIN_PROMPT)
@@ -37,7 +37,7 @@ class MandarinRuntime(Runtime):
                 self.device,
             )
 
-    def _create_session(self) -> D2LiveSession:
+    def _create_session(self) -> D2LiveSession:  # noqa: leading-underscore -- D2 session factory hook.
         session = super()._create_session()
         generated_text = session.macro_session.generated_text
         model = self.model
