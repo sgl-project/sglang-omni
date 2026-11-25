@@ -282,6 +282,11 @@ func TestSessionListNewDeleteNext(t *testing.T) {
 	if !v.Empty || a.overlayModeNow() != ovAnswer || a.notice != nil || len(v.Blocks) != 1 || !strings.Contains(v.Blocks[0].Text, "runs in this session") {
 		t.Fatalf("empty session: card %+v mode=%s notice=%+v", v, a.overlayModeNow(), a.notice)
 	}
+	// The empty card has nothing to copy or redo: c and r stay with the
+	// app in front.
+	if a.cardHotkeyGeneration() != 0 {
+		t.Fatal("the empty session card binds the card's letter keys")
+	}
 	for _, want := range []int{0, 1, 2} {
 		tap(a, "session-next", textEditApp)
 		if a.slot != want {
