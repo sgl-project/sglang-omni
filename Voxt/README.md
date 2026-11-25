@@ -158,7 +158,7 @@ Voxt is a Go app on [MyGo](https://github.com/egoist/mygo), with a small Swift h
 - [Build from source, sign and test](docs/development.md)
 - [How to send a change](CONTRIBUTING.md), and [the architecture](docs/architecture.md)
 
-For changes to Voxt, the Linux Go checks run when the pull request is ready for review and carries the `run-mac-ci` label.
+On a ready pull request with the `run-mac-ci` label, each push that matches the Voxt CI paths runs the Linux Go checks.
 
 ## Acknowledgements
 
