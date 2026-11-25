@@ -109,8 +109,8 @@ mx::array Qwen3ASR::AudioEncoderLayer(const mx::array &x, int layer) const {
                   prefix + ".fc2"));
 }
 
-mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
-                                AudioLayout layout) const {
+mx::array Qwen3ASR::EncodeAudio(const mx::array &mel, AudioLayout layout,
+                                bool has_earlier_chunks) const {
   const int chunk_frame_count = audio_.n_window * 2;
   const int frame_count = mel.shape(-1);
   const int mel_bins = mel.shape(0);
@@ -122,7 +122,9 @@ mx::array Qwen3ASR::EncodeAudio(const mx::array &mel,
     chunk_lengths.push_back(std::min(chunk_frame_count, frame_count - start));
   }
   const int longest_chunk =
-      *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
+      has_earlier_chunks
+          ? chunk_frame_count
+          : *std::max_element(chunk_lengths.begin(), chunk_lengths.end());
   const int chunk_count = static_cast<int>(chunk_starts.size());
   // The convolutions take one block of chunks at a time, so a long clip holds
   // two blocks' activations at most: each block but the last starts on the GPU

@@ -17,19 +17,29 @@ import (
 
 var (
 	sharePaintMu    sync.Mutex
-	shareBgPictures = map[[3]int]*ui.Bitmap{}
+	shareBgPictures = map[sharePaintKey]*ui.Bitmap{}
 	sharePalettePic *ui.Bitmap
 )
 
+// sharePaintKey is a painted background: its colors and its size.
+type sharePaintKey struct {
+	bg   shareBackground
+	w, h int
+}
+
 // shareBackgroundBitmap is background index painted w×h pixels.
 func shareBackgroundBitmap(index, w, h int) *ui.Bitmap {
-	key := [3]int{index, w, h}
+	return sharePaintedBackground(shareBackgrounds[index], w, h)
+}
+
+// sharePaintedBackground is bg painted w×h pixels.
+func sharePaintedBackground(bg shareBackground, w, h int) *ui.Bitmap {
+	key := sharePaintKey{bg, w, h}
 	sharePaintMu.Lock()
 	defer sharePaintMu.Unlock()
 	if bm, ok := shareBgPictures[key]; ok {
 		return bm
 	}
-	bg := shareBackgrounds[index]
 	a, b, c := shareRGB(bg.A), shareRGB(bg.B), shareRGB(bg.C)
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	// CSS's gradient line for 120°: through the middle, long enough that
