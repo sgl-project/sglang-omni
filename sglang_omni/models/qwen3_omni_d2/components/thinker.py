@@ -83,7 +83,7 @@ def allowed_tokens(
 
 
 class Qwen3OmniD2Thinker:
-    """Append each interval's environment and self tokens, then one text token per frame."""
+    """Append each frame's environment, self and text tokens in one captured forward."""
 
     def __init__(
         self,
@@ -93,26 +93,19 @@ class Qwen3OmniD2Thinker:
         opening: MandarinOpening | None,
     ) -> None:
         self.model = model
-        self.interval_frames = model.interval_frames
         self.opening = opening
         self.prompt_token_ids = torch.tensor([prompt_token_ids], device=model.device)
         self.cache = static_cache(
             model.thinker, THINKER_TOKENS_PER_FRAME * capacity_frames
         )
-        accepted_layer = model.thinker.layers[model.accept_hidden_layer - 1]
-        audio_tokens = 2 * self.interval_frames
-        if self.interval_frames == 1:
-            # note (cuzimi): At 80 ms the previous token is known, so one causal forward covers env, self and text.
-            self.fused_graph = DecoderGraph(
-                model.thinker, self.cache, (4, 1, 3), 0, accepted_layer
-            )
-        else:
-            self.audio_graph = DecoderGraph(
-                model.thinker, self.cache, (4, 1, audio_tokens), 0
-            )
-            self.text_graph = DecoderGraph(
-                model.thinker, self.cache, (4, 1, 1), audio_tokens, accepted_layer
-            )
+        # note (cuzimi): The previous text token is known before the frame starts, so one causal forward covers env, self and text.
+        self.graph = DecoderGraph(
+            model.thinker,
+            self.cache,
+            (4, 1, THINKER_TOKENS_PER_FRAME),
+            0,
+            model.thinker.layers[model.accept_hidden_layer - 1],
+        )
 
     def reset(self) -> None:
         """Empty the cache, prefill the system prompt and restart the text history."""
@@ -134,47 +127,30 @@ class Qwen3OmniD2Thinker:
         self.previous_token_id = model.pad_token_id
         self.generated_token_ids: list[int] = []
 
-    def append_audio(self, audio_inputs: torch.Tensor, frames: int) -> None:
-        """Add one interval of [1, 2 * interval_frames, hidden] environment then self tokens.
+    def decode(
+        self, audio_inputs: torch.Tensor, frames: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Append one frame's [1, 2, hidden] environment and self tokens, then the previous text token.
 
-        At 80 ms the fused graph runs them together with the first text token.
+        Returns the text slot's final and accepted-layer states.
         """
-        prompt_tokens = self.prompt_token_ids.shape[1]
-        self.cursor = prompt_tokens + THINKER_TOKENS_PER_FRAME * frames
-        slots = torch.arange(2 * self.interval_frames, device=self.model.device)
-        frame_positions = prompt_tokens + frames + slots % self.interval_frames
-        self.audio_inputs = audio_inputs
-        self.audio_positions = torch.stack(
-            (self.cursor + slots, frame_positions, frame_positions, frame_positions)
-        )[:, None]
-        if self.interval_frames == 1:
-            pass
-        else:
-            self.audio_graph.replay(audio_inputs, self.audio_positions, self.cursor)
-
-    def decode(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Feed the previous token at text slot index; return final and accepted-layer states."""
         model = self.model
-        text_cursor = self.cursor + 2 * self.interval_frames + index
+        prompt_tokens = self.prompt_token_ids.shape[1]
+        cursor = prompt_tokens + THINKER_TOKENS_PER_FRAME * frames
+        frame_position = prompt_tokens + frames
         text_embedding = model.thinker.embed_tokens(
             torch.tensor([[self.previous_token_id]], device=model.device)
         )
-        text_positions = torch.full(
-            (4, 1, 1), text_cursor, dtype=torch.long, device=model.device
+        # note (cuzimi): Row 0 numbers the cache slots; in the M-RoPE rows both audio tokens sit at the frame index and text at its slot.
+        position_ids = torch.tensor(
+            [[cursor, cursor + 1, cursor + 2]]
+            + [[frame_position, frame_position, cursor + 2]] * 3,
+            device=model.device,
+        )[:, None]
+        last_hidden = self.graph.replay(
+            torch.cat((audio_inputs, text_embedding), dim=1), position_ids, cursor
         )
-        if self.interval_frames == 1:
-            last_hidden = self.fused_graph.replay(
-                torch.cat((self.audio_inputs, text_embedding), dim=1),
-                torch.cat((self.audio_positions, text_positions), dim=2),
-                self.cursor,
-            )
-            accepted_hidden = self.fused_graph.hooked_states
-        else:
-            last_hidden = self.text_graph.replay(
-                text_embedding, text_positions, text_cursor
-            )
-            accepted_hidden = self.text_graph.hooked_states
-        return last_hidden[:, -1], accepted_hidden[:, -1:]
+        return last_hidden[:, -1], self.graph.hooked_states[:, -1:]
 
     def text_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Vocabulary logits for [1, hidden] states with the trained PAD and control rows."""

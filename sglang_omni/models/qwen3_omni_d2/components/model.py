@@ -22,9 +22,8 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeThinkerTextModel,
 )
 
-from sglang_omni.models.qwen3_omni_d2.config import NATIVE_FRAME_MS
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.hf import qwen_d2_interval_ms
+from sglang_omni.utils.hf import is_qwen_d2_release
 
 logger = logging.getLogger(__name__)
 
@@ -51,25 +50,19 @@ CHELSIE_SPEAKER = "chelsie"
 class Qwen3OmniD2Release:
     directory: Path
     base_directory: Path
-    interval_frames: int
 
 
 def resolve_release(model_path: str) -> Qwen3OmniD2Release:
     """Find the D2 release files and the Qwen3-Omni revision its manifest pins."""
     directory = Path(resolve_checkpoint(model_path, allow_patterns=RELEASE_FILES))
-    interval_ms = qwen_d2_interval_ms(str(directory))
-    if interval_ms is None:
+    if not is_qwen_d2_release(str(directory)):
         raise ValueError("Expected a Qwen3-Omni D2 release with a d2.json manifest")
     else:
         base_model = json.loads((directory / "d2.json").read_text())["base_model"]
     base_directory = resolve_checkpoint(
         f"{base_model['repo_id']}@{base_model['revision']}"
     )
-    return Qwen3OmniD2Release(
-        directory=directory,
-        base_directory=Path(base_directory),
-        interval_frames=interval_ms // NATIVE_FRAME_MS,
-    )
+    return Qwen3OmniD2Release(directory=directory, base_directory=Path(base_directory))
 
 
 def normalize_release_names(
@@ -151,7 +144,6 @@ class Qwen3OmniD2Model:
         duplex_rows: dict[str, torch.Tensor],
         tokenizer: PreTrainedTokenizerBase,
         feature_extractor: WhisperFeatureExtractor,
-        interval_frames: int,
     ) -> None:
         self.thinker: Qwen3OmniMoeThinkerTextModel = qwen.thinker.model
         self.lm_head: nn.Linear = qwen.thinker.lm_head
@@ -159,7 +151,6 @@ class Qwen3OmniD2Model:
         self.talker: Qwen3OmniMoeTalkerForConditionalGeneration = qwen.talker
         self.code2wav: Qwen3OmniMoeCode2Wav = qwen.code2wav
         self.tokenizer = tokenizer
-        self.interval_frames = interval_frames
         self.device = self.lm_head.weight.device
         self.mel_filters = torch.from_numpy(feature_extractor.mel_filters).float()
         self.fft_window_samples = int(feature_extractor.n_fft)
@@ -244,5 +235,4 @@ def load_release_model(
         duplex_rows,
         AutoTokenizer.from_pretrained(release.base_directory),
         WhisperFeatureExtractor.from_pretrained(release.base_directory),
-        release.interval_frames,
     )

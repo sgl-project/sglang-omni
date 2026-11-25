@@ -6,10 +6,14 @@ from typing import ClassVar, Literal
 from pydantic import Field
 
 from sglang_omni.config.schema import FactoryArgs, PipelineConfig, StageConfig
+from sglang_omni.proto.streams import PCM16_BYTES_PER_SAMPLE
 
 INPUT_SAMPLE_RATE_HZ = 16_000
 OUTPUT_SAMPLE_RATE_HZ = 24_000
 NATIVE_FRAME_MS = 80
+INPUT_BYTES_PER_FRAME = (
+    NATIVE_FRAME_MS * INPUT_SAMPLE_RATE_HZ // 1000 * PCM16_BYTES_PER_SAMPLE
+)
 MAX_SESSIONS = 1
 
 Qwen3OmniD2Language = Literal["zh", "auto"]

@@ -314,12 +314,15 @@ def try_resolve_arch_from_zonos3_layout(
     return ZONOS3_ARCHITECTURE
 
 
-def qwen_d2_interval_ms(model_path: str) -> int | None:
-    """Read the interaction interval from a local or revision-pinned D2 release."""
+def is_qwen_d2_release(model_path: str) -> bool:
+    """Whether a local or revision-pinned checkpoint is a Qwen3-Omni D2 release.
+
+    Only the 80 ms release is served; a Qwen manifest naming another interval is rejected.
+    """
     if os.path.isdir(model_path):
         manifest_path = Path(model_path) / "d2.json"
         if not manifest_path.is_file():
-            return None
+            return False
         else:
             pass
     else:
@@ -334,22 +337,21 @@ def qwen_d2_interval_ms(model_path: str) -> int | None:
                 )
             )
         except (OSError, ValueError):
-            return None
+            return False
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (
         not isinstance(manifest, dict)
         or manifest.get("format") != "d2.release.v1"
         or manifest.get("family") != "qwen"
     ):
-        return None
-    else:
-        interval_ms = manifest.get("latency_ms")
-    if type(interval_ms) is not int or interval_ms not in {80, 160, 320, 640, 1040}:
+        return False
+    elif manifest.get("latency_ms") != 80:
         raise ValueError(
-            f"Unsupported Qwen3-Omni D2 interval in milliseconds: {interval_ms}"
+            "Only the 80 ms Qwen3-Omni D2 release is supported, "
+            f"got latency_ms={manifest.get('latency_ms')!r}"
         )
     else:
-        return interval_ms
+        return True
 
 
 def auk_architecture_from_config(path: str) -> str | None:

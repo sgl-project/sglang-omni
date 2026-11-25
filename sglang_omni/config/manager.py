@@ -19,7 +19,7 @@ from sglang_omni.utils import (
     try_resolve_arch_from_zonos3_layout,
     try_resolve_ming3_dense_tts,
 )
-from sglang_omni.utils.hf import qwen_d2_interval_ms
+from sglang_omni.utils.hf import is_qwen_d2_release
 
 
 def resolve_config_cls_for_model_path(model_path: str):
@@ -77,7 +77,7 @@ def resolve_config_cls_for_model_path(model_path: str):
         arch = try_resolve_arch_from_zonos3_layout(repo_id, revision=revision)
     else:
         pass
-    if arch is None and qwen_d2_interval_ms(model_path) is not None:
+    if arch is None and is_qwen_d2_release(model_path):
         arch = "Qwen3OmniD2"
     else:
         pass

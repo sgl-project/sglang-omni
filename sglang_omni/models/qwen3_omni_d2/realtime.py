@@ -7,6 +7,7 @@ from sglang_omni.client.client import Client
 from sglang_omni.models.qwen3_omni_d2.config import (
     INPUT_SAMPLE_RATE_HZ,
     MAX_SESSIONS,
+    NATIVE_FRAME_MS,
     OUTPUT_SAMPLE_RATE_HZ,
     Qwen3OmniD2PipelineConfig,
 )
@@ -29,7 +30,6 @@ from sglang_omni.serve.realtime.output import (
     TextFinished,
 )
 from sglang_omni.serve.realtime.types import Capabilities
-from sglang_omni.utils.hf import qwen_d2_interval_ms
 
 
 class Qwen3OmniD2OutputConverter:
@@ -93,27 +93,23 @@ class Qwen3OmniD2OutputConverter:
 def create_realtime_deployment(
     client: Client, pipeline_config: Qwen3OmniD2PipelineConfig
 ) -> RealtimeDeployment:
-    interval_ms = qwen_d2_interval_ms(pipeline_config.model_path)
-    if interval_ms is None:
-        raise ValueError("Expected a Qwen3-Omni D2 release with a d2.json manifest")
-    else:
-        return RealtimeDeployment(
-            capabilities=Capabilities(
-                input_sample_rate_hz=INPUT_SAMPLE_RATE_HZ,
-                output_sample_rate_hz=OUTPUT_SAMPLE_RATE_HZ,
-                output_modalities=("audio", "text"),
-                max_granted_modalities=2,
-                native_unit_ms=interval_ms,
-                tail_policy="pad",
-                supports_custom_instructions=False,
-                supports_server_interrupt=True,
-            ),
-            adapter_factory=lambda: CoordinatorAdapter(
-                client,
-                request_builder=lambda session: OmniRequest(inputs=None),
-                output_converter=Qwen3OmniD2OutputConverter(),
-                atomic_consumption=True,
-            ),
-            limits=runtime_limits_for_pipeline(pipeline_config),
-            max_connections=MAX_SESSIONS,
-        )
+    return RealtimeDeployment(
+        capabilities=Capabilities(
+            input_sample_rate_hz=INPUT_SAMPLE_RATE_HZ,
+            output_sample_rate_hz=OUTPUT_SAMPLE_RATE_HZ,
+            output_modalities=("audio", "text"),
+            max_granted_modalities=2,
+            native_unit_ms=NATIVE_FRAME_MS,
+            tail_policy="pad",
+            supports_custom_instructions=False,
+            supports_server_interrupt=True,
+        ),
+        adapter_factory=lambda: CoordinatorAdapter(
+            client,
+            request_builder=lambda session: OmniRequest(inputs=None),
+            output_converter=Qwen3OmniD2OutputConverter(),
+            atomic_consumption=True,
+        ),
+        limits=runtime_limits_for_pipeline(pipeline_config),
+        max_connections=MAX_SESSIONS,
+    )

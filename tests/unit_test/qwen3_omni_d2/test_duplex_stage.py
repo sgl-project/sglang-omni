@@ -4,7 +4,7 @@
 import hashlib
 import json
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -12,6 +12,7 @@ from benchmarks.duplex.v15_audio import reconstruct_output
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client.client import Client
 from sglang_omni.models.qwen3_omni_d2.config import (
+    INPUT_BYTES_PER_FRAME,
     MAX_SESSIONS,
     Qwen3OmniD2PipelineConfig,
 )
@@ -42,9 +43,9 @@ from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.types import RuntimeLimits
 
 
-def duplex_stage(runtime: Qwen3OmniD2Runtime, interval_ms: int) -> SessionScheduler:
+def duplex_stage(runtime: Qwen3OmniD2Runtime) -> SessionScheduler:
     return SessionScheduler(
-        Qwen3OmniD2SessionHooks(runtime, interval_ms),
+        Qwen3OmniD2SessionHooks(runtime),
         max_open_sessions=MAX_SESSIONS,
         max_concurrency=1,
     )
@@ -85,7 +86,9 @@ def playback(
     )
 
 
-def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) -> None:
+def test_interrupt_keeps_queued_audio_and_eos_ends_on_the_padded_frame(
+    tmp_path: Path,
+) -> None:
     runtime = Mock(spec=Qwen3OmniD2Runtime)
     frames = [
         playback(0, "old"),
@@ -93,14 +96,25 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
         playback(2, "new"),
         playback(3, "!"),
     ]
-    runtime.step.return_value = frames
-    stage = duplex_stage(runtime, interval_ms=320)
+    runtime.step.side_effect = frames
+    stage = duplex_stage(runtime)
     identity = SessionIdentity("conversation")
     submit(stage, identity, "open")
-    pcm16 = b"\xfe\x80" * 4800 + bytes(640)
-    chunk = TimedChunk("audio", 0, 300, 0, pcm16, "pcm16", eos=True)
-    emitted = submit(stage, identity, "append", chunk)
-    runtime.step.assert_called_once_with(pcm16)
+    inputs = [bytes([index, 0x80]) * (INPUT_BYTES_PER_FRAME // 2) for index in range(4)]
+    emitted = []
+    for index, pcm16 in enumerate(inputs):
+        # note (cuzimi): The padded tail carries 60 ms of audio in a full frame.
+        chunk = TimedChunk(
+            "audio",
+            80 * index,
+            60 if index == 3 else 80,
+            index,
+            pcm16,
+            "pcm16",
+            eos=index == 3,
+        )
+        emitted.extend(submit(stage, identity, "append", chunk))
+    assert runtime.step.call_args_list == [call(pcm16) for pcm16 in inputs]
     assert [(frame.t_start_ms, frame.duration_ms, frame.eos) for frame in emitted] == [
         (0, 80, False),
         (80, 80, False),
@@ -113,7 +127,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
         for event in convert(frame):
             outbox.emit(event, unit=None, output_modalities=("audio",))
 
-    # Note (cuzimi): A slow socket can receive the entire macro in one burst.
+    # Note (cuzimi): A slow socket can receive several frames in one burst.
     events = []
     trace = [
         {
@@ -145,7 +159,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
         i for i, event in enumerate(events) if event.response_id == started_ids[1]
     )
     (tmp_path / "continuous.jsonl").write_text("\n".join(map(json.dumps, trace)))
-    replay = reconstruct_output(tmp_path, profile="qwen3-omni-d2-320ms")
+    replay = reconstruct_output(tmp_path, profile="qwen3-omni-d2-80ms")
     assert replay["errors"] == []
     assert replay["pcm_sha256"] == {
         "output-media.wav": hashlib.sha256(
@@ -160,10 +174,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
 
 def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) -> None:
     runtime = Mock(spec=Qwen3OmniD2Runtime)
-    stage = duplex_stage(runtime, interval_ms=80)
-    (tmp_path / "d2.json").write_text(
-        '{"format":"d2.release.v1","family":"qwen","latency_ms":80}'
-    )
+    stage = duplex_stage(runtime)
     deployment = create_realtime_deployment(
         Mock(spec=Client), Qwen3OmniD2PipelineConfig(model_path=str(tmp_path))
     )
@@ -173,23 +184,23 @@ def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) 
     submit(stage, identity, "open")
     with pytest.raises(QueueFullError):
         submit(stage, reopened, "open")
-    runtime.step.return_value = [playback(0, "old")]
-    interval = TimedChunk("audio", 0, 80, 0, bytes(2560), "pcm16")
+    runtime.step.return_value = playback(0, "old")
+    frame_input = TimedChunk("audio", 0, 80, 0, bytes(INPUT_BYTES_PER_FRAME), "pcm16")
     first = [
         event
-        for frame in submit(stage, identity, "append", interval)
+        for frame in submit(stage, identity, "append", frame_input)
         for event in convert(frame)
     ]
-    with pytest.raises(ValueError, match="input bytes per interval"):
+    with pytest.raises(ValueError, match="input bytes per 80 ms frame"):
         submit(
             stage, identity, "append", TimedChunk("audio", 80, 1, 1, bytes(32), "pcm16")
         )
     submit(stage, reopened, "open")
     convert = deployment.adapter_factory().output_converter
-    runtime.step.return_value = [playback(0, "fresh")]
+    runtime.step.return_value = playback(0, "fresh")
     second = [
         event
-        for frame in submit(stage, reopened, "append", interval)
+        for frame in submit(stage, reopened, "append", frame_input)
         for event in convert(frame)
     ]
     end = TimedChunk("audio", 80, 0, 1, b"", "pcm16", eos=True)

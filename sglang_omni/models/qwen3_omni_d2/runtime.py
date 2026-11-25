@@ -19,7 +19,7 @@ from sglang_omni.models.qwen3_omni_d2.components.model import (
 )
 from sglang_omni.models.qwen3_omni_d2.components.thinker import THINKER_TOKENS_PER_FRAME
 from sglang_omni.models.qwen3_omni_d2.config import (
-    INPUT_SAMPLE_RATE_HZ,
+    INPUT_BYTES_PER_FRAME,
     NATIVE_FRAME_MS,
     Qwen3OmniD2Language,
 )
@@ -27,7 +27,6 @@ from sglang_omni.models.qwen3_omni_d2.session import (
     Qwen3OmniD2Frame,
     Qwen3OmniD2Session,
 )
-from sglang_omni.proto.streams import PCM16_BYTES_PER_SAMPLE
 from sglang_omni.utils.device import device_guard
 
 logger = logging.getLogger(__name__)
@@ -73,16 +72,13 @@ class Qwen3OmniD2Runtime:
             prompt_token_ids = model.tokenizer.encode(
                 f"<|im_start|>system\n{prompt}<|im_end|>\n", add_special_tokens=False
             )
-            interval_tokens = THINKER_TOKENS_PER_FRAME * model.interval_frames
-            capacity_frames = kv_budget // interval_tokens * model.interval_frames
+            capacity_frames = kv_budget // THINKER_TOKENS_PER_FRAME
             self.max_frames = (
-                (THINKER_TOKENS_PER_FRAME * capacity_frames - len(prompt_token_ids))
-                // interval_tokens
-                * model.interval_frames
-            )
-            if self.max_frames < model.interval_frames:
+                THINKER_TOKENS_PER_FRAME * capacity_frames - len(prompt_token_ids)
+            ) // THINKER_TOKENS_PER_FRAME
+            if self.max_frames < 1:
                 raise ValueError(
-                    "D2 KV budget cannot hold the system prompt and one interval"
+                    "D2 KV budget cannot hold the system prompt and one frame"
                 )
             elif language == "zh":
                 tokenizer = model.tokenizer
@@ -97,39 +93,30 @@ class Qwen3OmniD2Runtime:
             self.session = Qwen3OmniD2Session(
                 model, capacity_frames, prompt_token_ids, seed, opening
             )
-        self.interval_frames = model.interval_frames
         logger.info(
-            f"Qwen3-Omni D2 ready: {model.interval_frames * NATIVE_FRAME_MS} ms interval, "
-            f"{self.max_frames} frames per conversation, language={language}"
+            f"Qwen3-Omni D2 ready: {self.max_frames} frames of {NATIVE_FRAME_MS} ms "
+            f"per conversation, language={language}"
         )
 
     def warm_up(self) -> None:
         """Replay silence until both audio streams reach their captured graphs.
 
-        Each startup interval attends over a new history length, and the first
+        Each startup frame attends over a new history length, and the first
         use of every length is several times slower than later ones.
         """
-        startup_intervals = (
-            self.session.audio_encoders[0].past_token_limit // self.interval_frames + 2
-        )
-        silence = bytes(
-            self.interval_frames
-            * NATIVE_FRAME_MS
-            * INPUT_SAMPLE_RATE_HZ
-            // 1000
-            * PCM16_BYTES_PER_SAMPLE
-        )
+        startup_frames = self.session.audio_encoders[0].past_token_limit + 2
+        silence = bytes(INPUT_BYTES_PER_FRAME)
         self.open_session()
-        for _ in range(min(startup_intervals, self.max_frames // self.interval_frames)):
+        for _ in range(min(startup_frames, self.max_frames)):
             self.step(silence)
 
     def open_session(self) -> None:
         with inference_scope(self.device):
             self.session.reset()
 
-    def step(self, pcm16: bytes) -> list[Qwen3OmniD2Frame]:
-        """Advance one interval; the fixed Thinker cache bounds the conversation length."""
-        if self.session.frames + self.interval_frames > self.max_frames:
+    def step(self, pcm16: bytes) -> Qwen3OmniD2Frame:
+        """Advance one 80 ms frame; the fixed Thinker cache bounds the conversation length."""
+        if self.session.frames >= self.max_frames:
             raise ContextExhaustedError(
                 f"{ContextExhaustedError.CODE}: D2 session reached its fixed context limit"
             )

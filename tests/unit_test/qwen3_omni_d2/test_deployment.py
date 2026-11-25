@@ -57,12 +57,9 @@ def test_serve_selects_d2_output_language(
         assert kwargs["language"] == expected_language
 
 
-@pytest.mark.parametrize("interval_ms", [80, 160, 320, 640, 1040])
-def test_manifest_selects_the_session_cadence(tmp_path: Path, interval_ms: int) -> None:
+def test_manifest_selects_the_80ms_realtime_session(tmp_path: Path) -> None:
     (tmp_path / "d2.json").write_text(
-        json.dumps(
-            {"format": "d2.release.v1", "family": "qwen", "latency_ms": interval_ms}
-        )
+        json.dumps({"format": "d2.release.v1", "family": "qwen", "latency_ms": 80})
     )
     config = ConfigManager.from_model_path(str(tmp_path)).config
     assert isinstance(config, Qwen3OmniD2PipelineConfig)
@@ -74,7 +71,7 @@ def test_manifest_selects_the_session_cadence(tmp_path: Path, interval_ms: int) 
     ) as http:
         capabilities = http.get("/v1/realtime/capabilities").json()
         assert capabilities["native_full_duplex"]
-        assert capabilities["native_unit_ms"] == interval_ms
+        assert capabilities["native_unit_ms"] == 80
         assert capabilities["input_audio_format"] == {
             "type": "audio/pcm",
             "rate": 16000,
@@ -100,16 +97,23 @@ def test_manifest_selects_the_session_cadence(tmp_path: Path, interval_ms: int) 
             assert rejection["error"]["code"] == "not_applicable"
 
 
-@pytest.mark.parametrize(("family", "interval_ms"), [("llama", 100), ("qwen", 100)])
+@pytest.mark.parametrize(
+    ("family", "interval_ms", "message"),
+    [
+        ("llama", 80, "Could not resolve model architecture"),
+        ("qwen", 100, "Only the 80 ms Qwen3-Omni D2 release"),
+        ("qwen", 320, "Only the 80 ms Qwen3-Omni D2 release"),
+    ],
+)
 def test_other_release_formats_do_not_select_qwen_d2(
-    tmp_path: Path, family: str, interval_ms: int
+    tmp_path: Path, family: str, interval_ms: int, message: str
 ) -> None:
     (tmp_path / "d2.json").write_text(
         json.dumps(
             {"format": "d2.release.v1", "family": family, "latency_ms": interval_ms}
         )
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=message):
         ConfigManager.from_model_path(str(tmp_path))
 
 
@@ -122,7 +126,7 @@ def test_cached_release_serves_without_repository_metadata_files(
     snapshot = repository / "snapshots" / revision
     snapshot.mkdir(parents=True)
     (snapshot / "d2.json").write_text(
-        json.dumps({"format": "d2.release.v1", "family": "qwen", "latency_ms": 160})
+        json.dumps({"format": "d2.release.v1", "family": "qwen", "latency_ms": 80})
     )
     for weight_filename in ("d2.safetensors", "encoder.safetensors"):
         (snapshot / weight_filename).write_bytes(b"weights")

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""One Qwen3-Omni D2 conversation: per interval, causal audio, then a Thinker and Talker step per frame."""
+"""One Qwen3-Omni D2 conversation: per 80 ms frame, causal audio, then one Thinker and one Talker step."""
 
 from dataclasses import replace
 
@@ -15,10 +15,7 @@ from sglang_omni.models.qwen3_omni_d2.components.code2wav import (
 )
 from sglang_omni.models.qwen3_omni_d2.components.mandarin import MandarinOpening
 from sglang_omni.models.qwen3_omni_d2.components.model import Qwen3OmniD2Model
-from sglang_omni.models.qwen3_omni_d2.components.talker import (
-    Qwen3OmniD2Talker,
-    TalkerFrame,
-)
+from sglang_omni.models.qwen3_omni_d2.components.talker import Qwen3OmniD2Talker
 from sglang_omni.models.qwen3_omni_d2.components.thinker import (
     Qwen3OmniD2Thinker,
     TurnState,
@@ -51,12 +48,10 @@ class Qwen3OmniD2Session:
         opening: MandarinOpening | None,
     ) -> None:
         self.model = model
-        self.interval_frames = model.interval_frames
         self.seed = seed
         self.audio_encoders = [
             Qwen3OmniD2AudioEncoder(
                 model.audio_tower,
-                model.interval_frames,
                 model.mel_filters,
                 model.fft_window_samples,
                 model.hop_samples,
@@ -85,18 +80,18 @@ class Qwen3OmniD2Session:
         self.feedback: torch.Tensor | None = None
         self.playback = Qwen3OmniD2Playback()
 
-    def step(self, pcm16: bytes) -> list[Qwen3OmniD2Frame]:
-        """Advance one interaction interval of 16 kHz PCM16 and return its native frames."""
+    def step(self, pcm16: bytes) -> Qwen3OmniD2Frame:
+        """Advance one 80 ms frame of 16 kHz PCM16 and return its playback and text."""
         model = self.model
         environment_encoder, self_encoder = self.audio_encoders
         waveform = torch.frombuffer(bytearray(pcm16), dtype=torch.int16).float()
         environment = environment_encoder.push(waveform / PCM16_SCALE)
         if self.feedback is None:
-            heard_self = model.self_silence_row.expand(self.interval_frames, -1)
+            heard_self = model.self_silence_row.view(1, -1)
         else:
-            # note (cuzimi): The model hears its own playback one interval late, as in training.
+            # note (cuzimi): The model hears its own playback one frame late, as in training.
             heard_self = self_encoder.push(self.feedback)
-        self.thinker.append_audio(
+        text_hidden, accepted_hidden = self.thinker.decode(
             torch.cat(
                 (
                     environment + model.environment_stream_row,
@@ -105,40 +100,27 @@ class Qwen3OmniD2Session:
             )[None],
             self.frames,
         )
-        decoded: list[tuple[int, TalkerFrame]] = []
-        for index in range(self.interval_frames):
-            text_hidden, accepted_hidden = self.thinker.decode(index)
-            token_id = self.thinker.next_token(text_hidden, self.turn)
-            transition = advance_turn(self.turn, token_id, model)
-            talker_frame = self.talker.step(
-                token_id, accepted_hidden, self.frames + index, transition
-            )
-            if talker_frame.has_closed:
-                self.turn = replace(transition.after, is_talker_responding=False)
-            else:
-                self.turn = transition.after
-            decoded.append((token_id, talker_frame))
-        frames: list[Qwen3OmniD2Frame] = []
-        feedback: list[torch.Tensor] = []
-        for index, (token_id, talker_frame) in enumerate(decoded):
-            pcm16_frame, frame_feedback = self.playback.append(
-                self.code2wav.append(talker_frame.codes), talker_frame.is_active
-            )
-            feedback.append(frame_feedback)
-            frames.append(
-                Qwen3OmniD2Frame(
-                    pcm16=pcm16_frame,
-                    text_delta=(
-                        ""
-                        if token_id in model.special_token_ids
-                        else model.tokenizer.decode(
-                            [token_id], skip_special_tokens=True
-                        )
-                    ),
-                    sequence=self.frames + index,
-                    is_interruption=token_id == model.interrupt_token_id,
-                )
-            )
-        self.feedback = torch.cat(feedback)
-        self.frames += self.interval_frames
-        return frames
+        token_id = self.thinker.next_token(text_hidden, self.turn)
+        transition = advance_turn(self.turn, token_id, model)
+        talker_frame = self.talker.step(
+            token_id, accepted_hidden, self.frames, transition
+        )
+        if talker_frame.has_closed:
+            self.turn = replace(transition.after, is_talker_responding=False)
+        else:
+            self.turn = transition.after
+        pcm16_frame, self.feedback = self.playback.append(
+            self.code2wav.append(talker_frame.codes), talker_frame.is_active
+        )
+        frame = Qwen3OmniD2Frame(
+            pcm16=pcm16_frame,
+            text_delta=(
+                ""
+                if token_id in model.special_token_ids
+                else model.tokenizer.decode([token_id], skip_special_tokens=True)
+            ),
+            sequence=self.frames,
+            is_interruption=token_id == model.interrupt_token_id,
+        )
+        self.frames += 1
+        return frame
