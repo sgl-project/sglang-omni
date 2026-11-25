@@ -12,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -324,6 +325,23 @@ func TestRewriteTypedFollowUpSurvivesNoLLM(t *testing.T) {
 		Problem: &session.Problem{Code: session.ProblemNoLLM, Err: errors.New("no model")}})
 	if got := a.boxVoiceLine(); got != "make it polite" {
 		t.Errorf("the early failure erased the typed follow-up: %q", got)
+	}
+}
+
+// TestRewriteKeepsTheLiveTextWhileRecognising: once the shortcut ends, the
+// card keeps the words heard so far until the recognition finishes; it shows
+// "Recognising…" only when nothing was heard live (VX-141).
+func TestRewriteKeepsTheLiveTextWhileRecognising(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.box = rewriteBox{open: true, shown: true, session: "r1"}
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Recording, Partial: "make it polite"})
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Recognizing, Partial: "make it polite"})
+	if got := a.boxVoiceLine(); got != "make it polite" {
+		t.Errorf("recognising replaced the live text with %q", got)
+	}
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Recognizing})
+	if got := a.boxVoiceLine(); got != i18n.T("Recognising…") {
+		t.Errorf("with nothing heard live the card shows %q", got)
 	}
 }
 

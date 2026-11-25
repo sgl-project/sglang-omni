@@ -20,8 +20,8 @@ func (a *app) boxVoiceLine() string {
 	b := &a.box
 	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
 		switch {
-		case a.sess.State == session.Recording:
-			return a.sess.Partial
+		case a.sess.State == session.Recording, a.sess.State == session.Recognizing && a.sess.Partial != "":
+			return a.sess.Partial // the live text stays while the last of it is recognised (VX-141)
 		case a.sess.State == session.Recognizing:
 			return i18n.T("Recognising…")
 		case a.sess.Spoken != "":
