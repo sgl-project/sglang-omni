@@ -419,3 +419,58 @@ func quietOver(t *testing.T, streamer *meetTestStreamer, levels []float64, vad .
 	}
 	return append(quiet, m.Current().Quiet) // levels are taken in as they come
 }
+
+// A live meeting writes the speech model's Traditional characters in the
+// user's Simplified script, in the live line and in the stored segment.
+func TestManagerLiveScript(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	streamer := &meetTestStreamer{text: "這個會議為什麼"}
+	m := meeting.NewManager(meeting.Config{
+		Mic: newFakeAudio(liveTestPCM(t)), Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"),
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer, Script: "zh-Hans"}, nil
+		},
+	})
+	lines := make(chan string, 64)
+	defer m.Subscribe(func(s meeting.Snapshot) {
+		if text := s.Live[meeting.SourceMic]; text != "" {
+			select {
+			case lines <- text:
+			default:
+			}
+		}
+	})()
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live string
+	select {
+	case live = <-lines:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no live text from the microphone")
+	}
+	if live != "这个会议为什么" {
+		t.Errorf("live line %q", live)
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := s.Meetings().Meeting(ctx, id)
+	if err != nil || len(segs) == 0 {
+		t.Fatalf("segments %v, %v", segs, err)
+	}
+	for _, g := range segs {
+		if g.Text != "这个会议为什么" {
+			t.Errorf("stored %q", g.Text)
+		}
+	}
+}
