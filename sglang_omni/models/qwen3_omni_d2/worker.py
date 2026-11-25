@@ -32,14 +32,17 @@ async def serve(connection: Connection, runtime: Runtime) -> None:
                         runtime.max_context_frames * INPUT_FRAME_SAMPLES * 2
                     )
                     connection.send_bytes(b"{}")
-                elif session is None:
-                    raise RuntimeError("D2 session is not open")
                 elif command == b"close":
                     try:
-                        await session.close()
+                        if session is not None:
+                            await session.close()
+                        else:
+                            pass
                     finally:
                         session = None
                     connection.send_bytes(b"{}")
+                elif session is None:
+                    raise RuntimeError("D2 session is not open")
                 elif command.startswith(b"pcm:"):
                     pcm16 = command[4:]
                     if len(pcm16) > remaining_input_bytes:
@@ -51,7 +54,9 @@ async def serve(connection: Connection, runtime: Runtime) -> None:
                         remaining_input_bytes -= len(pcm16)
                     frames = [
                         {
-                            "pcm16": base64.b64encode(playback_pcm16).decode("ascii"),
+                            "pcm16": base64.urlsafe_b64encode(playback_pcm16).decode(
+                                "ascii"
+                            ),
                             "text_delta": event.get("text_delta", ""),
                             "sequence": event["sequence"],
                             "token_id": event["token_id"],
