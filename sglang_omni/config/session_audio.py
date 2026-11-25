@@ -36,61 +36,38 @@ MODEL_PIPELINE_FIELDS = ("placement", "terminal_stages_fn", "env_defaults")
 
 def validate_fused_endpoint_graph(graph: SessionGraph) -> None:
     """Reject split endpoint ownership and competing raw consumer edges."""
-    vad_owners = {
-        name for name, node in graph.nodes.items() if VAD_STAGE in node.stages
-    }
-    for endpoint in graph.nodes.values():
-        if TURN_DETECTION_STAGE not in endpoint.stages:
-            continue
-        else:
-            pass
-        if vad_owners.intersection(endpoint.edges()):
-            raise ValueError(
-                "the split vad -> turn_detection graph is unsupported: remove "
-                "the separate VAD node from the semantic endpoint path; let "
-                "turn_detection consume input:pcm16 and input:session directly; "
-                "move VAD factory overrides to stages.turn_detection.factory; "
-                "route downstream PCM through turn_detection:pcm16 and "
-                "boundaries through turn_detection:session and in-band controls "
-                "through turn_detection:session_internal"
-            )
-        else:
-            pass
-    endpoints = {
+    endpoint_names = {
         name
         for name, node in graph.nodes.items()
         if TURN_DETECTION_STAGE in node.stages
     }
+    vad_names = {name for name, node in graph.nodes.items() if VAD_STAGE in node.stages}
+    for endpoint_name in endpoint_names:
+        if vad_names & graph.nodes[endpoint_name].edges().keys():
+            raise ValueError(
+                "split VAD -> turn_detection is unsupported; route input directly "
+                "to turn_detection"
+            )
+        else:
+            pass
     for name, consumer in graph.nodes.items():
         edges = consumer.edges()
         raw_formats = edges.get("input", frozenset())
-        reads_raw_pcm = raw_formats is None or (
-            raw_formats is not None and PCM16 in raw_formats
-        )
-        reads_raw_controls = raw_formats is None or (
-            raw_formats is not None and SESSION_CONTROL in raw_formats
-        )
-        for endpoint_name in endpoints.intersection(edges):
+        for endpoint_name in endpoint_names & edges.keys():
             endpoint_formats = edges[endpoint_name]
-            reads_endpoint_controls = endpoint_formats is None or (
-                endpoint_formats is not None
-                and bool({SESSION_CONTROL, SESSION_CONTROL_INTERNAL} & endpoint_formats)
-            )
-            reads_endpoint_internal_controls = endpoint_formats is None or (
-                endpoint_formats is not None
-                and SESSION_CONTROL_INTERNAL in endpoint_formats
-            )
-            if reads_raw_pcm and reads_endpoint_controls:
+            if (raw_formats is None or PCM16 in raw_formats) and (
+                endpoint_formats is None
+                or {SESSION_CONTROL, SESSION_CONTROL_INTERNAL} & endpoint_formats
+            ):
                 raise ValueError(
-                    f"node {name!r} reads raw input PCM and fused endpoint controls; "
-                    f"route PCM through {endpoint_name}:pcm16, boundaries through "
-                    f"{endpoint_name}:session, and in-band controls through "
-                    f"{endpoint_name}:session_internal"
+                    f"node {name!r} combines input PCM with {endpoint_name} controls; "
+                    f"route PCM through {endpoint_name}:pcm16"
                 )
-            elif reads_raw_controls and reads_endpoint_internal_controls:
+            elif (raw_formats is None or SESSION_CONTROL in raw_formats) and (
+                endpoint_formats is None or SESSION_CONTROL_INTERNAL in endpoint_formats
+            ):
                 raise ValueError(
-                    f"node {name!r} reads raw input session controls and fused "
-                    f"endpoint controls; route in-band controls through "
+                    f"node {name!r} combines input session controls with "
                     f"{endpoint_name}:session_internal"
                 )
             else:

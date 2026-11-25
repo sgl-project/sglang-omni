@@ -137,7 +137,7 @@ class UtteranceSegmenter:
         self, chunk: TimedChunk, start_sample: int
     ) -> TimedChunk | None:
         if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
-            return chunk
+            raise ValueError("utterance audio must be 16 kHz mono pcm16 bytes")
         elif len(chunk.payload) % 2:
             raise ValueError("PCM16 byte length must contain whole samples")
         else:

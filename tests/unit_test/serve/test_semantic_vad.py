@@ -77,6 +77,17 @@ def test_medium_eagerness_uses_confidence_windows(
     assert eou.calls == 1
 
 
+@pytest.mark.parametrize(
+    ("eagerness", "probability", "required_silence_ms"),
+    [("high", 0.85, 320), ("medium", 0.85, 2000), ("low", 0.95, 1200)],
+)
+def test_eagerness_presets_keep_their_existing_thresholds(
+    eagerness: str, probability: float, required_silence_ms: int
+) -> None:
+    policy = SemanticVADConfig.from_eagerness(eagerness)
+    assert policy.required_silence_ms(probability) == required_silence_ms
+
+
 def test_resumed_speech_discards_pause_decision():
     decisions = [True] + [False] * 5 + [True] + [False] * 8
     eou = FakeEOU([0.1, 0.99])

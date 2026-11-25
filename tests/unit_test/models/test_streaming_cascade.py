@@ -1373,6 +1373,26 @@ def test_segmenter_gates_on_speech_controls():
     assert segmenter.finish() == []
 
 
+def test_segmenter_rejects_unsupported_audio_when_slicing_lookback() -> None:
+    segmenter = UtteranceSegmenter()
+    segmenter.step(
+        TimedChunk(
+            "control",
+            0,
+            0,
+            0,
+            {"type": SEGMENTATION_MODE, "enabled": True},
+            format=SESSION_CONTROL_INTERNAL,
+        )
+    )
+    segmenter.step(TimedChunk(AUDIO, 0, 100, 0, QUIET, format=PCM_F32))
+
+    with pytest.raises(
+        ValueError, match="utterance audio must be 16 kHz mono pcm16 bytes"
+    ):
+        segmenter.step(control_chunk(SPEECH_STARTED, t_ms=50))
+
+
 class CapturingUtteranceRecognizer(UtteranceRecognizer):
     def __init__(self) -> None:
         super().__init__()
