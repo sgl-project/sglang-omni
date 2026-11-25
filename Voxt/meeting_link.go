@@ -100,6 +100,10 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
 	a.followMeeting(s, prev)
+	if prev.State == meeting.StateFinishing && prev.ID != "" && (s.State == meeting.StateDone || s.State == meeting.StateIdle) {
+		// The overlay goes once the meeting is filed: say where it went.
+		a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: prev.ID, ok: true})
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {

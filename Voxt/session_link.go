@@ -168,6 +168,8 @@ const (
 	actionRetry       = "retry"  // the session's entry, in History (history_retry.go)
 	actionSignIn      = "signin" // the ChatGPT (Codex) dialog (remote_chatgpt.go)
 	actionUsage       = "usage"  // the ChatGPT usage page, in the browser
+
+	actionMeeting = "meeting" // the meeting entry names, in Meetings
 )
 
 // sessionNotice is a one-line message in the overlay, where
@@ -176,7 +178,7 @@ const (
 type sessionNotice struct {
 	text, more string
 	action     string
-	entry      string // actionRetry's history entry
+	entry      string // actionRetry's history entry, actionMeeting's meeting
 	warn       bool   // a warning (the session went on), not an error
 	ok         bool   // done as asked (a term added, a note saved), not a problem
 	seq        int    // which notice: its timer hides only itself
@@ -532,6 +534,10 @@ func (a *app) noticeAction(action string) {
 		a.completeSetup(local.LLM, providers.ChatGPT)
 	case actionUsage:
 		go openBrowser(chatgptUsageURL)
+	case actionMeeting:
+		a.showMainWindow()
+		a.navigate("/meetings")
+		a.openMeetingDetail(entry)
 	}
 }
 
