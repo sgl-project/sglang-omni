@@ -46,7 +46,14 @@ class D2OutputConverter:
             yield TextFinished(response_id, item_id, self.transcript)
             yield AudioFinished(response_id, item_id)
             yield ResponseFinished(
-                response_id, item_id, self.transcript, True, status, reason
+                response_id,
+                item_id,
+                self.transcript,
+                True,
+                status,
+                reason,
+                # Note (cuzimi): D2 publishes every 80 ms frame. Its learned interrupt cuts client playout.
+                preserve_queued_audio=status == "cancelled",
             )
             self.response_id = None
             self.transcript = ""

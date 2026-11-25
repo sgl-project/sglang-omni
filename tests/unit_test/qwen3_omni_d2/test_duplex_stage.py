@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """D2 frame order, interrupt boundaries, and session cleanup through the terminal stage."""
 
+import hashlib
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from benchmarks.duplex.v15_audio import reconstruct_output
 from sglang_omni.admission import QueueFullError
 from sglang_omni.client.client import Client
 from sglang_omni.models.qwen3_omni_d2.config import Qwen3OmniD2PipelineConfig
@@ -29,6 +32,9 @@ from sglang_omni.serve.realtime.output import (
     ResponseFinished,
     ResponseStarted,
 )
+from sglang_omni.serve.realtime.output_buffer import OutputBuffer
+from sglang_omni.serve.realtime.projection import project_output
+from sglang_omni.serve.realtime.types import RuntimeLimits
 
 
 def submit(
@@ -64,7 +70,7 @@ def playback(sequence: int, text: str, *, interrupted: bool = False) -> D2Frame:
     )
 
 
-def test_interrupt_inside_one_macro_and_end_on_its_last_frame() -> None:
+def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) -> None:
     runtime = Mock(spec=D2Runtime)
     frames = [
         playback(0, "old"),
@@ -87,7 +93,26 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame() -> None:
         (240, 80, True),
     ]
     convert = D2OutputConverter()
-    events = [event for frame in emitted for event in convert(frame)]
+    outbox = OutputBuffer(RuntimeLimits())
+    for frame in emitted:
+        for event in convert(frame):
+            outbox.emit(event, unit=None, output_modalities=("audio",))
+
+    # Note (cuzimi): A slow socket can receive the entire macro in one burst.
+    events = []
+    trace = [
+        {
+            "direction": "send",
+            "time_s": 0.0,
+            "event": {"type": "input_audio_buffer.append", "sglang": {"t_start_ms": 0}},
+        }
+    ]
+    while (envelope := outbox.dequeue()) is not None:
+        outbox.before_send(envelope)
+        events.append(envelope.event)
+        projected = project_output(envelope.event, output_modalities=("audio",))
+        trace.append({"direction": "receive", "time_s": 0.0, "event": projected})
+        outbox.sent(envelope)
     assert [event.pcm for event in events if isinstance(event, AudioDelta)] == [
         frame.pcm16 for frame in frames
     ]
@@ -104,6 +129,17 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame() -> None:
     assert events.index(finished[0]) < next(
         i for i, event in enumerate(events) if event.response_id == started_ids[1]
     )
+    (tmp_path / "continuous.jsonl").write_text("\n".join(map(json.dumps, trace)))
+    replay = reconstruct_output(tmp_path, profile="qwen3-omni-d2-320ms")
+    assert replay["errors"] == []
+    assert replay["pcm_sha256"] == {
+        "output-media.wav": hashlib.sha256(
+            b"".join(f.pcm16 for f in frames)
+        ).hexdigest(),
+        "output-playout.wav": hashlib.sha256(
+            b"".join(f.pcm16 for f in frames[1:])
+        ).hexdigest(),
+    }
     submit(stage, identity, "close")
 
 
