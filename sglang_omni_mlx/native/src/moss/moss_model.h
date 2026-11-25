@@ -41,8 +41,6 @@ private:
                         const std::filesystem::path &model_directory);
   mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
                           int stride) const;
-  mlx::core::array WhisperEncoderLayer(const mlx::core::array &x,
-                                       int layer) const;
 
   WhisperEncoderConfig whisper_;
   float adaptor_norm_eps_ = 0.0f;
