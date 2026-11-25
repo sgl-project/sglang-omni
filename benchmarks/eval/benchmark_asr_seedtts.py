@@ -765,10 +765,13 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
         run_id=run_id,
         event_dir=event_dir,
         profile_urls=profile_urls,
-        event_buffer_capacity=args.profile_event_buffer_capacity,
+        event_buffer_capacity=(
+            args.profile_event_buffer_capacity
+            if args.profile_event_buffer_capacity is not None
+            else event_buffer_capacity_for_samples(len(samples))
+        ),
         run_pass=lambda: _run_repeat(args, samples, concurrency, repeat=0),
         log_prefix=f"[conc={concurrency}]",
-        event_buffer_capacity=event_buffer_capacity_for_samples(len(samples)),
     )
 
 
