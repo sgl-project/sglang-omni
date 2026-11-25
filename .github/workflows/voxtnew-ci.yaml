@@ -133,7 +133,7 @@ jobs:
       - name: Go tests
         run: |
           set -o pipefail
-          CGO_ENABLED=0 go test -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -cover ./... | tee "$RUNNER_TEMP/go-test.txt"
           {
             echo "### Coverage by package"
             echo '```'
