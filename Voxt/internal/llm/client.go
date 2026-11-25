@@ -94,8 +94,9 @@ func (c *Client) Prefill(ctx context.Context, req Request) error {
 	return nil
 }
 
-// Chat runs req with retries. A streaming request is retried only while
-// nothing has been streamed yet. The returned Usage sums every attempt.
+// Chat runs req with retries. A stream retries by default until output is
+// emitted; later retries need authorization to discard private output.
+// Usage sums every attempt.
 func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 	if c.Backend == nil {
 		return Response{}, newErr(CodeNoRoute, "skill", string(req.Skill))

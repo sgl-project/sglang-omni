@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,6 +60,8 @@ type pairedBenchmarkASR struct {
 	finishGate    <-chan struct{}
 	finishStarted chan struct{}
 	finishEmitted chan struct{}
+	partialText   string
+	finalText     string
 }
 
 func (provider *pairedBenchmarkASR) Caps() asr.Caps {
@@ -67,7 +71,7 @@ func (provider *pairedBenchmarkASR) Caps() asr.Caps {
 func (provider *pairedBenchmarkASR) Open(requestContext context.Context, _ asr.StreamRequest) (asr.Stream, error) {
 	return &pairedBenchmarkStream{
 		context: requestContext, finalGate: provider.finishGate, finishStarted: provider.finishStarted,
-		finishEmitted: provider.finishEmitted, events: make(chan asr.Event, 4),
+		finishEmitted: provider.finishEmitted, events: make(chan asr.Event, 4), partialText: provider.partialText, finalText: provider.finalText,
 	}, nil
 }
 
@@ -77,12 +81,14 @@ type pairedBenchmarkStream struct {
 	finishStarted chan struct{}
 	finishEmitted chan struct{}
 	events        chan asr.Event
+	partialText   string
+	finalText     string
 	partialOnce   sync.Once
 }
 
 func (stream *pairedBenchmarkStream) Send([]byte) error {
 	stream.partialOnce.Do(func() {
-		stream.events <- asr.Event{Kind: asr.EventPartial, Text: "spoken words."}
+		stream.events <- asr.Event{Kind: asr.EventPartial, Text: stream.partialText}
 	})
 	return nil
 }
@@ -91,7 +97,7 @@ func (stream *pairedBenchmarkStream) Finish() error {
 	close(stream.finishStarted)
 	select {
 	case <-stream.finalGate:
-		stream.events <- asr.Event{Kind: asr.EventFinal, Text: "spoken words.", Result: asr.Result{Text: "spoken words.", Model: "paired-benchmark"}}
+		stream.events <- asr.Event{Kind: asr.EventFinal, Text: stream.finalText, Result: asr.Result{Text: stream.finalText, Model: "paired-benchmark"}}
 		close(stream.events)
 		close(stream.finishEmitted)
 		return nil
@@ -121,13 +127,14 @@ func (textIO *pairedBenchmarkText) Paste(requestContext context.Context, request
 type pairedBenchmarkObservation struct {
 	firstDraft        chan time.Time
 	firstPresentation chan time.Time
+	draftUpdates      chan time.Time
 	pasteAt           chan time.Time
 }
 
-func newPairedBenchmarkHarness(t *testing.T, streamer asr.Provider, model *pairedBenchmarkLLM, clock *softDeadlineClock) (*harness, *pairedBenchmarkObservation) {
+func newPairedBenchmarkHarness(t *testing.T, streamer asr.Provider, model *pairedBenchmarkLLM, clock *softDeadlineClock, cleanupEnabled bool, liveCleanupEnabled bool) (*harness, *pairedBenchmarkObservation) {
 	t.Helper()
 	observations := &pairedBenchmarkObservation{
-		firstDraft: make(chan time.Time, 1), firstPresentation: make(chan time.Time, 1), pasteAt: make(chan time.Time, 4),
+		firstDraft: make(chan time.Time, 1), firstPresentation: make(chan time.Time, 1), draftUpdates: make(chan time.Time, 16), pasteAt: make(chan time.Time, 4),
 	}
 	var firstDraftOnce sync.Once
 	var firstPresentationOnce sync.Once
@@ -141,6 +148,8 @@ func newPairedBenchmarkHarness(t *testing.T, streamer asr.Provider, model *paire
 		llm:   model,
 	}
 	state := settings.Defaults()
+	state.Features.Transcribe.Enhance = cleanupEnabled
+	state.Features.Transcribe.CleanAfterStop = !liveCleanupEnabled
 	state.Dictionary.Enabled = true
 	config := Config{
 		Audio: fixture.audio,
@@ -162,10 +171,14 @@ func newPairedBenchmarkHarness(t *testing.T, streamer asr.Provider, model *paire
 		Settings: func() settings.Settings { return state },
 		OnChange: func(snapshot Snapshot) {
 			fixture.rec.add(snapshot)
-			if snapshot.State == Composing && snapshot.Draft != "" {
+			if snapshot.State == Composing && pairedBenchmarkEligibleText(snapshot.Draft) {
 				firstDraftOnce.Do(func() { observations.firstDraft <- clock.Now() })
 				firstPresentationOnce.Do(func() { observations.firstPresentation <- clock.Now() })
-			} else if snapshot.State.Ended() && snapshot.Result != "" {
+				select {
+				case observations.draftUpdates <- clock.Now():
+				default:
+				}
+			} else if cleanupEnabled && snapshot.State.Ended() && snapshot.Result != snapshot.Raw && pairedBenchmarkEligibleText(snapshot.Result) {
 				firstPresentationOnce.Do(func() { observations.firstPresentation <- clock.Now() })
 			}
 		},
@@ -176,29 +189,85 @@ func newPairedBenchmarkHarness(t *testing.T, streamer asr.Provider, model *paire
 		ASRTimeout: 2 * time.Second, StopGrace: 200 * time.Millisecond,
 	}
 	state.Audio.VAD.Off = true
-	state.Features.Transcribe.Enhance = true
 	fixture.m = New(config)
 	t.Cleanup(fixture.m.Close)
 	return fixture, observations
 }
 
+func pairedBenchmarkEligibleText(text string) bool {
+	text = strings.TrimSpace(text)
+	return text != "" && !strings.Contains(text, "<output") && !strings.Contains(text, "</") && !strings.Contains(text, "<think")
+}
+
 func TestLivePolishPairedBaselineBufferedStreamLatency(t *testing.T) {
-	runPairedBenchmarkScenario(t, "matching_buffered", true)
+	runPairedBenchmarkScenario(t, "matching_buffered")
 }
 
 func TestLivePolishPairedBaselineFirstDeltaLatency(t *testing.T) {
-	runPairedBenchmarkScenario(t, "matching_first_delta", false)
+	runPairedBenchmarkScenario(t, "matching_first_delta")
 }
 
-func runPairedBenchmarkScenario(t *testing.T, scenario string, deltaBeforeFinal bool) {
+func TestLivePolishPairedBaselineCompletedPrefixLatency(t *testing.T) {
+	runPairedBenchmarkScenario(t, "completed_prefix_slow_tail")
+}
+
+func TestLivePolishPairedBaselineMismatchedFlight(t *testing.T) {
+	runPairedBenchmarkScenario(t, "mismatched_flight")
+}
+
+func TestLivePolishPairedBaselineLiveCleanupDisabled(t *testing.T) {
+	runPairedBenchmarkScenario(t, "live_cleanup_disabled")
+}
+
+func TestLivePolishPairedBaselineAlreadyCompletedFlight(t *testing.T) {
+	runPairedBenchmarkScenario(t, "completed_compatible_flight")
+}
+
+func runPairedBenchmarkScenario(t *testing.T, scenario string) {
 	t.Helper()
+	partialText, finalText := "spoken words.", "spoken words."
+	speculativeAnswer, foregroundAnswer := "<output>Cleaned text.</output>", "<output>Cleaned final.</output>"
+	firstDelta := "<output>Cleaned"
+	cleanupEnabled, liveCleanupEnabled, deltaBeforeFinal, completeBeforeFinal := true, true, false, false
+	expectedRequests, expectedResult := int32(1), "Cleaned text."
+	expectedAdoption, expectedBufferedAtAdoption, expectedPrefixPublishedEarly := true, false, false
+	switch scenario {
+	case "matching_buffered":
+		deltaBeforeFinal, expectedBufferedAtAdoption = true, true
+	case "matching_first_delta":
+		firstDelta = "<output>Cleaned"
+	case "completed_prefix_slow_tail":
+		partialText = "First sentence. Second sentence. Third sentence."
+		finalText = partialText + " Fourth sentence."
+		speculativeAnswer = "<output>First sentence. Second sentence. Third sentence.</output>"
+		foregroundAnswer = "<output>Second sentence. Third sentence. Fourth sentence.</output>"
+		expectedRequests, expectedResult = 2, finalText
+		expectedAdoption = false
+		completeBeforeFinal = true
+	case "mismatched_flight":
+		partialText, finalText = "preview transcript.", "final transcript."
+		firstDelta = "<output>INVALID speculative text"
+		foregroundAnswer = "<output>Cleaned final.</output>"
+		expectedRequests, expectedResult = 2, "Cleaned final."
+		expectedAdoption = false
+	case "live_cleanup_disabled":
+		liveCleanupEnabled = false
+		expectedRequests, expectedResult = 1, "Cleaned final."
+		expectedAdoption = false
+	case "completed_compatible_flight":
+		completeBeforeFinal = true
+		expectedAdoption = false
+	default:
+		t.Fatalf("unknown paired benchmark scenario %q", scenario)
+	}
 	clock := newSoftDeadlineClock()
 	model := &pairedBenchmarkLLM{calls: make(chan *pairedBenchmarkCall, 4)}
 	finalGate := make(chan struct{})
 	streamer := &pairedBenchmarkASR{
 		finishGate: finalGate, finishStarted: make(chan struct{}), finishEmitted: make(chan struct{}),
+		partialText: partialText, finalText: finalText,
 	}
-	fixture, observations := newPairedBenchmarkHarness(t, streamer, model, clock)
+	fixture, observations := newPairedBenchmarkHarness(t, streamer, model, clock, cleanupEnabled, liveCleanupEnabled)
 	fixture.audio.notifyAt = 3
 	fixture.audio.notified = make(chan struct{})
 	id := fixture.start()
@@ -212,10 +281,8 @@ func runPairedBenchmarkScenario(t *testing.T, scenario string, deltaBeforeFinal 
 		t.Fatal("recording did not reach the Stop fixture")
 	}
 	var speculativeCall *pairedBenchmarkCall
-	select {
-	case speculativeCall = <-model.calls:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the speculative cleanup request did not start")
+	if liveCleanupEnabled {
+		speculativeCall = waitPairedBenchmarkCall(t, model, "the speculative cleanup request did not start")
 	}
 	stopAt := clock.Now()
 	fixture.m.Stop(id)
@@ -224,14 +291,21 @@ func runPairedBenchmarkScenario(t *testing.T, scenario string, deltaBeforeFinal 
 	case <-time.After(5 * time.Second):
 		t.Fatal("ASR did not start finalization")
 	}
-	clock.Advance(100 * time.Millisecond)
-	if deltaBeforeFinal {
-		speculativeCall.emitDelta("<output>Cleaned")
+	if completeBeforeFinal {
+		clock.Advance(100 * time.Millisecond)
+		speculativeCall.complete(t, speculativeAnswer)
+		waitLive(t, currentRun, partialText)
+		clock.Advance(200 * time.Millisecond)
+	} else if deltaBeforeFinal {
+		clock.Advance(100 * time.Millisecond)
+		speculativeCall.emitDelta(firstDelta)
 		if fixture.m.Current().Draft != "" {
-			t.Fatalf("speculative text escaped before ASR Final: %q", fixture.m.Current().Draft)
+			t.Fatalf("speculative text escaped before ASR Final in %s: %q", scenario, fixture.m.Current().Draft)
 		}
+		clock.Advance(200 * time.Millisecond)
+	} else {
+		clock.Advance(300 * time.Millisecond)
 	}
-	clock.Advance(200 * time.Millisecond)
 	close(finalGate)
 	select {
 	case <-streamer.finishEmitted:
@@ -239,43 +313,146 @@ func runPairedBenchmarkScenario(t *testing.T, scenario string, deltaBeforeFinal 
 		t.Fatal("ASR Final did not arrive")
 	}
 	asrFinalAt := clock.Now()
-	fixture.rec.waitFor(t, "the composing state", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State == Composing })
-	if !deltaBeforeFinal {
-		clock.Advance(100 * time.Millisecond)
-		speculativeCall.emitDelta("<output>Cleaned")
+	if cleanupEnabled {
+		fixture.rec.waitFor(t, "the composing state", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State == Composing })
 	}
+	var foregroundCall *pairedBenchmarkCall
+	switch scenario {
+	case "completed_prefix_slow_tail", "mismatched_flight":
+		if scenario == "mismatched_flight" {
+			select {
+			case <-speculativeCall.returned:
+			case <-time.After(5 * time.Second):
+				t.Fatal("mismatched speculative request did not cancel")
+			}
+		}
+		foregroundCall = waitPairedBenchmarkCall(t, model, "the foreground cleanup request did not start")
+	case "matching_first_delta", "live_cleanup_disabled":
+		foregroundCall = speculativeCall
+		if scenario == "live_cleanup_disabled" {
+			foregroundCall = waitPairedBenchmarkCall(t, model, "the foreground cleanup request did not start")
+		}
+	}
+	if scenario == "completed_prefix_slow_tail" {
+		waitForPairedDraftOrDeadline(observations, 150*time.Millisecond)
+		draft := fixture.m.Current().Draft
+		if strings.Contains(draft, "Second sentence.") || strings.Contains(draft, "Third sentence.") {
+			t.Fatalf("sentences selected for reclean were published before tail progress: %q", draft)
+		}
+		drainPairedBenchmarkDraftUpdates(observations)
+		clock.Advance(100 * time.Millisecond)
+		foregroundCall.emitDelta("<output>Second sentence.")
+		waitForPairedDraft(t, observations, "tail progress did not publish a cleaned draft")
+		expectedPrefixPublishedEarly = pairedBenchmarkEligibleText(draft)
+	} else if scenario == "mismatched_flight" {
+		if fixture.m.Current().Draft != "" {
+			t.Fatalf("mismatched speculative draft escaped before foreground cleanup: %q", fixture.m.Current().Draft)
+		}
+		clock.Advance(100 * time.Millisecond)
+		foregroundCall.emitDelta("<output>Cleaned")
+		waitForPairedDraft(t, observations, "foreground cleanup did not publish a cleaned draft")
+		if strings.Contains(fixture.m.Current().Draft, "INVALID") {
+			t.Fatalf("mismatched speculative text escaped: %q", fixture.m.Current().Draft)
+		}
+	} else if scenario == "matching_buffered" {
+		waitForPairedDraftOrDeadline(observations, 150*time.Millisecond)
+	} else if scenario == "matching_first_delta" {
+		clock.Advance(100 * time.Millisecond)
+		foregroundCall.emitDelta(firstDelta)
+		waitForPairedDraftOrDeadline(observations, 150*time.Millisecond)
+	} else if scenario == "completed_compatible_flight" {
+		if completeBeforeFinal && model.requests.Load() != 1 {
+			t.Fatalf("completed speculative request count before Final %d, want 1", model.requests.Load())
+		}
+	} else if scenario == "live_cleanup_disabled" {
+		clock.Advance(100 * time.Millisecond)
+		foregroundCall.emitDelta("<output>Cleaned")
+		waitForPairedDraftOrDeadline(observations, 150*time.Millisecond)
+	}
+	if scenario == "matching_buffered" || scenario == "matching_first_delta" {
+		clock.Advance(time.Second - clock.Now().Sub(stopAt))
+		speculativeCall.complete(t, speculativeAnswer)
+	} else if scenario == "completed_prefix_slow_tail" || scenario == "mismatched_flight" || scenario == "live_cleanup_disabled" {
+		clock.Advance(time.Second - clock.Now().Sub(stopAt))
+		foregroundCall.complete(t, foregroundAnswer)
+	} else if scenario == "completed_compatible_flight" {
+		if model.requests.Load() != 1 {
+			t.Fatalf("completed compatible flight issued %d requests, want 1", model.requests.Load())
+		}
+	}
+	end := fixture.rec.wait(t)
+	completionAt := clock.Now()
 	var firstDraftAt *time.Time
 	select {
 	case observedAt := <-observations.firstDraft:
 		firstDraftAt = &observedAt
-	case <-time.After(500 * time.Millisecond):
+	default:
 	}
-	clock.Advance(time.Second - clock.Now().Sub(stopAt))
-	speculativeCall.complete(t, "<output>Cleaned text.</output>")
-	end := fixture.rec.wait(t)
-	completionAt := clock.Now()
-	var firstPresentationAt time.Time
+	var firstPresentationAt *time.Time
 	select {
-	case firstPresentationAt = <-observations.firstPresentation:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the harness did not observe cleaned text")
+	case observedAt := <-observations.firstPresentation:
+		firstPresentationAt = &observedAt
+	default:
 	}
-	var pasteAt time.Time
+	var pasteAt *time.Time
 	select {
-	case pasteAt = <-observations.pasteAt:
+	case observedAt := <-observations.pasteAt:
+		pasteAt = &observedAt
 	case <-time.After(5 * time.Second):
-		t.Fatal("the harness did not observe paste delivery")
+		t.Fatal("the harness did not observe fake paste delivery")
 	}
-	if end.Result != "Cleaned text." || model.requests.Load() != 1 || len(fixture.text.pastes()) != 1 || fixture.text.pastes()[0] != end.Result {
-		t.Fatalf("result %+v, requests %d, pasted %q", end, model.requests.Load(), fixture.text.pastes())
+	if end.Result != expectedResult || model.requests.Load() != expectedRequests || len(fixture.text.pastes()) != 1 || fixture.text.pastes()[0] != end.Result {
+		t.Fatalf("scenario %s: result %+v, requests %d, pasted %q; want result %q and %d requests", scenario, end, model.requests.Load(), fixture.text.pastes(), expectedResult, expectedRequests)
 	}
 	fixture.m.mu.Lock()
 	outcome := currentRun.cleanupOutcome
 	fixture.m.mu.Unlock()
-	var stopToFirstDraft any
-	if firstDraftAt != nil {
-		stopToFirstDraft = firstDraftAt.Sub(stopAt).Milliseconds()
+	if cleanupEnabled && firstPresentationAt == nil {
+		t.Fatalf("scenario %s completed without a cleaned presentation: %+v", scenario, end)
 	}
-	bufferNonemptyAtAdoption := firstDraftAt != nil && deltaBeforeFinal
-	t.Logf("paired_benchmark scenario=%s stop_to_first_cleaned_draft_ms=%v stop_to_first_cleaned_presentation_ms=%d asr_final_to_first_cleaned_presentation_ms=%d stop_to_cleanup_complete_ms=%d stop_to_paste_ms=%d llm_request_count=%d llm_attempt_count=%d cleanup_outcome=%s speculative_flight_adopted=%t buffer_nonempty_at_adoption=%t completed_prefix_published=false final_text=%q", scenario, stopToFirstDraft, firstPresentationAt.Sub(stopAt).Milliseconds(), firstPresentationAt.Sub(asrFinalAt).Milliseconds(), completionAt.Sub(stopAt).Milliseconds(), pasteAt.Sub(stopAt).Milliseconds(), model.requests.Load(), model.requests.Load(), outcome, firstDraftAt != nil, bufferNonemptyAtAdoption, end.Result)
+	t.Logf("paired_benchmark scenario=%s stop_to_first_cleaned_draft_ms=%s stop_to_first_cleaned_presentation_ms=%s asr_final_to_first_cleaned_presentation_ms=%s stop_to_session_complete_ms=%d stop_to_paste_ms=%s llm_request_count=%d cleanup_outcome=%s scenario_expected_speculative_flight_adopted=%t scenario_expected_buffer_nonempty_at_adoption=%t completed_prefix_published_before_tail_delta=%t final_output=%q", scenario, pairedBenchmarkLatency(firstDraftAt, stopAt), pairedBenchmarkLatency(firstPresentationAt, stopAt), pairedBenchmarkLatency(firstPresentationAt, asrFinalAt), completionAt.Sub(stopAt).Milliseconds(), pairedBenchmarkLatency(pasteAt, stopAt), model.requests.Load(), outcome, expectedAdoption, expectedBufferedAtAdoption, expectedPrefixPublishedEarly, end.Result)
+}
+
+func waitPairedBenchmarkCall(t *testing.T, model *pairedBenchmarkLLM, failure string) *pairedBenchmarkCall {
+	t.Helper()
+	select {
+	case call := <-model.calls:
+		return call
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+		return nil
+	}
+}
+
+func waitForPairedDraftOrDeadline(observations *pairedBenchmarkObservation, deadline time.Duration) {
+	select {
+	case <-observations.draftUpdates:
+	case <-time.After(deadline):
+	}
+}
+
+func waitForPairedDraft(t *testing.T, observations *pairedBenchmarkObservation, failure string) {
+	t.Helper()
+	select {
+	case <-observations.draftUpdates:
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func drainPairedBenchmarkDraftUpdates(observations *pairedBenchmarkObservation) {
+	for {
+		select {
+		case <-observations.draftUpdates:
+		default:
+			return
+		}
+	}
+}
+
+func pairedBenchmarkLatency(observedAt *time.Time, origin time.Time) string {
+	if observedAt == nil {
+		return "null"
+	}
+	return strconv.FormatInt(observedAt.Sub(origin).Milliseconds(), 10)
 }
