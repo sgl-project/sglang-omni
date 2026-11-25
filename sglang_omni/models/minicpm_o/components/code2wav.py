@@ -233,22 +233,7 @@ class MiniCPMOCode2Wav(nn.Module):
             pass
 
         if hift_cuda_graph_capture_shapes and resolved_device.type == "cuda":
-            hift = self.token2wav.hift
-            runner = HiftBodyCudaGraphRunner(hift.decode_body)
-            with self.device_context:
-                self.decode_stream.wait_stream(
-                    torch.cuda.current_stream(resolved_device)
-                )
-            with self.device_context, torch.cuda.stream(self.decode_stream):
-                runner.capture(
-                    hift_cuda_graph_capture_shapes,
-                    device=self.token2wav.device,
-                    mel_channels=self.token2wav.flow.output_size,
-                    samples_per_frame=int(hift.f0_upsamp.scale_factor),
-                    fft_samples=hift.istft_params["n_fft"],
-                    hop_samples=hift.istft_params["hop_len"],
-                )
-            hift.body_graph_runner = runner
+            self.capture_hift_body_graphs(hift_cuda_graph_capture_shapes)
         else:
             pass
 
@@ -260,6 +245,35 @@ class MiniCPMOCode2Wav(nn.Module):
                 )
         else:
             pass
+
+    def capture_hift_body_graphs(self, shapes: tuple[tuple[int, int], ...]) -> None:
+        """Capture the HiFT decode body as padded CUDA graphs for these (rows, mel frames) shapes.
+
+        Call after any torch.compile of the decode body, so the graphs capture its compiled form.
+        """
+        if self.token2wav.device.type != "cuda":
+            raise ValueError(
+                "HiFT body graphs capture on CUDA devices only, got "
+                f"{self.token2wav.device}"
+            )
+        else:
+            pass
+        hift = self.token2wav.hift
+        runner = HiftBodyCudaGraphRunner(hift.decode_body)
+        with self.device_context:
+            self.decode_stream.wait_stream(
+                torch.cuda.current_stream(self.token2wav.device)
+            )
+        with self.device_context, torch.cuda.stream(self.decode_stream):
+            runner.capture(
+                shapes,
+                device=self.token2wav.device,
+                mel_channels=self.token2wav.flow.output_size,
+                samples_per_frame=int(hift.f0_upsamp.scale_factor),
+                fft_samples=hift.istft_params["n_fft"],
+                hop_samples=hift.istft_params["hop_len"],
+            )
+        hift.body_graph_runner = runner
 
     @torch.inference_mode()
     def forward(

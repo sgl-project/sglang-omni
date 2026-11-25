@@ -586,3 +586,16 @@ def test_each_duplex_session_optimization_turns_off_alone(
     native_stages.MiniCPMOVocoderRuntime.return_value.warm_up.assert_called_once_with(
         b"reference", capture_chunk_graphs=captures_chunk_graphs
     )
+
+
+def test_speech_settings_carry_the_hift_graph_flag() -> None:
+    """The HiFT body graph switch reaches the speech stage's factory kwargs both ways."""
+    config = MiniCPMODuplexPipelineConfig(model_path="unused")
+    assert config.speech.enable_hift_cuda_graph is False
+    assert config.stage_factory_kwargs("speech")["enable_hift_cuda_graph"] is False
+
+    manager = ConfigManager(MiniCPMODuplexPipelineConfig(model_path="unused"))
+    enabled = manager.merge_config(
+        manager.parse_extra_args(["--speech.enable_hift_cuda_graph", "true"])
+    )
+    assert enabled.stage_factory_kwargs("speech")["enable_hift_cuda_graph"] is True
