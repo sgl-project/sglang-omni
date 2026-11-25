@@ -177,7 +177,7 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		if ctx.Err() != nil {
 			e = ctxErr(ctx, c.Backend.Info().ID, ctx.Err(), timeout)
 		}
-		if !e.Retryable || streamed || attempt >= c.Retry.attempts() || ctx.Err() != nil {
+		if !e.Retryable || attempt >= c.Retry.attempts() || ctx.Err() != nil {
 			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
 			return Response{Usage: total, Attempts: attempt}, e
 		}
@@ -188,6 +188,13 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		}
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < d {
 			return Response{Usage: total, Attempts: attempt}, e // no time left to wait
+		}
+		if streamed {
+			if req.RetryPrivateStream == nil || !req.RetryPrivateStream() {
+				c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
+				return Response{Usage: total, Attempts: attempt}, e
+			}
+			streamed = false
 		}
 		if err := c.sleep(ctx, d); err != nil {
 			return Response{Usage: total, Attempts: attempt}, ctxErr(ctx, c.Backend.Info().ID, err, timeout)

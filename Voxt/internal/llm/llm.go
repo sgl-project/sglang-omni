@@ -76,6 +76,10 @@ type Request struct {
 	// order, on the calling goroutine, before Chat returns. It must not
 	// block for long. The Response still carries the whole text.
 	OnDelta func(delta string)
+	// RetryPrivateStream may authorize a retry after OnDelta emitted output.
+	// The caller must atomically discard that output and confirm it has not
+	// been exposed. Nil preserves the default of not retrying streamed output.
+	RetryPrivateStream func() bool
 
 	// Timeout bounds one attempt (0: the Client's default).
 	Timeout time.Duration

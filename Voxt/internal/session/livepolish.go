@@ -61,6 +61,28 @@ type livePolish struct {
 	done    []liveResult // note (luojiaxuan): the clean-ups of the open block: each of a stretch that starts the text after blocks
 	flight  *liveFlight  // note (luojiaxuan): the request under way, nil when none
 	closed  bool         // note (luojiaxuan): the final text came, or the live clean-up gave up: no more requests
+
+	// Test gates make completion/adoption interleavings deterministic; nil in production.
+	testHooks *livePolishTestHooks
+}
+
+type livePolishTestHooks struct {
+	afterAdoptSnapshot      func()
+	beforeAdoptDraftPublish func()
+	beforeFlightCommit      func()
+	afterFinishAdopted      func()
+}
+
+func (lp *livePolish) runBeforeAdoptDraftPublish() {
+	lp.mu.Lock()
+	var hook func()
+	if lp.testHooks != nil {
+		hook = lp.testHooks.beforeAdoptDraftPublish
+	}
+	lp.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 // note (luojiaxuan): liveResult is the clean-up of src, a stretch of the live text that ends
@@ -89,6 +111,7 @@ type liveFlight struct {
 	partIndex    int
 	delta        strings.Builder
 	detached     bool
+	adopted      bool
 	streamClosed bool
 	ok           bool
 }
@@ -156,6 +179,9 @@ func newLivePolish(r *run) *livePolish {
 		<-ctx.Done()
 		lp.mu.Lock()
 		lp.closed = true
+		if lp.flight != nil {
+			lp.flight.detached = true
+		}
 		lp.cond.Broadcast()
 		lp.mu.Unlock()
 	}()
@@ -187,6 +213,9 @@ func (lp *livePolish) stop() {
 	lp.mu.Lock()
 	lp.closed = true
 	lp.blocks, lp.done = nil, nil
+	if lp.flight != nil {
+		lp.flight.detached = true
+	}
 	lp.mu.Unlock()
 	lp.cancel()
 }
@@ -205,6 +234,7 @@ func (lp *livePolish) add(text string) {
 		lp.epoch++
 	}
 	if f := lp.flight; f != nil && (f.epoch != lp.epoch || !endsSentence(lp.open(), f.src)) {
+		f.detached = true
 		f.cancel()
 	}
 	lp.cond.Broadcast()
@@ -284,21 +314,31 @@ func (lp *livePolish) work() {
 		lp.mu.Unlock()
 		start := time.Now()
 		res, err := lp.clean(ctx, job, before, f)
-		cancelled := ctx.Err() != nil // note (luojiaxuan): before cancel: a failure of the service is not a cancellation
-		cancel()
 		lp.mu.Lock()
+		var beforeCommit func()
+		if lp.testHooks != nil {
+			beforeCommit = lp.testHooks.beforeFlightCommit
+		}
+		lp.mu.Unlock()
+		if beforeCommit != nil {
+			beforeCommit()
+		}
+		cancelled := ctx.Err() != nil // note (luojiaxuan): before disposal below, a failure is not a cancellation
+		lp.mu.Lock()
+		cancelled = cancelled || ctx.Err() != nil
 		lp.flight = nil
-		f.liveResult, f.ok = res, err == nil
+		f.liveResult = res
+		f.ok = err == nil && !cancelled && !f.detached
 		f.streamClosed = true
 		switch {
 		case lp.closed:
-			// note (luojiaxuan): finish took what it keeps without waiting for this request; a late answer is only the awaited flight's (f).
+			// finish owns an adopted flight; the caller consumes its terminal state.
+		case cancelled || f.detached:
+			lp.dropped++
 		case err == nil && res.epoch == lp.epoch:
 			lp.done = append(lp.done, res)
 			lp.r.logf("info", "cleaned up %d characters while recording in %v (%d prompt tokens, %d cached)",
 				utf8.RuneCountInString(res.src), time.Since(start).Round(time.Millisecond), res.usage.PromptTokens, res.usage.CachedTokens)
-		case err != nil && cancelled:
-			lp.dropped++
 		case err != nil:
 			lp.r.logf("warning", "the live clean-up stops, Stop cleans the whole text: %v", err)
 			lp.closed = true
@@ -307,6 +347,7 @@ func (lp *livePolish) work() {
 		close(f.done)
 		lp.cond.Broadcast()
 		lp.mu.Unlock()
+		cancel()
 	}
 }
 
@@ -340,7 +381,7 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, 
 		flight.partIndex = partIndex
 		flight.delta.Reset()
 		lp.mu.Unlock()
-		// Client.Chat suppresses retries after this callback emits; retrying could mix attempts in the adopted buffer.
+		// A retry may discard this private part only before finish adopts the flight.
 		req.OnDelta = func(delta string) {
 			if delta == "" {
 				return
@@ -351,6 +392,16 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, 
 				lp.notifyFlightLocked(flight)
 			}
 			lp.mu.Unlock()
+		}
+		req.RetryPrivateStream = func() bool {
+			lp.mu.Lock()
+			defer lp.mu.Unlock()
+			if flight.detached || flight.adopted || flight.streamClosed || flight.partIndex != partIndex {
+				return false
+			}
+			flight.delta.Reset()
+			lp.notifyFlightLocked(flight)
+			return true
 		}
 		reqCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 		resp, err := lp.llm.Chat(reqCtx, req) // note (luojiaxuan): no picture and no snapshot change: newLivePolish runs only without a picture

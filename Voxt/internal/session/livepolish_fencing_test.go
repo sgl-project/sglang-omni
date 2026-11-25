@@ -38,6 +38,42 @@ func TestLivePolishMismatchDetachesCancellationIgnoringFlight(t *testing.T) {
 	}
 }
 
+func TestLivePolishRevisionCannotReAdoptCancelledMatchingSource(t *testing.T) {
+	model := newControlledLiveLLM(true)
+	r := newEarlyUnitRun(t, model, nil)
+	r.hearLive("Old transcript.")
+	oldCall := waitLiveCall(t, model, "the original speculative request")
+	oldCall.sendDelta(t, "private stale text")
+	r.hearLive("Revised transcript.")
+	r.hearLive("Old transcript.")
+	result := make(chan string, 1)
+	go func() {
+		got, _ := liveCleanUp(r, "Old transcript.")
+		result <- got
+	}()
+	replacement := waitLiveCall(t, model, "the final-text replacement request")
+	if got := inputOf(replacement.request); got != "Old transcript." {
+		t.Fatalf("replacement input %q", got)
+	}
+	oldCall.sendDelta(t, " late stale text")
+	if draft := r.m.Current().Draft; draft != "" {
+		t.Fatalf("invalidated flight published Draft %q", draft)
+	}
+	replacement.complete(t, "Current answer", nil)
+	select {
+	case got := <-result:
+		if got != "Current answer" {
+			t.Fatalf("cleanup result %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("final cleanup waited for the invalidated provider")
+	}
+	oldCall.complete(t, "Stale completed answer", nil)
+	if model.requestCount() != 2 {
+		t.Fatalf("requests %d, want invalidated speculative call and one final call", model.requestCount())
+	}
+}
+
 func TestLivePolishSkipStopsAdoptionWithoutWaitingForProvider(t *testing.T) {
 	clock := newSoftDeadlineClock()
 	model := newControlledLiveLLM(true)
@@ -158,6 +194,94 @@ func TestLivePolishRethinkFencesTheAdoptedGeneration(t *testing.T) {
 	}
 	if pastes := fixture.harness.text.pastes(); len(pastes) != 1 || pastes[0] != "new generation answer" {
 		t.Fatalf("pasted %q", pastes)
+	}
+}
+
+func TestLivePolishCompletionRacingWithRethinkCannotPublishOldGeneration(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	model := newControlledLiveLLM(true)
+	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
+	flight := liveFlightOf(fixture.run)
+	commitEntered, releaseCommit := make(chan struct{}), make(chan struct{})
+	fixture.run.live.mu.Lock()
+	fixture.run.live.testHooks = &livePolishTestHooks{beforeFlightCommit: func() {
+		close(commitEntered)
+		<-releaseCommit
+	}}
+	fixture.run.live.mu.Unlock()
+	fixture.call.complete(t, "Old completed answer", nil)
+	select {
+	case <-commitEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the completed old flight did not reach terminal publication")
+	}
+	fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
+	fixture.harness.rec.waitFor(t, "the composing session", func(snapshot Snapshot) bool {
+		return snapshot.ID == fixture.id && snapshot.State == Composing
+	})
+	fixture.harness.m.Rethink(fixture.id, &llm.Thinking{Mode: llm.ThinkOff})
+	newCall := waitLiveCall(t, model, "the new-generation cleanup request")
+	newCall.complete(t, "New generation answer", nil)
+	end := fixture.harness.rec.waitFor(t, "the Rethink result", func(snapshot Snapshot) bool {
+		return snapshot.ID == fixture.id && snapshot.State.Ended()
+	})
+	if end.Result != "New generation answer" || model.requestCount() != 2 {
+		t.Fatalf("Rethink result %+v, requests %d", end, model.requestCount())
+	}
+	snapshotsBeforeOldCommit := len(fixture.harness.rec.all())
+	close(releaseCommit)
+	waitFlightDone(t, flight)
+	for _, snapshot := range fixture.harness.rec.all()[snapshotsBeforeOldCommit:] {
+		if snapshot.ID == fixture.id && snapshot.Draft == "Old completed answer" {
+			t.Fatalf("old generation published after Rethink: %+v", snapshot)
+		}
+	}
+	assertSinglePaste(t, fixture, "New generation answer")
+}
+
+func TestLivePolishCompletionRacingWithSoftDeadlineKeepsRawResult(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	model := newControlledLiveLLM(true)
+	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, true)
+	flight := liveFlightOf(fixture.run)
+	commitEntered, releaseCommit := make(chan struct{}), make(chan struct{})
+	fixture.run.live.mu.Lock()
+	fixture.run.live.testHooks = &livePolishTestHooks{beforeFlightCommit: func() {
+		close(commitEntered)
+		<-releaseCommit
+	}}
+	fixture.run.live.mu.Unlock()
+	fixture.call.complete(t, "Late cleaned answer", nil)
+	select {
+	case <-commitEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the completed flight did not reach terminal publication")
+	}
+	fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
+	fixture.harness.rec.waitFor(t, "the composing session", func(snapshot Snapshot) bool {
+		return snapshot.ID == fixture.id && snapshot.State == Composing
+	})
+	if clock.timerCount() != 1 || clock.timerDelay(0) != cleanupSoftDeadlineTestDuration-300*time.Millisecond {
+		t.Fatalf("deadline timers %d, delay %v", clock.timerCount(), clock.timerDelay(0))
+	}
+	clock.Advance(cleanupSoftDeadlineTestDuration - 300*time.Millisecond)
+	clock.Fire(t, 0)
+	end := fixture.harness.rec.waitFor(t, "the raw deadline result", func(snapshot Snapshot) bool {
+		return snapshot.ID == fixture.id && snapshot.State.Ended()
+	})
+	if end.Result != "spoken words." || end.Draft != "" || len(fixture.harness.text.pastes()) != 1 || fixture.harness.text.pastes()[0] != "spoken words." {
+		t.Fatalf("deadline result %+v, pasted %q", end, fixture.harness.text.pastes())
+	}
+	snapshotsBeforeOldCommit := len(fixture.harness.rec.all())
+	close(releaseCommit)
+	waitFlightDone(t, flight)
+	for _, snapshot := range fixture.harness.rec.all()[snapshotsBeforeOldCommit:] {
+		if snapshot.ID == fixture.id && snapshot.Draft != "" {
+			t.Fatalf("late completion restored Draft after deadline: %+v", snapshot)
+		}
+	}
+	if model.requestCount() != 1 {
+		t.Fatalf("requests %d, want only the speculative request", model.requestCount())
 	}
 }
 

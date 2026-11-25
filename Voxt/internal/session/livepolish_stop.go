@@ -27,9 +27,14 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	lp.cond.Broadcast()
 	cs, open, all := lp.chains(text, thinkOff)
 	keep := slices.MaxFunc(cs, func(a, b chain) int { return a.end - b.end }).results
+	var afterAdopted func()
 	if f := lp.flight; f != nil {
-		if all && f.epoch == lp.epoch && f.thinkOff == thinkOff && f.src == open && f.ctx.Err() == nil {
+		if all && f.epoch == lp.epoch && f.thinkOff == thinkOff && f.src == open && !f.detached && f.ctx.Err() == nil {
+			f.adopted = true
 			flight = f
+			if lp.testHooks != nil {
+				afterAdopted = lp.testHooks.afterFinishAdopted
+			}
 		} else {
 			f.detached = true
 			f.cancel()
@@ -37,6 +42,9 @@ func (lp *livePolish) finish(text string) (parts []compose.Part, answers []strin
 	}
 	asked, dropped := lp.asked, lp.dropped
 	lp.mu.Unlock()
+	if afterAdopted != nil {
+		afterAdopted()
+	}
 	if flight == nil {
 		lp.cancel()
 	}
@@ -68,6 +76,7 @@ func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequ
 		if hasPublished && !final && now.Sub(lastPublished) < draftEvery {
 			return true
 		}
+		lp.runBeforeAdoptDraftPublish()
 		if !lp.r.publishCleanupDraft(request, draft) {
 			return false
 		}
@@ -87,12 +96,18 @@ func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequ
 		closed := flight.streamClosed
 		detached := flight.detached
 		ok := flight.ok
+		var afterSnapshot func()
+		if lp.testHooks != nil {
+			afterSnapshot = lp.testHooks.afterAdoptSnapshot
+		}
 		lp.mu.Unlock()
+		if afterSnapshot != nil {
+			afterSnapshot()
+		}
 		if detached {
 			return liveResult{}, false
 		}
-		select {
-		case <-flight.done:
+		if closed {
 			if !ok {
 				return liveResult{}, false
 			}
@@ -103,7 +118,6 @@ func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequ
 				return liveResult{}, false
 			}
 			return result, true
-		default:
 		}
 		if request.ctx.Err() != nil || lp.r.ctx.Err() != nil {
 			lp.detach(flight)
@@ -126,19 +140,17 @@ func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequ
 			lp.detach(flight)
 			return liveResult{}, false
 		}
-		if closed {
-			select {
-			case <-flight.done:
-			case <-request.ctx.Done():
-			case <-lp.r.ctx.Done():
-			}
-		} else {
-			select {
-			case <-flight.updates:
-			case <-flight.done:
-			case <-request.ctx.Done():
-			case <-lp.r.ctx.Done():
-			}
+		select {
+		case <-flight.updates:
+			continue
+		case <-flight.done:
+			continue
+		case <-request.ctx.Done():
+			lp.detach(flight)
+			return liveResult{}, false
+		case <-lp.r.ctx.Done():
+			lp.detach(flight)
+			return liveResult{}, false
 		}
 	}
 }
