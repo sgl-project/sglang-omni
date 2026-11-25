@@ -78,7 +78,7 @@ class D2OutputConverter:
                 pass
             yield AudioDelta(self.response_id, item_id, frame.pcm16)
         if output.eos:
-            yield from self.finish_response("completed", "input_audio_ended")
+            yield from self.finish_response("completed", "stop")
         else:
             pass
 
