@@ -140,10 +140,7 @@ func (r *run) listen() (string, bool) {
 			return
 		}
 		warmed = true
-		prefiller, ctx, request, ok := r.prepareWarmup()
-		if ok {
-			go prefiller.Prefill(ctx, request)
-		}
+		go r.warmLLM()
 	}
 	open := func() chan openResult {
 		st, ok := r.streamer()

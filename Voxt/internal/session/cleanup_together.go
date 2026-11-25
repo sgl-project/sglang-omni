@@ -24,6 +24,9 @@ func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []s
 }
 
 func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, answered []string, think *llm.Thinking, ctx context.Context, generation uint64) (string, string, error) {
+	r.m.mu.Lock()
+	attempt := r.cleanupAttempt
+	r.m.mu.Unlock()
 	answers := make([]string, len(parts))
 	copy(answers, answered)
 	fails := make([]error, len(parts))
@@ -48,17 +51,17 @@ func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, an
 			so = append(so, compose.PartialOutput(drafts[n].String(), parts[n].Text, parts[n].Custom()))
 		}
 		draft := r.draftSnippets(compose.JoinParts(parts[:min(n+1, len(parts))], so), parts[:min(n+1, len(parts))])
-		raw := ""
+		var publishedAt time.Time
 		visible := r.m.updateIf(r, func(s *Snapshot) bool {
-			raw = s.Raw
-			if ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupGeneration == generation && r.cleanupDecisionOpenLocked() {
+			if ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupGeneration == generation && r.cleanupAttempt == attempt && r.cleanupDecisionOpenLocked() {
 				s.Draft = draft
+				publishedAt = r.now()
 				return true
 			}
 			return false
 		})
 		if visible {
-			r.noteCleanDraftPublication(generation, r.now(), draft, raw)
+			r.noteCleanDraftPublication(generation, attempt, publishedAt, draft)
 		}
 	}
 	slots := make(chan struct{}, partsTogether)
