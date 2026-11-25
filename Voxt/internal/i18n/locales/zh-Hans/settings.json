@@ -281,5 +281,14 @@
   "%s seconds": "%s 秒",
   "Opening speed": "开场动画速度",
   "Slower": "更慢",
-  "Faster": "更快"
+  "Faster": "更快",
+  "Another Mac": "换到另一台 Mac",
+  "Export library": "导出资料库",
+  "Import library": "导入资料库",
+  "Your settings, history, meetings, dictionary and snippets in one file. Recordings, models and API keys stay on this Mac.": "把设置、历史、会议、词典和片段打包成一个文件。录音、模型和 API key 留在这台 Mac 上。",
+  "Replaces this Mac's library with the file's, then restarts.": "用文件里的资料库替换这台 Mac 的资料库，然后重启。",
+  "Import a library?": "导入资料库？",
+  "Voxt restarts with the file's settings, history, meetings, dictionary and snippets in place of this Mac's. This Mac's library is kept in the data folder as %s.": "Voxt 会重启，用文件里的设置、历史、会议、词典和片段替换这台 Mac 的。原来的资料库留在数据文件夹里，文件名是 %s。",
+  "Voxt library": "Voxt 资料库",
+  "Exported the library to %s": "资料库已导出到 %s"
 }

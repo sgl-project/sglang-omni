@@ -59,6 +59,8 @@ type settingsStorageActions interface {
 	resetSettings()
 	askErase()
 	eraseAll()
+	exportLibrary()
+	importLibrary()
 	setStorageModelBackup(on bool)
 }
 
