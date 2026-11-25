@@ -228,6 +228,8 @@ for response formats and other ASR models.
 | `prompt` | string | unset | Optional text used as Whisper prev-context conditioning |
 | `response_format` | string | `json` | `json`, `verbose_json`, raw `text`, `srt`, or `vtt` |
 | `temperature` | float | `0.0` | Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422 |
+| `beam_width` | int | `1` | Beam search width, 1 to 16; above 1 the response carries the N-best (see [Beam Search](#beam-search)) |
+| `beam_search_diversity_rate` | float | `0.0` | Ranking-only diversity bonus for beam search |
 
 The serving route selects the internal `task` from the endpoint (`transcribe`
 or `translate`); it is not a public form field. The route uses the ASR stage
@@ -237,6 +239,35 @@ the request minimal and use `response_format=json`.
 For both transcription and translation, `srt` and `vtt` request Whisper's
 model-derived segment timestamps. Non-streaming subtitle requests are
 supported; `stream=true` with either subtitle format returns HTTP 400.
+
+## Beam Search
+
+Set `beam_width` above 1 to decode with beam search. The response keeps the best hypothesis in `text` and returns all `beam_width` hypotheses, best first, in `sglext.n_best`, a SGLang-Omni extension:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=openai/whisper-large-v3 \
+  -F file=@tests/data/query_to_cars.wav \
+  -F beam_width=5 \
+  -F response_format=json
+```
+
+```json
+{
+  "text": "...",
+  "sglext": {
+    "n_best": [
+      {"text": "...", "cum_logprob": -0.14, "score": -0.005, "finish_reason": "stop"}
+    ]
+  }
+}
+```
+
+`cum_logprob` is the hypothesis's raw cumulative log-probability and `score` is `cum_logprob` divided by the number of generated tokens, which is the order of the list. Selection and stopping follow Hugging Face `generate` with `num_beams`, `length_penalty=1.0` and `early_stopping=False`, and every beam gets Whisper's suppress, begin-suppress and timestamp rules before selection. `beam_search_diversity_rate` adds `rate * (rank_within_parent % beam_width)` to each candidate's ranking, as TensorRT-LLM does; the returned log-probabilities stay raw.
+
+Greedy and beam requests share one server and one decode step. While a beam request is decoding, its decode steps run without the async-decode lookahead, as timestamped requests do.
+
+Beam search returns final transcripts only. These requests return HTTP 400 with `beam_width` above 1: `stream=true`, `temperature` above 0, audio long enough to be split into chunks, `/v1/audio/translations`, and servers running speculative decoding. `json` and `verbose_json` carry `sglext.n_best`; `srt`, `vtt` and `text` are plain text and return the best hypothesis only.
 
 ## Long Audio
 
