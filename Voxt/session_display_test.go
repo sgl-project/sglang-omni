@@ -80,6 +80,30 @@ func TestPillAnchorKeepsFocusedDisplayBesideKeptCard(t *testing.T) {
 	}
 }
 
+// TestPillClearOfRewriteBoxCard: a Rewrite answer shows in the Rewrite
+// box's window, and the overlay window is then not shown. A recording
+// started with that card kept puts the pill beside the box, not over it.
+func TestPillClearOfRewriteBoxCard(t *testing.T) {
+	area := mygo.Rectangle{X: 0, Y: 30, Width: 1440, Height: 799}
+	for _, position := range []string{"bottom", "top"} {
+		t.Run(position, func(t *testing.T) {
+			a := &app{}
+			a.prefs.Overlay.Position = position
+			a.pill.area = area
+			a.box.winShown, a.box.area = true, area
+			a.box.frame = mygo.Rectangle{X: 482, Y: 255, Width: 476, Height: 496}
+
+			pill, box := a.pillFrame(556, 112), a.box.frame
+			if pill.X < box.X+box.Width && box.X < pill.X+pill.Width && pill.Y < box.Y+box.Height && box.Y < pill.Y+pill.Height {
+				t.Fatalf("pill %v covers the Rewrite box %v", pill, box)
+			}
+			if position == "bottom" && pill.Y+pill.Height != box.Y || position == "top" && pill.Y != box.Y+box.Height {
+				t.Fatalf("pill %v is not adjacent to the Rewrite box %v", pill, box)
+			}
+		})
+	}
+}
+
 func TestPillDisplayLogs(t *testing.T) {
 	var out bytes.Buffer
 	log.SetOutput(&out)
