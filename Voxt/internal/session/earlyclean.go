@@ -254,7 +254,7 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 			res.answers = append(res.answers, p.Text)
 			continue
 		}
-		res.answers = append(res.answers, compose.CleanOutput(resp.Text, p.Text))
+		res.answers = append(res.answers, compose.CleanOutput(resp.Text, p.Text, p.Custom()))
 	}
 	res.done, res.completedAt = true, r.now()
 	e.mu.Lock()

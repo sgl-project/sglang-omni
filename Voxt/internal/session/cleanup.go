@@ -375,7 +375,7 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			}
 			answers = append(answers, p.Text)
 		default:
-			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text, p.Custom()))
 			if u := resp.Usage; u.PromptTokens > 0 && !u.Estimated {
 				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
 			}
@@ -428,7 +428,7 @@ func (d *drafter) publish() {
 		return
 	}
 	part := d.parts[len(d.parts)-1]
-	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text, part.Custom())))
 	draft = d.r.draftSnippets(draft, d.parts)
 	d.r.m.update(d.r, func(s *Snapshot) {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {

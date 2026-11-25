@@ -146,50 +146,61 @@ func TestPartialClean(t *testing.T) {
 // (#4086); text that has the tags because the user said them keeps
 // them, less one outermost pair the model wrapped it in.
 func TestCleanOutput(t *testing.T) {
-	for _, tc := range []struct{ out, in, want string }{
-		{"  Hello.  ", "hello", "Hello."},
-		{"<output>\nHello.\n</output>", "hello", "Hello."},
-		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello."},
-		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello."},
-		{"<output>\n算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？\n</output>\n\n清理时删掉了“就是说”。", "x", "算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？"},
-		{"<output>\nHello.", "hello", "Hello."}, // cut short: the rest is the text
-		{"<output></output>", "hello", ""},
-		{"<output>“你好。”</output>", "你好", "你好。"},
+	for _, tc := range []struct {
+		out, in, want string
+		custom        bool
+	}{
+		{"  Hello.  ", "hello", "Hello.", false},
+		{"<output>\nHello.\n</output>", "hello", "Hello.", false},
+		{"<output>\nHello.\n</output>\n\nI removed the filler “um”.", "hello", "Hello.", false},
+		{"Here you go: <output>Hello.</output> Hope it helps.", "hello", "Hello.", false},
+		{"<output>\n算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？\n</output>\n\n清理时删掉了“就是说”。", "x", "算计算量（FLOPs）—— 用 bf16 算和 int8 有区别吗？", false},
+		{"<output>\nHello.", "hello", "Hello.", false}, // cut short: the rest is the text
+		{"<output></output>", "hello", "", false},
+		{"<output>“你好。”</output>", "你好", "你好。", false},
 		// The tags were in the input itself (dictated literally): the
 		// answer is used as it is…
-		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`},
-		{"<output>a</output><output>b</output>", "<output>a</output><output>b</output>", "<output>a</output><output>b</output>"},
+		{`use <output> and </output> here`, "use <output> and </output> here", `use <output> and </output> here`, false},
+		{"<output>a</output><output>b</output>", "<output>a</output><output>b</output>", "<output>a</output><output>b</output>", false},
 		// …but a contract-abiding model wrapped it in one more pair:
 		// exactly that pair goes.
-		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here"},
-		// A tag-less answer that ballooned past what a clean-up
-		// produces: the model thought out loud around the final text
-		// (#4086), and only the cleaned text stays.
+		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here", false},
+		// A tag-less answer to the built-in contract keeps only the
+		// cleaned text's span: the contract allows nothing around it,
+		// so the model's deliberation before or after goes (#4086).
 		{`Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. Also "不并不需要" looks like a self-correction or stutter. 我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。`,
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"},
-		// What follows the cleaned text's first sentence stays: a
-		// custom prompt may legitimately expand the dictation, and a
-		// foreign tail cannot be told from that expansion.
-		{"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.",
-			"our launch is friday",
-			"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers."},
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。", false},
 		{"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation.",
 			"we need to ship the release on friday, uh, and tell the team tomorrow",
-			"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation."},
+			"We need to ship the release on Friday and tell the team tomorrow.", false},
+		// …near the input's length or far past it, and even a finished
+		// deliberation sentence before the cleaned text.
+		{"Wait, I need to re-read. The release is Friday.", "the release is friday. tell the quality team", "The release is Friday.", false},
 		// Near the input's own length the answer is trusted as it is…
 		{"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
-			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"},
-		// …and so is a wholesale rewrite nothing like the input (a
-		// custom prompt's translation, say): no sentence is the cleaned
-		// text, so there is nothing to trim to.
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。", false},
+		// …and so is a wholesale rewrite nothing like the input: no
+		// sentence is the cleaned text, so there is nothing to trim to.
 		{"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。",
 			"the quick brown fox jumps over the lazy dog near the river bank",
-			"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。"},
+			"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。", false},
+		// With the user's own prompt (Output.Custom), the prompt owns
+		// the output shape — a heading, an expansion, a translation —
+		// and the answer is used as it is.
+		{"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.",
+			"our launch is friday",
+			"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.", true},
+		{"Release plan. Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.",
+			"our launch is friday",
+			"Release plan. Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.", true},
+		{"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。",
+			"the quick brown fox jumps over the lazy dog near the river bank",
+			"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。", true},
 	} {
-		if got := CleanOutput(tc.out, tc.in); got != tc.want {
-			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
+		if got := CleanOutput(tc.out, tc.in, tc.custom); got != tc.want {
+			t.Errorf("CleanOutput(%q, custom %v) = %q, want %q", tc.out, tc.custom, got, tc.want)
 		}
 	}
 }
@@ -199,7 +210,7 @@ func TestCleanOutput(t *testing.T) {
 func TestPartialOutput(t *testing.T) {
 	full := "<output>\n大家好，周五发布。\n</output>\n\n我删掉了语气词。"
 	for i := 1; i <= len(full); i++ {
-		got := PartialOutput(full[:i], "周五发布")
+		got := PartialOutput(full[:i], "周五发布", false)
 		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
 			t.Fatalf("at %d: a tag in %q", i, got)
 		}
@@ -207,7 +218,7 @@ func TestPartialOutput(t *testing.T) {
 	// Commentary before the opening tag goes too, as Clean drops it.
 	prefixed := "Here you go: <output>Hello.</output>"
 	for i := 1; i <= len(prefixed); i++ {
-		got := PartialOutput(prefixed[:i], "hello")
+		got := PartialOutput(prefixed[:i], "hello", false)
 		if strings.Contains(got, "<output>") || strings.Contains(got, "</") || strings.HasSuffix(got, "<") {
 			t.Fatalf("at %d: a tag in %q", i, got)
 		}
@@ -234,16 +245,16 @@ func TestPartialOutput(t *testing.T) {
 		"use </output> here": "use </output> here",
 		"Hello.</out":        "Hello.</out",
 	} {
-		if got := PartialOutput(text, "hello"); got != want {
+		if got := PartialOutput(text, "hello", false); got != want {
 			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
 		}
 	}
 	// The tags the user said stay: CleanOutput keeps that text too,
 	// less one outermost pair a contract-abiding model wrapped it in.
-	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here"); got != "use <output> and </output> here" {
+	if got := PartialOutput("use <output> and </output> here", "use <output> and </output> here", false); got != "use <output> and </output> here" {
 		t.Errorf("PartialOutput with the user's own tags = %q", got)
 	}
-	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
+	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here", false); got != "use <output> and </output> here" {
 		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
 	}
 	// A tag-less stream of the model's deliberation (#4086): a
@@ -255,12 +266,12 @@ func TestPartialOutput(t *testing.T) {
 	const input = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
 	const cleaned = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
 	const tagless = `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". ` + cleaned
-	if got := PartialOutput("Wait, I need to re-read.", input); got != "" {
+	if got := PartialOutput("Wait, I need to re-read.", input, false); got != "" {
 		t.Errorf("a completed deliberation sentence = %q, want hidden", got)
 	}
 	runes := []rune(tagless)
 	for i := 1; i <= len(runes); i++ {
-		got := PartialOutput(string(runes[:i]), input)
+		got := PartialOutput(string(runes[:i]), input, false)
 		if strings.Contains(got, "re-read.") || strings.Contains(got, "misrecognition") || strings.Contains(got, "reconsider") ||
 			strings.Contains(got, "stutter") || strings.Contains(got, "self-correction") || strings.Contains(got, "time-varying") {
 			t.Fatalf("at %d: the deliberation in the draft %q", i, got)
@@ -269,21 +280,54 @@ func TestPartialOutput(t *testing.T) {
 			t.Fatalf("at %d: draft %q is not the cleaned text's start", i, got)
 		}
 	}
-	if got := PartialOutput(tagless, input); got != cleaned {
+	if got := PartialOutput(tagless, input, false); got != cleaned {
 		t.Errorf("PartialOutput(tagless) = %q, want %q", got, cleaned)
 	}
-	// Streaming and final agree on a near-length answer whose tail is
-	// not the input's material (a custom prompt's expansion, say):
-	// both keep it whole.
+	// A finished deliberation sentence before the cleaned text never
+	// comes back when a later sentence anchors, near the input's
+	// length too: the draft is the cleaned text's span from the
+	// anchor on, as CleanOutput makes of the final text.
 	const nearIn = "the release is friday. tell the quality team"
+	if got := PartialOutput("Wait, I need to re-read. ", nearIn, false); got != "" {
+		t.Errorf("the finished deliberation sentence = %q, want hidden", got)
+	}
+	if got := PartialOutput("Wait, I need to re-read. The rel", nearIn, false); got != "The rel" {
+		t.Errorf("the cleaned text after the deliberation = %q, want its start shown", got)
+	}
+	if got := PartialOutput("Wait, I need to re-read. The release is Friday.", nearIn, false); got != "The release is Friday." {
+		t.Errorf("the near-length sequence = %q, want the cleaned text", got)
+	}
+	// Streaming and final agree: a finished sentence after the
+	// cleaned text's span is not the cleaned text either — the
+	// built-in contract allows nothing around it (#4086).
 	const nearOut = "The release is Friday. Notify QA."
+	if got := PartialOutput("The release is Friday. Notify Q", nearIn, false); got != "The release is Friday." {
+		t.Errorf("the tail still coming = %q, want the cleaned text's span", got)
+	}
+	if got := PartialOutput(nearOut, nearIn, false); got != "The release is Friday." {
+		t.Errorf("PartialOutput(%q) = %q, want the cleaned text's span", nearOut, got)
+	}
+	if got := CleanOutput(nearOut, nearIn, false); got != "The release is Friday." {
+		t.Errorf("CleanOutput(%q) = %q, want the cleaned text's span", nearOut, got)
+	}
+	// With the user's own prompt (Output.Custom) the same answer
+	// shows and stays whole, at every prefix: a custom prompt may
+	// legitimately expand the dictation.
 	for i := 1; i <= len(nearOut); i++ {
-		if got := PartialOutput(nearOut[:i], nearIn); got != nearOut[:i] {
-			t.Fatalf("at %d: PartialOutput = %q, want the text as it is", i, got)
+		if got := PartialOutput(nearOut[:i], nearIn, true); got != nearOut[:i] {
+			t.Fatalf("custom at %d: PartialOutput = %q, want the text as it is", i, got)
 		}
 	}
-	if got := CleanOutput(nearOut, nearIn); got != nearOut {
-		t.Errorf("CleanOutput(%q) = %q, want it whole", nearOut, got)
+	if got := CleanOutput(nearOut, nearIn, true); got != nearOut {
+		t.Errorf("CleanOutput(%q, custom) = %q, want it whole", nearOut, got)
+	}
+	// A wholesale rewrite (a custom prompt's translation, say)
+	// streams as it is at every prefix.
+	const rewrite = "我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。"
+	for i, n := 0, len([]rune(rewrite)); i < n; i++ {
+		if got := PartialOutput(string([]rune(rewrite)[:i+1]), nearIn, true); got != string([]rune(rewrite)[:i+1]) {
+			t.Fatalf("rewrite at %d: PartialOutput = %q, want the text as it is", i+1, got)
+		}
 	}
 }
 

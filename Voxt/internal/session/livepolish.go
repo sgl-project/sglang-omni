@@ -327,7 +327,7 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 		if err != nil {
 			return job, err
 		}
-		job.answers = append(job.answers, compose.CleanOutput(resp.Text, p.Text))
+		job.answers = append(job.answers, compose.CleanOutput(resp.Text, p.Text, p.Custom()))
 		job.usage = job.usage.Add(resp.Usage)
 	}
 	return job, nil
