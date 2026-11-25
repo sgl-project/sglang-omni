@@ -750,7 +750,13 @@ def parse_args() -> argparse.Namespace:
     return finalize_args(args)
 
 
-async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
+async def _run_profiled_pass(
+    args,
+    samples,
+    concurrency: int,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> dict | None:
     """One extra profiled pass, excluded from measured aggregates.
 
     Request-event profiling adds server-side JSONL writes, so the measured
@@ -770,7 +776,9 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
             if args.profile_event_buffer_capacity is not None
             else event_buffer_capacity_for_samples(len(samples))
         ),
-        run_pass=lambda: _run_repeat(args, samples, concurrency, repeat=0),
+        run_pass=lambda: _run_repeat(
+            args, samples, concurrency, repeat=0, session=session
+        ),
         log_prefix=f"[conc={concurrency}]",
     )
 
@@ -778,7 +786,7 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
 async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
     aggregates: list[dict] = []
     for concurrency in concurrencies:
-        # note (evanderfff123-boop): keep one HTTP session across warmup and measured repeats so each repeat reuses warm keep-alive connections instead of handshaking all slots at t0.
+        # note (evanderfff123-boop): keep one HTTP session across warmup, measured repeats, and the profiled pass so each reuses warm keep-alive connections instead of handshaking all slots at t0.
         timeout = aiohttp.ClientTimeout(total=QWEN3_ASR_REQUEST_TIMEOUT_S)
         connector = aiohttp.TCPConnector(limit=0)
         async with aiohttp.ClientSession(
@@ -832,12 +840,14 @@ async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
                     )
                 else:
                     pass
-        aggregate = _aggregate(repeats)
-        if args.profile_events:
-            print(f"[conc={concurrency}] profiled pass ...")
-            aggregate["profile"] = await _run_profiled_pass(args, samples, concurrency)
-        else:
-            pass
+            aggregate = _aggregate(repeats)
+            if args.profile_events:
+                print(f"[conc={concurrency}] profiled pass ...")
+                aggregate["profile"] = await _run_profiled_pass(
+                    args, samples, concurrency, session=session
+                )
+            else:
+                pass
         aggregates.append(aggregate)
     return aggregates
 
