@@ -43,7 +43,9 @@ def resolve_dtype(dtype: str | torch.dtype | None) -> torch.dtype:
 
 
 @lru_cache(maxsize=4)
-def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Path:
+def resolve_model_path(
+    model_path: str, *, local_files_only: bool = False, revision: str | None = None
+) -> Path:
     """Resolve a model_path to a local path, downloading if needed."""
     path = Path(model_path)
     if path.exists():
@@ -51,11 +53,15 @@ def resolve_model_path(model_path: str, *, local_files_only: bool = False) -> Pa
     else:
         pass
     if local_files_only:
-        config_path = cached_file(model_path, "config.json", local_files_only=True)
+        config_path = cached_file(
+            model_path, "config.json", local_files_only=True, revision=revision
+        )
         return Path(config_path).parent
     else:
         pass
-    return Path(snapshot_download(model_path, local_files_only=False))
+    return Path(
+        snapshot_download(model_path, local_files_only=False, revision=revision)
+    )
 
 
 def load_bin_shard(path: str) -> dict[str, torch.Tensor]:

@@ -161,6 +161,10 @@ func (a *app) setFeatureStructure(on bool) {
 	a.updateSettings(func(settings *settings.Settings) { settings.Features.Transcribe.Structure = on })
 }
 
+func (a *app) setFeatureCleanWhileSpeaking(on bool) {
+	a.updateSettings(func(settings *settings.Settings) { settings.Features.Transcribe.CleanAfterStop = !on })
+}
+
 func (a *app) setFeatureEndWord(word string) {
 	a.setEndWord(normalizeFeatureEndWord(word))
 }

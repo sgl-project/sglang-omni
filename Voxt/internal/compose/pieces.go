@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 )
 
 // Speech is cleaned up in pieces (docs/eval.md): where whole sentences
@@ -42,6 +44,9 @@ type Part struct {
 // Every part has the whole input's system prompt and its piece as the user
 // message (after the glossary picked from the whole text, when it is there):
 // the parts share their prefix, which the model's prompt cache keeps.
+//
+// note (luojiaxuan): with Input.Before, each part's user message opens with
+// the cleaned text before the input (before.go).
 func BuildParts(in Input) ([]Part, error) {
 	out, err := Build(in)
 	if err != nil {
@@ -53,8 +58,9 @@ func BuildParts(in Input) ([]Part, error) {
 	pieces := LanguagePieces(in.Text)
 	parts := make([]Part, len(pieces))
 	for i, p := range pieces {
-		o := out
-		o.User = out.withGlossary(UserMessage(p.Text))
+		o, piece := out, in
+		piece.Text = p.Text
+		o.User = out.withGlossary(userMessage(piece))
 		parts[i] = Part{Output: o, Piece: p}
 	}
 	return parts, nil
@@ -218,6 +224,9 @@ func units(text string, level int) []Piece {
 	var out []Piece
 	start := 0
 	for _, m := range boundaries[level].FindAllStringIndex(text, -1) {
+		if inMark(text, m[0]) {
+			continue
+		}
 		end := m[1]
 		body := strings.TrimRight(text[start:end], " \t\r\n")
 		if body == "" {
@@ -235,14 +244,32 @@ func units(text string, level int) []Piece {
 	return out
 }
 
-// hardCut cuts text into pieces of equal length, the last resort.
+// hardCut cuts text into pieces of equal length, the last resort, never
+// inside a snippet's mark.
 func hardCut(text string) []Piece {
-	rs := []rune(text)
-	n := (len(rs) + PieceChars - 1) / PieceChars
-	size := (len(rs) + n - 1) / n
+	var at []int // the byte each rune starts at, and the end
+	for i := range text {
+		at = append(at, i)
+	}
+	runes := len(at)
+	at = append(at, len(text))
+	n := (runes + PieceChars - 1) / PieceChars
+	size := (runes + n - 1) / n
 	var out []Piece
-	for i := 0; i < len(rs); i += size {
-		out = append(out, Piece{Text: string(rs[i:min(i+size, len(rs))])})
+	for i := 0; i < runes; {
+		j := min(i+size, runes)
+		for j < runes && inMark(text, at[j]) {
+			j++
+		}
+		out = append(out, Piece{Text: text[at[i]:at[j]]})
+		i = j
 	}
 	return out
+}
+
+// inMark says whether byte i of text is inside the mark around a
+// snippet's trigger (snippet.Mark), which a piece must not cut: the
+// model would lose the trigger.
+func inMark(text string, i int) bool {
+	return strings.LastIndex(text[:i], snippet.Open) > strings.LastIndex(text[:i], snippet.Close)
 }

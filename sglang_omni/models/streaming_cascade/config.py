@@ -570,6 +570,12 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        speakers = [
+            node.component
+            for node in self.nodes
+            if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+            and AUDIO_FORMATS & set(self.publish.get(node.name, ()))
+        ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
@@ -579,6 +585,9 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            # note (Haoling Pu): only a speaker whose audio is published reaches the user, and one that says the blocks would leave the client hiding words the user hears, so each of them has to skip the blocks.
+            skips_screen_blocks=bool(speakers)
+            and all(speaker.skip_screen_blocks for speaker in speakers),
         )
 
 

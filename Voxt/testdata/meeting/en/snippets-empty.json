@@ -1,0 +1,29 @@
+{
+  "name": "snippets-empty",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [],
+    "examples": [
+      {
+        "trigger": "my work email",
+        "hint": "name@company.com"
+      },
+      {
+        "trigger": "my office address",
+        "hint": "1 Market St, San Francisco, CA 94105"
+      },
+      {
+        "trigger": "my personal meeting link",
+        "hint": "https://zoom.us/j/1234567890"
+      },
+      {
+        "trigger": "organize thoughts prompt",
+        "hint": "Turn these scattered thoughts into a clear, tidy version without adding anything."
+      }
+    ],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

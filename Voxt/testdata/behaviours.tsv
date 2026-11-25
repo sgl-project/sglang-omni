@@ -3,6 +3,7 @@ Transcribe	L	TestSessionEndToEnd	Pasting into a real app is checked by hand only
 Transcribe	M	TestMacE2ESessionLocal	none
 Transcript clean-up by the language model	L	TestStopAnswerEndToEnd	No check of a real model's answer format
 Transcript clean-up by the language model	L	TestSkipLLMEndToEnd	none
+Transcript clean-up while the user speaks	L	TestLivePolishLeavesNothingAfterStop	The wait after Stop with a real speech model and a remote language model is measured by hand on a Mac
 Spoken translation	L	TestTranslateSpeechCard	none
 Selection translation, both directions	L	TestTranslateSelectionEndToEnd	No check that the result is in the target language
 Translation follow-up and fallback model	L	TestTranslateContinue	none
@@ -78,7 +79,11 @@ Paste a copied picture into the Rewrite card	L	TestRewriteBoxPastesCopiedPicture
 Home activity calendar and its numbers	L	TestHomeActivityShows	The light-up and the look are checked by hand only
 Hover a preview's buttons while another app is in front	L	TestFloatingWindowOptions	That AppKit tracks the pointer over the window while another app is active (MyGo patch 0020) is seen on a Mac only
 Return finishes a recording of any feature, switched in Settings → Shortcuts	L	TestReturnFinishPlanScope	The helper's event tap consuming Return in another app is seen on a Mac only
+Snippets page	L	TestSnippetsPage	none
+Snippets in a dictation	L	TestSnippets	none
 Home mascot and its holiday outfits	L	TestMascotOutfitOn	The moves and how the outfits look are checked by hand only
 Share card of Voxt and a sentence said to it, copied as a picture	L	TestShareCardTakesItsTry	How the card looks and pasting it into a chat app are checked by hand only
 Hat studio: draw, erase, undo, the wardrobe, put on	L	TestShareStudioDrawsUndoesAndWears	Drawing with a real pointer is checked by hand only
-Home Insights and their card	L	TestInsightsNumbers	How the card looks is checked by hand only
+Home Insights	L	TestInsightsNumbers	none
+The insights cards to share	L	TestInsightsFaces	How the cards look and move is checked by hand only
+Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none

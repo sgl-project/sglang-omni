@@ -37,8 +37,8 @@ struct TranscriptionOptions {
   std::vector<int> prefix_token_ids;
   std::string prefix_text;
   // Tokens likely to come next (a realtime refresh's previous text after the
-  // prefix), checked in the prompt's pass and kept while greedy decoding
-  // agrees.
+  // prefix, or a Final's live preview), checked in the prompt's pass and kept
+  // while greedy decoding agrees; those past the token budget are left out.
   std::vector<int> guessed_token_ids;
 };
 
@@ -54,12 +54,14 @@ struct RetainedText {
   std::vector<int> rest_ids;
 };
 
-// What a realtime segment's refreshes keep for the next: the encoder rows of
-// the attention windows whose audio is complete, and the decoder's keys and
-// values through them, with the speculative draft's context over the same
-// positions. The next refresh's audio extends this one's; a refresh whose mel
-// differs over those windows (a louder frame raises the log-mel floor), or
-// whose draft context is gone (the draft backed off), starts over.
+// What a realtime segment's refreshes keep for the next, and for the Final of
+// the same audio: the encoder rows of the attention windows whose audio is
+// complete, and the decoder's keys and values through them, with the
+// speculative draft's context over the same positions. The next decode's audio
+// extends this one's; a decode whose mel differs over those windows (a louder
+// frame raises the log-mel floor) keeps the prompt's head alone. One whose
+// prompt before the audio differs (a Final's context), or whose draft context
+// is gone (the draft backed off), keeps the rows alone.
 struct RefreshReuse {
   // The windows' mel frames, [mel_bins, frames].
   std::optional<mlx::core::array> mel;
@@ -67,10 +69,12 @@ struct RefreshReuse {
   std::optional<mlx::core::array> audio_rows;
   // The prompt's tokens before the audio.
   std::vector<int> head_ids;
-  // Keys and values of head_ids and audio_rows.
+  // Keys and values of head_ids and audio_rows, or of a part of head_ids.
   std::vector<omni_common::KVCache> caches;
   // The draft's context over them; empty without the draft.
   std::vector<omni_common::KVCache> draft_caches;
+  // The sample of the session's audio the windows start at.
+  long recording_start_sample = 0;
 };
 
 struct BatchRequest {
@@ -101,12 +105,24 @@ public:
   // Text already shown minus its last tokens, cut back to whole characters.
   RetainedText RetainedPrefix(const std::string &text,
                               int rollback_token_count) const;
-  // With reuse, a realtime refresh: the audio windows reuse holds are not
-  // encoded or prefilled again, and reuse then holds this refresh's for the
-  // next.
+  // With reuse, a realtime refresh or a Final over its audio: the audio windows
+  // reuse holds are not encoded or prefilled again, and reuse then holds this
+  // decode's for the next.
   omni_common::TranscriptionResult Transcribe(
       const std::vector<float> &samples, const TranscriptionOptions &options,
       const std::atomic<bool> &cancel, RefreshReuse *reuse = nullptr) const;
+  // Extends final_reuse, a Final's, by the prompt's head and the recording's
+  // complete windows, a chunk of the head or a window at a time; false once
+  // nothing is left to extend it by. A window recording_reuse has encoded is
+  // taken from it, any other is encoded from recording_samples.
+  // recording_samples is the session's audio from recording_start_sample;
+  // windows of another start are dropped.
+  bool ExtendFinalPrefill(const RefreshReuse &recording_reuse,
+                          const std::vector<float> &recording_samples,
+                          long recording_start_sample,
+                          const TranscriptionOptions &options,
+                          const std::atomic<bool> &cancel,
+                          RefreshReuse &final_reuse) const;
   // Whether the request can decode together with others: the batched loop
   // has neither the draft nor the repetition penalty.
   bool CanBatch(const TranscriptionOptions &options) const {
@@ -133,7 +149,13 @@ private:
     mlx::core::array embeddings;
     // The cache positions the next refresh can reuse.
     int kept_length;
+    // The audio rows that were not encoded again.
+    int reused_row_count;
+    // The prompt's tokens that were not computed again.
+    int reused_token_count;
   };
+  // The prompt's tokens before the audio.
+  std::vector<int> HeadIds(const TranscriptionOptions &options) const;
   // A refresh's prompt over what held can reuse, after which held holds this
   // refresh's complete windows; held starts over when it cannot be reused,
   // with the draft's context when the refresh decodes with the draft.

@@ -362,7 +362,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 			return i18n.T("No term matches “%s”", dictionary.ListFor)
 		}
 		if len(dictionary.Terms) == 0 {
-			return i18n.T("Names and terms you use")
+			return i18n.T("No terms yet")
 		}
 		return dictionary.Terms[0].Term
 	case "notes":
@@ -527,7 +527,7 @@ func meetingDemoSentinel(fixture meetingDemoFixture) string {
 	case "shell-announcement":
 		return state.Announcement.Title
 	default:
-		return ""
+		return snippetsDemoSentinel(state)
 	}
 }
 
