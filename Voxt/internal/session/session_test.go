@@ -565,10 +565,15 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		h := newHarness(t, &fakeFile{text: "x"}, nil, nil)
 		id := h.start()
 		h.speak(id, 30)
-		h.rec.wait(t)
+		end := h.rec.wait(t)
 		s := h.rec.waitFor(t, "levels", func(s Snapshot) bool { return len(s.Levels) == Bars })
 		if s.Levels[0] < 0.6 || s.Levels[0] > 0.7 || s.Device != "MacBook Air Microphone" {
 			t.Errorf("levels %v device %q", s.Levels, s.Device)
+		}
+		// Every level counts, past the Bars kept: the waveform tells the
+		// new ones by it (layout.WavePlay).
+		if sent := h.audio.recorded(); end.LevelCount != sent || len(end.Levels) != Bars {
+			t.Errorf("%d levels counted, %d kept; sent %d", end.LevelCount, len(end.Levels), sent)
 		}
 	})
 }

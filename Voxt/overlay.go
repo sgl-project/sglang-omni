@@ -68,9 +68,13 @@ type sessionOverlayLayout struct {
 	CardScrolls bool
 }
 
+// sessionOverlayAnimation is what moves in a frame: Phase seconds in, and
+// the waveform's bars at a time as they glide (Wave; nil: straight from
+// the levels), which its drawing asks for at every frame it paints.
 type sessionOverlayAnimation struct {
 	Motion bool
 	Phase  float64
+	Wave   func(time.Time) layout.Wave
 }
 
 type sessionOverlayMeasurement struct {
@@ -118,7 +122,7 @@ func sessionOverlayView(
 		context.After(250 * time.Millisecond)
 	}
 	look := pillLook{time: layoutState.ShowTime, lines: layoutState.LiveLines, scroll: &local.Overlay.lines,
-		motion: animation.Motion, phase: animation.Phase, w: layoutState.Width}
+		motion: animation.Motion, phase: animation.Phase, wave: animation.Wave, w: layoutState.Width}
 	ui.Column(context).Fill().Padding(layout.Pad).Children(func() {
 		switch state.Mode {
 		case ovAnswer:
