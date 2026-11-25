@@ -124,6 +124,9 @@ func (host *meetingDemoHost) saveNoteEdit(id, text string) {
 	host.record("saveNoteEdit %s %q", id, text)
 }
 
+func (host *meetingDemoHost) toggleNoteRecording() { host.record("toggleNoteRecording") }
+func (host *meetingDemoHost) closeNotesBanner()    { host.record("closeNotesBanner") }
+
 func (host *meetingDemoHost) setNoteKeys(keys string) {
 	host.notesUI.keys.text = keys
 	host.record("setNoteKeys %q", keys)

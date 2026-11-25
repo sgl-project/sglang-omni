@@ -317,6 +317,9 @@ type Setup struct {
 	// RewriteBoxTipDismissed independently hides the guidance for good.
 	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
 	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
+	// NotesIntroDone: the Notes page's banner was closed, or a note was
+	// saved since it showed: the page is the notes from then on.
+	NotesIntroDone bool `json:"notesIntroDone,omitempty"`
 }
 
 // Updates: what the updater offers (Settings → About → Updates). With an

@@ -32,6 +32,8 @@ Dictionary profiles	L	TestDictionaryProfileExternalSwitch	none
 Dictionary suggestions, history scan, learning from edits	L	TestLearnFromCorrection	Reading a real text field is checked by hand only
 Dictionary suggestions, history scan, learning from edits	L	TestScanButtonNeedsTheTranscribeLanguageModel	none
 Notes	L	TestSessionNote	none
+Notes	L	TestNotesBanner	none
+Notes	L	TestNotesBannerGoesWithTheFirstNote	none
 Meeting live captions	L	TestCommitterLive	none
 Meeting live captions	L	TestMeetingPlaythrough	none
 Meeting live captions	L	TestDedupeOverlapText	none

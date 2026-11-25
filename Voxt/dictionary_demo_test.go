@@ -101,6 +101,11 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 			}
 		}},
 		{name: "delete note", fixture: "en/notes-normal", steps: historySteps("Delete call Ana"), want: []string{`deleteDictionaryNote note-2 "call Ana"`}},
+		{name: "record a note", fixture: "en/notes-normal", steps: historySteps("Record a note"), want: []string{"toggleNoteRecording"}},
+		{name: "stop a note", fixture: "en/notes-recording", steps: historySteps("Stop and save"), want: []string{"toggleNoteRecording"}},
+		{name: "record a note from the banner", fixture: "en/notes-banner", steps: historySteps("Record a note"), want: []string{"toggleNoteRecording"}},
+		{name: "stop a note from the banner", fixture: "en/notes-banner-recording", steps: historySteps("Stop and save"), want: []string{"toggleNoteRecording"}},
+		{name: "close the banner", fixture: "en/notes-banner", steps: historySteps("Close the introduction"), want: []string{"closeNotesBanner"}},
 		{name: "note keys off", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Off", click: true}}, want: []string{`setNoteKeys ""`}},
 		{name: "note keys preset", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {label: "Right ⇧", click: true}}, want: []string{`setNoteKeys "RightShift"`}},
 		{name: "note keys custom", fixture: "en/notes-normal", steps: []historyDemoStep{{label: "Keys to record a note", click: true}, {key: ui.KeyEnd}, {key: ui.KeyEnter}}, want: []string{"setNoteHotkeyFocus true"}, check: func(t *testing.T, host *meetingDemoHost) {

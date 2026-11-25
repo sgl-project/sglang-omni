@@ -4,10 +4,15 @@
   "%d notes": "%d 条笔记",
   "Could not read the notes.": "无法读取笔记。",
   "No notes yet": "还没有笔记",
-  "Choose a shortcut above, then press it in any app and speak. What you say is saved here instead of typed.": "先在上面选一个快捷键，然后在任意 App 里按下它说话。说的内容会存到这里，不会输入到光标处。",
-  "Press %s in any app, speak, and press it again. What you say is saved here instead of typed.": "在任意 App 里按 %s，说完再按一次。说的内容会存到这里，不会输入到光标处。",
+  "Pick a shortcut, then press it in any app and speak. It's saved here, not typed.": "选个快捷键，在任意 App 里按下就能说。内容存在这里，不会打进当前 App。",
+  "Press %s, speak, and press it again. It's saved here, not typed.": "按 %s 说话，说完再按一次。内容存在这里，不会打进当前 App。",
   "Could not delete the note: %v": "无法删除笔记：%v",
   "Keys to record a note": "记笔记的快捷键",
   "Custom keys to record a note": "自定义记笔记的快捷键",
-  "Could not save the note: %v": "无法保存笔记：%v"
+  "Could not save the note: %v": "无法保存笔记：%v",
+  "Say it. Keep it.": "说出来，就记住了",
+  "Record a note": "录一条笔记",
+  "Stop and save": "停止并保存",
+  "Close the introduction": "关闭介绍",
+  "Edison · 1877 · first playback": "爱迪生 · 1877 · 第一段放出来的录音"
 }

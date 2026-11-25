@@ -15,6 +15,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Clean up while you speak** (#4592): when a language model cleans up Transcribe, Voxt sends it the sentences the speech model has written while you are still speaking, and after you stop it cleans only what is left, with the cleaned text before it as context; the two sentences just before are cleaned again with it, so that a correction said last still reaches them. When the final text is the one already cleaned, nothing is left to wait for. The Transcribe page's Clean up while you speak turns it off.
 - **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
 
+- **An introduction on the Notes page, and a button that records a note** (#4598): the page opens with a card that says how to record a note, with Record a note on it, and a nod to the first voice ever played back: Edison's "Mary had a little lamb", 1877. The card goes away for good when you close it or save your first note; the button stays in the page's header, and reads Stop and save while a note records.
+
 ### Changed
 
 - **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
@@ -47,6 +49,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
 - **边说边整理**（#4592）：转录用语言模型整理时，你还在说话，Voxt 就把语音识别模型已经写出的句子发给语言模型；停止后只整理剩下的部分，并带上整理好的前文；紧挨着的前两句会跟它一起重新整理，最后说的改口也能改到前面。最终文字就是已经整理过的那段时，停止后不用再等语言模型。可以在转录页关闭“边说边整理”。
 - **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。目前只用于转录。
+
+- **笔记页的介绍卡片和“录一条笔记”按钮**（#4598）：第一次打开笔记页会看到一张卡片，说怎么录笔记，上面有“录一条笔记”，还致敬了第一段能放出来的录音：1877 年爱迪生对留声机念的 “Mary had a little lamb”。关掉它或存下第一条笔记后，卡片不再出现；按钮留在页面右上角，录音时变成“停止并保存”。
 
 #### 变更
 

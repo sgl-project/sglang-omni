@@ -27,9 +27,15 @@ func notesPage(c *ui.Context, state *notesViewState, actions notesActions, local
 		if state.CountLabel != "" {
 			caption(c, state.CountLabel).SingleLine()
 		}
+		if !state.Banner { // the banner has the button while it shows
+			noteRecordButton(c, state, actions, false)
+		}
 	})
 	pageBody(c).Children(func() {
-		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp2)).Shrink(0).Children(func() {
+		ui.Column(c).Padding(px(t, sp1), px(t, sp6), px(t, sp2)).Gap(px(t, sp3)).Shrink(0).Children(func() {
+			if state.Banner {
+				notesBanner(c, state, actions)
+			}
 			noteKeysRow(c, &state.Shortcut, actions, local)
 			if state.Error != "" {
 				notice(c, "notes-err", noticeError, i18n.T("Could not read the notes."), state.Error, func() {
@@ -43,7 +49,11 @@ func notesPage(c *ui.Context, state *notesViewState, actions notesActions, local
 			switch {
 			case !state.Read:
 			case len(state.Rows) == 0:
-				emptyState(c, notesIcon, i18n.T("No notes yet"), state.Shortcut.EmptyHint, nil)
+				hint := state.Shortcut.EmptyHint
+				if state.Banner {
+					hint = "" // the banner says it
+				}
+				emptyState(c, notesIcon, i18n.T("No notes yet"), hint, nil)
 			default:
 				ui.List(c.Key("notes-list"), &local.listUI, len(state.Rows)).Grow(1).MinHeight(0).Gap(px(t, 2)).Padding(0, 0, px(t, sp4)).
 					ItemKey(func(index int) any { return state.Rows[index].ID }).Rows(func(row ui.ListRow) {
@@ -51,6 +61,111 @@ func notesPage(c *ui.Context, state *notesViewState, actions notesActions, local
 				})
 			}
 		})
+	})
+}
+
+// The banner: its height and corners, and the window's width from which
+// the note drawn on its far side has room beside the text.
+const (
+	notesBannerH      = 196
+	notesBannerRadius = 18
+	notesBannerWide   = 760
+)
+
+// notesBanner is the page's introduction, until it is closed or a note is
+// saved (Setup.NotesIntroDone): what a note is for, how to record one
+// (the shortcut's line) and the button that records one, white on the
+// picture the overlay's preview has, with a note drawn on its far side.
+func notesBanner(c *ui.Context, state *notesViewState, actions notesActions) {
+	t := c.Theme()
+	white := ui.Hex("#ffffff")
+	windowW, _ := c.Size()
+	ui.Box(c.Key("notes-banner")).FillWidth().MinWidth(0).Height(px(t, notesBannerH)).Shrink(0).Radius(px(t, notesBannerRadius)).Clip().
+		Background(ui.RGB(72, 96, 214)).Children(func() {
+		if picture := ovPreviewBackground(); picture != nil {
+			ui.Image(c, picture).Absolute().Left(0).Top(0).Right(0).Bottom(0).Fit(ui.Cover)
+		}
+		// Darker where the text is: the picture's far side is light.
+		ui.Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Gradient(ui.RGBA(10, 14, 60, 0.34), ui.RGBA(10, 14, 60, 0.06), 90)
+		// Positioned as the picture is, to draw over it.
+		ui.Row(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).AlignItems(ui.Stretch).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Padding(0, px(t, sp6)).Gap(px(t, sp2)).Justify(ui.Center).Children(func() {
+				ui.Text(c, i18n.T("Say it. Keep it.")).FontSize(px(t, 26)).FontWeight(650).TextColor(white)
+				ui.Text(c, state.Shortcut.EmptyHint).TextColor(white.Alpha(0.9)).MaxWidth(px(t, 440))
+				ui.Row(c).Margin(px(t, sp3), 0, 0).Children(func() {
+					noteRecordButton(c, state, actions, true)
+				})
+			})
+			if windowW >= notesBannerWide {
+				notesBannerNote(c)
+			}
+		})
+		// Close, over the picture's corner.
+		tip := i18n.T("Close the introduction")
+		closing := ghostBase(c.Key("notes-banner-close")).Size(px(t, 22), px(t, 22)).Center().Label(tip).Tooltip(tip).
+			Absolute().Top(px(t, 6)).Right(px(t, 6)).Radius(px(t, 11))
+		closing.Background(ui.RGBA(20, 20, 60, 0.24))
+		if closing.Hovered() {
+			closing.Background(ui.RGBA(20, 20, 60, 0.44))
+		}
+		closing.Children(func() {
+			ui.Icon(c, icons.Close.Linear).Size(px(t, 12), px(t, 12)).TextColor(white)
+		})
+		if closing.Clicked() {
+			actions.closeNotesBanner()
+		}
+	})
+}
+
+// noteRecordButton is Record a note, Stop and save while one records:
+// white on the banner's picture, a secondary button in the page's header.
+func noteRecordButton(c *ui.Context, state *notesViewState, actions notesActions, onPicture bool) {
+	t := c.Theme()
+	label := i18n.T("Record a note")
+	if state.Recording {
+		label = i18n.T("Stop and save")
+	}
+	var button ui.Element
+	if onPicture {
+		white := *t
+		white.Accent, white.AccentText = ui.Hex("#ffffff"), ui.Hex("#1b1b23")
+		white.AccentHover, white.AccentPressed = ui.Hex("#ececf4"), ui.Hex("#dcdce8")
+		c.SetTheme(&white)
+		button = ui.PrimaryButton(c.Key("notes-record"), "").Border(1, ui.Color{})
+	} else {
+		button = ui.Button(c.Key("notes-record"), "")
+	}
+	button.Label(label).Children(func() {
+		if state.Recording {
+			statusDot(c, tok(t).Record)
+		} else {
+			ui.Icon(c, icons.VoxtMicrophone.Bold).Size(labelIcon(t), labelIcon(t))
+		}
+		ui.Text(c, label).SingleLine()
+	})
+	c.SetTheme(t)
+	if button.Clicked() {
+		actions.toggleNoteRecording()
+	}
+}
+
+// notesBannerNote is the note drawn on the banner's far side, a sheet
+// that comes up from the banner's bottom edge. Its note is the first
+// words a machine recorded and played back, Edison's to his phonograph
+// in 1877: the first voice note. A quotation, so in English in every
+// language; who, when and what it was where a note has its time and app.
+// Lines stand for the note under it.
+func notesBannerNote(c *ui.Context) {
+	t := c.Theme()
+	ink := ui.Hex("#1b1b23")
+	ui.Column(c).Width(px(t, 208)).Shrink(0).Margin(px(t, sp6), px(t, sp6), 0, 0).Padding(px(t, sp3), px(t, 14), px(t, sp4)).Gap(px(t, 4)).
+		Radius(px(t, 12), px(t, 12), 0, 0).Background(ui.RGBA(255, 255, 255, 0.95)).Shadow(0, px(t, 8), px(t, 24), 0, ui.RGBA(20, 20, 60, 0.22)).Children(func() {
+		ui.Text(c, "Mary had a little lamb,\nits fleece was white as snow.").FontSize(px(t, fsCaption)).FontWeight(600).TextColor(ink)
+		ui.Text(c, i18n.T("Edison · 1877 · first playback")).FontSize(px(t, fsMicro)).TextColor(ink.Alpha(0.56)).MaxLines(2)
+		ui.Box(c).FillWidth().Height(1).Margin(px(t, 8), 0, px(t, 6)).Background(ink.Alpha(0.1))
+		for _, width := range []float32{172, 150, 104} {
+			ui.Box(c).Width(px(t, width)).Height(px(t, 6)).Radius(px(t, 3)).Margin(px(t, 3), 0).Background(ink.Alpha(0.16))
+		}
 	})
 }
 

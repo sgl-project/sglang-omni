@@ -35,6 +35,8 @@ type notesActions interface {
 	copyNote(text string)
 	saveNoteEdit(id, text string)
 	setNoteKeys(keys string)
+	toggleNoteRecording()
+	closeNotesBanner()
 	recordNoteKeys(keys string) notesShortcutViewState
 	updateNoteKeysDraft(text string) notesShortcutViewState
 	setNoteHotkeyFocus(focused bool)

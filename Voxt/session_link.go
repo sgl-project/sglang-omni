@@ -452,6 +452,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	}
 	if s.Note && s.State == session.Done && s.Result != "" {
 		a.loadNotes() // notes_page.go: the page shows it
+		a.closeNotesBanner()
 	}
 	if p := s.Problem; p != nil && s.State != session.Cancelled && !(s.Card && s.State == session.Failed) {
 		text, more, action := sessionProblemText(p)
