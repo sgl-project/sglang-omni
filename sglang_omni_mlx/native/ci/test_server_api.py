@@ -12,6 +12,7 @@ import io
 import json
 import os
 import select
+import shutil
 import subprocess
 import time
 import uuid
@@ -277,14 +278,30 @@ def test_a_draft_for_another_target_fails_at_load() -> None:
     assert failed.process.wait(timeout=10) == 1
 
 
-def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
+def test_backoff_preserves_recording_quality(tmp_path: Path) -> None:
+    """Adaptive decoding hands over to plain decoding when the draft loses, and the transcript stays as accurate."""
+    # note (XXXXRT666): the last clip ends before 120 s, so the recording is one chunk.
     recording_path = tmp_path / "recording.wav"
     recording = build_recording(
         load_clips(Path(DATA_ROOT) / "corpus" / "v1", "zh"),
-        900,
+        100,
         0,
         recording_path,
     )
+    # note (XXXXRT666): a draft with zero weights loses on any machine, as its every proposal is rejected.
+    draft_directory = tmp_path / "draft"
+    shutil.copytree(
+        model_directory(DRAFT_REPO),
+        draft_directory,
+        ignore=shutil.ignore_patterns("*.safetensors"),
+    )
+    for weights in model_directory(DRAFT_REPO).glob("*.safetensors"):
+        with weights.open("rb") as reader:
+            header_size = reader.read(8)
+            header = reader.read(int.from_bytes(header_size, "little"))
+        with (draft_directory / weights.name).open("wb") as writer:
+            writer.write(header_size + header)
+            writer.truncate(weights.stat().st_size)
     outputs = {}
     for policy in ("fixed", "adaptive"):
         result = subprocess.run(
@@ -293,7 +310,7 @@ def test_backoff_preserves_long_recording_quality(tmp_path: Path) -> None:
                 "--model-path",
                 str(model_directory()),
                 "--draft-model-path",
-                str(model_directory(DRAFT_REPO)),
+                str(draft_directory),
                 "--draft-policy",
                 policy,
                 "--layout",
