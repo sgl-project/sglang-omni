@@ -76,21 +76,25 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 		m.dropCorrectOverlap()
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.id != mt.ID {
+		m.mu.Unlock()
 		return
 	}
 	if err != nil {
 		m.state = StateInterrupted
 		m.snap.State = StateInterrupted
-		m.notify(m.snap)
+		s := m.snap
+		m.mu.Unlock()
+		m.notify(s)
 		return
 	}
 	meetingID := mt.ID
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
-	m.notify(m.snap)
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 	if auto {
 		go m.correctAndSummarize(context.Background(), meetingID)
 	}
