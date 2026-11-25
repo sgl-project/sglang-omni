@@ -12,7 +12,11 @@ from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import AUDIO, PCM16, PCM16_BYTES_PER_SAMPLE
-from sglang_omni.scheduling.session import SessionContext, SessionHooks, SessionScheduler
+from sglang_omni.scheduling.session import (
+    SessionContext,
+    SessionHooks,
+    SessionScheduler,
+)
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.hf import qwen_d2_interval_ms
