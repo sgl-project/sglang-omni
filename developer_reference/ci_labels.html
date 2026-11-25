@@ -672,7 +672,7 @@
 </tr>
 <tr class="row-even"><td><p>Code that only the unit tests cover</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code></p></td>
-<td><p>PR Test on H100. Not <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>.</p></td>
+<td><p>CPU unit tests on GitHub-hosted VMs and H100 accelerator unit tests. Not <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>.</p></td>
 </tr>
 <tr class="row-odd"><td><p>The Intel CPU or Intel GPU path</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> or <code class="docutils literal notranslate"><span class="pre">run-intel-xpu-ci</span></code></p></td>
@@ -732,8 +732,8 @@
 <td><p>Pull requests that change its Dockerfile, installer, pyproject files or workflows</p></td>
 </tr>
 <tr class="row-even"><td><p>Omni CI: PR Test</p></td>
-<td><p>H100</p></td>
-<td><p>The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU</p></td>
+<td><p>GitHub-hosted Linux and H100</p></td>
+<td><p>Eight CPU unit-test partitions on Ubuntu VMs and two H100 accelerator partitions</p></td>
 <td><p>Any stage label except <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code>, or a model label</p></td>
 </tr>
 <tr class="row-odd"><td><p>Omni CI: ASR</p></td>
@@ -826,9 +826,9 @@
 </section>
 <section id="the-omni-ci-workflow">
 <h2>The Omni CI workflow<a class="headerlink" href="#the-omni-ci-workflow" title="Link to this heading">#</a></h2>
-<p>Omni CI runs PR Test and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With every stage label, the stages run in this order:</p>
-<p>PR Test → ASR, TTS, Omni and Duplex side by side → MPS</p>
-<p>Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, Omni and Duplex start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well. TTS’s SeedTTS voice cloning job runs its non-streaming and streaming benchmarks one after the other, because its last check compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR’s shared virtualenv, and that must not happen while another stage is using it. With <code class="docutils literal notranslate"><span class="pre">run-tts-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-mps-ci</span></code>, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.</p>
+<p>Omni CI runs the hosted CPU unit tests (<code class="docutils literal notranslate"><span class="pre">unit-test-cpu-0</span></code> through <code class="docutils literal notranslate"><span class="pre">unit-test-cpu-7</span></code>), PR Test (<code class="docutils literal notranslate"><span class="pre">unit-test-accelerator-a/b</span></code>), and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. After preflight, the eight GitHub-hosted CPU unit-test jobs start immediately in parallel with H100 shared setup (<code class="docutils literal notranslate"><span class="pre">setup</span></code> builds the virtualenv and downloads model weights), without waiting for or occupying H100 runners. With every stage label, the H100 stages run in this order:</p>
+<p>PR Test → ASR, TTS, MPS, Omni and Duplex side by side</p>
+<p>Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, MPS, Omni and Duplex start independently as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free; they do not wait for the hosted CPU partitions. Jobs within a stage run side by side as well. TTS’s SeedTTS voice cloning job runs its non-streaming and streaming benchmarks one after the other, because its last check compares their results. MPS uses <code class="docutils literal notranslate"><span class="pre">github.sha</span></code> (the merge commit on a regular <code class="docutils literal notranslate"><span class="pre">pull_request</span></code> run), so it shares the same virtualenv and does not wait for TTS or other model stages. A stage that fails does not stop any other stage. A failed setup job blocks the H100 stages, while hosted CPU unit tests continue independently.</p>
 <section id="pr-test">
 <h3>PR Test<a class="headerlink" href="#pr-test" title="Link to this heading">#</a></h3>
 <div class="pst-scrollable-table-container"><table class="table">
@@ -838,14 +838,8 @@
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test-a</span></code></p></td>
-<td><p>First runtime-balanced partition of <code class="docutils literal notranslate"><span class="pre">pytest</span> <span class="pre">tests/</span> <span class="pre">-m</span> <span class="pre">&quot;not</span> <span class="pre">benchmark</span> <span class="pre">and</span> <span class="pre">not</span> <span class="pre">accelerator&quot;</span></code>, with CUDA hidden</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test-b</span></code></p></td>
-<td><p>Second runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test-c</span></code></p></td>
-<td><p>Third runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test-cpu-0</span></code> through <code class="docutils literal notranslate"><span class="pre">unit-test-cpu-7</span></code></p></td>
+<td><p>Eight runtime-balanced partitions of <code class="docutils literal notranslate"><span class="pre">pytest</span> <span class="pre">tests/</span> <span class="pre">-m</span> <span class="pre">&quot;not</span> <span class="pre">benchmark</span> <span class="pre">and</span> <span class="pre">not</span> <span class="pre">accelerator&quot;</span></code> on separate GitHub-hosted Ubuntu VMs</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unit-test-accelerator-a</span></code></p></td>
 <td><p>First runtime-balanced partition of <code class="docutils literal notranslate"><span class="pre">pytest</span> <span class="pre">tests/</span> <span class="pre">-m</span> <span class="pre">&quot;accelerator</span> <span class="pre">and</span> <span class="pre">not</span> <span class="pre">benchmark&quot;</span></code>, the unit tests that need a GPU</p></td>
@@ -856,10 +850,10 @@
 </tbody>
 </table>
 </div>
-<p>The CPU and accelerator partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using <code class="docutils literal notranslate"><span class="pre">.github/unit_test_durations.json</span></code> for the CPU suite and <code class="docutils literal notranslate"><span class="pre">.github/unit_test_accelerator_durations.json</span></code> for the accelerator suite; a file with both kinds of test has a weight in each. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file’s partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.</p>
+<p>Each CPU VM installs the dependencies for the checked-out revision in a fresh environment, runs its partition with retries, and uploads its JUnit report and attempt logs. The CPU and accelerator partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using <code class="docutils literal notranslate"><span class="pre">.github/unit_test_durations.json</span></code> for the CPU suite and <code class="docutils literal notranslate"><span class="pre">.github/unit_test_accelerator_durations.json</span></code> for the accelerator suite; a file with both kinds of test has a weight in each. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file’s partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.</p>
 <p>The CPU weights are per-file p90 elapsed estimates from three successful H100 A/B runs: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41197670240">41197670240</a>, <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41161315193">41161315193</a> and <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/41140707601">41140707601</a>. Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.</p>
 <p>The accelerator weights are per-file p90 estimates of the same kind, from the first attempt of three H100 accelerator jobs on 2026-11-21: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44939177878/job/136957056283">136957056283</a>, <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44947746078/job/136979600046">136979600046</a> and <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44948801830/job/136987314462">136987314462</a>. Each of those attempts stopped at a failure in <code class="docutils literal notranslate"><span class="pre">tests/unit_test/whisper_asr/test_draft_cuda_graph.py</span></code>, so that file and the five after it take their weights from three earlier successful jobs: <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44925396141/job/136910764501">136910764501</a>, <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44905131915/job/136849929132">136849929132</a> and <a class="reference external" href="https://github.com/sgl-project/sglang-omni/actions/runs/44905114597/job/136850113353">136850113353</a>.</p>
-<p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code> selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>; that job needs <code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the Intel hardware stages included. <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> do not run PR Test or setup.</p>
+<p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code> selects the hosted CPU unit tests and H100 accelerator unit tests without selecting model or hardware stages. It does not run the Intel Xeon job <code class="docutils literal notranslate"><span class="pre">intel-cpu-ci</span> <span class="pre">(unit_test/cpu)</span></code>; that job needs <code class="docutils literal notranslate"><span class="pre">run-intel-cpu-ci</span></code> and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs for the accelerator unit tests, including model-weight provisioning. Both unit-test suites also run whenever any other stage label selects a stage, the Intel hardware stages included. <code class="docutils literal notranslate"><span class="pre">run-mac-ci</span></code> and <code class="docutils literal notranslate"><span class="pre">run-lint-only</span></code> do not run unit tests or setup.</p>
 </section>
 <section id="asr">
 <h3>ASR<a class="headerlink" href="#asr" title="Link to this heading">#</a></h3>
@@ -1148,7 +1142,7 @@
 <td><p>Nothing self-hosted. The gates succeed.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-unit-test-ci-only</span></code></p></td>
-<td><p>PR Test only, after shared setup.</p></td>
+<td><p>Hosted CPU unit tests and H100 accelerator unit tests only.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-asr-ci</span></code></p></td>
 <td><p>PR Test, then both ASR jobs, SeedTTS ASR on a random model from its pool.</p></td>
