@@ -37,6 +37,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 
 - **Select all with ⌘A right before the shortcut is read as the selection** (#3835): pressing ⌘A and the Rewrite or Translate shortcut in one motion often sent no selected text, because Voxt read the selection before the app showed it to accessibility and concluded nothing was selected; it now keeps reading for a moment before giving up. And when the shortcut has Control, Option or Shift in it (such as Control+C), the helper's copy keystroke now waits for those keys to lift — and is not sent at all while they stay held — instead of reaching the app as a different key that copies nothing.
+- **Recording overlays open on the display you are working on**: with several displays, the recording pill and answer card now prefer the foreground app's focused-window display instead of following the pointer. Without Accessibility, Voxt reads the front window through the window server instead. If neither source has a focused window, they still use the pointer's display. A kept answer card on another display no longer pulls the recording pill away from the app you are dictating into. Pill show, hide and display choices are logged. A recording started while a Rewrite answer is kept now puts the pill beside that card instead of over it.
 - **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
 - **Rewrite stays in your full-screen app** (#4586): pressed in an app in full screen, Rewrite switched you to a desktop to show its card. The card now opens over the full-screen app and takes your typing there; inserting the result goes back into that app.
 - **The Transcribe pill shows over full-screen apps** (#4617): in an app in full screen, Transcribe recorded and typed but its pill never appeared. It now shows over the full-screen app, as on a desktop.
@@ -79,6 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 
 - **按快捷键前用 ⌘A 全选，选中内容能被读到了**（#3835）：⌘A 和改写、翻译快捷键连着按时，常常读不到任何选中内容，因为 Voxt 在 App 把选区交给辅助功能之前就读了选区，得出没有选中的结论；现在会多读一会儿再下结论。另外，快捷键里带 Control、Option 或 Shift 时（比如 Control+C），辅助进程的复制按键会等这些键松开再发，键一直不松就不发，不会再变成 App 里复制不了内容的另一个按键。
+- **录音浮窗显示在前台窗口所在屏**：使用多块显示器时，录音胶囊和答案卡片优先显示在前台 App 焦点窗口所在的屏幕，不再跟着鼠标跑到另一块屏；没有辅助功能权限时改从窗口服务器读取前台窗口，两种途径都读不到时才退回鼠标所在屏。保留的答案卡片在另一块屏时，也不会把录音胶囊带离正在输入的 App。胶囊显示、隐藏和选屏依据都会写入日志。保留着改写答案卡片时开始录音，录音胶囊贴在卡片旁边，不再盖住它。
 - **回顾里的数字不再被截断**（#4570）：窗口较窄时，英文界面的速度会显示成“2… characters a min…”。现在数字、单位和标题都不会被截断：放得下就一行四张，放不下就两两一行。
 - **改写不再把你从全屏 App 切走**（#4586）：在全屏的 App 里按改写，Voxt 会把你切到一个桌面去显示卡片。现在卡片直接出现在全屏 App 上面，可以在里面打字，插入结果也回到这个 App。
 - **全屏 App 里也能看到转录浮窗**（#4617）：在全屏的 App 里转录，录音和输入都正常，但浮窗一直不出现。现在浮窗和在桌面上一样，显示在全屏 App 上面。

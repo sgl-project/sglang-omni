@@ -9,6 +9,7 @@ package main
 // the menus and the answer's stream pacing.
 
 import (
+	"log"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -27,12 +28,15 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		a.pill.live.id, a.pill.live.w = "", 0
 		a.pill.dragged.x, a.pill.dragged.y = 0, 0
 		if was {
+			log.Printf("pill: hide display=%v", a.pill.area)
 			a.pillFadeOut()
 		}
 		return
 	}
 	if !was {
-		a.pill.area = a.overlayArea()
+		area, display := a.overlayDisplay()
+		a.pill.area = area
+		log.Printf("pill: show %s", display)
 	}
 	width, height := a.pillFace(mode)
 	frame := a.pillFrame(width, height)
@@ -187,19 +191,33 @@ func (a *app) pillOverlaySize(mode overlayMode) (width, height int, exact bool) 
 }
 
 // pillAnchor is the pill window's frame before clamping and the user's
-// drag: beside the card's current frame — above a bottom-anchored card,
-// below a top-anchored one (adjacent never intersects it). The default
-// anchor when the card is not showing.
+// drag: beside a same-display card — above a bottom-anchored card, below a
+// top-anchored one (adjacent never intersects it). The default anchor when
+// the card is not showing or is on another display.
 func (a *app) pillAnchor(width, height int) mygo.Rectangle {
 	frame := layout.Frame(a.pill.area, a.prefs.Overlay, width, height)
-	if a.ov.shown && a.ov.mode == ovAnswer {
+	if card, area, ok := a.pillCard(); ok && area == a.pill.area {
 		if a.prefs.Overlay.Position == "top" {
-			frame.Y = a.ov.frame.Y + a.ov.frame.Height
+			frame.Y = card.Y + card.Height
 		} else {
-			frame.Y = a.ov.frame.Y - frame.Height
+			frame.Y = card.Y - frame.Height
 		}
 	}
 	return frame
+}
+
+// pillCard is the frame and the screen of the card the pill stays clear
+// of: the answer card in the overlay window, or the Rewrite box's window,
+// which holds the card of a Rewrite answer (the overlay window is then
+// not shown).
+func (a *app) pillCard() (frame, area mygo.Rectangle, ok bool) {
+	if a.ov.shown && a.ov.mode == ovAnswer {
+		return a.ov.frame, a.ov.area, true
+	}
+	if a.box.winShown {
+		return a.box.frame, a.box.area, true
+	}
+	return mygo.Rectangle{}, mygo.Rectangle{}, false
 }
 
 func (a *app) pillFrame(width, height int) mygo.Rectangle {
@@ -222,7 +240,7 @@ func (a *app) pillFrameY(frame mygo.Rectangle, y int) int {
 	if cy := clamp(y); !a.pillCoversCard(frame.X, cy, frame.Width, frame.Height) {
 		return cy
 	}
-	card := a.ov.frame
+	card, _, _ := a.pillCard()
 	other := card.Y + card.Height
 	if a.prefs.Overlay.Position == "top" {
 		other = card.Y - frame.Height
@@ -237,12 +255,12 @@ func (a *app) pillFrameY(frame mygo.Rectangle, y int) int {
 }
 
 // pillCoversCard reports whether a pill frame at (x, y) intersects the
-// answer card's frame.
+// card's frame (pillCard).
 func (a *app) pillCoversCard(x, y, w, h int) bool {
-	if !a.ov.shown || a.ov.mode != ovAnswer {
+	c, _, ok := a.pillCard()
+	if !ok {
 		return false
 	}
-	c := a.ov.frame
 	return x < c.X+c.Width && c.X < x+w && y < c.Y+c.Height && c.Y < y+h
 }
 
