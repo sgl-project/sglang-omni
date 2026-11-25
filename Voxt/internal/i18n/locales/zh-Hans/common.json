@@ -195,6 +195,7 @@
   "Save": "保存",
   "Group prompt": "分组提示词",
   "Search": "搜索",
+  "Session %d": "会话 %d",
   "Secure input is on in %s and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard.": "%s 开启了安全输入，可能拦下 Voxt 发送的按键。文字已放到剪贴板，按 ⌘V 粘贴。",
   "Secure input is on in another app and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard, or insert it again.": "另一个 App 开启了安全输入，可能拦下 Voxt 发送的按键。文字已放到剪贴板，按 ⌘V 粘贴，或者再插入一次。",
   "Secure input is on and may block the keys Voxt sends. Press ⌘V to paste the text from the clipboard.": "安全输入已开启，可能拦下 Voxt 发送的按键。文字已放到剪贴板，按 ⌘V 粘贴。",
@@ -455,5 +456,8 @@
   "Undo": "撤销",
   "Share": "分享",
   "Turn on": "打开",
-  "Export…": "导出…"
+  "Export…": "导出…",
+  "Next session": "下一个会话",
+  "Sessions": "会话",
+  "New session": "新会话"
 }

@@ -74,10 +74,13 @@ type shortcutPresetActions interface {
 
 type settingsShortcutsActions interface {
 	shortcutPresetActions
+	keyRecorderActions
 	openShortcutPermissions()
 	openShortcutFeature(path string)
 	setStrictShortcuts(on bool)
 	setReturnFinishes(on bool)
+	setSessionKeys(slot int, keys string)
+	setSessionsOn(on bool)
 }
 
 type keyRecorderActions interface {

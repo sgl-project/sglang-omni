@@ -423,3 +423,43 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionShortcutsSettings: Settings → Shortcuts' Sessions section
+// lists the three session shortcuts (Control+Option+1 … by default,
+// #4005), in English and Chinese; Change… opens the recorder, whose
+// pressed keys save at once.
+func TestSessionShortcutsSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	scrollToText(tt, "Sessions (experimental)")
+	if has(tt, "Session 1") || a.settings.Get().Features.SessionsOn {
+		t.Fatalf("sessions are off by default: %q", firstTexts(tt))
+	}
+	if err := tt.ClickControl("Sessions (experimental)"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Features.SessionsOn {
+		t.Fatal("the switch did not turn sessions on")
+	}
+	for _, s := range []string{"Session 1", "Session 2", "Session 3", "Next session", "⌥Tab"} {
+		if !has(tt, s) {
+			t.Errorf("no %q: %q", s, firstTexts(tt))
+		}
+	}
+	scrollToText(tt, "Session 1")
+	click(t, tt, "Change…") // Session 1's, the first
+	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
+	frames(tt)
+	if got := a.settings.Get().Features.Sessions[0].Keys; got != "Control+Option+4" {
+		t.Fatalf("the recorder saved %q", got)
+	}
+	if !hasExact(tt, "⌃⌥4") {
+		t.Errorf("the row shows the new keys: %q", firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if !has(tt, "会话 1") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
+	}
+}

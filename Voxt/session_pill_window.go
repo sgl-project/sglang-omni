@@ -114,7 +114,7 @@ func (a *app) refreshPillOverlay(now time.Time, mode overlayMode) {
 	input := sessionOverlayProjectionInput{
 		Snapshot: a.sess, Mode: mode,
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShowTime: a.prefs.Overlay.ShowTime,
-		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice,
+		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice, SessionNumber: a.sessionNumber(),
 	}
 	// shortcut: no thinking menu here — langMenuWanted anchors it to the
 	// overlay window's working pill, which this window is not; upgrade by

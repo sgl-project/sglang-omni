@@ -106,6 +106,7 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 	}
 	if old.Privacy.KeepHistory != new.Privacy.KeepHistory {
 		a.loadTrayRecent() // the Reopen card list exists only with history on
+		a.keepSessions()   // history off: the saved sessions go at once
 	}
 	if old.Updates.BetaOn(a.version) != new.Updates.BetaOn(a.version) {
 		a.applyBeta() // updates.go
@@ -171,6 +172,7 @@ func (a *app) loadSettingsForm() {
 	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
 	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
+	f.sessionsOn = s.Features.SessionsOn
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
 	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection

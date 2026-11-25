@@ -119,6 +119,7 @@ type rewriteBoxViewState struct {
 	// the answer card's content shows above the text box (wall 122).
 	Conversation      bool
 	Card              *sessionCardViewState
+	Sessions          []sessionChipViewState // the session row (#4005)
 	CardSessionID     string
 	CardWidth         int
 	SizeStep          int

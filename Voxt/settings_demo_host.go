@@ -48,6 +48,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		}
 		if shortcuts := state.Shortcuts; shortcuts != nil {
 			host.settingsForm.strictShortcuts, host.settingsForm.returnFinishes = shortcuts.StrictShortcuts, shortcuts.ReturnFinishes
+			host.settingsForm.sessionsOn = shortcuts.SessionsOn
 		}
 		if overlay := state.Overlay; overlay != nil {
 			host.settingsForm.ovStyle = overlayForm{
@@ -166,6 +167,12 @@ func (host *meetingDemoHost) openShortcutFeature(path string) {
 func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStrictShortcuts %t", on) }
 
 func (host *meetingDemoHost) setReturnFinishes(on bool) { host.record("setReturnFinishes %t", on) }
+
+func (host *meetingDemoHost) setSessionKeys(slot int, keys string) {
+	host.record("setSessionKeys %d %s", slot, keys)
+}
+
+func (host *meetingDemoHost) setSessionsOn(on bool) { host.record("setSessionsOn %t", on) }
 
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {

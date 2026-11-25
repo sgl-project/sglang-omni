@@ -102,7 +102,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 				ui.Icon(context, icons.VoxtAnswer.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Shrink(0).Label(i18n.T("Rewrite"))
 				ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
-
 				if state.Recording {
 					cardWave(context, state.Levels[:], state.Wave, state.Recording, state.Heard, state.Motion, state.Phase)
 				}
@@ -120,7 +119,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					actions.close()
 				}
 			})
-			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			if !sessionRow(context, state.Sessions, 0, actions.card, actions.cardLocal().Card) {
+				ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			}
 
 			if state.Subtitle != "" {
 				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
