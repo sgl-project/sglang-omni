@@ -67,6 +67,12 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		}
 		if segs != nil {
 			done[src] = segs
+			if i == 0 && len(sources) > 1 && cfg.correctOverlap != nil {
+				// The first track's correction hides under the next
+				// track's transcription; the text only loses whole
+				// lines to echo dropping afterwards, never rewrites.
+				cfg.correctOverlap.speculate(ctx, cfg, segs)
+			}
 		}
 	}
 	// Speech from the speakers reaches the microphone too (#3982).
