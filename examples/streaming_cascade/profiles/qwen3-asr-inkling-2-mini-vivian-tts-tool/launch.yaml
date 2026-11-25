@@ -5,8 +5,8 @@ model_path: examples/streaming_cascade/profiles/qwen3-asr-inkling-2-mini-vivian-
 services:
   - name: chat
     # inkling_chat_service.sh serves sglang_omni.models.streaming_cascade.chat_service from a venv with the SGLang commit that serves Inkling-2-Mini (install it first with inkling_chat_service.sh install); it streams the arguments of a tts_start call, so the first sentence is spoken while the model writes the rest.
-    # The prefill CUDA graphs cover the 16 to 512 tokens a cascade turn adds, so no turn waits for a Triton compile; the guide explains the sizes.
-    command: [bash, examples/streaming_cascade/inkling_chat_service.sh, serve, --model-path, thinkingmachines/Inkling-2-Mini, --revision, b85c3cfa615fc413cc9af3379f491b963f3b586a, --reasoning-parser, inkling, --tool-call-parser, inkling2, --speculative-algorithm, DSPARK, --tp, "1", --port, "8003", --mem-fraction-static, "0.85", --cuda-graph-bs-prefill, "16", "32", "64", "128", "256", "512", --cuda-graph-bs-decode, "1", "2", "4"]
+    # The prefill CUDA graphs cover the 16 to 512 tokens a cascade turn adds, so no turn waits for a Triton compile, and the decode graphs cover up to 16 replies at once, as many as the FDB CI's sessions; the guide explains the sizes.
+    command: [bash, examples/streaming_cascade/inkling_chat_service.sh, serve, --model-path, thinkingmachines/Inkling-2-Mini, --revision, b85c3cfa615fc413cc9af3379f491b963f3b586a, --reasoning-parser, inkling, --tool-call-parser, inkling2, --speculative-algorithm, DSPARK, --tp, "1", --port, "8003", --mem-fraction-static, "0.85", --cuda-graph-bs-prefill, "16", "32", "64", "128", "256", "512", --cuda-graph-bs-decode, "1", "2", "4", "8", "12", "16"]
     port: 8003
     env: {CUDA_VISIBLE_DEVICES: "0"}
   - name: asr
@@ -49,8 +49,9 @@ session_nodes:
       - {kind: control, source: dialog, event: interrupt}
     base_url: "http://127.0.0.1:8003/v1"
     model: thinkingmachines/Inkling-2-Mini
-    # Inkling reasons before it calls tts_start, and its reasoning counts toward the limit.
-    max_tokens: 1024
+    max_tokens: 512
+    # A one-sentence thought and the start of a tts_start call up to its text, as Inkling writes them, with its control tokens as <|name|>: the model continues the call, so decoding starts at the text instead of after its own reasoning, and the chat service reads it back as the call. Without the thought, the model repeated the user's words as its reply.
+    required_call_opening: '<|message_model|><|content_thinking|>The user asked something; I answer it rather than repeat it.<|end_message|><|message_model|>tts_start<|content_invoke_tool_json|>{"name":"tts_start","args":{"text":"'
     tools:
       - name: tts_start
         description: Say text aloud to the user, who hears nothing else you write. Returns when the speech has ended.
@@ -63,7 +64,7 @@ session_nodes:
           required:
             - text
     extra_body:
-      # Inkling reasons by default, at an effort of 0.9; 0.1 keeps a short reasoning before the call, and the reasoning parser keeps it out of the reply that is spoken. A starting value: no other effort has been compared on the cascade yet.
+      # Every prompt opens a call after the written thought, so Inkling does not reason; the effort still sets the reasoning instruction in its prompt, where the server's default is 0.9, and the H100 runs used 0.1.
       reasoning_effort: 0.1
   tts:
     kind: openai_speech
