@@ -441,7 +441,7 @@ func (r *run) cleanPartsContextGeneration(text string, parts []compose.Part, ans
 				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
 			}
 		}
-		draft.done(answers)
+		draft.done(answers, err == nil)
 	}
 	return compose.JoinParts(parts, answers), parts[0].Profile(), failed
 }
@@ -461,6 +461,7 @@ type drafter struct {
 	r          *run
 	ctx        context.Context
 	generation uint64
+	attempt    uint64
 	parts      []compose.Part
 	answers    []string
 	buf        strings.Builder
@@ -468,7 +469,10 @@ type drafter struct {
 }
 
 func newDrafter(r *run, ctx context.Context, parts []compose.Part, answers []string, generation uint64) *drafter {
-	return &drafter{r: r, ctx: ctx, generation: generation, parts: parts, answers: answers[:len(answers):len(answers)]}
+	r.m.mu.Lock()
+	attempt := r.cleanupAttempt
+	r.m.mu.Unlock()
+	return &drafter{r: r, ctx: ctx, generation: generation, attempt: attempt, parts: parts, answers: answers[:len(answers):len(answers)]}
 }
 
 func (d *drafter) add(delta string) {
@@ -476,7 +480,7 @@ func (d *drafter) add(delta string) {
 		return
 	}
 	d.buf.WriteString(delta)
-	if now := time.Now(); now.Sub(d.last) >= draftEvery {
+	if now := d.r.now(); now.Sub(d.last) >= draftEvery {
 		d.last = now
 		d.publish()
 	}
@@ -495,22 +499,22 @@ func (d *drafter) publish() {
 	if strings.TrimSpace(draft) == "" {
 		return
 	}
-	raw := ""
+	var publishedAt time.Time
 	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
-		raw = s.Raw
-		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
+		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.generation == d.r.cleanupGeneration && d.attempt == d.r.cleanupAttempt && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
-			return draft != ""
+			publishedAt = d.r.now()
+			return true
 		}
 		return false
 	})
 	if visible {
-		d.r.noteCleanDraftPublication(d.generation, d.r.now(), draft, raw)
+		d.r.noteCleanDraftPublication(d.generation, d.attempt, publishedAt, draft)
 	}
 }
 
 // done puts the answers of the parts so far in the snapshot.
-func (d *drafter) done(answers []string) {
+func (d *drafter) done(answers []string, eligible bool) {
 	if d.ctx.Err() != nil || d.r.ctx.Err() != nil || d.r.skipped.Load() {
 		return
 	}
@@ -519,17 +523,17 @@ func (d *drafter) done(answers []string) {
 	if strings.TrimSpace(draft) == "" {
 		return
 	}
-	raw := ""
+	var publishedAt time.Time
 	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
-		raw = s.Raw
-		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
+		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.generation == d.r.cleanupGeneration && d.attempt == d.r.cleanupAttempt && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
-			return draft != ""
+			publishedAt = d.r.now()
+			return true
 		}
 		return false
 	})
-	if visible {
-		d.r.noteCleanDraftPublication(d.generation, d.r.now(), draft, raw)
+	if visible && eligible {
+		d.r.noteCleanDraftPublication(d.generation, d.attempt, publishedAt, draft)
 	}
 }
 

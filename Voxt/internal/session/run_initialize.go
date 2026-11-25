@@ -227,6 +227,7 @@ func (r *run) maybeCleanupReady() {
 }
 
 func (r *run) awaitTranscribeData() bool {
+	sceneDone := r.sceneReadySignal()
 	for !r.init.termsReady || !r.init.snippetsReady {
 		select {
 		case terms := <-r.init.termsDone:
@@ -243,6 +244,13 @@ func (r *run) awaitTranscribeData() bool {
 				return false
 			}
 			r.useSnippets(snippets)
+		case <-sceneDone:
+			sceneDone = nil
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				r.endCancelled(nil)
+				return false
+			}
+			r.markSceneReady()
 		case <-r.ctx.Done():
 			r.endCancelled(nil)
 			return false

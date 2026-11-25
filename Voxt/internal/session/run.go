@@ -52,10 +52,12 @@ type run struct {
 	cleanupDeadline         time.Time
 	cleanupDeadlineNotified bool
 	cleanupGeneration       uint64
+	cleanupAttempt          uint64
 	cleanupWorkerRunning    bool
 	cleanupCandidate        *cleanupOutput
 	cleanupOutput           cleanupOutput
 	cleanDraftGeneration    uint64
+	cleanDraftAttempt       uint64
 	cleanDraftAt            time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).

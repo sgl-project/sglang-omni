@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func readinessScene(urlStarted chan<- struct{}, release <-chan struct{}, urlCleanup, browserCleanup appctx.Cleanup) *SceneConfig {
@@ -52,11 +55,17 @@ func stopReadinessRecording(t testing.TB, h *harness, id string, drained <-chan 
 	})
 }
 
-func useReadinessResolvers(h *harness, provider asr.Provider, model LLM, started chan<- struct{}) {
+func useReadinessResolvers(h *harness, provider asr.Provider, model LLM, started chan<- struct{}) *atomic.Int32 {
+	llmCalls := &atomic.Int32{}
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
-		started <- struct{}{}
+		llmCalls.Add(1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		return LLMReadiness{LLM: model, LLMInfo: Model{ID: "fake-llm", Name: "Fake LLM"}, Outcome: LLMAvailable}
 	})
+	return llmCalls
 }
 
 func TestSceneReadinessStartsLLMWhileASRFinalIsPending(t *testing.T) {
@@ -342,5 +351,247 @@ func TestCancelFencesSceneAndLateLLMWhileASRFinalIsPending(t *testing.T) {
 	}
 	if snapshot := h.m.Current(); snapshot.ID != id || snapshot.State != Cancelled || snapshot.Result != "" {
 		t.Fatalf("late initialization changed the session: %+v", snapshot)
+	}
+}
+
+func TestSceneReadinessStartsLLMWhileDictionaryIsPendingAfterASRFinal(t *testing.T) {
+	urlStarted := make(chan struct{}, 1)
+	urlRelease, releaseURL := controlledRelease(t)
+	termsStarted := make(chan struct{}, 1)
+	termsRelease, releaseTerms := controlledRelease(t)
+	provider := &fakeStreamer{final: "hello aura link"}
+	model := &fakeLLM{text: "Hello VoxtNew."}
+	h := newHarness(t, provider, model, func(config *Config, currentSettings *settings.Settings) {
+		currentSettings.Features.Transcribe.Enhance = false
+		currentSettings.Dictionary.Enabled = true
+		currentSettings.Dictionary.ASRHints = false
+		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
+	})
+	h.m.cfg.Glossary = func(context.Context) ([]store.Term, error) {
+		termsStarted <- struct{}{}
+		<-termsRelease
+		return []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}}, nil
+	}
+	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	llmStarted := make(chan struct{}, 1)
+	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
+	id := h.start()
+	waitInitializationSignal(t, urlStarted, "browser URL lookup")
+	waitInitializationSignal(t, termsStarted, "blocked dictionary load")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPartial, "ASR audio consumption")
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, signals.asrFinal, "ASR Final with dictionary loading pending")
+
+	releaseURL()
+	waitInitializationSignal(t, llmStarted, "LLM resolver while dictionary loading is pending")
+	if llmCalls.Load() != 1 || len(model.requests()) != 0 {
+		t.Fatalf("LLM resolver calls=%d, Chat requests=%d before dictionary readiness", llmCalls.Load(), len(model.requests()))
+	}
+	if snapshot := h.m.Current(); snapshot.State.Ended() {
+		t.Fatalf("session ended before mandatory dictionary readiness: %+v", snapshot)
+	}
+	releaseTerms()
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Hello VoxtNew." || llmCalls.Load() != 1 || len(model.requests()) != 1 {
+		t.Fatalf("end=%+v, resolver calls=%d, Chat requests=%d", end, llmCalls.Load(), len(model.requests()))
+	}
+	request := model.requests()[0]
+	if len(request.Messages) == 0 || !strings.Contains(request.Messages[len(request.Messages)-1].Content, "hello VoxtNew") || strings.Contains(request.Messages[len(request.Messages)-1].Content, "aura link") {
+		t.Fatalf("cleanup input was not dictionary-normalized: %+v", request.Messages)
+	}
+	if len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("deliveries=%q, want one normalized cleanup result", h.text.pastes())
+	}
+}
+
+func TestSceneReadinessStartsLLMWhileSnippetsArePendingAfterASRFinal(t *testing.T) {
+	urlStarted := make(chan struct{}, 1)
+	urlRelease, releaseURL := controlledRelease(t)
+	snippetsStarted := make(chan struct{}, 1)
+	snippetsRelease, releaseSnippets := controlledRelease(t)
+	provider := &fakeStreamer{final: "send it to my email address please"}
+	model := &fakeLLM{text: "Send ⟦my email address⟧, please."}
+	h := newHarness(t, provider, model, func(config *Config, currentSettings *settings.Settings) {
+		currentSettings.Features.Transcribe.Enhance = false
+		currentSettings.Dictionary.Enabled = false
+		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
+	})
+	h.m.cfg.Glossary = func(context.Context) ([]store.Term, error) { return nil, nil }
+	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) {
+		snippetsStarted <- struct{}{}
+		<-snippetsRelease
+		return []snippet.Snippet{{ID: "email", Trigger: "my email address", Text: "ruiling@example.com"}}, nil
+	}
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	llmStarted := make(chan struct{}, 1)
+	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
+	id := h.start()
+	waitInitializationSignal(t, urlStarted, "browser URL lookup")
+	waitInitializationSignal(t, snippetsStarted, "blocked snippet load")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPartial, "ASR audio consumption")
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, signals.asrFinal, "ASR Final with snippet loading pending")
+
+	releaseURL()
+	waitInitializationSignal(t, llmStarted, "LLM resolver while snippet loading is pending")
+	if llmCalls.Load() != 1 || len(model.requests()) != 0 {
+		t.Fatalf("LLM resolver calls=%d, Chat requests=%d before snippet readiness", llmCalls.Load(), len(model.requests()))
+	}
+	releaseSnippets()
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Send ruiling@example.com, please." || llmCalls.Load() != 1 || len(model.requests()) != 1 {
+		t.Fatalf("end=%+v, resolver calls=%d, Chat requests=%d", end, llmCalls.Load(), len(model.requests()))
+	}
+	request := model.requests()[0]
+	if len(request.Messages) == 0 || !strings.Contains(request.Messages[len(request.Messages)-1].Content, "⟦my email address⟧") {
+		t.Fatalf("cleanup input did not preserve snippet marking: %+v", request.Messages)
+	}
+	if len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("deliveries=%q, want one snippet-expanded result", h.text.pastes())
+	}
+}
+
+func TestSceneCleanupOffOverrideSkipsLLMWhileDictionaryIsPendingAfterASRFinal(t *testing.T) {
+	urlStarted := make(chan struct{}, 1)
+	urlRelease, releaseURL := controlledRelease(t)
+	termsStarted := make(chan struct{}, 1)
+	termsRelease, releaseTerms := controlledRelease(t)
+	provider := &fakeStreamer{final: "hello aura link"}
+	model := &fakeLLM{text: "must not run"}
+	h := newHarness(t, provider, model, func(config *Config, currentSettings *settings.Settings) {
+		currentSettings.Features.Transcribe.Enhance = true
+		currentSettings.Dictionary.ASRHints = false
+		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOff, appctx.CleanupOn)
+	})
+	h.m.cfg.Glossary = func(context.Context) ([]store.Term, error) {
+		termsStarted <- struct{}{}
+		<-termsRelease
+		return []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}}, nil
+	}
+	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	llmStarted := make(chan struct{}, 1)
+	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
+	id := h.start()
+	waitInitializationSignal(t, urlStarted, "browser URL lookup")
+	waitInitializationSignal(t, termsStarted, "blocked dictionary load")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPartial, "ASR audio consumption")
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, signals.asrFinal, "ASR Final before scene cleanup-off decision")
+	releaseURL()
+	h.rec.waitFor(t, "resolved URL scene while dictionary loading is pending", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.Scene != nil
+	})
+	if llmCalls.Load() != 0 || len(model.requests()) != 0 {
+		t.Fatalf("cleanup-off scene invoked LLM: resolver calls=%d, Chat requests=%d", llmCalls.Load(), len(model.requests()))
+	}
+	releaseTerms()
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "hello VoxtNew" || llmCalls.Load() != 0 || len(model.requests()) != 0 {
+		t.Fatalf("end=%+v, resolver calls=%d, Chat requests=%d", end, llmCalls.Load(), len(model.requests()))
+	}
+	if len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("deliveries=%q, want one normalized raw result", h.text.pastes())
+	}
+}
+
+func TestCancelFencesSceneWhileTranscribeDataIsPending(t *testing.T) {
+	urlStarted := make(chan struct{}, 1)
+	urlRelease, releaseURL := controlledRelease(t)
+	termsStarted, snippetsStarted := make(chan struct{}, 1), make(chan struct{}, 1)
+	termsRelease, releaseTerms := controlledRelease(t)
+	snippetsRelease, releaseSnippets := controlledRelease(t)
+	provider := &fakeStreamer{final: "hello aura link"}
+	model := &fakeLLM{text: "must not run"}
+	h := newHarness(t, provider, model, func(config *Config, currentSettings *settings.Settings) {
+		currentSettings.Features.Transcribe.Enhance = false
+		currentSettings.Dictionary.ASRHints = false
+		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
+	})
+	h.m.cfg.Glossary = func(context.Context) ([]store.Term, error) {
+		termsStarted <- struct{}{}
+		<-termsRelease
+		return []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}}, nil
+	}
+	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) {
+		snippetsStarted <- struct{}{}
+		<-snippetsRelease
+		return nil, nil
+	}
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	llmStarted := make(chan struct{}, 1)
+	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
+	id := h.start()
+	waitInitializationSignal(t, urlStarted, "browser URL lookup")
+	waitInitializationSignal(t, termsStarted, "blocked dictionary load")
+	waitInitializationSignal(t, snippetsStarted, "blocked snippet load")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPartial, "ASR audio consumption")
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, signals.asrFinal, "ASR Final before cancellation")
+	h.m.Cancel(id)
+	end := h.rec.waitFor(t, "cancelled session awaiting scene and transcript data", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.State == Cancelled
+	})
+	releaseURL()
+	releaseTerms()
+	releaseSnippets()
+	if end.Result != "" || llmCalls.Load() != 0 || len(model.requests()) != 0 || len(h.text.pastes()) != 0 {
+		t.Fatalf("cancelled end=%+v, resolver calls=%d, Chats=%d, deliveries=%q", end, llmCalls.Load(), len(model.requests()), h.text.pastes())
+	}
+}
+
+func TestSceneReadinessAfterOriginalStopDeadlineSkipsCleanupChat(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	urlStarted := make(chan struct{}, 1)
+	urlRelease, releaseURL := controlledRelease(t)
+	termsStarted := make(chan struct{}, 1)
+	termsRelease, releaseTerms := controlledRelease(t)
+	provider := &fakeStreamer{final: "hello aura link"}
+	model := &fakeLLM{text: "must not run after deadline"}
+	h := newHarness(t, provider, model, func(config *Config, currentSettings *settings.Settings) {
+		cleanupLatencyConfig(clock, true)(config, currentSettings)
+		currentSettings.Features.Transcribe.Enhance = false
+		currentSettings.Dictionary.ASRHints = false
+		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
+	})
+	h.m.cfg.Glossary = func(context.Context) ([]store.Term, error) {
+		termsStarted <- struct{}{}
+		<-termsRelease
+		return []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}}, nil
+	}
+	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	llmStarted := make(chan struct{}, 1)
+	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
+	id := h.start()
+	waitInitializationSignal(t, urlStarted, "browser URL lookup")
+	waitInitializationSignal(t, termsStarted, "blocked dictionary load")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPartial, "ASR audio consumption")
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, signals.asrFinal, "ASR Final while scene and dictionary are pending")
+	clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
+	releaseURL()
+	waitInitializationSignal(t, llmStarted, "LLM resolver after scene resolves")
+	if llmCalls.Load() != 1 || len(model.requests()) != 0 {
+		t.Fatalf("before dictionary readiness: resolver calls=%d, Chat requests=%d", llmCalls.Load(), len(model.requests()))
+	}
+	releaseTerms()
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "hello VoxtNew" || len(model.requests()) != 0 || !h.logged("cleanup outcome=soft_deadline") {
+		t.Fatalf("after-deadline readiness produced end=%+v, Chats=%d, soft-deadline=%v", end, len(model.requests()), h.logged("cleanup outcome=soft_deadline"))
+	}
+	if llmCalls.Load() != 1 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("resolver calls=%d deliveries=%q", llmCalls.Load(), h.text.pastes())
 	}
 }
