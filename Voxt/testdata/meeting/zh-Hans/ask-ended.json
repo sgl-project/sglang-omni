@@ -4,7 +4,7 @@
   "ask": {
     "visible": true,
     "title": "会议结束了？",
-    "app": "5 分钟没有声音",
+    "app": "5 分钟没人说话",
     "start_label": "结束记录",
     "menu_label": "",
     "close_label": "关闭",

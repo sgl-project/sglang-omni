@@ -50,7 +50,7 @@ func buildMeetingAskViewState(translator *i18n.Translator, input meetingAskInput
 	if input.End {
 		// One answer, no menu: End recording, or close the card.
 		return meetingAskViewState{
-			Visible: true, Title: translator.T("Meeting ended?"), App: translator.T("No sound for 5 minutes"),
+			Visible: true, Title: translator.T("Meeting ended?"), App: translator.T("Nobody spoke for 5 minutes"),
 			StartLabel: translator.T("End recording"), CloseLabel: translator.T("Dismiss"),
 			Compact: input.Compact, End: true, Menu: []meetingAskMenuItem{},
 		}

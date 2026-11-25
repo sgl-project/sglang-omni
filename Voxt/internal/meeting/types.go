@@ -87,8 +87,11 @@ type Snapshot struct {
 	Progress float64
 	Started  time.Time
 	Elapsed  time.Duration
-	// Quiet is how long the meeting has recorded since a track was last
-	// as loud as SoundDBFS, pauses not counted: 0 while it hears sound.
+	// Quiet is how long the meeting has recorded since a track last heard
+	// someone speak, pauses not counted: 0 while someone speaks. Speech is
+	// the live recognition's detector's (Silero, or the energy detector
+	// over the room's noise floor); a track without live recognition
+	// counts any level of SoundDBFS and above.
 	Quiet time.Duration
 	// Levels are each track's last session.Bars input levels as bar
 	// heights (session.Level), oldest first: its waveform.

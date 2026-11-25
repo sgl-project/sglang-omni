@@ -349,3 +349,44 @@ func TestSnapshotQuiet(t *testing.T) {
 		t.Fatalf("quiet %v, want %v", quiet, want)
 	}
 }
+
+// A track with live recognition goes by its speech detector, not the
+// level: a room's steady noise above SoundDBFS still counts as quiet
+// (11-25: a MacBook microphone averaged -32 to -42 dBFS with nobody
+// speaking, so the end question never came).
+func TestSnapshotQuietGoesBySpeech(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	mic := newFakeAudio(make([]byte, asr.BytesPerSecond)) // a second of silence: no speech
+	mic.levelsSent = make(chan struct{})
+	mic.levels = []float64{-30, -30, -30, -30}
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	mic.beforeLevel = func() { clk.Advance(time.Minute) }
+	streamer := &meetTestStreamer{text: "noise"}
+	m := meeting.NewManager(meeting.Config{
+		Mic: mic, Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"), Now: clk.Now,
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
+		},
+	})
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, id)
+	select {
+	case <-mic.levelsSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("microphone did not finish sending its level events")
+	}
+	if got := m.Current().Quiet; got != 4*time.Minute {
+		t.Fatalf("quiet %v after four minutes of -30 dBFS noise and no speech, want 4m", got)
+	}
+}

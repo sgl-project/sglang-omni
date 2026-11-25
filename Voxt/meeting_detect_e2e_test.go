@@ -178,7 +178,7 @@ func TestMeetingDetectEndedEndToEnd(t *testing.T) {
 	s.startDetectedMeeting()
 	s.pump("the meeting", func() bool { return s.meetSnap.State == meeting.StateRecording })
 	s.pump("the card that asks whether it ended", func() bool { return s.ask.view.Visible && s.ask.view.End })
-	if view := s.ask.view; view.Title != "Meeting ended?" || view.App != "No sound for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
+	if view := s.ask.view; view.Title != "Meeting ended?" || view.App != "Nobody spoke for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
 		t.Fatalf("the card: %+v", view)
 	}
 	if !s.meetingActive() {

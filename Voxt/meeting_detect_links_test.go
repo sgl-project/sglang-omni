@@ -214,7 +214,7 @@ func TestMeetingEndedAsks(t *testing.T) {
 	}
 	quiet(meetingQuietAsk)
 	view := a.ask.view
-	if !view.Visible || !view.End || view.Title != "Meeting ended?" || view.App != "No sound for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
+	if !view.Visible || !view.End || view.Title != "Meeting ended?" || view.App != "Nobody spoke for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
 		t.Fatalf("five quiet minutes: %+v", view)
 	}
 	quiet(time.Hour)

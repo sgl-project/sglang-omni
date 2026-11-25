@@ -101,13 +101,21 @@ func (tr *trackTranscriber) refreshTimeBase() {
 func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 	tr.pcmBytes += int64(len(pcm))
 	if tr.live != nil {
+		was := tr.live.spoke()
 		if err := tr.live.Push(ctx, pcm); err != nil {
 			return err
+		}
+		if tr.live.spoke() != was {
+			tr.mgr.noteSpeech()
 		}
 		tr.mgr.updateLive(tr.src, tr.live.LiveText())
 		return nil
 	}
-	for _, u := range tr.cutter.Push(pcm) {
+	utterances := tr.cutter.Push(pcm)
+	if len(utterances) > 0 || tr.cutter.inUtter {
+		tr.mgr.noteSpeech()
+	}
+	for _, u := range utterances {
 		dur := u.End - u.Start
 		tr.queueDur += dur
 		tr.mgr.noteBacklog(tr.queueDur)

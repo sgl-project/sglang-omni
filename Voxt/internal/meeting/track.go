@@ -105,8 +105,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				levels[src] = h[max(len(h)-session.Bars, 0):]
 				m.snap.Levels = levels
 				m.snap.Elapsed = m.timeline.Elapsed()
-				if ev.Level.RMS >= SoundDBFS {
-					m.heard = m.snap.Elapsed
+				if ev.Level.RMS >= SoundDBFS && !m.hearsSpeechLocked(src) {
+					m.heard = m.snap.Elapsed // no speech detector on this track
 				}
 				m.snap.Quiet = max(m.snap.Elapsed-m.heard, 0)
 				m.mu.Unlock()

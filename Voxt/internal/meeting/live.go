@@ -221,6 +221,14 @@ func (l *Live) emit(seg Segment) {
 	}
 }
 
+// spoke is when its speech detector last heard speech (-1: never).
+func (l *Live) spoke() time.Duration {
+	if l.Speech == nil || !l.Speech.hasSpeech {
+		return -1
+	}
+	return l.Speech.lastSpeech
+}
+
 func (l *Live) LiveText() string {
 	return l.committer.Live()
 }
