@@ -158,7 +158,7 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, cached_keys, cached_values,
       static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
-      /*window_size=*/-1, length > 1 ? "causal" : "");
+      /*window_size=*/-1, length > 1 && config_.is_causal ? "causal" : "");
   const mx::array hidden =
       mx::add(x, Project(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                      {batch, length, -1}),

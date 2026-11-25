@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // The DFlash draft for a target on the Qwen3 decoder (Qwen3-ASR, MOSS-TD): a
 // short Qwen3 decoder whose context is the target's hidden states, proposing a
-// block of tokens per round.
+// block of tokens per round. A DSpark draft is the same decoder with a Markov
+// head that biases each proposal by the one before it.
 #pragma once
 
 #include <atomic>
@@ -31,13 +32,22 @@ struct DraftStatistics {
   int accepted_token_count = 0;
 };
 
+// The geometry of the target whose hidden states a draft reads and whose
+// tokens it embeds and predicts.
+struct DraftTarget {
+  int hidden_size;
+  int vocab_size;
+  int layer_count;
+};
+
 class DFlashDraft {
 public:
-  // Loads a Speculators DFlash checkpoint trained for a target of the given
-  // geometry, refusing one that does not fit it; quantization_bits 0 keeps the
-  // weights as stored, otherwise the linear layers are quantized on load.
+  // Loads a Speculators DFlash or DSpark checkpoint trained for a target of
+  // the given geometry, refusing one that does not fit it; quantization_bits
+  // 0 keeps the weights as stored, otherwise the linear layers are quantized
+  // on load.
   DFlashDraft(const std::filesystem::path &directory, int quantization_bits,
-              const Qwen3DecoderConfig &target);
+              const DraftTarget &target);
 
   // Greedy decoding with the draft: each round the target verifies the block
   // the draft proposed, cut to the tokens max_new_tokens still allows, and
@@ -74,29 +84,34 @@ public:
   std::vector<omni_common::KVCache> NewCaches() const {
     return decoder_.NewCaches();
   }
-
-private:
-  DFlashDraft(LoadedDraft draft, int quantization_bits);
-
+  // Target layers (0-indexed) whose entering hidden states form the context.
+  const std::vector<int> &aux_layers() const { return aux_layers_; }
+  // The block the draft reads after anchor_id: the anchor, then mask tokens.
+  std::vector<int> BlockIds(int anchor_id) const;
   // Appends the first token_count positions of the target hidden states
   // entering each aux layer, each [1, length, hidden], as context.
   void AppendContext(const std::vector<mlx::core::array> &aux_hidden_states,
                      int token_count,
                      std::vector<omni_common::KVCache> &caches) const;
-  // Proposes the target token ids after the anchor, [block_size - 1], from
-  // the block's embeddings [1, block_size, hidden]: the anchor, then mask
-  // tokens, at the positions after the context.
+  // Proposes the target token ids after anchor_id, int32 [proposal_count],
+  // from the embeddings of BlockIds(anchor_id) [1, block_size, hidden] at the
+  // positions after the context.
   mlx::core::array
-  ProposeBlock(const mlx::core::array &block_embeddings,
+  ProposeBlock(int anchor_id, const mlx::core::array &block_embeddings,
                std::vector<omni_common::KVCache> &caches) const;
+
+private:
+  DFlashDraft(LoadedDraft draft, int quantization_bits);
 
   omni_common::Checkpoint checkpoint_;
   Qwen3Decoder decoder_;
-  // Target layers (0-indexed) whose entering hidden states form the context.
   std::vector<int> aux_layers_;
-  // Tokens per block: the anchor and block_size - 1 proposals.
   int block_size_;
   int mask_token_id_;
+  // note (wilsonzheng0327): DSpark's sample_from_anchor reads a proposal off
+  // every block position, the anchor's included; DFlash skips the anchor.
+  int proposal_count_;
+  bool has_markov_head_;
 };
 
 } // namespace omni_common

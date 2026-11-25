@@ -47,6 +47,15 @@ public:
   const QuantizationConfig &Quantization(const std::string &prefix) const;
   mlx::core::array Linear(const mlx::core::array &x,
                           const std::string &prefix) const;
+  // Applies down_proj(silu(gate_proj(hidden_states)) * up_proj(hidden_states)).
+  mlx::core::array SwiGlu(const mlx::core::array &hidden_states,
+                          const std::string &weight_prefix) const;
+  // Selects bias-free expert matrices by expert_indices; sorted_expert_indices
+  // promises nondecreasing flattened indices.
+  mlx::core::array GatherLinear(const mlx::core::array &input,
+                                const std::string &prefix,
+                                const mlx::core::array &expert_indices,
+                                bool sorted_expert_indices = false) const;
   // Convolutions of channels-last x by prefix.weight [out, kernel..., in /
   // groups], plus prefix.bias when the checkpoint has one.
   mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,

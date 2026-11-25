@@ -6,6 +6,10 @@
 
 namespace omni_common {
 
+// note (ZaneZhang-67): warm one useful plain token, then time four pipelined
+// steps.
+inline constexpr int kPlainProbeTokenCount = 5;
+
 // Request-local measurements; a single slow round cannot disable the draft.
 class DraftBackoff {
 public:

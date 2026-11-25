@@ -452,6 +452,26 @@ set_target_properties(ming3_audio_chat ming3_audio_server PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS ming3_audio_chat ming3_audio_server RUNTIME DESTINATION bin)
+add_library(ming3_asr STATIC
+  src/ming3_asr/ming3_asr_model.cpp
+  src/ming3_asr/ming3_asr_audio.cpp
+  src/ming3_asr/ming3_asr_attention.cpp
+  src/ming3_asr/ming3_asr_decode.cpp
+  src/ming3_asr/ming3_asr_delta.cpp
+  src/ming3_asr/ming3_asr_moe.cpp
+  src/ming3_asr/ming3_asr_transcriber.cpp)
+target_link_libraries(ming3_asr PUBLIC common)
+target_compile_options(ming3_asr PRIVATE -Wall -Wextra)
+add_executable(ming3_asr_server src/ming3_asr/ming3_asr_server.cpp)
+target_link_libraries(ming3_asr_server PRIVATE ming3_asr asr_service)
+add_executable(ming3_asr_transcribe tools/ming3_asr_transcribe.cpp)
+target_link_libraries(ming3_asr_transcribe PRIVATE ming3_asr)
+add_executable(ming3_asr_probe tools/ming3_asr_probe.cpp)
+target_link_libraries(ming3_asr_probe PRIVATE ming3_asr)
+set_target_properties(ming3_asr_server ming3_asr_transcribe ming3_asr_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS ming3_asr_server ming3_asr_transcribe ming3_asr_probe RUNTIME DESTINATION bin)
 
 install(FILES licenses/music3-MIT.txt licenses/fishaudio_drama3-MIT.txt
   DESTINATION licenses)
@@ -498,4 +518,12 @@ add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)
 target_link_libraries(ming3_mtp_probe PRIVATE ming3_audio)
 target_compile_options(ming3_mtp_probe PRIVATE -Wall -Wextra)
 set_target_properties(ming3_mtp_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# Compares DSpark with plain decoding on a small Ming ASR checkpoint
+# (tests/test_ming3_dspark.py); built only on request and never installed.
+add_executable(ming3_dspark_probe EXCLUDE_FROM_ALL tests/ming3_dspark_probe.cpp)
+target_link_libraries(ming3_dspark_probe PRIVATE ming3_asr)
+target_compile_options(ming3_dspark_probe PRIVATE -Wall -Wextra)
+set_target_properties(ming3_dspark_probe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")

@@ -234,8 +234,24 @@ const std::vector<float> &PeriodicHannWindow() {
 
 mx::array LogMel(const std::vector<float> &samples,
                  FinalStftFrame final_frame) {
+  const mx::array window(PeriodicHannWindow().data(), {kFftSize}, mx::float32);
+  const mx::array filters(MelFilterBank().data(),
+                          {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
+  return LogMel(samples, window, filters,
+                {.drop_final_frame = final_frame == FinalStftFrame::kDropped,
+                 .pad_short_audio = true});
+}
+
+mx::array LogMel(const std::vector<float> &samples, const mx::array &window,
+                 const mx::array &filters, LogMelOptions options) {
+  if (!options.pad_short_audio && samples.size() <= kFftSize / 2) {
+    throw std::invalid_argument(
+        "audio is too short for reflected STFT padding");
+  } else {
+  }
   std::vector<float> padded_samples = samples;
-  if (padded_samples.size() < static_cast<size_t>(kFftSize)) {
+  if (options.pad_short_audio &&
+      padded_samples.size() < static_cast<size_t>(kFftSize)) {
     // Note (Jiaxin Deng): reflect padding needs more than half a window, so a
     // tail this short (a realtime cut) is zero-filled to one window.
     padded_samples.resize(kFftSize, 0.0f);
@@ -251,15 +267,12 @@ mx::array LogMel(const std::vector<float> &samples,
   const int frame_count = 1 + (padded.shape(0) - kFftSize) / kHopLength;
   const mx::array frames =
       mx::as_strided(padded, {frame_count, kFftSize}, {kHopLength, 1}, 0);
-  const mx::array window(PeriodicHannWindow().data(), {kFftSize}, mx::float32);
   mx::array power =
       mx::square(mx::abs(mx::fft::rfft(mx::multiply(frames, window), 1)));
-  if (final_frame == FinalStftFrame::kDropped) {
+  if (options.drop_final_frame) {
     power = mx::slice(power, {0, 0}, {power.shape(0) - 1, power.shape(1)});
   } else {
   }
-  const mx::array filters(MelFilterBank().data(),
-                          {kFftSize / 2 + 1, kMelBinCount}, mx::float32);
   mx::array log_spectrum = mx::log10(
       mx::maximum(mx::matmul(power, filters), mx::array(kLogMelFloor)));
   log_spectrum =

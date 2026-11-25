@@ -134,8 +134,11 @@ Qwen3ASRTranscriber::Qwen3ASRTranscriber(
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
       draft_policy_(draft_policy) {
   if (!draft_directory.empty()) {
+    const auto &target = model_.decoder().config();
     draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+                   omni_common::DraftTarget{target.hidden_size,
+                                            target.vocab_size,
+                                            target.num_hidden_layers});
   } else {
   }
 }
