@@ -10,6 +10,9 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, TypedDict
 
 from sglang_omni.model_runner.weight_checker import WeightCheckResult
+from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import (
+    register_qwen3_asr_hf_config,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import (
     needs_quant_config_normalization,
@@ -184,10 +187,6 @@ class ModelWorker:
 
         # note (Nathan Roll): importing ModelConfig registers SGLang's own Qwen3ASRConfig; re-register ours afterwards so flat native HF checkpoints parse cleanly.
         if self.model_arch_override == "Qwen3ASRForConditionalGeneration":
-            from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import (
-                register_qwen3_asr_hf_config,
-            )
-
             register_qwen3_asr_hf_config()
         else:
             pass
