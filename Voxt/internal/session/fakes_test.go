@@ -226,7 +226,8 @@ type fakeStreamer struct {
 	// pieces are the cumulative "final so far" texts it reports while
 	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
 	pieces  []string
-	salvage string // the text its streams salvage (asr.Salvager), "" for none
+	salvage string    // the text its streams salvage (asr.Salvager), "" for none
+	onSend  func(int) // called after the i-th send (nil: not)
 
 	mu      sync.Mutex
 	streams []*fakeStream
@@ -315,6 +316,9 @@ func (s *fakeStream) Send(pcm []byte) error {
 	}
 	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
 		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
+	}
+	if s.f.onSend != nil {
+		s.f.onSend(n)
 	}
 	return nil
 }

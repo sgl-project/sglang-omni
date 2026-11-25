@@ -115,6 +115,35 @@ func TestServices(t *testing.T) {
 	}
 }
 
+// TestOverNetwork: a language model's requests run side by side only when
+// its server is on the internet, not on this Mac or its network.
+func TestOverNetwork(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		p    settings.Provider
+		want bool
+	}{
+		{"a preset's service", settings.Provider{ID: "anthropic"}, true},
+		{"a custom service", settings.Provider{ID: llm.Custom, Endpoint: "https://api.example.com/v1"}, true},
+		{"this Mac", settings.Provider{ID: "ollama"}, false},
+		{"this Mac by address", settings.Provider{ID: llm.Custom, Endpoint: "http://127.0.0.1:8000/v1"}, false},
+		{"a local network address", settings.Provider{ID: llm.Custom, Endpoint: "http://192.168.1.20:8000/v1"}, false},
+		{"a .local name", settings.Provider{ID: llm.Custom, Endpoint: "http://studio.local:1234/v1"}, false},
+		{"a name without a dot", settings.Provider{ID: llm.Custom, Endpoint: "http://studio:1234/v1"}, false},
+		{"a router's name", settings.Provider{ID: llm.Custom, Endpoint: "http://box.lan:1234/v1"}, false},
+		{"a tailnet's name", settings.Provider{ID: llm.Custom, Endpoint: "https://studio.tail1234.ts.net/v1"}, false},
+		{"a tailnet's address", settings.Provider{ID: llm.Custom, Endpoint: "http://100.101.102.103:1234/v1"}, false},
+		{"an address on the internet", settings.Provider{ID: llm.Custom, Endpoint: "http://100.20.30.40:1234/v1"}, true},
+		{"no address", settings.Provider{ID: llm.Custom}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := overNetwork(c.p); got != c.want {
+				t.Errorf("overNetwork %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestTestLog: a connection test's log line names the service and model,
 // never the key, even when the server's error quotes it.
 func TestTestLog(t *testing.T) {

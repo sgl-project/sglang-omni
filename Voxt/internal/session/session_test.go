@@ -38,6 +38,8 @@ type harness struct {
 	logs   []string
 	// vadModel is the voice activity model the services have (nil: none).
 	vadModel vad.Model
+	// remote: the language model's requests run side by side (Model.Remote).
+	remote bool
 }
 
 func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
@@ -59,7 +61,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 				svc = Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
 			}
 			if h.llm != nil {
-				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
+				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat", Remote: h.remote}
 			}
 			if h.fallback != nil {
 				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
