@@ -278,9 +278,22 @@ class Attention(nn.Module):
     def norm_rope(self, q, k, q_norm, k_norm, rope: Rope | None):
         if self.qk_fusion is not None and rope is not None:
             return self.qk_fusion(q, k, q_norm, k_norm, rope)
+        elif (
+            supports_npu_bf16_inference(
+                q, training=self.training, operator="npu_rms_norm"
+            )
+            and k.dtype == q.dtype == q_norm.weight.dtype == k_norm.weight.dtype
+        ):
+            # BF16 RMSNorm uses the epsilon of its FP32 accumulation dtype.
+            epsilon = torch.finfo(torch.float32).eps
+            q = torch.ops.npu.npu_rms_norm(
+                q, q_norm.weight, epsilon if q_norm.eps is None else q_norm.eps
+            )[0]
+            k = torch.ops.npu.npu_rms_norm(
+                k, k_norm.weight, epsilon if k_norm.eps is None else k_norm.eps
+            )[0]
         else:
-            pass
-        q, k = q_norm(q), k_norm(k)
+            q, k = q_norm(q), k_norm(k)
         return self.apply_rope(q, k, rope) if rope is not None else (q, k)
 
     def forward(
