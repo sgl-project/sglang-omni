@@ -142,6 +142,10 @@ func (s *sessionApp) drain(d time.Duration) {
 	}
 }
 
+// speak lets the recording run past MinRecording, as a user saying the
+// instruction does (a shorter one is dropped as too short).
+func (s *sessionApp) speak() { s.drain(session.DefaultMinRecording + 100*time.Millisecond) }
+
 // pasted is what the fake helper pasted.
 func (s *sessionApp) pasted() []proto.PasteParams {
 	data, _ := os.ReadFile(s.pasteLog)

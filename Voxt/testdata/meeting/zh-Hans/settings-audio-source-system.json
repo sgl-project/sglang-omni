@@ -133,6 +133,36 @@
             "remaining": 0
           },
           {
+            "start": "soft-kalimba-start",
+            "stop": "soft-kalimba-stop",
+            "name": "卡林巴",
+            "sounds": "拇指琴，拨动金属簧片",
+            "play_label": "试听“卡林巴”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-wood-start",
+            "stop": "soft-wood-stop",
+            "name": "木琴",
+            "sounds": "软槌敲木条",
+            "play_label": "试听“木琴”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-vibes-start",
+            "stop": "soft-vibes-stop",
+            "name": "颤音琴",
+            "sounds": "毛线槌，带轻微颤动",
+            "play_label": "试听“颤音琴”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
             "start": "tally",
             "stop": "wrap",
             "name": "嘀声",
