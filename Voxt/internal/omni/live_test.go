@@ -473,20 +473,34 @@ func TestLiveFinalFailsWhenTheDrainTimesOut(t *testing.T) {
 func TestLiveResultSalvageAfterFinish(t *testing.T) {
 	old := runtime.GOMAXPROCS(1)
 	defer runtime.GOMAXPROCS(old)
-	for range 5 {
-		f := newFake(t, omnitest.Opts{LiveDrop: true}, nil)
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		st, err := f.asr(t, ASRFast).Open(ctx, asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sendAll(t, st, tone(500*time.Millisecond, 0.3))
-		if err := st.Finish(); err != nil {
-			t.Fatal(err)
-		}
-		_ = st.(asr.Salvager).Salvage()
-		st.Close()
-		cancel()
+	for _, test := range []struct {
+		name string
+		load time.Duration
+	}{
+		{name: "immediate Open"},
+		{name: "delayed Open", load: 250 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for range 5 {
+				f := newFake(t, omnitest.Opts{LiveDrop: true, Load: test.load}, nil)
+				ctx, cancel := context.WithCancel(context.Background())
+				st, err := f.asr(t, ASRFast).Open(ctx, asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+				if err != nil {
+					cancel()
+					t.Fatal(err)
+				}
+				// A slow start must not spend the race's cancellation budget.
+				timeout := time.AfterFunc(10*time.Second, cancel)
+				sendAll(t, st, tone(500*time.Millisecond, 0.3))
+				if err := st.Finish(); err != nil {
+					t.Fatal(err)
+				}
+				_ = st.(asr.Salvager).Salvage()
+				st.Close()
+				timeout.Stop()
+				cancel()
+			}
+		})
 	}
 }
 
