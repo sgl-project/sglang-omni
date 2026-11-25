@@ -447,7 +447,34 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, "<selected_text>\na long paragraph to shorten") {
 		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
 	}
-	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS {
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
+		t.Errorf("selection params %+v", p)
+	}
+}
+
+// TestTranslateSendsTheCopyBudget: Translate's read sends its ⌘C budget
+// explicitly — left at zero the helper's default applies, and the
+// deadline arithmetic of TestSelectionBudgetsFitTimeouts no longer
+// describes the real read (#3835).
+func TestTranslateSendsTheCopyBudget(t *testing.T) {
+	sel := &fakeSelector{text: "Good morning"}
+	model := &fakeLLM{text: "早上好"}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, model, func(c *Config, s *settings.Settings) {
+		c.Select = sel
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("end %s %q", end.State, end.Result)
+	}
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != selectionCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
 		t.Errorf("selection params %+v", p)
 	}
 }
@@ -667,5 +694,21 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 				t.Errorf("recorded %d frames", h.audio.recorded())
 			}
 		})
+	}
+}
+
+// TestSelectionBudgetsFitTimeouts: the worst helper read fits the
+// caller's deadline — the settle, the modifier wait and the copy wait
+// plus overhead. #4469 review: 600+800+300 ms of budgets exceeded
+// Translate's old 1500 ms read timeout, so a slow ⌘A reading followed
+// by a near-deadline modifier release returned no selection.
+func TestSelectionBudgetsFitTimeouts(t *testing.T) {
+	translateWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+selectionCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultReadTimeout < translateWorst {
+		t.Errorf("Translate's read timeout %v < worst read %v", DefaultReadTimeout, translateWorst)
+	}
+	rewriteWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+rewriteCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultRewriteReadTimeout < rewriteWorst {
+		t.Errorf("Rewrite's read timeout %v < worst read %v", DefaultRewriteReadTimeout, rewriteWorst)
 	}
 }

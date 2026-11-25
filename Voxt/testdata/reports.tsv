@@ -52,6 +52,8 @@ report	fix	symptom	level	check
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
 #4429	#4430	The release pre-flight reports no English entry in a long valid CHANGELOG section	L	TestReleasePreflight
 #4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
+#3835	#4469	The helper's copy keystroke reaches the app as Control-plus-C while the shortcut's Control is still held	L	testCopyWaitsForModifierRelease
+#4467	#4469	A selection made with Command-A in the same motion as the hotkey reads as nothing	L	testCaretSettleReadsLateSelection
 #4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
 #4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
 #4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
