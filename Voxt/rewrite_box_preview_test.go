@@ -256,6 +256,7 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 		s.Privacy.SendWindow = true
 	}, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first window review", func() bool {
 		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
@@ -317,6 +318,7 @@ func TestBoxResendWithoutWindowReviewKeepsTheCard(t *testing.T) {
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
 	sent := len(chat.requests())
@@ -342,6 +344,7 @@ func TestBoxCloseCancelsResendWindowReview(t *testing.T) {
 		s.Privacy.SendWindow = true
 	}, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first window review", func() bool {
 		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0

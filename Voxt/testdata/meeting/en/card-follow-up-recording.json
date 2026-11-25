@@ -90,7 +90,8 @@
           "text": "shorter",
           "live": true,
           "user": true,
-          "selectable": false
+          "selectable": false,
+          "preview": true
         },
         {
           "key": "",

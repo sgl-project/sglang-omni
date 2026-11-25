@@ -1,0 +1,203 @@
+{
+  "schema": "actnow.sounds.catalog/1",
+  "version": "2026-11-18",
+  "groups": [
+    {
+      "id": "soft",
+      "name": {
+        "en": "Soft",
+        "zh": "柔和"
+      }
+    }
+  ],
+  "tags": [
+    {
+      "id": "two-note",
+      "name": {
+        "en": "Two-note",
+        "zh": "双音"
+      },
+      "featured": true
+    },
+    {
+      "id": "soft",
+      "name": {
+        "en": "Soft",
+        "zh": "柔和"
+      },
+      "featured": true
+    },
+    {
+      "id": "wood",
+      "name": {
+        "en": "Wood",
+        "zh": "木质"
+      }
+    }
+  ],
+  "uses": [
+    {
+      "id": "record.start",
+      "name": {
+        "en": "Recording starts",
+        "zh": "开始录音"
+      }
+    },
+    {
+      "id": "record.stop",
+      "name": {
+        "en": "Recording stops",
+        "zh": "结束录音"
+      }
+    }
+  ],
+  "sounds": [
+    {
+      "id": "soft-kalimba-start",
+      "file": "sounds/soft-kalimba-start.wav",
+      "name": {
+        "en": "Kalimba (start)",
+        "zh": "卡林巴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.614,
+      "audible": 0.568,
+      "desc": {
+        "en": "Thumb piano, plucked metal tines",
+        "zh": "拇指琴，拨动金属簧片"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-kalimba-stop",
+      "sha256": "9584404c8de2a6aa3f51eb58ecc72a08f7ce2f660ab4d0403ac6de0de0d42e3a"
+    },
+    {
+      "id": "soft-kalimba-stop",
+      "file": "sounds/soft-kalimba-stop.wav",
+      "name": {
+        "en": "Kalimba (stop)",
+        "zh": "卡林巴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.604,
+      "audible": 0.564,
+      "desc": {
+        "en": "Thumb piano, plucked metal tines",
+        "zh": "拇指琴，拨动金属簧片"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-kalimba-start",
+      "sha256": "427507625c4cceec39a83189cdcc7d31da70af00fafa6bd1ca4778ffc34e7c77"
+    },
+    {
+      "id": "soft-wood-start",
+      "file": "sounds/soft-wood-start.wav",
+      "name": {
+        "en": "Wood (start)",
+        "zh": "木琴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft",
+        "wood"
+      ],
+      "duration": 0.562,
+      "audible": 0.516,
+      "desc": {
+        "en": "Soft mallets on wooden bars",
+        "zh": "软槌敲木条"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-wood-stop",
+      "sha256": "13ddfdbc501d8e6e0d7448d72fba100fd78ef2b465db10f1ebaf447fe5c0651d"
+    },
+    {
+      "id": "soft-wood-stop",
+      "file": "sounds/soft-wood-stop.wav",
+      "name": {
+        "en": "Wood (stop)",
+        "zh": "木琴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft",
+        "wood"
+      ],
+      "duration": 0.571,
+      "audible": 0.512,
+      "desc": {
+        "en": "Soft mallets on wooden bars",
+        "zh": "软槌敲木条"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-wood-start",
+      "sha256": "f67f2a1b8f72d3c2308486eb2bae4c919609e48872333b2f57e2b1623e4d04dd"
+    },
+    {
+      "id": "soft-vibes-start",
+      "file": "sounds/soft-vibes-start.wav",
+      "name": {
+        "en": "Vibraphone (start)",
+        "zh": "颤音琴（开始）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.661,
+      "audible": 0.627,
+      "desc": {
+        "en": "Yarn mallets, a light shimmer",
+        "zh": "毛线槌，带轻微颤动"
+      },
+      "uses": [
+        "record.start"
+      ],
+      "pair": "soft-vibes-stop",
+      "sha256": "f409fbc1a0946cf8bcad256163be932af498c17776d6d2798d6ab16f4380bd65"
+    },
+    {
+      "id": "soft-vibes-stop",
+      "file": "sounds/soft-vibes-stop.wav",
+      "name": {
+        "en": "Vibraphone (stop)",
+        "zh": "颤音琴（结束）"
+      },
+      "group": "soft",
+      "tags": [
+        "two-note",
+        "soft"
+      ],
+      "duration": 0.701,
+      "audible": 0.649,
+      "desc": {
+        "en": "Yarn mallets, a light shimmer",
+        "zh": "毛线槌，带轻微颤动"
+      },
+      "uses": [
+        "record.stop"
+      ],
+      "pair": "soft-vibes-start",
+      "sha256": "387a8b9f40b89107add41b0c795a2fbab54965db3753a4da903afe1fe8bb39d5"
+    }
+  ],
+  "notice": "Voxt's two-note cues are original synthesized sounds, part of Voxt (Apache License 2.0)."
+}
