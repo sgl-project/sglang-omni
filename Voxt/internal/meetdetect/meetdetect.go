@@ -59,6 +59,7 @@ var web = []struct{ host, app string }{
 	{"zoom.us", Zoom},
 	{"meeting.tencent.com", Tencent},
 	{"voovmeeting.com", Tencent},
+	{"webex.com", Webex},
 }
 
 // webKit records for Safari's pages (and other WebKit views): its bundle
