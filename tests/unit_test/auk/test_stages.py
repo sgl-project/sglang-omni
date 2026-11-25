@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Batched stage hand-offs and checkpoint sampling recipes."""
 
-from types import ModuleType
+from types import ModuleType, SimpleNamespace, TracebackType
 from typing import Literal
 from unittest.mock import Mock
 
@@ -11,6 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
+import sglang_omni.models.auk.stages as auk_stages
+import sglang_omni.platforms
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.batch_compute import (
     condition_batch,
@@ -129,6 +131,109 @@ def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
         sway_sampling_coef=None if flash else -1,
         t_grid=C.FLASH_T_GRID if flash else None,
     )
+
+
+@pytest.mark.parametrize(
+    "device, gpu_id, expected_device",
+    [("npu", 3, "npu:3"), ("cpu", 3, "cpu")],
+)
+def test_engine_factory_passes_resolved_device_to_flow_and_scheduler(
+    stages: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    device: str,
+    gpu_id: int,
+    expected_device: str,
+) -> None:
+    try:
+        expected = torch.device(expected_device)
+    except RuntimeError:
+        if device == "npu":
+            pytest.skip("torch_npu is unavailable")
+        else:
+            raise
+
+    monkeypatch.setattr(
+        sglang_omni.platforms,
+        "current_platform",
+        SimpleNamespace(device_type="npu"),
+    )
+    load_flow = Mock(return_value=Mock())
+    build_scheduler = Mock()
+    monkeypatch.setattr(stages, "load_flow", load_flow)
+    monkeypatch.setattr(stages, "scheduler", build_scheduler)
+
+    create_auk_engine_executor("stub", device=device, gpu_id=gpu_id)
+
+    assert load_flow.call_args.args[:2] == ("stub", str(expected))
+    assert build_scheduler.call_args.args[1] == expected
+
+
+@pytest.mark.parametrize("device_type", ["cpu", "npu"])
+def test_scheduler_compute_runs_under_device_guard_and_restores_worker_device(
+    monkeypatch: pytest.MonkeyPatch, device_type: str
+) -> None:
+    try:
+        device = torch.device(device_type)
+    except RuntimeError:
+        if device_type == "npu":
+            pytest.skip("torch_npu is unavailable")
+        else:
+            raise
+
+    worker_device = "worker-default"
+    current_device = {"value": worker_device}
+    entered_devices: list[torch.device] = []
+
+    class DeviceGuard:
+        previous_device: str | torch.device
+
+        def __init__(self, selected_device: torch.device) -> None:
+            self.selected_device = selected_device
+
+        def __enter__(self) -> None:
+            self.previous_device = current_device["value"]
+            entered_devices.append(self.selected_device)
+            current_device["value"] = self.selected_device
+
+        def __exit__(
+            self,
+            exception_type: type[BaseException] | None,
+            exception: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            current_device["value"] = self.previous_device
+
+    if device_type == "npu":
+        monkeypatch.setattr(
+            torch,
+            "get_device_module",
+            lambda selected_device: SimpleNamespace(
+                device=lambda guarded_device: DeviceGuard(guarded_device)
+            ),
+        )
+    else:
+        pass
+
+    def compute_batch(payloads: list[StagePayload]) -> list[StagePayload]:
+        if device_type == "npu":
+            assert current_device["value"] == device
+        else:
+            assert current_device["value"] == worker_device
+        return payloads
+
+    stage_scheduler = auk_stages.scheduler(compute_batch, device, 1, 0)
+    payload = StagePayload(
+        request_id="device-context",
+        request=OmniRequest(inputs="hello"),
+        data={},
+    )
+
+    assert stage_scheduler.batch_fn([payload]) == [payload]
+    assert current_device["value"] == worker_device
+    if device_type == "npu":
+        assert entered_devices == [device]
+    else:
+        assert entered_devices == []
 
 
 @pytest.fixture

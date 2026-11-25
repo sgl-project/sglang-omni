@@ -46,7 +46,7 @@ from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.stage_residency import torch_memory_saver
 from sglang_omni.scheduling.weight_cache import checkpoint_identity
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.device import resolve_concrete_device
+from sglang_omni.utils.device import device_guard, resolve_concrete_device
 
 
 def scheduler(
@@ -59,7 +59,10 @@ def scheduler(
 
     @torch.inference_mode()
     def run(payloads: list[StagePayload]) -> list[StagePayload]:
-        with torch.cuda.stream(stream) if stream is not None else nullcontext():
+        with (
+            device_guard(device),
+            torch.cuda.stream(stream) if stream is not None else nullcontext(),
+        ):
             return compute_batch(payloads)
 
     return SimpleScheduler(

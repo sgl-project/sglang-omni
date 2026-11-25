@@ -61,6 +61,8 @@ dependencies = [
     "pillow>=10.0.0",
     "huggingface-hub[hf_xet]>=0.36.0",
     "datasets>=2.14.0",
+    "omegaconf",                  # AuK checkpoint configuration
+    "x_transformers",             # AuK DiT rotary embeddings
 
     # NOTE: sglang is intentionally NOT pinned here (see the header).
 
@@ -106,10 +108,8 @@ fun-cosyvoice3 = [
     "gdown==5.1.0",
     "lightning==2.6.5",
     "matplotlib==3.11.1",
-    "omegaconf",
     "hydra-core",
     "wget",
-    "x_transformers",
 ]
 
 [project.scripts]

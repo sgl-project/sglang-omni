@@ -3,10 +3,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-import torch
-import torchaudio
+import soundfile as sf
 
 from sglang_omni.models.auk.constants import (
     MAX_SECONDS,
@@ -36,9 +37,9 @@ def context():
 
 
 @pytest.fixture
-def reference(tmp_path):
+def reference(tmp_path: Path) -> str:
     path = tmp_path / "ref.wav"
-    torchaudio.save(str(path), torch.zeros(1, 24240), SAMPLE_RATE)
+    sf.write(path, np.zeros(24240, dtype=np.float32), SAMPLE_RATE, subtype="FLOAT")
     return str(path)
 
 
