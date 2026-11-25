@@ -209,18 +209,20 @@ func (f *fakeAudio) lateEvents(id string) {
 
 // fakeStreamer streams: a partial per frame, the final on Finish.
 type fakeStreamer struct {
-	final         string
-	openErr       error
-	finalErr      error         // the stream fails instead of answering
-	errAfter      int           // the stream fails after this many sends
-	hang          bool          // no final after Finish
-	openWait      time.Duration // Open takes this long
-	openGate      chan struct{} // Open waits for it to close (nil: no wait)
-	openStarted   chan struct{}
-	finishGate    <-chan struct{} // Finish waits for it to close (nil: no wait)
-	finishStarted chan struct{}   // signalled once Finish begins
-	finishEmitted chan bool       // whether Finish emitted its Final event
-	silent        bool            // no partials
+	final             string
+	openErr           error
+	finalErr          error         // the stream fails instead of answering
+	errAfter          int           // the stream fails after this many sends
+	hang              bool          // no final after Finish
+	openWait          time.Duration // Open takes this long
+	openGate          chan struct{} // Open waits for it to close (nil: no wait)
+	openStarted       chan struct{}
+	finishGate        <-chan struct{} // Finish waits for it to close (nil: no wait)
+	finishStarted     chan struct{}   // signalled once Finish begins
+	finishEmitted     chan bool       // whether Finish emitted its Final event
+	partialGate       <-chan struct{}
+	partialReturnGate <-chan struct{}
+	silent            bool // no partials
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
@@ -236,8 +238,7 @@ type fakeStreamer struct {
 	hints   []string
 	prompt  string // the last stream's prompt
 	// liveResult is the last stream's StreamRequest.LiveResult.
-	liveResult          bool
-	latePartialsEnabled bool
+	liveResult bool
 }
 
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
@@ -266,10 +267,14 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	if f.openErr != nil {
 		return nil, f.openErr
 	}
-	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
+	s := &fakeStream{
+		f: f, ctx: ctx, events: make(chan asr.Event, 1024),
+		latePartials: req.LatePartials, candidates: f.candidates,
+		partialGate: f.partialGate, partialReturnGate: f.partialReturnGate,
+	}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
-	f.hints, f.prompt, f.liveResult, f.latePartialsEnabled = req.Hints, req.Prompt, req.LiveResult, req.LatePartials
+	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
 	f.mu.Unlock()
 	return s, nil
 }
@@ -277,19 +282,23 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 func (f *fakeStreamer) latePartialsRequested() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.latePartialsEnabled
+	return len(f.streams) > 0 && f.streams[len(f.streams)-1].latePartials
 }
 
 type fakeStream struct {
-	f      *fakeStreamer
-	ctx    context.Context
-	mu     sync.Mutex
-	bytes  int
-	data   []byte // what was sent
-	sends  int
-	closed bool
-	done   bool
-	events chan asr.Event
+	f                 *fakeStreamer
+	ctx               context.Context
+	mu                sync.Mutex
+	bytes             int
+	data              []byte // what was sent
+	sends             int
+	closed            bool
+	done              bool
+	events            chan asr.Event
+	latePartials      bool
+	candidates        []string
+	partialGate       <-chan struct{}
+	partialReturnGate <-chan struct{}
 }
 
 func (s *fakeStream) emit(ev asr.Event) {
@@ -323,11 +332,25 @@ func (s *fakeStream) Send(pcm []byte) error {
 		return nil
 	}
 	if !s.f.silent {
+		if n == 1 && s.partialGate != nil {
+			select {
+			case <-s.partialGate:
+			case <-s.ctx.Done():
+				return &asr.Error{Kind: asr.KindCancelled}
+			}
+		}
 		text := "partial"
 		if len(s.f.partials) > 0 {
 			text = s.f.partials[min(n, len(s.f.partials))-1]
 		}
 		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+		if n == 1 && s.partialReturnGate != nil {
+			select {
+			case <-s.partialReturnGate:
+			case <-s.ctx.Done():
+				return &asr.Error{Kind: asr.KindCancelled}
+			}
+		}
 	}
 	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
 		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
@@ -358,8 +381,8 @@ func (s *fakeStream) Finish() error {
 		default:
 		}
 	}
-	if s.f.latePartialsEnabled {
-		for _, text := range s.f.candidates {
+	if s.latePartials {
+		for _, text := range s.candidates {
 			s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
 		}
 	}

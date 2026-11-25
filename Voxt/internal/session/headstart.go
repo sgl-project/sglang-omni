@@ -66,12 +66,36 @@ type headStart struct {
 	gens  [][]*headCall // the requests of the texts asked about last, headKeep at most, the newest last
 }
 
+type headText struct {
+	heard   string
+	cleaned string
+}
+
+type headPart struct {
+	req  llm.Request
+	text string
+}
+
+type headPlan struct {
+	heard   string
+	cleaned string
+	rest    string
+	parts   []headPart
+}
+
+type headGeneration struct {
+	plan  headPlan
+	calls []*headCall
+	fresh []int
+}
+
 // headCall is a request asked early. resp and err are there once done is
 // closed; the answer so far goes to onDelta, or is kept until a request
 // takes the call.
 type headCall struct {
 	req    llm.Request
 	text   string // the part's
+	late   bool
 	cancel context.CancelFunc
 	done   chan struct{}
 	resp   llm.Response
@@ -129,111 +153,138 @@ func (h *headStart) guess(live string) (string, bool) {
 // ask sends the requests of the text known so far, unless it has. It
 // reports whether it asked anything.
 func (h *headStart) ask(live string) bool {
-	r := h.r
 	if !h.enabled {
 		return false
 	}
-	text, ok := h.guess(live)
+	text, ok := h.normalize(live)
 	if !ok {
 		return false
 	}
-	text, _ = withoutEndWord(text, r.endWord())
-	if text == "" || text == h.text {
+	if text.heard == h.text {
 		return false
 	}
-	h.text = text
-	if r.settings.Dictionary.Enabled {
-		text = dict.Replace(text, r.terms)
-	}
-	return h.send(text)
+	h.text = text.heard
+	return h.send(text.cleaned)
 }
 
-func (h *headStart) askCandidate(live string) bool {
+func (h *headStart) normalize(live string) (headText, bool) {
 	r := h.r
-	ctx := r.currentLLMContext()
-	if !h.enabled || h.lateAsked || r.ctx.Err() != nil || ctx == nil || ctx.Err() != nil || !r.cleanupMayContinue() || r.m.resting(h.service) {
-		return false
-	}
-	h.mu.Lock()
-	room := len(h.gens) < headKeep
-	h.mu.Unlock()
-	if !room {
-		return false
-	}
 	text, ok := h.guess(live)
 	if !ok {
-		return false
+		return headText{}, false
 	}
 	text, _ = withoutEndWord(text, r.endWord())
-	if text == "" || text == h.text {
-		return false
+	if text == "" {
+		return headText{}, false
 	}
+	cleaned := text
 	if r.settings.Dictionary.Enabled {
-		text = dict.Replace(text, r.terms)
+		cleaned = dict.Replace(text, r.terms)
 	}
-	rest, ok := r.earlyCleanup().rest(text)
-	if _, whole := snippet.Whole(text, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
-		return false
+	return headText{heard: text, cleaned: cleaned}, true
+}
+
+func (h *headStart) prepare(text headText) (headPlan, bool, bool) {
+	r := h.r
+	plan := headPlan{heard: text.heard, cleaned: text.cleaned}
+	rest, ok := r.earlyCleanup().rest(text.cleaned)
+	if _, whole := snippet.Whole(text.cleaned, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
+		return plan, false, true
 	}
 	parts, err := compose.BuildParts(r.transcribeInput(rest))
 	if err != nil {
+		return plan, false, false
+	}
+	plan.rest = rest
+	for _, part := range parts[:min(len(parts), partsTogether)] {
+		plan.parts = append(plan.parts, headPart{req: r.partRequest(text.cleaned, part, nil, nil), text: part.Text})
+	}
+	return plan, true, false
+}
+
+func (h *headStart) prepareLate(live string) (headGeneration, bool) {
+	if !h.lateAllowed() {
+		return headGeneration{}, false
+	}
+	text, ok := h.normalize(live)
+	if !ok || text.heard == h.text {
+		return headGeneration{}, false
+	}
+	plan, ok, _ := h.prepare(text)
+	if !ok {
+		return headGeneration{}, false
+	}
+	gen := h.generation(plan)
+	if len(gen.fresh) == 0 || !h.lateAllowed() {
+		return headGeneration{}, false
+	}
+	return gen, true
+}
+
+func (h *headStart) lateAllowed() bool {
+	if !h.enabled || h.lateAsked || h.r.ctx.Err() != nil {
 		return false
 	}
-	if r.ctx.Err() != nil || ctx.Err() != nil || !r.cleanupMayContinue() || r.m.resting(h.service) {
+	ctx := h.r.currentLLMContext()
+	if ctx == nil || ctx.Err() != nil || !h.r.cleanupMayContinue() || h.r.m.resting(h.service) {
 		return false
 	}
-	var gen []*headCall
-	started := false
-	for _, p := range parts[:min(len(parts), partsTogether)] {
-		req := r.partRequest(text, p, nil, nil)
-		c := h.find(req)
-		if c == nil {
-			c = h.start(req, p.Text)
-			started = true
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.gens) < headKeep
+}
+
+func (h *headStart) generation(plan headPlan) headGeneration {
+	gen := headGeneration{plan: plan, calls: make([]*headCall, len(plan.parts))}
+	for i, part := range plan.parts {
+		gen.calls[i] = h.find(part.req)
+		if gen.calls[i] == nil {
+			gen.fresh = append(gen.fresh, i)
 		}
-		gen = append(gen, c)
 	}
-	h.text = text
-	if !started {
+	return gen
+}
+
+func (h *headStart) submitLate(gen headGeneration) bool {
+	if len(gen.fresh) == 0 || !h.lateAllowed() {
 		return false
 	}
+	h.startGeneration(&gen, true)
+	h.text = gen.plan.heard
 	h.lateAsked = true
-	h.push(gen)
-	r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(rest))
+	h.push(gen.calls)
+	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(gen.plan.rest))
 	return true
+}
+
+func (h *headStart) startGeneration(gen *headGeneration, late bool) {
+	for _, i := range gen.fresh {
+		part := gen.plan.parts[i]
+		gen.calls[i] = h.start(part.req, part.text, late)
+	}
 }
 
 // send sends the requests of text, its dictionary's aliases replaced, and
 // gives up those of texts before the last headKeep.
 func (h *headStart) send(text string) bool {
-	r := h.r
-	rest, ok := r.earlyCleanup().rest(text)
-	if _, whole := snippet.Whole(text, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
-		h.drop()
-		return false
-	}
-	parts, err := compose.BuildParts(r.transcribeInput(rest))
-	if err != nil {
-		return false
-	}
-	var gen []*headCall
-	for _, p := range parts[:min(len(parts), partsTogether)] {
-		req := r.partRequest(text, p, nil, nil)
-		c := h.find(req)
-		if c == nil {
-			c = h.start(req, p.Text)
+	plan, ok, discard := h.prepare(headText{cleaned: text})
+	if !ok {
+		if discard {
+			h.drop()
 		}
-		gen = append(gen, c)
+		return false
 	}
-	h.push(gen)
-	r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(rest))
+	gen := h.generation(plan)
+	h.startGeneration(&gen, false)
+	h.push(gen.calls)
+	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(plan.rest))
 	return true
 }
 
-func (h *headStart) start(req llm.Request, text string) *headCall {
+func (h *headStart) start(req llm.Request, text string, late bool) *headCall {
 	r := h.r
 	ctx, cancel := context.WithCancel(r.currentLLMContext())
-	c := &headCall{req: req, text: text, cancel: cancel, done: make(chan struct{})}
+	c := &headCall{req: req, text: text, late: late, cancel: cancel, done: make(chan struct{})}
 	req.OnDelta = c.add
 	go func() {
 		defer close(c.done)
@@ -300,31 +351,64 @@ func (h *headStart) drop() {
 // at most, and the words its answer must be put right for; nil for none.
 func (h *headStart) near(req llm.Request, text string) (*headCall, []spokenWord, []headChange) {
 	last := len(req.Messages) - 1
-	var near *headCall
-	var nearOld []spokenWord
-	var nearChanges []headChange
+	type match struct {
+		call    *headCall
+		old     []spokenWord
+		changes []headChange
+		done    bool
+		err     error
+	}
+	var exact, repaired []match
 	for _, c := range h.all() {
 		if len(c.req.Messages) != last+1 || last < 0 || !slices.Equal(c.req.Messages[:last], req.Messages[:last]) || !h.sameThinking(c.req, req) ||
 			strings.Replace(c.req.Messages[last].Content, c.text, text, 1) != req.Messages[last].Content {
 			continue
 		}
+		done, err := h.callError(c)
+		if c.late && done && err != nil {
+			continue
+		}
 		old := spokenWords(c.text)
 		changes, ok := headChanges(old, c.text, text)
-		if ok && len(changes) == 0 {
-			return c, old, changes // the newest text that needs no putting right
+		if !ok {
+			continue
 		}
-		if ok && near == nil {
-			near, nearOld, nearChanges = c, old, changes
+		m := match{call: c, old: old, changes: changes, done: done, err: err}
+		if len(changes) == 0 {
+			exact = append(exact, m)
+		} else {
+			repaired = append(repaired, m)
 		}
 	}
-	return near, nearOld, nearChanges
+	choose := func(matches []match) *match {
+		if len(matches) == 0 {
+			return nil
+		}
+		first := matches[0]
+		if first.call.late && !first.done {
+			for i := 1; i < len(matches); i++ {
+				if matches[i].done && matches[i].err == nil {
+					return &matches[i]
+				}
+			}
+		}
+		return &first
+	}
+	chosen := choose(exact)
+	if chosen == nil {
+		chosen = choose(repaired)
+	}
+	if chosen == nil {
+		return nil, nil, nil
+	}
+	return chosen.call, chosen.old, chosen.changes
 }
 
 // askPart asks for one part's clean-up, with the answer a head start has
 // under way when there is one for it. Goroutine-safe.
 func (r *run) askPart(ctx context.Context, req llm.Request, text string) (llm.Response, error) {
 	h := &r.head
-	if c := h.find(req); c != nil {
+	if c := h.find(req); c != nil && !h.failedLate(c) {
 		r.logf("debug", "the language model was asked about this part ahead of the final text")
 		return c.join(req.OnDelta)
 	}
@@ -366,7 +450,7 @@ func (h *headStart) reuse(c *headCall, old []spokenWord, changes []headChange, r
 		resp, ok := right()
 		return resp, nil, ok
 	}
-	fresh := h.start(req, text)
+	fresh := h.start(req, text, false)
 	defer fresh.cancel()
 	select {
 	case <-c.done:
@@ -377,6 +461,23 @@ func (h *headStart) reuse(c *headCall, old []spokenWord, changes []headChange, r
 	}
 	resp, err := fresh.join(req.OnDelta)
 	return resp, err, true
+}
+
+func (h *headStart) callError(c *headCall) (bool, error) {
+	select {
+	case <-c.done:
+		return true, c.err
+	default:
+		return false, nil
+	}
+}
+
+func (h *headStart) failedLate(c *headCall) bool {
+	if !c.late {
+		return false
+	}
+	done, err := h.callError(c)
+	return done && err != nil
 }
 
 // join streams the answer so far and the rest into onDelta, and returns

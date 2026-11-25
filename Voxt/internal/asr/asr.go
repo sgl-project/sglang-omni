@@ -134,7 +134,13 @@ type Streamer interface {
 
 // Stream is one recognition session.
 //
-// note (chenye): Send and Finish are called from one goroutine (the session's); Close from any. Events delivers EventPartial while audio comes in, then optionally EventCandidate while an opted-in authoritative Final runs, exactly one EventFinal or EventError, then closes. A stream that finalises stretches of the recording while it continues may deliver EventPiece before them. ctx of Open bounds the whole stream: cancelling it ends the stream with a KindCancelled Error.
+// note (chenye): Send and Finish are called from one goroutine (the session's);
+// Close may be called from any goroutine. Events delivers EventPartial while
+// audio comes in, then optionally EventCandidate while an opted-in authoritative
+// Final runs, followed by exactly one EventFinal or EventError, then closes. A
+// stream that finalises stretches of the recording while it continues may
+// deliver EventPiece before them. ctx of Open bounds the whole stream:
+// cancelling it ends the stream with a KindCancelled Error.
 type Stream interface {
 	// Send sends PCM16LE mono audio at the request's sample rate, any
 	// length (the stream frames it as its speech model wants). It may

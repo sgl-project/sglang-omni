@@ -392,10 +392,14 @@ func (s *live) Finish() error {
 	}
 	s.preview = false
 	s.finalOnly = true
-	s.lateCandidates = s.req.LatePartials && s.conn != nil && s.a.spec.Kind == kindQwen3ASR && !s.req.LiveResult
+	s.lateCandidates = wantsLateCandidates(s.req, s.conn != nil, s.a.spec.Kind)
 	s.mu.Unlock()
 	go s.finalPass(pcm)
 	return nil
+}
+
+func wantsLateCandidates(req asr.StreamRequest, realtime bool, kind string) bool {
+	return req.LatePartials && realtime && kind == kindQwen3ASR && !req.LiveResult
 }
 
 // Salvage is the best text the stream has when its Final failed or took

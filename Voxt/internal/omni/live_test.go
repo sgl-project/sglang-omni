@@ -135,6 +135,66 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+func TestLateCandidatesAreOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		request asr.StreamRequest
+		want    bool
+	}{
+		{"Qwen3-ASR opted in", kindQwen3ASR, asr.StreamRequest{LatePartials: true}, true},
+		{"Qwen3-ASR without opt-in", kindQwen3ASR, asr.StreamRequest{}, false},
+		{"other realtime model", kindNemotron, asr.StreamRequest{LatePartials: true}, false},
+		{"LiveResult", kindQwen3ASR, asr.StreamRequest{LatePartials: true, LiveResult: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wantsLateCandidates(tc.request, true, tc.kind); got != tc.want {
+				t.Fatalf("late candidate eligibility %v, want %v", got, tc.want)
+			}
+			f := newFake(t, omnitest.Opts{LiveLateCandidate: true}, nil)
+			a := f.asr(t, ASRFast)
+			a.spec.Kind = tc.kind
+			tc.request.SampleRate = 16000
+			st, err := a.Open(context.Background(), tc.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sendAll(t, st, tone(500*time.Millisecond, 0.3))
+			select {
+			case event := <-st.Events():
+				if event.Kind != asr.EventPartial {
+					t.Fatalf("ordinary partial %+v", event)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the ordinary partial was not emitted before Finish")
+			}
+			if err := st.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			events := drain(t, st)
+			candidates := 0
+			for _, event := range events {
+				if event.Kind == asr.EventCandidate {
+					candidates++
+				}
+			}
+			want := 0
+			if tc.want {
+				want = 1
+			}
+			if candidates != want {
+				t.Errorf("%d candidates, want %d: %+v", candidates, want, events)
+			}
+			if len(events) == 0 {
+				t.Fatal("the stream closed without a terminal event")
+			}
+			if last := events[len(events)-1]; last.Kind != asr.EventFinal {
+				t.Fatalf("terminal event %+v", last)
+			}
+		})
+	}
+}
+
 // TestFinalPrior: the Final carries the preview's text and the session that
 // heard it. Without a language hint it carries no text (the model writes the
 // language first), and of a recording cut into chunks only the first carries

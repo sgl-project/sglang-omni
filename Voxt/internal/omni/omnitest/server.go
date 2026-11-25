@@ -22,6 +22,9 @@ import (
 	"github.com/coder/websocket"
 )
 
+var lateCandidateSessions sync.Map
+var lateCandidateSessionID atomic.Uint64
+
 // speechRMS is the level over which the fake hears speech (-34 dBFS).
 const speechRMS = 0.02
 
@@ -137,6 +140,11 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
+	if o.LiveLateCandidate {
+		if send, ok := lateCandidateSessions.Load(fields["realtime_session"]); ok {
+			send.(func())()
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
@@ -228,11 +236,24 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(-1)
 	ctx := r.Context()
 	idx := 0
+	sessionID := "fake-session"
+	if o.LiveLateCandidate {
+		sessionID = fmt.Sprintf("fake-session-%d", lateCandidateSessionID.Add(1))
+	}
+	var sendMu sync.Mutex
 	send := func(v map[string]any) {
+		sendMu.Lock()
+		defer sendMu.Unlock()
 		idx++
 		v["event_index"] = idx
 		b, _ := json.Marshal(v)
 		_ = c.Write(ctx, websocket.MessageText, b)
+	}
+	if o.LiveLateCandidate {
+		lateCandidateSessions.Store(sessionID, func() {
+			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "late transcript", "is_final": false})
+		})
+		defer lateCandidateSessions.Delete(sessionID)
 	}
 	samples, next, language := 0, 1600, ""
 	fields := map[string]string{}
@@ -269,7 +290,7 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 					fields[k] = v
 				}
 			}
-			send(map[string]any{"type": "transcription_session.updated", "session_id": "fake-session"})
+			send(map[string]any{"type": "transcription_session.updated", "session_id": sessionID})
 			stalled = o.LiveStall
 		case "input_audio_buffer.append":
 			pcm, err := base64.StdEncoding.DecodeString(ev.Audio)

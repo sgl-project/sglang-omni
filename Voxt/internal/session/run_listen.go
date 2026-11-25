@@ -377,50 +377,14 @@ func (r *run) listen() (string, bool) {
 				return "", false
 			}
 		}
-		silent := false
-		switch {
-		case early != nil:
+		var silent bool
+		if early != nil {
 			res, silent = early.res, early.silent
-		default:
-		recognition:
-			for {
-				select {
-				case e := <-finals:
-					res, err, silent = e.res, e.err, e.silent
-					break recognition
-				default:
-				}
-				select {
-				case <-actx.Done():
-					err = r.ctxErr(actx)
-					break recognition
-				default:
-				}
-				select {
-				case e := <-finals:
-					res, err, silent = e.res, e.err, e.silent
-					break recognition
-				case <-actx.Done():
-					err = r.ctxErr(actx)
-					break recognition
-				case update := <-heard:
-					if !update.candidate {
-						continue
-					}
-					select {
-					case e := <-finals:
-						res, err, silent = e.res, e.err, e.silent
-						break recognition
-					default:
-					}
-					select {
-					case <-actx.Done():
-						err = r.ctxErr(actx)
-						break recognition
-					default:
-					}
-					r.head.askCandidate(update.text)
-				}
+		} else {
+			end, waitErr := r.waitFinal(actx, finals, heard)
+			res, err, silent = end.res, end.err, end.silent
+			if waitErr != nil {
+				err = waitErr
 			}
 		}
 		if err != nil {
@@ -489,6 +453,24 @@ func (r *run) listen() (string, bool) {
 		return "", false
 	}
 	return raw, true
+}
+
+// salvage is the text a stream whose Final failed had (asr.Salvager:
+// its pieces or its preview), else the preview the snapshot shows.
+func (r *run) salvage(st asr.Stream) string {
+	if sv, ok := st.(asr.Salvager); ok {
+		if text := strings.TrimSpace(sv.Salvage()); text != "" {
+			return text
+		}
+	}
+	return strings.TrimSpace(r.m.snapshot(r).Partial)
+}
+
+// isCancelled reports whether a capture error is the end of a job that
+// Stop discarded (cancelled after Config.StopGrace).
+func isCancelled(err error, stopped bool) bool {
+	var pe *proto.Error
+	return stopped && errors.As(err, &pe) && pe.Code == proto.CodeCancelled
 }
 
 // warmLLM prepares the language model while the user speaks. A remote
