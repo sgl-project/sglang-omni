@@ -465,7 +465,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 	if name := uitext.SceneShort(snapshot); name != "" {
 		scene = float32(textWidth(name, float64(layout.SceneSize)))
 	}
-	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+	row, _ := recordingPillRow(&pill, false, showTime, scene, func(key ovSized) (float32, bool) {
 		return float32(textWidth(key.text, float64(key.size))), true
 	})
 	return row + 2*layout.PillPadX
