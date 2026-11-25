@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Single-node 2xH200 (141GB) BF16 1P:1D text-only PD profile for Qwen3-Omni.
+# Default placement puts image_encoder + audio_encoder + thinker_prefill on GPU 0
+# (thinker_prefill deducts encoder_mem_reserve=0.05 -> 0.87 effective static fraction)
+# and thinker_decode on GPU 1 over CUDA_IPC.
+# Scale to 1P:yD or xP:yD via processes.<stage>.num_replicas & replica_devices.
+config_cls: Qwen3OmniTextPDPipelineConfig
+name: qwen3-omni-text-pd-h200-bf16
+model_path: Qwen/Qwen3-Omni-30B-A3B-Instruct
+
+stages:
+  image_encoder:
+    gpu_memory_fraction: 0.02
+  audio_encoder:
+    gpu_memory_fraction: 0.02
+  thinker_prefill:
+    gpu_memory_fraction: 0.92
+  thinker_decode:
+    gpu_memory_fraction: 0.92

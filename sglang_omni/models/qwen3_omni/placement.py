@@ -3,8 +3,13 @@
 
 from __future__ import annotations
 
-from sglang_omni.config import PipelineConfig, StagePlacementPlan
-from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechColocatedPipelineConfig
+from sglang_omni.config import PipelineConfig, StageConfig, StagePlacementPlan
+from sglang_omni.models.qwen3_omni.config import (
+    THINKER_DECODE_STAGE,
+    THINKER_PREFILL_STAGE,
+    Qwen3OmniSpeechColocatedPipelineConfig,
+    Qwen3OmniTextPDPipelineConfig,
+)
 
 _SPEECH_STAGE_ORDER = (
     "preprocessing",
@@ -26,6 +31,19 @@ _COLOCATED_BUDGET_STAGES = {
 _AR_STAGES = ("thinker", "talker_ar")
 # Stages another model package adds to the same server are not Qwen's; only Qwen's own stage names take part in the check.
 _QWEN_STAGE_SET = _SPEECH_STAGE_SET | {"mm_aggregate"}
+TEXT_PD_STAGE_SET = {
+    "preprocessing",
+    "image_encoder",
+    "audio_encoder",
+    THINKER_PREFILL_STAGE,
+    THINKER_DECODE_STAGE,
+    "decode",
+}
+PD_MATCHING_ENGINE_DEFAULTS: dict[str, int | str] = {
+    "page_size": 1,
+    "kv_cache_dtype": "auto",
+    "dtype": "auto",
+}
 
 
 class Qwen3OmniPlacementPolicy:
@@ -38,6 +56,17 @@ class Qwen3OmniPlacementPolicy:
             raise ValueError(
                 "Qwen code predictor is part of talker_ar and must not be a stage"
             )
+        else:
+            pass
+
+        is_text_pd = (
+            isinstance(config, Qwen3OmniTextPDPipelineConfig)
+            or THINKER_PREFILL_STAGE in stage_map
+            or THINKER_DECODE_STAGE in stage_map
+        )
+        if is_text_pd:
+            self.validate_text_pd(stage_map, plan)
+            return
         else:
             pass
 
@@ -182,6 +211,122 @@ class Qwen3OmniPlacementPolicy:
                     f"Qwen colocated speech stage {stage_name} sets conflicting "
                     "memory fractions: gpu_memory_fraction="
                     f"{total_fraction:.3f}, mem_fraction_static={mem_fraction:.3f}"
+                )
+            else:
+                pass
+
+    def validate_text_pd(
+        self,
+        stage_map: dict[str, StageConfig],
+        plan: StagePlacementPlan,
+    ) -> None:
+        if "talker_ar" in stage_map or "code2wav" in stage_map:
+            raise ValueError(
+                "Qwen3-Omni text-pd does not support speech stages "
+                "(talker_ar/code2wav)"
+            )
+        else:
+            pass
+
+        pd_stage_names = set(stage_map) & (TEXT_PD_STAGE_SET | _QWEN_STAGE_SET)
+        if pd_stage_names != TEXT_PD_STAGE_SET:
+            missing = sorted(TEXT_PD_STAGE_SET - pd_stage_names)
+            extra = sorted(pd_stage_names - TEXT_PD_STAGE_SET)
+            raise ValueError(
+                "Qwen3-Omni text-pd must use the six configured stages; "
+                f"missing={missing}, extra={extra}"
+            )
+        else:
+            pass
+
+        prefill_stage = stage_map[THINKER_PREFILL_STAGE]
+        decode_stage = stage_map[THINKER_DECODE_STAGE]
+        if prefill_stage.kv_transfer_to != THINKER_DECODE_STAGE:
+            raise ValueError(
+                f"Qwen3-Omni text-pd requires {THINKER_PREFILL_STAGE}.kv_transfer_to "
+                f"== {THINKER_DECODE_STAGE!r}, got {prefill_stage.kv_transfer_to!r}"
+            )
+        else:
+            pass
+
+        for stage in (prefill_stage, decode_stage):
+            if stage.tp_size != 1:
+                raise ValueError(
+                    f"Qwen3-Omni text-pd stage {stage.name!r} requires tp_size == 1, "
+                    f"got {stage.tp_size}"
+                )
+            else:
+                pass
+
+        prefill_instances = plan.instances_of(THINKER_PREFILL_STAGE)
+        decode_instances = plan.instances_of(THINKER_DECODE_STAGE)
+        if not prefill_instances or not decode_instances:
+            raise ValueError(
+                "Qwen3-Omni text-pd requires GPU placement for both "
+                f"{THINKER_PREFILL_STAGE!r} and {THINKER_DECODE_STAGE!r}"
+            )
+        else:
+            pass
+        for prefill in prefill_instances:
+            for decode in decode_instances:
+                shared_gpus = set(prefill.gpu_ids).intersection(decode.gpu_ids)
+                if shared_gpus:
+                    raise ValueError(
+                        f"Qwen3-Omni text-pd requires {prefill.stage_name!r} and "
+                        f"{decode.stage_name!r} on distinct GPUs; "
+                        f"shared={sorted(shared_gpus)}"
+                    )
+                else:
+                    pass
+
+        prefill_overrides = (
+            prefill_stage.engine.overrides() if prefill_stage.engine is not None else {}
+        )
+        decode_overrides = (
+            decode_stage.engine.overrides() if decode_stage.engine is not None else {}
+        )
+        for stage_name, overrides in (
+            (THINKER_PREFILL_STAGE, prefill_overrides),
+            (THINKER_DECODE_STAGE, decode_overrides),
+        ):
+            if overrides.get("disable_radix_cache") is False:
+                raise ValueError(
+                    f"Qwen3-Omni text-pd stage {stage_name!r} requires "
+                    "disable_radix_cache=True"
+                )
+            else:
+                pass
+            if overrides.get("enable_mixed_chunk") is True:
+                raise ValueError(
+                    f"Qwen3-Omni text-pd stage {stage_name!r} requires "
+                    "enable_mixed_chunk=False"
+                )
+            else:
+                pass
+            spec_algorithm = overrides.get("speculative_algorithm")
+            has_spec = spec_algorithm is not None and str(
+                spec_algorithm
+            ).strip().lower() not in {"", "none"}
+            if has_spec or overrides.get("speculative_draft_model_path") is not None:
+                raise ValueError(
+                    f"Qwen3-Omni text-pd stage {stage_name!r} does not support "
+                    "speculative decoding"
+                )
+            else:
+                pass
+
+        for key, default_value in PD_MATCHING_ENGINE_DEFAULTS.items():
+            prefill_value = prefill_overrides.get(key)
+            decode_value = decode_overrides.get(key)
+            normalized_prefill = (
+                default_value if prefill_value is None else prefill_value
+            )
+            normalized_decode = default_value if decode_value is None else decode_value
+            if normalized_prefill != normalized_decode:
+                raise ValueError(
+                    f"Qwen3-Omni text-pd requires matching engine.{key} on "
+                    f"{THINKER_PREFILL_STAGE!r} ({normalized_prefill!r}) and "
+                    f"{THINKER_DECODE_STAGE!r} ({normalized_decode!r})"
                 )
             else:
                 pass

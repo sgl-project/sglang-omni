@@ -103,6 +103,24 @@ def test_seeded_batch_is_eligible() -> None:
     assert runner().lookahead_eligible(seeded_mix) is True
 
 
+def test_text_only_runner_skips_audio_output_gate() -> None:
+    text_runner = runner()
+    text_runner.gates_audio_output_lookahead = False
+    assert text_runner.lookahead_eligible(batch(req(stage_payload="audio"))) is True
+    assert (
+        text_runner.lookahead_eligible(
+            batch(req(stage_payload="audio", return_logprob=True))
+        )
+        is False
+    )
+    assert (
+        text_runner.lookahead_eligible(
+            batch(types.SimpleNamespace(sampling_params=sp(), omni_data=None))
+        )
+        is False
+    )
+
+
 def scheduler_request(
     request_id: str, sampling_seed: int | None
 ) -> types.SimpleNamespace:
