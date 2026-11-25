@@ -260,7 +260,7 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.asr.factory.session_max_concurrency": 16,
         },
     ),
-    # note (Jiaxin Deng): measured with sglang-omni a385eac6; every stage keeps its B200 budget in GB.
+    # note (Jiaxin Deng): measured with sglang-omni a385eac6 against the model's own config; every stage keeps its B200 budget in GB.
     ReplicaProfile(
         config_cls="Qwen3TTSPipelineConfig",
         model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -278,19 +278,18 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
             "stages.vocoder.process": "vocoder",
         },
     ),
+    # note (Jiaxin Deng): as on the RTX 4090 D, the B200 caps lost to the model's own config here; the engine's own 64 running requests and no queue cap beat it.
     ReplicaProfile(
         config_cls="MossTranscribeDiarizePipelineConfig",
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
         gpu=H200,
-        num_replicas=4,
+        num_replicas=2,
         replicated_processes=("asr",),
         settings={
-            "stages.asr.gpu_memory_fraction": 0.0478,
+            "stages.asr.gpu_memory_fraction": 0.46,
             "stages.asr.engine.mem_fraction_static": 0.966,
-            "stages.asr.engine.max_running_requests": 16,
-            "stages.asr.engine.max_queued_requests": 16,
-            "stages.asr.engine.cuda_graph_max_bs": 32,
-            "stages.asr.engine.max_total_tokens": 16384,
+            "stages.asr.engine.max_running_requests": 64,
+            "stages.asr.engine.max_total_tokens": 157670,
         },
     ),
 )
