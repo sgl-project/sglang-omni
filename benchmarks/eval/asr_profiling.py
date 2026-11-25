@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
 import threading
 import time
@@ -32,12 +31,12 @@ from sglang_omni.profiler.event_recorder_types import (
     DEFAULT_EVENT_BUFFER_CAPACITY,
     DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 )
-from sglang_omni.profiler.views import ProfilerReport, build_report
+from sglang_omni.profiler.views import EVENT_FILENAME_RE, ProfilerReport, build_report
 
 _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
+# ~6 events/request on the scheduler thread; 16 gives >2.5x headroom.
 EVENTS_PER_REQUEST_HEADROOM = 16
-EVENT_FILENAME_PID_RE = re.compile(r"^events_.*_(?P<pid>[0-9]+)\.jsonl$")
 FLUSH_POLL_INTERVAL_S = 0.05
 
 
@@ -53,18 +52,18 @@ async def wait_for_profile_flush(
     event_dir: str,
     *,
     timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
-) -> None:
+) -> bool:
     """Wait until each event JSONL writer publishes its run_status sidecar."""
-    directory = Path(event_dir)
+    directory = Path(event_dir).expanduser()
     if not directory.is_dir():
-        return
+        return True
     else:
         pass
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         event_pids: set[str] = set()
         for event_path in directory.glob("events_*.jsonl"):
-            match = EVENT_FILENAME_PID_RE.match(event_path.name)
+            match = EVENT_FILENAME_RE.match(event_path.name)
             if match is not None:
                 event_pids.add(match.group("pid"))
             else:
@@ -72,10 +71,11 @@ async def wait_for_profile_flush(
         if event_pids and all(
             (directory / f"run_status_{pid}.json").is_file() for pid in event_pids
         ):
-            return
+            return True
         else:
             pass
         await asyncio.sleep(FLUSH_POLL_INTERVAL_S)
+    return False
 
 
 def start_request_profile(
@@ -177,7 +177,14 @@ async def run_profiled_pass(
                 )
 
     # note (evanderfff123-boop): /stop_request_profile returns before each process's background writer finishes flushing events_*.jsonl and run_status_<pid>.json.
-    await wait_for_profile_flush(event_dir)
+    flushed = await wait_for_profile_flush(event_dir)
+    if not flushed:
+        print(
+            f"{log_prefix} timed out waiting for profile flush in {event_dir}",
+            file=error_stream,
+        )
+    else:
+        pass
     report = build_stage_breakdown(event_dir)
     return {
         "run_id": run_id,
