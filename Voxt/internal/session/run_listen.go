@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -36,7 +39,7 @@ func (r *run) awaitServices() bool {
 
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
-	r.resolved, r.svc, r.terms = true, s.svc, s.terms
+	r.resolved, r.svc, r.terms, r.snippets = true, s.svc, s.terms, s.snippets
 	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
@@ -151,6 +154,7 @@ func (r *run) listen() (string, bool) {
 		heard    chan string
 		said     string
 		endPause <-chan time.Time
+		quiet    bool // the user is silent
 	)
 	open := func() chan openResult {
 		st, ok := r.streamer()
@@ -158,13 +162,14 @@ func (r *run) listen() (string, bool) {
 			r.setOpening(false)
 			return nil
 		}
-		if word = r.endWord(); word != "" {
+		r.startHead()
+		if word = r.endWord(); word != "" || r.head.enabled {
 			heard = make(chan string, 1)
-			r.heard = heard
+			r.heard, r.silent = heard, make(chan bool, 1)
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult, EarlyPieces: r.earlyPieces()})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -240,14 +245,33 @@ func (r *run) listen() (string, bool) {
 				if _, ends := withoutEndWord(text, word); ends {
 					endPause = time.After(cfg.EndWordPause)
 				}
+				switch {
+				case stopCh == nil:
+					endPause = nil
+					r.head.ask(said)
+				case quiet:
+					r.head.pause(said)
+				}
+			}
+		case quiet = <-r.silent:
+			if quiet && stopCh != nil {
+				r.head.pause(said)
 			}
 		case <-endPause:
 			endPause = nil
 			r.logf("info", "the end word was said last: stopping the recording")
-			r.stopOnce.Do(func() { close(r.stop) })
+			r.stopRecording()
 		case <-stopCh:
-			stopCh, heard, endPause = nil, nil, nil
-			at := r.now()
+			select {
+			case said = <-heard:
+			default:
+			}
+			r.head.ask(said)
+			stopCh, endPause = nil, nil
+			at := r.stoppedAt()
+			if at.IsZero() {
+				at = r.recordStopAt(r.now())
+			}
 			r.m.update(r, func(s *Snapshot) { s.State, s.StoppedAt = Recognizing, at })
 			go func() {
 				ctx, cancel := context.WithTimeout(r.ctx, cfg.StopGrace)
@@ -262,6 +286,7 @@ func (r *run) listen() (string, bool) {
 			capCancel()
 		case c := <-capDone:
 			recordDone, captured = true, c
+			r.recordStopAt(r.now())
 			close(r.recorded)
 		}
 	}
@@ -299,6 +324,7 @@ func (r *run) listen() (string, bool) {
 		r.m.end(r, Cancelled, func(s *Snapshot) { s.Problem = &Problem{Code: ProblemTooShort} }, nil)
 		return "", false
 	}
+	r.head.ask(said)
 	asrStart := r.now()
 
 	// The services, if they are still on their way.
@@ -409,7 +435,7 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "going on with the text the live session had: %v", err)
 		res = asr.Result{Text: salvaged}
 	}
-	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
+	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text, res.Lang)), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
 	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" && r.typedOnly() {
@@ -441,13 +467,20 @@ func isCancelled(err error, stopped bool) bool {
 	return stopped && errors.As(err, &pe) && pe.Code == proto.CodeCancelled
 }
 
-// warmLLM sends the language model the shared part of the prompt this
-// session will send (the system prompt and the example turn) while the
-// user speaks, when the model keeps a prompt cache (llm.Prefiller): the
-// chat after the recording then evaluates little more than the
-// transcript. Transcribe's clean-up and Translate of speech only:
-// Rewrite's prompt depends on the selection, read meanwhile.
+// warmLLM prepares the language model while the user speaks. A remote
+// one (llm.Connector) has its connection opened. One that keeps a prompt
+// cache (llm.Prefiller) is sent the shared part of the prompt this session
+// will send (the system prompt and the example turn): the chat after the
+// recording then evaluates little more than the transcript. The prompt
+// is Transcribe's clean-up and Translate of speech only: Rewrite's
+// depends on the selection, read meanwhile.
 func (r *run) warmLLM() {
+	if r.req.Kind == store.KindTranscribe && !r.transcribeCleanup() {
+		return
+	}
+	if c, ok := r.svc.LLM.(llm.Connector); ok && r.svc.LLMInfo.Remote {
+		go r.warm("connected to the language model", c.Connect)
+	}
 	p, ok := r.svc.LLM.(llm.Prefiller)
 	if !ok {
 		return
@@ -456,9 +489,6 @@ func (r *run) warmLLM() {
 	var skill llm.Skill
 	switch r.req.Kind {
 	case store.KindTranscribe:
-		if !r.transcribeCleanup() {
-			return
-		}
 		in, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance
 	case store.KindTranslate:
 		in, skill = r.writeInput("", ""), llm.SkillTranslateText
@@ -470,22 +500,30 @@ func (r *run) warmLLM() {
 		return
 	}
 	req := llm.Request{Skill: skill, Messages: llmMessages(out)}
-	go func() {
-		start := r.now()
-		if err := p.Prefill(r.ctx, req); err != nil && r.ctx.Err() == nil {
-			r.logf("info", "warming the language model up: %v", err)
-			return
-		}
-		r.logf("debug", "warmed the language model up in %v", r.now().Sub(start).Round(time.Millisecond))
-	}()
+	go r.warm("warmed the language model up", func(ctx context.Context) error { return p.Prefill(ctx, req) })
 }
 
-// transcribeInput is Transcribe's request to compose for raw.
+// warm runs prepare and logs what it did, or that it failed: the chat
+// after the recording then takes its usual time.
+func (r *run) warm(did string, prepare func(context.Context) error) {
+	start := r.now()
+	if err := prepare(r.ctx); err != nil {
+		if r.ctx.Err() == nil {
+			r.logf("info", "warming the language model up: %v", err)
+		}
+		return
+	}
+	r.logf("debug", "%s in %v", did, r.now().Sub(start).Round(time.Millisecond))
+}
+
+// transcribeInput is Transcribe's request to compose for raw, its
+// snippets' triggers marked for the model to keep (expandSnippets).
 func (r *run) transcribeInput(raw string) compose.Input {
 	f := r.settings.Features.Transcribe
+	text, marked := snippet.Mark(raw, r.snippets)
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
-		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
+		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: text, Snippets: len(marked) > 0,
 		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
 		Scene: r.composeScene(),
 	}
@@ -516,4 +554,23 @@ func (r *run) typedOnly() bool {
 	}
 	typed, _, err := cfg.BoxInput(r.ctx)
 	return err == nil && strings.TrimSpace(typed) != ""
+}
+
+// inScript writes recognised Chinese text in the script of dictation
+// (SpeechScript). Text in another language stays as it is, or its kanji
+// would be rewritten: said is the language the speech model reported (""
+// when it did not, as for a stream's partials and pieces), and kana marks
+// Japanese either way.
+func (r *run) inScript(text, said string) string {
+	if c := lang.Canonical(said); c != "" && c != "zh" && c != "yue" {
+		return text
+	}
+	if strings.ContainsFunc(text, func(c rune) bool { return unicode.In(c, unicode.Hiragana, unicode.Katakana) }) {
+		return text
+	}
+	var reads []string
+	if r.m.cfg.Languages != nil {
+		reads = r.m.cfg.Languages()
+	}
+	return lang.RenderChineseScript(text, SpeechScript(r.settings, r.m.cfg.Locale(), reads))
 }

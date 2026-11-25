@@ -36,6 +36,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -136,6 +137,7 @@ type rewriteBoxViewState struct {
 	Levels            [session.Bars]float64
 	Motion            bool
 	Phase             float64
+	Wave              func(time.Time) layout.Wave // the gliding bars at a time (overlayWave)
 	Radius            float32
 	Alpha             float32
 	Palette           string

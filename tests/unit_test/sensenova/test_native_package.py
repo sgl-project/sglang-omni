@@ -19,6 +19,7 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
 from sglang.multimodal_gen.runtime.platforms import current_platform
 
+from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.pipeline import SenseNovaU1Pipeline
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
@@ -64,9 +65,8 @@ def test_external_package_in_fresh_process(tmp_path: Path) -> None:
         assert type(config).__module__.startswith("sglang_omni.vendor.sensenova_u1.")
     """
     )
-    environment = os.environ | {
-        "SGLANG_EXTERNAL_MODEL_PACKAGE": "sglang_omni.models.sensenova_u1.native",
-    }
+    config = SenseNovaU1PipelineConfig(model_path=str(checkpoint))
+    environment = os.environ | config.resolved_stage_env_defaults("generation")
     result = subprocess.run(
         [sys.executable, "-c", script, str(checkpoint)],
         env=environment,

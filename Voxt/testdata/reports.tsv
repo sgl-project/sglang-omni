@@ -62,3 +62,4 @@ report	fix	symptom	level	check
 #4375	#4515	A refused start erases a typed Rewrite follow-up	L	TestRewriteTypedFollowUpSurvivesStartRefusal
 #4375	#4515	Text typed during a Rewrite follow-up is erased when it finishes or is cancelled	L	TestRewriteTypingDuringFollowUpSurvivesItsEnd
 #4375	#4515	An early missing-model failure erases a typed Rewrite follow-up	L	TestRewriteTypedFollowUpSurvivesNoLLM
+#4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut

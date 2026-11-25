@@ -12,6 +12,14 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func (r *run) cleanUpFirst(text string) cleanupOutput {
+	request, ok := r.currentCleanupRequest()
+	if !ok {
+		return cleanupOutput{text: text, completedAt: r.now()}
+	}
+	return r.cleanUpFirstContext(text, request)
+}
+
 // TestAliases: with the dictionary on, its aliases become their terms
 // before the clean-up, also without a language model or with the
 // glossary and the hints off; the history keeps the text as recognised.

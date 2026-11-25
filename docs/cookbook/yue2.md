@@ -6,7 +6,9 @@ The YuE2 and YuE2-Vae weights are CC BY-NC 4.0; commercial use is not permitted.
 
 ## Start the server
 
-Install SGLang-Omni following [Installation](../get_started/installation.md), then start one CUDA worker:
+Install SGLang-Omni following [Installation](../get_started/installation.md). For Intel GPUs, follow the [YuE2 XPU recipe](../other_platforms/installation_xpu.md#yue2-text-to-music-single-xpu).
+
+Start one CUDA worker:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 sgl-omni serve \

@@ -38,6 +38,8 @@ type harness struct {
 	logs   []string
 	// vadModel is the voice activity model the services have (nil: none).
 	vadModel vad.Model
+	// remote: the language model's requests run side by side (Model.Remote).
+	remote bool
 }
 
 func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
@@ -59,7 +61,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 				svc = Services{ASR: h.asr, ASRInfo: Model{ID: "doubao", Name: "Doubao", Model: "seed"}, VAD: h.vadModel}
 			}
 			if h.llm != nil {
-				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat"}
+				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat", Remote: h.remote}
 			}
 			if h.fallback != nil {
 				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
@@ -565,10 +567,15 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		h := newHarness(t, &fakeFile{text: "x"}, nil, nil)
 		id := h.start()
 		h.speak(id, 30)
-		h.rec.wait(t)
+		end := h.rec.wait(t)
 		s := h.rec.waitFor(t, "levels", func(s Snapshot) bool { return len(s.Levels) == Bars })
 		if s.Levels[0] < 0.6 || s.Levels[0] > 0.7 || s.Device != "MacBook Air Microphone" {
 			t.Errorf("levels %v device %q", s.Levels, s.Device)
+		}
+		// Every level counts, past the Bars kept: the waveform tells the
+		// new ones by it (layout.WavePlay).
+		if sent := h.audio.recorded(); end.LevelCount != sent || len(end.Levels) != Bars {
+			t.Errorf("%d levels counted, %d kept; sent %d", end.LevelCount, len(end.Levels), sent)
 		}
 	})
 }

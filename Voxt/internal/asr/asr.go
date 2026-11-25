@@ -114,6 +114,10 @@ type StreamRequest struct {
 	// pass over the whole recording at Finish, where the model makes one
 	// (settings.Audio.LiveResult); the others ignore it.
 	LiveResult bool
+	// EarlyPieces asks for the first stretch (EventPiece) sooner than the
+	// model's policy gives it: the session works on the stretches while the
+	// recording goes on. A model that finalises none ignores it.
+	EarlyPieces bool
 }
 
 // Streamer opens recognition streams.

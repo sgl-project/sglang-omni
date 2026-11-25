@@ -10,6 +10,12 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 )
 
+// CleanupLatencyPolicy optionally allows ordinary Transcribe to fall back to raw text after Stop.
+type CleanupLatencyPolicy struct {
+	// A non-positive value disables automatic fallback.
+	AutoFallbackAfter time.Duration
+}
+
 // llmPrefillPerChar is a request's extra time per character of the input
 // before its answer starts: a long selection's prompt takes seconds to
 // read.
@@ -44,10 +50,34 @@ func TimedOut(err error) bool {
 // own (only those, the user's own), else the picture the user copied,
 // else the window's.
 func (r *run) llmChat(req llm.Request) (llm.Response, error) {
-	return r.llmChatContext(r.llmCtx, req)
+	return r.llmChatContext(r.currentLLMContext(), req)
+}
+
+func (r *run) currentLLMContext() context.Context {
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.llmCtx
 }
 
 func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Response, error) {
+	r.m.mu.Lock()
+	client, choice, deadlineAt := r.svc.LLM, r.cleanupChoice, r.cleanupDeadline
+	if parent == nil || parent.Err() != nil || r.ctx.Err() != nil || choice != cleanupUndecided || !r.cleanupDecisionOpenLocked() {
+		r.m.mu.Unlock()
+		return llm.Response{}, context.Canceled
+	}
+	if !deadlineAt.IsZero() {
+		remaining := deadlineAt.Sub(r.now())
+		if remaining <= 0 {
+			r.m.mu.Unlock()
+			return llm.Response{}, context.DeadlineExceeded
+		}
+		req.Timeout = min(req.Timeout, remaining)
+	}
+	r.m.mu.Unlock()
+	if client == nil {
+		return llm.Response{}, errors.New("no language model is ready")
+	}
 	ctx, cancel := context.WithTimeout(parent, req.Timeout)
 	defer cancel()
 	hint := ""
@@ -55,26 +85,41 @@ func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Respo
 	case len(r.req.Images) > 0:
 		req.Images, req.ImagesRequired = r.req.Images, true
 		hint = "box"
-		r.previewImage("", nil)
+		r.previewImageContext(parent, "", nil)
 	case r.clip != nil: // the picture the user copied wins over the window's
 		req.Images = [][]byte{r.clip}
 		hint = "clipboard"
-		r.previewImage("clipboard", r.clip)
+		r.previewImageContext(parent, "clipboard", r.clip)
 	case r.shot != nil:
 		if jpeg := r.shot(); jpeg != nil {
 			req.Images = [][]byte{jpeg}
 			hint = "window"
-			r.previewImage("window", jpeg)
+			r.previewImageContext(parent, "window", jpeg)
 		}
 	}
 	if hint != "" {
-		r.m.update(r, func(s *Snapshot) { s.ImageHint = hint })
+		r.m.updateIf(r, func(s *Snapshot) bool {
+			if parent.Err() != nil || r.ctx.Err() != nil || !r.cleanupDecisionOpenLocked() {
+				return false
+			}
+			s.ImageHint = hint
+			return true
+		})
 	}
-	resp, err := r.svc.LLM.Chat(ctx, req)
+	if parent.Err() != nil || r.ctx.Err() != nil {
+		return llm.Response{}, context.Canceled
+	}
+	resp, err := client.Chat(ctx, req)
 	if err == nil && resp.ImagesDropped && hint != "" {
 		// The model answered from the text alone: the card must not
 		// claim a picture went with the request.
-		r.m.update(r, func(s *Snapshot) { s.ImageHint = "" })
+		r.m.updateIf(r, func(s *Snapshot) bool {
+			if ctx.Err() != nil || parent.Err() != nil || !r.cleanupDecisionOpenLocked() {
+				return false
+			}
+			s.ImageHint = ""
+			return true
+		})
 	}
 	if err == nil || r.ctx.Err() != nil {
 		return resp, err

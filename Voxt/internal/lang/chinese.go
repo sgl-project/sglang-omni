@@ -47,6 +47,58 @@ func RenderChineseScript(text, languageTag string) string {
 	}
 }
 
+// ChineseScript is the script Chinese speech in the language main is
+// written in, "zh-Hans" or "zh-Hant", for a user who reads the languages
+// reads, most preferred first; "" when main is not Chinese or nothing
+// says. main's own script decides ("zh-Hant"), else the first Chinese
+// language read: its script, else its region's (TW, HK and MO
+// Traditional), else its usual one (Mandarin Simplified, Cantonese
+// Traditional). A bare "zh" main language with no Chinese read leaves the
+// script to the speech model.
+func ChineseScript(main string, reads []string) string {
+	if c := Canonical(main); c != "zh" && c != "yue" {
+		return ""
+	}
+	if s := chineseTagScript(main, false); s != "" {
+		return s
+	}
+	for _, tag := range reads {
+		if c := Canonical(tag); c == "zh" || c == "yue" {
+			return chineseTagScript(tag, true)
+		}
+	}
+	return ""
+}
+
+func chineseTagScript(tag string, usual bool) string {
+	subtags := strings.Split(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(tag), "_", "-")), "-")
+	region := ""
+	for _, subtag := range subtags[1:] {
+		switch subtag {
+		case "hans":
+			return "zh-Hans"
+		case "hant":
+			return "zh-Hant"
+		}
+		if len(subtag) == 2 && region == "" {
+			region = subtag
+		}
+	}
+	switch region {
+	case "tw", "hk", "mo":
+		return "zh-Hant"
+	case "cn", "sg", "my":
+		return "zh-Hans"
+	}
+	if !usual {
+		return ""
+	}
+	if language, ok := Lookup(tag); ok && language.Script == "Hant" {
+		return "zh-Hant"
+	}
+	return "zh-Hans"
+}
+
 // CanonicalChinese folds Traditional Chinese text to Simplified Chinese for
 // comparisons. Other text stays unchanged.
 func CanonicalChinese(text string) string {
