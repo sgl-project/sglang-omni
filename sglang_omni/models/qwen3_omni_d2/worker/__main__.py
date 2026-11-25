@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Run the Qwen D2 model and its fixed-capacity graph cache in the release environment."""
+"""Isolated entry point for the Qwen D2 model and its fixed-capacity graph cache."""
 
 import asyncio
 import base64

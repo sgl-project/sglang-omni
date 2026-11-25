@@ -47,7 +47,7 @@ class D2Runtime:
                 [
                     runtime_python,
                     "-I",
-                    str(Path(__file__).with_name("worker.py")),
+                    str(Path(__file__).with_name("worker")),
                     str(worker_socket.fileno()),
                     str(os.getpid()),
                     model_path,
