@@ -7,6 +7,7 @@ from typing import Literal
 ProfileName = Literal[
     "nemotron-voicechat-pr2188",
     "minicpmo-native-pr2377",
+    "qwen3-omni-d2-80ms",
     "qwen3-omni-half-duplex",
     "turn-based",
 ]
@@ -40,6 +41,13 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
         output_sample_rate=24000,
         stop_requires_eos=False,
         continuous_output=False,
+        protocol="native",
+    ),
+    "qwen3-omni-d2-80ms": DuplexProfile(
+        native_unit_ms=80,
+        output_sample_rate=24000,
+        stop_requires_eos=True,
+        continuous_output=True,
         protocol="native",
     ),
     "qwen3-omni-half-duplex": DuplexProfile(
