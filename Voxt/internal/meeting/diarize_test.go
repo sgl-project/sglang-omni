@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,8 @@ type seqDiarizer struct {
 	mu       sync.Mutex
 	results  []asr.Result
 	requests []asr.FileRequest
+	onCall   func(int)
+	failAt   int
 }
 
 func (f *seqDiarizer) Caps() asr.Caps { return asr.Caps{File: true} }
@@ -24,7 +27,14 @@ func (f *seqDiarizer) Diarize(_ context.Context, req asr.FileRequest) (asr.Resul
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
-	return f.results[len(f.requests)-1], nil
+	n := len(f.requests) - 1
+	if f.onCall != nil {
+		f.onCall(n)
+	}
+	if f.failAt > 0 && n+1 == f.failAt {
+		return asr.Result{}, errors.New("diarize failed")
+	}
+	return f.results[n], nil
 }
 
 // A long track goes to MTD in chunks (a dictation slips in between), the
@@ -38,7 +48,7 @@ func TestDiarizeTrackChunksAndCarriesSpeakers(t *testing.T) {
 	rate := asr.SampleRate
 	pcm := make([]byte, rate*200*2) // 200 s
 	speech := []vad.Segment{{Start: 0, End: rate * 200}}
-	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +93,7 @@ func TestDiarizeTrackDropsOverlapRepeat(t *testing.T) {
 	rate := asr.SampleRate
 	pcm := make([]byte, rate*200*2) // 200 s
 	speech := []vad.Segment{{Start: 0, End: rate * 200}}
-	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,12 +123,21 @@ func TestDiarizeTrackAnchorsRenumberedSpeaker(t *testing.T) {
 	rate := asr.SampleRate
 	pcm := make([]byte, rate*200*2) // 200 s
 	speech := []vad.Segment{{Start: 0, End: rate * 200}}
-	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	var delta []Segment
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, func(part []Segment) {
+		if len(part) != 2 || part[0].Speaker != "s1" || part[1].Speaker != "s2" {
+			t.Errorf("chunk callback before speaker anchoring: %+v", part)
+		}
+		delta = append(delta, part...)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(segs) != 3 {
 		t.Fatalf("segments %+v", segs)
+	}
+	if len(delta) != 2 {
+		t.Errorf("non-final chunk callbacks produced %+v, want two lines", delta)
 	}
 	if segs[1].Speaker != "s2" || segs[2].Speaker != "s2" || segs[2].Text != "next steps now" {
 		t.Errorf("segments %+v", segs)
@@ -150,7 +169,7 @@ func TestDiarizeTrackPacksPausesToTheCap(t *testing.T) {
 	for len(d.results) < len(speech) {
 		d.results = append(d.results, asr.Result{Segments: []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "hi"}}})
 	}
-	if _, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil); err != nil {
+	if _, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(d.requests) != 3 {

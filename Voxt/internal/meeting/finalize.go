@@ -150,7 +150,13 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return nil, err
 			}
 			if d != nil {
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				var onChunk func([]Segment)
+				if src == SourceSystem && cfg.correctOverlap != nil {
+					onChunk = func(delta []Segment) {
+						cfg.correctOverlap.speculateSystemDelta(ctx, cfg, delta)
+					}
+				}
+				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress, onChunk)
 				if err != nil {
 					return nil, err
 				}
@@ -159,6 +165,9 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				}
 				return segs, nil
 			}
+		}
+		if src == SourceSystem && cfg.correctOverlap != nil {
+			cfg.correctOverlap.flush(ctx)
 		}
 		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
 		if err != nil {
@@ -186,7 +195,7 @@ const mossPrompt = "Transcribe the audio into text. Start each segment with the 
 // after the first carrying the last labeled lines, so a voice keeps its
 // number across the boundaries (the native decoder starts its labels
 // over per chunk).
-func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64)) ([]Segment, error) {
+func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileRequest, rate int, pcm []byte, speech []vad.Segment, onProgress func(float64), onChunk func([]Segment)) ([]Segment, error) {
 	p := DefaultChunkParams()
 	p.Rate = rate
 	p.MaxDur = diarizeChunkMax
@@ -201,6 +210,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 	var prevText string       // the last emitted line, for the straddling one
 	var tail []labeledLine    // the trailing emitted lines, for speaker anchors
 	needTrim := false
+	previousLen := 0
 	for i, ch := range chunks {
 		if onProgress != nil {
 			onProgress(float64(i) / float64(len(chunks)))
@@ -271,6 +281,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		}
 		covered = time.Duration(ch.End) * time.Second / time.Duration(rate)
 		needTrim = true
+		if onChunk != nil && i+1 < len(chunks) && len(out) > previousLen {
+			onChunk(append([]Segment(nil), out[previousLen:]...))
+			previousLen = len(out)
+		}
 	}
 	if onProgress != nil {
 		onProgress(1)

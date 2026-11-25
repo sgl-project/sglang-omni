@@ -104,8 +104,8 @@ func (m *Manager) dropCorrectOverlap() {
 	o := m.cfg.correctOverlap
 	m.cfg.correctOverlap = nil
 	m.mu.Unlock()
-	if o != nil && o.cancel != nil {
-		o.cancel()
+	if o != nil {
+		o.abort()
 	}
 }
 
