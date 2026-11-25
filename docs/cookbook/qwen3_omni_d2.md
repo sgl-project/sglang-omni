@@ -48,6 +48,8 @@ python -m benchmarks.eval.benchmark_duplex \
   --server-revision "$(git rev-parse HEAD)" --timeout 220
 ```
 
+When testing another D2 release, use the matching replay profile, for example `qwen3-omni-d2-320ms` with the `qwen-320ms` checkpoint.
+
 ## Session limits
 
 The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The D2 checkpoint fixes the system prompt and voice. Its interruption decision is driven by incoming audio.

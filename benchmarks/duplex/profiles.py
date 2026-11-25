@@ -8,6 +8,10 @@ ProfileName = Literal[
     "nemotron-voicechat-pr2188",
     "minicpmo-native-pr2377",
     "qwen3-omni-d2-80ms",
+    "qwen3-omni-d2-160ms",
+    "qwen3-omni-d2-320ms",
+    "qwen3-omni-d2-640ms",
+    "qwen3-omni-d2-1040ms",
     "qwen3-omni-half-duplex",
     "turn-based",
 ]
@@ -29,6 +33,14 @@ class DuplexProfile:
     supports_server_interrupt: bool = False
 
 
+QWEN_D2_INTERVALS_MS: dict[ProfileName, int] = {
+    "qwen3-omni-d2-80ms": 80,
+    "qwen3-omni-d2-160ms": 160,
+    "qwen3-omni-d2-320ms": 320,
+    "qwen3-omni-d2-640ms": 640,
+    "qwen3-omni-d2-1040ms": 1040,
+}
+
 PROFILES: dict[ProfileName, DuplexProfile] = {
     "nemotron-voicechat-pr2188": DuplexProfile(
         native_unit_ms=80,
@@ -44,14 +56,17 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
         continuous_output=False,
         protocol="native",
     ),
-    "qwen3-omni-d2-80ms": DuplexProfile(
-        native_unit_ms=80,
-        output_sample_rate=24000,
-        stop_requires_eos=True,
-        continuous_output=True,
-        protocol="native",
-        supports_server_interrupt=True,
-    ),
+    **{
+        profile: DuplexProfile(
+            native_unit_ms=interval_ms,
+            output_sample_rate=24000,
+            stop_requires_eos=True,
+            continuous_output=True,
+            protocol="native",
+            supports_server_interrupt=True,
+        )
+        for profile, interval_ms in QWEN_D2_INTERVALS_MS.items()
+    },
     "qwen3-omni-half-duplex": DuplexProfile(
         native_unit_ms=20,
         output_sample_rate=24000,

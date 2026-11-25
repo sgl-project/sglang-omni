@@ -559,7 +559,7 @@ select the same profile during offline replay.
 | --- | --- | --- | --- | --- |
 | `nemotron-voicechat-pr2188` | 80 ms | 22,050 Hz, audio | After input EOS | Fixed samples per input unit |
 | `minicpmo-native-pr2377` | 1,000 ms | 24,000 Hz, audio required | Natural turn end or input EOS | Variable; silence is valid |
-| `qwen3-omni-d2-80ms` | 80 ms | 24,000 Hz, audio | After input EOS | 1,920 samples per input unit, including silence |
+| `qwen3-omni-d2-{80,160,320,640,1040}ms` | Checkpoint interval | 24,000 Hz, audio | After input EOS or a model interruption | 1,920 samples per 80 ms frame, including silence |
 
 Both profiles check the declared capabilities, causal receipts, complete input
 accounting, native units, terminal ordering, EOS drain and session closure.
