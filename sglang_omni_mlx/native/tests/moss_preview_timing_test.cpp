@@ -164,7 +164,13 @@ int main() {
   std::vector<std::string> events;
   omni_server::TranscriptionWorker worker([] {}, [] {}, 1);
   const auto session = std::make_shared<moss::MossRealtimeSession>(
-      worker, transcriber, [&events](const std::string &event) {
+      worker,
+      [&transcriber](const std::vector<float> &samples,
+                     const moss::MossOptions &options,
+                     const std::atomic<bool> &cancel) {
+        return transcriber.Transcribe(samples, options, cancel);
+      },
+      [&events](const std::string &event) {
         events.push_back(event);
         return true;
       });
