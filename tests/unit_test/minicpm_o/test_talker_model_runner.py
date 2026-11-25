@@ -583,4 +583,6 @@ def test_device_history_matches_host_boundary_eos_and_penalty() -> None:
         torch.testing.assert_close(logits, expected, rtol=0, atol=0)
         for row, scheduler_request in enumerate(requests):
             scheduler_request.data.req.output_ids.append(int(next_token_ids[row]))
-    assert held_steps == list(range(25, 30)), "the codec EOS is held around the boundary"
+    assert held_steps == list(
+        range(25, 30)
+    ), "the codec EOS is held around the boundary"
