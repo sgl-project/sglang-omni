@@ -86,7 +86,7 @@ def start_request_profile(
     event_buffer_capacity: int | None = None,
 ) -> dict:
     """Start request-level (JSONL) event profiling on one serve process."""
-    payload: dict[str, object] = {"run_id": run_id, "event_dir": event_dir}
+    payload: dict[str, str | int] = {"run_id": run_id, "event_dir": event_dir}
     if event_buffer_capacity is not None:
         payload["event_buffer_capacity"] = event_buffer_capacity
     else:
@@ -137,6 +137,7 @@ async def run_profiled_pass(
     profile_urls: Sequence[str],
     run_pass: Callable[[], Awaitable[dict[str, Any]]],
     log_prefix: str,
+    event_buffer_capacity: int | None = None,
     error_stream: TextIO | None = None,
     event_buffer_capacity: int | None = None,
 ) -> dict[str, Any] | None:
@@ -144,15 +145,9 @@ async def run_profiled_pass(
     started: list[str] = []
     try:
         for url in profile_urls:
-            if event_buffer_capacity is None:
-                start_request_profile(url, run_id, event_dir)
-            else:
-                start_request_profile(
-                    url,
-                    run_id,
-                    event_dir,
-                    event_buffer_capacity=event_buffer_capacity,
-                )
+            start_request_profile(
+                url, run_id, event_dir, event_buffer_capacity=event_buffer_capacity
+            )
             started.append(url)
     except requests.RequestException as exc:
         for url in started:

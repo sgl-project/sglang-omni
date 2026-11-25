@@ -220,7 +220,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 		marked := 0
 		carry = ""
 		for _, part := range res.Segments {
-			text := strings.TrimSpace(part.Text)
+			text := sanitizeSegmentText(part.Text, req, false)
 			if text == "" {
 				continue
 			}
@@ -247,7 +247,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			prevText = text
 			needTrim = false
 			if speaker != "" {
-				tail = append(tail, labeledLine{words: splitWords(text), speaker: speaker})
+				tail = append(tail, labeledLine{words: echoWords(text), speaker: speaker})
 				if len(tail) > 8 {
 					tail = tail[len(tail)-8:]
 				}
@@ -255,7 +255,10 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 			}
 		}
 		if marked == 0 && strings.TrimSpace(res.Text) != "" {
-			out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: strings.TrimSpace(res.Text), Final: true})
+			text := sanitizeSegmentText(res.Text, req, false)
+			if text != "" {
+				out = append(out, Segment{ID: core.NewID(time.Now()), Source: src, Start: offset, End: offset + asr.Duration(sub.Audio, rate), Text: text, Final: true})
+			}
 		}
 		if runes := []rune(carry); len(runes) > 300 { // the last lines, at most a screen
 			carry = string(runes[len(runes)-300:])
@@ -320,12 +323,12 @@ func anchorSpeakers(parts []asr.SpeakerSegment, offset, covered time.Duration, t
 		if offset+part.End > covered {
 			continue
 		}
-		words := splitWords(part.Text)
+		words := echoWords(part.Text)
 		if len(words) < 2 {
 			continue // a one-word line anchors nothing: too many voices say it
 		}
 		for k := len(tail) - 1; k >= 0; k-- {
-			if tail[k].speaker != "" && sameWords(tail[k].words, words) {
+			if tail[k].speaker != "" && len(tail[k].words) >= 2 && sameWords(tail[k].words, words) {
 				anchors[part.Speaker] = tail[k].speaker
 				break
 			}
@@ -360,7 +363,7 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 		if err != nil {
 			return out, fmt.Errorf("chunk %d: %w", i, err)
 		}
-		text := res.Text
+		text := sanitizeSegmentText(res.Text, req, true)
 		if i > 0 {
 			text = DedupeOverlapText(prevText, text)
 		}
@@ -468,7 +471,9 @@ func markFinalizeFailed(ctx context.Context, cfg Config, mt store.Meeting) error
 
 func applyAudioRetention(ctx context.Context, cfg Config, mt store.Meeting, mode Mode, success bool) error {
 	keep := cfg.Privacy().KeepAudio || mode.KeepsAudio()
-	if !success || keep {
+	// A meeting whose recording is gone has no folder of its own: joined
+	// with "", cfg.Dir is the folder of every meeting's recordings.
+	if !success || keep || mt.Audio == "" {
 		return nil
 	}
 	dir := filepath.Join(cfg.Dir, mt.Audio)

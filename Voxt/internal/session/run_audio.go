@@ -82,6 +82,7 @@ func (r *run) onAudio(ev AudioEvent) {
 		v := Level(ev.Level.RMS)
 		r.m.update(r, func(s *Snapshot) {
 			s.Levels = append(s.Levels, v)
+			s.LevelCount++
 			if len(s.Levels) > Bars {
 				s.Levels = s.Levels[len(s.Levels)-Bars:]
 			}
@@ -93,6 +94,12 @@ func (r *run) onAudio(ev AudioEvent) {
 			r.m.update(r, func(s *Snapshot) { s.Device, s.Switched = rs.DeviceName, s.Switched+1 })
 		}
 	}
+}
+
+// Level is a dBFS level as a bar height, 0–1 (−60 dBFS and below is 0).
+func Level(db float64) float64 {
+	v := (db + 60) / 60
+	return min(max(v, 0), 1)
 }
 
 // feed sends the recording to st as it grows, then Finish; its partials
@@ -189,11 +196,12 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				}
 				switch ev.Kind {
 				case asr.EventPartial:
-					text := ev.Text
+					text := r.inScript(ev.Text, "")
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
+					r.hearLive(text)
 				case asr.EventPiece:
-					r.hearPiece(ev.Text)
+					r.hearPiece(r.inScript(ev.Text, ""))
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text

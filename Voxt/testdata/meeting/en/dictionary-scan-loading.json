@@ -49,6 +49,7 @@
     ],
     "suggestion_count": 2,
     "scan_open": true,
+    "settings_open": false,
     "scan": {
       "stage": "loading",
       "model_name": "Fixture model",

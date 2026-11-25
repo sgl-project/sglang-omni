@@ -34,6 +34,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -51,6 +52,8 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// wave plays sess's levels out for the waveform (overlayWave).
+	wave layout.WavePlay
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
@@ -194,6 +197,12 @@ func (a *app) openSessions() {
 	lib := a.lib
 	logs := a.logs
 	st := a.settings
+	cleanupLatency, cleanupDiagnostic := cleanupLatencyFromEnv()
+	if cleanupDiagnostic != "" {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: cleanupDiagnostic})
+	} else if cleanupLatency.AutoFallbackAfter > 0 {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "experimental cleanup fallback enabled: " + cleanupLatency.AutoFallbackAfter.String() + " after Stop"})
+	}
 	a.mgr = session.New(session.Config{
 		Audio:  session.HelperAudio{H: sup},
 		Text:   a.textIO(), // family_runtime.go: the family's paste rule
@@ -219,16 +228,19 @@ func (a *app) openSessions() {
 		BoxReview:         a.boxShare.waitForReview,
 		Resolve:           resolver(lm),
 		History:           lib.store.History(),
+		Languages:         readingLanguages, // settings_locale.go
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
-		Notes:    lib.store.Notes(),
-		Settings: st.Get,
-		Locale:   i18n.Locale,
-		Scene:    a.sceneConfig(), // appenhance.go
-		Self:     os.Getpid(),
-		Activate: func(pid int) bool { ok, _ := activateTarget(pid); return ok },
-		OnChange: func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
+		Snippets:       snippetsReader(lib.store.Documents()),
+		Notes:          lib.store.Notes(),
+		Settings:       st.Get,
+		Locale:         i18n.Locale,
+		Scene:          a.sceneConfig(), // appenhance.go
+		CleanupLatency: cleanupLatency,
+		Self:           os.Getpid(),
+		Activate:       func(pid int) bool { ok, _ := activateTarget(pid); return ok },
+		OnChange:       func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
 		Log: func(level, msg string) {
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: sessionSource, Message: msg})
 		},
@@ -302,9 +314,7 @@ func resolver(lm local.Services) session.Resolver {
 
 // fallbackCandidates are the models a session may fall back to, in order:
 // Translate's fallback model, then, with Models.LLMSwitch, every other
-// ready model on this Mac in the Language models page's order. The switch
-// never picks an external API: the text would go to a provider the user
-// did not choose for the feature.
+// ready model in the Language models page's order.
 func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Model, chosen string) []string {
 	var ids []string
 	if fb := s.Features.Translate.Fallback; kind == store.KindTranslate && fb != "" && fb != chosen && slices.ContainsFunc(ready, func(x local.Model) bool { return x.ID == fb }) {
@@ -314,9 +324,7 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 		return ids
 	}
 	for _, x := range ready {
-		setup, _ := providers.Setup(s, x.ID)
-		preset, err := providers.Config(setup).Resolve()
-		if x.ID != chosen && !slices.Contains(ids, x.ID) && err == nil && onThisMac(preset.BaseURL) {
+		if x.ID != chosen && !slices.Contains(ids, x.ID) {
 			ids = append(ids, x.ID)
 		}
 	}
@@ -341,6 +349,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	a.wave.Feed(s.ID, s.Levels, s.LevelCount, time.Now())
 	if a.box.open {
 		if s.ID == a.box.session {
 			if s.Selection != "" {
@@ -384,7 +393,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		return
 	}
 	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
-		a.copyRecent(s.Result) // tray.go: the clipboard keeps each result
+		a.copyRecent(s.Result, false) // tray.go: the clipboard keeps each result
 	}
 	switch {
 	case a.answer.open && a.answer.redo != "" && a.answer.redo == s.ID:
@@ -434,7 +443,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 	var copied *sessionNotice
 	if !s.Card && !s.Inserted && s.Delivery != "" && s.Result != "" && s.State == session.Done {
 		// Not inserted and the card is off: the clipboard has it (Voxt 1.x).
-		a.copyRecent(s.Result)
+		a.copyRecent(s.Result, false)
 		// One short line: a notice is one line, cut past NoticeW2.
 		copied = &sessionNotice{text: i18n.T("Not inserted. Copied: press ⌘V to paste."), warn: true, over: back}
 	}

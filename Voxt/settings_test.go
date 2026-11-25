@@ -104,6 +104,39 @@ func TestShortcutsSettings(t *testing.T) {
 	}
 }
 
+func TestShortcutsUseTheTranscribeIcon(t *testing.T) {
+	if got := shortcutIcon("transcribe"); got.Name != transcribeIcon.Name {
+		t.Fatalf("Transcribe shortcut icon = %q, want %q", got.Name, transcribeIcon.Name)
+	}
+}
+
+// TestReturnFinishesSetting: Settings → Shortcuts has the switch for
+// Return finishing a recording, under the shortcuts, on by default, in
+// English and Chinese, and it saves. It was Transcribe's page's, for
+// Transcribe alone; it now covers every feature (TestReturnFinishPlanScope).
+func TestReturnFinishesSetting(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	const title = "Return finishes a recording"
+	scrollToText(tt, title)
+	if !has(tt, title) || !a.settings.Get().Features.ReturnFinishes {
+		t.Fatalf("section: %v %q", a.settings.Get().Features.ReturnFinishes, firstTexts(tt))
+	}
+	if err := tt.ClickControl(title); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.settings.Get().Features.ReturnFinishes {
+		t.Fatal("the switch did not turn Return finishing off")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	scrollToText(tt, "按回车结束录音")
+	if !has(tt, "按回车结束录音") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
+	}
+}
+
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
 // shortcuts switch, off by default, with its line in English and Chinese;
 // it shows without scrolling at the default and the smallest window size

@@ -56,13 +56,14 @@ dependencies = [
     "websockets>=12.0",
     "openai==2.6.1",
     "openai-harmony==0.0.4",
-    "silero-vad>=5.1",
+    "silero-vad>=5.1,<6.3",  # note (0xtoward): silero-vad 6.3 tightened speech probabilities for the same threshold; cap until VAD thresholds and fixtures are recalibrated.
     "onnxruntime>=1.17",
 
     # Audio and multimodal utilities
     # --- Multimodal preprocessing --------------------------------------------
     "qwen-vl-utils==0.0.11",
     "librosa>=0.11.0",
+    "soxr>=0.3.7",
     "av>=16.1.0",
     "soundfile>=0.12.0",
     "scipy>=1.10.0",

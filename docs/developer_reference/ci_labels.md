@@ -16,7 +16,7 @@ Add the labels that match the change. They combine, and no label runs all of CI.
 | Several models of one kind, or code they share | `run-asr-ci`, `run-tts-ci` or `run-omni-ci` | PR Test and every job of that stage, on a random model unless a model label pins it |
 | CUDA MPS or weight sharing | `run-mps-ci` | PR Test and MPS |
 | Full duplex or realtime sessions | `run-native-duplex`, `run-turn-based-duplex` or `run-cascaded-duplex` | PR Test and that Full-Duplex-Bench job |
-| Code that only the unit tests cover | `run-unit-test-ci-only` | PR Test on H100. Not `intel-cpu-ci (unit_test/cpu)`. |
+| Code that only the unit tests cover | `run-unit-test-ci-only` | CPU unit tests on GitHub-hosted VMs and H100 accelerator unit tests. Not `intel-cpu-ci (unit_test/cpu)`. |
 | The Intel CPU or Intel GPU path | `run-intel-cpu-ci` or `run-intel-xpu-ci` | PR Test and that workflow's tests, when its paths match |
 | The MLX path or the Voxt app | `run-mac-ci` | Mac CI. Not PR Test. |
 | Nothing that needs self-hosted CI | `run-lint-only` | No self-hosted job. The gates succeed. |
@@ -31,8 +31,8 @@ Add the labels that match the change. They combine, and no label runs all of CI.
 | Playground Test | GitHub-hosted | The playground frontend tests | Every pull request except MLX-only ones |
 | Rust Router | GitHub-hosted | Rust router format, lint, tests and release build | Every pull request except MLX-only ones |
 | Release Docker Images Nightly (NPU) | GitHub-hosted | NPU configuration checks and an ARM64 image build | Pull requests that change its Dockerfile, installer, pyproject files or workflows |
-| Omni CI: PR Test | H100 | The unit test suite twice: once with CUDA hidden, once for the tests that need a GPU | Any stage label except `run-mac-ci`, or a model label |
-| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
+| Omni CI: PR Test | GitHub-hosted Linux and H100 | Eight CPU unit-test partitions on Ubuntu VMs and two H100 accelerator partitions | Any stage label except `run-mac-ci`, or a model label |
+| Omni CI: ASR | H100 | Multi-speaker transcription and diarization with MOSS-Transcribe-Diarize, and SeedTTS English and Chinese word error rate and speed on ARK-ASR-3B, Fun-ASR-Nano-2512, Qwen3-ASR-1.7B or Whisper-large-v3 | `run-asr-ci` for both jobs, or an ASR model label for the job that tests that model |
 | Omni CI: TTS | H100 | Voice cloning on SeedTTS with Higgs-TTS, MOSS-TTS, Qwen3-TTS or Fun-CosyVoice3: non-streaming and streaming speed, word error rate, speaker similarity and UTMOS, streaming consistency, first-audio latency for Qwen3-TTS, and a serving stress test on Higgs-TTS | `run-tts-ci` for every job, or a TTS model label for the jobs that test that model |
 | Omni CI: MPS | H100 | External CUDA MPS DP2 non-streaming validation, native MPS lifecycle validation, and native CUDA IPC weight-sharing lifecycle validation | `run-mps-ci` |
 | Omni CI: Omni | H100 | Qwen3-Omni or MiniCPM-o 4.5: thinker length limits, SeedTTS voice cloning, accuracy and speed on MMMU, MMSU, Video-MME and Video-AMME with text and spoken answers, a tensor parallel thinker, and Qwen3-Omni process replicas | `run-omni-ci`, or an Omni model label for that model |
@@ -59,26 +59,27 @@ These workflows run on GitHub-hosted runners for every pull request, drafts incl
 
 ## The Omni CI workflow
 
-Omni CI runs PR Test and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. A shared setup job then builds the virtualenv and downloads model weights. With every stage label, the stages run in this order:
+Omni CI runs the hosted CPU unit tests (`unit-test-cpu-0` through `unit-test-cpu-7`), PR Test (`unit-test-accelerator-a/b`), and the seven H100 model stages. Its preflight job waits for lint, resolves the labels and draws the models once. After preflight, the eight GitHub-hosted CPU unit-test jobs start immediately in parallel with H100 shared setup (`setup` builds the virtualenv and downloads model weights), without waiting for or occupying H100 runners. With every stage label, the H100 stages run in this order:
 
-PR Test → ASR, TTS, Omni and Duplex side by side → MPS
+PR Test → ASR, TTS, MPS, Omni and Duplex side by side
 
-Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, Omni and Duplex start together as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free. Jobs within a stage run side by side as well. TTS's SeedTTS voice cloning job runs its non-streaming and streaming benchmarks one after the other, because its last check compares their results. MPS starts after the other selected stages finish: it tests the PR head commit instead of the merge commit, so it may rebuild the PR's shared virtualenv, and that must not happen while another stage is using it. With `run-tts-ci` and `run-mps-ci`, the order is PR Test → TTS → MPS. A stage that fails does not stop any other stage. A failed setup job blocks every stage.
+Only PR Test and the selected stages actually run; a stage that is not selected is skipped at once. ASR, TTS, MPS, Omni and Duplex start independently as soon as PR Test finishes, whether it passed or not, and their jobs spread over whichever H100 runners are free; they do not wait for the hosted CPU partitions. Jobs within a stage run side by side as well. TTS's SeedTTS voice cloning job runs its non-streaming and streaming benchmarks one after the other, because its last check compares their results. MPS uses `github.sha` (the merge commit on a regular `pull_request` run), so it shares the same virtualenv and does not wait for TTS or other model stages. A stage that fails does not stop any other stage. A failed setup job blocks the H100 stages, while hosted CPU unit tests continue independently.
 
 ### PR Test
 
 | Job | What it runs |
 | --- | --- |
-| `unit-test-a` | First runtime-balanced partition of `pytest tests/ -m "not benchmark and not accelerator"`, with CUDA hidden |
-| `unit-test-b` | Second runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
-| `unit-test-c` | Third runtime-balanced partition of the same CPU unit-test suite, with CUDA hidden |
-| `unit-test-accelerator` | `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
+| `unit-test-cpu-0` through `unit-test-cpu-7` | Eight runtime-balanced partitions of `pytest tests/ -m "not benchmark and not accelerator"` on separate GitHub-hosted Ubuntu VMs |
+| `unit-test-accelerator-a` | First runtime-balanced partition of `pytest tests/ -m "accelerator and not benchmark"`, the unit tests that need a GPU |
+| `unit-test-accelerator-b` | Second runtime-balanced partition of the same accelerator unit-test suite |
 
-The CPU partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json`. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
+Each CPU VM installs the dependencies for the checked-out revision in a fresh environment, runs its partition with retries, and uploads its JUnit report and attempt logs. The CPU and accelerator partitions run as independent matrix jobs with fail-fast disabled. Files stay intact and are balanced using `.github/unit_test_durations.json` for the CPU suite and `.github/unit_test_accelerator_durations.json` for the accelerator suite; a file with both kinds of test has a weight in each. Pytest discovers new tests automatically; files without a timing entry receive a one-second estimate, and new cases in an existing file stay in that file's partition. Local pytest remains unpartitioned unless the CI plugin is explicitly loaded.
 
-The weights are per-file p90 elapsed estimates from three successful H100 A/B runs: [41197670240](https://github.com/sgl-project/sglang-omni/actions/runs/41197670240), [41161315193](https://github.com/sgl-project/sglang-omni/actions/runs/41161315193) and [41140707601](https://github.com/sgl-project/sglang-omni/actions/runs/41140707601). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
+The CPU weights are per-file p90 elapsed estimates from three successful H100 A/B runs: [41197670240](https://github.com/sgl-project/sglang-omni/actions/runs/41197670240), [41161315193](https://github.com/sgl-project/sglang-omni/actions/runs/41161315193) and [41140707601](https://github.com/sgl-project/sglang-omni/actions/runs/41140707601). Each file has three observations. The estimates aggregate timestamp intervals between completed pytest cases, excluding initial collection; they are not isolated setup/call/teardown measurements. These are PR runs with different revisions, not scheduled main-branch observations. The weights are a committed snapshot, not an automatically refreshed model.
 
-`run-unit-test-ci-only` selects PR Test on H100 without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs, including model-weight provisioning. PR Test also runs whenever any other stage label selects a stage, the Intel hardware stages included. `run-mac-ci` and `run-lint-only` do not run PR Test or setup.
+The accelerator weights are per-file p90 estimates of the same kind, from the first attempt of three H100 accelerator jobs on 2026-11-21: [136957056283](https://github.com/sgl-project/sglang-omni/actions/runs/44939177878/job/136957056283), [136979600046](https://github.com/sgl-project/sglang-omni/actions/runs/44947746078/job/136979600046) and [136987314462](https://github.com/sgl-project/sglang-omni/actions/runs/44948801830/job/136987314462). Each of those attempts stopped at a failure in `tests/unit_test/whisper_asr/test_draft_cuda_graph.py`, so that file and the five after it take their weights from three earlier successful jobs: [136910764501](https://github.com/sgl-project/sglang-omni/actions/runs/44925396141/job/136910764501), [136849929132](https://github.com/sgl-project/sglang-omni/actions/runs/44905131915/job/136849929132) and [136850113353](https://github.com/sgl-project/sglang-omni/actions/runs/44905114597/job/136850113353).
+
+`run-unit-test-ci-only` selects the hosted CPU unit tests and H100 accelerator unit tests without selecting model or hardware stages. It does not run the Intel Xeon job `intel-cpu-ci (unit_test/cpu)`; that job needs `run-intel-cpu-ci` and the CPU path filter. Other stage labels remain additive, so keep them absent for unit tests only. Shared setup still runs for the accelerator unit tests, including model-weight provisioning. Both unit-test suites also run whenever any other stage label selects a stage, the Intel hardware stages included. `run-mac-ci` and `run-lint-only` do not run unit tests or setup.
 
 ### ASR
 
@@ -92,6 +93,7 @@ The two jobs share no data and run side by side. `run-asr-ci` runs both, and See
 | Model label | Job | Checkpoint | In the random pool |
 | --- | --- | --- | --- |
 | `run-moss-transcribe-diarize` | MOSS-TD multi-speaker | `OpenMOSS-Team/MOSS-Transcribe-Diarize` | Its only model |
+| `run-ark-asr-3b` | SeedTTS ASR | `AutoArk-AI/ARK-ASR-3B` with DFlash | Yes |
 | `run-fun-asr-nano-2512` | SeedTTS ASR | `FunAudioLLM/Fun-ASR-Nano-2512-hf` | Yes |
 | `run-qwen3-asr-1.7b` | SeedTTS ASR | `Qwen/Qwen3-ASR-1.7B` | Yes |
 | `run-whisper-large-v3` | SeedTTS ASR | `openai/whisper-large-v3` | Yes |
@@ -161,7 +163,7 @@ Each job runs a fixed Full-Duplex-Bench selection on one interaction strategy, t
 | --- | --- | --- |
 | `run-native-duplex` | Full-Duplex-Bench - full duplex | MiniCPM-o 4.5, native full duplex, one server on each of two GPUs |
 | `run-turn-based-duplex` | Full-Duplex-Bench - turn based | Qwen3-Omni with server VAD turn detection (`examples/qwen3_omni/session_h100.yaml`) |
-| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian`) |
+| `run-cascaded-duplex` | Full-Duplex-Bench - cascaded | Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off speaking through a `tts_start` tool, and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (`examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool`) |
 
 The three jobs share the pull request's Full-Duplex-Bench assets, so they run one after another, and a failed job does not skip the next. Each stage has one system and no model label.
 
@@ -207,7 +209,7 @@ The table is for a pull request that is not MLX-only and lists only the self-hos
 | --- | --- |
 | none | Nothing. The Omni CI gate, and the Mac CI gate when Mac CI starts, fail with `No CI label found`; the other hardware tests are skipped. |
 | `run-lint-only` | Nothing self-hosted. The gates succeed. |
-| `run-unit-test-ci-only` | PR Test only, after shared setup. |
+| `run-unit-test-ci-only` | Hosted CPU unit tests and H100 accelerator unit tests only. |
 | `run-asr-ci` | PR Test, then both ASR jobs, SeedTTS ASR on a random model from its pool. |
 | `run-asr-ci`, `run-qwen3-asr-1.7b` | PR Test, then both ASR jobs, SeedTTS ASR on Qwen3-ASR. |
 | `run-qwen3-asr-1.7b` | PR Test, then SeedTTS ASR on Qwen3-ASR. MOSS-TD multi-speaker does not run. |
@@ -256,7 +258,7 @@ Maintainers with CI permissions can comment `/tag-and-rerun-ci` with one or more
 | --- | --- |
 | `lint` | `run-lint-only` |
 | `unit-test`, `asr`, `tts`, `mps`, `omni`, `full-duplex`, `turn-based`, `cascaded`, `intel-cpu`, `intel-xpu`, `mac` | That stage's label |
-| `moss-td-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr` | That ASR model's label |
+| `moss-td-asr`, `ark-asr`, `fun-asr`, `qwen3-asr`, `whisper-asr` | That ASR model's label |
 | `higgs`, `moss`, `qwen3-tts`, `qwen3-tts-custom-voice`, `cosyvoice3` | That TTS model's label |
 | `qwen3-omni`, `minicpmo` | That Omni model's label |
 | `mps-higgs`, `mps-moss` | `run-mps-ci` and the Higgs or MOSS model label |
@@ -272,6 +274,8 @@ The command treats the labels already on the pull request as follows:
 It then re-runs all jobs of the newest completed run of each selected workflow on the current PR commit, unless GitHub requires workflow approval. If the newest run is still active, the command leaves it running and re-runs nothing older; run the command again once it finishes to apply the changed labels. Path filters and PR gates still apply.
 
 `/tag-run-ci-label` accepts the same short targets but only updates labels; it also requires at least one target. Labels added by the bot do not start workflows; push a commit or use a tag-and-rerun command to start them. `/rerun-failed-ci` retries failed jobs without changing labels or stopping active runs. PR authors can use it on their own PRs.
+
+A bot keeps one comment on a pull request with the `/tag-and-rerun-ci` targets that test what it changes. For a changed model directory it names the targets of the stages a model label selects, and of the Full-Duplex-Bench job of MiniCPM-o, Qwen3-Omni and the streaming cascade. For code that every model shares it names `asr`, `tts` and `omni` until a model stage is selected. The comment follows the labels and commits, and a maintainer still starts every run.
 
 ## Gate messages
 

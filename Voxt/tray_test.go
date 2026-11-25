@@ -110,7 +110,7 @@ func TestTrayRecent(t *testing.T) {
 	if tip := trayTip(huge); len([]rune(tip)) != trayTipRunes+1 || trayTip(" short \n") != "short" {
 		t.Errorf("tip %d", len([]rune(tip)))
 	}
-	// The items: the recent results, a click copies one.
+	// The items say what a click does, a click copies one and confirms it.
 	a, _, _ := newTestApp(t)
 	var copied []string
 	a.copyText = func(s string) error { copied = append(copied, s); return nil }
@@ -119,10 +119,10 @@ func TestTrayRecent(t *testing.T) {
 	found, title := 0, false
 	for _, it := range a.trayItems() {
 		switch it.Label {
-		case "hello there", "Please send the meeting…":
+		case "Copy: hello there", "Copy: Please send the meeting…":
 			found++
 			it.Click(it, nil)
-			if it.Label != "hello there" && it.ToolTip != long {
+			if it.Label != "Copy: hello there" && it.ToolTip != long {
 				t.Errorf("tooltip %q", it.ToolTip)
 			}
 		case "Recent results":
@@ -131,6 +131,9 @@ func TestTrayRecent(t *testing.T) {
 	}
 	if found != 2 || !title || !slices.Equal(copied, []string{"hello there", long}) {
 		t.Errorf("recent items: found %d, title %v, copied %q", found, title, copied)
+	}
+	if !slices.Equal(a.toasts, []string{"Copied", "Copied"}) {
+		t.Errorf("toasts %q", a.toasts)
 	}
 }
 

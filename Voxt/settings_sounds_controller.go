@@ -196,7 +196,7 @@ func (a *app) previewSound(ev sounds.Event, choice, key string) {
 		if d <= 0 {
 			d = sounds.UnknownLength
 		}
-		a.sounds.playing, a.sounds.playingEnd = choice, time.Now().Add(d)
+		a.sounds.playing, a.sounds.playingEnd = choice, a.now().Add(d)
 	}
 	a.later(max(t.Length(a.soundCat)+cueMargin, previewMin), func() {
 		if a.sounds.seq == seq {

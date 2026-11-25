@@ -185,6 +185,35 @@ def test_engine_fills_a_pinned_draft_revision_only_when_the_key_is_absent() -> N
     assert "speculative_draft_model_revision" not in unpinned.overrides()
 
 
+def test_a_config_naming_only_speechspecs_cosyvoice3_draft_keeps_its_revision(
+    tmp_path: Path,
+) -> None:
+    """A Fun-CosyVoice3 config written before the Apache-2.0 draft names SpeechSpec's draft by path alone."""
+    config_path = tmp_path / "fun_cosyvoice3_dspark.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "FunCosyVoice3PipelineConfig",
+                "model_path": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                "stages": {
+                    "tts_engine": {
+                        "engine": {
+                            "speculative_algorithm": "DSPARK",
+                            "speculative_draft_model_path": "yuekai/cosyvoice3_llm_dspark",
+                        }
+                    }
+                },
+            }
+        )
+    )
+    config = ConfigManager.from_file(str(config_path)).config
+    overrides = config.stage_named("tts_engine").engine.overrides()
+    assert (
+        overrides["speculative_draft_model_revision"]
+        == "0b1b28dbb751bac3b74eea5dcc11e0570c91563b"
+    )
+
+
 @pytest.mark.parametrize("revision", [None, "another-revision"])
 def test_bundled_draft_does_not_override_the_target_revision(
     revision: str | None,
@@ -387,6 +416,43 @@ def test_serve_gives_the_default_draft_by_the_launched_model_path_and_tp_size(
         assert engine_keys == {}
 
 
+@pytest.mark.parametrize("algorithm", ["NEXTN", "DSPARK"])
+def test_serve_gives_the_default_draft_only_to_a_stage_under_its_algorithm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, algorithm: str
+) -> None:
+    """Ming's bundled MTP runs under NEXTN without a draft path, so the DSpark default stays out of it."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    (draft,) = [
+        draft
+        for draft in DRAFT_REGISTRY
+        if draft.model_path == "inclusionAI/Ming-3.0-asr-tiny" and draft.is_default_on
+    ]
+    config_path = tmp_path / "ming3_asr.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {"config_cls": "Ming3ASRPipelineConfig", "model_path": draft.model_path}
+        )
+    )
+    with mock.patch("sglang_omni.cli.serve.launch_server") as launch_server:
+        result = CliRunner().invoke(
+            app,
+            [
+                "serve",
+                "--config",
+                str(config_path),
+                "--thinker.engine.speculative_algorithm",
+                algorithm,
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    (launched,) = launch_server.call_args.args
+    engine_keys = engine_draft_keys(launched.stage_named("thinker").engine)
+    if algorithm == draft.algorithm:
+        assert engine_keys == registered_keys(draft)
+    else:
+        assert engine_keys == {"speculative_algorithm": algorithm}
+
+
 @pytest.mark.parametrize(
     ("extra_args", "names_the_draft"),
     [([], True), (["--asr.engine.disable_speculative_decoding", "true"], False)],
@@ -423,14 +489,13 @@ def test_config_explain_names_the_default_draft_added_at_launch(
     )
 
 
-def test_ci_prefetches_each_default_on_draft_at_its_pinned_revision() -> None:
+def test_ci_prefetches_the_default_on_draft_of_each_model_it_downloads() -> None:
+    """A model without CI can serve its draft by default, and CI then downloads neither."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "omni-ci.yaml").read_text(
         encoding="utf-8"
     )
     for draft in DRAFT_REGISTRY:
-        if draft.is_default_on:
+        if draft.is_default_on and draft.model_path in workflow:
             assert (
                 f"{draft.draft_model_path}@{draft.draft_model_revision}" in workflow
             ), draft
-        else:
-            pass

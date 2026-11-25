@@ -62,11 +62,19 @@ type sessionOverlayLayout struct {
 	LiveID        string
 	LiveWidth     int
 	StreamHeight  float32
+	// CardScrolls is whether the answer card's body is as high as the
+	// screen's room lets it be: below that the card grows to its text,
+	// and the body does not scroll.
+	CardScrolls bool
 }
 
+// sessionOverlayAnimation is what moves in a frame: Phase seconds in, and
+// the waveform's bars at a time as they glide (Wave; nil: straight from
+// the levels), which its drawing asks for at every frame it paints.
 type sessionOverlayAnimation struct {
 	Motion bool
 	Phase  float64
+	Wave   func(time.Time) layout.Wave
 }
 
 type sessionOverlayMeasurement struct {
@@ -114,7 +122,7 @@ func sessionOverlayView(
 		context.After(250 * time.Millisecond)
 	}
 	look := pillLook{time: layoutState.ShowTime, lines: layoutState.LiveLines, scroll: &local.Overlay.lines,
-		motion: animation.Motion, phase: animation.Phase, w: layoutState.Width}
+		motion: animation.Motion, phase: animation.Phase, wave: animation.Wave, w: layoutState.Width}
 	ui.Column(context).Fill().Padding(layout.Pad).Children(func() {
 		switch state.Mode {
 		case ovAnswer:

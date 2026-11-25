@@ -19,9 +19,17 @@ from sglang_omni.config.patch import (
     Specificity,
 )
 from sglang_omni.config.path import ConfigPath, ConfigPathError
-from sglang_omni.config.sources import dump_user_config, patches_from_model_path_flag
+from sglang_omni.config.sources import (
+    dump_user_config,
+    patches_from_dotted_cli,
+    patches_from_model_path_flag,
+)
 from sglang_omni.models.auk.config import AuKPipelineConfig
+from sglang_omni.models.llada2_uni.config import LLaDA2UniOmniPipelineConfig
 from sglang_omni.models.minimax_music3.config import MiniMaxMusic3PipelineConfig
+from sglang_omni.mps.control import SubprocessMpsControlClient
+from sglang_omni.mps.devices import NvmlDeviceInfo
+from sglang_omni.mps.replica_profiles import decide_replica_profile
 from sglang_omni.platforms import current_platform
 from sglang_omni.preprocessing.resource_connector import (
     resolve_allowed_local_media_path,
@@ -354,14 +362,17 @@ def default_draft_engine_writes(
     }
     writes: dict[str, object] = {}
     for stage in pipeline_config.stages:
+        draft = default_drafts.get(stage.name)
         if (
-            stage.name in default_drafts
+            draft is not None
             and stage.engine is not None
             and stage.tp_size == 1
             and not stage.engine.disable_speculative_decoding
+            and stage.engine.overrides().get("speculative_algorithm", draft.algorithm)
+            == draft.algorithm
         ):
             already_set = stage.engine.overrides()
-            for key, value in default_drafts[stage.name].engine_overrides().items():
+            for key, value in draft.engine_overrides().items():
                 if key != "speculative_draft_model_revision" and key not in already_set:
                     writes[f"stages.{stage.name}.engine.{key}"] = value
                 else:
@@ -422,7 +433,8 @@ def apply_stage_offload_cli_overrides(
         pass
 
     if not isinstance(
-        pipeline_config, (MiniMaxMusic3PipelineConfig, AuKPipelineConfig)
+        pipeline_config,
+        (MiniMaxMusic3PipelineConfig, AuKPipelineConfig, LLaDA2UniOmniPipelineConfig),
     ):
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
@@ -543,7 +555,7 @@ def serve(
             "--stage-offload-components",
             "--stage_offload_components",
             help=(
-                "Comma-separated components to run request-serially, each "
+                "Comma-separated components to run serially on the GPU, each "
                 "offloading itself from the GPU before the next one runs."
             ),
         ),
@@ -687,6 +699,9 @@ def serve(
             extra_args,
             extra_patches=flag_patches,
         )
+        cli_patches = patches_from_dotted_cli(extra_args, config_manager.config).merge(
+            flag_patches
+        )
     except (ConfigPathError, ValueError) as exc:
         # Unknown path, unwritable path, two sources disagreeing at one
         # precedence, or a value the schema refuses. Every one of these
@@ -701,6 +716,17 @@ def serve(
         merged_config,
         stage_offload_components=stage_offload_components,
     )
+    replica_profile = decide_replica_profile(
+        merged_config,
+        user_patches=[*config_manager.source_patches, *cli_patches],
+        device_info=NvmlDeviceInfo(),
+        mps_client=SubprocessMpsControlClient(),
+    )
+    if replica_profile.message is not None:
+        logger.info(replica_profile.message)
+    else:
+        pass
+    merged_config = apply_engine_writes(merged_config, replica_profile.writes)
     merged_config = apply_default_draft_engine_overrides(merged_config)
     merged_config = apply_tensor_parallel_engine_overrides(merged_config)
 

@@ -15,6 +15,7 @@ from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoConfig, PreTrainedTokenizerFast
+from transformers.utils.hub import cached_file
 
 from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
 from sglang_omni.models.ming3_asr.mtp import Ming3ASRMTP
@@ -67,7 +68,7 @@ class Ming3ASRConfig(Ming3AudioConfig):
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
-    return json.loads((Path(model_path) / "config.json").read_text())
+    return json.loads(Path(cached_file(model_path, "config.json")).read_text())
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
@@ -241,15 +242,8 @@ def create_thinker_executor(
 
         def build_request(payload: StagePayload) -> Ming3ASRRequestData:
             parameters = payload.request.params
-            temperature = parameters.get("temperature", 0.0)
-            if draft_checkpoint is not None and temperature != 0.0:
-                raise ValueError(
-                    "Ming 3 ASR request: DSpark decoding requires temperature=0"
-                )
-            else:
-                pass
             sampling = SamplingParams(
-                temperature=temperature,
+                temperature=parameters.get("temperature", 0.0),
                 max_new_tokens=parameters.get("max_new_tokens", max_new_tokens),
                 top_p=parameters.get("top_p", 1.0),
                 top_k=parameters.get("top_k", -1),
@@ -307,6 +301,12 @@ def create_thinker_executor(
             }
             return payload
 
+        model_runner = Ming3AudioModelRunner(worker, SGLangOutputProcessor())
+        if draft_checkpoint is not None:
+            # note (wilsonzheng0327): SGLang's DSpark verify never applies repetition_penalty, so the shared verify rows apply it exactly.
+            model_runner.speculative_repetition_penalty_owner = "verify_logits"
+        else:
+            pass
         scheduler = OmniScheduler(
             tp_worker=worker,
             tree_cache=tree_cache,
@@ -314,7 +314,7 @@ def create_thinker_executor(
             token_to_kv_pool_allocator=token_pool,
             server_args=server_args,
             model_config=model_config,
-            model_runner=Ming3AudioModelRunner(worker, SGLangOutputProcessor()),
+            model_runner=model_runner,
             request_builder=build_request,
             result_adapter=build_result,
             request_build_max_workers=request_build_max_workers,

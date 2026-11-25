@@ -36,13 +36,6 @@ AudioSmith
   supervisor). They have been modified; docs/architecture.md lists what
   was taken and how it changed.
 
-Voxt overlay preview background
-  assets/overlay-preview-background.png, the desktop picture behind the
-  overlay's preview in Settings → Overlay style, is taken unchanged from
-  Voxt (https://github.com/hehehai/voxt) at commit baa6f31
-  (Voxt/Assets.xcassets/OverlayPreviewBackground.imageset), Copyright the
-  Voxt authors, licensed under the Apache License 2.0.
-
 Voxt overlay icons
   internal/icons/voxt.go holds the overlay's mode icons (transcription,
   translation, rewrite), its answer icon and its small spinner, drawn from
@@ -73,6 +66,29 @@ Solar icon set
   https://icon-sets.iconify.design/solar/). Only the icons VoxtNew uses are
   included, converted to Go source in internal/icons/solar_gen.go
   (internal/icons/gen); their shapes are unchanged.
+
+Tabler Icons
+  Some of the share card's and the hat studio's marks in
+  internal/icons/share.go (shuffle, back, eraser, undo, clear, record)
+  are outline icons from Tabler Icons 3.19.0 (https://tabler.io/icons),
+  Copyright (c) 2020-2024 Paweł Kuna, MIT (LICENSES/Tabler-Icons.txt),
+  some redrawn slightly.
+
+Insights cards
+  The paper behind some of the insights cards
+  (assets/share/paper-grain.jpg) is the fibre pattern of a sheet of
+  colored paper from the author's own background pictures, given to this
+  project under its licence. The "in" and the X on the cards' Share to
+  LinkedIn and Share to X buttons (internal/icons/share.go) were drawn
+  for VoxtNew; LinkedIn is a trademark of LinkedIn Corporation and X of
+  X Corp., named only to say where the buttons post.
+
+Lucide
+  The rabbit and the turtle at the ends of Settings → Appearance's
+  opening speed (internal/icons/opening.go) are Lucide's icons
+  (https://lucide.dev), Copyright (c) Lucide Contributors 2022, portions
+  Copyright (c) Cole Bemis 2013-2022 as part of Feather, ISC
+  (LICENSES/Lucide.txt).
 
 Language data
   internal/lang/languages.tsv and aliases.tsv are built by
@@ -147,6 +163,11 @@ React Bits Sound Lab (the recording's cues, in official builds only)
   build fetches them from the ActNow family's private sound library
   (scripts/sync-sounds.sh) into Contents/Resources/sounds. A build from
   this source without them plays macOS's system sounds.
+
+Chinese character and phrase conversion data
+  The Simplified/Traditional character and phrase dictionaries in internal/lang,
+  distributed with github.com/liuzl/gocc, are OpenCC data licensed under
+  Apache License 2.0 (LICENSES/Apache-2.0.txt).
 
 Go modules compiled into VoxtNew
   Their licence files are copied unchanged into LICENSES/go/.

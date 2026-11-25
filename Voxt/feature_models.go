@@ -56,9 +56,10 @@ func featureModelStatus(c *ui.Context, state *featureModelStatusViewState, actio
 
 func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureActions) {
 	sectionTitle(c, i18n.T("Clean-up"))
-	enhance, cleanup, structure := state.Enhance, state.Cleanup, state.Structure
-	settingRow(c, "tr-enhance", i18n.T("Clean up with a language model"),
-		i18n.T("When off, or if the model fails, the text is typed as recognised."), func() {
+	enhance, cleanup, structure, whileSpeaking := state.Enhance, state.Cleanup, state.Structure, state.WhileSpeaking
+	settingRowNoteTip(c, "tr-enhance", i18n.T("Clean up with a language model"),
+		i18n.T("When off, or if the model fails, the text is typed as recognised."),
+		i18n.T("Add a prompt to translate or reformat what you said."), func() {
 			if ui.Switch(c.Key("tr-enhance-switch"), &enhance).Label(i18n.T("Clean up with a language model")).Changed() {
 				actions.setFeatureEnhance(enhance)
 			}
@@ -73,6 +74,13 @@ func trEnhance(c *ui.Context, state *featureCleanupViewState, actions featureAct
 		i18n.T("Makes lists and paragraphs when you dictate steps or a long text."), func() {
 			if ui.Switch(c.Key("tr-structure-switch"), &structure).Label(i18n.T("Structure")).Disabled(!enhance).Changed() {
 				actions.setFeatureStructure(structure)
+			}
+		})
+	settingRow(c, "tr-while-speaking", i18n.T("Clean up while you speak"),
+		i18n.T("Sends each finished sentence to the language model as you speak, so the text is ready sooner after you stop, at the cost of more requests. Not with a language model on this Mac. When off, nothing is sent until you stop."), func() {
+			// note (luojiaxuan): editable with the clean-up off too: an app's group can turn the clean-up on for it.
+			if ui.Switch(c.Key("tr-while-speaking-switch"), &whileSpeaking).Label(i18n.T("Clean up while you speak")).Changed() {
+				actions.setFeatureCleanWhileSpeaking(whileSpeaking)
 			}
 		})
 }
@@ -108,7 +116,7 @@ func featureModelSelectRow(c *ui.Context, key, title, label string, value *strin
 		help = i18n.T("Used when the language model fails.")
 	}
 	if key == "tl-target" {
-		help = i18n.T("The language model translates into this. Speech recognition writes what you said in your own language. Automatic is English, or Chinese when your main language is English. Text that is all in the target language goes into your main language.")
+		help = i18n.T("Automatic is English, or Chinese when your main language is English.")
 	}
 	settingRow(c, key, title, help, func() {
 		options := make([]string, len(state.Options))

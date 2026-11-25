@@ -102,11 +102,14 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.windowTransparency` | integer | `8` | 5–15 percent (clamped), used by `transparent` | Theme |
 | `appearance.scale` | number | `1` | `0.9`, `1`, `1.1`, `1.25` (snapped to the nearest) | Interface size |
 | `appearance.reduceMotion` | bool | `false` | | Reduce motion |
+| `appearance.opening` | bool | `true` | | Play the opening at start (shown off and resting while Reduce motion is on, which skips the opening; the saved choice comes back when it is off) |
+| `appearance.openingMillis` | integer | `2000` | 3000, 2000, 1000 | Opening speed: a slider of three stops from the turtle (the opening in 3 s) to the rabbit (1 s), along the same timeline; the row shows only while Play the opening at start is on and Reduce motion is off |
 | `appearance.rail` | bool | `false` | `true` shows the sidebar as icons only | Sidebar |
 | `appearance.railChosen` | bool | `false` | the user chose names and icons | Sidebar |
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
 | `appearance.historyDetailWidth` | number | `0` | 0 (default) or 290–350 (clamped) | Dragging the edge of History's detail panel |
 | `appearance.closedSections` | array of strings | `[]` | sidebar sections the user closed | The sidebar's section headers |
+| `appearance.lookingBackClosed` | bool | `false` | `true` folds Looking back to its title row | Home's Looking back title |
 
 ### Privacy (Settings → Privacy)
 
@@ -115,9 +118,9 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `privacy.keepHistory` | bool | `true` | | Keep a history |
 | `privacy.keepAudio` | bool | `false` | | Keep recordings |
 | `privacy.logText` | bool | `false` | | Write text to the log |
-| `privacy.sendWindow` | bool | `false` | | Send a screenshot |
-| `privacy.sendClipboardImage` | bool | `false` | | Send a copied image |
-| `privacy.sendClipboardImageWithSelection` | bool | `false` | | Text and a copied image together |
+| `privacy.sendWindow` | bool | `false` | a screenshot of the window you speak into goes with the text to a language model that reads images; needs Screen Recording; a model that takes no images gets the text alone | Send a screenshot |
+| `privacy.sendClipboardImage` | bool | `false` | Rewrite sends the image you copied (⌘C) with what you said; copied text and copied files that are not images are not sent; with text selected only the text goes, unless `sendClipboardImageWithSelection` is on | Send a copied image |
+| `privacy.sendClipboardImageWithSelection` | bool | `false` | off so an image you copied earlier cannot take over a text rewrite | Text and a copied image together |
 | `privacy.historyAccess` | bool | `false` | | Let programs on this Mac read the history ([history-access.md](history-access.md)) |
 | `privacy.historySelection` | bool | `false` | | Also include the text you selected |
 
@@ -143,7 +146,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `audio.liveResult` | bool | `false` | `true` keeps the live text instead of recognising the recording again | Recognise the whole recording again (inverted) |
 | `audio.vad.off` | bool | `false` | | Skip silence (inverted) |
 | `audio.clean.off` | bool | `false` | | Optimise sound (inverted) |
-| `audio.uploadMB` | integer | `0` | MB per upload to a speech service that takes whole files; 0 = the service's limit | Upload size limit |
+| `audio.uploadMB` | integer | `0` | MB per upload to a speech service that takes whole files (OpenAI, Doubao): a longer recording goes in pieces of at most this size; 0 = the service's limit (25 MB for OpenAI, 100 MB for Doubao) | Upload size limit |
 | `audio.maxSeconds` | integer | `0` | seconds; 0 = no limit | Recording length limit (shown in minutes) |
 
 **Silence detection and sound clean-up, for troubleshooting only.** These fields have no UI and are absent from a fresh install's document. Leave them absent: Voxt then uses the effective default in the table. It also uses the effective default for `0` or a value outside the range; a few values are capped instead, as noted.
@@ -194,6 +197,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `features.cancel` | shortcut | `{"keys": "Escape", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Transcribe → Cancel recording |
 | `features.note` | shortcut | `{"keys": "RightCommand", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Notes |
 | `features.strictShortcuts` | bool | `false` | Settings → Shortcuts → Strict shortcuts: only the starting feature's shortcut stops a recording |
+| `features.returnFinishes` | bool | `true` | Settings → Shortcuts → Return finishes a recording: Return stops a Transcribe, Translate or Rewrite recording (not a note's); off, Return reaches the app. Until 2.1.3 it was `features.transcribe.returnFinishes`, Transcribe's alone, which a document without this field still keeps |
 
 Settings → Shortcuts → presets set the four main shortcuts at once; no field stores the preset, Voxt recognises it from the keys.
 
@@ -215,7 +219,8 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
-| `features.transcribe.returnFinishes` | bool | `true` | | Return finishes dictation |
+| `features.transcribe.cleanAfterStop` | bool | `false` | | Clean up while you speak, inverted: `true` sends nothing to the language model until Stop. With it `false`, a dictation costs more requests and input tokens (a block goes again each time it gains a sentence); a language model on this Mac, or a clean-up that sends a picture, waits for Stop all the same |
+| `features.transcribe.recleanSentences` | integer | `2` | `0` or more: how many sentences of the text cleaned while you speak go back to the language model with the text left at Stop | none (settings file only) |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |
@@ -264,8 +269,8 @@ And their own fields:
 |---|---|---|---|---|
 | `models.keepLoaded` | string | `""` | `""` (Automatic), `5m`, `15m`, `30m`, `1h`, `quit` | Speech models → Keep models loaded |
 | `models.hidden` | array of strings | `[]` | speech model ids | Speech models → Hide |
-| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed | Speech models → Faster transcription |
-| `models.llmWait` | string | `""` | `""` (Automatic), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works | Language models → Wait for the language model |
+| `models.faster` | object, string → bool | `{}` | speech model id → on; absent = on while the draft is installed, except the 6bit (its draft came with the 8bit's download, so it stays off until switched on) | Speech models → Faster transcription |
+| `models.llmWait` | string | `""` | `""` (Automatic: 20 s to a minute, longer for long text), `1m`, `2m`, `5m`, `10m`, `30m`, `60m`, `none` (no limit); another `<n>m` for 1–60 also works; after it the recognised text is inserted | Language models → Wait for the language model |
 | `models.llmSwitch` | bool | `false` | | Language models → Switch models when one fails |
 | `providers.llm` | array of providers | `[]` | one entry per language model service | Language models (one card per service set up) |
 | `providers.asr` | array of providers | `[]` | one entry per speech service | Speech models → online services |
@@ -326,7 +331,6 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 |---|---|---|
 | `version` | integer | The document's schema version; Voxt rewrites it |
 | `setup.done` | bool | The setup guide is finished |
-| `setup.openingShown` | bool | The first-use opening was shown |
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
