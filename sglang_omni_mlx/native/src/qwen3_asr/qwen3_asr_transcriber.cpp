@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -42,6 +43,9 @@ constexpr int kReflectedTailFrames = 2;
 // Tokens of a Final's prompt head one background job prefills, so that a live
 // refresh waits for no more than this long.
 constexpr int kFinalPrefillChunkTokens = 256;
+constexpr size_t kChunkSearchSamples = 5 * omni_common::kSampleRate;
+constexpr size_t kChunkEnergyWindowSamples = omni_common::kSampleRate / 10;
+constexpr size_t kMinTailSamples = 5 * omni_common::kSampleRate;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -466,6 +470,60 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
 }
 
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (samples.size() <= kMaxChunkSamples || reuse != nullptr ||
+      !options.prefix_token_ids.empty()) {
+    return TranscribeChunk(samples, options, cancel, reuse);
+  } else {
+  }
+  TranscriptionResult merged;
+  merged.language = NormalizeLanguage(options.language.value_or(""));
+  merged.finish_reason = FinishReason::kStop;
+  const int max_new_tokens = options.max_new_tokens.value_or(0);
+  TranscriptionOptions chunk_options = options;
+  // The guesses are the whole recording's text, which no chunk is.
+  chunk_options.guessed_token_ids.clear();
+  std::vector<std::string> texts;
+  for (const auto &[start_sample, end_sample] :
+       omni_common::BoundedEnergyCutChunks(
+           samples, kMaxChunkSamples, kChunkSearchSamples,
+           kChunkEnergyWindowSamples, kMinTailSamples)) {
+    if (omni_common::PeakIsSilent(samples.data() + start_sample,
+                                  end_sample - start_sample, kSilentPeak)) {
+      continue;
+    } else if (max_new_tokens != 0 &&
+               merged.generated_token_count >= max_new_tokens) {
+      merged.finish_reason = FinishReason::kLength;
+      break;
+    } else if (max_new_tokens != 0) {
+      chunk_options.max_new_tokens =
+          max_new_tokens - merged.generated_token_count;
+    } else {
+    }
+    const TranscriptionResult chunk = TranscribeChunk(
+        {samples.begin() + start_sample, samples.begin() + end_sample},
+        chunk_options, cancel, nullptr);
+    texts.push_back(chunk.text);
+    if (!merged.language.has_value()) {
+      merged.language = chunk.language;
+    } else {
+    }
+    merged.generated_token_count += chunk.generated_token_count;
+    merged.verify_round_count += chunk.verify_round_count;
+    merged.proposed_draft_token_count += chunk.proposed_draft_token_count;
+    merged.accepted_draft_token_count += chunk.accepted_draft_token_count;
+    // One truncated chunk cuts the whole transcript short.
+    if (chunk.finish_reason == FinishReason::kLength) {
+      merged.finish_reason = FinishReason::kLength;
+    } else {
+    }
+  }
+  merged.text = omni_common::JoinTranscriptParts(texts);
+  return merged;
+}
+
+TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
     const std::vector<float> &samples, const TranscriptionOptions &options,
     const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
   if (cancel.load()) {
