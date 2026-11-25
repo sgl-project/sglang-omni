@@ -100,6 +100,7 @@ FIELDS = (
     "drops_mid_reply",
     "drops_after_reply",
     "capacity_unrecovered_cycles",
+    "probes_above_cap",
     "rss_growth_megabytes_per_cycle",
     "device_growth_megabytes_per_cycle",
     "thread_count_growth",

@@ -4,7 +4,9 @@ This tool opens, closes, drops, cancels, idles out, reconnects and interrupts `/
 
 ## GPU run
 
-This is the part that is still open: the tool has not run against a model that replies. One script runs every cell against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
+One script runs every cell against a turn-based Qwen3-Omni server, with the client on the server's host and no other job on the GPU.
+
+It has run once, on one H200 with `max_sessions` 16, 16 clients and 10 cycles per cell, at `1ed438c47` (reported in #3663): all 12 cells passed, with no traceback in the server's log and no memory growth, and `unknown session open index` (#3565) appeared 0 times. One server finding came out of it: a client that leaves mid-reply frees its slot only after about 9.3 s, against milliseconds in the other cells, so its reconnects wait about 6.7 s, and each handshake denied meanwhile logs an `ERROR` line. The per-cell figures of that run are not in this page.
 
 ```bash
 MODEL=$MODEL MAX_SESSIONS=$MAX_SESSIONS SERVER_PID=$SERVER_PID SERVER_LOG=$SERVER_LOG PAIR=$FDB_WORK/dataset/v1.5/user_interruption/1 bash benchmarks/duplex/lifecycle_stress/gpu_matrix.sh runs/gpu
@@ -46,7 +48,7 @@ Setup notes:
 - The tool reads from `/v1/realtime/capabilities` whether the deployment is turn-based. If it is, every session of the run asks for `server_vad` turn detection, and the recorded sessions use the duplex recorder's turn-based profile.
 - With `--audio-file` a short session sends the whole file, because a turn-based model replies only after the speech and the pause that ends the turn. So a cycle takes at least as long as the file.
 - The tool cannot see how the server was started. State the voice, the encoder scheduling (`batch_sessions` and the like), `max_sessions` and the GPU and driver with the results; `--runtime` takes a free text that is stored in every run's record.
-- The script was run end to end against the mock's turn-taking stand-in only. Nothing here has met a model.
+- Before that run the script had only met the mock's turn-taking stand-in.
 
 ## Mock results
 
@@ -106,7 +108,7 @@ The tool changes no serving code. It is built on `main` and holds what `main` ho
 | #3504 | open | release the legacy session when its client vanishes mid-send | `legacy_drop_frame` row |
 | #3623 | merged | Qwen3-Omni's connection cap follows `max_sessions` | the capacity probe: one cap to confirm instead of two |
 | #3561 | open | one Silero session shared across VAD streams | not exercised: the mock replaces Silero |
-| #3565 | open bug | `unknown session open index` in the log as sessions close | `--server-log`, on a model server only |
+| #3565 | open bug | `unknown session open index` in the log as sessions close | `--server-log`, on a model server only; 0 lines in the GPU run |
 
 Until #3504 is merged, the `legacy_drop_frame` row leaks on `main` and fails `no_sessions_left`. That is the leak #3504 fixes and not a fault of the tool; the same row against the serving code of #3504 is the comparison. #3504 and #3561 are on the legacy path, which the GPU run above does not take.
 
