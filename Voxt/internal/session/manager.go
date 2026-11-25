@@ -281,6 +281,7 @@ func (m *Manager) Stop(id string) {
 	ok := r != nil && snap.State == Recording
 	m.mu.Unlock()
 	if ok {
+		r.logTiming("user_stop")
 		r.stopRecording()
 	}
 }

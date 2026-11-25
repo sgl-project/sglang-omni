@@ -23,6 +23,9 @@ func (r *run) streamer() (asr.Streamer, bool) {
 
 // hints are the dictionary's terms for the speech model (SpeechHints).
 func (r *run) hints() []string {
+	if r.init.split {
+		return r.speechHints
+	}
 	return SpeechHints(r.settings, r.terms)
 }
 
@@ -118,6 +121,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 		defer closeGate()
 		pauses := r.watchPauses()
 		off, sent := 0, 0
+		firstPCMSent := false
 		for {
 			chunk, closed, err := r.pcm.next(r.ctx, off)
 			if err != nil {
@@ -146,6 +150,10 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				if err := st.Send(chunk); err != nil {
 					sendErr <- err
 					return
+				}
+				if !firstPCMSent {
+					firstPCMSent = true
+					r.logTiming("first_pcm_sent")
 				}
 				sent += len(chunk)
 				continue
@@ -189,6 +197,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 	}()
 	go func() {
 		events := st.Events()
+		firstPartial := false
 		for {
 			select {
 			case ev, ok := <-events:
@@ -199,6 +208,10 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				switch ev.Kind {
 				case asr.EventPartial:
 					text := r.inScript(ev.Text, "")
+					if text != "" && !firstPartial {
+						firstPartial = true
+						r.logTiming("first_asr_partial")
+					}
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
 					r.hearLive(text)

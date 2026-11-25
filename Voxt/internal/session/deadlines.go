@@ -109,6 +109,16 @@ func (r *run) llmChatContext(parent context.Context, req llm.Request) (llm.Respo
 	if parent.Err() != nil || r.ctx.Err() != nil {
 		return llm.Response{}, context.Canceled
 	}
+	if req.OnDelta != nil {
+		onDelta := req.OnDelta
+		req.OnDelta = func(delta string) {
+			if delta != "" && r.firstLLMDelta.CompareAndSwap(false, true) {
+				r.logTiming("llm_first_content_delta")
+			}
+			onDelta(delta)
+		}
+	}
+	r.logTiming("llm_request_started")
 	resp, err := client.Chat(ctx, req)
 	if err == nil && resp.ImagesDropped && hint != "" {
 		// The model answered from the text alone: the card must not

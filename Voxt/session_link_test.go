@@ -228,6 +228,62 @@ func TestResolverWithoutSpeech(t *testing.T) {
 	}
 }
 
+type splitResolverServices struct {
+	models    []local.Model
+	asrCalls  int
+	llmCalls  []string
+	installed int
+}
+
+func (s *splitResolverServices) Installed(kind local.Kind) []local.Model {
+	if kind == local.LLM {
+		s.installed++
+		return s.models
+	}
+	return nil
+}
+
+func (s *splitResolverServices) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	s.asrCalls++
+	return nil, local.Model{Kind: local.ASR, ID: id, Name: "Fake speech"}, nil
+}
+
+func (s *splitResolverServices) LLM(_ context.Context, id string) (local.Chat, local.Model, error) {
+	s.llmCalls = append(s.llmCalls, id)
+	m, _ := local.Choose(s.models, id)
+	return &llm.Client{Backend: &fakeChat{}}, m, nil
+}
+
+func TestSessionResolversSplitSpeechAndCleanupProviderWork(t *testing.T) {
+	shelf := &splitResolverServices{models: []local.Model{
+		{Kind: local.LLM, ID: "deepseek", Name: "DeepSeek"},
+		{Kind: local.LLM, ID: "ollama", Name: "Ollama"},
+	}}
+	_, resolveASR, resolveLLM := sessionResolvers(shelf)
+	s := settings.Defaults()
+	s.Features.Transcribe.ASR = "sensevoice"
+	s.Features.Transcribe.Enhance = true
+	s.Features.Transcribe.LLM = "deepseek"
+
+	voice := resolveASR(context.Background(), store.KindTranscribe, s)
+	if voice.Err != nil || voice.ASRInfo.ID != "sensevoice" || shelf.asrCalls != 1 || shelf.installed != 0 || len(shelf.llmCalls) != 0 {
+		t.Fatalf("ASR readiness %+v, shelf %+v", voice, shelf)
+	}
+
+	s.Features.Translate.Fallback = "ollama"
+	cleanup := resolveLLM(context.Background(), store.KindTranslate, s)
+	if cleanup.Outcome != session.LLMAvailable || cleanup.LLMInfo.ID != "deepseek" || cleanup.FallbackInfo.ID != "ollama" ||
+		shelf.asrCalls != 1 || shelf.installed != 1 || len(shelf.llmCalls) != 2 || shelf.llmCalls[0] != "deepseek" || shelf.llmCalls[1] != "ollama" {
+		t.Fatalf("LLM readiness %+v, shelf %+v", cleanup, shelf)
+	}
+
+	s.Features.Transcribe.Enhance = false
+	notRequested := resolveLLM(context.Background(), store.KindTranscribe, s)
+	if notRequested.Outcome != session.LLMNotRequested || shelf.installed != 1 || len(shelf.llmCalls) != 2 {
+		t.Fatalf("disabled Cleanup did provider work: %+v, shelf %+v", notRequested, shelf)
+	}
+}
+
 // TestReturnFinishQueuedStateChange: a Return the helper still reports as
 // Finish from the old configuration (its new one is on its way) stops
 // nothing once the setting is off or the recording is a note's; another

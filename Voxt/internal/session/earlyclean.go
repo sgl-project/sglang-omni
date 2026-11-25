@@ -120,7 +120,15 @@ func (e *earlyClean) finalize() {
 // (settings.Transcribe.CleanAfterStop); the live clean-up ends here.
 func (r *run) hearPiece(stable string) {
 	r.endLive()
-	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
+	if r.req.Kind != store.KindTranscribe {
+		return
+	}
+	select {
+	case <-r.svcResolved:
+	default:
+		return
+	}
+	if r.settings.Features.Transcribe.CleanAfterStop || !r.transcribeCleanup() {
 		return
 	}
 	r.head.hearFinal(stable)

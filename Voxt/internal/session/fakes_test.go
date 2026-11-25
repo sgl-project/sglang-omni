@@ -680,7 +680,7 @@ func (r *recorder) wait(t *testing.T) Snapshot {
 }
 
 // waitFor waits until a snapshot satisfies ok.
-func (r *recorder) waitFor(t *testing.T, what string, ok func(Snapshot) bool) Snapshot {
+func (r *recorder) waitFor(t testing.TB, what string, ok func(Snapshot) bool) Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

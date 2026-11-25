@@ -38,12 +38,13 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx      context.Context
-	llmStop     context.CancelFunc
-	skipped     atomic.Bool
-	stopped     atomic.Bool
-	rethink     atomic.Bool
-	cleanupWake chan struct{}
+	llmCtx        context.Context
+	llmStop       context.CancelFunc
+	firstLLMDelta atomic.Bool
+	skipped       atomic.Bool
+	stopped       atomic.Bool
+	rethink       atomic.Bool
+	cleanupWake   chan struct{}
 	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
 	// here before waking the session owner; only the owner delivers one.
 	cleanupChoice           cleanupChoice
@@ -73,11 +74,14 @@ type run struct {
 	onDraft      func(string)
 	own          Snapshot
 
-	svc      Services
-	terms    []store.Term
-	snippets []snippet.Snippet
-	// svcDone gets the services, resolved meanwhile; resolved once r.svc
-	// holds them.
+	svc         Services
+	terms       []store.Term
+	snippets    []snippet.Snippet
+	speechHints []string
+	init        runInitialization
+	// svcDone gets the compatibility resolver result. On split Transcribe
+	// sessions, resolved means the speech lane is ready; cleanup state is
+	// published separately by the session owner.
 	svcDone  chan svcResult
 	resolved bool
 	sc       sceneState // app enhancement (scene.go)
@@ -107,7 +111,7 @@ type run struct {
 	// typed is Rewrite's typed text: StartRequest.Text's, or the input
 	// box's (Config.BoxInput) when the answer is asked for.
 	typed string
-	// note (chenye): heard carries latest whole-text updates to the session owner; candidates are advisory and do not update the UI.
+	// heard carries whole-text updates and advisory candidates to the session owner.
 	heard chan heardText
 	// svcResolved is closed when the session's services are resolved
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
@@ -227,6 +231,7 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
+	r.logTiming("session_started")
 	// Rewrite's window picture waits for the clipboard's: the copied
 	// picture wins, and a picture that will not be sent is never taken.
 	if kind != store.KindRewrite {
@@ -286,10 +291,20 @@ func (r *run) main() {
 	if !ok {
 		return
 	}
+	if r.init.split && !r.awaitTranscribeData() {
+		return
+	}
 	text := r.spoken(raw)
 	switch kind {
 	case store.KindTranscribe:
 		if !r.insertSnippet(text) {
+			if r.init.split && !r.awaitCleanupReadiness() {
+				if r.ctx.Err() != nil || r.cancelled.Load() {
+					return
+				}
+				r.finish(Done, nil, r.expandSnippets(text, text), r.transcribeOpts())
+				return
+			}
 			r.transcribe(text)
 		}
 	case store.KindTranslate:
@@ -306,30 +321,6 @@ func (r *run) main() {
 		}
 		r.write(text, sel)
 	}
-}
-
-// resolve opens the session's services and reads the dictionary,
-// meanwhile, into a new svcDone (an earlier resolve's result is
-// dropped); speech: as Resolver's.
-func (r *run) resolve(speech bool) {
-	cfg := r.m.cfg
-	done := make(chan svcResult, 1)
-	r.svcDone = done
-	go func() {
-		svc, err := r.resolveServices(speech)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		var snippets []snippet.Snippet
-		if err == nil && cfg.Snippets != nil {
-			snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
-		}
-		if r.ctx.Err() != nil {
-			return
-		}
-		done <- svcResult{svc, terms, snippets, err}
-	}()
 }
 
 // finishOpts say how a result is delivered: card, when set, sends it to
@@ -401,6 +392,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
+	r.logTiming("delivery_completed")
 	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span

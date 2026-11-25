@@ -206,6 +206,7 @@ func (r *run) transcribe(text string) {
 			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
 		}
 	}
+	r.logTiming("cleanup_completed")
 	r.finish(Done, problem, r.expandSnippets(text, result), r.transcribeOpts())
 }
 
