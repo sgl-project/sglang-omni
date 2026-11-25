@@ -9,6 +9,7 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from types import MethodType
+from typing import Protocol
 
 import torch
 import torch.nn as nn
@@ -27,7 +28,9 @@ from dots_tts.modules.backbone.layers import RotaryEmbedding, rotate_half
 logger = logging.getLogger(__name__)
 
 _TAIL_SDPA_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
-_GRAPH_BATCH_BUCKETS = (8, 16)
+_GRAPH_BATCH_BUCKETS = (1, 2, 4, 8, 16)
+# note (Tz22z): a partial batch replays a wider batch bucket only up to this multiple of its live rows, the bound prefill bucket padding uses.
+GRAPH_BATCH_PADDING_FACTOR = 2
 _GRAPH_CONTEXT_PATCH_BUCKETS = (16, 32, 64, 128)
 _TAIL_STEP_LOG_INTERVAL = 50
 
@@ -381,6 +384,12 @@ def validate_acoustic_pool_memory(
     )
 
 
+class TailGraphStep(Protocol):
+    """One captured tail step, rerun on the static inputs it was built with."""
+
+    def __call__(self) -> torch.Tensor: ...
+
+
 @dataclass
 class CapturedTailGraph:
     graph: torch.cuda.CUDAGraph
@@ -483,6 +492,7 @@ class DotsTtsAcousticTail:
         self.capture_stream: torch.cuda.Stream | None = None
         self.graph_replays: Counter[str] = Counter()
         self.graph_misses: Counter[str] = Counter()
+        self.graph_pad_rows: Counter[str] = Counter()
         self.tail_steps = 0
         self.dit_contiguous_view_steps = 0
         if optimize and device.type == "cuda":
@@ -679,13 +689,15 @@ class DotsTtsAcousticTail:
         logger.log(
             level,
             "dots.tts tail graph counters: steps=%d meanflow_replays=%d "
-            "meanflow_misses=%d semantic_encoder_replays=%d "
-            "semantic_encoder_misses=%d",
+            "meanflow_misses=%d meanflow_pad_rows=%d semantic_encoder_replays=%d "
+            "semantic_encoder_misses=%d semantic_encoder_pad_rows=%d",
             self.tail_steps,
             self.graph_replays["meanflow"],
             self.graph_misses["meanflow"],
+            self.graph_pad_rows["meanflow"],
             self.graph_replays["semantic_encoder"],
             self.graph_misses["semantic_encoder"],
+            self.graph_pad_rows["semantic_encoder"],
         )
 
     def note_decode_cycle(self) -> None:
@@ -876,52 +888,55 @@ class DotsTtsAcousticTail:
             persistent, device=self.device, dtype=torch.long
         )
         noise = self.sample_noise(slots)
-        direct_kv = len(slots) == spec.num_slots and sorted(slots) == list(
-            range(spec.num_slots)
-        )
-        if direct_kv:
-            order = torch.argsort(slot_index)
-            work_slots = torch.arange(spec.num_slots, device=self.device)
-            work_persistent = persistent_index.index_select(0, order)
-            work_hidden = fm_hidden_rows.index_select(0, order)
-            work_noise = noise.index_select(0, order)
-            self.dit_contiguous_view_steps += spec.nfe
-            if self.dit_contiguous_view_steps == spec.nfe:
-                logger.info("dots.tts contiguous DiT KV view is active")
-            else:
-                pass
-        else:
-            work_slots = slot_index
-            work_persistent = persistent_index
-            work_hidden = fm_hidden_rows
-            work_noise = noise
-        graph = self.select_graph(self.meanflow_graphs, len(slots), capacity)
-        if graph is None:
+        plan = self.select_graph(self.meanflow_graphs, slots, capacity)
+        if plan is None:
             self.graph_misses["meanflow"] += 1
-            latent = self.sample_patches_core(
-                work_slots,
-                work_persistent,
-                capacity,
-                work_hidden,
-                work_noise,
-                direct_kv=direct_kv,
+            direct_kv = len(slots) == spec.num_slots and sorted(slots) == list(
+                range(spec.num_slots)
             )
+            if direct_kv:
+                order = torch.argsort(slot_index)
+                self.note_contiguous_view()
+                latent = self.sample_patches_core(
+                    torch.arange(spec.num_slots, device=self.device),
+                    persistent_index.index_select(0, order),
+                    capacity,
+                    fm_hidden_rows.index_select(0, order),
+                    noise.index_select(0, order),
+                    direct_kv=True,
+                ).index_select(0, slot_index)
+            else:
+                latent = self.sample_patches_core(
+                    slot_index,
+                    persistent_index,
+                    capacity,
+                    fm_hidden_rows,
+                    noise,
+                )
         else:
-            graph.inputs["slots"].copy_(work_slots)
-            graph.inputs["starts"].copy_(work_persistent)
-            graph.inputs["hidden"].copy_(work_hidden)
-            graph.inputs["noise"].copy_(work_noise)
+            graph, row_index = plan
+            self.load_graph_rows(
+                graph,
+                row_index,
+                {
+                    "starts": persistent_index,
+                    "hidden": fm_hidden_rows,
+                    "noise": noise,
+                },
+            )
             graph.graph.replay()
-            latent = graph.output.clone()
+            latent = graph.output.index_select(0, row_index)
+            batch_size = int(graph.output.size(0))
+            self.graph_pad_rows["meanflow"] += batch_size - len(slots)
             self.graph_replays["meanflow"] += 1
             if self.graph_replays["meanflow"] == 1:
                 logger.info("dots.tts batched MeanFlow CUDA graph replay is active")
             else:
                 pass
-        if direct_kv:
-            latent = latent.index_select(0, slot_index)
-        else:
-            pass
+            if batch_size == spec.num_slots:
+                self.note_contiguous_view()
+            else:
+                pass
         for slot in slots:
             self._fm_seq_len[
                 slot
@@ -929,6 +944,13 @@ class DotsTtsAcousticTail:
                 spec.latent_patch_size
             )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
         return latent
+
+    def note_contiguous_view(self) -> None:
+        self.dit_contiguous_view_steps += self.spec.nfe
+        if self.dit_contiguous_view_steps == self.spec.nfe:
+            logger.info("dots.tts contiguous DiT KV view is active")
+        else:
+            pass
 
     def sample_patches_core(
         self,
@@ -1110,8 +1132,8 @@ class DotsTtsAcousticTail:
         else:
             pass
         start_index = torch.tensor(starts, device=self.device, dtype=torch.long)
-        graph = self.select_graph(self.encoder_graphs, rows, capacity)
-        if graph is None:
+        plan = self.select_graph(self.encoder_graphs, slots, capacity)
+        if plan is None:
             self.graph_misses["semantic_encoder"] += 1
             embeddings = self.encode_feedback_core(
                 slot_index,
@@ -1120,11 +1142,13 @@ class DotsTtsAcousticTail:
                 latent_patches,
             )
         else:
-            graph.inputs["slots"].copy_(slot_index)
-            graph.inputs["starts"].copy_(start_index)
-            graph.inputs["latent"].copy_(latent_patches)
+            graph, row_index = plan
+            self.load_graph_rows(
+                graph, row_index, {"starts": start_index, "latent": latent_patches}
+            )
             graph.graph.replay()
-            embeddings = graph.output.clone()
+            embeddings = graph.output.index_select(0, row_index)
+            self.graph_pad_rows["semantic_encoder"] += int(graph.output.size(0)) - rows
             self.graph_replays["semantic_encoder"] += 1
             if self.graph_replays["semantic_encoder"] == 1:
                 logger.info(
@@ -1190,21 +1214,64 @@ class DotsTtsAcousticTail:
         self.encoder_conv_tail[slot_index] = conv_tail
         return embeddings.reshape(rows, -1)
 
-    @staticmethod
     def select_graph(
+        self,
         graphs: dict[tuple[int, int], CapturedTailGraph],
-        rows: int,
+        slots: list[int],
         capacity: int,
-    ) -> CapturedTailGraph | None:
-        bucket = min(
+    ) -> tuple[CapturedTailGraph, torch.Tensor] | None:
+        """Pick the smallest captured graph that covers the live rows and stage its slot input.
+
+        Returns the graph and the row each live slot occupies in it. A graph wider than the live batch is filled with idle slots.
+        """
+        rows = len(slots)
+        live = set(slots)
+        # note (Tz22z): a pad row writes its window, conv tail and KV block back to its slot, so only a slot no request owns may pad.
+        idle = [slot for slot in self.free_slots if slot not in live]
+        key = min(
             (
-                bucket_capacity
+                (batch_size, bucket_capacity)
                 for batch_size, bucket_capacity in graphs
-                if batch_size == rows and bucket_capacity >= capacity
+                if rows <= batch_size <= rows * GRAPH_BATCH_PADDING_FACTOR
+                and batch_size - rows <= len(idle)
+                and bucket_capacity >= capacity
             ),
             default=None,
         )
-        return None if bucket is None else graphs[(rows, bucket)]
+        if key is None:
+            return None
+        else:
+            pass
+        graph = graphs[key]
+        padding_slots = idle[: key[0] - rows]
+        if padding_slots:
+            # note (Tz22z): pad rows also start from zero carried state, so what they write to an idle slot stays finite; masked attention would still spread a stale NaN to the slot's next request.
+            self.window[padding_slots] = 0
+            self.encoder_conv_tail[padding_slots] = 0
+        else:
+            pass
+        # note (Tz22z): slot order lets the whole-pool graph, captured on contiguous pool views, see every slot at its own index.
+        members = sorted([*slots, *padding_slots])
+        row_of = {slot: row for row, slot in enumerate(members)}
+        graph.inputs["slots"].copy_(
+            torch.tensor(members, device=self.device, dtype=torch.long)
+        )
+        row_index = torch.tensor(
+            [row_of[slot] for slot in slots], device=self.device, dtype=torch.long
+        )
+        return graph, row_index
+
+    @staticmethod
+    def load_graph_rows(
+        graph: CapturedTailGraph,
+        row_index: torch.Tensor,
+        row_values: dict[str, torch.Tensor],
+    ) -> None:
+        """Write the live rows into the graph's static inputs and zero the pad rows."""
+        for name, value in row_values.items():
+            buffer = graph.inputs[name]
+            buffer.zero_()
+            buffer[row_index] = value.to(buffer.dtype)
 
     @torch.no_grad()
     def capture_cuda_graphs(self) -> None:
@@ -1251,15 +1318,10 @@ class DotsTtsAcousticTail:
             context_buckets,
         )
 
-    def capture_graph(
-        self,
-        destination: dict[tuple[int, int], CapturedTailGraph],
-        batch_size: int,
-        capacity: int,
-        *,
-        kind: str,
-    ) -> None:
-        key = (batch_size, capacity)
+    def build_graph_step(
+        self, batch_size: int, capacity: int, *, kind: str
+    ) -> tuple[dict[str, torch.Tensor], TailGraphStep]:
+        """Static inputs for one captured shape and the step that reads them."""
         slots = torch.arange(batch_size, device=self.device, dtype=torch.long)
         starts = torch.full(
             (batch_size,), capacity, device=self.device, dtype=torch.long
@@ -1308,6 +1370,18 @@ class DotsTtsAcousticTail:
                 capacity,
                 inputs["latent"],
             )
+        return inputs, run
+
+    def capture_graph(
+        self,
+        destination: dict[tuple[int, int], CapturedTailGraph],
+        batch_size: int,
+        capacity: int,
+        *,
+        kind: str,
+    ) -> None:
+        key = (batch_size, capacity)
+        inputs, run = self.build_graph_step(batch_size, capacity, kind=kind)
 
         graph = torch.cuda.CUDAGraph()
         try:

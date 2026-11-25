@@ -601,3 +601,260 @@ def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(
     memory["free"] = 40 << 30
     tail.validate_acoustic_pool_memory(estimate, device=device)
     assert memory["released"] == 2
+
+
+def install_eager_graphs(
+    acoustic_tail: tail.DotsTtsAcousticTail,
+    batch_sizes: tuple[int, ...],
+    patches: int = 16,
+) -> None:
+    """Stand-in graphs that rerun the captured step eagerly on replay.
+
+    They read the same static inputs a CUDA graph would, so the selection,
+    padding and row mapping around a replay run on any device.
+    """
+
+    def install(
+        graphs: dict[tuple[int, int], tail.CapturedTailGraph],
+        batch_size: int,
+        capacity: int,
+        kind: str,
+    ) -> None:
+        inputs, run = acoustic_tail.build_graph_step(batch_size, capacity, kind=kind)
+        output = torch.zeros_like(run())
+        graphs[(batch_size, capacity)] = tail.CapturedTailGraph(
+            SimpleNamespace(replay=lambda: output.copy_(run())), inputs, output
+        )
+
+    with torch.no_grad():
+        for batch_size in batch_sizes:
+            install(
+                acoustic_tail.meanflow_graphs,
+                batch_size,
+                patches * acoustic_tail.spec.unit_len,
+                "meanflow",
+            )
+            install(
+                acoustic_tail.encoder_graphs,
+                batch_size,
+                patches * acoustic_tail.encoder_block,
+                "semantic_encoder",
+            )
+
+
+def paired_tails(
+    slots: int,
+    *,
+    device: torch.device = torch.device("cpu"),
+    dtype: torch.dtype = torch.float32,
+    optimize: bool = False,
+    eager_graph_batches: tuple[int, ...] = (),
+) -> tuple[tail.DotsTtsAcousticTail, tail.DotsTtsAcousticTail]:
+    """An eager reference tail and a graph tail with the same weights."""
+    torch.manual_seed(1234)
+    model = TailModel().eval().to(device=device, dtype=dtype)
+    tails = []
+    for use_graphs in (False, True):
+        torch.manual_seed(9)
+        tails.append(
+            build_tail(
+                copy.deepcopy(model),
+                slots=slots,
+                device=device,
+                dtype=dtype,
+                patch_capacity=33,
+                optimize=optimize and use_graphs,
+            )
+        )
+    reference, padded = tails
+    install_eager_graphs(padded, eager_graph_batches)
+    return reference, padded
+
+
+def prime_tails(
+    reference: tail.DotsTtsAcousticTail,
+    padded: tail.DotsTtsAcousticTail,
+    live: list[int],
+) -> None:
+    """Admit the live slots on both tails and give them the same history."""
+    unit = reference.spec.unit_len
+    block = reference.encoder_block
+    for acoustic_tail in (reference, padded):
+        for slot in range(acoustic_tail.spec.num_slots):
+            acoustic_tail.release_slot(slot)
+        for slot in [
+            acoustic_tail.acquire_slot() for _ in range(acoustic_tail.spec.num_slots)
+        ]:
+            if slot in live:
+                pass
+            else:
+                acoustic_tail.release_slot(slot)
+    for name in (
+        "dit_k",
+        "dit_v",
+        "encoder_k",
+        "encoder_v",
+        "encoder_conv_tail",
+        "window",
+        "all_mods",
+    ):
+        value = getattr(reference, name)
+        value.normal_(0, 0.05)
+        getattr(padded, name).copy_(value)
+    for row, slot in enumerate(live):
+        for acoustic_tail in (reference, padded):
+            # Rows of one batch sit at different history lengths.
+            acoustic_tail._fm_seq_len[slot] = (
+                3 + row % 3
+            ) * unit  # noqa: leading-underscore  # production name
+            acoustic_tail.encoder_seq_len[slot] = (1 + row % 3) * block
+            acoustic_tail.initialize_slot_rng(slot, 100 + slot)
+
+
+def assert_cycle_matches(
+    reference: tail.DotsTtsAcousticTail,
+    padded: tail.DotsTtsAcousticTail,
+    slots: list[int],
+    *,
+    tolerance: float,
+) -> None:
+    hidden = torch.randn(
+        len(slots), FM_HIDDEN, device=reference.device, dtype=reference.dtype
+    )
+    expected = reference.sample_patches(slots, fm_hidden_rows=hidden)
+    actual = padded.sample_patches(slots, fm_hidden_rows=hidden)
+    torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+    # Both tails encode the reference latent so one cycle's rounding does not
+    # compound into the next comparison.
+    expected_feedback = reference.encode_feedback(slots, expected)
+    actual_feedback = padded.encode_feedback(slots, expected)
+    torch.testing.assert_close(
+        actual_feedback, expected_feedback, rtol=tolerance, atol=tolerance
+    )
+
+
+def test_graph_selection_pads_a_partial_batch_with_idle_slots() -> None:
+    _, padded = paired_tails(8, eager_graph_batches=(4, 8))
+    graphs = padded.meanflow_graphs
+    capacity = 4 * padded.spec.unit_len
+
+    # One live row would be padded 4x, past GRAPH_BATCH_PADDING_FACTOR.
+    assert padded.select_graph(graphs, [5], capacity) is None
+
+    graph, row_index = padded.select_graph(graphs, [5, 2], capacity)
+    members = graph.inputs["slots"].tolist()
+    assert len(members) == 4
+    assert members == sorted(set(members))
+    assert [members[row] for row in row_index.tolist()] == [5, 2]
+
+    graph, row_index = padded.select_graph(graphs, [5, 2, 1, 0, 3], capacity)
+    assert graph.inputs["slots"].tolist() == list(range(8))
+    assert row_index.tolist() == [5, 2, 1, 0, 3]
+
+    # A history past the largest captured context bucket has no graph.
+    assert padded.select_graph(graphs, [5, 2], 17 * padded.spec.unit_len) is None
+
+
+@pytest.mark.parametrize(
+    "live,pad_rows",
+    [
+        ([6, 1, 3], 1),  # gathers into the batch 4 graph
+        ([7, 2, 5, 0, 6], 3),  # fills the whole-pool batch 8 graph
+        ([4, 1, 6, 3], 0),  # exact batch, no padding
+    ],
+)
+def test_padded_graph_replay_matches_eager_for_a_partial_batch(
+    live: list[int], pad_rows: int
+) -> None:
+    reference, padded = paired_tails(8, eager_graph_batches=(4, 8))
+    prime_tails(reference, padded, live)
+
+    cycles = 3
+    for _ in range(cycles):
+        assert_cycle_matches(reference, padded, live, tolerance=2e-4)
+
+    assert padded.graph_replays == {"meanflow": cycles, "semantic_encoder": cycles}
+    assert not padded.graph_misses
+    assert padded.graph_pad_rows == {
+        "meanflow": cycles * pad_rows,
+        "semantic_encoder": cycles * pad_rows,
+    }
+    assert not reference.graph_replays
+    for pool in padded.pool_tensors():
+        assert torch.isfinite(pool).all()
+
+
+def test_slot_that_padded_a_replay_serves_the_next_request_cleanly() -> None:
+    reference, padded = paired_tails(4, eager_graph_batches=(4,))
+    live = [2, 0, 1]
+    prime_tails(reference, padded, live)
+    for _ in range(2):
+        assert_cycle_matches(reference, padded, live, tolerance=2e-4)
+    assert padded.graph_pad_rows["meanflow"] == 2
+
+    # Slot 3 padded both cycles on the graph tail and never ran on the
+    # reference tail. A request admitted into it must not see the difference.
+    grid = torch.linspace(0.0, 1.0, NFE + 1)
+    mods = reference.dit.build_mods(
+        grid[:-1], duration=grid[1:] - grid[:-1], g_cond=torch.randn(1, FM_HIDDEN)
+    )
+    history = torch.randn(2 * reference.spec.unit_len, FM_HIDDEN)
+    for acoustic_tail in (reference, padded):
+        assert acoustic_tail.acquire_slot() == 3
+        acoustic_tail.seed_fm_history(3, fm_rows=history, all_mods=mods)
+        acoustic_tail.initialize_slot_rng(3, 7)
+
+    for _ in range(2):
+        assert_cycle_matches(reference, padded, [3, 0, 2, 1], tolerance=2e-4)
+    assert not padded.graph_misses
+
+
+def test_admitted_slot_that_sits_a_step_out_is_never_used_as_padding() -> None:
+    reference, padded = paired_tails(4, eager_graph_batches=(4,))
+    prime_tails(reference, padded, [0, 1, 2, 3])
+    waiting_window = padded.window[3].clone()
+    waiting_conv_tail = padded.encoder_conv_tail[3].clone()
+    waiting_keys = padded.dit_k[:, :, 3].clone()
+
+    # Three rows fit the batch 4 graph, but the only other slot is owned by a
+    # request that is not decoding this step, so the step must run eagerly.
+    assert_cycle_matches(reference, padded, [0, 1, 2], tolerance=2e-4)
+
+    assert padded.graph_misses == {"meanflow": 1, "semantic_encoder": 1}
+    assert not padded.graph_replays
+    assert torch.equal(padded.window[3], waiting_window)
+    assert torch.equal(padded.encoder_conv_tail[3], waiting_conv_tail)
+    assert torch.equal(padded.dit_k[:, :, 3], waiting_keys)
+
+
+@pytest.mark.accelerator
+def test_batched_tail_cuda_graph_pads_partial_batches_to_a_captured_bucket() -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is required")
+    device = torch.device("cuda")
+    reference, padded = paired_tails(
+        16, device=device, dtype=torch.bfloat16, optimize=True
+    )
+    assert {batch for batch, _ in padded.meanflow_graphs} == {1, 2, 4, 8, 16}
+
+    order = [9, 3, 14, 0, 7, 12, 5, 1, 15, 8, 2, 11, 6, 13, 4, 10]
+    cycles = 2
+    expected_pad_rows = 0
+    row_counts = (1, 2, 3, 5, 8, 11, 13, 16)
+    for rows in row_counts:
+        live = order[:rows]
+        prime_tails(reference, padded, live)
+        for _ in range(cycles):
+            assert_cycle_matches(reference, padded, live, tolerance=2e-2)
+        bucket = min(batch for batch in (1, 2, 4, 8, 16) if batch >= rows)
+        expected_pad_rows += cycles * (bucket - rows)
+
+    replays = cycles * len(row_counts)
+    assert padded.graph_replays == {"meanflow": replays, "semantic_encoder": replays}
+    assert not padded.graph_misses
+    assert padded.graph_pad_rows == {
+        "meanflow": expected_pad_rows,
+        "semantic_encoder": expected_pad_rows,
+    }
+    for pool in padded.pool_tensors():
+        assert torch.isfinite(pool.float()).all()
