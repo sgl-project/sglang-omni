@@ -36,6 +36,10 @@ TOOL_CALL = "tool_call"
 # {"responses": [{"id": str, "name": str, "response": object}, ...]}
 TOOL_RESPONSE = "tool_response"
 SESSION_CONTROL = "session"  # {"type": <control type>, ...}
+SESSION_CONTROL_INTERNAL = (
+    "session_internal"  # a control routed between graph nodes, not published
+)
+SEGMENTATION_MODE = "segmentation.mode"  # set whether speech events gate PCM
 # `turn_detection.type` of a realtime session: speech boundaries end turns, or an end-of-turn model holds a turn across a pause
 SERVER_VAD = "server_vad"
 SEMANTIC_VAD = "semantic_vad"
@@ -84,20 +88,23 @@ def chunk_style(chunk: TimedChunk) -> str | None:
 
 
 def control_type(chunk: TimedChunk | OutputChunk) -> str | None:
-    """The control type of a SESSION_CONTROL chunk; None for any other chunk and for an input confirmation, which carries no payload."""
-    if chunk.format != SESSION_CONTROL or chunk.payload is None:
+    """The control type of a public or internal session control chunk."""
+    if (
+        chunk.format not in (SESSION_CONTROL, SESSION_CONTROL_INTERNAL)
+        or chunk.payload is None
+    ):
         return None
     elif isinstance(chunk.payload, dict) and isinstance(chunk.payload.get("type"), str):
         return chunk.payload["type"]
     else:
         raise ValueError(
-            f"a {SESSION_CONTROL!r} chunk carries a string type: {chunk!r:.300}"
+            f"a session control chunk carries a string type: {chunk!r:.300}"
         )
 
 
 def edge_event(chunk: TimedChunk) -> str | None:
-    """The event a control edge takes a node's chunk by: the control type of a SESSION_CONTROL chunk, the format of any other, such as `tool_response`."""
-    if chunk.format == SESSION_CONTROL:
+    """The event a control edge takes a node's chunk by: the control type of a session control chunk, the format of any other, such as `tool_response`."""
+    if chunk.format in (SESSION_CONTROL, SESSION_CONTROL_INTERNAL):
         return control_type(chunk)
     else:
         return chunk.format

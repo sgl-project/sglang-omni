@@ -20,6 +20,7 @@ def test_vad_graph_assembles_and_round_trips() -> None:
     rebuilt = AudioSessionPipelineConfig.model_validate(config.model_dump())
     assert rebuilt.session_graph() == config.session_graph()
     assert rebuilt.session_ports().input[0].format == PCM16
+    assert rebuilt.session_ports().output is None
     assert (
         rebuilt.session_limits().max_output_chunks == config.max_pending_output_chunks
     )

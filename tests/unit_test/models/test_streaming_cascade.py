@@ -48,7 +48,10 @@ from sglang_omni.models.streaming_cascade.dialog import (
 )
 from sglang_omni.models.streaming_cascade.generators import ChatChoice, ChatDelta
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
-from sglang_omni.models.streaming_cascade.recognizers import probe_realtime_service
+from sglang_omni.models.streaming_cascade.recognizers import (
+    UtteranceRecognizer,
+    probe_realtime_service,
+)
 from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
@@ -72,7 +75,9 @@ from sglang_omni.proto.streams import (
     REPLY_HEARD,
     REPLY_PROGRESS,
     REPLY_SENTENCE,
+    SEGMENTATION_MODE,
     SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TEXT_DELTA,
@@ -1354,10 +1359,58 @@ def test_segmenter_gates_on_speech_controls():
         assert segmenter.step(chunk) == []
     assert segmenter.pending_audio[0].t_start_ms == 600
     restart = control_chunk(SPEECH_STARTED, t_ms=2350)
-    assert segmenter.step(restart) == ["open", *held[-3:]]
+    selected = segmenter.step(restart)
+    assert selected == [
+        "open",
+        TimedChunk(AUDIO, 2350, 50, 0, held[-3].payload[1600:], format=PCM16),
+        *held[-2:],
+    ]
     assert segmenter.step(control_chunk(COMMIT)) == ["finish"]
     assert segmenter.step(control_chunk(COMMIT)) == ["empty"]
     assert segmenter.finish() == []
+
+
+class CapturingUtteranceRecognizer(UtteranceRecognizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.utterances: list[bytes] = []
+
+    async def utterance(
+        self, audio: AsyncIterator[TimedChunk]
+    ) -> AsyncIterator[TimedChunk]:
+        pcm = bytearray()
+        async for chunk in audio:
+            if isinstance(chunk.payload, bytes):
+                pcm.extend(chunk.payload)
+            else:
+                pass
+        self.utterances.append(bytes(pcm))
+        yield transcript_chunk("captured", True)
+
+
+@pytest.mark.asyncio
+async def test_cascade_recognizer_receives_sample_sliced_lookback_audio() -> None:
+    recognizer = CapturingUtteranceRecognizer()
+    leading_audio = np.arange(1600, dtype="<i2").tobytes()
+    final = np.arange(1600, 2400, dtype="<i2").tobytes()
+
+    async def inputs() -> AsyncIterator[TimedChunk]:
+        yield TimedChunk(
+            "control",
+            0,
+            0,
+            0,
+            {"type": SEGMENTATION_MODE, "enabled": True},
+            format=SESSION_CONTROL_INTERNAL,
+        )
+        yield TimedChunk(AUDIO, 0, 100, 0, leading_audio, format=PCM16)
+        yield control_chunk(SPEECH_STARTED, t_ms=50)
+        yield TimedChunk(AUDIO, 100, 50, 1, final, format=PCM16)
+        yield replace(control_chunk(COMMIT), format=SESSION_CONTROL_INTERNAL)
+
+    recognizer_outputs: list[TimedChunk] = []
+    await recognizer.process(inputs(), recognizer_outputs.append)
+    assert recognizer.utterances == [leading_audio[800 * 2 :] + final]
 
 
 @pytest.mark.asyncio

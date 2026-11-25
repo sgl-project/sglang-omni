@@ -55,6 +55,7 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_PROGRESS,
     SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
     TEXT_DELTA,
     TOOL_CALL,
@@ -185,7 +186,10 @@ class NodeSettings(BaseModel):
 
     @property
     def consumes(self) -> frozenset[str]:
-        return COMPONENTS.kind(self.component.kind).consumes | {SESSION_CONTROL}
+        return COMPONENTS.kind(self.component.kind).consumes | {
+            SESSION_CONTROL,
+            SESSION_CONTROL_INTERNAL,
+        }
 
     @property
     def required(self) -> frozenset[str]:
@@ -285,7 +289,14 @@ class ComponentGraphConfig(BaseModel):
             offered = frozenset().union(
                 *(formats & produced[name] for name, formats in edges.items())
             )
-            missing = node.required - offered - {SESSION_CONTROL}
+            missing = (
+                node.required
+                - offered
+                - {
+                    SESSION_CONTROL,
+                    SESSION_CONTROL_INTERNAL,
+                }
+            )
             if node.name in node.sources:
                 raise ValueError(f"node {node.name!r} reads itself")
             elif unusable:
@@ -693,7 +704,8 @@ class StreamingCascadePipelineConfig(AudioSessionPipelineConfig):
         for name, node in self.session_nodes.items():
             inputs = []
             consumes = (
-                COMPONENTS.kind(node.kind).consumes | {SESSION_CONTROL}
+                COMPONENTS.kind(node.kind).consumes
+                | {SESSION_CONTROL, SESSION_CONTROL_INTERNAL}
                 if node.kind
                 else None
             )

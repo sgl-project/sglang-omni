@@ -17,7 +17,14 @@ from sglang_omni.models.turn_detection.node import (
 from sglang_omni.models.vad.node import SESSION_PORTS as VAD_PORTS
 from sglang_omni.models.vad.node import VAD_STAGE, VADStageConfig, vad_stage
 from sglang_omni.proto.session import SessionGraph, SessionLimits
-from sglang_omni.proto.streams import SESSION_UNIT_MS, SessionPorts
+from sglang_omni.proto.streams import (
+    PCM16,
+    SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
+    SESSION_UNIT_MS,
+    SessionPorts,
+    published_audio_port,
+)
 
 REALTIME_OPERATION_TIMEOUT_S = 300
 REALTIME_IDLE_TIMEOUT_S = 6 * 3600
@@ -28,7 +35,7 @@ MODEL_PIPELINE_FIELDS = ("placement", "terminal_stages_fn", "env_defaults")
 
 
 def validate_fused_endpoint_graph(graph: SessionGraph) -> None:
-    """Reject data edges from standalone VAD owners into fused endpoints."""
+    """Reject split endpoint ownership and competing raw consumer edges."""
     vad_owners = {
         name for name, node in graph.nodes.items() if VAD_STAGE in node.stages
     }
@@ -43,11 +50,51 @@ def validate_fused_endpoint_graph(graph: SessionGraph) -> None:
                 "the separate VAD node from the semantic endpoint path; let "
                 "turn_detection consume input:pcm16 and input:session directly; "
                 "move VAD factory overrides to stages.turn_detection.factory; "
-                "route downstream consumers and session publication through "
-                "turn_detection:session"
+                "route downstream PCM through turn_detection:pcm16 and "
+                "boundaries through turn_detection:session and in-band controls "
+                "through turn_detection:session_internal"
             )
         else:
             pass
+    endpoints = {
+        name
+        for name, node in graph.nodes.items()
+        if TURN_DETECTION_STAGE in node.stages
+    }
+    for name, consumer in graph.nodes.items():
+        edges = consumer.edges()
+        raw_formats = edges.get("input", frozenset())
+        reads_raw_pcm = raw_formats is None or (
+            raw_formats is not None and PCM16 in raw_formats
+        )
+        reads_raw_controls = raw_formats is None or (
+            raw_formats is not None and SESSION_CONTROL in raw_formats
+        )
+        for endpoint_name in endpoints.intersection(edges):
+            endpoint_formats = edges[endpoint_name]
+            reads_endpoint_controls = endpoint_formats is None or (
+                endpoint_formats is not None
+                and bool({SESSION_CONTROL, SESSION_CONTROL_INTERNAL} & endpoint_formats)
+            )
+            reads_endpoint_internal_controls = endpoint_formats is None or (
+                endpoint_formats is not None
+                and SESSION_CONTROL_INTERNAL in endpoint_formats
+            )
+            if reads_raw_pcm and reads_endpoint_controls:
+                raise ValueError(
+                    f"node {name!r} reads raw input PCM and fused endpoint controls; "
+                    f"route PCM through {endpoint_name}:pcm16, boundaries through "
+                    f"{endpoint_name}:session, and in-band controls through "
+                    f"{endpoint_name}:session_internal"
+                )
+            elif reads_raw_controls and reads_endpoint_internal_controls:
+                raise ValueError(
+                    f"node {name!r} reads raw input session controls and fused "
+                    f"endpoint controls; route in-band controls through "
+                    f"{endpoint_name}:session_internal"
+                )
+            else:
+                pass
 
 
 @dataclass(frozen=True)
@@ -203,10 +250,32 @@ class AudioSessionPipelineConfig(PipelineConfig):
             name: self.node_ports(name, node)
             for name, node in self.session_nodes.items()
         }
-        first, *others = [ports for ports in by_node.values() if ports is not None]
+        first, *others = [
+            replace(
+                ports,
+                output=(
+                    ports.output
+                    if ports.output is not None
+                    and ports.output.format in self.session_publish.get(name, ())
+                    else None
+                ),
+            )
+            for name, ports in by_node.items()
+            if ports is not None
+        ]
         for ports in others:
             first = first.with_node(ports)
-        return replace(first, unit_ms=self.unit_ms)
+        return replace(
+            first,
+            output=published_audio_port(
+                ports.output
+                for name, ports in by_node.items()
+                if ports is not None
+                and ports.output is not None
+                and ports.output.format in self.session_publish.get(name, ())
+            ),
+            unit_ms=self.unit_ms,
+        )
 
     def session_limits(self) -> SessionLimits:
         return SessionLimits(

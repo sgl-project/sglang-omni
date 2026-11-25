@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
@@ -29,9 +29,13 @@ from sglang_omni.proto.streams import (
     AUDIO,
     COMMIT,
     CONFIGURE,
+    CONTROL,
+    INTERRUPT,
+    SEGMENTATION_MODE,
     SEMANTIC_VAD,
     SERVER_VAD,
     SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
     control_type,
 )
@@ -95,6 +99,7 @@ class TurnSession:
     audio_received_end_ms: float = 0.0
     audio_received_sample_count: int = 0
     audio_history: deque[TimedChunk] = field(default_factory=deque)
+    segmentation_mode_announced: bool = False
 
     def clear_pause(self) -> None:
         self.pause_start_ms = None
@@ -140,15 +145,28 @@ class TurnDetectionHooks(SessionHooks):
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
         session = self.sessions[context.session_identity]
+        if not session.segmentation_mode_announced:
+            if session.mode is not None:
+                self.emit_segmentation_mode(session, chunk, context)
+            else:
+                pass
+            session.segmentation_mode_announced = True
+        else:
+            pass
         chunk_control_type = control_type(chunk)
         if chunk.modality == AUDIO:
             self.append_audio(session, chunk, context)
         elif chunk_control_type == COMMIT:
             self.reset_after_commit(session)
+            context.emit(replace(chunk, format=SESSION_CONTROL_INTERNAL))
         elif chunk_control_type == CONFIGURE:
             self.configure(session, chunk.payload)
-        elif chunk.format == SESSION_CONTROL:
+            context.emit(replace(chunk, format=SESSION_CONTROL_INTERNAL))
+            self.emit_segmentation_mode(session, chunk, context)
+        elif chunk_control_type == INTERRUPT:
             pass
+        elif chunk.format == SESSION_CONTROL:
+            context.emit(replace(chunk, format=SESSION_CONTROL_INTERNAL))
         else:
             raise ValueError("expected pcm16 audio or a session control")
 
@@ -159,11 +177,41 @@ class TurnDetectionHooks(SessionHooks):
                 )
             else:
                 pass
-            self.end_turn(session, context)
+            context.emit(self.end_turn(session))
+        else:
+            pass
+        if chunk.modality == AUDIO and chunk.eos:
+            context.emit(
+                TimedChunk(
+                    AUDIO,
+                    chunk.t_start_ms + chunk.duration_ms,
+                    0,
+                    chunk.seq,
+                    b"",
+                    format=chunk.format,
+                    eos=True,
+                    turn=chunk.turn,
+                )
+            )
         else:
             pass
         payload.data = {"accepted": True}
         return payload
+
+    def emit_segmentation_mode(
+        self, session: TurnSession, chunk: TimedChunk, context: SessionContext
+    ) -> None:
+        context.emit(
+            TimedChunk(
+                CONTROL,
+                chunk.t_start_ms,
+                0,
+                chunk.seq,
+                {"type": SEGMENTATION_MODE, "enabled": session.mode is not None},
+                format=SESSION_CONTROL_INTERNAL,
+                turn=chunk.turn,
+            )
+        )
 
     def append_audio(
         self, session: TurnSession, chunk: TimedChunk, context: SessionContext
@@ -184,9 +232,11 @@ class TurnDetectionHooks(SessionHooks):
         elif not session.detector_session.is_enabled:
             session.audio_received_end_ms = chunk.t_start_ms + chunk.duration_ms
             self.append_audio_history(session, chunk)
+            self.emit_audio_span([replace(chunk, eos=False)], context)
         else:
             assert isinstance(chunk.payload, bytes)
             byte_offset = 0
+            pending_audio: list[TimedChunk] = []
             while byte_offset < len(chunk.payload):
                 partial_sample_count = (
                     session.audio_received_sample_count
@@ -210,25 +260,30 @@ class TurnDetectionHooks(SessionHooks):
                     * 1000
                     / SESSION_INPUT_SAMPLE_RATE_HZ
                 )
-                self.append_audio_history(
-                    session,
-                    TimedChunk(
-                        AUDIO,
-                        chunk.t_start_ms
-                        + byte_offset // 2 * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
-                        slice_sample_count * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
-                        chunk.seq,
-                        pcm_slice,
-                        format=chunk.format,
-                        turn=chunk.turn,
-                    ),
+                audio_slice = TimedChunk(
+                    AUDIO,
+                    chunk.t_start_ms
+                    + byte_offset // 2 * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                    slice_sample_count * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                    chunk.seq,
+                    pcm_slice,
+                    format=chunk.format,
+                    turn=chunk.turn,
                 )
+                self.append_audio_history(session, audio_slice)
+                pending_audio.append(audio_slice)
                 byte_offset = end_byte
                 if session.detector_session.detector.samples_consumed > consumed_before:
                     for started, boundary_time_ms in boundaries:
-                        self.append_boundary(
-                            session, started, boundary_time_ms, context
+                        boundary = self.append_boundary(
+                            session, started, boundary_time_ms
                         )
+                        if boundary is not None:
+                            self.emit_audio_span(pending_audio, context)
+                            pending_audio.clear()
+                            context.emit(boundary)
+                        else:
+                            pass
                     if (
                         session.mode in (SERVER_VAD, SEMANTIC_VAD)
                         and session.is_open
@@ -252,13 +307,46 @@ class TurnDetectionHooks(SessionHooks):
                             // 1000
                         )
                         if completed_frame_end_sample >= deadline_sample:
-                            self.end_turn(session, context)
+                            self.emit_audio_span(pending_audio, context)
+                            pending_audio.clear()
+                            context.emit(self.end_turn(session))
                         else:
                             pass
                     else:
                         pass
                 else:
                     pass
+            self.emit_audio_span(pending_audio, context)
+
+    def emit_audio_span(
+        self, chunks: Sequence[TimedChunk], context: SessionContext
+    ) -> None:
+        """Coalesce PCM up to the next causal control without crossing appends."""
+        if not chunks:
+            return
+        else:
+            pass
+        first = chunks[0]
+        pcm_fragments = [chunk.payload for chunk in chunks]
+        if not all(isinstance(fragment, bytes) for fragment in pcm_fragments):
+            raise ValueError("audio chunks must contain PCM bytes")
+        else:
+            pass
+        if len(chunks) == 1:
+            assert isinstance(first.payload, bytes)
+            payload = first.payload
+        else:
+            payload = b"".join(
+                fragment for fragment in pcm_fragments if isinstance(fragment, bytes)
+            )
+        context.emit(
+            replace(
+                first,
+                duration_ms=len(payload) // 2 * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ,
+                payload=payload,
+                eos=False,
+            )
+        )
 
     def append_audio_history(self, session: TurnSession, chunk: TimedChunk) -> None:
         session.audio_history.append(chunk)
@@ -341,27 +429,29 @@ class TurnDetectionHooks(SessionHooks):
         return b"".join(pcm_fragments)
 
     def append_boundary(
-        self, session: TurnSession, started: bool, t_ms: float, context: SessionContext
-    ) -> None:
+        self, session: TurnSession, started: bool, t_ms: float
+    ) -> TimedChunk | None:
         if session.mode == SERVER_VAD:
             if started and not session.is_open:
                 session.is_open = True
                 session.turn_start_ms = t_ms
                 session.clear_pause()
-                context.emit(boundary_chunk(True, t_ms))
+                return boundary_chunk(True, t_ms)
             elif started:
                 session.clear_pause()
+                return None
             else:
                 session.is_open = False
                 session.clear_pause()
-                context.emit(boundary_chunk(False, t_ms))
+                return boundary_chunk(False, t_ms)
         elif session.mode == SEMANTIC_VAD and started and not session.is_open:
             session.is_open = True
             session.turn_start_ms = t_ms
             session.clear_pause()
-            context.emit(boundary_chunk(True, t_ms))
+            return boundary_chunk(True, t_ms)
         elif session.mode == SEMANTIC_VAD and started:
             session.clear_pause()
+            return None
         elif session.mode == SEMANTIC_VAD and session.is_open:
             session.pause_start_ms = t_ms
             assert session.policy is not None
@@ -373,8 +463,9 @@ class TurnDetectionHooks(SessionHooks):
             session.required_silence_ms = session.policy.required_silence_ms(
                 session.pause_probability
             )
+            return None
         else:
-            pass
+            return None
 
     def configure(self, session: TurnSession, settings: Mapping[str, object]) -> None:
         if "turn_detection" not in settings:
@@ -426,7 +517,7 @@ class TurnDetectionHooks(SessionHooks):
         session.clear_pause()
         session.audio_history.clear()
 
-    def end_turn(self, session: TurnSession, context: SessionContext) -> None:
+    def end_turn(self, session: TurnSession) -> TimedChunk:
         boundary_time_ms = (
             session.pause_start_ms
             if session.pause_start_ms is not None
@@ -434,7 +525,7 @@ class TurnDetectionHooks(SessionHooks):
         )
         session.is_open = False
         session.clear_pause()
-        context.emit(boundary_chunk(False, boundary_time_ms))
+        return boundary_chunk(False, boundary_time_ms)
 
 
 def create_scheduler(

@@ -26,6 +26,7 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    SEGMENTATION_MODE,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -280,7 +281,12 @@ class QwenInputHooks(SessionHooks):
             else:
                 state.input_end_ms = chunk.t_start_ms + chunk.duration_ms
                 self.drop_unreachable_frames(state)
-        elif event_type not in (COMMIT, SPEECH_STARTED, SPEECH_STOPPED):
+        elif event_type not in (
+            COMMIT,
+            SEGMENTATION_MODE,
+            SPEECH_STARTED,
+            SPEECH_STOPPED,
+        ):
             return payload
         else:
             pass
