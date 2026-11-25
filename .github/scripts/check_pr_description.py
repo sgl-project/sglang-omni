@@ -25,9 +25,8 @@ TEMPLATE_PLACEHOLDERS = frozenset(
         "Describe the changes made in this PR.",
     }
 )
-HTML_COMMENT_PATTERN = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
-HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*$")
-FENCE_PATTERN = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+HEADING_PATTERN = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*$")
+FENCE_PATTERN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 SectionName = Literal["Motivation", "Modifications"]
 ProblemReason = Literal["missing", "empty"]
@@ -53,21 +52,44 @@ def read_body_lines(body: str) -> list[BodyLine]:
     """Drop HTML comments and flag fenced code and blockquote lines as example content."""
     body_lines: list[BodyLine] = []
     fence_marker: str | None = None
-    for line in HTML_COMMENT_PATTERN.sub("", body).splitlines():
+    in_comment = False
+    for line in body.splitlines():
         fence_match = FENCE_PATTERN.match(line)
-        if fence_match is not None:
-            marker = fence_match.group(1)[0]
-            if fence_marker == marker:
+        if fence_marker is not None:
+            if (
+                fence_match
+                and fence_match[1].startswith(fence_marker)
+                and not fence_match[2].strip()
+            ):
                 fence_marker = None
-            elif fence_marker is None:
-                fence_marker = marker
             else:
                 pass
             is_example = True
-        elif fence_marker is not None or line.lstrip().startswith(">"):
+        elif (
+            not in_comment
+            and fence_match
+            and (fence_match[1].startswith("~") or "`" not in fence_match[2])
+        ):
+            fence_marker = fence_match[1]
+            is_example = True
+        elif not in_comment and line.lstrip().startswith(">"):
             is_example = True
         else:
             is_example = False
+            visible = []
+            while line:
+                prefix, delimiter, line = line.partition(
+                    "-->" if in_comment else "<!--"
+                )
+                if not in_comment:
+                    visible.append(prefix)
+                else:
+                    pass
+                if delimiter:
+                    in_comment = not in_comment
+                else:
+                    break
+            line = "".join(visible)
         body_lines.append(BodyLine(text=line, is_example=is_example))
     return body_lines
 

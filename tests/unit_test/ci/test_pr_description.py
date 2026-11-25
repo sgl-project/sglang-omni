@@ -164,6 +164,19 @@ def checker() -> Iterator[ModuleType]:
             id="a_heading_in_a_code_sample_is_not_a_section",
         ),
         pytest.param(
+            "~~~~markdown\n~~~\n## Motivation\nExample only.\n~~~~\n"
+            "## Modifications\nCheck the body.\n",
+            [("Motivation", "missing")],
+            id="a_shorter_fence_does_not_end_an_example",
+        ),
+        pytest.param(
+            "~~~html\n<!--\n~~~\n"
+            "  ## Motivation\nExplain the problem.\n"
+            "## Modifications\nCheck the body.\n",
+            [],
+            id="a_literal_comment_in_code_cannot_hide_real_sections",
+        ),
+        pytest.param(
             "## Modifications\n\n- Add the check.\n\n"
             "> ## Motivation\n>\n> Explain why this change is needed.\n",
             [("Motivation", "missing")],
