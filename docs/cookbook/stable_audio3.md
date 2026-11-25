@@ -38,6 +38,7 @@ curl http://localhost:8000/v1/audio/speech \
 ## Limitations
 
 - Only Stable Audio 3 Medium is supported. Small Music and Small SFX use a different autoencoder.
+- Only NVIDIA GPUs are tested: Hopper GPUs run attention on FA3, other NVIDIA GPUs on SDPA. Other accelerators start but run untested paths.
 - Only text-to-audio is supported. The official library's audio-to-audio editing, inpainting and LoRA loading are not.
 - The checkpoint is distilled for 8 sampling steps without classifier-free guidance, so steps and guidance are fixed.
 

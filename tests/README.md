@@ -148,6 +148,7 @@ tests/
     │   ├── test_core.py
     │   └── test_request_builders.py
     ├── stable_audio3/
+    │   ├── test_request_builders.py
     │   └── test_stable_audio3.py
     ├── nemotron_voicechat/
     │   ├── test_checkpoint_shim.py
@@ -957,7 +958,7 @@ that happened to contain an older version of the test.
   attention and decoder contracts, abort handling, and relay tensor validation.
   Kernel and CUDA Graph parity cases in `test_core.py` are marked `accelerator`.
 
-- `unit_test/stable_audio3/`: Stable Audio 3 request validation, latent lengths and noise levels from the official inference, batched and length-grouped generation leaving each request's audio unchanged, CUDA graph buckets and checkpoint detection, on a tiny randomly initialized model. The case that checks compiled blocks and CUDA graphs against eager runs is marked `accelerator`.
+- `unit_test/stable_audio3/`: Stable Audio 3 request validation (`test_request_builders.py`), latent lengths and noise levels from the official inference, batched and length-grouped generation leaving each request's audio unchanged, CUDA graph buckets and checkpoint detection, on a tiny randomly initialized model. The case that checks compiled blocks and CUDA graphs against eager runs is marked `accelerator`.
 
 - `unit_test/preprocessing/`: Reference-audio cache identity, bit-exact cached
   resampling, audio-source resolution (including declared G.711 bytes getting

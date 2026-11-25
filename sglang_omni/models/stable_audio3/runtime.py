@@ -26,6 +26,7 @@ from sglang_omni.models.stable_audio3.dit import (
     TransformerBlock,
 )
 from sglang_omni.models.stable_audio3.layers import AttentionBackend
+from sglang_omni.models.stable_audio3.length_groups import plan_length_groups
 from sglang_omni.models.stable_audio3.model_config import (
     MAX_DURATION_SECONDS,
     MIN_DURATION_SECONDS,
@@ -72,36 +73,6 @@ def sampling_schedule(device: torch.device) -> torch.Tensor:
         timesteps <= 0, torch.zeros_like(noise_levels), noise_levels
     )
     return torch.where(timesteps >= 1, torch.ones_like(noise_levels), noise_levels)
-
-
-def plan_length_groups(
-    latent_lengths: list[int], overhead_latents: int
-) -> list[list[int]]:
-    """Cut a batch, sorted by length, into runs that each pad only to their own longest request.
-
-    The cut minimizes the padded latents plus a fixed overhead per run, so a batch of equal lengths stays whole. Returns indices into latent_lengths.
-    """
-    order = sorted(range(len(latent_lengths)), key=lambda index: latent_lengths[index])
-    best_cost = [0] + [math.inf] * len(order)
-    run_start = [0] * (len(order) + 1)
-    for end in range(1, len(order) + 1):
-        for start in range(end):
-            cost = (
-                best_cost[start]
-                + overhead_latents
-                + (end - start) * latent_lengths[order[end - 1]]
-            )
-            if cost < best_cost[end]:
-                best_cost[end] = cost
-                run_start[end] = start
-            else:
-                pass
-    groups = []
-    end = len(order)
-    while end > 0:
-        groups.append(order[run_start[end] : end])
-        end = run_start[end]
-    return groups[::-1]
 
 
 class StableAudio3Runtime:

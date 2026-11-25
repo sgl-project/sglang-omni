@@ -239,7 +239,13 @@ def apply_speed(
 
 def encode_wav(audio: np.ndarray, sample_rate: int) -> bytes:
     """Encode audio as a 16-bit PCM WAV, interleaving the samples straight into the output buffer, since every copy of a long clip shows in the latency."""
-    scaled = np.clip(np.atleast_1d(audio), -1.0, 1.0)
+    samples_in = np.atleast_1d(audio)
+    # note (ruilin): float16 rounds 32767 up to 32768, which wraps to -32768 in int16, so a half-precision waveform scales in float32.
+    if samples_in.dtype == np.float16:
+        samples_in = samples_in.astype(np.float32)
+    else:
+        pass
+    scaled = np.clip(samples_in, -1.0, 1.0)
     np.multiply(scaled, 32767.0, out=scaled)
     num_channels = int(scaled.shape[0]) if scaled.ndim == 2 else 1
 

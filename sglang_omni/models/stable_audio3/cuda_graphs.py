@@ -97,6 +97,20 @@ def bucket_latents(latent_length: int) -> int:
     return -(-latent_length // LATENT_BUCKET_STEP) * LATENT_BUCKET_STEP
 
 
+def below_memory_floor(device: torch.device, label: str) -> bool:
+    """True once free memory drops under the floor; the buckets not yet recorded then run eager."""
+    free_gb = get_available_gpu_memory(
+        device.type, device.index or 0, distributed=False, empty_cache=False
+    )
+    if free_gb < MIN_FREE_GB:
+        logger.warning(
+            f"Stable Audio 3 {label} graphs: {free_gb:.1f} GB free < {MIN_FREE_GB:.1f} GB, the remaining buckets run eager"
+        )
+        return True
+    else:
+        return False
+
+
 def capture_graph(
     forward: GraphForward,
     *,
@@ -105,17 +119,7 @@ def capture_graph(
     device: torch.device,
     label: str,
 ) -> tuple[ReplayableGraph, torch.Tensor] | None:
-    """Warms forward up on a side stream and records it, or returns None to run eager."""
-    free_gb = get_available_gpu_memory(
-        device.type, device.index or 0, distributed=False, empty_cache=False
-    )
-    if free_gb < MIN_FREE_GB:
-        logger.warning(
-            f"Stable Audio 3 {label} graph: {free_gb:.1f} GB free < {MIN_FREE_GB:.1f} GB, running eager"
-        )
-        return None
-    else:
-        pass
+    """Warms forward up on a side stream and records it, or returns None when it runs out of memory."""
     device_module = torch.get_device_module(device)
     try:
         with current_platform.graph_capture_attention():
@@ -164,11 +168,14 @@ class PromptEncoderCudaGraphRunner:
         self.pool: DeviceGraphPool = graph_backend.graph_pool_handle()
 
     def capture_buckets(self) -> None:
-        """Records every batch bucket; after a failed capture the rest run eager."""
+        """Records every batch bucket; a bucket whose capture runs out of memory runs eager."""
         for batch_bucket in serving_batch_buckets(self.max_batch_size):
-            prompt_graph = self.capture(batch_bucket)
-            if prompt_graph is None:
+            if below_memory_floor(self.device, "prompt encoder"):
                 return
+            else:
+                prompt_graph = self.capture(batch_bucket)
+            if prompt_graph is None:
+                pass
             else:
                 self.graphs[batch_bucket] = prompt_graph
 
@@ -245,7 +252,7 @@ class DiTCudaGraphRunner:
         )
 
     def capture_buckets(self, min_latent_length: int) -> None:
-        """Records every bucket a request can reach within the token budget, largest first so smaller graphs reuse the pool; after a failed capture the rest run eager."""
+        """Records every bucket a request can reach within the token budget, largest first so smaller graphs reuse the pool; a bucket whose capture runs out of memory runs eager."""
         if self.conditions is None:
             raise ValueError(
                 "load one batch's conditions before capturing, so the buffers exist"
@@ -259,14 +266,16 @@ class DiTCudaGraphRunner:
                 LATENT_BUCKET_STEP,
             )
             for latent_bucket in reversed(latent_buckets):
-                if self.within_budget(batch_bucket, latent_bucket):
-                    step_graph = self.capture(batch_bucket, latent_bucket)
-                    if step_graph is None:
-                        return
-                    else:
-                        self.graphs[(batch_bucket, latent_bucket)] = step_graph
+                if not self.within_budget(batch_bucket, latent_bucket):
+                    continue
+                elif below_memory_floor(self.device, "DiT"):
+                    return
                 else:
+                    step_graph = self.capture(batch_bucket, latent_bucket)
+                if step_graph is None:
                     pass
+                else:
+                    self.graphs[(batch_bucket, latent_bucket)] = step_graph
 
     def bind(
         self, conditions: SamplingConditions, batch_size: int, latent_length: int

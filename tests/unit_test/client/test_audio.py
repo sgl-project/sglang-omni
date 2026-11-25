@@ -155,6 +155,14 @@ def test_encode_wav_writes_the_same_bytes_as_the_step_by_step_encoding(
     assert np.array_equal(audio, before)
 
 
+def test_encode_wav_scales_float16_like_its_float32_values() -> None:
+    """A full-scale float16 sample stays full scale; scaled in float16 it would round to 32768 and wrap to -32768."""
+    audio = wav_test_input(np.float16, (2, 4000))
+    assert client_audio.encode_wav(audio, 44100) == straightforward_wav(
+        audio.astype(np.float32), 44100
+    )
+
+
 def test_float16_waveform_reaches_the_client_as_the_same_audio() -> None:
     """A float16 waveform sent with keep_float16 reaches the client as the same float32 values and WAV."""
     generator = torch.Generator().manual_seed(0)
