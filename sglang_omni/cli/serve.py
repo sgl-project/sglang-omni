@@ -362,14 +362,17 @@ def default_draft_engine_writes(
     }
     writes: dict[str, object] = {}
     for stage in pipeline_config.stages:
+        draft = default_drafts.get(stage.name)
         if (
-            stage.name in default_drafts
+            draft is not None
             and stage.engine is not None
             and stage.tp_size == 1
             and not stage.engine.disable_speculative_decoding
+            and stage.engine.overrides().get("speculative_algorithm", draft.algorithm)
+            == draft.algorithm
         ):
             already_set = stage.engine.overrides()
-            for key, value in default_drafts[stage.name].engine_overrides().items():
+            for key, value in draft.engine_overrides().items():
                 if key != "speculative_draft_model_revision" and key not in already_set:
                     writes[f"stages.{stage.name}.engine.{key}"] = value
                 else:

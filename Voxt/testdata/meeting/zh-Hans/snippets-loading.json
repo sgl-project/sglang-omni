@@ -1,0 +1,11 @@
+{
+  "name": "snippets-loading",
+  "kind": "snippets",
+  "snippets": {
+    "ready": false,
+    "rows": [],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

@@ -62,6 +62,7 @@ session_nodes:
     reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
     drop_quiet_start: true
     language: auto
+    sentence_pause_ms: 200
   aligner:
     kind: alignment
     method: forced

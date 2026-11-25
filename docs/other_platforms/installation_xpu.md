@@ -746,6 +746,35 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 
 **Expected result:** Play `rock_1.wav` to hear the generated music.
 
+### YuE2 (text-to-music, single XPU)
+
+The AR stage runs the bf16 transformer on the SGLang engine with decode graphs, which capture on XPU and stay on by default, as on CUDA. Cross-process weight sharing reduces a tensor to an IPC handle only on CUDA, so here the acoustic stage loads its own copy of the AR weights instead: both stages together hold about 21 GB of a 24 GB card, so give the model an otherwise-idle card, move the acoustic stage to a second one with `--yue2_acoustic.gpu 1`, or shrink the 65,536-token KV cache with `--yue2_ar.engine.max_total_tokens`. The acoustic stage's `fused_kernels` option needs sgl-kernel's CUDA kernels and stays off; `fuse_projections` works.
+
+**Launch**
+
+```bash
+sgl-omni serve --model-path m-a-p/YuE2-3B --host 0.0.0.0 --port 8000
+```
+
+**Request**
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "m-a-p/YuE2-3B",
+    "input": "[Verse]\nMorning light is shining through\nEvery road leads back to you",
+    "instructions": "Gentle acoustic pop, warm female vocals, piano and guitar",
+    "seed": 42,
+    "max_new_tokens": 1500
+  }' \
+  --output song.wav
+```
+
+**Expected result:** Play `song.wav` to hear the generated song.
+
+A seed repeats a take byte for byte on one server here, over 12 repeats at the regression suite's parameters and 14 at a 256-token budget, where one repeat returned a different take of the same length and did not reproduce in 13 further attempts across three cards ([#4576](https://github.com/sgl-project/sglang-omni/issues/4576)).
+
 ### Ming-Omni (omni chat and speech, one or two XPUs)
 
 Ming-flash-omni-2.0's thinker holds 194 GiB of bf16 weights, so on 24 GB cards it runs TP=1 with
@@ -831,8 +860,8 @@ Health check for any of the above: `curl http://localhost:8000/v1/models`.
 > — those CUDA-only transfer backends are omitted; tensors move through the `shm` relay instead.
 
 > Support status: **Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Zonos2,
-> Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash and dots.tts all serve end-to-end on Intel XPU**
-> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash and dots.tts single-card;
+> Audar-TTS, Qwen3-Omni, MiniMax Music 3, MiniCPM-o, Ming-Omni, Ming-Omni-TTS, Nemotron VoiceChat, PersonaPlex, AuK/AuK-Flash, dots.tts and YuE2 all serve end-to-end on Intel XPU**
+> (Qwen3-ASR, Whisper ASR, Fun-ASR-Nano, Nemotron 3.5 ASR, MOSS-Transcribe-Diarize, Qwen3-TTS, Fun-CosyVoice3, Audar-TTS, MiniCPM-o, PersonaPlex, AuK/AuK-Flash, dots.tts and YuE2 single-card;
 > Zonos2 single-card with decode graphs; MiniMax Music 3, Ming-Omni-TTS and Nemotron VoiceChat need two cards;
 > Ming-Omni chat single-card and speech two-card, with the thinker offloaded to host memory;
 > Qwen3-Omni thinker across 8 cards with tensor parallelism).

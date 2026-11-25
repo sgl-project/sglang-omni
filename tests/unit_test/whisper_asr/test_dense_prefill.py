@@ -117,6 +117,7 @@ def test_dense_prefill_matches_reference_and_preserves_per_request_kv(
         encoder_out_cache_loc=encoder_locations,
         encoder_cached=[False] * request_count,
         encoder_lens=torch.full((request_count,), 8),
+        encoder_lens_cpu=[8] * request_count,
         mm_inputs=[
             SimpleNamespace(mm_items=[SimpleNamespace(precomputed_embeddings=states)])
             for states in encoder_states
@@ -259,6 +260,7 @@ def test_dense_prefill_cuda_capture_replay_kv_and_output_lifetime(
         encoder_out_cache_loc=torch.randperm(request_count * 8, device="cuda") + 31,
         encoder_cached=[False] * request_count,
         encoder_lens=torch.full((request_count,), 8, device="cuda"),
+        encoder_lens_cpu=[8] * request_count,
         mm_inputs=[
             SimpleNamespace(mm_items=[SimpleNamespace(precomputed_embeddings=states)])
             for states in encoder_states

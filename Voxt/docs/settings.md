@@ -109,6 +109,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
 | `appearance.historyDetailWidth` | number | `0` | 0 (default) or 290–350 (clamped) | Dragging the edge of History's detail panel |
 | `appearance.closedSections` | array of strings | `[]` | sidebar sections the user closed | The sidebar's section headers |
+| `appearance.lookingBackClosed` | bool | `false` | `true` folds Looking back to its title row | Home's Looking back title |
 
 ### Privacy (Settings → Privacy)
 

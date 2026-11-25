@@ -95,6 +95,8 @@ type Appearance struct {
 	SidebarWidth       float64  `json:"sidebarWidth,omitempty"`
 	HistoryDetailWidth float64  `json:"historyDetailWidth,omitempty"` // DIPs at 100 %, 0 = default
 	ClosedSections     []string `json:"closedSections,omitempty"`
+	// LookingBackClosed folds Home's Looking back to its title row.
+	LookingBackClosed bool `json:"lookingBackClosed,omitempty"`
 }
 
 // Privacy: what VoxtNew keeps on this Mac and what it logs.
