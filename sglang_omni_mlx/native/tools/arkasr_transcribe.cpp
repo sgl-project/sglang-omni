@@ -21,8 +21,8 @@
 
 int main(int argc, char **argv) {
   std::string model_path;
-  std::string draft_model_path;
-  int draft_quantization_bits = 0;
+  omni_common::DraftOptions draft;
+  const auto draft_flags = draft.Flags();
   arkasr::ArkOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -33,10 +33,8 @@ int main(int argc, char **argv) {
       return 2;
     } else if (argument == "--model-path") {
       model_path = argv[++i];
-    } else if (argument == "--draft-model-path") {
-      draft_model_path = argv[++i];
-    } else if (argument == "--draft-bits") {
-      draft_quantization_bits = std::stoi(argv[++i]);
+    } else if (draft_flags.count(argument) != 0) {
+      draft_flags.at(argument)(argv[++i]);
     } else if (argument == "--language") {
       options.language = argv[++i];
     } else if (argument == "--max-new-tokens") {
@@ -48,16 +46,14 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
-  if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
-      draft_quantization_bits != 6 && draft_quantization_bits != 8) {
-    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
-  } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
-    throw std::invalid_argument("--draft-bits needs --draft-model-path");
-  } else {
+  try {
+    draft.Check();
+  } catch (const std::invalid_argument &error) {
+    std::cerr << argv[0] << ": " << error.what() << "\n";
+    return 2;
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const arkasr::ArkTranscriber transcriber(model_path, draft_model_path,
-                                           draft_quantization_bits);
+  const arkasr::ArkTranscriber transcriber(model_path, draft);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)

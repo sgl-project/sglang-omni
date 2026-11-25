@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
   };
   bool ok = true;
 
-  const arkasr::ArkTranscriber loop(argv[1]);
+  const arkasr::ArkTranscriber loop(argv[1], {});
   const omni_common::TranscriptionResult limited = run(loop, 2);
   const omni_common::TranscriptionResult defaulted = run(loop, std::nullopt);
   const omni_common::TranscriptionResult zero = run(loop, 0);
@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
                 "a zero budget must mean the default, like the other ASR "
                 "servers");
 
-  const arkasr::ArkTranscriber stop(argv[2]);
+  const arkasr::ArkTranscriber stop(argv[2], {});
   const omni_common::TranscriptionResult joined = run(stop, std::nullopt);
   const omni_common::TranscriptionResult capped = run(stop, 5);
   ok &= Require(joined.generated_token_count == 3 * 2 &&
@@ -161,11 +161,11 @@ int main(int argc, char **argv) {
          {"proposed", drafted.proposed_draft_token_count},
          {"accepted", drafted.accepted_draft_token_count}});
   };
-  const arkasr::ArkTranscriber drafted_loop(argv[1], argv[3]);
+  const arkasr::ArkTranscriber drafted_loop(argv[1], {argv[3]});
   compare("loop", loop, drafted_loop, 2);
   compare("loop", loop, drafted_loop, std::nullopt);
   compare("loop", loop, drafted_loop, 0);
-  const arkasr::ArkTranscriber drafted_stop(argv[2], argv[3]);
+  const arkasr::ArkTranscriber drafted_stop(argv[2], {argv[3]});
   compare("stop", stop, drafted_stop, std::nullopt);
   compare("stop", stop, drafted_stop, 5);
 

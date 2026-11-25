@@ -30,9 +30,8 @@ class ArkTranscriber {
 public:
   // With a DFlash draft directory, each window's greedy decoding verifies the
   // draft's proposals instead of taking one token per step.
-  explicit ArkTranscriber(const std::filesystem::path &model_directory,
-                          const std::filesystem::path &draft_directory = {},
-                          int draft_quantization_bits = 0);
+  ArkTranscriber(const std::filesystem::path &model_directory,
+                 const omni_common::DraftOptions &draft);
 
   omni_common::TranscriptionResult
   Transcribe(const std::vector<float> &samples, const ArkOptions &options,

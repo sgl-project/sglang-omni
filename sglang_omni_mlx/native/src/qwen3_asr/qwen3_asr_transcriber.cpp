@@ -125,17 +125,15 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits,
-    DraftPolicy draft_policy)
+    const omni_common::DraftOptions &draft, DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
       draft_policy_(draft_policy) {
-  if (!draft_directory.empty()) {
-    draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+  if (!draft.directory.empty()) {
+    draft_.emplace(draft, model_.decoder().config());
   } else {
   }
 }
