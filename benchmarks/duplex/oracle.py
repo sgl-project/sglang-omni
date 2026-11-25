@@ -758,7 +758,10 @@ def evaluate_trace(
             check(
                 (response_state.terminal, response_state.reason) in native_terminals,
                 f"response {response_id} ended {response_state.terminal}/"
-                f"{response_state.reason}, expected one of {sorted(native_terminals)}",
+                f"{response_state.reason}, expected "
+                + " or ".join(
+                    f"{status}/{reason}" for status, reason in sorted(native_terminals)
+                ),
             )
     coverage = {
         "input_output_overlap": bool(audio_times)
