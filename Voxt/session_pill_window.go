@@ -63,9 +63,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 			a.postPillOverlayMeasurements,
 			func() { a.pill.reveal = false; a.post(a.revealPillOverlay) },
 		)
-		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
-		a.pill.win = mygo.NewWindow(opts)
+		a.pill.win = mygo.NewWindow(pillWindowOptions(frame, hudContent(content)))
 		a.pill.win.OnMove(func() { a.post(a.pillDragged) })
 		a.pill.passThrough = false
 	}
@@ -88,6 +86,15 @@ func (a *app) pillOverlaySync(main overlayMode) {
 	if !was {
 		showFloating(a.pill.win, frame.X, frame.Y)
 	}
+}
+
+// pillWindowOptions are the pill window's: a floating window that never
+// takes the front, so it also shows over another app's full screen, where
+// macOS shows no ordinary window of an app with a Dock icon.
+func pillWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	return opts
 }
 
 // refreshPillOverlay updates the pill window's projection: the session
