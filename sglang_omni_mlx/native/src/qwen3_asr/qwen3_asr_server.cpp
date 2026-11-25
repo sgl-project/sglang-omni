@@ -79,9 +79,9 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    // Only the caller knows whether this Final covers the whole recording.
-    // Keep automatic guesses opt-in; other HTTP requests retain their
-    // existing behavior, including explicit guessed_text.
+    // note (chenye): the caller opts in when the request covers the whole
+    // recording. Other requests retain their existing behavior, including
+    // explicit guessed_text.
     const bool guess_auto_language =
         omni_common::FormFlag(
             asr_service::TextField(form, "guess_auto_language")) &&
@@ -97,11 +97,10 @@ public:
                   options.context, guess_auto_language)
             : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
-      // Voxt cannot send a text-only guess for automatic language detection:
-      // the decoder first generates its language header. The session has
-      // that language from the preview. Verify the whole proposed output
-      // through the existing guessed-token path; leave options.language
-      // unset so the Final still detects the language itself.
+      // note (chenye): auto-language decoding generates a language header
+      // before the transcript. Propose both from the session's preview and
+      // verify them through the existing guessed-token path. Leave
+      // options.language unset so the decoder still detects the language.
       if (guess_auto_language && final_reuse.auto_language_guess.has_value()) {
         const auto &guess = *final_reuse.auto_language_guess;
         options.guessed_token_ids =

@@ -178,10 +178,10 @@ func TestLateCandidatesAreOptIn(t *testing.T) {
 	}
 }
 
-// TestFinalPrior: the Final carries the preview's text and the session that
-// heard it. Without a language hint it asks the server to propose the language
-// header and text. A chunked recording carries the session only on the first
-// chunk and neither kind of guess on any chunk.
+// note (chenye): TestFinalPrior checks that the Final carries the preview's
+// text and session. Without a language hint it asks the server to propose
+// the language header and text. A chunked recording carries the session only
+// on the first chunk and neither kind of guess on any chunk.
 func TestFinalPrior(t *testing.T) {
 	for _, tc := range []struct{ lang, text, autoGuess string }{
 		{"zh", "partial 5", ""},

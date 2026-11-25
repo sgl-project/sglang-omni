@@ -218,8 +218,8 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
     FinalReuse reuse = final_reuse != nullptr
                            ? FinalReuse{std::move(final_reuse), true}
                            : FinalReuse{recording_reuse_, false};
-    // Only use an auto-language preview of the same recording start. A
-    // committed segment or a moved Final start can leave a different tail.
+    // note (chenye): only use an auto-language preview of the same recording
+    // start. A committed segment or a moved start can leave a different tail.
     if (guess_auto_language && !language_.has_value() &&
         final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
         segment_.has_value() &&

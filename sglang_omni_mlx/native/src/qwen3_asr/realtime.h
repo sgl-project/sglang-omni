@@ -31,8 +31,8 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds);
 
-// A preview's detected language and text are guesses, not a language hint
-// or a committed transcript prefix for the authoritative Final.
+// note (chenye): a preview's detected language and text are guesses, not
+// a language hint or a committed transcript prefix for the final decode.
 struct FinalPreviewGuess {
   std::string language;
   std::string text;
@@ -62,7 +62,9 @@ public:
   bool Handle(const nlohmann::json &message) override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null. Only snapshot a preview guess when the caller asks for one.
+  // null.
+  //
+  // note (chenye): only snapshot a preview guess when the caller opts in.
   FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
                             bool guess_auto_language);
 

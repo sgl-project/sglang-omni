@@ -110,8 +110,8 @@ public:
   // Text already shown minus its last tokens, cut back to whole characters.
   RetainedText RetainedPrefix(const std::string &text,
                               int rollback_token_count) const;
-  // An auto-language decode generates the language header as well as the
-  // transcript. Propose both, without adding either to the prompt.
+  // note (chenye): an auto-language decode generates the language header
+  // as well as the transcript. Propose both without adding them to the prompt.
   std::vector<int> AutoLanguageGuesses(const std::string &language,
                                        const std::string &text) const;
   // Audio over kMaxChunkSamples is cut at quiet points into chunks decoded one

@@ -31,8 +31,10 @@ var loopback = &http.Client{Transport: &http.Transport{
 // decoding agrees, and the session, whose encoded audio it reuses ("" none).
 // Of the rest after the pieces the session has what it prefilled from where
 // the last one ended, and no text. All of it only saves work: the text is
-// decoding's. guessAutoLanguage opts into server-side language-header and
-// transcript guesses for a whole, auto-language Final.
+// decoding's.
+//
+// note (chenye): guessAutoLanguage opts into server-side language-header
+// and transcript guesses for a whole, auto-language Final.
 type prior struct {
 	text, session     string
 	guessAutoLanguage bool

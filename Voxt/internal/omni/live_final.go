@@ -52,8 +52,8 @@ func (s *live) finalPass(pcm []byte) {
 					known.text = s.asm.text()
 					s.mu.Unlock()
 				} else if !s.req.LiveResult && known.session != "" {
-					// An auto-language Final also generates a language header.
-					// Let the server propose it together with the preview text.
+					// note (chenye): an auto-language Final generates a language
+					// header. Let the server propose it with the preview text.
 					known.guessAutoLanguage = true
 				}
 			}
