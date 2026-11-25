@@ -65,6 +65,8 @@ source .venv/bin/activate
 uv pip install --prerelease=allow "sglang-omni==0.2.0"
 ```
 
+**FlashInfer kernels.** The image's provided `/opt/sglang` Python environment already includes compatible precompiled FlashInfer kernels, so it does not need a separate JIT-cache installation. The `.venv` created above is isolated and may not inherit those packages; if you use it, you can install the optional cache there after installing SGLang-Omni.
+
 (option-b-manual-install)=
 ### pip / uv
 
@@ -116,6 +118,22 @@ source .venv/bin/activate
 
 uv pip install --prerelease=allow -v -e .   # drop -e for a non-editable install
 ```
+
+### Optional: Precompiled FlashInfer Kernels
+
+After installing SGLang-Omni with pip / uv or from source, you can optionally install FlashInfer's precompiled JIT-cache kernels into that same Python environment. This step is for supported NVIDIA CUDA environments only; it does not apply to CPU, Apple Silicon, Intel XPU, AMD ROCm, Ascend NPU, or MUSA.
+
+```bash
+flashinfer install-jit-cache-wheel --mode minimal
+```
+
+The FlashInfer CLI detects the CUDA version used by PyTorch and matches the JIT-cache package to the installed `flashinfer-python` and CUDA environment. It also detects visible NVIDIA GPU architectures and installs only their best compatible providers, avoiding packages for unrelated architectures. Precompiled coverage is not available for every NVIDIA GPU or kernel variant, so variants without coverage may still require JIT compilation. Run the command again after upgrading FlashInfer so the cache stays compatible.
+
+Installing the cache can reduce first-launch compilation and cold-start overhead. It generally does not improve steady-state GPU execution when the same kernels are already compiled and cached.
+
+For heterogeneous NVIDIA deployments, make sure compatible providers are installed for every GPU architecture used by the deployment. If GPUs are unavailable during installation, such as during an image build, automatic detection may not find the target architectures; use FlashInfer's [CLI architecture-selection option](https://docs.flashinfer.ai/cli.html#install-jit-cache-wheel) (`--sm`, repeatable) to select them explicitly.
+
+To also install the separate precompiled cubin package, run `flashinfer install-cubin-wheel` after the JIT-cache installation above.
 
 ## Next steps
 

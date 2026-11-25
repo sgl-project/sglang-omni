@@ -33,6 +33,8 @@ public:
                  const std::string &message);
   // The client left: stop any decode in flight and send nothing more.
   void Close();
+  // Names this connection to the HTTP API; random.
+  const std::string &session_id() const { return session_id_; }
 
 protected:
   void Send(nlohmann::ordered_json event);
@@ -50,6 +52,7 @@ protected:
   CancelFlag cancel_ = NewCancelFlag();
 
 private:
+  const std::string session_id_;
   Sender sender_;
   std::mutex send_mutex_;
   int event_index_ = 0;

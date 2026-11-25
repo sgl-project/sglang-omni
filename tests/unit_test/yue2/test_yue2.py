@@ -15,6 +15,7 @@ from sglang_omni.config.runtime import resolve_factory_signature_args
 from sglang_omni.config.schema import EngineStageConfig
 from sglang_omni.models.yue2.acoustic import synthesize_latents
 from sglang_omni.models.yue2.config import Yue2PipelineConfig
+from sglang_omni.models.yue2.engine_builder import create_ar_executor
 from sglang_omni.models.yue2.generation import masked_scores
 from sglang_omni.models.yue2.layers import (
     MLP,
@@ -46,9 +47,11 @@ from sglang_omni.models.yue2.shared_weights import (
 )
 from sglang_omni.models.yue2.stages import (
     Yue2AcousticScheduler,
+    accelerator_device,
     create_acoustic_executor,
 )
 from sglang_omni.models.yue2.vae import DecoderConfig, VaeConfig, Yue2Vae
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.pipeline_state import store_state
 from sglang_omni.serve.openai_errors import generation_error_status_code
@@ -457,12 +460,30 @@ def test_acoustic_model_reads_ar_weights_from_engine_storage(
     assert set(borrower.state_dict()) == set(model.state_dict())
 
 
-def test_stages_share_ar_weights_only_on_one_gpu() -> None:
+@pytest.mark.parametrize(
+    "device_type,should_share_ar_weights", [("cuda", True), ("xpu", False)]
+)
+def test_stages_share_ar_weights_only_on_one_cuda_gpu(
+    monkeypatch: pytest.MonkeyPatch, device_type: str, should_share_ar_weights: bool
+) -> None:
+    monkeypatch.setattr(current_platform, "device_type", device_type, raising=False)
     config = Yue2PipelineConfig(model_path="model")
     shared = config.stage_factory_kwargs("yue2_ar")
-    assert shared and shared == config.stage_factory_kwargs("yue2_acoustic")
+    assert bool(shared) == should_share_ar_weights
+    assert shared == config.stage_factory_kwargs("yue2_acoustic")
     config.stage_named("yue2_acoustic").gpu = 1
     assert config.stage_factory_kwargs("yue2_ar") == {}
+
+
+def test_stages_accept_the_host_accelerator_and_reject_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(current_platform, "device_type", "xpu", raising=False)
+    assert accelerator_device(None, 0) == torch.device("xpu", 0)
+    with pytest.raises(ValueError, match="accelerator"):
+        accelerator_device("cpu", 0)
+    with pytest.raises(ValueError, match="accelerator"):
+        create_ar_executor("model", max_concurrency=1, device="cpu")
 
 
 def test_fused_kernels_reject_cpu_weights(model: Yue2Model) -> None:
