@@ -173,3 +173,10 @@ type Backend interface {
 type Prefiller interface {
 	Prefill(ctx context.Context, req Request) error
 }
+
+// Connector is a model on a server: Connect opens the connection its next
+// chat will use, so that the chat does not wait for the handshakes. It
+// sends nothing of the user's.
+type Connector interface {
+	Connect(ctx context.Context) error
+}
