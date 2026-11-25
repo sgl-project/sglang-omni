@@ -668,6 +668,10 @@ func (w *window) Hide() {
 
 func (w *window) IsVisible() bool { return gtkWidgetGetVisible(w.win) }
 
+// IsOnActiveSpace is true: GTK gives no portable way to tell a window's
+// workspace.
+func (w *window) IsOnActiveSpace() bool { return true }
+
 func (w *window) Focus() {
 	if w.host != nil {
 		if !w.closed {

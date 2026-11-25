@@ -714,6 +714,15 @@ func (w *Window) IsPanel() bool { return w.panel }
 // IsVisible reports whether the window is shown.
 func (w *Window) IsVisible() bool { return get(w, platform.Window.IsVisible) }
 
+// IsOnActiveSpace reports whether the window is on the workspace the user
+// is on or, hidden, whether showing it would put it there (macOS:
+// NSWindow.isOnActiveSpace). On macOS a regular app's ordinary window is
+// never on another app's full-screen Space, even with
+// SetVisibleOnAllWorkspaces, and activating the app from there switches
+// to a Space with its windows; a panel (WindowOptions.Panel) shows there.
+// Other platforms report true.
+func (w *Window) IsOnActiveSpace() bool { return get(w, platform.Window.IsOnActiveSpace) }
+
 // Focus focuses the window.
 func (w *Window) Focus() { w.do(platform.Window.Focus) }
 
