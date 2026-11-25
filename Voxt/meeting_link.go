@@ -116,10 +116,12 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 const meetingMistakeWait = 30 * time.Second
 
 // keepUnanswered keeps meeting id when its question is still open after
-// meetingMistakeWait.
+// meetingMistakeWait. With history off it waits for the user, as "Save
+// this meeting?" does: kept by itself, it would keep what they chose not
+// to.
 func (a *app) keepUnanswered(id string) {
 	a.later(meetingMistakeWait, func() {
-		if s := a.meetSnap; s.ID == id && s.State == meeting.StateAsking && s.Mistake {
+		if s := a.meetSnap; s.ID == id && s.State == meeting.StateAsking && s.Mistake && a.prefs.Privacy.KeepHistory {
 			a.meetingSave()
 		}
 	})

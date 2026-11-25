@@ -45,10 +45,13 @@ func TestMeetingMistakeOverlay(t *testing.T) {
 
 // meetingOfWords is the app over the fake helper and a speech model that
 // hears text in every meeting.
-func meetingOfWords(t *testing.T, text string) *sessionApp {
+func meetingOfWords(t *testing.T, text string, more ...func(*settings.Settings)) *sessionApp {
 	t.Helper()
 	s := newSessionApp(t, "", func(st *settings.Settings) {
 		st.Features.Meeting.NoFinalPass, st.Features.Meeting.NoAutoSummary = true, true
+		for _, f := range more {
+			f(st)
+		}
 	}, &fakeLocal{ASRP: fakeStreamer{final: text, partial: text}})
 	// A meeting plays no cue; were one played, it would be silent.
 	useTestSounds(t, s.app)
@@ -120,6 +123,21 @@ func TestMeetingMistakeEndToEnd(t *testing.T) {
 		s.pump("the keep", func() bool { return s.meetSnap.State == meeting.StateIdle })
 		if rows := meetingRows(t, s); len(rows) != 1 || rows[0].Status != store.MeetingDone {
 			t.Fatalf("unanswered: %+v", rows)
+		}
+	})
+	t.Run("no answer, history off", func(t *testing.T) {
+		// The question waits for the user, as "Save this meeting?" does.
+		s := meetingOfWords(t, "hi", func(st *settings.Settings) { st.Privacy.KeepHistory = false })
+		timers := (&fakeTimers{}).install(s.app)
+		holdMeeting(s)
+		timers.advance(2 * meetingMistakeWait)
+		if s.meetSnap.State != meeting.StateAsking || !s.meetSnap.Mistake {
+			t.Fatalf("answered by itself with history off: %s, mistake %v", s.meetSnap.State, s.meetSnap.Mistake)
+		}
+		s.meetingDiscard()
+		s.pump("the discard", func() bool { return s.meetSnap.State == meeting.StateIdle })
+		if rows := meetingRows(t, s); len(rows) != 0 {
+			t.Fatalf("discarded: %+v", rows)
 		}
 	})
 	t.Run("a real meeting", func(t *testing.T) {
