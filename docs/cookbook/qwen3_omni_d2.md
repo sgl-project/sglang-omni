@@ -26,6 +26,10 @@ sgl-omni serve \
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
+This command starts D2 with Mandarin spoken replies. To select Mandarin explicitly, pass `--language=zh`. Use `--language=auto` to let the original checkpoint choose its response language. A pipeline YAML accepts the same top-level field (`language: zh` or `language: auto`). The setting applies to every conversation on that server.
+
+In Mandarin mode, D2 uses a Mandarin system prompt. If the Thinker would start a reply with a Latin word, the worker selects its highest-scoring allowed token beginning with two Chinese characters. The Talker synthesizes that choice directly. The model controls listening, interruptions and the rest of the reply.
+
 A local D2 release directory containing `d2.json`, `encoder.safetensors` and `d2.safetensors` also works as `--model-path`. The manifest selects the input interval. The 80 ms release consumes 1,280 input samples per interval. Other Qwen D2 revisions use 160, 320, 640 or 1040 ms intervals. The internal playback frame is always 80 ms.
 
 ## Talk to the model
@@ -52,6 +56,8 @@ When testing another D2 release, use the matching replay profile, for example `q
 
 ## Reference comparison
 
+To reproduce the comparisons below, launch Omni with `--language=auto` so it uses the same prompt and decoding policy as the reference runtime.
+
 On one RTX PRO 6000 Blackwell, a question asking for the sum of two and two produced the transcript “4” in the 80 ms release with seed 1337. The 160,166 input samples included trailing silence. Omni streamed 125 of 126 frames before input EOS, and all 241,920 output samples matched the official runtime byte for byte. A second session on the same server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). User speech resumed during the smartphone answer, D2 emitted an interrupt at 9.92 s on the media timeline, and its next reply discussed smartwatches.
 
 Each public checkpoint also answered the arithmetic question over WebSocket. Output length reflects padding the last input interval. The 80 ms and 320 ms runs included a separate official inference run with the same seed and input.
@@ -74,4 +80,4 @@ To compare your own recording, stop the Omni server to release its GPU, then run
 
 ## Session limits
 
-The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The D2 checkpoint fixes the system prompt and voice. Its interruption decision is driven by incoming audio.
+The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The server selects the prompt at startup and the checkpoint supplies the voice. Its interruption decision is driven by incoming audio.
