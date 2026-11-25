@@ -592,12 +592,14 @@ async def test_timed_dispatch_pauses_cyclic_gc_and_restores_it() -> None:
     was_enabled = gc.isenabled()
     gc.enable()
     observed_gc_state: list[bool] = []
+
     async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
         observed_gc_state.append(gc.isenabled())
         if sample == "boom":
             raise RuntimeError("boom")
         else:
             return RequestResult(request_id=sample, is_success=True)
+
     runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
     try:
         await runner.run(["a", "b"], send)
@@ -611,22 +613,29 @@ async def test_timed_dispatch_pauses_cyclic_gc_and_restores_it() -> None:
             gc.disable()
         else:
             pass
+
+
 @pytest.mark.asyncio
 async def test_runner_reuses_caller_session_without_closing_it() -> None:
     seen_sessions: list[aiohttp.ClientSession] = []
+
     async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
         seen_sessions.append(session)
         return RequestResult(request_id=sample, is_success=True)
+
     runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
     async with aiohttp.ClientSession() as session:
         await runner.run(["a", "b"], send, session=session)
         assert seen_sessions == [session, session]
         assert session.closed is False
+
+
 @pytest.mark.asyncio
 async def test_closed_loop_worker_pool_caps_concurrency_and_preserves_order() -> None:
     in_flight = 0
     peak_in_flight = 0
     delays = {"0": 0.06, "1": 0.01, "2": 0.03, "3": 0.01, "4": 0.02}
+
     async def send(session: aiohttp.ClientSession, sample: str) -> RequestResult:
         nonlocal in_flight, peak_in_flight
         in_flight += 1
@@ -636,6 +645,7 @@ async def test_closed_loop_worker_pool_caps_concurrency_and_preserves_order() ->
         finally:
             in_flight -= 1
         return RequestResult(request_id=sample, is_success=True)
+
     runner = BenchmarkRunner(RunConfig(max_concurrency=2, warmup=0, disable_tqdm=True))
     results = await runner.run(["0", "1", "2", "3", "4"], send)
     assert peak_in_flight == 2
