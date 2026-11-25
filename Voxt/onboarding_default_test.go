@@ -100,8 +100,7 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 }
 
 // TestGuideOnDiskNoDownload: another app's copy the survey has not
-// reported yet is on disk, so the step offers no download of it, and
-// Home sends the user to the page that can claim it.
+// reported yet is on disk, so the step offers no download of it.
 func TestGuideOnDiskNoDownload(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
 	a.modelStatus[models.ASRAccurate] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
@@ -109,9 +108,7 @@ func TestGuideOnDiskNoDownload(t *testing.T) {
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
 	}
-	if r := homeSpeech(a); r.Action != "Open Speech models" {
-		t.Errorf("Home: %+v", r)
-	}
+
 }
 
 // TestGuideAlternativeNoDownloadButton: an alternative on this Mac, with
@@ -293,63 +290,6 @@ func TestTranslateByVoiceWaits(t *testing.T) {
 	if text, _, action := sessionProblemText(end.Problem); text != "The speech model is still downloading (33%)." || action != actionModels {
 		t.Errorf("notice %q, %q", text, action)
 	}
-}
-
-func homeSpeech(a *app) homeReadinessViewState {
-	for _, r := range a.readinessList() {
-		if r.Key == "home-asr" {
-			return r
-		}
-	}
-	return homeReadinessViewState{}
-}
-
-func TestHomeSpeechRow(t *testing.T) {
-	asked := countingHub(t)
-	a, tt := homeTester(t)
-	drain := queuePosts(a)
-	reopenModels(a)
-	if r := homeSpeech(a); r.OK || !strings.HasPrefix(r.Action, "Download (") {
-		t.Fatalf("no model: %+v", r)
-	}
-	click(t, tt, "Speech recognition: "+homeSpeech(a).Action)
-	if a.shownPath() == modelsPath {
-		t.Error("the line left Home instead of downloading")
-	}
-	downloadAsked(t, a, drain, models.ASRAccurate)
-	if asked.Load() == 0 {
-		t.Error("nothing was asked of the Hub")
-	}
-
-	a.local = onlyDictation{&fakeLocal{}}
-	a.modelStatus = map[string]models.Status{}
-	r := homeSpeech(a)
-	if r.OK || r.Kind != "info" || r.Text != "Using System dictation for now." || !strings.HasPrefix(r.Action, "Download the recommended model (") {
-		t.Errorf("automatic on System dictation: %+v", r)
-	}
-	if missing, _ := homeMissing(a.readinessList()); !containsKey(missing, "home-asr") {
-		t.Errorf("counted as ready: %+v", missing)
-	}
-
-	downloading(a, a.obSpeech())
-	if r := homeSpeech(a); r.OK || r.Text != "The speech model is still downloading (33%)." {
-		t.Errorf("downloading: %+v", r)
-	}
-
-	a.modelStatus = map[string]models.Status{}
-	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = dictation.ModelID })
-	if r := homeSpeech(a); !r.OK || r.Text != "System dictation" {
-		t.Errorf("System dictation chosen: %+v", r)
-	}
-}
-
-func containsKey(list []homeReadinessViewState, key string) bool {
-	for _, r := range list {
-		if r.Key == key {
-			return true
-		}
-	}
-	return false
 }
 
 // obDefaultShots saves the models step with nothing on this Mac.

@@ -72,8 +72,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "home":
 				state := *fixture.state.Home
 				state.InsightsClosed = host.insightsClosed
-				homePage(c, &state, host, &host.historyUI, nil)
-				historyDeleteDialog(c, &host.historyUI, host)
+				homePage(c, &state, host)
 			case "onboarding":
 				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
 			case "appenhance":

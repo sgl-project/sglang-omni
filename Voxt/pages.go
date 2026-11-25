@@ -42,8 +42,7 @@ func (a *app) pageShown(path string) {
 	}
 	switch path {
 	case "/home":
-		a.homeUI.tryOn = false // a new visit (homeShowsTry)
-		a.loadHome()           // home_controller.go
+		a.loadHome() // home_controller.go
 	case "/history":
 		a.historyShown() // history_page.go
 	case "/app-enhancement":
@@ -65,14 +64,7 @@ func (a *app) page(c *uiContext, p navPage) {
 	case "/home":
 		a.prepareHomePage()
 		model := a.homePageModel(time.Now())
-		homePage(c, &model, a, &a.histUI, func(c *uiContext) {
-			a.tryCard(c, tryOpts{
-				prefix: "home", feature: hotkey.Transcribe, mine: a.homeTrySession(),
-				intro: a.tryIntro(hotkey.Transcribe), block: &a.homeUI.block,
-				start: func() *sessionNotice { _, n := a.startTry(featureKind(hotkey.Transcribe)); return n },
-			})
-		})
-		historyDeleteDialog(c, &a.histUI, a)
+		homePage(c, &model, a)
 		a.shareDialog(c)    // share_controller.go
 		a.insightsDialog(c) // insights_controller.go
 		return
