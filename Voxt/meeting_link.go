@@ -28,6 +28,9 @@ type meetingState struct {
 	meetSnap           meeting.Snapshot
 	meetingUI          *meetingSettingsUI // settings_meeting.go
 	meetingDetectState                    // meeting_detect.go
+	// savedNotice is the meeting "Meeting saved" was last shown for: a
+	// meeting kept from its question says it once, after its final pass.
+	savedNotice string
 }
 
 func (a *app) openMeetings() {
@@ -104,7 +107,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.followMeeting(s, prev)
 	if prev.State == meeting.StateFinishing && prev.ID != "" && (s.State == meeting.StateDone || s.State == meeting.StateIdle) {
 		// The overlay goes once the meeting is filed: say where it went.
-		a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: prev.ID, ok: true})
+		a.noticeMeetingSaved(prev.ID)
 	}
 	if s.State.Active() != prev.State.Active() {
 		a.closeMeetingAsk() // meeting_detect.go: it records now
@@ -228,9 +231,22 @@ func (a *app) meetingSave() {
 		}
 		a.post(func() {
 			a.loadMeetings()
-			a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: id, ok: true})
+			if a.meetSnap.ID == id && a.meetSnap.State == meeting.StateFinishing {
+				return // its final pass runs: the notice comes once it is filed
+			}
+			a.noticeMeetingSaved(id)
 		})
 	})
+}
+
+// noticeMeetingSaved says once where meeting id went: "Meeting saved",
+// with View meeting.
+func (a *app) noticeMeetingSaved(id string) {
+	if a.savedNotice == id {
+		return
+	}
+	a.savedNotice = id
+	a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: id, ok: true})
 }
 
 func (a *app) meetingReprocess(id string) {

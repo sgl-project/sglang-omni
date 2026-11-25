@@ -171,3 +171,58 @@ func TestFewWordsWithHistoryOff(t *testing.T) {
 		t.Fatalf("history off, a real meeting: %s, mistake %v", now.State, now.Mistake)
 	}
 }
+
+// The question's wait is not the meeting's: Keep files the length the
+// meeting had when it ended, not the seconds spent answering, on the
+// mistake path and with history off.
+func TestSaveKeepsTheLengthAtEnd(t *testing.T) {
+	for _, keepHistory := range []bool{true, false} {
+		ctx := context.Background()
+		dir := t.TempDir()
+		s, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.Close() })
+		clk := newFakeClock(time.Unix(1_700_000_000, 0))
+		streamer := &meetTestStreamer{text: "hi"}
+		m := meeting.NewManager(meeting.Config{
+			Mic: newFakeAudio(liveTestPCM(t)), Store: s.Meetings(), Dir: filepath.Join(dir, "meetings"), Now: clk.Now,
+			Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: keepHistory} },
+			Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
+			FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+			ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+				return meeting.TrackASR{Caps: streamer.Caps(), Streamer: streamer}, nil
+			},
+		})
+		got := &told{heard: make(chan struct{}, 1)}
+		m.Subscribe(got.tell)
+		id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+		if err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-got.heard:
+		case <-time.After(10 * time.Second):
+			t.Fatal("no live text from the microphone")
+		}
+		clk.Advance(30 * time.Second)
+		if err := m.Finish(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		if now := m.Current(); now.State != meeting.StateAsking {
+			t.Fatalf("history %v: %s, want the question", keepHistory, now.State)
+		}
+		clk.Advance(90 * time.Second) // the user thinks it over
+		if err := m.Save(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		row, _, err := s.Meetings().Meeting(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row.DurationMS != 30_000 {
+			t.Errorf("history %v: filed as %d ms, want the 30 s it ran", keepHistory, row.DurationMS)
+		}
+	}
+}

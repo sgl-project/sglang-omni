@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
@@ -210,4 +211,56 @@ func TestMeetingMistakeOverMadeUpWords(t *testing.T) {
 	}
 	s.meetingDiscard()
 	s.pump("discarded", func() bool { return s.meetSnap.State == meeting.StateIdle })
+}
+
+// streamAndFile is a speech model that streams (live text) and takes the
+// recording whole (the final pass), slowly enough to see the pass run.
+type streamAndFile struct {
+	fakeStreamer
+	file *fakeTranscriptions
+}
+
+func (streamAndFile) Caps() asr.Caps { return asr.Caps{Stream: true, File: true} }
+func (s streamAndFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
+	time.Sleep(100 * time.Millisecond)
+	return s.file.Transcribe(ctx, req)
+}
+
+// Keep on "Started by mistake?" with the final pass on files the meeting
+// through the pass: one "Meeting saved", once it is filed, not at the
+// click while the overlay still says the transcript is being finalised.
+func TestMeetingMistakeKeepWithFinalPass(t *testing.T) {
+	s := newSessionApp(t, "", func(st *settings.Settings) {
+		st.Features.Meeting.NoAutoSummary = true // the final pass runs
+	}, &fakeLocal{ASRP: streamAndFile{fakeStreamer{final: "hi", partial: "hi"}, &fakeTranscriptions{text: "hi"}}})
+	useTestSounds(t, s.app)
+	s.playSound = func(sounds.Target) {}
+	holdMeeting(s)
+	if s.meetSnap.State != meeting.StateAsking || !s.meetSnap.Mistake {
+		t.Fatalf("one word: %s, mistake %v", s.meetSnap.State, s.meetSnap.Mistake)
+	}
+	s.meetingSave()
+	var early bool
+	saved := 0
+	last := 0
+	s.pump("the final pass and its filing", func() bool {
+		if s.notice != nil && s.notice.seq != last {
+			last = s.notice.seq
+			if s.notice.text == "Meeting saved" {
+				saved++
+				early = early || s.meetSnap.State == meeting.StateFinishing
+			}
+		}
+		return !s.meetingActive()
+	})
+	s.drain(200 * time.Millisecond)
+	if s.notice != nil && s.notice.seq != last && s.notice.text == "Meeting saved" {
+		saved++
+	}
+	if saved != 1 || early {
+		t.Fatalf("\"Meeting saved\" %d time(s), one while still finishing: %v", saved, early)
+	}
+	if rows := meetingRows(t, s); len(rows) != 1 || rows[0].Status != store.MeetingDone {
+		t.Fatalf("kept: %+v", rows)
+	}
 }

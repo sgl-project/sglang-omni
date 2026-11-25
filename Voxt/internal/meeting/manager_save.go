@@ -67,16 +67,17 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("meeting: not asking")
 	}
+	elapsed := m.snap.Elapsed // as it ended (Finish): not the time spent answering
 	mt := store.Meeting{
 		Seq: m.seq, ID: m.id, CreatedAt: m.snap.Started, EndedAt: m.cfg.Now(),
 		Status: store.MeetingDone, Mode: toStoreMode(m.mode),
-		DurationMS: m.timeline.Elapsed().Milliseconds(), Audio: m.id,
+		DurationMS: elapsed.Milliseconds(), Audio: m.id,
 	}
 	if m.snap.Mistake && m.cfg.Privacy().KeepHistory {
 		// It asked only because little was heard: kept, it is filed as
 		// any meeting that ended.
 		m.snap.Mistake = false
-		return m.fileLocked(ctx, mt, m.timeline.Elapsed())
+		return m.fileLocked(ctx, mt, elapsed)
 	}
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		m.mu.Unlock()

@@ -281,6 +281,7 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 	if !keep || mistake {
 		m.state = StateAsking
 		m.snap.State, m.snap.Stage = StateAsking, "" // no longer saving: it asks
+		m.snap.Elapsed = elapsed                     // its length: the question's wait is not the meeting's
 		m.snap.Mistake = mistake
 		mt.Status = store.MeetingAsking
 		m.mu.Unlock()
