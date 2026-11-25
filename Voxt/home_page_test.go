@@ -78,7 +78,7 @@ func TestHomeReadiness(t *testing.T) {
 	a.perms.access = false
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
-	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {
+	if _, ok := tt.Find("Speech recognition: Download (" + a.obDownloadLeft() + ")"); !ok {
 		t.Fatalf("no download on the speech line: %q", tt.Texts())
 	}
 	click(t, tt, "Language model: Open Language models")

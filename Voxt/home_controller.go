@@ -221,7 +221,7 @@ func (a *app) homeReadinessInput() homeReadinessInput {
 func (a *app) fixHomeReadiness(fix string) {
 	switch fix {
 	case homeFixSpeechDownload:
-		a.downloadModel(a.obSpeech())
+		a.obDownload()
 	case homeFixSpeechModels:
 		a.navigate(modelsPath)
 	case homeFixLanguageModels:

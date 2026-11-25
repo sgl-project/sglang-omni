@@ -129,7 +129,7 @@ func (a *app) featureShortcuts(c *uiContext, feature string) {
 
 func (a *app) featurePage(c *uiContext, feature string) {
 	state, tryActions := a.featurePageModel(feature)
-	featurePage(c, &state, a, a.fui(feature), tryActions)
+	featurePage(c, &state, featurePackDownloads{a}, a.fui(feature), tryActions)
 }
 
 func (a *app) transcribePage(c *uiContext) { a.featurePage(c, hotkey.Transcribe) }
