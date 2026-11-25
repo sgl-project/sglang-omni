@@ -224,14 +224,26 @@ func TestMeetingCorrectionOverlapStartsDuringSystemTrack(t *testing.T) {
 // again, one request is in flight at a time, and at least 95% of the
 // recognised characters went through a correction request.
 func TestMeetingCorrectionOverlapCoversBothTracks(t *testing.T) {
+	// The line counts below are sized for 30-line, 3000-rune batches: 31
+	// mic lines make two batches, like a long meeting's mic track (#4539
+	// raised the real limits).
+	lines, runes := correctBatchLines, correctBatchRunes
+	correctBatchLines, correctBatchRunes = 30, 3000
+	t.Cleanup(func() { correctBatchLines, correctBatchRunes = lines, runes })
 	var micTexts, sysTexts []string
 	for i := 0; i < 31; i++ {
 		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d", i))
 	}
+	// 80 different characters: a repeated one is a recognition loop the
+	// final pass collapses, and the stored line would no longer match.
+	var filler []rune
+	for r := '一'; len(filler) < 80; r++ {
+		filler = append(filler, r)
+	}
 	for i := 0; i < 30; i++ {
 		// The words must not form a shared three-word run with the mic
 		// lines, or the final pass drops them as echoes (#3982).
-		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, strings.Repeat("字", 80)))
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(filler)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 31, micTexts, sysTexts)
 	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}

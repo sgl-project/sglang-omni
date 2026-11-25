@@ -26,8 +26,9 @@ type TranscriptContext struct {
 
 // A correction request holds at most this many lines and runes of text. A
 // whole meeting's transcript usually fits one request: every extra request
-// is another full round trip of queueing on the language model.
-const (
+// is another full round trip of queueing on the language model. Variables
+// only so a test can batch a small transcript the way a long one is.
+var (
 	correctBatchLines = 250
 	correctBatchRunes = 20000
 )
