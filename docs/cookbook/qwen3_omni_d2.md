@@ -24,7 +24,7 @@ This command starts D2 with Mandarin spoken replies. To select Mandarin explicit
 
 In Mandarin mode, D2 uses a Mandarin system prompt. If the Thinker would start a reply with a Latin word, the stage selects its highest-scoring allowed token beginning with two Chinese characters. The Talker synthesizes that choice directly. The model controls listening, interruptions and the rest of the reply.
 
-A local D2 release directory containing `d2.json`, `encoder.safetensors` and `d2.safetensors` also works as `--model-path`. The manifest selects the input interval. The 80 ms release consumes 1,280 input samples per interval. Other Qwen D2 revisions use 160, 320, 640 or 1040 ms intervals. The internal playback frame is always 80 ms.
+A local copy of the release containing `d2.json`, `encoder.safetensors` and `d2.safetensors` also works as `--model-path`. The stage consumes one 80 ms frame of 1,280 input samples per append. Only the 80 ms release is supported: the server refuses a manifest for another interval (160, 320, 640 or 1040 ms) at startup.
 
 ## Talk to the model
 
@@ -46,8 +46,6 @@ python -m benchmarks.eval.benchmark_duplex \
   --server-revision "$(git rev-parse HEAD)" --timeout 220
 ```
 
-When testing another D2 release, use the matching replay profile, for example `qwen3-omni-d2-320ms` with the `qwen-320ms` checkpoint.
-
 ## Reference comparison
 
 To reproduce a comparison, launch Omni with `--language=auto` so it uses the same prompt and decoding policy as the official runtime. Then stop the Omni server to release its GPU and run the official implementation on the same input, revision, seed and trailing silence. It needs its own Python 3.12 environment because it pins PyTorch 2.11 and Transformers 5.13. It writes the waveform and a JSON file of per-frame events next to it.
@@ -64,17 +62,16 @@ uv pip install --python .venv-d2/bin/python \
   --input question-with-silence.wav --output d2-reference.wav
 ```
 
-On one H200, a question asking for the sum of two and two (160,166 input samples including trailing silence, seed 1337) produced the reply on the same frames as the official runtime. Codec sampling makes the waveform depend on bit-level numerics, so the audio agrees exactly until the first sampled codec frame and differs afterwards. The times are wall-clock per input interval after the startup warm-up.
+On one H200, a question asking for the sum of two and two (160,166 input samples including trailing silence, seed 1337) produced the reply on the same frames as the official runtime. Codec sampling makes the waveform depend on bit-level numerics, so the audio agrees exactly until the first sampled codec frame and differs afterwards. The times are wall-clock per 80 ms input frame after the startup warm-up.
 
-| Checkpoint | Output frames | Output samples at 24 kHz | Reply | Token trace against the official runtime | Mean / p95 per interval |
+| Checkpoint | Output frames | Output samples at 24 kHz | Reply | Token trace against the official runtime | Mean / p95 per frame |
 | --- | ---: | ---: | --- | --- | --- |
 | [80 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/0237f21b29d2a762750ddee08e37ec4fe8e00473) | 126 | 241,920 | "4" at frame 54 | Identical except a learned interrupt before the reply, at frame 9 instead of 8, where the two candidates differ by one BF16 step | 52.8 / 67.1 ms |
-| [320 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/93d6ec8ba5068671d9199889bcbfa07b0d115606) | 128 | 245,760 | "Four." at frames 52–53 | Identical | 153.7 / 187.7 ms |
 
-Repeating a conversation on one server reproduces it byte for byte. The stage restricts attention to the flash, memory-efficient and math kernels because cuDNN attention made identical conversations drift. After the encoder history fills, an 80 ms interval takes about 33 ms.
+Repeating a conversation on one server reproduces it byte for byte. The stage restricts attention to the flash, memory-efficient and math kernels because cuDNN attention made identical conversations drift. After the encoder history fills, an 80 ms frame takes about 33 ms.
 
 A second session on the same Mandarin-mode server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). D2 answered the question about smartphones, cut itself off when the user spoke over the reply, and its next reply, starting at 9.84 s on the media timeline, discussed smartwatches. Mandarin mode steers only the opening word: in this run each reply began with Chinese words and continued in English.
 
 ## Session limits
 
-The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The server selects the prompt at startup and the checkpoint supplies the voice. Its interruption decision is driven by incoming audio.
+The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. Each frame takes three tokens, so the default holds 659 frames (about 53 s) in Mandarin mode and 674 frames with `--language=auto`. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The server selects the prompt at startup and the checkpoint supplies the voice. Its interruption decision is driven by incoming audio.

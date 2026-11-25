@@ -98,7 +98,7 @@ The results should be as follows:
 
 ### Native Full Duplex: Qwen3-Omni D2
 
-The D2 checkpoint consumes live 16 kHz user audio, feeds back its delayed speech and returns 24 kHz audio on the same connection. A learned interruption ends the previous response with `cancelled/interrupted`. See the [Qwen3-Omni D2 cookbook](../cookbook/qwen3_omni_d2.md) for the worker installation, model revision and WebSocket replay command.
+The 80 ms D2 release consumes live 16 kHz user audio one 80 ms frame at a time, feeds back its delayed speech and returns 24 kHz audio on the same connection. A learned interruption ends the previous response with `cancelled/interrupted`. See the [Qwen3-Omni D2 cookbook](../cookbook/qwen3_omni_d2.md) for the launch command, model revision and WebSocket replay command.
 
 ### Native Full Duplex: PersonaPlex
 
