@@ -20,10 +20,7 @@ class D2Frame(BaseModel):
     pcm16: bytes
     text_delta: str
     sequence: int
-    token_id: int
     is_interruption: bool
-    response_open: bool
-    emit_audio: bool
 
 
 class WorkerReply(BaseModel):

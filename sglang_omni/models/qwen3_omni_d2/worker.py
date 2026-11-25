@@ -59,11 +59,8 @@ async def serve(connection: Connection, runtime: Runtime) -> None:
                             ),
                             "text_delta": event.get("text_delta", ""),
                             "sequence": event["sequence"],
-                            "token_id": event["token_id"],
                             "is_interruption": event["token_id"]
                             == runtime.model.interrupt_id,
-                            "response_open": event["metadata"]["response_open"],
-                            "emit_audio": event["metadata"]["emit_audio"],
                         }
                         for playback_pcm16, event in zip(
                             batch.pcm_frames, batch.frame_events, strict=True
