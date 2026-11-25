@@ -758,7 +758,7 @@
 </tr>
 <tr class="row-odd"><td><p>Omni CI: Duplex</p></td>
 <td><p>H100</p></td>
-<td><p>Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Qwen3.8-27B and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline</p></td>
+<td><p>Full-Duplex-Bench v1.0 and v1.5 on three interaction strategies: native full duplex (MiniCPM-o 4.5), turn based (Qwen3-Omni with server VAD) and cascaded (Qwen3-ASR-1.7B, Inkling-2-Mini and Qwen3-TTS Base cloning one Vivian recording). Each gates turn taking, overlap behavior, latency and listening quality against its own baseline</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">run-native-duplex</span></code>, <code class="docutils literal notranslate"><span class="pre">run-turn-based-duplex</span></code> or <code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p>CPU CI</p></td>
@@ -1084,7 +1084,7 @@
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-cascaded-duplex</span></code></p></td>
 <td><p>Full-Duplex-Bench - cascaded</p></td>
-<td><p>Qwen3-ASR-1.7B, Qwen3.8-27B with thinking off speaking through a <code class="docutils literal notranslate"><span class="pre">tts_start</span></code> tool, and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (<code class="docutils literal notranslate"><span class="pre">examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool</span></code>)</p></td>
+<td><p>Qwen3-ASR-1.7B, Inkling-2-Mini with DSpark speaking through a <code class="docutils literal notranslate"><span class="pre">tts_start</span></code> tool with its reasoning kept out of the speech, and Qwen3-TTS Base cloning one Vivian recording, with server VAD, on two GPUs (<code class="docutils literal notranslate"><span class="pre">examples/streaming_cascade/profiles/qwen3-asr-inkling-2-mini-vivian-tts-tool</span></code>)</p></td>
 </tr>
 </tbody>
 </table>
