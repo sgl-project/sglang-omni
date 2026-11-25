@@ -124,6 +124,27 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				t.Fatalf("controls %q", labels)
 			}
 		}},
+		{name: "session row scrolls", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
+			chips := []sessionChipViewState{{ID: 1, Title: "First"}}
+			for id := 2; id <= 30; id++ {
+				chips = append(chips, sessionChipViewState{ID: id, Current: id == 20})
+			}
+			host.sessionState.Card.Sessions = chips
+		}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+			// The current session came into view, which put the first out of it.
+			frames(tester)
+			now, ok := tester.Find("20 New session")
+			first, _ := tester.Find("1 First")
+			if !ok || now.W == 0 || first.W != 0 {
+				t.Fatalf("session 20 at %v (%v), session 1 at %v", now, ok, first)
+			}
+			// The row scrolls back to the first session and stays there.
+			tester.Scroll(now.X, now.Y+now.H/2, -100000, 0)
+			frames(tester)
+			if first, ok = tester.Find("1 First"); !ok || first.W == 0 {
+				t.Fatalf("after scrolling back, session 1 at %v (%v)", first, ok)
+			}
+		}},
 		{name: "session rename", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"renameSession", "nameSession"},
 			check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 				// A double click on the current session, a new title, Return.

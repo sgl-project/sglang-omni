@@ -27,7 +27,8 @@ type sessionChipViewState struct {
 	Renaming bool   `json:"renaming,omitempty"`
 }
 
-const sessionChipH, sessionChipNameW = 18, 140
+// sessionBarH is the room under the chips for the row's scroll bar.
+const sessionChipH, sessionChipNameW, sessionBarH = 18, 140, 10
 
 func sessionCardSessionsHeight(card *sessionCardViewState) int {
 	if card != nil && len(card.Sessions) > 0 {
@@ -43,9 +44,11 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 	if len(chips) == 0 {
 		return false
 	}
-	ui.Row(context).Height(sessionChipH).Shrink(0).Margin(top, 0, 0, 0).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.ScrollHorizontal(context.Key("ov-sessions")).Height(sessionChipH).Shrink(1).MinWidth(0).Label(i18n.T("Sessions")).Children(func() {
-			ui.Row(context).Gap(4).AlignItems(ui.Center).Children(func() {
+	ui.Row(context).Height(sessionChipH).Shrink(0).Margin(top, 0, 0, 0).Gap(8).AlignItems(ui.Start).Children(func() {
+		// Taller than the chips: the scroll bar lies in the gap under
+		// them, not over them.
+		ui.ScrollHorizontal(context.Key("ov-sessions")).Height(sessionChipH + sessionBarH).AlignItems(ui.Start).Shrink(1).MinWidth(0).Label(i18n.T("Sessions")).Children(func() {
+			ui.Row(context).Height(sessionChipH).Gap(4).AlignItems(ui.Center).Children(func() {
 				for index, chip := range chips {
 					sessionChip(context.Key(chip.ID), index+1, chip, len(chips) > 1, actions, local)
 				}
@@ -54,7 +57,7 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 				}
 			})
 		})
-		ui.Box(context).Height(1).Grow(1).MinWidth(0).Background(ovCardRule)
+		ui.Box(context).Height(1).Margin(sessionChipH/2, 0, 0, 0).Grow(1).MinWidth(0).Background(ovCardRule)
 	})
 	return true
 }
@@ -76,7 +79,6 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, rem
 		}
 		return
 	}
-	label := strconv.Itoa(number) + " " + title
 	tip := i18n.T("Switch to session %d. Double-click to rename.", number)
 	background, line, text := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.1), ovText2
 	if chip.Current {
@@ -92,14 +94,17 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, rem
 	ui.Row(context).Height(sessionChipH).Radius(sessionChipH/2).Background(background).Border(1, line).AlignItems(ui.Center).Shrink(0).Children(func() {
 		right := float32(2)
 		if !removable {
-			right = 8
+			right = 7
 		}
-		button := ui.ButtonBase(context.Key("go")).Height(sessionChipH).Padding(0, right, 0, 8).Center().Label(i18n.T("Session %d", number)).Tooltip(tip).Checked(chip.Current)
-		if chip.Current {
+		button := ui.ButtonBase(context.Key("go")).Height(sessionChipH).Padding(0, right, 0, 7).Center().Label(i18n.T("Session %d", number)).Tooltip(tip).Checked(chip.Current)
+		if chip.Current && local.sessionShown != chip.ID {
+			// Once, when the session becomes the current one: in every
+			// frame it would keep the row from scrolling away from it.
+			local.sessionShown = chip.ID
 			button.ScrollIntoView()
 		}
 		button.Children(func() {
-			ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(text).SingleLine()
+			ui.Text(context, strconv.Itoa(number)+" "+title).FontSize(11).FontWeight(600).TextColor(text).SingleLine()
 		})
 		switch {
 		case button.DoubleClicked():

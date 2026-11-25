@@ -185,7 +185,11 @@ func (a *app) sessionChips() []sessionChipViewState {
 		if chip.Renaming {
 			chip.Title = p.title // the field's placeholder: what an empty name gives
 		}
-		if short := cutTitle(chip.Title, sessionShortMax); !chip.Current && !chip.Renaming && short != chip.Title {
+		most := sessionShortMax
+		if chip.Current {
+			most = sessionTitleMax // a name the user typed can be longer
+		}
+		if short := cutTitle(chip.Title, most); !chip.Renaming && short != chip.Title {
 			chip.Title, chip.Full = short, chip.Title
 		}
 		chips[i] = chip

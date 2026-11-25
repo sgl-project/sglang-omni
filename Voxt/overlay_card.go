@@ -19,6 +19,7 @@ var (
 type answerCardUI struct {
 	langOpen, thinkMenu, pillMenu bool
 	sessionName                   string // the title being typed on the session row
+	sessionShown                  int    // the session the row last scrolled into view
 	quotesOpen                    map[int]bool
 	thumbs                        []*ui.Bitmap
 	preview                       int

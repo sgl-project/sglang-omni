@@ -257,6 +257,11 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	if len(chips) != 2 || chips[1].Title != "A long t…" || chips[1].Full != "A long title here" || chips[0].Full != "" {
 		t.Fatalf("session row %+v", chips)
 	}
+	// A long name of the current session is cut too, so the row stays short.
+	a.nameSession(a.slot, "A name that is much longer than a chip")
+	if chip := a.boxViewState().Sessions[0]; chip.Title != "A name that is muc…" || chip.Full != "A name that is much longer than a chip" {
+		t.Fatalf("long name %+v", chip)
+	}
 }
 
 // TestSessionListNewDeleteNext: "+" adds sessions without a limit and
