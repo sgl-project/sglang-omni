@@ -51,6 +51,9 @@ type settingsShortcutsViewState struct {
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
 	Sessions               []sessionSlotViewState         `json:"sessions"`
 	SessionsOn             bool                           `json:"sessions_on,omitempty"`
+	// SessionsUnsaved: sessions are on with Privacy's history off, so
+	// they end when Voxt quits.
+	SessionsUnsaved bool `json:"sessions_unsaved,omitempty"`
 	// SessionUse says how often the user switched sessions, once they did.
 	SessionUse string `json:"session_use,omitempty"`
 }
@@ -60,6 +63,7 @@ type settingsShortcutsStateInput struct {
 	FamilyConflicts        []shortcuts.Conflict
 	AccessibilityInstalled bool
 	HelperRecordsKeys      bool
+	KeepHistory            bool
 	SessionSwitches        int
 	SessionReturns         int
 }
@@ -70,6 +74,7 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 		StrictShortcuts:        input.Features.StrictShortcuts,
 		ReturnFinishes:         input.Features.ReturnFinishes,
 		SessionsOn:             input.Features.SessionsOn,
+		SessionsUnsaved:        input.Features.SessionsOn && !input.KeepHistory,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}
 	for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {

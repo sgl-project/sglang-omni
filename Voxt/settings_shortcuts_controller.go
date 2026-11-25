@@ -22,8 +22,8 @@ func featurePath(feature string) string {
 func (a *app) shortcutsSettingsModel() settingsShortcutsViewState {
 	return buildSettingsShortcutsViewState(i18n.CurrentTranslator(), settingsShortcutsStateInput{
 		Features: a.prefs.Features, FamilyConflicts: a.famConflicts, AccessibilityInstalled: a.hotkeys.Installed,
-		HelperRecordsKeys: a.helperRecordsKeys(),
-		SessionSwitches:   a.prefs.Setup.SessionSwitchTotal, SessionReturns: a.prefs.Setup.SessionReturns,
+		HelperRecordsKeys: a.helperRecordsKeys(), KeepHistory: a.prefs.Privacy.KeepHistory,
+		SessionSwitches: a.prefs.Setup.SessionSwitchTotal, SessionReturns: a.prefs.Setup.SessionReturns,
 	})
 }
 
@@ -47,6 +47,7 @@ func (a *app) setSessionsOn(on bool) {
 		a.switchSlot(a.sessions()[0].id)
 		a.emptyCard = false
 	}
+	a.buildTrayMenu() // its session list comes and goes with the switch
 	a.overlaySync()
 }
 

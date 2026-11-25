@@ -62,11 +62,20 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 			shortcutRow(c, row, actions, state.AccessibilityInstalled, keysWidth)
 		}
 	})
-	settingRow(c, "sc-sessions", i18n.T("Sessions (experimental)"), i18n.T("Sessions keep separate answer cards and conversations. A session's shortcut switches Rewrite, Translate and Transcribe to it."), func() {
+	settingRow(c, "sc-sessions", i18n.T("Sessions (experimental)"), i18n.T("Each session keeps its own answer card and conversation. Switch, add, rename and delete sessions on the card. They come back after a restart, with their titles, while Privacy keeps a history."), func() {
 		if ui.Switch(c.Key("sc-sessions-switch"), &local.sessionsOn).Label(i18n.T("Sessions (experimental)")).Changed() {
 			actions.setSessionsOn(local.sessionsOn)
 		}
 	})
+	if state.SessionsUnsaved {
+		notice(c, "sc-sessions-unsaved", noticeWarn,
+			i18n.T("History is off, so sessions end when Voxt quits. Turn on Keep a history in Privacy to keep them."),
+			"", func() {
+				if ui.Button(c.Key("sc-open-privacy"), i18n.T("Open Privacy")).Clicked() {
+					actions.openShortcutFeature("/settings/privacy")
+				}
+			}, nil)
+	}
 	if state.SessionUse != "" {
 		caption(c, state.SessionUse)
 	}

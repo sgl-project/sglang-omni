@@ -167,7 +167,7 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 				n = (a.slotIndex(a.slot) + 1) % len(list)
 			}
 			if n < len(list) {
-				a.switchSession(list[n].id)
+				a.showSession(list[n].id)
 			}
 			return
 		}

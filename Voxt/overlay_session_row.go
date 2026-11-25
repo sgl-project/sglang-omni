@@ -7,6 +7,7 @@ package main
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -106,4 +107,27 @@ func sessionChipButton(context *ui.Context, label string, icon icons.Icon) bool 
 	return button.Background(background).Children(func() {
 		ui.Icon(context, icon.Linear).Size(12, 12).TextColor(ovText2)
 	}).Clicked()
+}
+
+// sessionMarked is the pill's scene text with the session's number
+// before it ("#2 · Mail"); number 0: the scene alone.
+func sessionMarked(number int, scene string) string {
+	switch {
+	case number == 0:
+		return scene
+	case scene == "":
+		return "#" + strconv.Itoa(number)
+	}
+	return "#" + strconv.Itoa(number) + " · " + scene
+}
+
+func pillSceneLabel(pill *sessionPillViewState) string {
+	var parts []string
+	if pill.Session > 0 {
+		parts = append(parts, i18n.T("Session %d", pill.Session))
+	}
+	if pill.SceneLabel != "" {
+		parts = append(parts, i18n.T("App enhancement: %s", pill.SceneLabel))
+	}
+	return strings.Join(parts, ", ")
 }

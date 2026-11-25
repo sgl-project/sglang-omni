@@ -443,7 +443,7 @@ func TestSessionShortcutsSettings(t *testing.T) {
 	if !a.settings.Get().Features.SessionsOn {
 		t.Fatal("the switch did not turn sessions on")
 	}
-	for _, s := range []string{"Session 1", "Session 2", "Session 3", "Next session", "⌃⌥1"} {
+	for _, s := range []string{"Session 1", "Session 2", "Session 3", "Next session", "⌥Tab"} {
 		if !has(tt, s) {
 			t.Errorf("no %q: %q", s, firstTexts(tt))
 		}

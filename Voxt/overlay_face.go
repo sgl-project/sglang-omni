@@ -105,7 +105,7 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 			}
 			if pill.SceneText != "" {
 				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
-					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
+					Label(pillSceneLabel(pill))
 			}
 		})
 		switch {

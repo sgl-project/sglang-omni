@@ -23,6 +23,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -94,6 +96,12 @@ type sessionState struct {
 	// row; the card's keys go to the text meanwhile.
 	renaming bool
 	renameID int
+	// The saved sessions (session_keep.go): read at start, the document
+	// last written, and the order of its writes.
+	sessionsLoaded bool
+	sessionsSaved  string
+	sessionsSeq    atomic.Int64
+	sessionsWrite  sync.Mutex
 	// reopen is the history's continuable conversations, newest first.
 	reopen     []reopenConversation
 	restoreSeq int

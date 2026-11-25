@@ -28,12 +28,6 @@
   "Thinking level: %s": "思考强度：%s",
   "Transcription": "转录结果",
   "Text": "文字",
-  "Sessions": "会话",
-  "New session": "新会话",
-  "Session title": "会话标题",
-  "Switch to session %d. Double-click to rename.": "切换到会话 %d。双击可改名。",
-  "Session %d, the current one. Double-click to rename.": "会话 %d，当前会话。双击可改名。",
-  "Delete session %d": "删除会话 %d",
   "Nothing here yet. Start a Rewrite, Translate or Transcribe and it runs in this session.": "这里还没有内容。开始一次改写、翻译或转录，它就在这个会话里进行。",
   "History is off, so sessions end when Voxt quits.": "历史已关闭，退出 Voxt 后会话不保留。"
 }

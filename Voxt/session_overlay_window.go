@@ -160,6 +160,7 @@ func (a *app) saveCardDrag() {
 
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	a.keepSessions() // session_keep.go: every change of the sessions ends here
 	if a.box.open {
 		defer a.boxSync() // the Rewrite card draws the answer card's state
 	}

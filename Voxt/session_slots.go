@@ -14,7 +14,11 @@ package main
 
 import (
 	"slices"
+	"strconv"
 	"strings"
+
+	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -81,7 +85,12 @@ func (a *app) switchSlot(id int) {
 		a.closeBox()
 	}
 	from := &a.slots[a.slotIndex(a.slot)]
-	from.answer, from.under, from.followUp = a.answer, a.under, a.followUp
+	if from.answer.open && a.answer.open && !a.under.open {
+		a.under = from.answer // the card that waited here since the restart, never shown
+	}
+	if a.answer.open || !from.answer.open {
+		from.answer, from.under, from.followUp = a.answer, a.under, a.followUp
+	}
 	to := &a.slots[n]
 	a.slot = id
 	a.answer, a.under, a.followUp = to.answer, to.under, to.followUp
@@ -168,6 +177,30 @@ func (a *app) sessionChips() []sessionChipViewState {
 		chips[i] = sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
 	}
 	return chips
+}
+
+// sessionNumber is the current session's number on the recording pill:
+// 0 with sessions off or one session only.
+func (a *app) sessionNumber() int {
+	if !a.prefs.Features.SessionsOn || len(a.sessions()) < 2 {
+		return 0
+	}
+	return a.slotIndex(a.slot) + 1
+}
+
+// sessionsMenu lists the sessions for the menu bar menu:
+// "1 Title", the current one checked. Choosing one shows it.
+func (a *app) sessionsMenu(act func(func()) func(*mygo.MenuItem, *mygo.Window)) []*mygo.MenuItem {
+	if !a.prefs.Features.SessionsOn {
+		return nil
+	}
+	items := []*mygo.MenuItem{{Label: i18n.T("Sessions"), Disabled: true}}
+	for i, p := range a.sessions() {
+		id := p.id
+		label := strings.TrimSpace(strconv.Itoa(i+1) + " " + cmpOr(p.name, p.title))
+		items = append(items, &mygo.MenuItem{Label: label, Type: mygo.MenuItemCheckbox, Checked: id == a.slot, Click: act(func() { a.showSession(id) })})
+	}
+	return items
 }
 
 // sessionTitleMax is how many characters of a title a chip shows.

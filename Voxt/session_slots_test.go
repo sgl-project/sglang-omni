@@ -336,23 +336,29 @@ func TestSessionUseCounts(t *testing.T) {
 	}
 }
 
-// TestSessionTitleAndRename: a session is named after its first
-// instruction; a title the user types replaces it for good, and an
-// empty one brings the automatic title back. While a title is typed the
-// cancel shortcut ends the typing, not the card.
+// TestSessionTitleAndRename: a session is named after the head of its
+// first instruction at once, then by the language model's summary of
+// it; a title the user types replaces both for good, and an empty one
+// brings the automatic title back. While a title is typed the cancel
+// shortcut ends the typing, not the card.
 func TestSessionTitleAndRename(t *testing.T) {
-	chat := &fakeChat{texts: []string{"one", "two", "three"}}
+	chat := &fakeChat{texts: []string{"one", "two", "\"Autumn rain haiku.\"\nIt is about rain.", "three"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
 	sessionsOn(a)
 	a.newSession()
 	rewriteSaid(t, a, tr, textEditApp, "write a haiku about the autumn rain in Kyoto", "two")
-	if got := chipLine(a); got != "1 | 2 write a haiku abou…*" {
+	if got := a.slots[1].titled; !strings.HasPrefix(got, "write a haiku") {
+		t.Fatalf("the instruction a title is asked for: %q", got)
+	}
+	a.pump("the model's title", func() bool { return a.slots[1].title == "Autumn rain haiku" })
+	if got := chipLine(a); got != "1 | 2 Autumn rain haiku*" {
 		t.Fatalf("titled: %q", got)
 	}
-	// A later instruction does not rename it.
+	// The title request is no turn of the conversation, and a later
+	// instruction does not rename the session.
 	rewriteSaid(t, a, tr, textEditApp, "shorter", "three")
-	if got := a.slots[1].title; got != "write a haiku abou…" {
-		t.Fatalf("title after a follow-up: %q", got)
+	if got := a.slots[1].title; got != "Autumn rain haiku" || len(a.answer.turns) != 2 {
+		t.Fatalf("after a follow-up: title %q, %d turns", got, len(a.answer.turns))
 	}
 	a.renameSession(1)
 	if !a.cachedCard().Sessions[1].Renaming || a.cardHotkeyGeneration() != 0 {
@@ -364,13 +370,19 @@ func TestSessionTitleAndRename(t *testing.T) {
 	}
 	a.renameSession(1)
 	a.nameSession(1, "  Haiku  draft ")
-	a.setSessionTitle(1, "write a haiku", "Model title") // a late answer
 	if got := chipLine(a); got != "1 | 2 Haiku draft*" {
 		t.Fatalf("renamed: %q", got)
 	}
 	a.nameSession(1, "")
-	if got := chipLine(a); got != "1 | 2 write a haiku abou…*" {
+	if got := chipLine(a); got != "1 | 2 Autumn rain haiku*" {
 		t.Fatalf("empty name: %q", got)
+	}
+	// A title that arrives for a deleted session is dropped.
+	a.slots[1].titled = "x"
+	a.deleteSession(1)
+	a.setSessionTitle(1, "x", "Late")
+	if got := chipLine(a); got != "1*" {
+		t.Fatalf("after the delete: %q", got)
 	}
 }
 
