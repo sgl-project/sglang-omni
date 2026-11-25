@@ -223,7 +223,6 @@ class RealtimeEndpointSpec:
     output_sample_rate_hz: int
     turn_detection: dict[str, JsonValue] | None
     reported_model: str | None = None
-    max_sessions: int | None = None
     supports_truncate: bool | None = None
     trust_env: bool = False
 
@@ -550,7 +549,6 @@ async def negotiate_realtime_endpoint(
     detected_input_rate: int | None = None
     detected_output_rate: int | None = None
     reported_model: str | None = None
-    detected_max_sessions: int | None = None
     detected_supports_truncate: bool | None = None
 
     if capabilities_payload is not None:
@@ -562,15 +560,6 @@ async def negotiate_realtime_endpoint(
         raw_supports_truncate = capabilities_payload.get("supports_truncate")
         if type(raw_supports_truncate) is bool:
             detected_supports_truncate = raw_supports_truncate
-        else:
-            pass
-        limits_block = capabilities_payload.get("limits")
-        if isinstance(limits_block, dict):
-            raw_max_sessions = limits_block.get("max_sessions")
-            if type(raw_max_sessions) is int and raw_max_sessions >= 1:
-                detected_max_sessions = int(raw_max_sessions)
-            else:
-                pass
         else:
             pass
         input_format = capabilities_payload.get("input_audio_format")
@@ -709,7 +698,6 @@ async def negotiate_realtime_endpoint(
         output_sample_rate_hz=resolved_output_rate,
         turn_detection=resolved_turn_detection,
         reported_model=reported_model,
-        max_sessions=detected_max_sessions,
         supports_truncate=detected_supports_truncate,
         trust_env=trust_env,
     )

@@ -1270,18 +1270,6 @@ async def run_generate_phase(
         output_sample_rate_hz=config.output_sample_rate_hz,
         trust_env=config.trust_env,
     )
-    effective_max_concurrency = (
-        min(config.max_concurrency, endpoint_spec.max_sessions)
-        if endpoint_spec.max_sessions is not None
-        else config.max_concurrency
-    )
-    if effective_max_concurrency < config.max_concurrency:
-        logger.warning(
-            f"Clamping --max-concurrency from {config.max_concurrency} to server "
-            f"max_sessions={effective_max_concurrency}"
-        )
-    else:
-        pass
     effective_model = (
         config.model
         if config.model is not None
@@ -1340,7 +1328,7 @@ async def run_generate_phase(
         "input_sample_rate_hz": endpoint_spec.input_sample_rate_hz,
         "output_sample_rate_hz": endpoint_spec.output_sample_rate_hz,
         "turn_detection": endpoint_spec.turn_detection,
-        "max_concurrency": effective_max_concurrency,
+        "max_concurrency": config.max_concurrency,
         "warmup_sessions": config.warmup_sessions,
         "session_timeout_seconds": config.session_timeout_seconds,
         "addressing": config.addressing,
@@ -1402,7 +1390,7 @@ async def run_generate_phase(
 
     if not pending_scenarios:
         if existing_manifest is None:
-            run_manifest["concurrency_history"] = [effective_max_concurrency]
+            run_manifest["concurrency_history"] = [config.max_concurrency]
             write_json_atomic(run_manifest_path, run_manifest)
         else:
             pass
@@ -1437,8 +1425,8 @@ async def run_generate_phase(
                 pass
         else:
             pass
-        if effective_max_concurrency not in prior_history:
-            prior_history.append(effective_max_concurrency)
+        if config.max_concurrency not in prior_history:
+            prior_history.append(config.max_concurrency)
         else:
             pass
         run_manifest["concurrency_history"] = [int(level) for level in prior_history]
@@ -1454,7 +1442,7 @@ async def run_generate_phase(
             f"Running {config.warmup_sessions} unscored warmup session(s) on "
             f"{warmup_scenario.scenario_id} ..."
         )
-        warmup_semaphore = asyncio.Semaphore(effective_max_concurrency)
+        warmup_semaphore = asyncio.Semaphore(config.max_concurrency)
 
         async def run_warmup_one(warmup_index: int) -> None:
             async with warmup_semaphore:
@@ -1502,7 +1490,7 @@ async def run_generate_phase(
     else:
         pass
 
-    semaphore = asyncio.Semaphore(effective_max_concurrency)
+    semaphore = asyncio.Semaphore(config.max_concurrency)
     save_lock = asyncio.Lock()
     existing_failure_ledger = load_validated_failure_ledger(failures_path)
     failed_scenarios: dict[str, str] = {
@@ -1555,7 +1543,7 @@ async def run_generate_phase(
                 return
 
             async with save_lock:
-                scenario_report["recorded_concurrency"] = effective_max_concurrency
+                scenario_report["recorded_concurrency"] = config.max_concurrency
                 saved_reports[scenario.scenario_id] = scenario_report
                 failed_scenarios.pop(scenario.scenario_id, None)
                 await asyncio.to_thread(

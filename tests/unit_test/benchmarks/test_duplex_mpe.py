@@ -5670,22 +5670,21 @@ validate_accepted_session(serialized_legacy_updated, legacy_endpoint_spec)
 def test_concurrency_history_warmup_deadline_and_stale_ledger_normalization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify concurrency_history provenance across 4->1 resume, max_sessions clamping, warmup isolation, and stale ledger deduplication."""
+    """Verify concurrency_history provenance across 4->1 resume, warmup isolation, and stale ledger deduplication."""
     dataset_root = build_synthetic_dataset(tmp_path / "dataset")
     scenarios = load_duplex_mpe_scenarios(dataset_root, addressing="all")
 
     followup_directory = tmp_path / "followup_resume"
-    uncapped_endpoint_spec = RealtimeEndpointSpec(
+    endpoint_spec = RealtimeEndpointSpec(
         websocket_url="ws://127.0.0.1:9999/v1/realtime",
         capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
         protocol="native",
         input_sample_rate_hz=16000,
         output_sample_rate_hz=24000,
         turn_detection=None,
-        max_sessions=4,
     )
 
-    async def fake_negotiate_uncapped(
+    async def fake_negotiate(
         base_url: str,
         *,
         protocol_selection: str = "auto",
@@ -5695,7 +5694,7 @@ def test_concurrency_history_warmup_deadline_and_stale_ledger_normalization(
         timeout_seconds: float = 30.0,
         trust_env: bool = False,
     ) -> RealtimeEndpointSpec:
-        return uncapped_endpoint_spec
+        return endpoint_spec
 
     concurrency_tracker = {"active": 0, "peak_active": 0}
 
@@ -5760,7 +5759,7 @@ def test_concurrency_history_warmup_deadline_and_stale_ledger_normalization(
 
     monkeypatch.setattr(
         "benchmarks.eval.benchmark_duplex_mpe.negotiate_realtime_endpoint",
-        fake_negotiate_uncapped,
+        fake_negotiate,
     )
     monkeypatch.setattr(
         "benchmarks.eval.benchmark_duplex_mpe.run_realtime_scenario",
@@ -5782,7 +5781,7 @@ def test_concurrency_history_warmup_deadline_and_stale_ledger_normalization(
             "--max-scenarios",
             "2",
             "--max-concurrency",
-            "8",
+            "4",
             "--warmup",
             "1",
             "--session-timeout-s",
