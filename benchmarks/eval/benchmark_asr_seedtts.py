@@ -673,7 +673,7 @@ def add_common_args(
         "--profile-event-buffer-capacity",
         type=_positive_int,
         default=None,
-        help="Events buffered per producer during profiling. Defaults to the server setting.",
+        help="Events buffered per producer during profiling. Defaults to sizing from sample count.",
     )
     parser.add_argument(
         "--sample-util",
