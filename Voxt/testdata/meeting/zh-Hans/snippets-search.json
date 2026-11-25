@@ -1,0 +1,20 @@
+{
+  "name": "snippets-search",
+  "kind": "snippets",
+  "snippets": {
+    "ready": true,
+    "rows": [
+      {
+        "id": "s-link",
+        "trigger": "my meeting link",
+        "text": "https://zoom.us/j/1234567890",
+        "preview": "https://zoom.us/j/1234567890"
+      }
+    ],
+    "total": 3,
+    "order": 0
+  },
+  "snippets_ui": {
+    "query": "zoom"
+  }
+}
