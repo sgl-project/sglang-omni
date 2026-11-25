@@ -81,9 +81,14 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    const qwen3_asr::FinalReuse final_reuse = TakeFinalReuse(
-        asr_service::TextField(form, "realtime_session").value_or(""),
-        options.context);
+    // note (XXXXRT666): a session holds one prompt's windows, and longer audio
+    // is decoded in chunks.
+    const qwen3_asr::FinalReuse final_reuse =
+        samples.size() <= qwen3_asr::kMaxChunkSamples
+            ? TakeFinalReuse(
+                  asr_service::TextField(form, "realtime_session").value_or(""),
+                  options.context)
+            : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
@@ -95,7 +100,7 @@ public:
                                             : *final_reuse.reuse;
         return transcriber_.Transcribe(samples, options, cancel, &reuse);
       };
-    } else if (transcriber_.CanBatch(options, samples.size())) {
+    } else if (transcriber_.CanBatch(samples.size(), options)) {
       return qwen3_asr::BatchableTranscription{
           &transcriber_, std::move(samples), std::move(options)};
     } else {

@@ -30,7 +30,6 @@ constexpr int kPrefixRollbackTokenCount = 5;
 // slack; speech uses half of that at most.
 constexpr double kPrefixedTokensPerNewSecond = 10.0;
 constexpr int kPrefixedTokenSlack = 8;
-constexpr float kSilentPeak = 1e-3f;
 // The audio from where its Final starts that a session prefills, and that it
 // keeps for that: Voxt recognises a longer recording in pieces while it
 // records, and the Final that is left starts where the last piece ended.
