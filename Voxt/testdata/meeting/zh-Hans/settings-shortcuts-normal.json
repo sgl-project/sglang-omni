@@ -178,12 +178,12 @@
           "title": "会话 1",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥1",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+1",
-              "formatted_keys": "⌃⌥1",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
             },
             "raw_keys": "",
             "custom": false,
@@ -199,12 +199,12 @@
           "title": "会话 2",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥2",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+2",
-              "formatted_keys": "⌃⌥2",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
             },
             "raw_keys": "",
             "custom": false,
@@ -220,12 +220,12 @@
           "title": "会话 3",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥3",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+3",
-              "formatted_keys": "⌃⌥3",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
             },
             "raw_keys": "",
             "custom": false,

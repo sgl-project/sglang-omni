@@ -208,12 +208,12 @@
           "title": "Session 1",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥1",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+1",
-              "formatted_keys": "⌃⌥1",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "Type the keys, as in Control+Option+Space."
             },
             "raw_keys": "",
             "custom": false,
@@ -229,12 +229,12 @@
           "title": "Session 2",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥2",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+2",
-              "formatted_keys": "⌃⌥2",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "Type the keys, as in Control+Option+Space."
             },
             "raw_keys": "",
             "custom": false,
@@ -250,12 +250,12 @@
           "title": "Session 3",
           "recorder": {
             "helper_records_keys": false,
-            "displayed_keys": "⌃⌥3",
+            "displayed_keys": "—",
             "typed": {
-              "valid": true,
-              "canonical_keys": "Control+Option+3",
-              "formatted_keys": "⌃⌥3",
-              "error_text": ""
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "Type the keys, as in Control+Option+Space."
             },
             "raw_keys": "",
             "custom": false,
