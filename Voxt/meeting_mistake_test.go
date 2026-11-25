@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -47,7 +51,14 @@ func TestMeetingMistakeOverlay(t *testing.T) {
 // hears text in every meeting.
 func meetingOfWords(t *testing.T, text string, more ...func(*settings.Settings)) *sessionApp {
 	t.Helper()
-	s := newSessionApp(t, "", func(st *settings.Settings) {
+	return meetingOfWordsWith(t, text, "", more...)
+}
+
+// meetingOfWordsWith is meetingOfWords with the fake helper's options
+// (opts: its audio, for one).
+func meetingOfWordsWith(t *testing.T, text, opts string, more ...func(*settings.Settings)) *sessionApp {
+	t.Helper()
+	s := newSessionApp(t, opts, func(st *settings.Settings) {
 		st.Features.Meeting.NoFinalPass, st.Features.Meeting.NoAutoSummary = true, true
 		for _, f := range more {
 			f(st)
@@ -173,4 +184,30 @@ func TestMeetingMistakeDemoControls(t *testing.T) {
 			t.Fatalf("%s: calls %q", label, host.calls)
 		}
 	}
+}
+
+// A quiet room where the speech model writes words for nothing (11-25 on a
+// Mac: Whisper Turbo wrote "Продолжение следует...", "you", "Gracias" on
+// both tracks, 7 lines in a 58 s empty meeting, so it was filed without the
+// question). Lines with no speech under them are dropped, so a short quiet
+// meeting still asks "Started by mistake?".
+func TestMeetingMistakeOverMadeUpWords(t *testing.T) {
+	quiet := filepath.Join(t.TempDir(), "quiet.pcm")
+	if err := os.WriteFile(quiet, make([]byte, 2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	made := "Продолжение следует you Gracias thank you for watching"
+	s := meetingOfWordsWith(t, made, helpertest.Opt("pcm", quiet)+","+helpertest.Opt("system", quiet))
+	s.startMeeting()
+	s.pump("the meeting", func() bool { return s.meetSnap.State == meeting.StateRecording })
+	s.drain(time.Second) // the model writes; nobody speaks
+	s.meetingFinish()
+	s.pump("its end", func() bool {
+		return s.meetSnap.State != meeting.StateRecording && s.meetSnap.State != meeting.StateFinishing
+	})
+	if s.meetSnap.State != meeting.StateAsking || !s.meetSnap.Mistake {
+		t.Fatalf("made-up words in a quiet room: %s, mistake %v, live %q, %d segments", s.meetSnap.State, s.meetSnap.Mistake, s.meetSnap.Live, len(s.meetSnap.Segments))
+	}
+	s.meetingDiscard()
+	s.pump("discarded", func() bool { return s.meetSnap.State == meeting.StateIdle })
 }
