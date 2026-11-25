@@ -18,6 +18,7 @@ from sglang_omni.admission import QueueFullError
 from sglang_omni.config.session_audio import REALTIME_MAX_PENDING_CHUNKS
 from sglang_omni.pipeline.coordinator import Coordinator
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.proto.messages import SubmitMessage
 from sglang_omni.proto.session import (
     ControlEdge,
     DataEdge,
@@ -26,11 +27,18 @@ from sglang_omni.proto.session import (
     SessionIdentity,
     SessionLimits,
     SessionNode,
+    SessionOperation,
     TimedChunk,
+    find_session_operation,
+    wire_size,
 )
 from sglang_omni.proto.streams import (
+    AUDIO,
+    COMMIT,
     INTERRUPT,
+    PCM16,
     SESSION_CONTROL,
+    TEXT_DELTA,
     TOOL,
     TOOL_CALL,
     TOOL_RESPONSE,
@@ -686,3 +694,160 @@ async def test_an_open_waits_for_a_closing_session_to_free_its_stage(
         await closing
         second = await asyncio.wait_for(opening, OUTPUT_TIMEOUT_S)
         await coordinator.close_session(second)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("interrupt", "sink_source", "should_batch_appends", "expected_requests"),
+    [
+        pytest.param(False, "src", True, 3, id="same-turn"),
+        pytest.param(True, "src", True, 3, id="interrupted-turn"),
+        pytest.param(False, "input", True, 5, id="client-input"),
+        pytest.param(False, "src", False, 5, id="batching-disabled"),
+    ],
+)
+async def test_queued_text_reaches_owner_in_order_without_a_round_trip_per_piece(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: bool,
+    sink_source: str,
+    should_batch_appends: bool,
+    expected_requests: int,
+) -> None:
+    """Small text pieces behind a busy speech node delayed the first playable span by one transport round trip apiece."""
+    graph = SessionGraph(
+        {
+            "front": SessionNode(("front",), ("input:pcm16",)),
+            "src": SessionNode(("src",), ("input:text_delta",)),
+            "sink": SessionNode(
+                ("sink",),
+                (f"{sink_source}:text_delta",),
+                controls=(ControlEdge("front", INTERRUPT, should_preempt=True),),
+                should_batch_appends=should_batch_appends,
+            ),
+        },
+        {"sink": (TEXT_DELTA,)},
+    )
+    turns = [1, 1, 1, 2, 2]
+    async with open_graph(
+        tmp_path, graph, ("front", "src", "sink"), limits=SessionLimits()
+    ) as (
+        coordinator,
+        identity,
+        gates,
+        log,
+    ):
+        operations: list[SessionOperation] = []
+        submit = coordinator.control_plane.submit_to_stage
+
+        async def record(stage: str, endpoint: str, message: SubmitMessage) -> None:
+            assert isinstance(message.data, StagePayload)
+            operation = find_session_operation(message.data.request.metadata)
+            if (
+                stage == "sink"
+                and operation is not None
+                and operation.operation == "append"
+            ):
+                operations.append(operation)
+                if interrupt and len(operations) == 2:
+                    gates.hold("sink")
+            await submit(stage, endpoint, message)
+
+        monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", record)
+        gates.hold("sink")
+        for seq, turn in enumerate(turns):
+            await append(
+                coordinator,
+                identity,
+                replace(text_chunk(str(seq), seq, turn), format=TEXT_DELTA),
+            )
+            if seq == 0:
+                await wait_until(lambda: len(log.of("append", "sink")) == 1)
+        node = coordinator.sessions[coordinator.graphs[identity.id].nodes["sink"].id]
+        await wait_until(lambda: len(node.pending) == len(turns) - 1)
+        gates.release("sink")
+        outputs = coordinator.session_outputs(identity)
+        try:
+            start = 0
+            if interrupt:
+                first = await next_data(outputs)
+                assert first.turn == 1 and first.payload == {"text": "sink(src(0))"}
+                await wait_until(lambda: len(log.of("append", "sink")) == 2)
+                await append(coordinator, identity, speech_chunk(len(turns), turn=1))
+                await wait_until(lambda: log.names("control") == ["sink"])
+                gates.release("sink")
+                start = 3
+            for seq in range(start, len(turns)):
+                turn = turns[seq]
+                output = await next_data(outputs)
+                assert output.turn == turn
+                text = str(seq) if sink_source == "input" else f"src({seq})"
+                assert output.payload == {"text": f"sink({text})"}
+            if interrupt:
+                assert f"{TEXT_DELTA}:src(2)" not in log.of("append", "sink")
+            assert len(operations) == expected_requests
+            assert all(
+                chunk.turn == operation.chunks[0].turn
+                for operation in operations
+                for chunk in operation.chunks
+            )
+        finally:
+            await outputs.aclose()
+
+
+@pytest.mark.asyncio
+async def test_queued_pcm_batches_obey_byte_limit_and_dispatch_commit_separately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Queued PCM chunks share a transport request and keep their individual receipts."""
+    chunks = [
+        TimedChunk(AUDIO, seq, 1, seq, bytes([seq, 0]) * 16, PCM16, turn=1)
+        for seq in range(21)
+    ]
+    chunks[18] = control_chunk(COMMIT, seq=18, turn=1)
+    chunks[-1] = replace(chunks[-1], eos=True)
+    limits = SessionLimits(
+        max_pending_chunks=len(chunks),
+        max_chunk_bytes=sum(wire_size(chunk.to_dict()) for chunk in chunks[:17]),
+    )
+    async with pipeline(tmp_path, names=["reader"]) as (coordinator, _, _):
+        identity = await coordinator.open_route(
+            OmniRequest(None),
+            stages=["reader"],
+            limits=limits,
+            session_id="audio-reader",
+            is_node=True,
+            should_batch_appends=True,
+        )
+        batches: list[list[TimedChunk]] = []
+        submit = coordinator.control_plane.submit_to_stage
+
+        async def record(stage: str, endpoint: str, message: SubmitMessage) -> None:
+            assert isinstance(message.data, StagePayload)
+            operation = find_session_operation(message.data.request.metadata)
+            if operation is not None and operation.operation == "append":
+                batches.append(list(operation.chunks))
+            else:
+                pass
+            await submit(stage, endpoint, message)
+
+        monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", record)
+        session = coordinator.get_session(identity)
+        for chunk in chunks:
+            coordinator.enqueue_session_input(
+                session, chunk, input_kind="inter_stage_chunk"
+            )
+
+        receipts: list[int] = []
+        outputs = coordinator.session_outputs(identity)
+        try:
+            while len(receipts) < len(chunks):
+                output = await asyncio.wait_for(anext(outputs), OUTPUT_TIMEOUT_S)
+                if output.kind == "input_done":
+                    receipts.append(output.input_seq)
+                else:
+                    pass
+            assert receipts == list(range(len(chunks)))
+            assert batches == [chunks[:17], chunks[17:18], chunks[18:19], chunks[19:]]
+        finally:
+            await outputs.aclose()

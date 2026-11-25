@@ -39,7 +39,11 @@ from sglang_omni.proto.session import (
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from sglang_omni.scheduling.session import (
+    BatchedSessionHooks,
+    SessionHooks,
+    SessionScheduler,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -193,6 +197,23 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         assert not stage_obj.stream_queue.has("req-1")
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("batch_sessions", [True, False])
+def test_stage_rejects_multi_chunk_appends_on_batched_session_hooks(
+    batch_sessions: bool,
+) -> None:
+    spec = StageLaunchConfig(
+        stage_name="speech",
+        should_batch_appends=True,
+        factory="sglang_omni.scheduling.session.SessionScheduler",
+        factory_kwargs={
+            "session_hooks": BatchedSessionHooks(),
+            "batch_sessions": batch_sessions,
+        },
+    )
+    with pytest.raises(ValueError, match="stage 'speech'.*BatchedSessionHooks"):
+        construct_stage(spec, logging.getLogger(__name__))
 
 
 def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:

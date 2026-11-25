@@ -131,6 +131,12 @@ def test_a_marked_feedback_edge_or_a_control_edge_closes_a_cycle_without_orderin
     ("nodes", "publish", "message"),
     [
         ({"a": SessionNode(("x",), ("b",))}, {}, "unknown inputs"),
+        pytest.param(
+            {"a": SessionNode(("x", "y"), ("input",), should_batch_appends=True)},
+            {},
+            "single stage",
+            id="multi-stage-batch",
+        ),
         (
             {"a": SessionNode(("x",), ("b",)), "b": SessionNode(("y",), ("a",))},
             {},
