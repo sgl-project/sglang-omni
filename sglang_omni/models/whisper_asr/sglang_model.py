@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import torch
 import torch.nn.functional as F
@@ -51,6 +51,14 @@ logger = logging.getLogger(__name__)
 
 _QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 _KV_SHARDS = {"k_proj": 0, "v_proj": 1}
+
+
+class DensePrefillReplay(Protocol):
+    def prompt_length_of(self, forward_batch: ForwardBatch) -> int | None: ...
+
+    def run(
+        self, forward_batch: ForwardBatch, prompt_length: int
+    ) -> LogitsProcessorOutput: ...
 
 
 class WhisperDecoderLayerNorm(nn.LayerNorm):
@@ -483,6 +491,7 @@ class WhisperForConditionalGeneration(nn.Module):
         self.end_layer = int(config.decoder_layers) * 2
         self.encoder_graph_runner: WhisperEncoderCudaGraphRunner | None = None
         self.decode_graph_runner: WhisperDecodeGraphRunner | None = None
+        self.dense_prefill_runner: DensePrefillReplay | None = None
 
     def init_encoder_graphs(
         self,
@@ -645,6 +654,15 @@ class WhisperForConditionalGeneration(nn.Module):
             forward_batch
         ):
             return self.decode_graph_runner.replay(forward_batch)
+        else:
+            pass
+        prompt_length = (
+            None
+            if self.dense_prefill_runner is None
+            else self.dense_prefill_runner.prompt_length_of(forward_batch)
+        )
+        if prompt_length is not None:
+            return self.dense_prefill_runner.run(forward_batch, prompt_length)
         else:
             pass
 

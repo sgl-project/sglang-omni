@@ -13,6 +13,7 @@ from sglang.srt.arg_groups import memory_hook
 from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.hardware_backend.npu import utils as npu_utils
 from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
+from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 from sglang.srt.server_args import ServerArgs
 from transformers import WhisperConfig
 
@@ -41,6 +42,7 @@ from sglang_omni.models.whisper_asr.text_streaming import (
     ExactWhisperStreamOutputBuilder,
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.npu import NPUOmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
@@ -633,10 +635,34 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
     assert len(attest_calls) == 1
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("device_type", ["cpu", "cuda"])
-def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
-    monkeypatch: pytest.MonkeyPatch, device_type: str, enabled: bool
+@pytest.mark.parametrize(
+    ("platform", "device_type", "prefill_runner_type", "enabled", "replayed_by"),
+    [
+        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, True, "graph"),
+        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, False, None),
+        (CUDAOmniPlatform(), "cpu", WhisperPrefillCudaGraphRunner, True, None),
+        (CUDAOmniPlatform(), "cuda", EagerRunner, True, None),
+        (XPUOmniPlatform(), "xpu", EagerRunner, True, "model"),
+        (XPUOmniPlatform(), "xpu", EagerRunner, False, None),
+        (XPUOmniPlatform(), "cpu", EagerRunner, True, None),
+    ],
+    ids=[
+        "cuda_prefill_graph",
+        "cuda_disabled",
+        "cpu_beside_a_cuda_prefill_graph",
+        "cuda_eager_prefill",
+        "xpu_eager_prefill",
+        "xpu_disabled",
+        "cpu_on_xpu",
+    ],
+)
+def test_dense_prefill_graphs_capture_only_where_a_runner_replays_them(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: CUDAOmniPlatform | XPUOmniPlatform,
+    device_type: str,
+    prefill_runner_type: type[WhisperPrefillCudaGraphRunner] | type[EagerRunner],
+    enabled: bool,
+    replayed_by: str | None,
 ) -> None:
     """Other devices must not enter torch.cuda capture during resource setup."""
     captured_request_counts: list[int] = []
@@ -653,18 +679,19 @@ def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
         ) -> None:
             self.max_requests: int = max_requests
 
-        def capture(self) -> None:
+        def capture(self, graph_backend: DeviceGraphBackend) -> None:
             captured_request_counts.append(self.max_requests)
 
+    monkeypatch.setattr(whisper_asr_builder, "current_platform", platform)
     builder = encoder_graph_builder(
         enable_encoder_cuda_graph=False,
         enable_dense_prefill_cuda_graph=enabled,
         max_running_requests=2,
     )
-    graph_runner = object.__new__(WhisperPrefillCudaGraphRunner)
-    graph_runner.dense_prefill_runner = None
+    prefill_runner = object.__new__(prefill_runner_type)
+    prefill_runner.dense_prefill_runner = None
     builder.sglang_runner = SimpleNamespace(
-        prefill_cuda_graph_runner=graph_runner, token_to_kv_pool=object()
+        prefill_cuda_graph_runner=prefill_runner, token_to_kv_pool=object()
     )
     model = SimpleNamespace(
         model=SimpleNamespace(
@@ -673,7 +700,8 @@ def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
                     weight=SimpleNamespace(device=SimpleNamespace(type=device_type))
                 )
             )
-        )
+        ),
+        dense_prefill_runner=None,
     )
     monkeypatch.setattr(whisper_asr_builder, "WhisperDensePrefillRunner", DenseCapture)
     monkeypatch.setattr(
@@ -683,10 +711,37 @@ def test_dense_prefill_capture_is_cuda_only_and_bounded_by_capacity(
     builder.setup_model_resources(
         model, SimpleNamespace(), generation_cuda_graph_enabled=True
     )
-    assert builder.sglang_runner.prefill_cuda_graph_runner is graph_runner
-    if device_type == "cuda" and enabled:
-        assert captured_request_counts == [2]
-        assert isinstance(graph_runner.dense_prefill_runner, DenseCapture)
-    else:
-        assert captured_request_counts == []
-        assert graph_runner.dense_prefill_runner is None
+    assert builder.sglang_runner.prefill_cuda_graph_runner is prefill_runner
+    assert captured_request_counts == ([] if replayed_by is None else [2])
+    assert isinstance(prefill_runner.dense_prefill_runner, DenseCapture) == (
+        replayed_by == "graph"
+    )
+    assert isinstance(model.dense_prefill_runner, DenseCapture) == (
+        replayed_by == "model"
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform_type", "enabled_by_user", "expected"),
+    [
+        (XPUOmniPlatform, None, True),
+        (XPUOmniPlatform, False, False),
+        (CUDAOmniPlatform, None, False),
+    ],
+    ids=["xpu_default", "xpu_switched_off", "cuda_default"],
+)
+def test_dense_prefill_graphs_default_on_where_whisper_owns_its_decoder_graphs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    platform_type: type[OmniPlatform],
+    enabled_by_user: bool | None,
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(whisper_asr_config, "current_platform", platform_type())
+    WhisperConfig(architectures=["WhisperForConditionalGeneration"]).save_pretrained(
+        tmp_path
+    )
+    config = WhisperASRPipelineConfig(model_path=str(tmp_path))
+    config.stage_named("asr").factory.enable_dense_prefill_cuda_graph = enabled_by_user
+    factory_args = resolve_stage_factory_args(config.stage_named("asr"), config)
+    assert factory_args.get("enable_dense_prefill_cuda_graph", False) is expected

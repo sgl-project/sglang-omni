@@ -99,9 +99,11 @@ class WhisperASRPipelineConfig(PipelineConfig):
         )
     ]
 
-    def stage_factory_kwargs(self, stage_name: str) -> dict[str, float]:
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, float | bool]:
         if current_platform.is_npu():
             return {"mem_fraction_static": 0.50}
+        elif current_platform.enable_whisper_decoder_graphs():
+            return {"enable_dense_prefill_cuda_graph": True}
         else:
             return {}
 

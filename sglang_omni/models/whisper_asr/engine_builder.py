@@ -13,6 +13,7 @@ import torch
 from sglang.srt.model_executor.runner.base_cuda_graph_runner import (
     get_batch_sizes_to_capture,
 )
+from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 from sglang.srt.server_args import ServerArgs
 from transformers import GenerationConfig, WhisperProcessor, WhisperTokenizer
 
@@ -329,7 +330,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     def post_cuda_graph_setup(
         self, model: WhisperForConditionalGeneration, server_args: ServerArgs
     ) -> None:
-        if not current_platform.enable_whisper_decode_graph():
+        if not current_platform.enable_whisper_decoder_graphs():
             return
         else:
             pass
@@ -392,9 +393,18 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             >= self.encoder_token_count + WHISPER_DENSE_PREFILL_PROMPT_LENGTH
         ):
             prefill_graph_runner = self.sglang_runner.prefill_cuda_graph_runner
-            if (
+            decoder_device = model.model.decoder.embed_tokens.weight.device
+            graph_backend = current_platform.get_device_graph_backend(decoder_device)
+            replays_in_prefill_graph = (
                 isinstance(prefill_graph_runner, WhisperPrefillCudaGraphRunner)
-                and model.model.decoder.embed_tokens.weight.device.type == "cuda"
+                and decoder_device.type == "cuda"
+            )
+            replays_in_model = (
+                isinstance(prefill_graph_runner, EagerRunner)
+                and current_platform.enable_whisper_decoder_graphs()
+            )
+            if graph_backend is not None and (
+                replays_in_prefill_graph or replays_in_model
             ):
                 dense_prefill_runner = WhisperDensePrefillRunner(
                     model,
@@ -410,8 +420,11 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
                     ),
                     prompt_lengths=(WHISPER_DENSE_PREFILL_PROMPT_LENGTH,),
                 )
-                dense_prefill_runner.capture()
-                prefill_graph_runner.dense_prefill_runner = dense_prefill_runner
+                dense_prefill_runner.capture(graph_backend)
+                if replays_in_prefill_graph:
+                    prefill_graph_runner.dense_prefill_runner = dense_prefill_runner
+                else:
+                    model.dense_prefill_runner = dense_prefill_runner
             else:
                 pass
         else:
