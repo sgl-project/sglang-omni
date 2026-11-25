@@ -61,7 +61,7 @@ The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD and ARK-ASR dra
 
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
-`arkasr_server` and `arkasr_transcribe` take the same two flags as MOSS-TD. The draft is a five-layer Qwen3 decoder (with query and key norms) reading ARK-ASR's Qwen2 decoder, whose attention has none. Each 30 s window decodes with the draft under the request's one token budget, so stop rules, budget and window joining are plain decoding's; the draft counts and the CLI's `verify_rounds` sum over windows. ARK-ASR decodes greedily only, so every request uses the draft. `tests/test_arkasr_probe.py` checks on small checkpoints that drafted and plain decoding give the same result. Their decoder attention is all zero, so the check covers the budget, stop and dispatch wiring, not the shared draft's cache bookkeeping, which the real-model DFlash golden covers.
+`arkasr_server` and `arkasr_transcribe` take the same two flags as MOSS-TD. Each 30 s window decodes with the draft under the request's one token budget, so stop rules, budget and window joining are plain decoding's; the draft counts and the CLI's `verify_rounds` sum over windows. ARK-ASR decodes greedily only, so every request uses the draft.
 
 Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
 
