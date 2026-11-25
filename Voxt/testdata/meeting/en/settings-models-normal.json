@@ -68,7 +68,6 @@
           {
             "key": "family-qwen3-asr",
             "family_name": "Qwen3-ASR",
-            "count_text": "3 models",
             "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
             "rows": [
               {
@@ -78,13 +77,6 @@
                 "default": true,
                 "installed": false,
                 "size_text": "2.5 GB download",
-                "about": "The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.",
-                "tags": [
-                  "Local",
-                  "Accurate",
-                  "Realtime",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -108,13 +100,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "712.8 MB download",
-                "about": "Quicker and lighter on memory, for clear speech in a quiet place.",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "Realtime",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -138,13 +123,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "2.0 GB download",
-                "about": "Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.",
-                "tags": [
-                  "Local",
-                  "Accurate",
-                  "Realtime",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -166,7 +144,6 @@
           {
             "key": "family-whisper",
             "family_name": "Whisper",
-            "count_text": "3 models",
             "languages": "About 100 languages, including Chinese, English, Cantonese, Japanese and Korean",
             "rows": [
               {
@@ -176,13 +153,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "1.6 GB download",
-                "about": "A quicker OpenAI Whisper, good in many languages. The text shows a moment after you speak.",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -206,13 +176,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "3.1 GB download",
-                "about": "The largest Whisper: accurate in many languages, but slower and heavy on memory.",
-                "tags": [
-                  "Local",
-                  "Accurate",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -236,13 +199,6 @@
                 "default": false,
                 "installed": false,
                 "size_text": "481.3 MB download",
-                "about": "A small Whisper: light on memory, less accurate.",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -271,14 +227,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "2.5 GB download",
-                "about": "NVIDIA's Parakeet: very quick, for European languages. It does not support Chinese, Japanese or Korean.",
                 "languages": "25 European languages, including English, German, French, Spanish and Russian",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -307,14 +256,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "936.5 MB download",
-                "about": "Very quick, for Chinese, Cantonese, English, Japanese and Korean.",
                 "languages": "Chinese, Cantonese, English, Japanese and Korean",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -343,14 +285,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "4.1 GB download",
-                "about": "Cohere's model: accurate, with punctuation, but large. It recognises only your main language, or English if yours is not supported.",
                 "languages": "14 languages, including Chinese, English, Japanese and Korean",
-                "tags": [
-                  "Local",
-                  "Accurate",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -379,15 +314,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "755.8 MB download",
-                "about": "NVIDIA's streaming model: shows the text as you speak, in many languages.",
                 "languages": "28 languages, including Chinese, English, Japanese and Korean",
-                "tags": [
-                  "Local",
-                  "Fast",
-                  "Realtime",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -416,14 +343,7 @@
                 "default": false,
                 "installed": false,
                 "size_text": "1.8 GB download",
-                "about": "Made for conversations between several people. Shows the text as you speak.",
                 "languages": "Chinese and English",
-                "tags": [
-                  "Local",
-                  "Realtime",
-                  "No dictionary",
-                  "Supports your main language"
-                ],
                 "actions": [
                   {
                     "kind": "hide",
@@ -483,14 +403,13 @@
         "network": {
           "open": false,
           "proxy_mode": 0,
-          "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
           "source": 0,
           "source_labels": [
             "Automatic",
             "Hugging Face only",
             "hf-mirror.com only"
           ],
-          "source_caption": "Whichever answers first. Every file is checked.",
+          "source_caption": "",
           "proxy_family": {
             "key": "network.proxy",
             "kind": "",
