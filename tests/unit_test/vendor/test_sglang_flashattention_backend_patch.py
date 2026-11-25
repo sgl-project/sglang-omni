@@ -6,11 +6,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 
-from sglang_omni.vendor.sglang import flashattention_backend
+from tests.unit_test.fixtures.accelerator import require_cuda
 
 
+@pytest.mark.accelerator
 @pytest.mark.parametrize(
     ("is_draft_worker", "sample_from_anchor", "expected_rows_per_request"),
     [(True, False, 8), (True, True, 7), (False, False, 7)],
@@ -21,6 +21,12 @@ def test_fa3_lays_out_a_dspark_draft_batch_at_the_draft_width(
     sample_from_anchor: bool,
     expected_rows_per_request: int,
 ) -> None:
+    require_cuda()
+    # note (0xtoward): importing the FA3 backend loads sgl_kernel at import time.
+    from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
+
+    from sglang_omni.vendor.sglang import flashattention_backend
+
     def sglang_init(
         backend: FlashAttentionBackend,
         model_runner: SimpleNamespace,

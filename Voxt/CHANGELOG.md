@@ -12,15 +12,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Fold Looking back away** (#4570): click Home's Looking back title to fold its numbers to one row, and click again to open them. Share stays on the row, and Voxt remembers the choice.
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 - **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
+- **Clean up while you speak** (#4592): when a language model cleans up Transcribe, Voxt sends it the sentences the speech model has written while you are still speaking, and after you stop it cleans only what is left, with the cleaned text before it as context; the two sentences just before are cleaned again with it, so that a correction said last still reaches them. When the final text is the one already cleaned, nothing is left to wait for. The Transcribe page's Clean up while you speak turns it off.
 - **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too). A list that cannot be read is never overwritten. Transcribe only for now.
 
 ### Changed
 
 - **Remote language models with a key: the Model menu lists the service's models** (#4568): the menu of OpenAI, Anthropic and the other services with a key showed only the names built into Voxt, so a newer model had to be typed under "Other model…". With a key typed or saved, Voxt now asks the service which models it has and lists the ones that chat, the newest first. With no key, or no answer, the menu is the built-in list, which also gains the current OpenAI and Anthropic models.
+- **Live words show dim until they are final** (#4574): while you speak, the overlay and the answer card show the speech model's words so far in a dimmer color; they turn to the normal color once the recognised text replaces them.
+- **The pill keeps its width when you stop** (#4574): the dots take the waveform's place, and Use transcript takes the feature name's with them, so the row stays as wide and centred, and the microphone icon no longer jumps.
 - **A tidier Dictionary page** (#4597): one column, as Snippets. A line under the title says what the page is for; the terms sit in a card, each with what it may be heard as and its note under it, and a switch on the right; click a term to edit it, and Delete shows under the pointer. Suggestions get a card of their own with Add as their button. The dictionary's switches (Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections) and Scan history move into Dictionary settings (the gear by Add term), each with its ⓘ in place of the folded guide; when the dictionary is off, the page says so with a Turn on button. The profile shows beside the title once there is more than one, as a menu to switch, rename or delete; New profile… is in the ⋯ menu. In the term dialog, Aliases is now Heard as.
 - **A new picture behind the overlay preview** (#4533): Settings → Overlay style shows the overlay over a soft blue-violet to peach gradient of our own, in place of the picture from Voxt 1.x.
 - **Local Qwen3-ASR answers sooner after you stop** (#4589): the result now reuses what the live preview has already worked out, and a dictionary is prepared while you speak. On an M4 MacBook Air with the 1.7B model and Faster transcription, it came about 1.8 times as fast, and about 7 times with a dictionary of several hundred terms.
 - **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
+- **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
 
 ### Fixed
 
@@ -40,15 +44,19 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **回顾可以收起**（#4570）：点首页“回顾”的标题，把数字收成一行，再点一下展开。“分享”留在这一行，Voxt 会记住你的选择。
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
+- **边说边整理**（#4592）：转录用语言模型整理时，你还在说话，Voxt 就把语音识别模型已经写出的句子发给语言模型；停止后只整理剩下的部分，并带上整理好的前文；紧挨着的前两句会跟它一起重新整理，最后说的改口也能改到前面。最终文字就是已经整理过的那段时，停止后不用再等语言模型。可以在转录页关闭“边说边整理”。
 - **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。目前只用于转录。
 
 #### 变更
 
 - **带 key 的远程语言模型：“模型”菜单列出服务商现有的模型**（#4568）：OpenAI、Anthropic 等带 key 的服务，菜单里以前只有 Voxt 内置的几个名字，新模型要在“其他模型…”里手打。现在只要输入或保存了 key，Voxt 会向服务商要模型列表，只留能聊天的模型，新的排在前面。没有 key 或没拿到列表时，菜单还是内置的名字；内置列表也补上了 OpenAI 和 Anthropic 现在的模型。
+- **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
+- **停止后浮窗不再跳**（#4574）：圆点接替波形的位置，“用识别原文”出现时和圆点一起接替功能名的位置，整行宽度不变、仍然居中，麦克风图标不再跳动。
 - **词典页更清楚**（#4597）：和片段页一样改成一栏。标题下一行说明这个页面做什么；词条放在一张卡片里，每条下面是可能听成的写法和备注，开关在右边；点词条就能编辑，指针移上去才出现删除。建议单独一张卡片，按钮是“添加”。词典的几个开关（使用词典、识别热词、语言模型术语表、从我的改正中学习）和“扫描历史”移进“词典设置”（“添加词条”旁边的齿轮），每个开关的 ⓘ 讲清它的作用，取代原来折叠的“词典的用法”；词典关掉时页面上会提示，并有“打开”按钮。有两个以上词典配置时，当前配置显示在标题旁边，点开可以切换、重命名或删除；“新建词典配置…”在 ⋯ 菜单里。词条对话框里的“别名”改叫“可能听成”。
 - **浮窗预览换了背景图**（#4533）：设置 → 浮窗样式的预览改用我们自己做的蓝紫到橙桃渐变，不再用 Voxt 1.x 的图。
 - **本地 Qwen3-ASR 松键后出结果更快**（#4589）：结果会直接用上实时预览已经算好的部分，词典也在你说话时提前准备好。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，平均快约 1.8 倍；词典有几百个词时快约 7 倍。
 - **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
+- **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
 
 #### 修复
 

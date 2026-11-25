@@ -339,7 +339,7 @@ up() {
   local engine_stage=""
   local kv_cache_bytes=""
   local mps_budget_manifest=""
-  local uuid=""
+  local uuid
   local model_path_manifest=$model
   if [ -n "$config" ]; then
     [ -z "${MODEL:-}" ] || die "MODEL cannot be combined with CONFIG"
@@ -377,16 +377,6 @@ up() {
       || die "could not resolve max_total_tokens from $config"
     engine_stage=${resolved_stage_and_tokens%% *}
     expected_max_total_tokens=${resolved_stage_and_tokens##* }
-    # Note (Aditya Vaid Sharma): nvidia-smi resolves GPU_ID physically, so the
-    # budget helper runs in a single-UUID namespace and queries logical GPU 0.
-    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
-    local budget_args=("$config" --print-mps-memory-budget --gpu-id 0 --replicas "$n")
-    if [ "$weight_share" = 1 ]; then
-      budget_args+=(--weight-share)
-    fi
-    mps_budget_manifest=$(env CUDA_VISIBLE_DEVICES="$uuid" \
-      "$PYTHON_BIN" "$SCRIPT_DIR/config.py" "${budget_args[@]}") \
-      || die "could not resolve MPS memory budget from $config"
   else
     # Note (Jiaxin Deng): without a pipeline config the supported-model check
     # cannot run until engine startup, which is after the MPS daemon and state
@@ -431,6 +421,17 @@ up() {
     mem_args+=(--mem-fraction-static "$mf")
   fi
 
+  local run
+  # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
+  # the run it started, instead of rediscovering the newest dir.
+  # Note (Yueying Li): RUN_ID becomes a single directory component under
+  # gpu-$gpu; a separator or traversal sequence would relocate run state into
+  # another GPU's namespace (or out of STATE_ROOT) and bypass the
+  # active/stale-run guards below, so restrict it to a run-* basename.
+  run="${RUN_ID:-run-$(date +%Y%m%d-%H%M%S)-$$}"
+  [[ "$run" =~ ^run-[A-Za-z0-9_-]+$ ]] \
+    || die "RUN_ID must be a single 'run-<suffix>' path component ([A-Za-z0-9_-]), got '$run'"
+
   local d
   for d in $(ls -d "$STATE_ROOT/gpu-$gpu"/run-* 2>/dev/null || true); do
     if run_is_active "$d"; then
@@ -448,20 +449,20 @@ up() {
     fi
   done
 
-  local node run state
-  if [ -z "$uuid" ]; then
-    uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  # Note (Aditya Vaid Sharma): nvidia-smi resolves GPU_ID physically, so the
+  # budget helper runs in a single-UUID namespace and queries logical GPU 0.
+  uuid=$(nvidia-smi --query-gpu=uuid --format=csv,noheader -i "$gpu")
+  if [ -n "$config" ]; then
+    local budget_args=("$config" --print-mps-memory-budget --gpu-id 0 --replicas "$n")
+    if [ "$weight_share" = 1 ]; then
+      budget_args+=(--weight-share)
+    fi
+    mps_budget_manifest=$(env CUDA_VISIBLE_DEVICES="$uuid" \
+      "$PYTHON_BIN" "$SCRIPT_DIR/config.py" "${budget_args[@]}") \
+      || die "could not resolve MPS memory budget from $config"
   fi
+  local node state
   node=$(resolve_numa "$gpu")
-  # Note (Jiaxin Deng): a caller (autodp) may pin RUN_ID so it can tear down exactly
-  # the run it started, instead of rediscovering the newest dir.
-  # Note (Yueying Li): RUN_ID becomes a single directory component under
-  # gpu-$gpu; a separator or traversal sequence would relocate run state into
-  # another GPU's namespace (or out of STATE_ROOT) and bypass the
-  # active/stale-run guards above, so restrict it to a run-* basename.
-  run="${RUN_ID:-run-$(date +%Y%m%d-%H%M%S)-$$}"
-  [[ "$run" =~ ^run-[A-Za-z0-9_-]+$ ]] \
-    || die "RUN_ID must be a single 'run-<suffix>' path component ([A-Za-z0-9_-]), got '$run'"
   state=$STATE_ROOT/gpu-$gpu/$run
   mkdir -p "$state/logs" "$state/mps/pipe" "$state/mps/log"
   : > "$state/replicas.tsv"

@@ -1,0 +1,1 @@
+Before: when the user message starts with <before> and </before>, that is the start of the same dictation, already cleaned up and typed. Read it only to understand the text in <input>: what it refers to, a list it continues, a word it explains. Clean up and return only the text in <input>; never repeat or change the text in <before>.

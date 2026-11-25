@@ -27,6 +27,7 @@ type featureActions interface {
 	setFeatureEnhance(on bool)
 	setFeatureCleanup(on bool)
 	setFeatureStructure(on bool)
+	setFeatureCleanWhileSpeaking(on bool)
 	selectFeatureTarget(code string)
 	setFeatureTranslateCleanup(on bool)
 	setFeatureRewriteCleanup(on bool)
