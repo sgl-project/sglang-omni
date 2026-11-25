@@ -7,6 +7,7 @@ and belong in tests/test_model/.
 
     pytest tests/test_ci/xpu_model -v                     # every model with weights
     pytest tests/test_ci/xpu_model -v -k "asr or tts"     # a subset
+    pytest tests/test_ci/xpu_model -v -m xpu_tp           # tensor-parallel rows only
     REQUIRE_FREE_GPU=0 pytest tests/test_ci/xpu_model -v  # ignore who else is on the card
 """
 
@@ -50,7 +51,15 @@ def serve_plan(
     return list(model.serve_args_on(family)), env
 
 
-@pytest.mark.parametrize("model", XPU_MODELS, ids=[m.key for m in XPU_MODELS])
+ROWS = [
+    pytest.param(
+        model, id=model.key, marks=[pytest.mark.xpu_tp] if model.tp_size > 1 else []
+    )
+    for model in XPU_MODELS
+]
+
+
+@pytest.mark.parametrize("model", ROWS)
 def test_the_model_serves_and_answers_on_xpu(
     model: XpuModel,
     xpu_host: None,

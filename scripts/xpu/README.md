@@ -37,6 +37,7 @@ with no XPU at all, which is how the main unit lane sees it.
 ```bash
 pytest tests/test_ci/xpu_model -m xpu_serving -v -rs                      # every model
 pytest tests/test_ci/xpu_model -m xpu_serving -v -k "qwen3-asr or dots-tts"  # a subset
+pytest tests/test_ci/xpu_model -m "xpu_serving and xpu_tp" -v -rs           # tensor-parallel cases
 ```
 
 Each row is served with its recipe, sent one request, and the answer is checked: a
@@ -45,6 +46,15 @@ chat must answer `42` to `17 plus 25`. A row **skips with its reason** rather th
 when its checkpoint is not local, its topology needs more cards than the host has, or the
 table says this image cannot serve it, so an incomplete host reports what it could not do.
 The full lane, 20 rows served and 6 skipped, took 39 minutes on bmg17690.
+
+The `xpu_tp` cases are every row that serves a stage tensor-parallel, plus a check that needs
+no checkpoint: an all-reduce captured in an XPU graph must sum on replay, on two and four
+cards. A collective that oneCCL fails to record replays as a no-op, so a TP>1 decode graph
+answers its first token from the eager prefill and garbage after it, with no error. The oneCCL
+that torch 2.14.0+xpu pins, 2022.1.1, does exactly that: on it the collective check and
+`minicpm-o-tp2` fail, and with 2022.1.2 (`pip install --no-deps oneccl==2022.1.2
+oneccl-devel==2022.1.2`) they pass. `ming-tts` passes on both, because audible frames
+cannot tell a broken TP path from a working one.
 
 | variable | effect |
 |---|---|
@@ -273,7 +283,7 @@ Three of those flags are workarounds with a known end:
 ## Data provenance
 
 Every number above comes from `scripts/xpu/xpu_model_baseline.json`. Page generated
-2026-11-18.
+2026-11-25.
 
 Rows still at a single launch, to re-record with `--launches 3` before treating as a floor:
 

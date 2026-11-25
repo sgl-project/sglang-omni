@@ -135,6 +135,7 @@ markers = [
     "tts_stage(name): select an in-file TTS benchmark CI stage",
     "accelerator: requires accelerator hardware",
     "xpu_serving: serves a model on an Intel XPU (tests/test_ci/xpu_model)",
+    "xpu_tp: an xpu_serving case that exercises tensor parallelism",
 ]
 
 [tool.setuptools.packages.find]

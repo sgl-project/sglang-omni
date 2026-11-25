@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.imports import import_string
@@ -154,6 +155,15 @@ def test_each_row_is_a_distinct_checkpoint() -> None:
     assert len(envs) == len(set(envs)), "two rows derive the same checkpoint_env"
 
 
+def test_a_tensor_parallel_row_claims_a_card_per_rank() -> None:
+    """The lane claims a row's cards, and a tensor-parallel stage needs one per rank."""
+    short = {m.key: (m.tp_size, m.cards) for m in XPU_MODELS if m.tp_size > m.cards}
+    assert not short, f"rows claiming fewer cards than their TP degree: {short}"
+    assert any(
+        1 < m.tp_size <= m.cards <= 4 for m in XPU_MODELS
+    ), "no tensor-parallel row fits a four-card host"
+
+
 @pytest.mark.parametrize("model", XPU_MODELS, ids=[m.key for m in XPU_MODELS])
 def test_a_stage_scoped_serve_argument_names_a_stage_this_row_has(
     model: XpuModel,
@@ -170,7 +180,7 @@ def test_a_stage_scoped_serve_argument_names_a_stage_this_row_has(
             continue
         else:
             stage = argument[2:].split(".", 1)[0]
-        if stage in names or "-" in stage:
+        if stage in names or stage in PipelineConfig.model_fields or "-" in stage:
             continue
         else:
             pytest.fail(

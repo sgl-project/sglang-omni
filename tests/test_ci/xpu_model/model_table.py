@@ -98,6 +98,16 @@ class XpuModel:
         return self.serve_args + extra
 
     @property
+    def tp_size(self) -> int:
+        """The largest tensor-parallel degree any stage of this row is served at."""
+        sizes = [
+            int(self.serve_args[index + 1])
+            for index, arg in enumerate(self.serve_args[:-1])
+            if arg.endswith(".tp_size")
+        ]
+        return max(sizes, default=1)
+
+    @property
     def pipeline_key(self) -> str:
         """Identity of the *pipeline*, which several checkpoints can share."""
         return f"{self.package}:{self.variant or 'default'}"
@@ -488,6 +498,36 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         startup_seconds=2400,
     ),
     XpuModel(
+        key="omni-text-tp4",
+        package="qwen3_omni",
+        architecture="Qwen3OmniMoeForConditionalGeneration",
+        variant="text",
+        stages=(
+            "preprocessing",
+            "image_encoder",
+            "audio_encoder",
+            "mm_aggregate",
+            "thinker",
+            "decode",
+        ),
+        repo_id="Qwen/Qwen3-Omni-30B-A3B-Instruct",
+        cards=4,
+        kind="chat",
+        serve_args=(
+            "--thinker.engine.mem_fraction_static",
+            "0.80",
+            "--skip-server-warmup",
+            "--text-only",
+            "--thinker.process",
+            "thinker",
+            "--thinker.tp_size",
+            "4",
+            "--thinker.gpu",
+            "[0, 1, 2, 3]",
+        ),
+        startup_seconds=2400,
+    ),
+    XpuModel(
         key="omni-speech",
         package="qwen3_omni",
         architecture="Qwen3OmniMoeForConditionalGeneration",
@@ -554,6 +594,36 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             "--text-only",
             "--thinker.engine.mem_fraction_static",
             "0.85",
+        ),
+        startup_seconds=1800,
+    ),
+    XpuModel(
+        key="minicpm-o-tp2",
+        package="minicpm_o",
+        architecture="MiniCPMO",
+        variant="text",
+        stages=(
+            "preprocessing",
+            "thinker",
+            "image_encoder",
+            "audio_encoder",
+            "decode",
+        ),
+        repo_id="openbmb/MiniCPM-o-4_5",
+        cards=2,
+        kind="chat",
+        serve_args=(
+            "--text-only",
+            "--thinker.engine.mem_fraction_static",
+            "0.85",
+            "--thinker.process",
+            "thinker",
+            "--thinker.tp_size",
+            "2",
+            "--thinker.gpu",
+            "[0, 1]",
+            "--placement.require_memory_fraction_for_colocation",
+            "false",
         ),
         startup_seconds=1800,
     ),
