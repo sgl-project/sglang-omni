@@ -26,9 +26,10 @@ var (
 )
 
 // ovLiveAlpha is the live text's; ovPreviewAlpha a streaming speech
-// model's words so far, before the recognised text replaces them: as dim
-// as ovText2 (macOS's secondary label), still 4.5:1 over a light desktop.
-const ovLiveAlpha, ovPreviewAlpha = 0.85, 0.6
+// model's words so far, before the recognised text replaces them: dimmer
+// than the result, yet bright enough to read a long recording by (60 %
+// tired the eyes).
+const ovLiveAlpha, ovPreviewAlpha = 0.85, 0.75
 
 // faceStyle gives e, the face, its radius and translucent fill, hairline and
 // shadow. Give it children.
