@@ -43,7 +43,8 @@ type fakeAudio struct {
 	tick     time.Duration
 	startErr error // Record fails before any audio
 	maxFrame int   // the recording ends by itself after this many frames (0: never)
-	failAt   int   // after this many frames Record fails with failErr
+	maxDone  chan struct{}
+	failAt   int // after this many frames Record fails with failErr
 	failErr  error
 	deaf     bool // ignore Stop (a capture.stop that raced its start)
 	quiet    bool // nobody speaks: quietFrame instead of frame
@@ -58,8 +59,9 @@ type fakeAudio struct {
 	// in 100 ms frames (the last one may be short), drained closes once
 	// the last frame was delivered, and the recording then waits for
 	// Stop, as the helper's file input does.
-	file    []byte
-	drained chan struct{}
+	file     []byte
+	fileTick time.Duration
+	drained  chan struct{}
 	// notified closes once notifyAt frames were sent (0: never).
 	notifyAt int
 	notified chan struct{}
@@ -105,14 +107,32 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "MacBook Air Microphone", SampleRate: 16000}})
 	n := 0
 	if len(f.file) > 0 {
+		var ticker *time.Ticker
+		var ticks <-chan time.Time
+		if f.fileTick > 0 {
+			ticker = time.NewTicker(f.fileTick)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
 		for off := 0; off < len(f.file); off += len(frame) {
+			if ticks != nil {
+				select {
+				case <-ctx.Done():
+					return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
+				case <-stop:
+					return proto.CaptureResult{Reason: proto.CaptureStopped, Frames: n}, nil
+				case <-ticks:
+				}
+			}
 			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: f.file[off:min(off+len(frame), len(f.file))]}})
 			n++
 		}
 		f.mu.Lock()
 		f.frames = n
 		f.mu.Unlock()
-		close(f.drained)
+		if f.drained != nil {
+			close(f.drained)
+		}
 		select {
 		case <-ctx.Done():
 			return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
@@ -149,6 +169,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 				return proto.CaptureResult{}, f.failErr
 			}
 			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
+				if f.maxDone != nil && f.maxFrame > 0 && n == f.maxFrame {
+					close(f.maxDone)
+				}
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}

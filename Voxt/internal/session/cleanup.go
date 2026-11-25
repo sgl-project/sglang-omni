@@ -83,7 +83,12 @@ func (r *run) spoken(raw string) string {
 func (r *run) transcribe(text string) {
 	result := text
 	var problem *Problem
-	cleanupRequested := r.transcribeCleanup() && r.svc.LLM != nil
+	cleanupEnabled := r.transcribeCleanup()
+	cleanupRequested := cleanupEnabled && r.svc.LLM != nil
+	readinessOutcome := LLMAvailable
+	if r.init.split {
+		readinessOutcome = r.init.llmOutcome
+	}
 	ordinaryTranscribe := r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
 	policy := r.m.cfg.CleanupLatency
 	softDeadline := policy.AutoFallbackAfter > 0 && ordinaryTranscribe
@@ -94,7 +99,13 @@ func (r *run) transcribe(text string) {
 		}
 		r.logf(level, "cleanup requested=%t", cleanupRequested)
 		if !cleanupRequested {
-			r.logf(level, "cleanup outcome=not_requested")
+			reason := "unavailable"
+			if !cleanupEnabled || readinessOutcome == LLMNotRequested {
+				reason = "not_requested"
+			} else if readinessOutcome == LLMUnavailable || r.svc.LLM == nil {
+				reason = "unavailable"
+			}
+			r.logf(level, "cleanup outcome=%s", reason)
 		}
 	}
 	if cleanupRequested {
@@ -472,11 +483,16 @@ func (d *drafter) publish() {
 	part := d.parts[len(d.parts)-1]
 	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text, part.Custom())))
 	draft = d.r.draftSnippets(draft, d.parts)
-	d.r.m.update(d.r, func(s *Snapshot) {
+	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
+			return draft != ""
 		}
+		return false
 	})
+	if visible {
+		d.r.noteVisibleCleanupText()
+	}
 }
 
 // done puts the answers of the parts so far in the snapshot.
@@ -486,11 +502,16 @@ func (d *drafter) done(answers []string) {
 	}
 	draft := compose.JoinParts(d.parts, answers)
 	draft = d.r.draftSnippets(draft, d.parts)
-	d.r.m.update(d.r, func(s *Snapshot) {
+	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
+			return draft != ""
 		}
+		return false
 	})
+	if visible {
+		d.r.noteVisibleCleanupText()
+	}
 }
 
 func (r *run) currentCleanupRequest() (cleanupRequest, bool) {

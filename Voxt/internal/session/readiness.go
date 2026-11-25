@@ -44,14 +44,18 @@ type ASRResolver func(ctx context.Context, kind Kind, s settings.Settings) ASRRe
 type LLMResolver func(ctx context.Context, kind Kind, s settings.Settings) LLMReadiness
 
 type runInitialization struct {
-	split         bool
-	asrDone       chan ASRReadiness
-	llmDone       chan LLMReadiness
-	termsDone     chan []store.Term
-	snippetsDone  chan []snippet.Snippet
-	llmReady      bool
-	termsReady    bool
-	snippetsReady bool
-	sceneReady    bool
-	cleanupReady  bool
+	split                bool
+	asrDone              chan ASRReadiness
+	llmDone              chan LLMReadiness
+	termsDone            chan []store.Term
+	snippetsDone         chan []snippet.Snippet
+	llmStarted           bool
+	llmReady             bool
+	llmOutcome           LLMOutcome
+	cleanupDecisionReady bool
+	cleanupRequested     bool
+	termsReady           bool
+	snippetsReady        bool
+	sceneReady           bool
+	cleanupReady         bool
 }

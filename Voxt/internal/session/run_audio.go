@@ -71,6 +71,9 @@ func (r *run) speechLang() string {
 func (r *run) onAudio(ev AudioEvent) {
 	switch {
 	case ev.PCM != nil:
+		if r.firstPCMCaptured.CompareAndSwap(false, true) {
+			r.logTiming("first_pcm_captured")
+		}
 		r.pcm.append(ev.PCM.Data)
 	case ev.Started != nil:
 		st, at := ev.Started, r.now()
@@ -112,6 +115,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 	// Two may come (the sender's silent end, the reader's): the first
 	// counts, the other must not block.
 	end := make(chan streamEnd, 2)
+	readerDone := make(chan struct{})
+	r.streamReaderDone = readerDone
 	sendErr := make(chan error, 1)
 	hp, lev := r.streamDSP()
 	go func() {
@@ -196,8 +201,56 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 		}
 	}()
 	go func() {
+		defer close(readerDone)
 		events := st.Events()
 		firstPartial := false
+		cleanupReady := (<-chan struct{})(r.svcResolved)
+		stop := (<-chan struct{})(r.stop)
+		stopped := false
+		pendingLive := ""
+		pendingStable := ""
+		pendingPieces := make([]string, 0)
+		piecesBroken := false
+		noteStop := func() {
+			if stop == nil {
+				return
+			}
+			select {
+			case <-stop:
+				stop = nil
+				stopped = true
+				pendingLive = ""
+			default:
+			}
+		}
+		replayPieces := func() {
+			if len(pendingPieces) == 0 && !piecesBroken {
+				return
+			}
+			if r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.transcribeCleanup() {
+				if piecesBroken {
+					r.earlyCleanup().stop()
+				} else {
+					stable := ""
+					for _, delta := range pendingPieces {
+						stable += delta
+						r.hearPiece(stable)
+					}
+				}
+			}
+			pendingPieces = nil
+			pendingStable = ""
+			piecesBroken = false
+		}
+		handleCleanupReady := func() {
+			cleanupReady = nil
+			noteStop()
+			replayPieces()
+			if pendingLive != "" && !stopped && !r.liveOff {
+				r.hearLive(pendingLive)
+			}
+			pendingLive = ""
+		}
 		for {
 			select {
 			case ev, ok := <-events:
@@ -207,27 +260,59 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				}
 				switch ev.Kind {
 				case asr.EventPartial:
+					noteStop()
 					text := r.inScript(ev.Text, "")
-					if text != "" && !firstPartial {
-						firstPartial = true
-						r.logTiming("first_asr_partial")
+					firstNonemptyPartial := text != "" && !firstPartial
+					firstPartial = firstPartial || text != ""
+					r.hearPartial(text)
+					if cleanupReady == nil {
+						if !stopped && !r.liveOff {
+							r.hearLive(text)
+						}
+					} else if !stopped && !r.liveOff {
+						pendingLive = text
 					}
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
-					r.hearPartial(text)
-					r.hearLive(text)
+					if firstNonemptyPartial {
+						r.logTiming("first_asr_partial")
+					}
 				case asr.EventCandidate:
 					r.hearCandidate(r.inScript(ev.Text, ""))
 				case asr.EventPiece:
-					r.hearPiece(r.inScript(ev.Text, ""))
+					stable := r.inScript(ev.Text, "")
+					r.endLive()
+					pendingLive = ""
+					if cleanupReady == nil {
+						r.hearPiece(stable)
+					} else if !piecesBroken {
+						if !strings.HasPrefix(stable, pendingStable) {
+							piecesBroken = true
+							pendingPieces = nil
+							pendingStable = stable
+						} else {
+							pendingPieces = append(pendingPieces, strings.Clone(stable[len(pendingStable):]))
+							pendingStable = stable
+						}
+					}
 				case asr.EventFinal:
 					res := ev.Result
 					res.Text = ev.Text
+					pendingLive = ""
 					end <- streamEnd{res: res}
 					return
 				case asr.EventError:
+					pendingLive = ""
 					end <- streamEnd{err: ev.Err}
 					return
 				}
+			case <-cleanupReady:
+				handleCleanupReady()
+			case <-stop:
+				stop = nil
+				stopped = true
+				pendingLive = ""
+			case <-r.ctx.Done():
+				return
 			case err := <-sendErr:
 				// The reader usually has the real reason; give it a moment.
 				select {
@@ -236,6 +321,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 						err = ev.Err
 					}
 				case <-time.After(500 * time.Millisecond):
+				case <-r.ctx.Done():
+					return
 				}
 				end <- streamEnd{err: asr.NetError(r.ctx, "", err)}
 				return

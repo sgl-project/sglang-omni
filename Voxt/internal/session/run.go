@@ -38,13 +38,13 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx        context.Context
-	llmStop       context.CancelFunc
-	firstLLMDelta atomic.Bool
-	skipped       atomic.Bool
-	stopped       atomic.Bool
-	rethink       atomic.Bool
-	cleanupWake   chan struct{}
+	llmCtx         context.Context
+	llmStop        context.CancelFunc
+	firstCleanText atomic.Bool
+	skipped        atomic.Bool
+	stopped        atomic.Bool
+	rethink        atomic.Bool
+	cleanupWake    chan struct{}
 	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
 	// here before waking the session owner; only the owner delivers one.
 	cleanupChoice           cleanupChoice
@@ -98,6 +98,7 @@ type run struct {
 	// opening: the speech model is still starting (wait.go); waitDue:
 	// Config.WaitNote has passed since the start.
 	opening, waitDue atomic.Bool
+	firstPCMCaptured atomic.Bool
 	// dsp and gainDB are what the sound processing did (noteDSP), for a
 	// retry's entry.
 	dsp    string
@@ -115,7 +116,8 @@ type run struct {
 	heard chan heardText
 	// svcResolved is closed when the session's services are resolved
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
-	svcResolved chan struct{}
+	svcResolved      chan struct{}
+	streamReaderDone chan struct{}
 	// early cleans finalized speech stretches before Stop (earlyclean.go).
 	earlyMu sync.Mutex
 	early   *earlyClean
@@ -349,7 +351,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		noted = true
 	case o.card != "":
 		dres.Reason = o.card
-		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
+		if r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true }) {
+			r.noteVisibleCleanupResult(result)
+		}
 	default:
 		if r.req.Kind == store.KindTranscribe {
 			if !r.m.beginTranscribeDelivery(r, result) {
@@ -358,6 +362,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 				r.endCancelled(nil)
 				return
 			}
+			r.noteVisibleCleanupResult(result)
 		} else {
 			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
 		}

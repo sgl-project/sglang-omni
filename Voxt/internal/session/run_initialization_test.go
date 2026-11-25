@@ -24,11 +24,12 @@ type initializationSignals struct {
 	llmResolveDone   chan time.Time
 	asrOpenStarted   chan time.Time
 	asrOpenDone      chan time.Time
+	firstPCMCaptured chan time.Time
 	firstPCM         chan time.Time
 	firstPartial     chan time.Time
 	asrFinal         chan time.Time
 	llmRequest       chan time.Time
-	llmFirstDelta    chan time.Time
+	cleanupFirstText chan time.Time
 	cleanupReady     chan time.Time
 	cleanupComplete  chan time.Time
 	deliveryComplete chan time.Time
@@ -38,28 +39,29 @@ func observeInitializationTimings(h *harness) initializationSignals {
 	signals := initializationSignals{
 		sessionStarted: make(chan time.Time, 1), asrResolveDone: make(chan time.Time, 1),
 		llmResolveStart: make(chan time.Time, 1), llmResolveDone: make(chan time.Time, 1),
-		asrOpenStarted: make(chan time.Time, 1),
-		asrOpenDone:    make(chan time.Time, 1), firstPCM: make(chan time.Time, 1),
+		asrOpenStarted: make(chan time.Time, 1), asrOpenDone: make(chan time.Time, 1),
+		firstPCMCaptured: make(chan time.Time, 1), firstPCM: make(chan time.Time, 1),
 		firstPartial: make(chan time.Time, 1), asrFinal: make(chan time.Time, 1),
-		llmRequest: make(chan time.Time, 1), llmFirstDelta: make(chan time.Time, 1),
+		llmRequest: make(chan time.Time, 1), cleanupFirstText: make(chan time.Time, 1),
 		cleanupReady: make(chan time.Time, 1), cleanupComplete: make(chan time.Time, 1),
 		deliveryComplete: make(chan time.Time, 1),
 	}
 	channels := map[string]chan time.Time{
-		"session_started":         signals.sessionStarted,
-		"asr_resolve_completed":   signals.asrResolveDone,
-		"llm_resolve_started":     signals.llmResolveStart,
-		"llm_resolve_completed":   signals.llmResolveDone,
-		"asr_open_started":        signals.asrOpenStarted,
-		"asr_open_completed":      signals.asrOpenDone,
-		"first_pcm_sent":          signals.firstPCM,
-		"first_asr_partial":       signals.firstPartial,
-		"asr_final_completed":     signals.asrFinal,
-		"llm_request_started":     signals.llmRequest,
-		"llm_first_content_delta": signals.llmFirstDelta,
-		"cleanup_context_ready":   signals.cleanupReady,
-		"cleanup_completed":       signals.cleanupComplete,
-		"delivery_completed":      signals.deliveryComplete,
+		"session_started":            signals.sessionStarted,
+		"asr_resolve_completed":      signals.asrResolveDone,
+		"llm_resolve_started":        signals.llmResolveStart,
+		"llm_resolve_completed":      signals.llmResolveDone,
+		"asr_open_started":           signals.asrOpenStarted,
+		"asr_open_completed":         signals.asrOpenDone,
+		"first_pcm_captured":         signals.firstPCMCaptured,
+		"first_pcm_sent":             signals.firstPCM,
+		"first_asr_partial":          signals.firstPartial,
+		"asr_final_completed":        signals.asrFinal,
+		"llm_request_started":        signals.llmRequest,
+		"cleanup_first_visible_text": signals.cleanupFirstText,
+		"cleanup_context_ready":      signals.cleanupReady,
+		"cleanup_completed":          signals.cleanupComplete,
+		"delivery_completed":         signals.deliveryComplete,
 	}
 	previous := h.m.cfg.Log
 	h.m.cfg.Log = func(level, message string) {
@@ -90,6 +92,21 @@ func setIndependentResolvers(h *harness, provider asr.Provider, resolveLLM LLMRe
 		return ASRReadiness{ASR: provider, ASRInfo: Model{ID: "fake-asr", Name: "Fake ASR", Model: "fake"}}
 	}
 	h.m.cfg.ResolveLLM = resolveLLM
+}
+
+func TestSceneReadinessSignalIsConsumedOnce(t *testing.T) {
+	sceneDone := make(chan struct{})
+	close(sceneDone)
+	r := &run{init: runInitialization{split: true}, sc: sceneState{done: sceneDone}}
+	selectable := r.sceneReadySignal()
+	if selectable == nil {
+		t.Fatal("closed scene readiness was lost before the owner consumed it")
+	}
+	<-selectable
+	r.markSceneReady()
+	if selectable = r.sceneReadySignal(); selectable != nil || !r.init.sceneReady {
+		t.Fatalf("scene readiness stayed selectable: channel=%v, state=%+v", selectable, r.init)
+	}
 }
 
 func gatedLLMResolver(model LLM, started chan<- struct{}, release <-chan struct{}, returned chan<- struct{}) LLMResolver {
@@ -148,6 +165,30 @@ func TestIndependentInitializationOpensASRBeforeLLMAndUsesResolvedLLM(t *testing
 	}
 	if !h.logged("timing event=cleanup_context_ready") {
 		t.Fatal("cleanup readiness timing was not logged")
+	}
+}
+
+func TestCleanupDisabledSkipsBlockedLLMResolver(t *testing.T) {
+	provider := &fakeStreamer{final: "hello aura link"}
+	var llmCalls atomic.Int32
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h := newHarness(t, provider, &fakeLLM{text: "must not run"}, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+		s.Dictionary.ASRHints = false
+	})
+	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
+		llmCalls.Add(1)
+		<-release // It would remain blocked if cleanup-off started this resolver.
+		return LLMReadiness{Outcome: LLMUnavailable}
+	})
+	signals := observeInitializationTimings(h)
+	id := h.start()
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR to open with cleanup disabled")
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "hello VoxtNew" || llmCalls.Load() != 0 {
+		t.Fatalf("end %+v, LLM resolver calls %d", end, llmCalls.Load())
 	}
 }
 
@@ -392,8 +433,8 @@ func TestCancelReturnsWhileLLMInitializationIgnoresContext(t *testing.T) {
 	waitInitializationSignal(t, signals.firstPartial, "ASR partial")
 	h.m.Cancel(id)
 	end := h.rec.wait(t)
-	if end.State != Cancelled || len(h.text.pastes()) != 0 {
-		t.Fatalf("cancelled session %+v, deliveries %q", end, h.text.pastes())
+	if end.State != Cancelled || len(h.text.pastes()) != 0 || len(model.requests()) != 0 {
+		t.Fatalf("cancelled session %+v, deliveries %q, LLM requests %d", end, h.text.pastes(), len(model.requests()))
 	}
 	openRelease()
 }
@@ -669,10 +710,14 @@ func TestPendingBrowserURLDoesNotBlockASRAndKeepsCleanupOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitInitializationSignal(t, urlStarted, "browser URL lookup to start")
-	waitInitializationSignal(t, signals.llmResolveStart, "LLM lane to start its app-context resolution")
 	waitInitializationSignal(t, signals.firstPartial, "ASR partial while browser URL is pending")
 	h.speak(id, 5)
 	waitInitializationSignal(t, signals.asrFinal, "ASR Final while browser URL is pending")
+	select {
+	case <-signals.llmResolveStart:
+		t.Fatal("LLM initialization started before the URL cleanup override was known")
+	default:
+	}
 	select {
 	case <-effectiveCleanup:
 		t.Fatal("Cleanup override was resolved before the URL lookup completed")
@@ -681,8 +726,10 @@ func TestPendingBrowserURLDoesNotBlockASRAndKeepsCleanupOverride(t *testing.T) {
 
 	openURL()
 	end := h.rec.wait(t)
-	if got := <-effectiveCleanup; got {
-		t.Fatal("URL-specific Cleanup-off override was not applied")
+	select {
+	case got := <-effectiveCleanup:
+		t.Fatalf("LLM resolver ran for URL-specific Cleanup-off override: %t", got)
+	default:
 	}
 	if end.Result != "hello VoxtNew" || len(model.requests()) != 0 || end.Scene == nil || end.Scene.GroupID() != "url" {
 		t.Fatalf("end %+v, LLM requests %d", end, len(model.requests()))

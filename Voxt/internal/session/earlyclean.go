@@ -287,6 +287,7 @@ func (e *earlyClean) clean(job segJob, thinkOffUnder int) {
 	if !e.finalized {
 		res.publishedAt = r.now()
 		e.segs = append(e.segs, res)
+		e.cond.Broadcast()
 	}
 	e.mu.Unlock()
 }
