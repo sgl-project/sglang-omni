@@ -33,9 +33,10 @@ type featureModelNoticeViewState struct {
 }
 
 type featureCleanupViewState struct {
-	Enhance   bool `json:"enhance"`
-	Cleanup   bool `json:"cleanup"`
-	Structure bool `json:"structure"`
+	Enhance       bool `json:"enhance"`
+	Cleanup       bool `json:"cleanup"`
+	Structure     bool `json:"structure"`
+	WhileSpeaking bool `json:"while_speaking"`
 }
 
 type featureModelsViewState struct {
@@ -108,7 +109,8 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 		LLM:    featureModelSelect(optionsL, input.ReadyLLM, modelLabel(input.ReadyLLM, f.LLM, automaticL), len(input.ReadyLLM) == 0 || !enhance),
 		Cleanup: featureCleanupViewState{
 			Enhance: input.Settings.Features.Transcribe.Enhance, Cleanup: input.Settings.Features.Transcribe.Cleanup,
-			Structure: input.Settings.Features.Transcribe.Structure,
+			Structure:     input.Settings.Features.Transcribe.Structure,
+			WhileSpeaking: !input.Settings.Features.Transcribe.CleanAfterStop,
 		},
 	}
 	state.ASRStatus = buildFeatureModelStatus(translator, state.Prefix+"-asr", input.ASRStatus, input.ModelDeciding)

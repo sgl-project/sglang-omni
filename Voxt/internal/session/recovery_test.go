@@ -287,17 +287,18 @@ func TestRetry(t *testing.T) {
 		}
 	})
 	t.Run("beside a session", func(t *testing.T) {
-		h, e := retryHarness(t, &fakeFile{text: "again"}, nil, false)
+		h, e := retryHarness(t, &fakeFile{text: "again"}, &fakeLLM{err: errors.New("primary unavailable")}, false)
+		h.fallback = &fakeLLM{text: "Again."}
 		id := h.start()
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
-		if err != nil || out.Result != "again" {
+		if err != nil || out.Result != "Again." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 		if cur := h.m.Current(); cur.ID != id || cur.State != Recording {
 			t.Fatalf("the session changed: %+v", cur)
 		}
 		h.speak(id, 3)
-		if end := h.rec.wait(t); end.State != Done || end.Result != "again" {
+		if end := h.rec.wait(t); end.State != Done || end.Result != "Again." || end.LLM.ID != "ollama" {
 			t.Errorf("session %+v", end)
 		}
 	})
