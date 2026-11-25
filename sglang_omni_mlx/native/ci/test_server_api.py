@@ -507,7 +507,8 @@ def test_concurrent_requests_decode_together_and_match_serial_output() -> None:
                 clip_id: pool.submit(server.post_form, {}, clip(clip_id))
                 for clip_id in clip_ids
             }
-            canceled = pool.submit(open_stream, server, long_wav(300))
+            # note (XXXXRT666): longer audio is decoded in chunks, outside the batch.
+            canceled = pool.submit(open_stream, server, long_wav(120))
             wait_for(
                 lambda: request_states(server).get("queued") == 4,
                 10,
@@ -970,6 +971,64 @@ def test_a_final_reads_a_tail_under_one_second_like_a_whole_recording(
     # note (XXXXRT666): the 8 s window's 104 audio tokens.
     assert reused["generation_metadata"]["reused_audio_token_count"] == 104
     assert reused["text"] == final({})["text"]
+
+
+def test_a_silent_chunk_of_a_long_request_adds_no_text(server: Server) -> None:
+    """A request over 120 s is cut into chunks, and the chunk of its closing silence was decoded like the others, which added words nobody said (The.)."""
+    speech = (pcm16("0344_en_long") * 2)[: 114 * 32000]
+    recording = speech + bytes(16 * 32000)
+    # note (XXXXRT666): the cut is in the middle of the first quiet 100 ms of the 5 s before 120 s.
+    first_chunk = recording[: 115 * 32000 + 1600]
+
+    def transcribe(pcm: bytes) -> dict:
+        status, body = server.post_form(
+            {
+                "stream": "true",
+                "language": "en",
+                "include_generation_metadata": "true",
+            },
+            wav_bytes(pcm),
+        )
+        assert status == 200
+        return sse_events(body)[0]
+
+    assert transcribe(recording) == transcribe(first_chunk)
+
+
+def test_a_long_request_is_cut_whatever_a_live_session_has_of_it(
+    server: Server,
+) -> None:
+    """A request over 120 s with a preview's text or a live session was decoded as one prompt, on which the model can repeat a sentence until its tokens run out; both only save work, so the answer is the one without them. The chunks share max_new_tokens."""
+    pcm = (pcm16("0344_en_long") * 3)[: 130 * 32000]
+
+    def final(extra: dict[str, str]) -> dict:
+        status, body = server.post_form(
+            {"stream": "true", "include_generation_metadata": "true", **extra},
+            wav_bytes(pcm),
+        )
+        assert status == 200
+        return sse_events(body)[0]
+
+    plain = final({})
+    assert final({"guessed_text": plain["text"]}) == plain
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps({"type": "session.update", "session": {"turn_detection": None}})
+        )
+        session_id = json.loads(socket.recv())["session_id"]
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm[: 9 * 32000]).decode(),
+                }
+            )
+        )
+        assert json.loads(socket.recv())["type"] == "transcription.segment"
+        assert final({"realtime_session": session_id}) == plain
+    truncated = final({"max_new_tokens": "2"})["generation_metadata"]
+    assert truncated["finish_reason"] == "length"
+    assert truncated["generated_token_count"] == 2
 
 
 @pytest.mark.parametrize(
