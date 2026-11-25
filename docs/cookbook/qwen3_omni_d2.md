@@ -54,6 +54,16 @@ When testing another D2 release, use the matching replay profile, for example `q
 
 On one RTX PRO 6000 Blackwell, a question asking for the sum of two and two produced the transcript “4” in the 80 ms release with seed 1337. The 160,166 input samples included trailing silence. Omni streamed 125 of 126 frames before input EOS, and all 241,920 output samples matched the official runtime byte for byte. A second session on the same server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). User speech resumed during the smartphone answer, D2 emitted an interrupt at 9.92 s on the media timeline, and its next reply discussed smartwatches.
 
+Each public checkpoint also answered the arithmetic question over WebSocket. Output length reflects padding the last input interval. The 80 ms and 320 ms runs included a separate official inference run with the same seed and input.
+
+| Checkpoint | Input intervals | Received 80 ms frames | Output samples at 24 kHz | Reference PCM |
+| --- | ---: | ---: | ---: | --- |
+| [80 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/0237f21b29d2a762750ddee08e37ec4fe8e00473) | 126 | 126 | 241,920 | Exact match |
+| [160 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/1f772b9aab3acac649bf6b972bef3ec71b635ef7) | 63 | 126 | 241,920 | Unmeasured |
+| [320 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/93d6ec8ba5068671d9199889bcbfa07b0d115606) | 32 | 128 | 245,760 | Exact match |
+| [640 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/c15b678d53073a2787ba5e3292f88793363c315f) | 16 | 128 | 245,760 | Unmeasured |
+| [1040 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/cbddf68f3b601593ea1d0cbda2163a53cffed151) | 10 | 130 | 249,600 | Unmeasured |
+
 To compare your own recording, stop the Omni server to release its GPU, then run the reference with the same input, revision, seed and trailing silence. It writes the waveform and a JSON file of per-frame events next to it.
 
 ```bash
