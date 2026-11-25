@@ -62,8 +62,9 @@ public:
   bool Handle(const nlohmann::json &message) override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null.
-  FinalReuse TakeFinalReuse(const std::optional<std::string> &context);
+  // null. Only snapshot a preview guess when the caller asks for one.
+  FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
+                            bool guess_auto_language);
 
 private:
   struct Segment {

@@ -46,12 +46,16 @@ func (s *live) finalPass(pcm []byte) {
 			// The server has prefilled the Final's audio, from the last piece
 			// on, and its dictionary (startFinalAt).
 			known.session = s.session
-			// Without a hint the model writes the language before the text,
-			// and the preview does not hold it.
-			if done == 0 && hint != "" {
-				s.mu.Lock()
-				known.text = s.asm.text()
-				s.mu.Unlock()
+			if done == 0 {
+				if hint != "" {
+					s.mu.Lock()
+					known.text = s.asm.text()
+					s.mu.Unlock()
+				} else if !s.req.LiveResult && known.session != "" {
+					// An auto-language Final also generates a language header.
+					// Let the server propose it together with the preview text.
+					known.guessAutoLanguage = true
+				}
 			}
 		}
 		text, language, err = s.a.final(s.ctx, s.l, tail, hint, finalBias, known)
