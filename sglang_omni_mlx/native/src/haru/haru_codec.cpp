@@ -21,6 +21,7 @@ void PrepareCodecWeights(omni_common::WeightMap &weights) {
     if (name.starts_with("codec.") && name.ends_with(".weight") &&
         weight.ndim() == 3 && !name.starts_with("codec.decoder.up.")) {
       names.push_back(name);
+    } else {
     }
   }
   for (const std::string &name : names) {
@@ -78,6 +79,7 @@ VibeVoiceCodec::VibeVoiceCodec(const omni_common::Checkpoint &checkpoint,
                                  "codec.decoder.up." + previous,
                                  2 * decoder_stride, decoder_stride,
                                  decoder_stride, decoder_channels});
+    } else {
     }
     for (int block = 0; block < config.encoder_depths[stage]; ++block) {
       encoder_layers_.push_back(

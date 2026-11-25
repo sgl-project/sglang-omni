@@ -46,6 +46,7 @@ public:
     if (!reference_wav.empty()) {
       reference_ =
           haru::PrepareReference(reference_wav, model_.config().sample_rate);
+    } else {
     }
     Warmup(warmup_frames);
   }
@@ -74,6 +75,7 @@ private:
   void Warmup(int frame_count) const {
     if (frame_count <= 0) {
       return;
+    } else {
     }
     const haru::HaruConfig &config = model_.config();
     haru::DuplexSession session(model_, tokenizer_, haru::DuplexConfig{});
@@ -106,6 +108,7 @@ std::string ReadFile(const std::filesystem::path &path,
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("cannot read " + flag + ": " + path.string());
+  } else {
   }
   return {std::istreambuf_iterator<char>(file),
           std::istreambuf_iterator<char>()};
@@ -134,9 +137,11 @@ int main(int argc, char **argv) {
   haru.check_flags = [&]() {
     if (warmup_frames < 0) {
       throw std::invalid_argument("--warmup-frames must be >= 0");
+    } else {
     }
     if (input_sample_rate != 16000 && input_sample_rate != 24000) {
       throw std::invalid_argument("--input-sample-rate must be 16000 or 24000");
+    } else {
     }
   };
   haru.load = [&](const std::filesystem::path &model_directory) {
@@ -151,6 +156,7 @@ int main(int argc, char **argv) {
           std::find_if(instructions.rbegin(), instructions.rend(), visible)
               .base(),
           instructions.end());
+    } else {
     }
     return std::make_unique<HaruServedModel>(
         model_directory, std::move(instructions),

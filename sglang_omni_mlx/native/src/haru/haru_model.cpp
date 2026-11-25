@@ -81,6 +81,7 @@ LoadWeights(const std::filesystem::path &model_directory) {
       prepared.push_back(weight);
     } else if (name.starts_with("codec.")) {
       prepared.push_back(weight);
+    } else {
     }
   }
   mx::eval(prepared);
@@ -105,6 +106,7 @@ mx::array SpeechTokenMask(const HaruConfig &config) {
     if (token >= 0) {
       mask[static_cast<size_t>(token)] =
           -std::numeric_limits<float>::infinity();
+    } else {
     }
   }
   return mx::array(mask.data(), {config.lm.vocab_size}, mx::float32);
@@ -149,6 +151,7 @@ std::vector<LayerCache> HaruModel::NewCaches() const {
           {1, config_.lm.linear_num_value_heads,
            config_.lm.linear_value_head_dim, config_.lm.linear_key_head_dim},
           mx::float32);
+    } else {
     }
   }
   return caches;
@@ -192,10 +195,12 @@ mx::array HaruModel::Embed(const mx::array &tokens,
                               const std::string &prefix) {
     if (!latents.has_value()) {
       return;
+    } else {
     }
     mx::array y = AudioProject(*latents, prefix);
     if (mask.has_value()) {
       y = mx::multiply(y, mx::expand_dims(mx::astype(*mask, y.dtype()), -1));
+    } else {
     }
     x = mx::add(x, y);
   };

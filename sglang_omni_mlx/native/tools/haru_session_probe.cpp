@@ -42,10 +42,12 @@ int main(int argc, char **argv) {
     std::cerr << "usage: haru_session_probe <model-dir> [seed] "
                  "[--full-precision]\n";
     return 2;
+  } else {
   }
   try {
     if (argc == 4) {
       omni_common::SetLoadTimeQuantization(false);
+    } else {
     }
     const haru::HaruModel model(argv[1]);
     const omni_common::Tokenizer tokenizer(argv[1]);

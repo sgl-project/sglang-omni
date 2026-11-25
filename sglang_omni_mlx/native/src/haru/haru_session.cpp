@@ -31,12 +31,14 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
   const int n = static_cast<int>(history.size());
   if (n < std::max(1, config.allowed_length)) {
     return out;
+  } else {
   }
   const int last = history[n - 1];
   std::vector<std::pair<int, int>> matches; // (candidate, length)
   for (int j = n - 2; j >= std::max(0, n - 1 - config.lookback); --j) {
     if (history[j] != last) {
       continue;
+    } else {
     }
     int length = 1;
     while (length < config.max_match_length && j - length >= 0 &&
@@ -45,6 +47,7 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
     }
     if (length >= config.allowed_length) {
       matches.push_back({history[j + 1], length});
+    } else {
     }
   }
   std::sort(matches.begin(), matches.end(), [](const auto &a, const auto &b) {
@@ -53,6 +56,7 @@ std::vector<std::pair<int, float>> DryPenalties(const std::vector<int> &history,
   for (size_t i = 0; i < matches.size(); ++i) {
     if (i > 0 && matches[i].first == matches[i - 1].first) {
       continue;
+    } else {
     }
     const float penalty = std::min(
         config.max_penalty,
@@ -97,6 +101,7 @@ Frame DuplexSession::Start(const std::string &system_prompt,
   if (!system_prompt.empty()) {
     card = tokenizer_.Encode("<|im_start|>system\n" + system_prompt +
                              "<|im_end|>\n");
+  } else {
   }
 
   mx::array ref_latents =
@@ -122,14 +127,17 @@ Frame DuplexSession::Start(const std::string &system_prompt,
         codec_.Sample(mx::reshape(means, {1, means.shape(0), dim}), NextKey());
     mx::eval(ref_latents);
     n_ref = ref_latents.shape(1);
+  } else {
   }
 
   std::vector<int> grid;
   if (config_.speak_first) {
     grid = {pad_id_, eop_id_};
+  } else {
   }
   if (card.empty() && n_ref == 0 && grid.empty()) {
     grid = {pad_id_};
+  } else {
   }
   std::vector<int> tokens = card;
   for (int i = 0; i < n_ref; ++i) {
@@ -159,13 +167,16 @@ Frame DuplexSession::Start(const std::string &system_prompt,
         if (energy < best_energy) {
           best_energy = energy;
           best = f;
+        } else {
         }
       }
       room_tone = mx::reshape(mx::slice(ref_latents, mx::Shape{0, best, 0},
                                         mx::Shape{1, best + 1, dim}),
                               mx::Shape{dim});
       mx::eval(room_tone);
+    } else {
     }
+  } else {
   }
 
   std::vector<float> model_flat(static_cast<size_t>(n) * dim, 0.0f);
@@ -176,6 +187,7 @@ Frame DuplexSession::Start(const std::string &system_prompt,
       model_flat[static_cast<size_t>(n_card + i / dim) * dim + i % dim] =
           src[i];
     }
+  } else {
   }
   if (n_grid > 0) {
     const float *room_tone_values = room_tone.data<float>();
@@ -187,6 +199,7 @@ Frame DuplexSession::Start(const std::string &system_prompt,
         user_flat[static_cast<size_t>(pos) * dim + d] = silence_values[d];
       }
     }
+  } else {
   }
 
   std::vector<float> model_mask(static_cast<size_t>(n), 0.0f);
@@ -253,6 +266,7 @@ mx::array DuplexSession::PreparedLogits(const mx::array &last_hidden) {
         mx::subtract(mx::take(logits, indices, 0),
                      mx::array(penalties.data(), {count}, mx::float32)),
         0);
+  } else {
   }
   // The PAD and EOP logits, recomputed in float32.
   logits = mx::put_along_axis(
@@ -264,6 +278,7 @@ mx::array DuplexSession::PreparedLogits(const mx::array &last_hidden) {
 mx::array DuplexSession::SampleToken(const mx::array &logits) {
   if (config_.temperature <= 0.0f) {
     return mx::argmax(logits, -1);
+  } else {
   }
   mx::array scaled_logits =
       mx::divide(logits, mx::array(config_.temperature, mx::float32));
@@ -274,6 +289,7 @@ mx::array DuplexSession::SampleToken(const mx::array &logits) {
         mx::argpartition(mx::negative(scaled_logits), config_.top_k - 1, -1);
     indices = mx::take(*indices, mx::arange(0, config_.top_k, mx::int32), 0);
     scaled_logits = mx::take_along_axis(scaled_logits, *indices, -1);
+  } else {
   }
   if (0.0f < config_.top_p && config_.top_p < 1.0f) {
     const mx::array order = mx::argsort(mx::negative(scaled_logits), -1);
@@ -291,12 +307,14 @@ mx::array DuplexSession::SampleToken(const mx::array &logits) {
                               mx::full(scaled_logits.shape(),
                                        -std::numeric_limits<float>::infinity(),
                                        mx::float32));
+  } else {
   }
   const mx::array choice =
       mx::random::categorical(scaled_logits, -1, NextKey());
   if (indices.has_value()) {
     return mx::squeeze(
         mx::take_along_axis(*indices, mx::expand_dims(choice, -1), -1), -1);
+  } else {
   }
   return choice;
 }
@@ -305,9 +323,11 @@ std::string DuplexSession::Detokenize(int token) {
   if (token == pad_id_ || token == eop_id_) {
     if (in_gap_) {
       return "";
+    } else {
     }
     in_gap_ = true;
     return " ";
+  } else {
   }
   in_gap_ = false;
   pending_ids_.push_back(token);
@@ -317,6 +337,7 @@ std::string DuplexSession::Detokenize(int token) {
       text.compare(text.size() - replacement.size(), replacement.size(),
                    replacement) == 0) {
     return "";
+  } else {
   }
   pending_ids_.clear();
   return text;
@@ -339,9 +360,11 @@ Frame DuplexSession::Emit(const mx::array &hidden) {
   const int token_id = token.item<int>();
   if (force_text_ > 0) {
     --force_text_;
+  } else {
   }
   if (token_id != pad_id_ && token_id != eop_id_ && token_id != eos_id_) {
     history_.push_back(token_id);
+  } else {
   }
   Frame frame;
   const float *audio_data = audio.data<float>();

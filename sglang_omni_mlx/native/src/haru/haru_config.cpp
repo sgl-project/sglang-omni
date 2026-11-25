@@ -9,6 +9,7 @@ int RequireInt(const nlohmann::json &obj, const char *key) {
   if (!obj.contains(key) || !obj[key].is_number_integer()) {
     throw std::invalid_argument(std::string("config field ") + key +
                                 " must be an integer");
+  } else {
   }
   return obj[key].get<int>();
 }
@@ -17,6 +18,7 @@ std::vector<int> IntVector(const nlohmann::json &obj, const char *key) {
   if (!obj.contains(key) || !obj[key].is_array()) {
     throw std::invalid_argument(std::string("config field ") + key +
                                 " must be an array");
+  } else {
   }
   std::vector<int> out;
   for (const auto &value : obj[key])
@@ -54,6 +56,7 @@ TextConfig ParseText(const nlohmann::json &lm) {
   if (static_cast<int>(text.layer_types.size()) != layers) {
     throw std::invalid_argument(
         "layer_types must name one kind per hidden layer");
+  } else {
   }
 
   // Rotary: prefer rope_parameters, fall back to the flat fields.
@@ -73,24 +76,31 @@ CodecConfig ParseCodec(const nlohmann::json &codec) {
   CodecConfig out;
   if (codec.contains("latent_dim")) {
     out.latent_dim = codec["latent_dim"].get<int>();
+  } else {
   }
   if (codec.contains("base_channels")) {
     out.base_channels = codec["base_channels"].get<int>();
+  } else {
   }
   if (codec.contains("ratios")) {
     out.ratios = IntVector(codec, "ratios");
+  } else {
   }
   if (codec.contains("encoder_depths")) {
     out.encoder_depths = IntVector(codec, "encoder_depths");
+  } else {
   }
   if (codec.contains("decoder_depths")) {
     out.decoder_depths = IntVector(codec, "decoder_depths");
+  } else {
   }
   if (codec.contains("norm_eps")) {
     out.norm_eps = codec["norm_eps"].get<float>();
+  } else {
   }
   if (codec.contains("latent_std")) {
     out.latent_std = codec["latent_std"].get<float>();
+  } else {
   }
   return out;
 }
@@ -99,31 +109,40 @@ HeadConfig ParseHead(const nlohmann::json &head) {
   HeadConfig out;
   if (head.contains("hidden_size")) {
     out.hidden_size = head["hidden_size"].get<int>();
+  } else {
   }
   if (head.contains("latent_dim")) {
     out.latent_dim = head["latent_dim"].get<int>();
+  } else {
   }
   if (head.contains("num_layers")) {
     out.num_layers = head["num_layers"].get<int>();
+  } else {
   }
   if (head.contains("ffn_ratio")) {
     out.ffn_ratio = head["ffn_ratio"].get<float>();
+  } else {
   }
   if (head.contains("norm_eps")) {
     out.norm_eps = head["norm_eps"].get<float>();
+  } else {
   }
   if (head.contains("interval_embed")) {
     out.interval_embed = head["interval_embed"].get<float>();
+  } else {
   }
   if (head.contains("num_steps")) {
     out.num_steps = head["num_steps"].get<int>();
+  } else {
   }
   if (head.contains("guidance_scale")) {
     out.guidance_scale = head["guidance_scale"].get<float>();
+  } else {
   }
   if (head.contains("guidance_range") && head["guidance_range"].is_array()) {
     out.guidance_range = {head["guidance_range"][0].get<float>(),
                           head["guidance_range"][1].get<float>()};
+  } else {
   }
   return out;
 }
@@ -135,6 +154,7 @@ HaruConfig HaruConfig::FromDict(const nlohmann::json &params) {
   if (model_type != "haru") {
     throw std::invalid_argument(
         "not a Haru checkpoint (model_type=" + model_type + ")");
+  } else {
   }
   HaruConfig config;
   config.sample_rate = RequireInt(params, "sample_rate");
@@ -145,20 +165,25 @@ HaruConfig HaruConfig::FromDict(const nlohmann::json &params) {
 
   if (!params.contains("lm") || !params["lm"].is_object()) {
     throw std::invalid_argument("config field lm must be an object");
+  } else {
   }
   config.lm = ParseText(params["lm"]);
   // The end-of-speech id lives under lm, like HaruConfig.eos_token_id.
   if (params["lm"].contains("eos_token_id")) {
     config.eos_token_id = params["lm"]["eos_token_id"].get<int>();
+  } else {
   }
   if (params.contains("codec") && params["codec"].is_object()) {
     config.codec = ParseCodec(params["codec"]);
+  } else {
   }
   if (params.contains("head") && params["head"].is_object()) {
     config.head = ParseHead(params["head"]);
+  } else {
   }
   if (config.codec.frame_samples() != config.frame_samples) {
     throw std::invalid_argument("codec ratios do not match frame_samples");
+  } else {
   }
   return config;
 }

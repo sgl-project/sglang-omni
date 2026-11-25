@@ -32,6 +32,7 @@ double BesselI0(double x) {
     sum += term;
     if (term < sum * 1e-17) {
       break;
+    } else {
     }
   }
   return sum;
@@ -49,6 +50,7 @@ const double kBesselI0Beta = BesselI0(kResampleKaiserBeta);
 double ResampleKernel(double t) {
   if (std::abs(t) >= kResampleHalfTaps) {
     return 0.0;
+  } else {
   }
   const double sinc = t == 0.0 ? 1.0 : std::sin(M_PI * t) / (M_PI * t);
   const double ratio = t / static_cast<double>(kResampleHalfTaps);
@@ -66,36 +68,46 @@ DuplexConfig WithSampling(DuplexConfig config, const nlohmann::json &sampling) {
     const double value = sampling.at("temperature").get<double>();
     if (!(value >= 0.0 && value <= 2.0)) {
       throw std::invalid_argument("temperature must be in [0, 2]");
+    } else {
     }
     config.temperature = static_cast<float>(value);
+  } else {
   }
   if (sampling.contains("top_k")) {
     const long long value = sampling.at("top_k").get<long long>();
     if (value < 1 || value > static_cast<long long>(INT32_MAX)) {
       throw std::invalid_argument("top_k must be >= 1");
+    } else {
     }
     config.top_k = static_cast<int>(value);
+  } else {
   }
   if (sampling.contains("top_p")) {
     const double value = sampling.at("top_p").get<double>();
     if (!(value > 0.0 && value <= 1.0)) {
       throw std::invalid_argument("top_p must be in (0, 1]");
+    } else {
     }
     config.top_p = static_cast<float>(value);
+  } else {
   }
   if (sampling.contains("guidance_scale")) {
     const double value = sampling.at("guidance_scale").get<double>();
     if (!(value >= 1.0 && value <= 2.0)) {
       throw std::invalid_argument("guidance_scale must be in [1, 2]");
+    } else {
     }
     config.guidance_scale = static_cast<float>(value);
+  } else {
   }
   if (sampling.contains("seed")) {
     const long long value = sampling.at("seed").get<long long>();
     if (value < 0 || value > static_cast<long long>(INT32_MAX)) {
       throw std::invalid_argument("seed must be in [0, 2147483647]");
+    } else {
     }
     config.seed = static_cast<int>(value);
+  } else {
   }
   return config;
 }
@@ -160,6 +172,7 @@ StreamResampler::StreamResampler(int input_rate, int output_rate)
 std::vector<float> StreamResampler::Process(const std::vector<float> &input) {
   if (input_rate_ == output_rate_) {
     return input;
+  } else {
   }
   buffer_.insert(buffer_.end(), input.begin(), input.end());
   input_count_ += static_cast<int64_t>(input.size());
@@ -169,6 +182,7 @@ std::vector<float> StreamResampler::Process(const std::vector<float> &input) {
 std::vector<float> StreamResampler::Flush() {
   if (input_rate_ == output_rate_) {
     return {};
+  } else {
   }
   // Zeros let the filter finish the samples still inside its window without
   // inventing audio the client did not send.
@@ -188,6 +202,7 @@ std::vector<float> StreamResampler::Convert() {
     const int64_t last = center + kResampleHalfTaps;
     if (last >= origin_ + static_cast<int64_t>(buffer_.size())) {
       break;
+    } else {
     }
     const std::vector<double> &taps = phase_taps_[phase];
     double value = 0.0;
@@ -196,6 +211,7 @@ std::vector<float> StreamResampler::Convert() {
       const int64_t index = center + offset;
       if (index < origin_) {
         continue;
+      } else {
       }
       value += buffer_[static_cast<size_t>(index - origin_)] *
                taps[static_cast<size_t>(offset + kResampleHalfTaps)];
@@ -212,6 +228,7 @@ std::vector<float> StreamResampler::Convert() {
                   buffer_.begin() +
                       static_cast<std::ptrdiff_t>(keep_from - origin_));
     origin_ = keep_from;
+  } else {
   }
   return output;
 }
@@ -268,6 +285,7 @@ void HaruRealtimeSession::StepFrame(const std::vector<float> &frame,
   ++stepped_frames_;
   if (!is_padding && stepped_frames_ % kNativeUnitFrames == 0) {
     pending_units_.push_back(static_cast<double>(kNativeUnitMs));
+  } else {
   }
 }
 
@@ -298,6 +316,7 @@ void HaruRealtimeSession::EmitFrame(const Frame &frame) {
                  {"object", "realtime.response"},
                  {"status", "in_progress"},
                  {"output", nlohmann::json::array()}}}});
+  } else {
   }
   const nlohmann::json position = {
       {"response_id", "resp_" + std::to_string(response_index_)},
@@ -313,9 +332,11 @@ void HaruRealtimeSession::EmitFrame(const Frame &frame) {
     nlohmann::json text_event = position;
     text_event["delta"] = frame.text;
     SendEvent("response.output_audio_transcript.delta", text_event);
+  } else {
   }
   if (frame.done) {
     FinishResponse("incomplete", "max_output_tokens");
+  } else {
   }
 }
 
@@ -323,6 +344,7 @@ void HaruRealtimeSession::FinishResponse(const std::string &status,
                                          const std::string &reason) {
   if (!response_open_) {
     return;
+  } else {
   }
   response_open_ = false;
   const std::string response_id = "resp_" + std::to_string(response_index_);
@@ -362,6 +384,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
       SendError("invalid_request_error", "invalid_state",
                 "session.update is accepted once per session");
       return true;
+    } else {
     }
     std::string system_prompt = system_prompt_;
     std::vector<float> reference = reference_;
@@ -381,6 +404,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
       if (!requested_format.is_null() && requested_format != input_format) {
         throw std::invalid_argument("this server takes audio/pcm at " +
                                     std::to_string(input_sample_rate_) + " Hz");
+      } else {
       }
       error_code = "invalid_reference_audio";
       if (sglang.contains("reference_audio")) {
@@ -391,10 +415,12 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
             !wav_bytes.has_value()) {
           throw std::invalid_argument(
               "reference_audio must be base64 audio/wav");
+        } else {
         }
         reference =
             PrepareReference(std::string(wav_bytes->begin(), wav_bytes->end()),
                              model_sample_rate_);
+      } else {
       }
       error_code = "invalid_sampling";
       config.speak_first = sglang.value("speak_first", config.speak_first);
@@ -431,32 +457,38 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
                                   {"capabilities", capabilities}});
     started_ = true;
     return true;
+  } else {
   }
   if (type == "input_audio_buffer.append") {
     if (!started_) {
       SendError("invalid_request_error", "invalid_state",
                 "session.update must precede input_audio_buffer.append");
       return true;
+    } else {
     }
     if (input_ended_) {
       SendError("invalid_request_error", "invalid_state",
                 "input_audio_buffer.append after sglang.input_audio.end");
       return true;
+    } else {
     }
     if (finished_) {
       SendError("invalid_request_error", "invalid_state",
                 "the session reached its frame limit");
       return true;
+    } else {
     }
     const std::optional<std::vector<float>> samples =
         AppendedSamples(message.value("audio", nlohmann::json()));
     if (!samples.has_value()) {
       return true;
+    } else {
     }
     accepted_input_samples_ += static_cast<int64_t>(samples->size());
     nlohmann::json sequence = nullptr;
     if (message.contains("sglang") && message["sglang"].contains("seq")) {
       sequence = message["sglang"]["seq"];
+    } else {
     }
     SendEvent("sglang.input_audio.accepted",
               {{"seq", sequence},
@@ -467,6 +499,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
       if (first_frame_.has_value()) {
         frames.push_back(*first_frame_);
         first_frame_.reset();
+      } else {
       }
       const std::vector<float> resampled = resampler_.Process(*samples);
       pending_.insert(pending_.end(), resampled.begin(), resampled.end());
@@ -483,6 +516,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
     }
     EmitPendingUnits();
     return true;
+  } else {
   }
   if (type == "sglang.input_audio.end") {
     if (!input_ended_) {
@@ -496,6 +530,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
         if (first_frame_.has_value()) {
           frames.push_back(*first_frame_);
           first_frame_.reset();
+        } else {
         }
         const std::vector<float> tail = resampler_.Flush();
         pending_.insert(pending_.end(), tail.begin(), tail.end());
@@ -522,6 +557,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
         const double partial_ms = AcceptedEndMs() - completed_ms;
         if (!finished_ && partial_ms > 0.0) {
           pending_units_.push_back(partial_ms);
+        } else {
         }
       });
       for (const Frame &frame : frames) {
@@ -538,20 +574,25 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
                  {"discarded_ms", discarded_ms},
                  {"padding_ms", PaddingMs()},
                  {"client_event_id", client_event_id}});
+    } else {
     }
     return true;
+  } else {
   }
   if (type == "response.cancel") {
     if (response_open_) {
       FinishResponse("cancelled", "cancelled");
+    } else {
     }
     return true;
+  } else {
   }
   if (type == "session.close") {
     FinishResponse("cancelled", "client_closed");
     SendEvent("session.closed", {{"reason", "client_closed"},
                                  {"client_event_id", client_event_id}});
     return false;
+  } else {
   }
   SendError("invalid_request_error", "unsupported_event",
             "unsupported " + type);

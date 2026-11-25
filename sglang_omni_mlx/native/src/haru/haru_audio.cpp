@@ -22,6 +22,7 @@ std::vector<float> TrimSilence(const std::vector<float> &audio,
   const int count = static_cast<int>(audio.size()) / window;
   if (count == 0) {
     return audio;
+  } else {
   }
   int first = -1;
   int last = -1;
@@ -34,12 +35,15 @@ std::vector<float> TrimSilence(const std::vector<float> &audio,
     if (20.0 * std::log10(rms) > kSilenceDbFs) {
       if (first < 0) {
         first = i;
+      } else {
       }
       last = i;
+    } else {
     }
   }
   if (first < 0) {
     return {};
+  } else {
   }
   const int margin = static_cast<int>(kSilenceMarginSeconds * sample_rate);
   const int start = std::max(0, first * window - margin);
@@ -57,11 +61,13 @@ std::vector<float> PrepareReference(std::string_view wav_bytes, int sample_rate,
   std::vector<float> samples = decoded.samples;
   if (decoded.sample_rate != sample_rate) {
     samples = omni_common::Resample(samples, decoded.sample_rate, sample_rate);
+  } else {
   }
   samples = TrimSilence(samples, sample_rate);
   const int max_samples = max_seconds * sample_rate;
   if (static_cast<int>(samples.size()) > max_samples) {
     samples.erase(samples.begin(), samples.end() - max_samples);
+  } else {
   }
   return samples;
 }
