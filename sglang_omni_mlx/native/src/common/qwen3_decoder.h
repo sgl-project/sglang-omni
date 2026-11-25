@@ -30,6 +30,10 @@ struct Qwen3DecoderConfig {
   bool traditional_rope = false;
   int hidden_size = 0;
   int vocab_size = 0;
+  // When set, each layer's norms output this dtype for the projections, so a
+  // float32 residual stream still multiplies in the weights' dtype (AuK's
+  // conditioner).
+  std::optional<mlx::core::Dtype> projection_dtype = std::nullopt;
 
   static Qwen3DecoderConfig FromJson(const nlohmann::json &text_config);
 };
@@ -116,6 +120,9 @@ public:
 
 private:
   std::string Name(const std::string &suffix) const;
+  // x through the RMS norm at norm_prefix, as the projections take it.
+  mlx::core::array ProjectionInput(const mlx::core::array &x,
+                                   const std::string &norm_prefix) const;
   mlx::core::array Project(const mlx::core::array &x,
                            const std::string &prefix) const;
   // Logits of normalized hidden states x.
