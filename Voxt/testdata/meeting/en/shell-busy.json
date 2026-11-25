@@ -77,6 +77,11 @@
               "title": "Dictionary",
               "badge": "2",
               "selected": false
+            },
+            {
+              "path": "/snippets",
+              "title": "Snippets",
+              "selected": false
             }
           ]
         },

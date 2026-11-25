@@ -1,0 +1,12 @@
+{
+  "name": "snippets-error",
+  "kind": "snippets",
+  "snippets": {
+    "ready": false,
+    "error": "无法读取片段：fixture read failed",
+    "rows": [],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

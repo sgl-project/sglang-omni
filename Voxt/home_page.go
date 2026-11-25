@@ -29,7 +29,10 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 	if state.TryRecording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
-	columnPageHeader(c, i18n.T("Home"), func() {
+	centeredPageHeaderBy(c, pageMaxW, i18n.T("Home"), func() { homeMascot(c, state.Outfit) }, func() {
+		if shareSparkleButton(c.Key("home-share"), i18n.T("Share a card of Voxt and you"), i18n.T("Share"), true) {
+			actions.openShare()
+		}
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			actions.openHomeGuide()
 		}
@@ -43,6 +46,7 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 				tryCard(c)
 			}
 			homeToday(c, state)
+			homeInsightsSection(c, state, actions) // insights_view.go
 			homeActivitySection(c, state, actions)
 			homeRecentList(c, state, actions, local)
 		})

@@ -180,8 +180,9 @@ func buildMeetingDetailViewState(translator *i18n.Translator, input meetingDetai
 		ID: stored.ID, Title: meetingDisplayTitle(translator, stored), Meta: meetingMeta(translator, stored),
 		Loading: input.Loading, Error: input.Error, Correcting: input.Correcting,
 		Answering: input.Answering, CanUseLLM: input.CanUseLLM,
-		ShowMore:       stored.Status == store.MeetingDone || stored.Audio != "",
-		CanReprocess:   stored.Status == store.MeetingDone,
+		// Transcribing again needs the recording, which a finished meeting
+		// keeps only in Recording mode or with Save each recording on.
+		CanReprocess:   stored.Status == store.MeetingDone && stored.Audio != "",
 		CanCorrect:     stored.Status == store.MeetingDone && input.CanUseLLM && !input.Correcting,
 		CanRevealAudio: stored.Audio != "",
 		CanContinue:    stored.Status == store.MeetingInterrupted || stored.Status == store.MeetingFinishing,
@@ -192,6 +193,8 @@ func buildMeetingDetailViewState(translator *i18n.Translator, input meetingDetai
 			Available: input.AudioReady, Playing: input.Playback.Playing, Highlight: input.Playback.Highlight,
 		},
 	}
+	// The menu shows only with something in it.
+	state.ShowMore = state.CanReprocess || state.CanCorrect || state.CanRevealAudio
 	if input.Playback.Position > 0 || input.Playback.Playing {
 		state.Playback.PositionText = meeting.FormatPlaybackTime(input.Playback.Position)
 	}
