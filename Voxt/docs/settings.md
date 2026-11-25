@@ -226,8 +226,9 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
-| `features.transcribe.cleanAfterStop` | bool | `false` | | Clean up while you speak, inverted: `true` sends nothing to the language model until Stop. With it `false`, a dictation costs more requests and input tokens (a block goes again each time it gains a sentence); a language model on this Mac, or a clean-up that sends a picture, waits for Stop all the same |
+| `features.transcribe.cleanAfterStop` | bool | `false` | | Clean up while you speak, inverted: `true` sends nothing to the language model until Stop. With it `false`, a dictation costs more requests and input tokens (a block goes again each time it gains a sentence); a language model on this Mac (unless `liveCleanLocal`), or a clean-up that sends a picture, waits for Stop all the same |
 | `features.transcribe.recleanSentences` | integer | `2` | `0` or more: how many sentences of the text cleaned while you speak go back to the language model with the text left at Stop | none (settings file only) |
+| `features.transcribe.liveCleanLocal` | bool | `false` | | `true`: Clean up while you speak also runs when the language model is served on this Mac (a loopback address); its requests then share the GPU with the speech model while you speak | none (settings file only) |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |

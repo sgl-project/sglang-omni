@@ -161,7 +161,8 @@ func (r *run) endLive() {
 // request would send it again, and the card would show it while the user
 // speaks); or the language model is served on this Mac, where its requests
 // would share the GPU with the speech model while the user speaks and
-// beside the Final after Stop.
+// beside the Final after Stop, unless the user allows it
+// (settings.Transcribe.LiveCleanLocal).
 //
 // Nor where the head start asks the whole text at every pause (headstart.go):
 // it is ahead of the sentences this would clean one by one.
@@ -176,7 +177,7 @@ func newLivePolish(r *run) *livePolish {
 		client == nil || len(r.glossary()) > compose.GlossaryAllUpTo || r.shot != nil || len(r.req.Images) > 0 {
 		return nil
 	}
-	if r.llmOnThisMac(llmInfo.ID) {
+	if !r.settings.Features.Transcribe.LiveCleanLocal && r.llmOnThisMac(llmInfo.ID) {
 		r.logf("info", "no clean-up while recording: the language model %s runs on this Mac", llmInfo.ID)
 		return nil
 	}

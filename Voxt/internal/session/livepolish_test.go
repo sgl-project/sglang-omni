@@ -366,6 +366,27 @@ func TestLivePolishOff(t *testing.T) {
 	}
 }
 
+// TestLivePolishLocalWhenAllowed: with LiveCleanLocal on, a language model
+// served on this Mac cleans up while recording, and Stop asks nothing more.
+func TestLivePolishLocalWhenAllowed(t *testing.T) {
+	model := newLiveLLM()
+	r := newEarlyUnitRun(t, model, nil)
+	r.svc.LLMInfo.ID = "ollama"
+	r.settings.Features.Transcribe.LiveCleanLocal = true
+	r.hearLive("Hello there.")
+	waitLive(t, r, "Hello there.")
+	got, err := liveCleanUp(r, "Hello there.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "[Hello there.]" {
+		t.Errorf("result %q, want the live clean-up's answer", got)
+	}
+	if n := len(model.requests()); n != 1 {
+		t.Errorf("%d requests, want only the one while recording", n)
+	}
+}
+
 // note (luojiaxuan): TestLivePolishThinking: a clean-up asked with thinking off (the text then
 // shorter than ThinkingOffUnder) does not count for a final text long
 // enough for thinking.
