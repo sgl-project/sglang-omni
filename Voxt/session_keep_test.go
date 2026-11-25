@@ -227,3 +227,25 @@ func TestSessionHistoryHints(t *testing.T) {
 		t.Fatal("Privacy names sessions with the switch off")
 	}
 }
+
+// TestDeletedEntryUntitlesSession: a session's automatic title comes
+// from its first instruction, so it goes with that history entry; the
+// name the user gave stays, and the menu calls the session New session.
+func TestDeletedEntryUntitlesSession(t *testing.T) {
+	a := twoSessions(t, t.TempDir())
+	for _, entry := range a.history() {
+		a.deleteHistoryEntry(entry.ID)
+	}
+	a.pump("the title gone", func() bool { return a.slots[0].title == "" })
+	a.pump("the saved title gone", func() bool { return !strings.Contains(savedDoc(t, a), "Docs status") })
+	if p := a.slots[1]; p.name != "My haiku" {
+		t.Fatalf("the user's name: %+v", p)
+	}
+	if !a.answer.open {
+		t.Fatal("the card on screen closed")
+	}
+	labels, _ := menuLabels(a)
+	if got := strings.Join(labels, " | "); got != "Sessions | 1 New session* | 2 My haiku" {
+		t.Fatalf("menu: %q", got)
+	}
+}

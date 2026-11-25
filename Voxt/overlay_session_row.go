@@ -41,7 +41,7 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 	ui.ScrollHorizontal(context.Key("ov-sessions")).Height(sessionChipH).Shrink(0).Margin(top, 0, 0, 0).Label(i18n.T("Sessions")).Children(func() {
 		ui.Row(context).Gap(6).AlignItems(ui.Center).Children(func() {
 			for index, chip := range chips {
-				sessionChip(context.Key(chip.ID), index+1, chip, actions, local)
+				sessionChip(context.Key(chip.ID), index+1, chip, len(chips) > 1, actions, local)
 			}
 			if sessionChipButton(context.Key("ov-session-new"), i18n.T("New session"), icons.Add) {
 				actions.newSession()
@@ -50,9 +50,13 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 	})
 }
 
-func sessionChip(context *ui.Context, number int, chip sessionChipViewState, actions sessionOverlayActions, local *answerCardUI) {
+// sessionChip draws one session; removable is false for the only one.
+func sessionChip(context *ui.Context, number int, chip sessionChipViewState, removable bool, actions sessionOverlayActions, local *answerCardUI) {
+	title := cmpOr(chip.Title, i18n.T("New session"))
 	if chip.Renaming {
-		input := ui.TextInputBase(context.Key("name"), &local.sessionName).Label(i18n.T("Session title")).Placeholder(i18n.T("Session title")).
+		// The field starts empty over the title it replaces, so typing
+		// needs no clearing first; nothing typed keeps the title.
+		input := ui.TextInputBase(context.Key("name"), &local.sessionName).Label(i18n.T("Session title")).Placeholder(title).
 			Width(sessionChipNameW).Height(sessionChipH).Padding(0, 8).Radius(sessionChipH / 2).FontSize(11).
 			TextColor(ui.RGBA(255, 255, 255, 0.94)).Background(ui.RGBA(255, 255, 255, 0.16)).Shrink(0).AutoFocus()
 		if input.Submitted() {
@@ -60,10 +64,7 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, act
 		}
 		return
 	}
-	label := strconv.Itoa(number)
-	if chip.Title != "" {
-		label += " " + chip.Title
-	}
+	label := strconv.Itoa(number) + " " + title
 	tip := i18n.T("Switch to session %d. Double-click to rename.", number)
 	background, line, text := ui.RGBA(255, 255, 255, 0.06), ui.RGBA(255, 255, 255, 0.1), ovText2
 	if chip.Current {
@@ -71,7 +72,11 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, act
 		background, line, text = ui.RGBA(255, 255, 255, 0.2), ui.RGBA(255, 255, 255, 0.28), ui.RGBA(255, 255, 255, 0.94)
 	}
 	ui.Row(context).Height(sessionChipH).Radius(sessionChipH/2).Background(background).Border(1, line).AlignItems(ui.Center).Shrink(0).Children(func() {
-		button := ui.ButtonBase(context.Key("go")).Height(sessionChipH).Padding(0, 4, 0, 9).Center().Label(i18n.T("Session %d", number)).Tooltip(tip).Checked(chip.Current)
+		right := float32(4)
+		if !removable {
+			right = 9
+		}
+		button := ui.ButtonBase(context.Key("go")).Height(sessionChipH).Padding(0, right, 0, 9).Center().Label(i18n.T("Session %d", number)).Tooltip(tip).Checked(chip.Current)
 		if chip.Current {
 			button.ScrollIntoView()
 		}
@@ -80,10 +85,13 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, act
 		})
 		switch {
 		case button.DoubleClicked():
-			local.sessionName = chip.Title
+			local.sessionName = ""
 			actions.renameSession(chip.ID)
 		case button.Clicked() && !chip.Current:
 			actions.switchSession(chip.ID)
+		}
+		if !removable {
+			return
 		}
 		remove := ui.ButtonBase(context.Key("x")).Size(sessionChipH-4, sessionChipH-4).Margin(0, 2, 0, 0).Radius((sessionChipH - 4) / 2).Center().
 			Label(i18n.T("Delete session %d", number)).Tooltip(i18n.T("Delete session %d", number))

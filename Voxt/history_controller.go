@@ -266,6 +266,7 @@ func (a *app) deleteHistoryEntry(id string) {
 				a.histUI.sel = ""
 			}
 			a.toast(i18n.T("Entry deleted"))
+			a.untitleSessions() // session_keep.go: a session titled after it
 			a.historyChanged()
 		})
 	})

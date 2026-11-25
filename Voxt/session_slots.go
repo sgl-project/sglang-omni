@@ -197,7 +197,7 @@ func (a *app) sessionsMenu(act func(func()) func(*mygo.MenuItem, *mygo.Window)) 
 	items := []*mygo.MenuItem{{Label: i18n.T("Sessions"), Disabled: true}}
 	for i, p := range a.sessions() {
 		id := p.id
-		label := strings.TrimSpace(strconv.Itoa(i+1) + " " + cmpOr(p.name, p.title))
+		label := strconv.Itoa(i+1) + " " + cmpOr(cmpOr(p.name, p.title), i18n.T("New session"))
 		items = append(items, &mygo.MenuItem{Label: label, Type: mygo.MenuItemCheckbox, Checked: id == a.slot, Click: act(func() { a.showSession(id) })})
 	}
 	return items

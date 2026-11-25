@@ -96,7 +96,9 @@ func (a *app) nameSession(id int, name string) {
 		if runes := []rune(name); len(runes) > sessionNameMax {
 			name = string(runes[:sessionNameMax])
 		}
-		a.slots[n].name = name
+		if name != "" {
+			a.slots[n].name = name
+		}
 	}
 	a.endRename()
 	a.buildTrayMenu()

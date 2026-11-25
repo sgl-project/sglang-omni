@@ -193,3 +193,46 @@ func (a *app) endSessions() {
 	a.buildTrayMenu()
 	a.overlaySync()
 }
+
+// untitleSessions drops the automatic title of each session whose card
+// is no longer in the history, after an entry was deleted: the title
+// comes from that entry's instruction and is saved. The card on screen
+// stays, as any open card does; a name the user gave stays too.
+// shortcut: the automatic clean-up does not call this, the next start drops those titles (restoreSessions).
+func (a *app) untitleSessions() {
+	if !a.sessionsKept() {
+		return
+	}
+	conversations := map[int]string{}
+	for _, p := range a.sessions() {
+		conversation := p.answer.conv
+		if p.id == a.slot && a.answer.open {
+			conversation = a.answer.conv
+		}
+		if p.title != "" && conversation != "" {
+			conversations[p.id] = conversation
+		}
+	}
+	history := a.lib.store.History()
+	a.async(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var gone []int
+		for id, conversation := range conversations {
+			if entries, err := history.List(ctx, store.HistoryQuery{Conversation: conversation}); err == nil && len(entries) == 0 {
+				gone = append(gone, id)
+			}
+		}
+		a.post(func() {
+			for _, id := range gone {
+				if n := a.slotIndex(id); n >= 0 {
+					a.slots[n].title, a.slots[n].titled = "", ""
+				}
+			}
+			if len(gone) > 0 {
+				a.buildTrayMenu()
+				a.overlaySync()
+			}
+		})
+	})
+}

@@ -116,9 +116,20 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 		}},
 		{name: "session row", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"switchSession", "newSession", "deleteSession"},
 			steps: steps("Session 2", "New session", "Delete session 2"), want: []string{"switchSession 7", "newSession", "deleteSession 7"}},
+		{name: "only session", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
+			host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Current: true}}
+		}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+			// The last session cannot be deleted, so it has no button for it.
+			if labels := tester.AccessLabels(); slices.Contains(labels, "Delete session 1") || !slices.Contains(labels, "Session 1") {
+				t.Fatalf("controls %q", labels)
+			}
+		}},
 		{name: "session rename", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"renameSession", "nameSession"},
 			check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
 				// A double click on the current session, a new title, Return.
+				if _, ok := tester.Find("2 New session"); !ok {
+					t.Fatalf("the untitled session is not named New session (%q)", tester.Texts())
+				}
 				box, ok := tester.Find("1 Goroutines")
 				if !ok {
 					t.Fatalf("no session chip (controls %q)", tester.AccessLabels())
@@ -127,7 +138,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				tester.ClickAt(x, y)
 				tester.ClickAt(x, y)
 				frames(tester)
-				tester.Key(ui.Super, ui.KeyA)
+				// The field starts empty: typing needs no clearing first.
 				tester.Type("Go notes")
 				tester.Key(0, ui.KeyEnter)
 				frames(tester)

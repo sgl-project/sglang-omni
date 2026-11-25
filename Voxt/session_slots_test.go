@@ -373,9 +373,11 @@ func TestSessionTitleAndRename(t *testing.T) {
 	if got := chipLine(a); got != "1 | 2 Haiku draft*" {
 		t.Fatalf("renamed: %q", got)
 	}
-	a.nameSession(1, "")
-	if got := chipLine(a); got != "1 | 2 Autumn rain haiku*" {
-		t.Fatalf("empty name: %q", got)
+	// Nothing typed keeps the name.
+	a.renameSession(1)
+	a.nameSession(1, " ")
+	if got := chipLine(a); got != "1 | 2 Haiku draft*" || a.renaming {
+		t.Fatalf("empty name: %q renaming=%v", got, a.renaming)
 	}
 	// A title that arrives for a deleted session is dropped.
 	a.slots[1].titled = "x"
