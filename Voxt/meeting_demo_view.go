@@ -149,7 +149,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					announcementDialog(c, fixture.state.Announcement, &host.announcementOpen)
 				})
 			case "shell-nav":
-				sidebarFrame(c, fixture.state.Nav, fixture.state.Notices, host, host, &host.navUI, func() {
+				sidebarFrame(c, fixture.state.Nav, fixture.state.Notices, nil, host, host, host, &host.navUI, func() {
 					ui.Column(c).Grow(1).Center().Children(func() { ui.Text(c, fixture.name) })
 				})
 			case "shell-notices":

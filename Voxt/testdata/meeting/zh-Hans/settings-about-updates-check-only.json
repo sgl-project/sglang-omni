@@ -102,7 +102,7 @@
       "auto_install": false,
       "beta": true,
       "check_description": "上次检查：2 小时前。",
-      "automatic_description": "每天一次。有新版本时侧边栏会出现提示卡片。",
+      "automatic_description": "每天一次。有新版本时侧边栏底部会出现更新按钮。",
       "beta_note": "接收 beta 版和正式版，哪个新用哪个。"
     }
   }

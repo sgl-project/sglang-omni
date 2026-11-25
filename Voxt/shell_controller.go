@@ -248,6 +248,7 @@ func (a *app) shellModel(now time.Time) *shellViewState {
 		Still:         a.win == nil || a.prefs.Appearance.ReduceMotion,
 		Toasts:        a.toasts,
 		Nav:           a.navModel(), Notices: a.noticesModel(),
+		Update:  a.sidebarUpdateModel(),
 		Palette: &a.paletteView, Sheet: &a.sheetView,
 		LogsHeight:   a.logsHeight,
 		SettingsOpen: a.settingsOpen,

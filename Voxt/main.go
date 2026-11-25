@@ -132,7 +132,9 @@ func main() {
 	case updates.FeedUpdates:
 		a.upd = pluginUpdates{}
 	case updates.GitHubUpdates:
-		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
+		r := newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
+		r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+		a.upd = r
 	}
 	a.bundleStale = h.stale
 	a.connectUpdates()                    // updates.go

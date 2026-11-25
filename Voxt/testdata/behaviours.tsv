@@ -87,3 +87,4 @@ Hat studio: draw, erase, undo, the wardrobe, put on	L	TestShareStudioDrawsUndoes
 Home Insights	L	TestInsightsNumbers	none
 The insights cards to share	L	TestInsightsFaces	How the cards look and move is checked by hand only
 Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none
+Sidebar update control (bar and icon-rail button) and menu bar tray update action	L	TestSidebarUpdateControlAndTray	none

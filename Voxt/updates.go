@@ -11,9 +11,10 @@ package main
 //
 // The updater replaces Voxt.app while the old version runs. Until it
 // restarts, the helper on disk is the new version's: the supervisor does
-// not start it (helper.FailUpdated), and a card asks to restart VoxtNew
-// (appUpdated), which a timer, a check and the helper's failure look for
-// (checkBundle, appbundle.Updated).
+// not start it (helper.FailUpdated), and appUpdated marks the running
+// copy as updated so the sidebar footer control, the tray menu,
+// Settings → About and Home offer to restart (checkBundle,
+// appbundle.Updated).
 //
 // Beta updates (Settings → About): betas are in the feed's beta channel
 // (https://actnow.dev/updates/voxtnew/beta, whose manifest is the newer
@@ -29,7 +30,6 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/updater"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -60,18 +60,24 @@ type updateService interface {
 	SetPrereleases(on bool)
 	// CheckNow checks as the user asked: the update window shows at once.
 	CheckNow()
-	// OnChange calls fn on the main thread after the preferences or the
-	// time of the last check changed.
+	// CheckBackground checks in the background without opening a window
+	// unless an update needs the user's choice.
+	CheckBackground()
+	// OnChange calls fn on the main thread after the preferences, the time
+	// of the last check, or the available/installed version changed.
 	OnChange(fn func()) (off func())
 }
 
-// updatePrefs is a snapshot of the updater for Settings → About.
+// updatePrefs is a snapshot of the updater for Settings → About and the
+// shell's update pill and tray menu.
 type updatePrefs struct {
-	Enabled     bool // this build can update itself
-	CheckOnly   bool // it only checks GitHub's releases (updates_github.go)
-	AutoCheck   bool // checks once a day in the background
-	AutoInstall bool // installs what a background check finds without asking
-	LastCheck   time.Time
+	Enabled          bool // this build can update itself
+	CheckOnly        bool // it only checks GitHub's releases (updates_github.go)
+	AutoCheck        bool // checks once a day in the background
+	AutoInstall      bool // installs what a background check finds without asking
+	LastCheck        time.Time
+	AvailableVersion string // latest available update not skipped or installed
+	InstalledVersion string // update installed while running, waiting for restart
 }
 
 // pluginUpdates is the updater plugin (mygo.Use(native.New(...))).
@@ -81,12 +87,15 @@ func (pluginUpdates) Prefs() updatePrefs {
 	return updatePrefs{
 		Enabled: mygo.Updater.Enabled(), AutoCheck: updater.AutomaticChecks(),
 		AutoInstall: updater.AutomaticDownloads(), LastCheck: updater.LastCheck(),
+		AvailableVersion: updater.AvailableVersion(),
+		InstalledVersion: updater.InstalledVersion(),
 	}
 }
 func (pluginUpdates) SetAutomaticChecks(on bool)      { updater.SetAutomaticChecks(on) }
 func (pluginUpdates) SetAutomaticDownloads(on bool)   { updater.SetAutomaticDownloads(on) }
 func (pluginUpdates) SetPrereleases(on bool)          { mygo.Updater.SetPrereleases(on) }
 func (pluginUpdates) CheckNow()                       { updater.CheckForUpdates() }
+func (pluginUpdates) CheckBackground()                { updater.CheckBackground() }
 func (pluginUpdates) OnChange(fn func()) (off func()) { return updater.OnChange(fn) }
 
 // updateState is the updater as the UI sees it.
@@ -141,8 +150,27 @@ func (a *app) loadUpdates() {
 	upd := a.upd
 	a.async(func() {
 		p := upd.Prefs()
-		a.post(func() { a.updPrefs, a.updKnown, a.updLoading = p, true, false })
+		a.post(func() {
+			prevAvail := a.updPrefs.AvailableVersion
+			a.updPrefs, a.updKnown, a.updLoading = p, true, false
+			if p.InstalledVersion != "" && !a.bundleUpdated {
+				a.appUpdated()
+			} else if p.AvailableVersion != prevAvail {
+				a.buildTrayMenu()
+			}
+		})
 	})
+}
+
+func (a *app) availableUpdateVersion() string {
+	if a.upd == nil || a.bundleUpdated {
+		return ""
+	}
+	return a.updPrefs.AvailableVersion
+}
+
+func (a *app) sidebarUpdateModel() *sidebarUpdateViewState {
+	return buildSidebarUpdateViewState(i18n.CurrentTranslator(), a.bundleUpdated, a.updPrefs.InstalledVersion, a.availableUpdateVersion())
 }
 
 func (a *app) updatesSettingsModel(now time.Time) updatesViewState {
@@ -196,10 +224,15 @@ func (a *app) applyBeta() {
 	}
 }
 
-// setBeta is the user's choice of Beta updates, which lasts.
+// setBeta is the user's choice of Beta updates, which lasts. Turning it on
+// kicks off a background check so newer betas show right away.
 func (a *app) setBeta(on bool) {
 	a.updateSettings(func(s *settings.Settings) { s.Updates.Beta = &on })
 	a.applyBeta()
+	if on && a.upd != nil {
+		upd := a.upd
+		a.async(upd.CheckBackground)
+	}
 }
 
 func (a *app) setAutoInstall(on bool) {
@@ -240,12 +273,12 @@ func (a *app) checkBundle() {
 	})
 }
 
-// appUpdated shows that an update is installed and VoxtNew is to
-// restart: a card (with Restart VoxtNew), Settings → About and Home.
+// appUpdated marks the running copy as updated on disk so the sidebar
+// footer control, the tray menu, Settings → About and Home offer to
+// restart.
 func (a *app) appUpdated() {
 	a.bundleUpdated = true
-	a.setProblem(problemUpdate, "installed", &core.Notification{Severity: core.SeverityWarning,
-		Title: i18n.T("Update installed"), Body: i18n.T("Restart Voxt to finish updating."), Link: linkRelaunch})
+	a.buildTrayMenu()
 }
 
 // relaunch restarts VoxtNew into the version on disk: the quit stops the
