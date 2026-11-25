@@ -34,6 +34,10 @@ from sglang_omni.models.nemotron3_5_asr.request_builders import (
     Nemotron3_5ASRRequest,
     build_nemotron3_5_asr_result,
 )
+from sglang_omni.models.nemotron3_5_asr.rnnt_greedy import (
+    BATCH_BUCKETS,
+    GreedyRNNTDecoder,
+)
 from sglang_omni.models.nemotron3_5_asr.text import (
     clean_nemotron_text,
     resolve_nemotron_locale,
@@ -139,6 +143,16 @@ class Nemotron3_5ASRModelRunner:
             self.model
         )
         self.encoder_state_pool: NemotronEncoderStatePool | None = None
+        self.greedy_decoder: GreedyRNNTDecoder | None = (
+            GreedyRNNTDecoder(
+                self.model,
+                use_cuda_graphs=self.enable_encoder_cuda_graph,
+            )
+            if self.device.type == "cuda"
+            and isinstance(getattr(self.model, "decoder", None), torch.nn.Module)
+            and isinstance(getattr(self.model, "joint", None), torch.nn.Module)
+            else None
+        )
 
     def configure_encoder_state_pool(self, capacity_slots: int) -> None:
         assert self.encoder_state_pool is None
@@ -155,6 +169,17 @@ class Nemotron3_5ASRModelRunner:
                 num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
                 max_batch_size=self.encoder_graph_max_batch_size,
             )
+            if self.greedy_decoder is not None:
+                max_bs = min(self.encoder_graph_max_batch_size, capacity_slots)
+                batch_buckets = tuple(b for b in BATCH_BUCKETS if b <= max_bs) or (1,)
+                self.greedy_decoder.capture_common_graphs(
+                    self.device,
+                    self.dtype,
+                    batch_buckets=batch_buckets,
+                    frame_buckets=(8, 16),
+                )
+            else:
+                pass
         else:
             pass
 
@@ -261,7 +286,17 @@ class Nemotron3_5ASRModelRunner:
                 num_lookahead_tokens=self.processor.default_num_lookahead_tokens,
                 graph_runner=self.encoder_graph_runner,
             )
-            decode_streaming_batch(self.model, states, encoded_frames, token_limits)
+            greedy_decoder = getattr(self, "greedy_decoder", None)
+            frame_count = int(encoded_frames.shape[1])
+            if greedy_decoder is not None and all(
+                greedy_decoder.can_decode(state, frame_count, limit)
+                for state, limit in zip(states, token_limits, strict=True)
+            ):
+                greedy_decoder.decode(
+                    states, encoded_frames, [frame_count] * len(states)
+                )
+            else:
+                decode_streaming_batch(self.model, states, encoded_frames, token_limits)
             if supports_device_streams(self.device):
                 self.device_module.synchronize(self.device)
             else:
@@ -378,6 +413,12 @@ class Nemotron3_5ASRModelRunner:
         return [ordered_results[index] for index in range(len(requests))]
 
     def close(self) -> None:
+        greedy_decoder = getattr(self, "greedy_decoder", None)
+        if greedy_decoder is not None:
+            greedy_decoder.close()
+            self.greedy_decoder = None
+        else:
+            pass
         if self.encoder_graph_runner is not None:
             self.encoder_graph_runner.close()
             self.encoder_graph_runner = None
