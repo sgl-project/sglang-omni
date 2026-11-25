@@ -104,7 +104,7 @@ type Runtime struct {
 	cfg    Config
 	events *resident.Queue // Config.OnModel's
 	idle   atomic.Int64    // the idle timeout (Config.IdleTimeout, SetIdleTimeout)
-	// afterFunc runs the idle timers (time.AfterFunc; tests move a
+	// afterFunc runs the idle and preview-drain timers (time.AfterFunc; tests move a
 	// clock of their own) and returns their Stop.
 	afterFunc func(time.Duration, func()) func()
 

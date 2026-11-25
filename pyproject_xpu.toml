@@ -57,7 +57,7 @@ dependencies = [
     "openai==2.6.1",
     "openai-harmony==0.0.4",
     # /v1/realtime — server-side VAD (onnxruntime accepts any protobuf: no conflict)
-    "silero-vad>=5.1",
+    "silero-vad>=5.1,<6.3",  # note (0xtoward): silero-vad 6.3 tightened speech probabilities for the same threshold; cap until VAD thresholds and fixtures are recalibrated.
     "onnxruntime>=1.17",
 
     # --- Multimodal preprocessing (needed by Qwen3-Omni/ASR/TTS) ------------

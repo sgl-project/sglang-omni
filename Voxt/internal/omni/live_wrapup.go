@@ -57,12 +57,15 @@ func (s *live) drainPreview() (drained bool) {
 	s.mu.Lock()
 	close(s.out)
 	s.mu.Unlock()
+	timeout := make(chan struct{})
+	stop := s.a.rt.afterFunc(previewDrain, func() { close(timeout) })
+	defer stop()
 	select {
 	case <-s.writeDone:
 		return true
 	case <-s.ctx.Done():
 		return false
-	case <-time.After(previewDrain):
+	case <-timeout:
 		s.a.rt.logf("warning", "%s: the preview's writer did not drain in %v", s.a.spec.ID, previewDrain)
 		s.conn.CloseNow()
 		return false

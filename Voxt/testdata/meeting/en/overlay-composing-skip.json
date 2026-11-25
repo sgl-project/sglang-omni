@@ -32,6 +32,7 @@
         0,
         0
       ],
+      "live_preview": true,
       "heard": false,
       "starting": false,
       "waiting": "",
