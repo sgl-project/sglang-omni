@@ -38,6 +38,9 @@ LEGACY_BARGE_IN_CUT = (
     "input_audio_buffer.speech_started when turn_detection.interrupt_response is not "
     "false"
 )
+# note (luojiaxuan): A turn-based server sends no output_audio_buffer.cleared; it
+# drops the undelivered audio of the reply it cancels, and the cancelled
+# response.done is the first event that shows it.
 CANCELLED_RESPONSE_CUT = (
     "playout cursor cut at the client receipt of a response.done with status "
     "cancelled"
