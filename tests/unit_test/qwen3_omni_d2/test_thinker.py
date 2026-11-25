@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from sglang_omni.models.qwen3_omni_d2.session import (
+from sglang_omni.models.qwen3_omni_d2.components.thinker import (
     TurnState,
     advance_turn,
     allowed_tokens,
@@ -30,14 +30,15 @@ def test_a_reply_opens_speaks_finishes_its_words_and_is_interrupted() -> None:
     for token_id in (PAD, RESPONSE, WORD, PAD, PAD, INTERRUPT):
         allowed = allowed_tokens(state, previous_token_id, model)
         assert allowed[token_id] and allowed[INTERRUPT]
-        state, reads_text, emits_audio = advance_turn(state, token_id, model)
+        transition = advance_turn(state, token_id, model)
+        state = transition.after
         observed.append(
             (
                 bool(allowed[WORD]),
                 bool(allowed[PAD]),
                 bool(allowed[RESPONSE]),
-                reads_text,
-                emits_audio,
+                transition.reads_text,
+                transition.emits_audio,
             )
         )
         previous_token_id = token_id

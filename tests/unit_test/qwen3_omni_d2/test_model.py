@@ -5,7 +5,7 @@ import pytest
 import torch
 from torch import nn
 
-from sglang_omni.models.qwen3_omni_d2.release import (
+from sglang_omni.models.qwen3_omni_d2.components.model import (
     DUPLEX_ROW_NAMES,
     merge_release_tensors,
     normalize_release_names,

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Render D2 codec frames to 80 ms of playback and the 16 kHz self feedback the model hears next."""
+"""Qwen3-Omni D2 Code2Wav: codec frames to 80 ms of playback and the 16 kHz self feedback heard next."""
 
 import math
 
@@ -8,8 +8,8 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeCode2Wav,
 )
 
-from sglang_omni.models.qwen3_omni_d2.graphs import (
-    CapturedDecoder,
+from sglang_omni.models.qwen3_omni_d2.components.decoder_graph import (
+    DecoderGraph,
     reset_cache,
     static_cache,
 )
@@ -27,7 +27,7 @@ DEZIPPER_MINIMUM_JUMP = 0.03
 PCM16_FULL_SCALE = 32767.0
 
 
-class CapturedConvolution:
+class Code2WavConvolutionGraph:
     """The Code2Wav upsampling and decoder convolutions for one fixed window of transformer frames."""
 
     def __init__(self, code2wav: Qwen3OmniMoeCode2Wav, window_frames: int) -> None:
@@ -63,19 +63,19 @@ class CapturedConvolution:
         return self.waveform
 
 
-class Code2WavRenderer:
+class Qwen3OmniD2Code2Wav:
     """Decode one 16-codebook frame at a time from a KV-cached transformer and a bounded window."""
 
     def __init__(self, code2wav: Qwen3OmniMoeCode2Wav, capacity_frames: int) -> None:
         self.code2wav = code2wav
-        self.transformer = CapturedDecoder(
+        self.transformer = DecoderGraph(
             code2wav.pre_transformer,
             static_cache(code2wav.pre_transformer, capacity_frames),
             (1, 1),
             capture_cursor=0,
         )
         self.convolutions = {
-            frames: CapturedConvolution(code2wav, frames)
+            frames: Code2WavConvolutionGraph(code2wav, frames)
             for frames in range(1, LEFT_CONTEXT_FRAMES + 2)
         }
         self.reset()
@@ -108,7 +108,7 @@ class Code2WavRenderer:
             return waveform[-OUTPUT_FRAME_SAMPLES:]
 
 
-class PlaybackStream:
+class Qwen3OmniD2Playback:
     """Put Code2Wav samples on the 80 ms clock, silence inactive frames and derive the self feedback."""
 
     def __init__(self) -> None:

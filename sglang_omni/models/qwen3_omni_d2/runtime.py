@@ -1,19 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The resident D2 model and its captured graphs, serving one conversation at a time."""
+"""The resident Qwen3-Omni D2 model and its captured graphs, serving one conversation at a time."""
 
 import logging
 
 import torch
 
 from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.models.qwen3_omni_d2.components.mandarin import (
+    MANDARIN_PROMPT,
+    MandarinOpening,
+)
+from sglang_omni.models.qwen3_omni_d2.components.model import (
+    load_release_model,
+    resolve_release,
+)
+from sglang_omni.models.qwen3_omni_d2.components.thinker import THINKER_TOKENS_PER_FRAME
 from sglang_omni.models.qwen3_omni_d2.config import (
     INPUT_SAMPLE_RATE_HZ,
     NATIVE_FRAME_MS,
-    D2Language,
+    Qwen3OmniD2Language,
 )
-from sglang_omni.models.qwen3_omni_d2.mandarin import MANDARIN_PROMPT, MandarinOpening
-from sglang_omni.models.qwen3_omni_d2.release import load_d2_model, resolve_release
-from sglang_omni.models.qwen3_omni_d2.session import D2Frame, D2Session
+from sglang_omni.models.qwen3_omni_d2.session import (
+    Qwen3OmniD2Frame,
+    Qwen3OmniD2Session,
+)
 from sglang_omni.proto.streams import PCM16_BYTES_PER_SAMPLE
 from sglang_omni.utils.device import device_guard
 
@@ -23,11 +33,9 @@ CONVERSATION_PROMPT = (
     "You are a helpful spoken conversational assistant. "
     "Respond naturally when the user finishes speaking."
 )
-# Environment audio, delayed self audio and text each take one Thinker token per frame.
-THINKER_TOKENS_PER_FRAME = 3
 
 
-class D2Runtime:
+class Qwen3OmniD2Runtime:
     """Load the release once; each conversation reuses the same fixed caches and graphs."""
 
     def __init__(
@@ -36,11 +44,11 @@ class D2Runtime:
         device: str,
         kv_budget: int,
         seed: int,
-        language: D2Language,
+        language: Qwen3OmniD2Language,
     ) -> None:
         self.device = torch.device(device)
         with torch.no_grad(), device_guard(self.device):
-            model = load_d2_model(resolve_release(model_path), self.device)
+            model = load_release_model(resolve_release(model_path), self.device)
             prompt = MANDARIN_PROMPT if language == "zh" else CONVERSATION_PROMPT
             prompt_token_ids = model.tokenizer.encode(
                 f"<|im_start|>system\n{prompt}<|im_end|>\n", add_special_tokens=False
@@ -66,7 +74,7 @@ class D2Runtime:
                 )
             else:
                 opening = None
-            self.session = D2Session(
+            self.session = Qwen3OmniD2Session(
                 model, capacity_frames, prompt_token_ids, seed, opening
             )
         self.interval_frames = model.interval_frames
@@ -82,7 +90,7 @@ class D2Runtime:
         use of every length is several times slower than later ones.
         """
         startup_intervals = (
-            self.session.streams[0].past_token_limit // self.interval_frames + 2
+            self.session.audio_encoders[0].past_token_limit // self.interval_frames + 2
         )
         silence = bytes(
             self.interval_frames
@@ -99,7 +107,7 @@ class D2Runtime:
         with torch.no_grad(), device_guard(self.device):
             self.session.reset()
 
-    def step(self, pcm16: bytes) -> list[D2Frame]:
+    def step(self, pcm16: bytes) -> list[Qwen3OmniD2Frame]:
         """Advance one interval; the fixed Thinker cache bounds the conversation length."""
         if self.session.frames + self.interval_frames > self.max_frames:
             raise ContextExhaustedError(

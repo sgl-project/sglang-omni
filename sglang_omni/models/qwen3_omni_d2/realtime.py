@@ -10,7 +10,7 @@ from sglang_omni.models.qwen3_omni_d2.config import (
     OUTPUT_SAMPLE_RATE_HZ,
     Qwen3OmniD2PipelineConfig,
 )
-from sglang_omni.models.qwen3_omni_d2.session import D2Frame
+from sglang_omni.models.qwen3_omni_d2.session import Qwen3OmniD2Frame
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import OutputChunk
 from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
@@ -32,7 +32,7 @@ from sglang_omni.serve.realtime.types import Capabilities
 from sglang_omni.utils.hf import qwen_d2_interval_ms
 
 
-class D2OutputConverter:
+class Qwen3OmniD2OutputConverter:
     def __init__(self) -> None:
         self.response_id: str | None = None
         self.transcript = ""
@@ -64,7 +64,7 @@ class D2OutputConverter:
         if output.payload is None:
             assert output.eos
         else:
-            frame = D2Frame.model_validate(output.payload)
+            frame = Qwen3OmniD2Frame.model_validate(output.payload)
             if frame.is_interruption:
                 yield from self.finish_response("cancelled", "interrupted")
             else:
@@ -111,7 +111,7 @@ def create_realtime_deployment(
             adapter_factory=lambda: CoordinatorAdapter(
                 client,
                 request_builder=lambda session: OmniRequest(inputs=None),
-                output_converter=D2OutputConverter(),
+                output_converter=Qwen3OmniD2OutputConverter(),
                 atomic_consumption=True,
             ),
             limits=runtime_limits_for_pipeline(pipeline_config),

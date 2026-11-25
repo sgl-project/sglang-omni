@@ -16,12 +16,12 @@ from sglang_omni.models.qwen3_omni_d2.config import (
     Qwen3OmniD2PipelineConfig,
 )
 from sglang_omni.models.qwen3_omni_d2.realtime import (
-    D2OutputConverter,
+    Qwen3OmniD2OutputConverter,
     create_realtime_deployment,
 )
-from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
-from sglang_omni.models.qwen3_omni_d2.session import D2Frame
-from sglang_omni.models.qwen3_omni_d2.stages import D2SessionHooks
+from sglang_omni.models.qwen3_omni_d2.runtime import Qwen3OmniD2Runtime
+from sglang_omni.models.qwen3_omni_d2.session import Qwen3OmniD2Frame
+from sglang_omni.models.qwen3_omni_d2.stages import Qwen3OmniD2SessionHooks
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
     SESSION_METADATA_KEY,
@@ -42,9 +42,9 @@ from sglang_omni.serve.realtime.projection import project_output
 from sglang_omni.serve.realtime.types import RuntimeLimits
 
 
-def duplex_stage(runtime: D2Runtime, interval_ms: int) -> SessionScheduler:
+def duplex_stage(runtime: Qwen3OmniD2Runtime, interval_ms: int) -> SessionScheduler:
     return SessionScheduler(
-        D2SessionHooks(runtime, interval_ms),
+        Qwen3OmniD2SessionHooks(runtime, interval_ms),
         max_open_sessions=MAX_SESSIONS,
         max_concurrency=1,
     )
@@ -74,8 +74,10 @@ def submit(
     return chunks
 
 
-def playback(sequence: int, text: str, *, interrupted: bool = False) -> D2Frame:
-    return D2Frame(
+def playback(
+    sequence: int, text: str, *, interrupted: bool = False
+) -> Qwen3OmniD2Frame:
+    return Qwen3OmniD2Frame(
         pcm16=bytes([sequence, 255]) * 1920,
         text_delta=text,
         sequence=sequence,
@@ -84,7 +86,7 @@ def playback(sequence: int, text: str, *, interrupted: bool = False) -> D2Frame:
 
 
 def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) -> None:
-    runtime = Mock(spec=D2Runtime)
+    runtime = Mock(spec=Qwen3OmniD2Runtime)
     frames = [
         playback(0, "old"),
         playback(1, "", interrupted=True),
@@ -105,7 +107,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
         (160, 80, False),
         (240, 80, True),
     ]
-    convert = D2OutputConverter()
+    convert = Qwen3OmniD2OutputConverter()
     outbox = OutputBuffer(RuntimeLimits())
     for frame in emitted:
         for event in convert(frame):
@@ -157,7 +159,7 @@ def test_interrupt_inside_one_macro_and_end_on_its_last_frame(tmp_path: Path) ->
 
 
 def test_failed_unit_releases_capacity_for_a_fresh_conversation(tmp_path: Path) -> None:
-    runtime = Mock(spec=D2Runtime)
+    runtime = Mock(spec=Qwen3OmniD2Runtime)
     stage = duplex_stage(runtime, interval_ms=80)
     (tmp_path / "d2.json").write_text(
         '{"format":"d2.release.v1","family":"qwen","latency_ms":80}'

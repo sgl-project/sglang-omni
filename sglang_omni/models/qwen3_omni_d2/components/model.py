@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Load a Qwen3-Omni D2 release as BF16 modules with every released adapter merged."""
+"""Qwen3-Omni D2 release loading: BF16 Qwen3-Omni modules with every released adapter merged."""
 
 import json
 import logging
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
 from safetensors.torch import load_file
 from torch import nn
 from transformers import (
@@ -49,13 +48,13 @@ CHELSIE_SPEAKER = "chelsie"
 
 
 @dataclass(frozen=True, kw_only=True)
-class D2Release:
+class Qwen3OmniD2Release:
     directory: Path
     base_directory: Path
     interval_frames: int
 
 
-def resolve_release(model_path: str) -> D2Release:
+def resolve_release(model_path: str) -> Qwen3OmniD2Release:
     """Find the D2 release files and the Qwen3-Omni revision its manifest pins."""
     directory = Path(resolve_checkpoint(model_path, allow_patterns=RELEASE_FILES))
     interval_ms = qwen_d2_interval_ms(str(directory))
@@ -66,7 +65,7 @@ def resolve_release(model_path: str) -> D2Release:
     base_directory = resolve_checkpoint(
         f"{base_model['repo_id']}@{base_model['revision']}"
     )
-    return D2Release(
+    return Qwen3OmniD2Release(
         directory=directory,
         base_directory=Path(base_directory),
         interval_frames=interval_ms // NATIVE_FRAME_MS,
@@ -143,7 +142,7 @@ def merge_release_tensors(
                 pass
 
 
-class D2Model:
+class Qwen3OmniD2Model:
     """The released modules on one device and the rows the Thinker keeps beside its vocabulary."""
 
     def __init__(
@@ -205,8 +204,7 @@ class D2Model:
         control_ids = [self.response_token_id, self.interrupt_token_id]
         embedding = self.thinker.embed_tokens.weight
         official_input_rows = embedding[control_ids].clone()
-        # note (cuzimi): Folding the trained rows into the table keeps every lookup equal to the
-        # released embed path: PAD is replaced, RESPONSE/INTERRUPT add a BF16 delta.
+        # note (cuzimi): Folded rows keep every lookup equal to the released embed path: PAD is replaced, RESPONSE/INTERRUPT add a BF16 delta.
         embedding[self.pad_token_id] = rows["text_control_rows.input_rows.weight"][0]
         embedding[control_ids] = official_input_rows + (
             rows["audio_control_rows.input_rows.weight"] - official_input_rows
@@ -219,18 +217,10 @@ class D2Model:
         self.control_token_index = torch.tensor([control_ids], device=self.device)
         self.pad_token_index = torch.tensor([[self.pad_token_id]], device=self.device)
 
-    def text_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Vocabulary logits for [1, hidden] states with the trained PAD and control rows."""
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            logits = self.lm_head(hidden_states)
-            pad_logits = F.linear(hidden_states, self.pad_output_row)
-            control_logits = F.linear(hidden_states, self.control_output_delta)
-            logits = logits.scatter(-1, self.pad_token_index, pad_logits)
-            logits = logits.scatter_add(-1, self.control_token_index, control_logits)
-        return logits.masked_fill(self.invalid_vocabulary_mask, float("-inf"))
 
-
-def load_d2_model(release: D2Release, device: torch.device) -> D2Model:
+def load_release_model(
+    release: Qwen3OmniD2Release, device: torch.device
+) -> Qwen3OmniD2Model:
     logger.info(f"Loading Qwen3-Omni D2 base model from {release.base_directory}")
     qwen = Qwen3OmniMoeForConditionalGeneration.from_pretrained(
         release.base_directory,
@@ -249,7 +239,7 @@ def load_d2_model(release: D2Release, device: torch.device) -> D2Model:
     )
     merge_release_tensors(qwen, qwen_tensors)
     logger.info(f"Merged {len(qwen_tensors)} D2 release tensors")
-    return D2Model(
+    return Qwen3OmniD2Model(
         qwen,
         duplex_rows,
         AutoTokenizer.from_pretrained(release.base_directory),

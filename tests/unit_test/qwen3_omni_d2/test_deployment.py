@@ -15,7 +15,7 @@ from sglang_omni.client.client import Client
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.models.qwen3_omni_d2.config import Qwen3OmniD2PipelineConfig
-from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
+from sglang_omni.models.qwen3_omni_d2.runtime import Qwen3OmniD2Runtime
 from sglang_omni.models.qwen3_omni_d2.stages import create_scheduler
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.utils.imports import import_string
@@ -137,10 +137,10 @@ def test_cached_release_serves_without_repository_metadata_files(
     )
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
     monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
-    runtime = Mock(spec=D2Runtime)
+    runtime = Mock(spec=Qwen3OmniD2Runtime)
     load_runtime = Mock(return_value=runtime)
     monkeypatch.setattr(
-        "sglang_omni.models.qwen3_omni_d2.stages.D2Runtime", load_runtime
+        "sglang_omni.models.qwen3_omni_d2.stages.Qwen3OmniD2Runtime", load_runtime
     )
 
     scheduler = create_scheduler(

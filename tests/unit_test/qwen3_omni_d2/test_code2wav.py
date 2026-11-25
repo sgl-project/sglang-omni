@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""D2 playback stays on the 80 ms clock and its self feedback follows the played waveform."""
+"""Qwen3-Omni D2 Code2Wav decodes incrementally, stays on the 80 ms clock and feeds back what it played."""
 
 import pytest
 import torch
@@ -10,13 +10,13 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeCode2Wav,
 )
 
-from sglang_omni.models.qwen3_omni_d2.waveform import (
+from sglang_omni.models.qwen3_omni_d2.components.code2wav import (
     DEZIPPER_TRANSITION_SAMPLES,
     FIRST_FRAME_DELAY_SAMPLES,
     OUTPUT_FRAME_SAMPLES,
     PCM16_FULL_SCALE,
-    Code2WavRenderer,
-    PlaybackStream,
+    Qwen3OmniD2Code2Wav,
+    Qwen3OmniD2Playback,
 )
 
 
@@ -35,7 +35,7 @@ def test_feedback_resamples_the_continuous_playback_across_frames() -> None:
     raw += [
         0.01 * torch.randn(OUTPUT_FRAME_SAMPLES, generator=generator) for _ in range(3)
     ]
-    stream = PlaybackStream()
+    stream = Qwen3OmniD2Playback()
     outputs = [stream.append(samples, is_active=True) for samples in raw]
     first = pcm16_samples(outputs[0][0])
     assert first.numel() == OUTPUT_FRAME_SAMPLES
@@ -54,7 +54,7 @@ def test_feedback_resamples_the_continuous_playback_across_frames() -> None:
 
 
 def test_an_inactive_frame_feeds_back_silence_and_ramps_from_the_last_sample() -> None:
-    stream = PlaybackStream()
+    stream = Qwen3OmniD2Playback()
     stream.append(
         torch.full((OUTPUT_FRAME_SAMPLES - FIRST_FRAME_DELAY_SAMPLES,), 0.5),
         is_active=True,
@@ -86,7 +86,7 @@ def test_incremental_rendering_matches_one_full_decode() -> None:
     )
     code2wav = Qwen3OmniMoeCode2Wav(config).cuda().bfloat16().eval()
     codes = torch.randint(0, config.codebook_size, (30, config.num_quantizers))
-    renderer = Code2WavRenderer(code2wav, capacity_frames=codes.shape[0])
+    renderer = Qwen3OmniD2Code2Wav(code2wav, capacity_frames=codes.shape[0])
     incremental = torch.cat([renderer.append(frame) for frame in codes])
     with torch.autocast("cuda", dtype=torch.bfloat16):
         full = code2wav(codes.T[None].cuda()).float().cpu().view(-1)

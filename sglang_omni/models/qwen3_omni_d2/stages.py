@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Advance the D2 session by one trained interaction interval per append."""
+"""Advance the Qwen3-Omni D2 session by one trained interaction interval per append."""
 
 from dataclasses import replace
 
+from sglang_omni.models.qwen3_omni_d2.components.model import RELEASE_FILES
 from sglang_omni.models.qwen3_omni_d2.config import (
     INPUT_SAMPLE_RATE_HZ,
     MAX_SESSIONS,
     NATIVE_FRAME_MS,
-    D2Language,
+    Qwen3OmniD2Language,
 )
-from sglang_omni.models.qwen3_omni_d2.release import RELEASE_FILES
-from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
+from sglang_omni.models.qwen3_omni_d2.runtime import Qwen3OmniD2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import AUDIO, PCM16, PCM16_BYTES_PER_SAMPLE
@@ -24,8 +24,8 @@ from sglang_omni.utils.device import resolve_concrete_device
 from sglang_omni.utils.hf import qwen_d2_interval_ms
 
 
-class D2SessionHooks(SessionHooks):
-    def __init__(self, runtime: D2Runtime, interval_ms: int) -> None:
+class Qwen3OmniD2SessionHooks(SessionHooks):
+    def __init__(self, runtime: Qwen3OmniD2Runtime, interval_ms: int) -> None:
         self.runtime = runtime
         self.frames_per_interval = interval_ms // NATIVE_FRAME_MS
         self.input_bytes_per_interval = (
@@ -81,7 +81,7 @@ def create_scheduler(
     *,
     kv_budget: int,
     seed: int,
-    language: D2Language,
+    language: Qwen3OmniD2Language,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> SessionScheduler:
@@ -90,7 +90,7 @@ def create_scheduler(
     if interval_ms is None:
         raise ValueError("Expected a Qwen3-Omni D2 release with a d2.json manifest")
     else:
-        runtime = D2Runtime(
+        runtime = Qwen3OmniD2Runtime(
             model_path=release_directory,
             device=str(resolve_concrete_device(device, gpu_id)),
             kv_budget=kv_budget,
@@ -98,7 +98,7 @@ def create_scheduler(
             language=language,
         )
         return SessionScheduler(
-            D2SessionHooks(runtime, interval_ms),
+            Qwen3OmniD2SessionHooks(runtime, interval_ms),
             max_open_sessions=MAX_SESSIONS,
             max_concurrency=1,
         )

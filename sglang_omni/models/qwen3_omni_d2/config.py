@@ -12,21 +12,21 @@ OUTPUT_SAMPLE_RATE_HZ = 24_000
 NATIVE_FRAME_MS = 80
 MAX_SESSIONS = 1
 
-D2Language = Literal["zh", "auto"]
+Qwen3OmniD2Language = Literal["zh", "auto"]
 
 
-class D2FactoryArgs(FactoryArgs):
+class Qwen3OmniD2FactoryArgs(FactoryArgs):
     kv_budget: int = Field(default=2048, ge=128)
     seed: int = 1337
 
 
-class D2StageConfig(StageConfig):
-    factory: D2FactoryArgs = Field(default_factory=D2FactoryArgs)
+class Qwen3OmniD2StageConfig(StageConfig):
+    factory: Qwen3OmniD2FactoryArgs = Field(default_factory=Qwen3OmniD2FactoryArgs)
 
 
 def duplex_stages() -> list[StageConfig]:
     return [
-        D2StageConfig(
+        Qwen3OmniD2StageConfig(
             name="duplex",
             process="duplex",
             gpu=0,
@@ -43,10 +43,10 @@ class Qwen3OmniD2PipelineConfig(PipelineConfig):
         "sglang_omni.models.qwen3_omni_d2.realtime.create_realtime_deployment"
     )
     stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        "duplex": D2StageConfig
+        "duplex": Qwen3OmniD2StageConfig
     }
     stages: list[StageConfig] = Field(default_factory=duplex_stages)
-    language: D2Language = Field(
+    language: Qwen3OmniD2Language = Field(
         default="zh",
         description="Spoken response language. Use auto for checkpoint defaults.",
     )

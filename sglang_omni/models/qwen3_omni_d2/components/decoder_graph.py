@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Fixed-shape CUDA graphs of the D2 decoders over static KV caches.
+"""Fixed-shape CUDA graphs of the Qwen3-Omni D2 decoders over static KV caches.
 
 Every mask spans the whole cache: written slots and earlier queries attend,
 unwritten slots never do, so one capture serves every cursor.
@@ -34,7 +34,7 @@ def causal_cache_mask(
     return (columns[None, :] <= rows[:, None])[None, None]
 
 
-class CapturedDecoder:
+class DecoderGraph:
     """One decoder forward for a fixed number of query tokens, replayed at any cache cursor."""
 
     def __init__(

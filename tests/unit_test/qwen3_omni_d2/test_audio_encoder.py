@@ -4,7 +4,7 @@
 import torch
 from transformers import WhisperFeatureExtractor
 
-from sglang_omni.models.qwen3_omni_d2.audio_encoder import CausalLogMel
+from sglang_omni.models.qwen3_omni_d2.components.audio_encoder import CausalLogMel
 
 SAMPLE_RATE_HZ = 16_000
 INTERVAL_SAMPLES = 1_280

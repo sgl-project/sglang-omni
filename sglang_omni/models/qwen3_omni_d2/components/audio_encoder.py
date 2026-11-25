@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Causal log-mel and the macro-window Qwen3-Omni audio tower for one D2 waveform stream."""
+"""Qwen3-Omni D2 audio encoder: causal log-mel and the macro-window audio tower for one waveform stream."""
 
 import torch
 import torch.nn.functional as F
@@ -57,7 +57,7 @@ class CausalLogMel:
         return (log_mel + 4.0) / 4.0
 
 
-class CausalAudioStream:
+class Qwen3OmniD2AudioEncoder:
     """Encode each interval from the latest 104 mel frames and at most 104 attention tokens.
 
     History fills with the tower's native attention width; once full, a CUDA

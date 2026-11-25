@@ -10,8 +10,8 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeThinkerTextModel,
 )
 
-from sglang_omni.models.qwen3_omni_d2.graphs import (
-    CapturedDecoder,
+from sglang_omni.models.qwen3_omni_d2.components.decoder_graph import (
+    DecoderGraph,
     causal_cache_mask,
     reset_cache,
     static_cache,
@@ -48,7 +48,7 @@ def test_replays_at_advancing_cursors_match_eager_chunks() -> None:
     )
     decoder = Qwen3OmniMoeThinkerTextModel(config).cuda().bfloat16().eval()
     capacity_tokens = QUERY_TOKENS * CHUNKS + 2
-    captured = CapturedDecoder(
+    captured = DecoderGraph(
         decoder,
         static_cache(decoder, capacity_tokens),
         (4, 1, QUERY_TOKENS),

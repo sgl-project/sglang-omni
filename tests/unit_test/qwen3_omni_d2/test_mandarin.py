@@ -6,7 +6,7 @@ import torch
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
-from sglang_omni.models.qwen3_omni_d2.mandarin import MandarinOpening
+from sglang_omni.models.qwen3_omni_d2.components.mandarin import MandarinOpening
 
 
 @pytest.fixture
