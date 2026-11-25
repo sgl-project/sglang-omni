@@ -1332,7 +1332,10 @@ def test_profile_graph_turns_formats_and_ports():
     )
     assert (text_only.output, text_only.hot_settings) == (None, hot_settings)
     chat = settings.node("llm")
-    assert (chat.consumes, chat.required) == ({MESSAGES, SESSION_CONTROL}, {MESSAGES})
+    assert (chat.consumes, chat.required) == (
+        {MESSAGES, SESSION_CONTROL, SESSION_CONTROL_INTERNAL},
+        {MESSAGES},
+    )
     dialog_formats = {TRANSCRIPT_FORMAT, TEXT_DELTA, SESSION_CONTROL}
     assert settings.node("dialog").required == dialog_formats
 

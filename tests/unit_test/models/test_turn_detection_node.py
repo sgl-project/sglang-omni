@@ -28,7 +28,7 @@ from sglang_omni.config.session_audio import (
     validate_fused_endpoint_graph,
 )
 from sglang_omni.models.qwen3_omni.payload_types import UNIT_FORMAT
-from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks
+from sglang_omni.models.qwen3_omni.session_input import QwenInputHooks, QwenInputState
 from sglang_omni.models.streaming_cascade.base import text_chunk, transcript_chunk
 from sglang_omni.models.streaming_cascade.config import CascadeSessionNodeConfig
 from sglang_omni.models.turn_detection.node import (
@@ -67,6 +67,7 @@ from sglang_omni.proto.streams import (
     control_type,
 )
 from sglang_omni.scheduling.session import (
+    ChunkEmitter,
     SessionContext,
     SessionHooks,
     SessionScheduler,
@@ -741,25 +742,37 @@ def test_manual_mode_preserves_an_open_turn_until_commit_and_reenable_is_causal(
     None
 ):
     node = Node([0.99], eagerness="high")
-    node.frames(0, [True] * 5)
+    first_pcm = pcm_frames([True] * 5)
+    manual_pcm = pcm_samples(False, 20 * 16)
+    node.audio(0, first_pcm)
     node.control(CONFIGURE, turn_detection=None)
-    node.audio(160, pcm_samples(False, 20 * 16), eos=True)
+    node.audio(160, manual_pcm)
     assert node.boundaries() == [(SPEECH_STARTED, 0)]
     assert node.session.is_open
-    eos_markers = [
-        chunk for chunk in node.outputs if chunk.modality == AUDIO and chunk.eos
-    ]
-    assert len(eos_markers) == 1 and eos_markers[0].payload == b""
-    segmenter = UtteranceSegmenter()
-    manual_audio = next(chunk for chunk in node.outputs if chunk.modality == AUDIO)
-    assert [
-        action
-        for chunk in (manual_audio, control_chunk(COMMIT))
-        for action in segmenter.step(chunk)
-    ] == ["open", "finish"]
 
+    # Replay the actual ordered PCM and controls, rather than treating the
+    # segmenter's PCM actions as lifecycle strings or selecting the first span.
+    segmenter = UtteranceSegmenter()
+    actions = [
+        action for chunk in node.outputs for action in segmenter.step(chunk)
+    ]
+    assert [action for action in actions if isinstance(action, str)] == [
+        OPEN_UTTERANCE
+    ]
+    assert b"".join(
+        action.payload for action in actions if isinstance(action, TimedChunk)
+    ) == first_pcm + manual_pcm
+    assert segmenter.is_open
+
+    previous_outputs = len(node.outputs)
     node.control(COMMIT)
     assert not node.session.is_open
+    assert [
+        action
+        for chunk in node.outputs[previous_outputs:]
+        for action in segmenter.step(chunk)
+    ] == [FINISH_UTTERANCE]
+    assert not segmenter.is_open
     commit_outputs = [chunk for chunk in node.outputs if control_type(chunk) == COMMIT]
     assert len(commit_outputs) == 1
     assert commit_outputs[0].format == SESSION_CONTROL_INTERNAL
@@ -785,6 +798,34 @@ def test_manual_mode_preserves_an_open_turn_until_commit_and_reenable_is_causal(
         (SPEECH_STARTED, 1000),
         (SPEECH_STOPPED, 1160),
     ]
+
+
+def test_manual_eos_flushes_pcm_without_an_automatic_speech_stop() -> None:
+    node = Node([0.99], eagerness="high")
+    first_pcm = pcm_frames([True] * 5)
+    manual_pcm = pcm_samples(False, 20 * 16)
+    node.audio(0, first_pcm)
+    node.control(CONFIGURE, turn_detection=None)
+    node.audio(160, manual_pcm, eos=True)
+    assert node.boundaries() == [(SPEECH_STARTED, 0)]
+    eos_markers = [chunk for chunk in node.outputs if chunk.eos]
+    assert len(eos_markers) == 1
+    assert eos_markers[0].modality == AUDIO and eos_markers[0].payload == b""
+
+    segmenter = UtteranceSegmenter()
+    actions = []
+    for chunk in node.outputs:
+        actions.extend(segmenter.step(chunk))
+        if chunk.eos:
+            actions.extend(segmenter.finish())
+    assert [action for action in actions if isinstance(action, str)] == [
+        OPEN_UTTERANCE,
+        FINISH_UTTERANCE,
+    ]
+    assert b"".join(
+        action.payload for action in actions if isinstance(action, TimedChunk)
+    ) == first_pcm + manual_pcm
+    assert segmenter.finish() == []
 
 
 def test_reenabling_detection_while_a_manual_turn_is_open_suppresses_duplicate_start() -> (
@@ -1162,28 +1203,44 @@ class CapturingDialogHooks(QwenInputHooks):
         )
         self.events = events
 
+    def start_next(self, state: QwenInputState) -> None:
+        # Capture the queued utterance before the production dialog joins it
+        # with any earlier input whose reply was interrupted unheard.
+        utterance = (
+            state.waiting[0]
+            if state.answering is None and state.interrupted is None and state.waiting
+            else None
+        )
+        super().start_next(state)
+        if utterance is not None:
+            assert state.answering is not None
+            assert state.answering.turn == utterance.turn
+            self.events.put(("dialog_utterance", "dialog", utterance.pcm))
+
+    def attach_output_stream(
+        self, session_identity: SessionIdentity, emit: ChunkEmitter
+    ) -> None:
+        def capture(chunk: TimedChunk) -> None:
+            if chunk.format == UNIT_FORMAT:
+                self.events.put(
+                    (
+                        "dialog_unit",
+                        "dialog",
+                        chunk.turn,
+                        chunk.payload["pcm"],
+                        chunk.payload["carried_turns"],
+                    )
+                )
+            emit(chunk)
+
+        super().attach_output_stream(session_identity, capture)
+
     def append(
         self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
     ) -> StagePayload:
-        state = self.states[context.session_identity]
-        turn_count = state.turn_count
         payload = super().append(chunk, payload, context)
-        if state.turn_count > turn_count:
-            if state.waiting and state.waiting[-1].turn == state.turn_count:
-                utterance_pcm = state.waiting[-1].pcm
-            elif (
-                state.answering is not None and state.answering.turn == state.turn_count
-            ):
-                utterance_pcm = state.answering.pcm
-            else:
-                raise AssertionError("completed dialog utterance was not retained")
-            self.events.put(("dialog_utterance", "dialog", utterance_pcm))
-        else:
-            pass
         if chunk.eos:
             self.events.put(("dialog_complete", "dialog"))
-        else:
-            pass
         return payload
 
 
@@ -1309,6 +1366,11 @@ async def test_session_graph_delivers_resumed_pcm_to_second_recognizer_and_dialo
         dialog_pcm = [
             event[2] for event in delivered_events if event[0] == "dialog_utterance"
         ]
+        dialog_units = [
+            (event[2], event[3], event[4])
+            for event in delivered_events
+            if event[0] == "dialog_unit"
+        ]
         recognizer_delivery = [
             event
             for event in delivered_events
@@ -1396,6 +1458,13 @@ async def test_session_graph_delivers_resumed_pcm_to_second_recognizer_and_dialo
                 resumed_speech in utterance for utterance in dialog_pcm
             ],
         }
+        # The fake graph has no model reply feedback. The first inference unit
+        # is interrupted before its reply starts; carrying it into the second
+        # unit is intentional and must not be mistaken for segmentation leakage.
+        assert dialog_units == [
+            (1, expected_first_utterance, []),
+            (2, expected_first_utterance + resumed_speech, [1]),
+        ]
         await coordinator.close_session(identity)
 
 
