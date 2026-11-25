@@ -140,7 +140,7 @@ def capture_graph(
             exc_info=True,
         )
         return None
-    logger.info(f"Captured Stable Audio 3 {label} graph")
+    logger.debug(f"Captured Stable Audio 3 {label} graph")
     return graph, output
 
 
@@ -248,7 +248,7 @@ class DiTCudaGraphRunner:
         """Records every bucket a request can reach within the token budget, largest first so smaller graphs reuse the pool; after a failed capture the rest run eager."""
         if self.conditions is None:
             raise ValueError(
-                "bind one batch before capturing, so the condition buffers exist"
+                "load one batch's conditions before capturing, so the buffers exist"
             )
         else:
             pass
@@ -278,12 +278,11 @@ class DiTCudaGraphRunner:
             return None
         else:
             pass
-        # note (ruilin): loaded even when the bucket has no graph, so the startup warmup sizes the buffers capture_buckets records against.
-        self.load_conditions(conditions, batch_size)
         if (batch_bucket, latent_bucket) in self.graphs:
             step_graph = self.graphs[(batch_bucket, latent_bucket)]
         else:
             return None
+        self.load_conditions(conditions, batch_size)
 
         def step(latents: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
             step_graph.latents[:batch_size, :, :latent_length].copy_(latents)

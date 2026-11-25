@@ -11,6 +11,7 @@ from sglang_omni.models.stable_audio3.cuda_graphs import (
     DiTCudaGraphRunner,
     PromptEncoderCudaGraphRunner,
 )
+from sglang_omni.models.stable_audio3.layers import flash_attention_supported
 from sglang_omni.models.stable_audio3.payload_types import StableAudio3State
 from sglang_omni.models.stable_audio3.request_builders import build_state
 from sglang_omni.models.stable_audio3.runtime import (
@@ -33,13 +34,6 @@ WARMUP_REQUESTS = [
     GenerationRequest(prompt="Warm piano chords", duration_seconds=30.0, seed=0),
 ]
 
-if current_platform.is_cuda():
-    from sglang.kernels.ops.attention.flash_attention_v3 import (  # noqa: leading-underscore  # upstream spelling
-        _is_fa3_supported,
-    )
-else:
-    pass
-
 
 def create_preprocessing_executor() -> SimpleScheduler[StagePayload, StagePayload]:
     return SimpleScheduler(lambda payload: store_state(payload, build_state(payload)))
@@ -56,8 +50,8 @@ def create_generation_executor(
     device: str | None = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     resolved_device = resolve_concrete_device(device, gpu_id)
-    if resolved_device.type != "cuda":
-        raise ValueError("Stable Audio 3 serving requires a CUDA device")
+    if resolved_device.type == "cpu":
+        raise ValueError("Stable Audio 3 serving needs an accelerator; it runs in fp16")
     else:
         pass
     # note (ruilin): the checkpoint's own inference runs the DiT and decoder in fp16, with FlashAttention where the GPU has it.
@@ -66,9 +60,7 @@ def create_generation_executor(
         resolved_device,
         torch.float16,
         attention_backend=(
-            "flash"
-            if current_platform.is_cuda() and _is_fa3_supported(resolved_device)
-            else "sdpa"
+            "flash" if flash_attention_supported(resolved_device) else "sdpa"
         ),
     )
     if enable_torch_compile:
@@ -95,9 +87,9 @@ def create_generation_executor(
     if enable_torch_compile or graph_backend is not None:
         warmup_start_seconds = time.perf_counter()
         runtime.generate(WARMUP_REQUESTS)
-        runtime.capture_graphs()
+        graph_count = runtime.capture_graphs()
         logger.info(
-            f"Stable Audio 3 warmed up in {time.perf_counter() - warmup_start_seconds:.1f}s"
+            f"Stable Audio 3 warmed up in {time.perf_counter() - warmup_start_seconds:.1f}s with {graph_count} CUDA graphs"
         )
     else:
         pass

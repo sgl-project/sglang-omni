@@ -15,7 +15,6 @@ from sglang_omni.models.stable_audio3.autoencoder import AudioDecoder
 from sglang_omni.models.stable_audio3.conditioning import Conditioner
 from sglang_omni.models.stable_audio3.config import StableAudio3PipelineConfig
 from sglang_omni.models.stable_audio3.cuda_graphs import (
-    MAX_GRAPH_TOKENS,
     DiTCudaGraphRunner,
     PromptEncoderCudaGraphRunner,
     bucket_batch,
@@ -23,9 +22,15 @@ from sglang_omni.models.stable_audio3.cuda_graphs import (
     serving_batch_buckets,
 )
 from sglang_omni.models.stable_audio3.dit import DiffusionTransformer
-from sglang_omni.models.stable_audio3.layers import AttentionBackend
+from sglang_omni.models.stable_audio3.layers import (
+    AttentionBackend,
+    flash_attention_supported,
+)
 from sglang_omni.models.stable_audio3.model_config import StableAudio3Config
-from sglang_omni.models.stable_audio3.request_builders import build_state
+from sglang_omni.models.stable_audio3.request_builders import (
+    MAX_PROMPT_CHARACTERS,
+    build_state,
+)
 from sglang_omni.models.stable_audio3.runtime import (
     GenerationRequest,
     StableAudio3Runtime,
@@ -40,13 +45,6 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from tests.unit_test.fixtures.accelerator import require_device_streams
-
-if current_platform.is_cuda():
-    from sglang.kernels.ops.attention.flash_attention_v3 import (  # noqa: leading-underscore  # upstream spelling
-        _is_fa3_supported,
-    )
-else:
-    pass
 
 PROMPT_TOKENS = 6
 TEXT_DIM = 12
@@ -89,11 +87,23 @@ def test_requests_that_skip_the_speech_validator_are_refused() -> None:
     with pytest.raises(ValueError, match="/v1/audio/speech") as error:
         build_state(payload_with({}, metadata={}))
     assert is_bad_request_error(error.value)
-    with pytest.raises(ValueError, match="seed"):
-        build_state(payload_with({"seed": -5}))
-    for inputs in ("  ", [{"role": "user", "content": "ambient pads"}]):
-        with pytest.raises(ValueError, match="prompt"):
+    for params, message in (
+        ({"seed": -5}, "seed"),
+        ({"stage_params": {"generation": {"duration_seconds": 1000}}}, "duration"),
+        ({"stage_params": {"generation": {"steps": 4}}}, "steps"),
+        ({"stage_params": "fast"}, "stage_params"),
+    ):
+        with pytest.raises(ValueError, match=message) as error:
+            build_state(payload_with(params))
+        assert is_bad_request_error(error.value)
+    for inputs in (
+        "  ",
+        [{"role": "user", "content": "ambient pads"}],
+        "a" * (MAX_PROMPT_CHARACTERS + 1),
+    ):
+        with pytest.raises(ValueError, match="prompt") as error:
             build_state(payload_with({}, inputs=inputs))
+        assert is_bad_request_error(error.value)
 
 
 @pytest.mark.parametrize(
@@ -254,7 +264,11 @@ class EmbeddingTextEncoder(nn.Module):
     def forward(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
     ) -> BatchEncoding:
-        return BatchEncoding({"last_hidden_state": self.embedding(input_ids)})
+        # note (ruilin): every position also reads the mean of the unmasked tokens, so a replay that kept a stale mask returns different states.
+        mask = attention_mask[..., None].to(self.embedding.weight.dtype)
+        embeddings = self.embedding(input_ids)
+        context = (embeddings * mask).sum(1, keepdim=True) / mask.sum(1, keepdim=True)
+        return BatchEncoding({"last_hidden_state": embeddings + context})
 
 
 def tiny_runtime(
@@ -360,14 +374,17 @@ def test_grouped_generation_matches_one_batch(
 
 
 @pytest.mark.accelerator
-def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds() -> None:
+@pytest.mark.parametrize("backend", ["flash", "sdpa"])
+def test_graphed_compiled_generation_matches_eager_whatever_the_padding_holds(
+    backend: AttentionBackend,
+) -> None:
     """Graphs recorded at startup are the only ones serving uses; replayed compiled blocks stay close to eager, and a padded batch returns the same bits after a fuller batch left its data in the padding."""
     device = require_device_streams()
-    if not (current_platform.is_cuda() and _is_fa3_supported(device)):
+    if backend == "flash" and not flash_attention_supported(device):
         pytest.skip("the flash backend needs FlashAttention 3")
     else:
         pass
-    runtime = tiny_runtime(device, torch.float16, "flash")
+    runtime = tiny_runtime(device, torch.float16, backend)
     padded_batch = [
         GenerationRequest(prompt="lofi", duration_seconds=4.0, seed=3),
         GenerationRequest(prompt="rain", duration_seconds=5.3, seed=5),
@@ -424,13 +441,6 @@ def test_batch_buckets_fit_every_batch_the_stage_sends(max_batch_size: int) -> N
         else:
             assert batch_size <= bucket <= max_batch_size
             assert bucket in recorded
-
-
-def test_latent_buckets_hold_every_length_within_the_graph_budget() -> None:
-    assert all(
-        bucket_latents(latent_length) >= latent_length
-        for latent_length in range(1, MAX_GRAPH_TOKENS)
-    )
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ import math
 from typing import Literal
 
 import torch
+from torch import _check as torch_check  # noqa: leading-underscore  # upstream spelling
 from torch import nn
 from torch.nn import functional as F
 
@@ -14,6 +15,9 @@ from sglang_omni.platforms import current_platform
 
 if current_platform.is_cuda():
     from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+    from sglang.kernels.ops.attention.flash_attention_v3 import (  # noqa: leading-underscore  # upstream spelling
+        _is_fa3_supported,
+    )
     from sglang.srt.utils.custom_op import register_custom_op
 else:
     pass
@@ -29,6 +33,11 @@ TRUNCATED_PI = 3.14159265359
 DIFFERENTIAL_MAPS = 2
 SELF_ATTENTION_PROJECTIONS = 5
 CROSS_ATTENTION_PROJECTIONS = 3
+
+
+def flash_attention_supported(device: torch.device) -> bool:
+    """SGLang's FA3 kernels run on this device; elsewhere attention uses SDPA."""
+    return current_platform.is_cuda() and _is_fa3_supported(device)
 
 
 def expo_fourier_features(values: torch.Tensor, dim: int) -> torch.Tensor:
@@ -150,9 +159,13 @@ def attend(
             -1 if window_tokens is None else window_tokens,
         )
     else:
+        # note (ruilin): compiled blocks give each input its own unbacked batch size; SDPA checks they match, so stating it keeps the block one graph.
+        torch_check(keys.shape[0] == queries.shape[0])
+        torch_check(values.shape[0] == queries.shape[0])
         positions = torch.arange(keys.shape[1], device=keys.device)
         mask = None
         if key_lengths is not None:
+            torch_check(key_lengths.shape[0] == queries.shape[0])
             mask = (positions < key_lengths[:, None])[:, None, None, :]
         else:
             pass

@@ -20,7 +20,11 @@ from sglang_omni.models.stable_audio3.cuda_graphs import (
     DiTCudaGraphRunner,
     PromptEncoderCudaGraphRunner,
 )
-from sglang_omni.models.stable_audio3.dit import DiffusionTransformer, TransformerBlock
+from sglang_omni.models.stable_audio3.dit import (
+    DiffusionTransformer,
+    SamplingConditions,
+    TransformerBlock,
+)
 from sglang_omni.models.stable_audio3.layers import AttentionBackend
 from sglang_omni.models.stable_audio3.model_config import (
     MAX_DURATION_SECONDS,
@@ -224,32 +228,42 @@ class StableAudio3Runtime:
             mark_dynamic(hidden_states, [0, 1])
             return compiled_decoder_block(block, hidden_states, window_tokens)
 
+        # note (ruilin): every block calls the one compiled forward of its stack, so the stack compiles once and its dynamic dimensions are marked before each call.
         for block in self.dit.transformer.layers:
             block.forward = MethodType(dit_block, block)
         for block in self.decoder.decoder.resampling.transformers:
             block.forward = MethodType(decoder_block, block)
 
     @torch.inference_mode()
-    def capture_graphs(self) -> None:
-        """Records every graph bucket a request can reach, so no request waits on a capture."""
+    def capture_graphs(self) -> int:
+        """Records every graph bucket a request can reach, so no request waits on a capture; returns how many graphs exist."""
+        graph_count = 0
         if self.prompt_graphs is None:
             pass
         else:
             self.prompt_graphs.capture_buckets()
+            graph_count += len(self.prompt_graphs.graphs)
         if self.dit_graphs is None:
             pass
         else:
-            # note (ruilin): the DiT graphs record against condition buffers that the first bound batch sizes, and the shortest request fits every bucket.
-            self.generate(
-                [
-                    GenerationRequest(
-                        prompt="Warm piano chords",
-                        duration_seconds=MIN_DURATION_SECONDS,
-                        seed=0,
-                    )
-                ]
+            shortest_latents = self.latent_length(MIN_DURATION_SECONDS)
+            # note (ruilin): the DiT graphs record against condition buffers sized by one loaded batch; any batch's conditions give them their shapes.
+            self.dit_graphs.load_conditions(
+                self.sampling_conditions(
+                    [
+                        GenerationRequest(
+                            prompt="Warm piano chords",
+                            duration_seconds=MIN_DURATION_SECONDS,
+                            seed=0,
+                        )
+                    ],
+                    shortest_latents,
+                ),
+                batch_size=1,
             )
-            self.dit_graphs.capture_buckets(self.latent_length(MIN_DURATION_SECONDS))
+            self.dit_graphs.capture_buckets(shortest_latents)
+            graph_count += len(self.dit_graphs.graphs)
+        return graph_count
 
     def encode_text(
         self, input_ids: torch.Tensor, attention_mask: torch.Tensor
@@ -310,9 +324,10 @@ class StableAudio3Runtime:
                 audio[index] = waveform
         return [audio[index] for index in range(len(requests))]
 
-    @torch.inference_mode()
-    def generate(self, requests: list[GenerationRequest]) -> list[torch.Tensor]:
-        """Stereo audio per request in the decoder's precision; each request draws its noise from its own seed, so batching does not change it."""
+    def sampling_conditions(
+        self, requests: list[GenerationRequest], latent_length: int
+    ) -> SamplingConditions:
+        """Prompt and duration conditions for a batch padded to latent_length; every sampling step reuses them."""
         seconds_embedding = self.conditioner.embed_seconds(
             [request.duration_seconds for request in requests]
         )
@@ -327,16 +342,30 @@ class StableAudio3Runtime:
             ],
             dim=1,
         )
-        latent_lengths = [
-            self.latent_length(request.duration_seconds) for request in requests
-        ]
         valid_lengths = torch.tensor(
             [
-                self.valid_latent_length(request.duration_seconds, length)
-                for request, length in zip(requests, latent_lengths, strict=True)
+                self.valid_latent_length(
+                    request.duration_seconds,
+                    self.latent_length(request.duration_seconds),
+                )
+                for request in requests
             ],
             device=self.device,
         )
+        return self.dit.prepare(
+            condition_tokens,
+            seconds_embedding,
+            valid_lengths=valid_lengths,
+            latent_length=latent_length,
+        )
+
+    @torch.inference_mode()
+    def generate(self, requests: list[GenerationRequest]) -> list[torch.Tensor]:
+        """Stereo audio per request in the decoder's precision; each request draws its noise from its own seed, so batching does not change it."""
+        latent_lengths = [
+            self.latent_length(request.duration_seconds) for request in requests
+        ]
+        conditions = self.sampling_conditions(requests, max(latent_lengths))
         generators = [
             torch.Generator(self.device).manual_seed(request.seed)
             for request in requests
@@ -352,12 +381,6 @@ class StableAudio3Runtime:
             zip(generators, latent_lengths, strict=True)
         ):
             latents[row, :, :length] = self.noise(generator, length, torch.float32)
-        conditions = self.dit.prepare(
-            condition_tokens,
-            seconds_embedding,
-            valid_lengths=valid_lengths,
-            latent_length=latents.shape[-1],
-        )
         graphed_step = (
             None
             if self.dit_graphs is None

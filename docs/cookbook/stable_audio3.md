@@ -14,7 +14,7 @@ CUDA_VISIBLE_DEVICES=0 sgl-omni serve \
   --port 8000
 ```
 
-One GPU stage runs the prompt encoder, the diffusion transformer and the decoder. Like the official inference, the transformer and decoder run in fp16 and the prompt encoder in bf16. Requests that arrive together are generated as one batch of up to `--generation.factory.max_batch_size` requests (default 8). Each request keeps its own duration and seed, so batching does not change its audio. A batch runs in groups of similar length, so a short request is not padded to a long one.
+One GPU stage runs the prompt encoder, the diffusion transformer and the decoder. Like the official inference, the transformer and decoder run in fp16 and the prompt encoder in bf16. Requests that arrive together are generated as one batch of up to `--generation.factory.max_batch_size` requests (default 8). Each request keeps its own duration and seed, so on GPUs with FA3 (Hopper) batching does not change a single bit of its audio; on other GPUs attention runs on SDPA, where padding shifts the rounding, so a batched request can differ slightly from the same request alone. A batch runs in groups of similar length, so a short request is not padded to a long one.
 
 At startup the transformer and decoder blocks are compiled and CUDA graphs are recorded for the prompt encoder and the short-clip diffusion steps, which takes about 25 seconds the first time; requests only replay them. `--generation.factory.enable_torch_compile false` and `--generation.factory.enable_cuda_graph false` turn them off.
 
@@ -33,7 +33,7 @@ curl http://localhost:8000/v1/audio/speech \
   --output house.wav
 ```
 
-`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, from 0.1 to 380 seconds; the default is 120 seconds, as in the official library. `seed` (0 to 2⁶³ − 1) makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error. The model serves only the speech endpoints; `/generate` and chat requests are refused with a 400 error.
+`input` is the prompt; genre, instruments, mood and tempo all help. `stage_params.generation.duration_seconds` sets the length, from 0.1 to 380 seconds; the default is 120 seconds, as in the official library. `seed` (0 to 2⁶³ − 1) makes a request reproducible; without it every request draws a new random seed. Voices, streaming, sampling fields and other generation settings are rejected with a 400 error. The model serves only the speech endpoints; `/generate` and chat requests are refused with a 400 error. Prompts longer than 8192 characters are refused too, since the model reads at most 256 tokens. For Python or the OpenAI SDK, the [TTS client examples](../basic_usage/tts.md#python) work with these fields.
 
 ## Limitations
 
