@@ -2,7 +2,9 @@ package datadir
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -93,6 +95,38 @@ func TestStageImportRefusesOtherFiles(t *testing.T) {
 	write(t, filepath.Dir(notes), map[string]string{"notes.voxtlibrary": "not a database"})
 	if err := StageImport(context.Background(), dir, notes); err == nil {
 		t.Fatal("StageImport accepted a text file")
+	}
+	for _, name := range []string{ImportFile, importedDB} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s was left after a refused import", name)
+		}
+	}
+}
+
+// A sound SQLite file of another app, at a schema version Voxt reads, is
+// refused too: the library stays as it was after the restart.
+func TestStageImportRefusesForeignSQLite(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := sqlitestore.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putDoc(t, st, "settings:app", `{"from":"mine"}`)
+	st.Close()
+	foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
+	out, err := exec.Command(sqlite3, foreign, fmt.Sprintf("CREATE TABLE notes (x); PRAGMA user_version = %d;", sqlitestore.Version())).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if err := StageImport(ctx, dir, foreign); err == nil {
+		t.Fatal("StageImport accepted another app's SQLite file")
+	}
+	if _, err := Resolve(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := docs(t, dir, "settings:app")[0]; got != `{"from":"mine"}` {
+		t.Errorf("the library after the refused import: %s", got)
 	}
 	for _, name := range []string{ImportFile, importedDB} {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
