@@ -137,8 +137,17 @@ func TestHideClosesTheOverlaysPreviews(t *testing.T) {
 
 func TestCloseOverlayResetsPreviewState(t *testing.T) {
 	a := &app{}
-	a.overlayTranscript = transcriptPreview{ready: true, height: 40}
-	a.bubbleTranscripts = []*transcriptPreview{{ready: true}}
+	a.overlayTranscript = transcriptPreview{ready: true, running: true, height: 40}
+	a.bubbleTranscripts = []*transcriptPreview{{ready: true, running: true}}
+	a.ov.passThrough, a.ov.reveal = true, true
+	a.ov.front.card = true
+	a.destroyOverlayWindow()
+	if a.ov.passThrough || a.ov.reveal || a.ov.front.card {
+		t.Fatal("replacement kept the old window's mouse, reveal or front state")
+	}
+	if a.overlayTranscript.running || a.bubbleTranscripts[0].running || a.bubbleTranscripts[0].ready {
+		t.Fatal("replacement retained work belonging to the old host")
+	}
 	a.closeOverlay()
 	if a.overlayTranscript.ready || a.overlayTranscript.height != 0 {
 		t.Fatalf("the answer preview survived closeOverlay: %+v", a.overlayTranscript)

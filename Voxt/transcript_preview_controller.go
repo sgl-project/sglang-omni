@@ -89,8 +89,12 @@ func (p *transcriptPreview) update(win *mygo.Window) {
 	go func() {
 		markup := transcriptMarkup(in.source, in.streaming)
 		p.schedule(win, func() {
+			// A replacement host may already be using this preview's state.
+			if win.IsDestroyed() {
+				return
+			}
 			p.running = false
-			if p.closed || win.IsDestroyed() {
+			if p.closed {
 				return
 			}
 			if p.version != version {

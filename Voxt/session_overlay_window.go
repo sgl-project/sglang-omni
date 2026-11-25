@@ -14,13 +14,14 @@ type overlayState struct {
 	overlayTranscript transcriptPreview
 	bubbleTranscripts []*transcriptPreview
 	ov                struct {
-		win     *mygo.Window
-		shown   bool
-		visible bool
-		mode    overlayMode
-		w, h    int
-		frame   mygo.Rectangle
-		live    struct {
+		win        *mygo.Window
+		cardWindow bool
+		shown      bool
+		visible    bool
+		mode       overlayMode
+		w, h       int
+		frame      mygo.Rectangle
+		live       struct {
 			id string
 			w  int
 		}
@@ -143,10 +144,14 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
-// sessionOverlayWindowOptions leaves StateKey empty because the pill and
-// card share this window; restored bounds would move the next mode.
-func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
-	opts := cardWindowOptions("Voxt", frame.Width, frame.Height, content)
+// Preview panels follow the current Space without activating Voxt. Answer
+// cards remain ordinary windows for keyboard input and window managers.
+// StateKey stays empty: each mode computes its own bounds.
+func sessionOverlayWindowOptions(mode overlayMode, frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	if mode == ovAnswer {
+		opts = cardWindowOptions("Voxt", frame.Width, frame.Height, content)
+	}
 	opts.Vibrancy = mygo.VibrancyHUD
 	opts.X, opts.Y = frame.X, frame.Y
 	return opts
@@ -212,6 +217,11 @@ func (a *app) overlaySync() {
 		}
 		return
 	}
+	card := mode == ovAnswer
+	if a.ov.win != nil && a.ov.cardWindow != card {
+		a.destroyOverlayWindow()
+		was = false // the replacement needs its own reveal and front ordering
+	}
 	if a.ov.win == nil {
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
@@ -227,9 +237,17 @@ func (a *app) overlaySync() {
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
-		opts := sessionOverlayWindowOptions(frame, hudContent(content))
+		opts := sessionOverlayWindowOptions(mode, frame, hudContent(content))
 		a.ov.win = mygo.NewWindow(opts)
-		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
+		a.ov.cardWindow = card
+		win := a.ov.win
+		win.OnMove(func() {
+			a.post(func() {
+				if a.ov.win == win {
+					a.overlayDragged()
+				}
+			})
+		})
 		a.ov.passThrough = false
 		a.overlayDraggedAt(a.ov.win.ContentBounds())
 		frame = a.overlayFrame(width, height)
@@ -422,14 +440,32 @@ func (a *app) invalidatePaletteOverlays() {
 	}
 }
 
-func (a *app) closeOverlay() {
-	a.closeLangWindow()
-	a.closePillOverlay()
+// destroyOverlayWindow resets window-bound state while retaining the card.
+// WebViews and pending parses belong to the old host; the next build recreates them.
+func (a *app) destroyOverlayWindow() {
 	if a.ov.win != nil {
 		a.ov.win.Destroy()
 		a.ov.win = nil
-		a.ov.front = overlayFront{} // a new window starts above the others
 	}
+	a.ov.style = mygo.VibrancyStyle{}
+	a.ov.passThrough = false
+	a.ov.front = overlayFront{}
+	a.ov.reveal = false
+	a.ov.fade++
+	// A parse queued on the old window may never run after it closes.
+	a.overlayTranscript = transcriptPreview{restyle: a.overlayRestyle}
+	for i, preview := range a.bubbleTranscripts {
+		if preview != nil {
+			preview.closed = true
+			a.bubbleTranscripts[i] = &transcriptPreview{restyle: a.overlayRestyle}
+		}
+	}
+}
+
+func (a *app) closeOverlay() {
+	a.closeLangWindow()
+	a.closePillOverlay()
+	a.destroyOverlayWindow()
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false

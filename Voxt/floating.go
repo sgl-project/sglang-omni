@@ -15,8 +15,8 @@ package main
 // Transcribe, Translate and Rewrite, the Rewrite card) is an ordinary
 // window: the user's action on it brings VoxtNew in front with it
 // (cardFront), so a window manager such as Rectangle moves it and the
-// user's next app covers it. Both are ordinary windows that a click
-// brings in front, as any app's (cardWindowOptions).
+// user's next app covers it (cardWindowOptions). Recording previews use
+// non-activating panels so they can follow the current Space.
 
 import (
 	"os"
