@@ -39,7 +39,9 @@ def test_d2_learned_interruption_can_end_audio_before_input_eos() -> None:
             record["time_s"] = 100.215
         elif event["type"] == "response.done":
             record["time_s"] = 100.22
-            event["response"].update(status="cancelled", status_details={"reason": "interrupted"})
+            event["response"].update(
+                status="cancelled", status_details={"reason": "interrupted"}
+            )
     trace.sort(key=lambda record: record["time_s"])
     result = evaluate_trace(trace, profile="qwen3-omni-d2-80ms")
     assert result["status"] == "pass", result["violations"]
