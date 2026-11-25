@@ -188,6 +188,7 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 			return Response{Usage: total, Attempts: attempt}, e
 		}
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < d {
+			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
 			return Response{Usage: total, Attempts: attempt}, e // no time left to wait
 		}
 		if streamed {

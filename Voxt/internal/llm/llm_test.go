@@ -150,6 +150,48 @@ func TestStreamingNotRetriedOnceStarted(t *testing.T) {
 	}
 }
 
+func TestStreamedFailureWithoutRetryTimeIsMetered(t *testing.T) {
+	failure := HTTPError("fake", "m", 503, "reset", 10*time.Minute)
+	backend := &fakeBackend{steps: []step{
+		{deltas: []string{"private output"}, err: failure},
+		text("must not run"),
+	}}
+	meter := &Meter{}
+	var records int
+	var recordedCode string
+	meter.OnRecord = func(_ UsageKey, _ Usage, code string) {
+		records++
+		recordedCode = code
+	}
+	client := &Client{
+		Backend: backend,
+		Retry:   RetryPolicy{MaxAttempts: 2, MaxRetryAfter: time.Hour},
+		Meter:   meter,
+	}
+	callerContext, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var privateOutput strings.Builder
+	var retryAuthorizations int
+	response, err := client.Chat(callerContext, Request{
+		Messages: msgs("x"),
+		OnDelta:  func(delta string) { privateOutput.WriteString(delta) },
+		RetryPrivateStream: func() bool {
+			retryAuthorizations++
+			return true
+		},
+	})
+	if Code(err) != CodeServer || response.Attempts != 1 || callerContext.Err() != nil {
+		t.Fatalf("response %+v, error %v, caller context error %v", response, err, callerContext.Err())
+	}
+	if privateOutput.String() != "private output" || retryAuthorizations != 0 || len(backend.requests()) != 1 {
+		t.Fatalf("private output %q, retry authorizations %d, requests %d", privateOutput.String(), retryAuthorizations, len(backend.requests()))
+	}
+	snapshot := meter.Snapshot()
+	if records != 1 || recordedCode != CodeServer || len(snapshot) != 1 || snapshot[0].Calls != 1 || snapshot[0].Failures != 1 || snapshot[0].Attempts != 1 || snapshot[0].Usage.TotalTokens != 0 {
+		t.Fatalf("meter callback records %d code %q, snapshot %+v", records, recordedCode, snapshot)
+	}
+}
+
 func TestRetryPrivateStreamResetsAttemptBeforeRetry(t *testing.T) {
 	f := &fakeBackend{steps: []step{
 		{deltas: []string{"old attempt"}, err: HTTPError("fake", "m", 503, "reset", 0)},

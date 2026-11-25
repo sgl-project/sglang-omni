@@ -254,7 +254,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 	}
 }
 
-// cleanUpFirst is a dictation's first clean-up: what the early clean-up
+// cleanUpFirstContext is a dictation's first clean-up: what the early clean-up
 // finished while the recording went on is not asked again, only the
 // tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
 // whole text instead.
@@ -263,14 +263,6 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 // the live text (livepolish.go) count the same way; their tail goes with the
 // end of the cleaned text before it (liveContext), after the last sentences
 // of that text that are asked again (redo).
-func (r *run) cleanUpFirst(text string) cleanupOutput {
-	request, ok := r.currentCleanupRequest()
-	if !ok {
-		return cleanupOutput{text: text, completedAt: r.now()}
-	}
-	return r.cleanUpFirstContext(text, request)
-}
-
 func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOutput {
 	parts, answers, tail, failed, completedAt, ok := r.earlyCleanup().drain(text)
 	before := ""
@@ -301,7 +293,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 			if livePath && !r.publishCleanupDraft(request, "") {
 				return cleanupOutput{text: text, completedAt: r.now()}
 			}
-			return r.cleanUpOutputContext(text, request.thinking, request.ctx)
+			return r.cleanUpOutputContext(text, nil, request.ctx)
 		}
 		before = liveContext(compose.JoinParts(parts, answers))
 		tail = joinRedo(redo, tail)
@@ -326,7 +318,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
-	result, profile, err := r.cleanPartsContext(text, append(parts, tailParts...), answers, request.thinking, request.ctx)
+	result, profile, err := r.cleanPartsContext(text, append(parts, tailParts...), answers, nil, request.ctx)
 	if err == nil {
 		err = failed
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 type liveDelta struct {
@@ -154,7 +155,7 @@ type liveSessionFixture struct {
 	call      *controlledLiveCall
 }
 
-func newLiveSessionFixture(t *testing.T, text string, model *controlledLiveLLM, clock *softDeadlineClock, softDeadline bool) *liveSessionFixture {
+func newLiveSessionFixture(t *testing.T, text string, model *controlledLiveLLM, clock *softDeadlineClock, softDeadline bool, thinking ...*llm.Thinking) *liveSessionFixture {
 	t.Helper()
 	finalGate := make(chan struct{})
 	streamer := &fakeStreamer{
@@ -172,7 +173,14 @@ func newLiveSessionFixture(t *testing.T, text string, model *controlledLiveLLM, 
 	})
 	h.audio.notifyAt = 3 // meet DefaultMinRecording before the fake Stop
 	h.audio.notified = make(chan struct{})
-	id := h.start()
+	request := StartRequest{Kind: store.KindTranscribe, Target: slack}
+	if len(thinking) > 0 {
+		request.Thinking = thinking[0]
+	}
+	id, err := h.m.Start(request)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.rec.waitFor(t, "recording", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State == Recording })
 	select {
 	case <-h.audio.notified:
