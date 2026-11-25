@@ -313,14 +313,37 @@ def create_image_decode_executor(
     *,
     device: str | None = None,
     gpu_id: int | None = None,
+    runtime_gpu_ids: list[int] | None = None,
     dtype: str | torch.dtype | None = None,
     decode_mode: DecoderMode = "normal",
     num_steps: int = 50,
     resolution_multiplier: int = 2,
     backend: DecoderBackend = "diffusers",
     attention_backend: str = "torch_sdpa",
+    ring_degree: int = 1,
     enable_serial_offload: bool = False,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
+    if runtime_gpu_ids is not None and len(runtime_gpu_ids) > 1:
+        from sglang_omni.models.llada2_uni.native_sp_host import create_native_decoder
+
+        return create_native_decoder(
+            model_path,
+            device=device,
+            gpu_id=gpu_id,
+            runtime_gpu_ids=runtime_gpu_ids,
+            dtype=dtype,
+            backend=backend,
+            attention_backend=attention_backend,
+            decode_mode=decode_mode,
+            num_steps=num_steps,
+            resolution_multiplier=resolution_multiplier,
+            ring_degree=ring_degree,
+            enable_serial_offload=enable_serial_offload,
+        )
+    elif ring_degree != 1:
+        raise ValueError("ring_degree > 1 requires multi-GPU runtime_gpu_ids")
+    else:
+        pass
     concrete_device = resolve_concrete_device(device, gpu_id)
     dtype = resolve_dtype(dtype)
     if enable_serial_offload and (
@@ -370,8 +393,11 @@ def create_image_decode_executor(
         image.save(image_buffer, format="PNG")
         return image_buffer.getvalue()
 
+    decode_step = build_image_decode_step(
+        decode_png, enable_serial_offload=enable_serial_offload
+    )
     if runtime is None:
-        return SimpleScheduler(build_image_decode_step(decode_png))
+        return SimpleScheduler(decode_step)
     else:
         pass
 
@@ -382,9 +408,7 @@ def create_image_decode_executor(
             finally:
                 runtime.close()
 
-    return ImageDecoderScheduler(
-        build_image_decode_step(decode_png, enable_serial_offload=enable_serial_offload)
-    )
+    return ImageDecoderScheduler(decode_step)
 
 
 def build_image_decode_step(

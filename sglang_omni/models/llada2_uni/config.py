@@ -54,6 +54,7 @@ class LLaDA2ImageDecoderFactoryArgs(LLaDA2OffloadFactoryArgs):
     num_steps: int = Field(default=50, ge=1)
     resolution_multiplier: int = Field(default=2, ge=1)
     attention_backend: str = "torch_sdpa"
+    ring_degree: int = Field(default=1, ge=1)
 
 
 class LLaDA2ImageDecoderStageConfig(StageConfig):
@@ -291,26 +292,14 @@ class LLaDA2UniOmniPipelineConfig(LLaDA2UniPipelineConfig):
     ]
 
 
-class NativeDecoderFactoryArgs(LLaDA2ImageDecoderFactoryArgs):
-    ring_degree: int = Field(default=1, ge=1)
-
-
-class NativeDecoderStageConfig(LLaDA2ImageDecoderStageConfig):
-    factory: NativeDecoderFactoryArgs = Field(default_factory=NativeDecoderFactoryArgs)
-
-
 class LLaDA2UniNativeSP2PipelineConfig(LLaDA2UniOmniPipelineConfig):
-    stage_config_types: ClassVar[dict[str, type[StageConfig]]] = {
-        **LLaDA2UniOmniPipelineConfig.stage_config_types,
-        IMAGE_DECODE_STAGE: NativeDecoderStageConfig,
-    }
     stages: list[StageConfig] = [
         *LLaDA2UniOmniPipelineConfig.shared_stages,
-        NativeDecoderStageConfig(
+        LLaDA2ImageDecoderStageConfig(
             name=IMAGE_DECODE_STAGE,
             process=IMAGE_DECODE_STAGE,
             factory_path=f"{_PKG}.native_sp_host.create_native_decoder",
-            factory=NativeDecoderFactoryArgs(
+            factory=LLaDA2ImageDecoderFactoryArgs(
                 backend="sglang",
                 attention_backend="fa",
                 decode_mode="decoder-turbo",

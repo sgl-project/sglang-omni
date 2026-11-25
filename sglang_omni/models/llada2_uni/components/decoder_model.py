@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Literal, TypedDict
@@ -87,6 +88,46 @@ def semantic_checkpoint(
         yield name, value
 
 
+def validate_decoder_sp_architecture(
+    cfg: DecoderConfig, ulysses_degree: int
+) -> DecoderConfig:
+    normalized = decoder_config(cfg)
+    if (
+        normalized["n_kv_heads"] != normalized["n_heads"]
+        or normalized["n_heads"] % ulysses_degree
+    ):
+        raise ValueError(
+            "Native decoder requires equal Q/KV heads divisible by Ulysses degree"
+        )
+    else:
+        pass
+    if normalized["all_patch_size"] != (2,) or normalized["all_f_patch_size"] != (1,):
+        raise ValueError(
+            "Native spatial decoder supports only patch_size=2, f_patch_size=1"
+        )
+    else:
+        pass
+    return normalized
+
+
+def require_joint_sp_support(model_cls: type[nn.Module] | None = None) -> None:
+    if model_cls is None:
+        from sglang.multimodal_gen.runtime.models.dits.zimage import (
+            ZImageTransformer2DModel,
+        )
+
+        model_cls = ZImageTransformer2DModel
+    else:
+        pass
+    if "shard_joint_sequence" not in inspect.signature(model_cls.__init__).parameters:
+        raise RuntimeError(
+            "Installed sglang ZImageTransformer2DModel lacks shard_joint_sequence "
+            "support required for SP decoding"
+        )
+    else:
+        pass
+
+
 class ZImageTransformer2DModelWrapper(nn.Module):
     """Load semantic checkpoints and return positive velocity for t in [0, 1].
 
@@ -116,7 +157,10 @@ class ZImageTransformer2DModelWrapper(nn.Module):
                     int,
                     int,
                 ],
-                tuple[torch.Tensor, torch.Tensor],
+                tuple[
+                    tuple[torch.Tensor, torch.Tensor],
+                    tuple[torch.Tensor, torch.Tensor],
+                ],
             ]
             | None
         ) = None
@@ -162,27 +206,17 @@ class ZImageTransformer2DModelWrapper(nn.Module):
         )
         from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
 
-        if (
-            self.cfg["n_kv_heads"] != self.cfg["n_heads"]
-            or self.cfg["n_heads"] % self.runtime.ulysses_degree
-        ):
-            raise ValueError(
-                "Native decoder requires equal Q/KV heads divisible by Ulysses degree"
-            )
-        else:
-            pass
-        if self.cfg["all_patch_size"] != (2,) or self.cfg["all_f_patch_size"] != (1,):
-            raise ValueError(
-                "Native spatial decoder supports only patch_size=2, f_patch_size=1"
-            )
-        else:
-            pass
+        validate_decoder_sp_architecture(self.cfg, self.runtime.ulysses_degree)
         try:
             attention = AttentionBackendEnum[self.runtime.attention_backend.upper()]
         except KeyError as exc:
             raise ValueError(
                 f"Unknown decoder attention backend: {self.runtime.attention_backend}"
             ) from exc
+        if self.runtime.sp_size > 1:
+            require_joint_sp_support(ZImageTransformer2DModel)
+        else:
+            pass
         arch = dict(self.cfg)
         arch["num_layers"] = arch.pop("n_layers")
         arch["num_attention_heads"] = arch.pop("n_heads")

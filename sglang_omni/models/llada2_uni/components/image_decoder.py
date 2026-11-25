@@ -11,12 +11,14 @@ from typing import Literal
 import torch
 import torch.nn.functional as F
 from diffusers import AutoencoderKL
+from huggingface_hub import hf_hub_download
 from PIL.Image import Image
 from torchvision.transforms.functional import to_pil_image
 
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
     ZImageTransformer2DModelWrapper,
+    validate_decoder_sp_architecture,
 )
 from sglang_omni.models.llada2_uni.components.decoder_runtime import (
     DecoderRuntimeHandle,
@@ -34,6 +36,77 @@ logger = logging.getLogger(__name__)
 
 DecoderBackend = Literal["diffusers", "sglang"]
 DecoderMode = Literal["normal", "decoder-turbo"]
+
+
+def resolve_cached_snapshot_config(model_path: str, subdir: str) -> str | None:
+    from huggingface_hub import constants as hf_constants
+
+    repo_dir = f"models--{model_path.replace('/', '--')}"
+    cache_roots = [hf_constants.HF_HUB_CACHE]
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        cache_roots.append(os.path.join(hf_home, "hub"))
+    else:
+        pass
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for root in cache_roots:
+        snapshots = os.path.join(root, repo_dir, "snapshots")
+        if not os.path.isdir(snapshots):
+            continue
+        else:
+            pass
+        for revision in sorted(os.listdir(snapshots)):
+            candidate = os.path.join(snapshots, revision, subdir, "config.json")
+            resolved = os.path.realpath(candidate)
+            if os.path.isfile(candidate) and resolved not in seen:
+                seen.add(resolved)
+                candidates.append(candidate)
+            else:
+                pass
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def resolve_decoder_config_path(
+    model_path: str, decode_mode: DecoderMode
+) -> str | None:
+    subdir = "decoder-turbo" if decode_mode == "decoder-turbo" else "decoder"
+    if os.path.isdir(model_path):
+        config_path = os.path.join(model_path, subdir, "config.json")
+        return config_path if os.path.isfile(config_path) else None
+    else:
+        pass
+    if "/" not in model_path:
+        return None
+    else:
+        pass
+    for local_only in (True, False):
+        try:
+            return hf_hub_download(
+                model_path,
+                filename=f"{subdir}/config.json",
+                local_files_only=local_only,
+            )
+        except Exception:
+            continue
+    return resolve_cached_snapshot_config(model_path, subdir)
+
+
+def validate_checkpoint_sp_config(
+    model_path: str, decode_mode: DecoderMode, ulysses_degree: int
+) -> None:
+    if ulysses_degree <= 1:
+        return
+    else:
+        pass
+    config_path = resolve_decoder_config_path(model_path, decode_mode)
+    if config_path is None:
+        return
+    else:
+        pass
+    with open(config_path) as config_file:
+        config: DecoderConfig = json.load(config_file)
+    validate_decoder_sp_architecture(config, ulysses_degree)
 
 
 def create_decoder_model_fn(
@@ -307,6 +380,10 @@ class LLaDA2ImageDecoder:
             else self.resolution_multiplier
         )
         self.validate_settings(mode, steps, output_resolution_multiplier)
+        if self.runtime is not None and self.runtime.sp_size > 1 and seed is None:
+            raise ValueError("SP image decoding requires an explicit shared seed")
+        else:
+            pass
         if not isinstance(h, int) or not isinstance(w, int) or h < 1 or w < 1:
             raise ValueError("Image decoder grid dimensions must be positive integers")
         else:
@@ -324,29 +401,39 @@ class LLaDA2ImageDecoder:
 
         image_height = h * 16 * output_resolution_multiplier
         image_width = w * 16 * output_resolution_multiplier
-        self.ensure_diff_model(mode)
-        if self.is_leader:
-            self.ensure_sigvq()
-            with self.component_context(self.sigvq, "sigvq"):
-                token_grid = (
-                    torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+        rank_error: Exception | None = None
+        features: torch.Tensor | None = None
+        try:
+            if self.is_leader:
+                self.ensure_sigvq()
+                with self.component_context(self.sigvq, "sigvq"):
+                    token_grid = (
+                        torch.tensor(token_ids).view(1, 1, h, w).float().to(self.device)
+                    )
+                    upsampled_tokens = (
+                        F.interpolate(token_grid, scale_factor=2, mode="nearest")
+                        .long()
+                        .view(1, -1)
+                    )
+                    features = self.sigvq(upsampled_tokens).squeeze(0).contiguous()
+                self.ensure_diff_model(mode)
+            else:
+                self.ensure_diff_model(mode)
+                features = torch.empty(
+                    (4 * h * w, self.diff_config["cap_feat_dim"]),
+                    device=self.device,
+                    dtype=self.dtype,
                 )
-                upsampled_tokens = (
-                    F.interpolate(token_grid, scale_factor=2, mode="nearest")
-                    .long()
-                    .view(1, -1)
-                )
-                features = self.sigvq(upsampled_tokens).squeeze(0).contiguous()
-        else:
-            features = torch.empty(
-                (4 * h * w, self.diff_config["cap_feat_dim"]),
-                device=self.device,
-                dtype=self.dtype,
-            )
+        except Exception as exc:
+            rank_error = exc
         if self.runtime:
+            self.runtime.sync_rank_status(rank_error)
+            assert features is not None
             features = self.runtime.broadcast_features(features)
+        elif rank_error is not None:
+            raise rank_error
         else:
-            pass
+            assert features is not None
         positive_caption_features = [features]
         negative_caption_features = [torch.zeros_like(features)]
 

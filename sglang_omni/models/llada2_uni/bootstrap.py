@@ -13,7 +13,11 @@ from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.environ import envs
 from sglang.srt.model_executor.cuda_graph_config import Backend as CudaGraphBackend
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils.hf_transformers_utils import get_tokenizer
+
+try:
+    from sglang.srt.hf_transformers.tokenizer import get_tokenizer
+except ImportError:
+    from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
 from sglang_omni.models.llada2_uni.cfg_attention_backend import (
     CFG_ATTENTION_BACKEND,
