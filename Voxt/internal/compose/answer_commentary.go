@@ -89,17 +89,26 @@ func cleanedSpan(s, input string) (string, bool) {
 	first, last := -1, -1
 	for i, seg := range segs {
 		f := folded(seg)
-		if len([]rune(f)) < 4 {
-			continue
+		n := len([]rune(f))
+		var anchor bool
+		if n >= 4 {
+			// An unfinished sentence anchors at a higher share: its
+			// share still moves as it grows — a quoted fragment or a
+			// coincidental pair reads as a half before the rest of the
+			// words dilutes it.
+			bar := 0.5
+			if !terminated(seg) {
+				bar = 0.65
+			}
+			anchor = inputShare(f, in) >= bar
+		} else if terminated(seg) {
+			// An exact short answer (Hi., 你好。): the whole input, or
+			// contained in it. A connector that is not the input (OK,
+			// 嗯 before the cleaned text) does not anchor; it keeps the
+			// side of the sentence next to it, below.
+			anchor = f == in || strings.Contains(in, f) || strings.Contains(f, in)
 		}
-		// An unfinished sentence anchors at a higher share: its share
-		// still moves as it grows — a quoted fragment or a coincidental
-		// pair reads as a half before the rest of the words dilute it.
-		bar := 0.5
-		if !terminated(seg) {
-			bar = 0.65
-		}
-		if inputShare(f, in) >= bar {
+		if anchor {
 			if first < 0 {
 				first = i
 			}

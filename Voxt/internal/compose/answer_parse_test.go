@@ -181,6 +181,19 @@ func TestCleanOutput(t *testing.T) {
 		// before or after the cleaned text goes…
 		{"Wait, I need to re-read. Hello.", "hello", "Hello.", false},
 		{"Hello. I fixed the typo.", "hello", "Hello.", false},
+		// …down to an exact short cleaned answer (Hi., Yes., 你好。)…
+		{"Wait, I need to re-read. Hi.", "hi", "Hi.", false},
+		{"Wait, I need to re-read. Yes.", "yes", "Yes.", false},
+		{"Wait, I need to re-read. 你好。", "你好", "你好。", false},
+		// …while a connector that is not the input (OK, 嗯) does not
+		// anchor, so it cannot shield the deliberation after it…
+		{"OK. Let me reconsider. 我觉得现在的时变已经非常快了。",
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
+			"我觉得现在的时变已经非常快了。", false},
+		// …and one next to the cleaned text stays with it.
+		{"嗯。我觉得现在的时变已经非常快了。",
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
+			"嗯。我觉得现在的时变已经非常快了。", false},
 		// …while a legitimate short answer keeps its added words when
 		// nothing anchors the input (there is nothing to trim to).
 		{"Hello world.", "hello", "Hello world.", false},
@@ -286,6 +299,21 @@ func TestPartialOutput(t *testing.T) {
 	}
 	if got := PartialOutput("Hello.", "hello", false); got != "Hello." {
 		t.Errorf("a legitimate short answer = %q, want it whole", got)
+	}
+	// An exact short cleaned answer (Hi., Yes., 你好。) anchors and
+	// shows, while its unfinished typing passes through and the
+	// finished deliberation sentence before it hides.
+	for _, tc := range []struct{ out, in, want string }{
+		{"Wait, I need to re-read. Hi.", "hi", "Hi."},
+		{"Wait, I need to re-read. Yes.", "yes", "Yes."},
+		{"Wait, I need to re-read. 你好。", "你好", "你好。"},
+	} {
+		if got := PartialOutput(tc.out, tc.in, false); got != tc.want {
+			t.Errorf("PartialOutput(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+		if got := CleanOutput(tc.out, tc.in, false); got != tc.want {
+			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
+		}
 	}
 	runes := []rune(tagless)
 	for i := 1; i <= len(runes); i++ {
