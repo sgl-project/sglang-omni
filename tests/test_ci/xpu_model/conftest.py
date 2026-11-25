@@ -101,6 +101,20 @@ def mirror_roots() -> list[Path]:
     return [Path(root) for root in spec.split(":") if root]
 
 
+def hub_repo_dir(repo_id: str) -> Path:
+    return Path(HF_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
+
+
+def main_snapshot_holds_a_checkpoint(repo_id: str) -> bool:
+    """An offline load by bare repo id reads the snapshot refs/main names, and only that one."""
+    main = hub_repo_dir(repo_id) / "refs" / "main"
+    if not main.is_file():
+        return False
+    else:
+        snapshot = hub_repo_dir(repo_id) / "snapshots" / main.read_text().strip()
+    return holds_a_checkpoint(snapshot)
+
+
 def hub_cache_path(repo_id: str, revision: str = "") -> str | None:
     """A cached snapshot of repo_id that holds a servable checkpoint, or None."""
     try:
@@ -117,7 +131,7 @@ def hub_cache_path(repo_id: str, revision: str = "") -> str | None:
             pass
 
     # local_files_only wants every file a repo publishes, and Whisper ships its weights three ways.
-    repo_dir = Path(HF_HUB_CACHE) / ("models--" + repo_id.replace("/", "--"))
+    repo_dir = hub_repo_dir(repo_id)
     snapshots = repo_dir / "snapshots"
     if not snapshots.is_dir():
         return None
@@ -172,14 +186,15 @@ def holds_a_checkpoint(path: Path) -> bool:
 def require_companions(model: XpuModel) -> None:
     """Skip a row whose server also loads a checkpoint by repo id that is not cached."""
     for companion in model.companions:
-        if hub_cache_path(companion) is not None:
+        if main_snapshot_holds_a_checkpoint(companion):
             continue
         elif os.environ.get(ALLOW_DOWNLOAD_ENV) == "1":
             download(companion)
         else:
             pytest.skip(
-                f"{model.key} also loads {companion}, which is not in the Hub cache. Warm "
-                f"the cache or set {ALLOW_DOWNLOAD_ENV}=1."
+                f"{model.key} also loads {companion} by repo id, and the snapshot its refs/main "
+                f"names is not a complete checkpoint in the Hub cache. Warm the cache or set "
+                f"{ALLOW_DOWNLOAD_ENV}=1."
             )
 
 

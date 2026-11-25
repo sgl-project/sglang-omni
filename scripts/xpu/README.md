@@ -204,7 +204,7 @@ Stage gpu ids in the flags are relative to `ZE_AFFINITY_MASK`. A multi-card row 
 | `dots-tts-mf` | `dots-studio/dots.tts-mf@c28105adc8228143392b4e346994ff613ee48a06` | 1 | `--config examples/configs/dots_tts.yaml --latent_engine.engine.max_running_requests 4 --latent_engine.engine.cuda_graph_max_bs 4` | - |
 | `auk` | `tencent/AuK` | 1 | none | `--auk_engine.factory.enable_dit_cuda_graph false` |
 | `auk-flash` | `tencent/AuK-Flash` | 1 | none | `--auk_engine.factory.enable_dit_cuda_graph false` |
-| `minimax-music3` | `MiniMaxAI/MiniMax-Music3` | 2 | `--mem-fraction-static 0.7 --minimax_music3_ar.engine.attention_backend triton` | - |
+| `minimax-music3` | `MiniMaxAI/MiniMax-Music3` | 2 | `--mem-fraction-static 0.7` | - |
 | `yue2` | `m-a-p/YuE2-3B` | 1 | none | - |
 | `omni-text` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | 8 | `--thinker.engine.mem_fraction_static 0.435 --skip-server-warmup --text-only --thinker.process thinker --thinker.tp_size 8 --thinker.gpu '[0, 1, 2, 3, 4, 5, 6, 7]'` | - |
 | `omni-text-tp4` | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | 4 | `--thinker.engine.mem_fraction_static 0.80 --skip-server-warmup --text-only --thinker.process thinker --thinker.tp_size 4 --thinker.gpu '[0, 1, 2, 3]'` | - |
@@ -212,10 +212,9 @@ Stage gpu ids in the flags are relative to `ZE_AFFINITY_MASK`. A multi-card row 
 | `minicpm-o` | `openbmb/MiniCPM-o-4_5` | 1 | `--text-only --thinker.engine.mem_fraction_static 0.85` | - |
 | `minicpm-o-tp2` | `openbmb/MiniCPM-o-4_5` | 2 | `--text-only --thinker.engine.mem_fraction_static 0.85 --thinker.process thinker --thinker.tp_size 2 --thinker.gpu '[0, 1]' --placement.require_memory_fraction_for_colocation false` | - |
 
-Three of those flags are workarounds with a known end:
+Two of those flags are workarounds:
 
-- `minimax-music3` `--minimax_music3_ar.engine.attention_backend triton`: the AR stage turns on deterministic inference without naming a backend, and SGLang 0.5.23's deterministic fallback picks fa3, a CUDA-only kernel. Fixed upstream in sgl-project/sglang#46623.
-- `omni-text` `--skip-server-warmup`: the server's own warmup reaches the vision encoder, whose head dim of 72 is one sgl-kernel's XPU RoPE does not compile for. Text requests never touch it.
+- `--skip-server-warmup` on the Qwen3-Omni rows: the server's warmup request, an image, a second of audio and an instruction, never completes on XPU, so startup waits out the 600 s warmup window and stops. Since #3907 it no longer dies in the vision RoPE; it hangs instead. Text and speech requests serve normally without it.
 - `omni-text` `--thinker.engine.mem_fraction_static 0.435`: SGLang 0.5.20 added an XPU-only memory reserve that walks the automatic fraction down to 0.302, below what the KV cache needs.
 
 ## What cannot be served here

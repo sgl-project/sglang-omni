@@ -295,10 +295,9 @@ Stage gpu ids in the flags are relative to `ZE_AFFINITY_MASK`. A multi-card row 
 
 {recipe_table()}
 
-Three of those flags are workarounds with a known end:
+Two of those flags are workarounds:
 
-- `minimax-music3` `--minimax_music3_ar.engine.attention_backend triton`: the AR stage turns on deterministic inference without naming a backend, and SGLang 0.5.23's deterministic fallback picks fa3, a CUDA-only kernel. Fixed upstream in sgl-project/sglang#46623.
-- `omni-text` `--skip-server-warmup`: the server's own warmup reaches the vision encoder, whose head dim of 72 is one sgl-kernel's XPU RoPE does not compile for. Text requests never touch it.
+- `--skip-server-warmup` on the Qwen3-Omni rows: the server's warmup request, an image, a second of audio and an instruction, never completes on XPU, so startup waits out the 600 s warmup window and stops. Since #3907 it no longer dies in the vision RoPE; it hangs instead. Text and speech requests serve normally without it.
 - `omni-text` `--thinker.engine.mem_fraction_static 0.435`: SGLang 0.5.20 added an XPU-only memory reserve that walks the automatic fraction down to 0.302, below what the KV cache needs.
 
 ## What cannot be served here

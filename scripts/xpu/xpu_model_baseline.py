@@ -108,6 +108,7 @@ class Record(TypedDict, total=False):
     observed_span: dict[str, float]
     cards: str
     judge_cards: str
+    judge_serve_extra: list[str]
     cards_used_mib: CardMemory
     launches: int
     within_run_spread: dict[str, float]
@@ -571,7 +572,7 @@ def probe_chat(base_url: str, model: BaselineModel) -> Sample:
         speed["decode_tokens_per_second"] = completion_tokens / elapsed
     else:
         pass
-    return {"exact": {"content": normalize_text(content)}, "speed": speed}
+    return {"exact": {"content": content.strip()}, "speed": speed}
 
 
 PROBES: dict[ProbeKind, Probe] = {
@@ -840,7 +841,32 @@ def measure_launches(
             worst_within[name] = max(worst_within.get(name, 0.0), value)
     folded["within_run_spread"] = worst_within
     folded["launches"] = launches
+    if "judge_serve_extra" in runs[0]:
+        folded["judge_serve_extra"] = runs[0]["judge_serve_extra"]
+    else:
+        pass
     return folded
+
+
+def with_recorded_judge_flags(
+    model: BaselineModel,
+    recorded: Record,
+    extras: dict[str, tuple[str, ...]],
+    explicit: set[str],
+) -> dict[str, tuple[str, ...]]:
+    """A judge runs with the flags its dependent was recorded with, unless this run names its own."""
+    if (
+        not model.judge
+        or model.judge in explicit
+        or "judge_serve_extra" not in recorded
+    ):
+        return extras
+    else:
+        flags = tuple(recorded["judge_serve_extra"])
+    print(
+        f"  judge {model.judge} flags, from this entry: {shlex.join(flags) or 'none'}"
+    )
+    return {**extras, model.judge: flags}
 
 
 def pessimistic_speed(runs: list[Record]) -> dict[str, float]:
@@ -901,12 +927,11 @@ def measure(
             print(f"  waiting for {noisy} MiB to clear", flush=True)
         time.sleep(30)
         busy_before = cards_in_use(layout)
+    judge_flags = extras.get(judge.key, ()) if judge else ()
     try:
         judge_url = ""
         if judge:
-            judge_proc, judge_url = launch(
-                judge, judge_cards, extras.get(judge.key, ())
-            )
+            judge_proc, judge_url = launch(judge, judge_cards, judge_flags)
             servers.append(judge_proc)
         else:
             pass
@@ -946,8 +971,9 @@ def measure(
     else:
         folded = fold_samples(samples[warmups:])
     folded["cards"] = cards
-    if judge_cards:
+    if judge:
         folded["judge_cards"] = judge_cards
+        folded["judge_serve_extra"] = list(judge_flags)
     else:
         pass
     folded["cards_used_mib"] = {"before": busy_before, "after": busy_after}
@@ -1310,6 +1336,8 @@ def main() -> int:
             f"--card-pool {args.card_pool} names card(s) {outside} this process cannot use; "
             f"it can use {visible}" + (f" (ZE_AFFINITY_MASK={mask})" if mask else "")
         )
+    elif len(set(pool)) != len(pool):
+        parser.error(f"--card-pool {args.card_pool} names a card more than once")
     else:
         pass
     print(f"card pool {pool}", flush=True)
@@ -1340,6 +1368,7 @@ def main() -> int:
         pass
 
     # A check measures the recipe its entry was recorded with; a flag given here still wins.
+    explicit = set(extras)
     if not args.record:
         restored = {
             key: tuple(value)
@@ -1443,13 +1472,20 @@ def main() -> int:
             print(f"  {prefetch_checkpoints(model)}", flush=True)
         else:
             pass
+        model_extras = (
+            extras
+            if args.record
+            else with_recorded_judge_flags(
+                model, entry.get("models", {}).get(key, {}), extras, explicit
+            )
+        )
         try:
             observed = measure_launches(
                 model,
                 pool,
                 args.repeats,
                 args.warmups,
-                extras,
+                model_extras,
                 args.launches,
                 args.idle_mib,
                 args.idle_wait_s,

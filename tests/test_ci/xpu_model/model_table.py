@@ -452,8 +452,6 @@ XPU_MODELS: tuple[XpuModel, ...] = (
         serve_args=(
             "--mem-fraction-static",
             "0.7",
-            "--minimax_music3_ar.engine.attention_backend",
-            "triton",
         ),
         startup_seconds=1800,
     ),
@@ -550,7 +548,6 @@ XPU_MODELS: tuple[XpuModel, ...] = (
             # The talker's sampler reads the host inside its captured region: error 44 on XPU.
             "--talker_ar.engine.disable_cuda_graph",
             "true",
-            # Warmup reaches the vision RoPE (head dim 72) the XPU kernel does not build: #3907.
             "--skip-server-warmup",
             "--image_encoder.gpu",
             "0",
