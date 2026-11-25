@@ -168,7 +168,8 @@ func TestOnlyTheCleanedText(t *testing.T) {
 func TestCleanedTextWithoutCommentary(t *testing.T) {
 	text := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
 	cleaned := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
-	deliberation := `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". `
+	// The reported reply, with its blank lines.
+	deliberation := "Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n"
 	model := &fakeLLM{text: deliberation + cleaned, chunk: 3, pause: 5 * time.Millisecond}
 	h := newHarness(t, &fakeFile{text: text}, model, nil)
 	h.speak(h.start(), 5)

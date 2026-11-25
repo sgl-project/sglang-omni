@@ -101,11 +101,13 @@ func cleanedSpan(s, input string) (string, bool) {
 				bar = 0.65
 			}
 			anchor = inputShare(f, in) >= bar
-		} else if terminated(seg) {
+		} else if n > 0 && terminated(seg) {
 			// An exact short answer (Hi., 你好。): the whole input, or
 			// contained in it. A connector that is not the input (OK,
 			// 嗯 before the cleaned text) does not anchor; it keeps the
-			// side of the sentence next to it, below.
+			// side of the sentence next to it, below. An empty segment
+			// (a blank line) never anchors either: containment holds
+			// for it trivially.
 			anchor = f == in || strings.Contains(in, f) || strings.Contains(f, in)
 		}
 		if anchor {

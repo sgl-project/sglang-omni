@@ -168,7 +168,8 @@ func TestCleanOutput(t *testing.T) {
 		// A tag-less answer to the built-in contract keeps only the
 		// cleaned text's span: the contract allows nothing around it,
 		// so the model's deliberation before or after goes (#4086).
-		{`Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. Also "不并不需要" looks like a self-correction or stutter. 我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。`,
+		// This is the reported reply, with its blank lines.
+		{"Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。", false},
 		{"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation.",
@@ -285,7 +286,8 @@ func TestPartialOutput(t *testing.T) {
 	// draft corrects when it completes.
 	const input = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
 	const cleaned = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
-	const tagless = `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". ` + cleaned
+	// The reported reply, with its blank lines.
+	const tagless = "Wait, I need to re-read. \"时变\" might not be a misrecognition - let me reconsider. The user might mean \"时变\" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition.\n\nAlso \"不并不需要\" looks like a self-correction or stutter - \"不，并不需要\" → \"并不需要\".\n\n" + cleaned
 	if got := PartialOutput("Wait, I need to re-read.", input, false); got != "" {
 		t.Errorf("a completed deliberation sentence = %q, want hidden", got)
 	}
