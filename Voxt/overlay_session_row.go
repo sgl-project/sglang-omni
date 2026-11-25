@@ -91,18 +91,19 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, rem
 	// Only the current chip has the delete button: the others stay
 	// narrow, and no chip changes its width under the pointer.
 	removable = removable && chip.Current
-	ui.Row(context).Height(sessionChipH).Radius(sessionChipH/2).Background(background).Border(1, line).AlignItems(ui.Center).Shrink(0).Children(func() {
+	row := ui.Row(context).Height(sessionChipH).Radius(sessionChipH/2).Background(background).Border(1, line).AlignItems(ui.Center).Shrink(0)
+	if chip.Current && local.sessionShown != chip.ID {
+		// Once, when the session becomes the current one: in every
+		// frame it would keep the row from scrolling away from it.
+		local.sessionShown = chip.ID
+		row.ScrollIntoView()
+	}
+	row.Children(func() {
 		right := float32(2)
 		if !removable {
 			right = 7
 		}
 		button := ui.ButtonBase(context.Key("go")).Height(sessionChipH).Padding(0, right, 0, 7).Center().Label(i18n.T("Session %d", number)).Tooltip(tip).Checked(chip.Current)
-		if chip.Current && local.sessionShown != chip.ID {
-			// Once, when the session becomes the current one: in every
-			// frame it would keep the row from scrolling away from it.
-			local.sessionShown = chip.ID
-			button.ScrollIntoView()
-		}
 		button.Children(func() {
 			ui.Text(context, strconv.Itoa(number)+" "+title).FontSize(11).FontWeight(600).TextColor(text).SingleLine()
 		})
