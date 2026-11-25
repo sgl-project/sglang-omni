@@ -238,7 +238,7 @@ func (a *app) overlaySync() {
 			a,
 			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 			func() sessionOverlayAnimation {
-				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()}
+				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave()}
 			},
 			a.postSessionOverlayMeasurements,
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
@@ -495,6 +495,20 @@ func (a *app) closeOverlay() {
 }
 
 func (a *app) overlayMotion() bool { return a.overlayNative() && !a.prefs.Appearance.ReduceMotion }
+
+// overlayWave gives the waveform's bars at a time, gliding between the
+// levels as they come (a.wave, fed in sessionChanged as they arrive), for
+// the waveform's drawing to ask at every frame it paints; nil when nothing
+// records or nothing moves, and the bars are the levels' own. It feeds the
+// player too, which changes nothing for levels it has and shows a snapshot
+// set without sessionChanged (the overlay's check) as it is.
+func (a *app) overlayWave() func(time.Time) layout.Wave {
+	if !a.overlayMotion() || a.sess.State != session.Recording {
+		return nil
+	}
+	a.wave.Feed(a.sess.ID, a.sess.Levels, a.sess.LevelCount, time.Now())
+	return a.wave.Bars
+}
 
 func (a *app) overlayPhase() float64 {
 	if !a.overlayMotion() || a.ov.epoch.IsZero() {

@@ -200,8 +200,9 @@ func TestManagerUpdateIfRoutesBackgroundAnswers(t *testing.T) {
 
 func TestManagerUpdateIfConditionalRevision(t *testing.T) {
 	h := newHarness(t, &fakeFile{text: "spoken"}, nil, nil)
+	h.audio.tick = time.Hour
 	id := h.start()
-	h.rec.waitFor(t, "recording", func(s Snapshot) bool { return s.ID == id && s.State == Recording })
+	h.rec.waitFor(t, "recording", func(s Snapshot) bool { return s.ID == id && s.State == Recording && s.Device != "" })
 	h.m.mu.Lock()
 	r := h.m.cur
 	h.m.mu.Unlock()
