@@ -187,7 +187,10 @@ func (a *app) meetingSave() {
 			})
 			return
 		}
-		a.post(a.loadMeetings)
+		a.post(func() {
+			a.loadMeetings()
+			a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: id, ok: true})
+		})
 	})
 }
 

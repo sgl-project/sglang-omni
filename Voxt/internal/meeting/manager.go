@@ -323,6 +323,12 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 
 // Save keeps an asking-state meeting.
 func (m *Manager) Save(ctx context.Context, id string) error {
+	var saved *Snapshot
+	defer func() { // once mu is free
+		if saved != nil {
+			m.notify(*saved)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
@@ -344,6 +350,8 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
+	s := m.snap
+	saved = &s // the meeting no longer asks: its overlay goes
 	if auto {
 		go func() {
 			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
