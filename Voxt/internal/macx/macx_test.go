@@ -48,6 +48,29 @@ func TestFocusedWindowFrame(t *testing.T) {
 	}
 	frame, ok := FocusedWindowFrame()
 	t.Logf("focused window: frame %+v, available %v", frame, ok)
+	serverFrame, serverOK := windowServerFocusedWindowFrame(Frontmost().PID)
+	t.Logf("window-server frame %+v, available %v", serverFrame, serverOK)
+}
+
+func TestFocusedWindowFrameFallsBackToWindowServer(t *testing.T) {
+	oldFrontmost, oldAccessibility, oldServer := focusedWindowFrontmost, focusedWindowAccessibility, focusedWindowServer
+	t.Cleanup(func() {
+		focusedWindowFrontmost, focusedWindowAccessibility, focusedWindowServer = oldFrontmost, oldAccessibility, oldServer
+	})
+	focusedWindowFrontmost = func() App { return App{PID: 42} }
+	focusedWindowAccessibility = func(int) (WindowFrame, bool) { return WindowFrame{}, false }
+	want := WindowFrame{X: 1500, Y: 100, Width: 1000, Height: 700}
+	focusedWindowServer = func(pid int) (WindowFrame, bool) {
+		if pid != 42 {
+			t.Errorf("window-server pid = %d, want 42", pid)
+		}
+		return want, true
+	}
+
+	got, ok := FocusedWindowFrame()
+	if !ok || got != want {
+		t.Errorf("FocusedWindowFrame() = %+v, %v; want %+v, true", got, ok, want)
+	}
 }
 
 // TestSystemProxies: off macOS nothing; on a Mac (VOXTNEW_MAC=1) the

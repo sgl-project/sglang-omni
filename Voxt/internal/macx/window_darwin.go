@@ -84,15 +84,11 @@ func axAttribute(element, name uintptr) (uintptr, bool) {
 	return value, true
 }
 
-func focusedWindowFrame() (WindowFrame, bool) {
-	if loadAXWindow() != nil {
+func accessibilityFocusedWindowFrame(pid int) (WindowFrame, bool) {
+	if loadAXWindow() != nil || pid <= 0 {
 		return WindowFrame{}, false
 	}
-	front := frontmost()
-	if front.PID <= 0 {
-		return WindowFrame{}, false
-	}
-	application := axWindow.createApplication(int32(front.PID))
+	application := axWindow.createApplication(int32(pid))
 	if application == 0 {
 		return WindowFrame{}, false
 	}
@@ -132,4 +128,90 @@ func focusedWindowFrame() (WindowFrame, bool) {
 		return WindowFrame{}, false
 	}
 	return WindowFrame{X: int(position.X), Y: int(position.Y), Width: int(size.Width), Height: int(size.Height)}, true
+}
+
+var cgWindow struct {
+	once sync.Once
+	err  error
+
+	copyList           func(uint32, uint32) uintptr
+	arrayCount         func(uintptr) int
+	arrayValueAt       func(uintptr, int) uintptr
+	dictionaryGet      func(uintptr, uintptr) uintptr
+	numberGetValue     func(uintptr, int, *int32) uint8
+	rectWithDictionary func(uintptr, unsafe.Pointer) bool
+	release            func(uintptr)
+
+	ownerPID uintptr
+	layer    uintptr
+	bounds   uintptr
+}
+
+func loadCGWindow() error {
+	cgWindow.once.Do(func() {
+		const rtld = purego.RTLD_GLOBAL | purego.RTLD_NOW
+		coreGraphics, err := purego.Dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", rtld)
+		if err != nil {
+			cgWindow.err = err
+			return
+		}
+		foundation, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", rtld)
+		if err != nil {
+			cgWindow.err = err
+			return
+		}
+		purego.RegisterLibFunc(&cgWindow.copyList, coreGraphics, "CGWindowListCopyWindowInfo")
+		purego.RegisterLibFunc(&cgWindow.rectWithDictionary, coreGraphics, "CGRectMakeWithDictionaryRepresentation")
+		purego.RegisterLibFunc(&cgWindow.arrayCount, foundation, "CFArrayGetCount")
+		purego.RegisterLibFunc(&cgWindow.arrayValueAt, foundation, "CFArrayGetValueAtIndex")
+		purego.RegisterLibFunc(&cgWindow.dictionaryGet, foundation, "CFDictionaryGetValue")
+		purego.RegisterLibFunc(&cgWindow.numberGetValue, foundation, "CFNumberGetValue")
+		purego.RegisterLibFunc(&cgWindow.release, foundation, "CFRelease")
+		for name, target := range map[string]*uintptr{
+			"kCGWindowOwnerPID": &cgWindow.ownerPID,
+			"kCGWindowLayer":    &cgWindow.layer,
+			"kCGWindowBounds":   &cgWindow.bounds,
+		} {
+			value, err := axConstant(coreGraphics, name)
+			if err != nil {
+				cgWindow.err = err
+				return
+			}
+			*target = value
+		}
+	})
+	return cgWindow.err
+}
+
+// The window server needs no Accessibility permission and lists windows front to back.
+func windowServerFocusedWindowFrame(pid int) (WindowFrame, bool) {
+	if loadCGWindow() != nil || pid <= 0 {
+		return WindowFrame{}, false
+	}
+	const onScreenExcludeDesktop = 0x11
+	list := cgWindow.copyList(onScreenExcludeDesktop, 0)
+	if list == 0 {
+		return WindowFrame{}, false
+	}
+	defer cgWindow.release(list)
+	for i := 0; i < cgWindow.arrayCount(list); i++ {
+		window := cgWindow.arrayValueAt(list, i)
+		var ownerPID, layer int32
+		if cgWindow.numberGetValue(cgWindow.dictionaryGet(window, cgWindow.ownerPID), cfNumberIntType, &ownerPID) == 0 || int(ownerPID) != pid {
+			continue
+		}
+		if cgWindow.numberGetValue(cgWindow.dictionaryGet(window, cgWindow.layer), cfNumberIntType, &layer) == 0 || layer != 0 {
+			continue
+		}
+		bounds := cgWindow.dictionaryGet(window, cgWindow.bounds)
+		if bounds == 0 {
+			continue
+		}
+		var frame struct{ X, Y, Width, Height float64 }
+		if !cgWindow.rectWithDictionary(bounds, unsafe.Pointer(&frame)) || frame.Width <= 0 || frame.Height <= 0 {
+			continue
+		}
+		return WindowFrame{X: int(frame.X), Y: int(frame.Y), Width: int(frame.Width), Height: int(frame.Height)}, true
+	}
+	return WindowFrame{}, false
 }

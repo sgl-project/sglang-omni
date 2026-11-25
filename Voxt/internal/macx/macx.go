@@ -43,7 +43,24 @@ type WindowFrame struct {
 	X, Y, Width, Height int
 }
 
-// FocusedWindowFrame returns the front app's focused window's frame. It
-// reports false when macOS exposes no focused window or accessibility is
-// unavailable.
+var (
+	focusedWindowFrontmost     = frontmost
+	focusedWindowAccessibility = accessibilityFocusedWindowFrame
+	focusedWindowServer        = windowServerFocusedWindowFrame
+)
+
+func focusedWindowFrame() (WindowFrame, bool) {
+	front := focusedWindowFrontmost()
+	if front.PID <= 0 {
+		return WindowFrame{}, false
+	}
+	if frame, ok := focusedWindowAccessibility(front.PID); ok {
+		return frame, true
+	}
+	return focusedWindowServer(front.PID)
+}
+
+// FocusedWindowFrame returns the front app's focused window's frame, using
+// the window server when Accessibility is unavailable. It reports false when
+// neither source exposes a suitable window.
 func FocusedWindowFrame() (WindowFrame, bool) { return focusedWindowFrame() }
