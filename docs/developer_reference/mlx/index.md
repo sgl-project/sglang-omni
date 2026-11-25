@@ -58,6 +58,8 @@ agree on it with a maintainer first.
 
 The Qwen3-ASR drafts are pinned in `ci/models.json`; the MOSS-TD draft is pinned in `ci/model_pins.json`. A draft for another target is one pin and one golden whose request names it under `draft_model_path`. Verifying a block moves the target's low-precision logits slightly, so a few percent of clips differ from plain decoding in punctuation or a near-tie word; the goldens hold each chip's draft outputs like any other.
 
+The goldens run by hand, so Mac CI checks the shared draft's cache bookkeeping without a download: `tests/test_dflash_cache.py` decodes a small target whose attention reads only a decoy token, so a rejected proposal or guess left in its cache changes the output, and checks that the target's and the draft's caches end the same length, covering the prompt and the committed tokens.
+
 `moss_transcribe_diarize_server` and `moss_transcribe` take the same two flags; the CLI's `verify_rounds` sums over audio chunks.
 
 Qwen3-ASR uses adaptive backoff by default: after warmup and two four-round windows, a five-token plain probe measures cost per committed token. If both windows are over 5% slower, the request continues with plain decoding and the existing target KV cache. Otherwise speculation resumes. A winning plain measurement expires after 64 post-warmup draft rounds; an observed slowdown can trigger an earlier recheck.
