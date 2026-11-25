@@ -18,8 +18,13 @@ import (
 // never raises its floor while it thinks someone speaks, took -35 dBFS of
 // noise for half a minute of speech); a key click is too short. With
 // Silero the live recognition's detector decides instead (noteSpeech).
+// SpeechOverFloorDB keeps soft speech heard (11-25, replayed on the
+// helper's 50 ms levels: speech about 7 dB over −35 dBFS noise went up to
+// 8.5 s unheard at 10 dB, 3 s at 8 dB and at 6 dB) while noise is not:
+// −38 dBFS noise jittering 3 dB per level was heard 352 times in 1000
+// minutes at 6 dB, 47 at 7 dB, 7 at 8 dB.
 const (
-	SpeechOverFloorDB = 10
+	SpeechOverFloorDB = 8
 	quietFloorWindow  = 30 * time.Second
 	speechHoldMin     = 250 * time.Millisecond
 	speechGapMax      = 300 * time.Millisecond // a dip between syllables
