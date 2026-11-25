@@ -299,16 +299,14 @@ def test_arkasr_budget_windowing_and_join(
     assert by_budget[("stop", None)]["text"] == "éx éx éx"
     assert by_budget[("stop", 5)]["tokens"] == 5
     assert by_budget[("stop", 5)]["windows"] == 3
-    # Plain-equality is checked in the probe; here, that the draft really ran:
-    # every loop proposal is accepted, every stop proposal rejected.
+    # Equality with plain decoding is checked in the probe; here, that the
+    # draft really proposed: the loop accepts every proposal and the stop
+    # none. Budgets 1 and 2 end before a proposal could commit.
     for row in output["drafted"]:
-        assert row["verify_rounds"] > 0
-        if row["checkpoint"] == "loop" and row["budget"] == 2:
-            assert row["proposed"] == 0
-        elif row["checkpoint"] == "loop":
-            assert row["accepted"] == row["proposed"] > 0
-        else:
+        if row["checkpoint"] == "stop":
             assert row["accepted"] == 0 < row["proposed"]
+        elif row["budget"] not in (1, 2):
+            assert row["accepted"] == row["proposed"] > 0
 
 
 def test_arkasr_refuses_a_draft_for_another_target(

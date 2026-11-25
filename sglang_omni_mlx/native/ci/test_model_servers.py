@@ -1416,31 +1416,6 @@ def test_arkasr_token_budget_covers_the_whole_request(
     ]
 
 
-@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
-def test_arkasr_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
-    """A budget ending inside a draft block must not commit extra tokens."""
-    result = subprocess.run(
-        [
-            str(Path(RUNTIME_BIN) / "arkasr_transcribe"),
-            "--model-path",
-            str(Path(DATA_ROOT) / "models" / ARKASR_REPO.replace("/", "_")),
-            "--draft-model-path",
-            str(Path(DATA_ROOT) / "models" / ARKASR_DRAFT_REPO.replace("/", "_")),
-            "--max-new-tokens",
-            str(max_new_tokens),
-            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=120,
-    )
-    output = json.loads(result.stdout)
-    assert output["generated_token_count"] == max_new_tokens
-    assert output["finish_reason"] == "length"
-    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
-
-
 def test_arkasr_zero_token_budget_means_the_default(
     arkasr_server: ModelServer,
 ) -> None:

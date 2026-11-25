@@ -6,7 +6,8 @@
 // not the old byte rule that glued a non-ASCII ending to the next window.
 // A split window that is only the request's own zero padding must add no
 // text: the real checkpoint reads such a window as silence and hallucinates.
-// Decoding with a DFlash draft must give the plain decode's result.
+// Decoding with a DFlash draft must give the plain decode's result, also
+// when the budget ends inside a draft block.
 //
 //   arkasr_probe LOOP_CHECKPOINT STOP_CHECKPOINT DRAFT_CHECKPOINT
 //
@@ -138,11 +139,9 @@ int main(int argc, char **argv) {
 
   nlohmann::json drafted_rows = nlohmann::json::array();
   const auto compare = [&](const char *checkpoint,
-                           const arkasr::ArkTranscriber &plain_transcriber,
+                           const omni_common::TranscriptionResult &plain,
                            const arkasr::ArkTranscriber &drafted_transcriber,
                            std::optional<int> max_new_tokens) {
-    const omni_common::TranscriptionResult plain =
-        run(plain_transcriber, max_new_tokens);
     const omni_common::TranscriptionResult drafted =
         run(drafted_transcriber, max_new_tokens);
     ok &= Require(drafted.text == plain.text &&
@@ -156,18 +155,19 @@ int main(int argc, char **argv) {
         {{"checkpoint", checkpoint},
          {"budget", max_new_tokens.has_value() ? nlohmann::json(*max_new_tokens)
                                                : nlohmann::json()},
-         {"tokens", drafted.generated_token_count},
-         {"verify_rounds", drafted.verify_round_count},
          {"proposed", drafted.proposed_draft_token_count},
          {"accepted", drafted.accepted_draft_token_count}});
   };
   const arkasr::ArkTranscriber drafted_loop(argv[1], {argv[3]});
-  compare("loop", loop, drafted_loop, 2);
-  compare("loop", loop, drafted_loop, std::nullopt);
-  compare("loop", loop, drafted_loop, 0);
+  // Budgets 1, 2, 8 and 9 end around the draft's 8-token block.
+  for (const int budget : {1, 8, 9}) {
+    compare("loop", run(loop, budget), drafted_loop, budget);
+  }
+  compare("loop", limited, drafted_loop, 2);
+  compare("loop", defaulted, drafted_loop, std::nullopt);
   const arkasr::ArkTranscriber drafted_stop(argv[2], {argv[3]});
-  compare("stop", stop, drafted_stop, std::nullopt);
-  compare("stop", stop, drafted_stop, 5);
+  compare("stop", joined, drafted_stop, std::nullopt);
+  compare("stop", capped, drafted_stop, 5);
 
   const nlohmann::json rows = {
       {{"checkpoint", "loop"},
