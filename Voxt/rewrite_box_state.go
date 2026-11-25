@@ -89,7 +89,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), EditorPlaceholder: i18n.T("Or type here"), Subtitle: a.boxSubtitle(selection), SubtitleError: box.err != "",
 		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
 		Limit:   box.limit, FocusText: box.focusText, ShowTip: box.showTip,
-		Recording: recording, EnterSends: !recording || a.prefs.Features.ReturnFinishes, Heard: !a.sess.HeardAt.IsZero(), Motion: a.overlayMotion(), Phase: a.overlayPhase(),
+		Recording: recording, EnterSends: !recording || a.prefs.Features.ReturnFinishes, Heard: !a.sess.HeardAt.IsZero(), Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave(),
 		Radius: faceRadius(a.prefs.Overlay, ovAnswer, boxWinH), Alpha: layout.FaceAlpha(a.prefs.Overlay), Palette: a.prefs.Appearance.Palette,
 	}
 	if state.Conversation {
