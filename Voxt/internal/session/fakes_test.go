@@ -405,6 +405,7 @@ type fakeLLM struct {
 	texts     []string
 	err       error
 	failOn    int
+	failDelta string
 	hang      bool
 	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
 	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
@@ -437,6 +438,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	failDelta := f.failDelta
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
 	if hang {
@@ -447,6 +449,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		return llm.Response{}, ctx.Err()
 	}
 	if failed {
+		if req.OnDelta != nil && failDelta != "" {
+			req.OnDelta(failDelta)
+		}
 		return llm.Response{}, f.err
 	}
 	if req.OnDelta == nil && f.pause > 0 {

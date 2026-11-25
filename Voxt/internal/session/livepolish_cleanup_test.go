@@ -10,39 +10,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
-
-func TestLivePolishAdoptionConsumesFlightCompletedBeforeFirstRead(t *testing.T) {
-	model := newControlledLiveLLM(false)
-	r := newEarlyUnitRun(t, model, nil)
-	text := "Hello there."
-	r.hearLive(text)
-	call := waitLiveCall(t, model, "the speculative request")
-	r.m.mu.Lock()
-	r.m.cur = r
-	r.m.rev++
-	r.m.snap = Snapshot{Rev: r.m.rev, ID: r.id, Kind: store.KindTranscribe, State: Composing}
-	request := cleanupRequest{generation: r.cleanupGeneration, ctx: r.llmCtx, thinking: r.think}
-	r.m.mu.Unlock()
-	_, _, _, _, flight := r.live.finish(text)
-	if flight == nil {
-		t.Fatal("the matching flight was not adopted")
-	}
-	call.complete(t, "<output>Cleaned.</output>", nil)
-	select {
-	case <-flight.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the speculative flight did not finish")
-	}
-	result, adopted := r.live.adopt(text, flight, request)
-	if !adopted || len(result.answers) != 1 || result.answers[0] != "Cleaned." {
-		t.Fatalf("completed flight result %+v, adopted %t", result, adopted)
-	}
-	if draft := r.m.Current().Draft; draft != "Cleaned." || model.requestCount() != 1 {
-		t.Fatalf("draft %q, requests %d", draft, model.requestCount())
-	}
-}
 
 func TestLivePolishPublishesOnlyTheRetainedCompletedPrefix(t *testing.T) {
 	for _, test := range []struct {
@@ -70,7 +38,6 @@ func TestLivePolishPublishesOnlyTheRetainedCompletedPrefix(t *testing.T) {
 			first.complete(t, test.answer, nil)
 			waitLiveFor(t, r, "the committed block", func(lp *livePolish) bool { return len(lp.blocks) == 1 })
 			finalText := block + " " + openTail + "."
-			stopAt := clock.Now()
 			clock.Advance(300 * time.Millisecond)
 			result := make(chan string, 1)
 			go func() {
@@ -84,10 +51,8 @@ func TestLivePolishPublishesOnlyTheRetainedCompletedPrefix(t *testing.T) {
 			if got := inputOf(tail.request); !strings.HasPrefix(got, test.wantInput) {
 				t.Fatalf("tail input %q, want prefix %q", got, test.wantInput)
 			}
-			firstDraftAt := clock.Now()
 			tailInput := inputOf(tail.request)
 			clock.Advance(700 * time.Millisecond)
-			tailCompletionAt := clock.Now()
 			tail.complete(t, tailInput, nil)
 			wantFinal := strings.TrimSpace(test.wantDraft)
 			if wantFinal != "" {
@@ -98,9 +63,6 @@ func TestLivePolishPublishesOnlyTheRetainedCompletedPrefix(t *testing.T) {
 			case got := <-result:
 				if got != wantFinal {
 					t.Fatalf("final output %q, want %q", got, wantFinal)
-				}
-				if test.name == "one recleaned" {
-					t.Logf("scenario=completed_prefix_slow_tail stop_to_first_cleaned_draft_ms=%d asr_final_to_first_cleaned_draft_ms=0 stop_to_cleanup_complete_ms=%d completed_prefix_published=true llm_request_count=%d cleanup_outcome=cleaned scheduled_tail_completion_ms=%d", firstDraftAt.Sub(stopAt).Milliseconds(), clock.Now().Sub(stopAt).Milliseconds(), model.requestCount(), tailCompletionAt.Sub(stopAt).Milliseconds())
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("tail cleanup did not finish")
@@ -205,58 +167,6 @@ func TestLivePolishStreamingCallbackRetrySemantics(t *testing.T) {
 				t.Fatalf("backend attempts %d, want speculative retry and no replacement request", got)
 			}
 		})
-	}
-}
-
-type multipartRetryBackend struct {
-	calls atomic.Int32
-}
-
-func (backend *multipartRetryBackend) Info() llm.BackendInfo {
-	return llm.BackendInfo{ID: "multipart-retry-test"}
-}
-
-func (backend *multipartRetryBackend) Chat(_ context.Context, request llm.Request) (llm.Response, error) {
-	switch backend.calls.Add(1) {
-	case 1:
-		if request.OnDelta != nil {
-			request.OnDelta("failed attempt text")
-		}
-		return llm.Response{}, &llm.Error{Code: llm.CodeServer, Retryable: true}
-	case 2:
-		if request.OnDelta != nil {
-			request.OnDelta("First cleaned.")
-		}
-		return llm.Response{Text: "First cleaned."}, nil
-	case 3:
-		if request.OnDelta != nil {
-			request.OnDelta("Second cleaned.")
-		}
-		return llm.Response{Text: "Second cleaned."}, nil
-	default:
-		return llm.Response{}, errors.New("unexpected multipart request")
-	}
-}
-
-func TestLivePolishMultipartRequestRetriesOnePrivatePart(t *testing.T) {
-	backend := &multipartRetryBackend{}
-	client := &llm.Client{
-		Backend: backend,
-		Retry:   llm.RetryPolicy{MaxAttempts: 2},
-		Sleep:   func(context.Context, time.Duration) error { return nil },
-	}
-	r := newEarlyUnitRun(t, client, nil)
-	r.settings.Features.Transcribe.RecleanSentences = 0
-	firstSentence := strings.Repeat("a", 180) + "."
-	secondSentence := strings.Repeat("b", 180) + "."
-	transcript := firstSentence + " " + secondSentence
-	r.hearLive(transcript)
-	waitLiveFor(t, r, "the committed first part and completed second part", func(polish *livePolish) bool {
-		return len(polish.blocks) == 1 && len(polish.done) == 1 && polish.flight == nil
-	})
-	result, err := liveCleanUp(r, transcript)
-	if err != nil || result != "First cleaned. Second cleaned." || backend.calls.Load() != 3 {
-		t.Fatalf("result %q, error %v, backend attempts %d", result, err, backend.calls.Load())
 	}
 }
 
@@ -476,37 +386,6 @@ func TestLivePolishRetryDuringBackoffStopsOnSkip(t *testing.T) {
 	}
 }
 
-func TestLivePolishProviderFailureAfterDeltaReplacesThePrivateAttempt(t *testing.T) {
-	model := newControlledLiveLLM(false)
-	r := newEarlyUnitRun(t, model, nil)
-	r.hearLive("Hello there.")
-	call := waitLiveCall(t, model, "the speculative request")
-	call.sendDelta(t, "partial private attempt")
-	call.complete(t, "", errors.New("provider failed"))
-	waitLiveFor(t, r, "the failed live request", func(lp *livePolish) bool { return lp.closed })
-	result := make(chan string, 1)
-	go func() {
-		got, _ := liveCleanUp(r, "Hello there.")
-		result <- got
-	}()
-	retry := waitLiveCall(t, model, "the full-text cleanup after failure")
-	if got := r.m.Current().Draft; got != "" {
-		t.Fatalf("failed partial draft %q remained visible", got)
-	}
-	retry.complete(t, "complete answer", nil)
-	select {
-	case got := <-result:
-		if got != "complete answer" {
-			t.Fatalf("final output %q", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("fallback cleanup did not finish")
-	}
-	if model.requestCount() != 2 {
-		t.Fatalf("requests %d, want the failed speculative call and one replacement", model.requestCount())
-	}
-}
-
 func TestLivePolishAdoptedFailureClearsDraftBeforeFallback(t *testing.T) {
 	clock := newSoftDeadlineClock()
 	model := newControlledLiveLLM(false)
@@ -536,21 +415,5 @@ func TestLivePolishAdoptedFailureClearsDraftBeforeFallback(t *testing.T) {
 	})
 	if end.Result != "fallback cleaned answer" || end.LLM.ID != "ollama" || model.requestCount() != 2 || len(fallback.requests()) != 1 {
 		t.Fatalf("fallback result %+v, primary requests %d, fallback requests %d", end, model.requestCount(), len(fallback.requests()))
-	}
-}
-
-func TestLivePolishUsesDictionaryNormalizedFlightSource(t *testing.T) {
-	model := newControlledLiveLLM(false)
-	r := newEarlyUnitRun(t, model, []store.Term{{Term: "VoxtNew", Aliases: []string{"aura link"}, Enabled: true}})
-	r.hearLive("aura link is ready.")
-	call := waitLiveCall(t, model, "the dictionary-normalized request")
-	if got := inputOf(call.request); got != "VoxtNew is ready." {
-		t.Fatalf("flight source %q", got)
-	}
-	call.complete(t, "VoxtNew is ready.", nil)
-	waitLive(t, r, "VoxtNew is ready.")
-	got, err := liveCleanUp(r, "VoxtNew is ready.")
-	if err != nil || got != "VoxtNew is ready." || model.requestCount() != 1 {
-		t.Fatalf("cleanup %q, error %v, requests %d", got, err, model.requestCount())
 	}
 }

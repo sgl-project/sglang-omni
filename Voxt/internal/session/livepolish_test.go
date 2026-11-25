@@ -405,8 +405,8 @@ func TestLivePolishEndsWithPieces(t *testing.T) {
 // worker asked it again at once, as a cancellation), and Stop cleans the
 // whole text: what was cleaned before the failure is dropped too.
 func TestLivePolishStopsOnFailure(t *testing.T) {
-	model := &fakeLLM{text: "clean", err: errors.New("401 unauthorized"), failOn: 2}
-	r := newEarlyUnitRun(t, model, nil)
+	model := &fakeLLM{text: "clean", err: errors.New("401 unauthorized"), failOn: 2, failDelta: "private failed text"}
+	h, r := newEarlyUnitHarnessRun(t, model, nil)
 	r.settings.Features.Transcribe.RecleanSentences = 0
 	r.hearLive("Hello there. How")
 	waitLive(t, r, "Hello there.")
@@ -415,14 +415,26 @@ func TestLivePolishStopsOnFailure(t *testing.T) {
 	if n := len(model.requests()); n != 2 {
 		t.Fatalf("%d requests while recording, want 2: the refused one is not asked again", n)
 	}
+	if draft := h.m.Current().Draft; draft != "" {
+		t.Fatalf("failed private text was published as Draft %q", draft)
+	}
 	full := "Hello there. How are you? Fine."
-	if _, err := liveCleanUp(r, full); err != nil {
+	result, err := liveCleanUp(r, full)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result != "clean" {
+		t.Fatalf("full-text cleanup %q, want clean", result)
 	}
 	reqs := model.requests()
 	last := reqs[len(reqs)-1].Messages
 	if user := last[len(last)-1].Content; user != compose.UserMessage(full) {
 		t.Errorf("the request after Stop is %q, want the whole text", user)
+	}
+	for _, snapshot := range h.rec.all() {
+		if strings.Contains(snapshot.Draft, "private failed text") {
+			t.Fatalf("failed private text reached a session snapshot: %+v", snapshot)
+		}
 	}
 }
 

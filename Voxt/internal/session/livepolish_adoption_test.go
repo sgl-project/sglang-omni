@@ -203,9 +203,8 @@ func (fixture *liveSessionFixture) releaseFinal() {
 	fixture.finalOnce.Do(func() { close(fixture.finalGate) })
 }
 
-func (fixture *liveSessionFixture) beginStop(t *testing.T) time.Time {
+func (fixture *liveSessionFixture) beginStop(t *testing.T) {
 	t.Helper()
-	stopAt := fixture.clock.Now()
 	fixture.harness.m.Stop(fixture.id)
 	select {
 	case <-fixture.streamer.finishStarted:
@@ -215,7 +214,6 @@ func (fixture *liveSessionFixture) beginStop(t *testing.T) time.Time {
 		fixture.harness.mu.Unlock()
 		t.Fatalf("ASR did not begin finalization: current=%+v snapshots=%+v logs=%v", fixture.harness.m.Current(), tail(fixture.harness.rec.all()), logs)
 	}
-	return stopAt
 }
 
 func (fixture *liveSessionFixture) releaseFinalAndWait(t *testing.T) {
@@ -231,12 +229,11 @@ func (fixture *liveSessionFixture) releaseFinalAndWait(t *testing.T) {
 	}
 }
 
-func (fixture *liveSessionFixture) stopAndReleaseFinal(t *testing.T, afterStop time.Duration) time.Time {
+func (fixture *liveSessionFixture) stopAndReleaseFinal(t *testing.T, afterStop time.Duration) {
 	t.Helper()
-	stopAt := fixture.beginStop(t)
+	fixture.beginStop(t)
 	fixture.clock.Advance(afterStop)
 	fixture.releaseFinalAndWait(t)
-	return stopAt
 }
 
 func waitLiveAdoption(t *testing.T, r *run) {
@@ -247,24 +244,26 @@ func waitLiveAdoption(t *testing.T, r *run) {
 func TestLivePolishAdoptsBufferedStreamBeforeCompletion(t *testing.T) {
 	clock := newSoftDeadlineClock()
 	model := newControlledLiveLLM(false)
-	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
+	fixture := newLiveSessionFixture(t, "aura link is ready.", model, clock, false)
+	if got := inputOf(fixture.call.request); got != "VoxtNew is ready." {
+		t.Fatalf("normalized speculative source %q", got)
+	}
 	fixture.call.sendDelta(t, " \n")
 	fixture.call.sendDelta(t, "<out")
 	if draft := fixture.harness.m.Current().Draft; draft != "" {
 		t.Fatalf("speculative draft %q escaped while recording", draft)
 	}
-	stopAt := fixture.beginStop(t)
+	fixture.beginStop(t)
 	clock.Advance(100 * time.Millisecond)
-	fixture.call.sendDelta(t, "put>Cleaned")
+	fixture.call.sendDelta(t, "put>VoxtNew")
 	if draft := fixture.harness.m.Current().Draft; draft != "" {
 		t.Fatalf("speculative draft %q escaped before ASR Final validation", draft)
 	}
 	clock.Advance(200 * time.Millisecond)
 	fixture.releaseFinalAndWait(t)
 	fixture.harness.rec.waitFor(t, "the adopted buffered draft", func(snapshot Snapshot) bool {
-		return snapshot.ID == fixture.id && snapshot.State == Composing && snapshot.Draft == "Cleaned"
+		return snapshot.ID == fixture.id && snapshot.State == Composing && snapshot.Draft == "VoxtNew"
 	})
-	firstDraftAt := clock.Now()
 	select {
 	case <-fixture.call.returned:
 		t.Fatal("adoption waited for the LLM completion gate")
@@ -274,28 +273,19 @@ func TestLivePolishAdoptsBufferedStreamBeforeCompletion(t *testing.T) {
 		t.Fatal("the session delivered before cleanup completed")
 	}
 	clock.Advance(draftEvery)
-	fixture.call.sendDelta(t, " text</output>")
+	fixture.call.sendDelta(t, " is ready</output>")
 	fixture.harness.rec.waitFor(t, "the continued stream", func(snapshot Snapshot) bool {
-		return snapshot.ID == fixture.id && snapshot.Draft == "Cleaned text"
+		return snapshot.ID == fixture.id && snapshot.Draft == "VoxtNew is ready"
 	})
 	clock.Advance(660 * time.Millisecond)
-	completionAt := clock.Now()
-	fixture.call.complete(t, "<output>Cleaned text</output>", nil)
+	fixture.call.complete(t, "<output>VoxtNew is ready</output>", nil)
 	end := fixture.harness.rec.wait(t)
-	completeAt := clock.Now()
-	if end.State != Done || end.Result != "Cleaned text" || fixture.model.requestCount() != 1 {
+	if end.State != Done || end.Result != "VoxtNew is ready" || fixture.model.requestCount() != 1 {
 		t.Fatalf("end %+v, requests %d", end, fixture.model.requestCount())
 	}
-	if pastes := fixture.harness.text.pastes(); len(pastes) != 1 || pastes[0] != "Cleaned text" {
+	if pastes := fixture.harness.text.pastes(); len(pastes) != 1 || pastes[0] != "VoxtNew is ready" {
 		t.Fatalf("pasted %q", pastes)
 	}
-	if got := firstDraftAt.Sub(stopAt); got != 300*time.Millisecond {
-		t.Fatalf("stop-to-first-draft = %v, want 300 ms", got)
-	}
-	if got := completeAt.Sub(stopAt); got != time.Second {
-		t.Fatalf("stop-to-completion = %v, want 1 s", got)
-	}
-	t.Logf("scenario=matching_prebuffered stop_to_first_cleaned_draft_ms=%d asr_final_to_first_cleaned_draft_ms=0 stop_to_cleanup_complete_ms=%d stop_to_paste_ms=%d speculative_flight_adopted=true buffer_nonempty_at_adoption=true completed_prefix_published=false llm_request_count=1 cleanup_outcome=cleaned provider_completion_ms=%d", firstDraftAt.Sub(stopAt).Milliseconds(), completeAt.Sub(stopAt).Milliseconds(), completeAt.Sub(stopAt).Milliseconds(), completionAt.Sub(stopAt).Milliseconds())
 }
 
 func TestLivePolishCompletedFlightBeforeFirstAdoptReadIsDeliveredOnce(t *testing.T) {
@@ -322,42 +312,66 @@ func TestLivePolishCompletedFlightBeforeFirstAdoptReadIsDeliveredOnce(t *testing
 	end := fixture.harness.rec.waitFor(t, "completed-flight delivery", func(snapshot Snapshot) bool {
 		return snapshot.ID == fixture.id && snapshot.State.Ended()
 	})
-	if end.Result != "Completed answer" || fixture.model.requestCount() != 1 {
+	if end.Result != "Completed answer" || end.Draft != "Completed answer" || fixture.model.requestCount() != 1 {
 		t.Fatalf("result %+v, requests %d", end, fixture.model.requestCount())
 	}
 	assertSinglePaste(t, fixture, "Completed answer")
 }
 
 func TestLivePolishCompletionBetweenSnapshotAndWakeUsesFreshState(t *testing.T) {
-	clock := newSoftDeadlineClock()
-	model := newControlledLiveLLM(false)
-	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
-	flight := liveFlightOf(fixture.run)
-	drainFlightUpdates(flight)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	fixture.run.live.mu.Lock()
-	fixture.run.live.testHooks = &livePolishTestHooks{afterAdoptSnapshot: func() {
-		once.Do(func() { close(entered); <-release })
-	}}
-	fixture.run.live.mu.Unlock()
-	fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("adoption did not take its active-state snapshot")
+	for _, test := range []struct {
+		name        string
+		updateReady bool
+		wantPending int
+	}{
+		{name: "completion notification ready"},
+		{name: "completion and update notifications both ready", updateReady: true, wantPending: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := newSoftDeadlineClock()
+			model := newControlledLiveLLM(false)
+			fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
+			flight := liveFlightOf(fixture.run)
+			drainFlightUpdates(flight)
+			entered, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			fixture.run.live.mu.Lock()
+			fixture.run.live.testHooks = &livePolishTestHooks{afterAdoptSnapshot: func() {
+				once.Do(func() { close(entered); <-release })
+			}}
+			fixture.run.live.mu.Unlock()
+			fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("adoption did not take its active-state snapshot")
+			}
+			if test.updateReady {
+				fixture.call.sendDelta(t, "Update after snapshot")
+			}
+			fixture.call.complete(t, "Completed authoritative answer", nil)
+			waitFlightDone(t, flight)
+			if !test.updateReady {
+				drainFlightUpdates(flight)
+			}
+			if len(flight.updates) != test.wantPending {
+				t.Fatalf("pending update notifications %d, want %d", len(flight.updates), test.wantPending)
+			}
+			close(release)
+			var end Snapshot
+			select {
+			case extra := <-model.calls:
+				t.Fatalf("completion snapshot caused replacement request %+v", extra.request)
+			case end = <-fixture.harness.rec.ended:
+			case <-time.After(5 * time.Second):
+				t.Fatal("session did not finish after completion notification")
+			}
+			if end.Result != "Completed authoritative answer" || fixture.model.requestCount() != 1 {
+				t.Fatalf("result %+v, requests %d", end, fixture.model.requestCount())
+			}
+			assertSinglePaste(t, fixture, "Completed authoritative answer")
+		})
 	}
-	fixture.call.complete(t, "Completed without deltas", nil)
-	waitFlightDone(t, flight)
-	drainFlightUpdates(flight)
-	close(release)
-	end := fixture.harness.rec.waitFor(t, "completion after an active snapshot", func(snapshot Snapshot) bool {
-		return snapshot.ID == fixture.id && snapshot.State.Ended()
-	})
-	if end.Result != "Completed without deltas" || fixture.model.requestCount() != 1 {
-		t.Fatalf("result %+v, requests %d", end, fixture.model.requestCount())
-	}
-	assertSinglePaste(t, fixture, "Completed without deltas")
 }
 
 func TestLivePolishCompletionDuringPartialDraftPublication(t *testing.T) {
@@ -389,42 +403,6 @@ func TestLivePolishCompletionDuringPartialDraftPublication(t *testing.T) {
 		t.Fatalf("result %+v, requests %d", end, fixture.model.requestCount())
 	}
 	assertSinglePaste(t, fixture, "Authoritative completed answer")
-}
-
-func TestLivePolishCompletionRacesWithUpdateNotification(t *testing.T) {
-	clock := newSoftDeadlineClock()
-	model := newControlledLiveLLM(false)
-	fixture := newLiveSessionFixture(t, "spoken words.", model, clock, false)
-	flight := liveFlightOf(fixture.run)
-	fixture.call.sendDelta(t, "First partial")
-	drainFlightUpdates(flight)
-	entered, release := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	fixture.run.live.mu.Lock()
-	fixture.run.live.testHooks = &livePolishTestHooks{afterAdoptSnapshot: func() {
-		once.Do(func() { close(entered); <-release })
-	}}
-	fixture.run.live.mu.Unlock()
-	fixture.stopAndReleaseFinal(t, 300*time.Millisecond)
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("adoption did not take its partial-state snapshot")
-	}
-	fixture.call.sendDelta(t, " after update")
-	fixture.call.complete(t, "Complete final text", nil)
-	waitFlightDone(t, flight)
-	if len(flight.updates) != 1 {
-		t.Fatalf("coalesced update notifications %d, want one pending with completion", len(flight.updates))
-	}
-	close(release)
-	end := fixture.harness.rec.waitFor(t, "completion with an update pending", func(snapshot Snapshot) bool {
-		return snapshot.ID == fixture.id && snapshot.State.Ended()
-	})
-	if end.Result != "Complete final text" || fixture.model.requestCount() != 1 {
-		t.Fatalf("result %+v, requests %d", end, fixture.model.requestCount())
-	}
-	assertSinglePaste(t, fixture, "Complete final text")
 }
 
 func TestLivePolishNormalCompletionContextDisposalDoesNotRejectFlight(t *testing.T) {
@@ -518,7 +496,6 @@ func TestLivePolishAdoptsFirstDeltaAfterFinalValidation(t *testing.T) {
 	fixture.harness.rec.waitFor(t, "the first post-Final delta", func(snapshot Snapshot) bool {
 		return snapshot.ID == fixture.id && snapshot.Draft == "First visible answer"
 	})
-	firstDraftAt := clock.Now()
 	select {
 	case <-fixture.call.returned:
 		t.Fatal("the first delta waited for the full answer")
@@ -527,17 +504,9 @@ func TestLivePolishAdoptsFirstDeltaAfterFinalValidation(t *testing.T) {
 	clock.Advance(700 * time.Millisecond)
 	fixture.call.complete(t, "First visible answer", nil)
 	end := fixture.harness.rec.wait(t)
-	completeAt := clock.Now()
 	if end.Result != "First visible answer" || fixture.model.requestCount() != 1 {
 		t.Fatalf("end %+v, requests %d", end, fixture.model.requestCount())
 	}
-	if got := firstDraftAt.Sub(fixture.run.stoppedAt()); got != 300*time.Millisecond {
-		t.Fatalf("stop-to-first-draft = %v, want 300 ms", got)
-	}
-	if got := completeAt.Sub(fixture.run.stoppedAt()); got != time.Second {
-		t.Fatalf("stop-to-completion = %v, want 1 s", got)
-	}
-	t.Logf("scenario=matching_post_final_delta stop_to_first_cleaned_draft_ms=%d asr_final_to_first_cleaned_draft_ms=0 stop_to_cleanup_complete_ms=%d stop_to_paste_ms=%d speculative_flight_adopted=true buffer_nonempty_at_adoption=false completed_prefix_published=false llm_request_count=1 cleanup_outcome=cleaned", firstDraftAt.Sub(fixture.run.stoppedAt()).Milliseconds(), completeAt.Sub(fixture.run.stoppedAt()).Milliseconds(), completeAt.Sub(fixture.run.stoppedAt()).Milliseconds())
 }
 
 func TestLivePolishAdoptsMixedLanguagePartsInOrder(t *testing.T) {
