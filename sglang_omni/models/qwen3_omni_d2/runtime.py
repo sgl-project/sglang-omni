@@ -6,10 +6,15 @@ import logging
 import torch
 
 from sglang_omni.admission import ContextExhaustedError
-from sglang_omni.models.qwen3_omni_d2.config import NATIVE_FRAME_MS, D2Language
+from sglang_omni.models.qwen3_omni_d2.config import (
+    INPUT_SAMPLE_RATE_HZ,
+    NATIVE_FRAME_MS,
+    D2Language,
+)
 from sglang_omni.models.qwen3_omni_d2.mandarin import MANDARIN_PROMPT, MandarinOpening
 from sglang_omni.models.qwen3_omni_d2.release import load_d2_model, resolve_release
 from sglang_omni.models.qwen3_omni_d2.session import D2Frame, D2Session
+from sglang_omni.proto.streams import PCM16_BYTES_PER_SAMPLE
 from sglang_omni.utils.device import device_guard
 
 logger = logging.getLogger(__name__)
@@ -69,6 +74,26 @@ class D2Runtime:
             f"Qwen3-Omni D2 ready: {model.interval_frames * NATIVE_FRAME_MS} ms interval, "
             f"{self.max_frames} frames per conversation, language={language}"
         )
+
+    def warm_up(self) -> None:
+        """Replay silence until both audio streams reach their captured graphs.
+
+        Each startup interval attends over a new history length, and the first
+        use of every length is several times slower than later ones.
+        """
+        startup_intervals = (
+            self.session.streams[0].past_token_limit // self.interval_frames + 2
+        )
+        silence = bytes(
+            self.interval_frames
+            * NATIVE_FRAME_MS
+            * INPUT_SAMPLE_RATE_HZ
+            // 1000
+            * PCM16_BYTES_PER_SAMPLE
+        )
+        self.open_session()
+        for _ in range(min(startup_intervals, self.max_frames // self.interval_frames)):
+            self.step(silence)
 
     def open_session(self) -> None:
         with torch.no_grad(), device_guard(self.device):

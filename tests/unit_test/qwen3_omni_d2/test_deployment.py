@@ -153,4 +153,4 @@ def test_cached_release_serves_without_repository_metadata_files(
     assert load_runtime.call_args.kwargs["model_path"] == str(snapshot)
     assert load_runtime.call_args.kwargs["language"] == "auto"
     scheduler.warm_up_serving_thread()
-    runtime.step.assert_called_once_with(bytes(5120))
+    runtime.warm_up.assert_called_once_with()

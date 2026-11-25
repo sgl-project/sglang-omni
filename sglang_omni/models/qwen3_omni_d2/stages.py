@@ -33,9 +33,8 @@ class D2SessionHooks(SessionHooks):
         )
 
     def warm_up_serving_thread(self) -> None:
-        """Run the system prompt and one silent interval on the serving thread before admitting a caller."""
-        self.runtime.open_session()
-        self.runtime.step(bytes(self.input_bytes_per_interval))
+        """Replay a silent conversation on the serving thread before admitting a caller."""
+        self.runtime.warm_up()
 
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.runtime.open_session()
