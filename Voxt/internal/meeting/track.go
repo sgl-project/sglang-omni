@@ -19,6 +19,7 @@ type track struct {
 	floor      roomFloor // Quiet without Silero (quiet.go), under Manager.mu
 	transcribe *trackTranscriber
 	done       chan struct{} // closed once Record returned and its PCM is handled
+	stopMu     sync.Mutex    // End and Discard may stop a track at the same time
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -158,9 +159,12 @@ func (t *track) stop() {
 	case <-t.done:
 	case <-time.After(5 * time.Second): // a helper that never answers Stop
 	}
-	if t.transcribe != nil {
-		_ = t.transcribe.finish(context.Background())
-		t.transcribe = nil
+	t.stopMu.Lock()
+	tr := t.transcribe
+	t.transcribe = nil // one of two stops at the same time finishes it
+	t.stopMu.Unlock()
+	if tr != nil {
+		_ = tr.finish(context.Background())
 	}
 }
 

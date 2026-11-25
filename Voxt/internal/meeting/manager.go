@@ -252,6 +252,17 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 		return nil
 	}
 	keep := m.cfg.Privacy().KeepHistory
+	// The tracks recognise what they still hold before they stop, a few
+	// seconds: meanwhile the meeting shows as ending, not as recording.
+	m.snap.State, m.snap.Stage, m.snap.Progress = StateFinishing, StageSaving, 0
+	ending := m.snap
+	m.mu.Unlock()
+	m.notify(ending)
+	m.mu.Lock()
+	if m.id != id || !m.state.Active() { // discarded meanwhile
+		m.mu.Unlock()
+		return ErrNoMeeting
+	}
 	m.stopAllTracksLocked()
 	if m.archive != nil {
 		_ = m.archive.Close()
@@ -313,6 +324,12 @@ func (m *Manager) Finish(ctx context.Context, id string) error {
 
 // Save keeps an asking-state meeting.
 func (m *Manager) Save(ctx context.Context, id string) error {
+	var saved *Snapshot
+	defer func() { // once mu is free
+		if saved != nil {
+			m.notify(*saved)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
@@ -334,6 +351,8 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
+	s := m.snap
+	saved = &s // the meeting no longer asks: its overlay goes
 	if auto {
 		go func() {
 			_ = m.GenerateMeetingSummary(context.Background(), meetingID)
@@ -525,9 +544,13 @@ func (m *Manager) stopTracksLocked(sources []Source) {
 	}
 	// Live teardown updates the snapshot and must not run under Manager.mu (Finish holds it).
 	m.mu.Unlock()
+	// Each recognises the audio it still holds: together, the wait is the
+	// longest one's, not their sum.
+	var wg sync.WaitGroup
 	for _, tr := range pending {
-		tr.stop()
+		wg.Go(tr.stop)
 	}
+	wg.Wait()
 	m.segWrites.Wait() // the last words are in the store before the meeting ends
 	m.mu.Lock()
 }

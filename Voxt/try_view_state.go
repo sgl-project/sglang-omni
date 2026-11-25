@@ -213,6 +213,8 @@ func tryNoticeActionLabel(translator *i18n.Translator, action string) string {
 		return translator.T("Restart helper")
 	case actionRetry:
 		return translator.T("Retry")
+	case actionMeeting:
+		return translator.T("View meeting")
 	}
 	return ""
 }

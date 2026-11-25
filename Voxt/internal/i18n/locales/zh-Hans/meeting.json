@@ -102,5 +102,8 @@
   "Detection settings": "检测设置",
   "Meeting ended?": "会议结束了？",
   "End recording": "结束记录",
-  "Nobody spoke for 5 minutes": "5 分钟没人说话"
+  "Nobody spoke for 5 minutes": "5 分钟没人说话",
+  "Meeting saved": "会议已保存",
+  "End this meeting?": "结束这场会议？",
+  "The recording stops, and Voxt finishes the transcript.": "录音会停止，Voxt 会整理好转录稿。"
 }

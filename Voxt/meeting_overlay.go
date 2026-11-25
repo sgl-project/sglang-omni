@@ -19,6 +19,10 @@ type meetingOverlayLocalUI struct {
 	list      ui.ListState
 	menu      meetingMenu
 	abandon   bool
+	// endAsk: the overlay's End button asks first; it sits next to Pause
+	// (11-25: the user asked for it). Meetings and the menu bar end at
+	// once, as the end card's End recording does: there it was chosen.
+	endAsk bool
 }
 
 type meetingOverlayAnimation struct {
@@ -82,6 +86,7 @@ func meetingOverlayView(
 		})
 	})
 	meetingAbandonDialog(c, actions, local)
+	meetingEndDialog(c, actions, local)
 }
 
 var (
@@ -137,7 +142,11 @@ func meetingOverlayBar(c *ui.Context, state meetingOverlayViewState, model meeti
 			if state.Live || state.Starting { // a start that hangs can be ended
 				if meetingOverlayButton(c.Key("mt-end"), i18n.T("End meeting"), icons.Stop.Bold, 14) {
 					local.menu = meetingMenuNone
-					actions.meetingFinish()
+					if state.Starting {
+						actions.meetingFinish() // a start that hangs: nothing recorded to keep
+					} else {
+						actions.requestMeetingFinish()
+					}
 				}
 			}
 			if model.ShowExpanded && state.Live && meetingOverlayButton(c.Key("mt-more"), i18n.T("More"), icons.MenuDots.Linear, 14) {
@@ -351,6 +360,23 @@ func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {
 	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, message, look, 0)
 		ui.Text(c, message).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
+	})
+}
+
+func meetingEndDialog(c *ui.Context, actions meetingOverlayActions, local *meetingOverlayLocalUI) {
+	t := c.Theme()
+	ui.Modal(c.Key("mt-end-ask"), &local.endAsk, func() {
+		ui.Text(c, i18n.T("End this meeting?")).Bold()
+		ui.Text(c, i18n.T("The recording stops, and Voxt finishes the transcript.")).Width(px(t, 380))
+		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
+			if ui.Button(c.Key("mt-end-no"), i18n.T("Keep recording")).Clicked() {
+				local.endAsk = false
+			}
+			if primaryButton(c.Key("mt-end-yes"), i18n.T("End meeting")).AutoFocus().Clicked() {
+				local.endAsk = false
+				actions.meetingFinish()
+			}
+		})
 	})
 }
 

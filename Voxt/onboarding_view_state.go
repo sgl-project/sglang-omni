@@ -310,6 +310,8 @@ func onboardingNoticeActionLabel(translator *i18n.Translator, action string) str
 		return translator.T("Restart helper")
 	case actionRetry:
 		return translator.T("Retry")
+	case actionMeeting:
+		return translator.T("View meeting")
 	}
 	return ""
 }

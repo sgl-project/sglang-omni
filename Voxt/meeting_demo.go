@@ -393,6 +393,11 @@ func (host *meetingDemoHost) setMeetingOverlayCollapsed(collapsed bool) {
 	host.overlayUI.collapsed = collapsed
 	host.record("setMeetingOverlayCollapsed %t", collapsed)
 }
+func (host *meetingDemoHost) requestMeetingFinish() {
+	host.overlayUI.menu = meetingMenuNone
+	host.overlayUI.endAsk = true
+	host.record("requestMeetingFinish")
+}
 func (host *meetingDemoHost) requestMeetingDiscard() {
 	host.overlayUI.menu = meetingMenuNone
 	host.overlayUI.abandon = true

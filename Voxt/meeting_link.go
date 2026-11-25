@@ -96,11 +96,16 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
 		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.endAsk = false         // and End's question
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)
 	}
 	a.followMeeting(s, prev)
+	if prev.State == meeting.StateFinishing && prev.ID != "" && (s.State == meeting.StateDone || s.State == meeting.StateIdle) {
+		// The overlay goes once the meeting is filed: say where it went.
+		a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: prev.ID, ok: true})
+	}
 	if s.State.Active() != prev.State.Active() {
 		a.closeMeetingAsk() // meeting_detect.go: it records now
 		a.ask.snoozed = ""  // and is not asked about again later
@@ -201,7 +206,10 @@ func (a *app) meetingSave() {
 			})
 			return
 		}
-		a.post(a.loadMeetings)
+		a.post(func() {
+			a.loadMeetings()
+			a.showNotice(sessionNotice{text: i18n.T("Meeting saved"), action: actionMeeting, entry: id, ok: true})
+		})
 	})
 }
 

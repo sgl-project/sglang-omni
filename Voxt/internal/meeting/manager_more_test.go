@@ -173,12 +173,18 @@ func TestSaveAfterAsking(t *testing.T) {
 	if err := m.Finish(ctx, id); err != nil {
 		t.Fatal(err)
 	}
+	var after []meeting.State
+	defer m.Subscribe(func(s meeting.Snapshot) { after = append(after, s.State) })()
 	if err := m.Save(ctx, id); err != nil {
 		t.Fatal(err)
 	}
 	mt, _, err := s.Meetings().Meeting(ctx, id)
 	if err != nil || mt.Status != store.MeetingDone {
 		t.Fatalf("saved row: %v %#v", err, mt)
+	}
+	// Save says so: the app's overlay, still asking otherwise, goes.
+	if len(after) == 0 || after[len(after)-1].Active() {
+		t.Fatalf("after Save the meeting showed %v", after)
 	}
 }
 

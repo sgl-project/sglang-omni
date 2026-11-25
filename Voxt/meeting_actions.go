@@ -41,4 +41,5 @@ type meetingOverlayActions interface {
 	setMeetingOverlayCollapsed(collapsed bool)
 	setMeetingOverlayCardSize(size int)
 	requestMeetingDiscard()
+	requestMeetingFinish()
 }
