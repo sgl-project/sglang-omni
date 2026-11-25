@@ -95,6 +95,7 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	a.meetSnap = s
 	if s.ID != prev.ID || s.State != prev.State {
 		a.meetOvUI.menu = meetingMenuNone // a menu for the state it opened in
+		a.meetOvUI.endAsk = false         // and End's question
 	}
 	if a.mv.read && (s.ID != prev.ID || s.State != prev.State) {
 		a.loadMeetings() // the meeting's row was written or its status changed (#3990)

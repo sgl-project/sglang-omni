@@ -37,3 +37,23 @@ func TestMeetingSavedNotice(t *testing.T) {
 		t.Fatalf("interrupted: notice %+v", b.notice)
 	}
 }
+
+// The overlay's End asks first, opening a collapsed overlay for its
+// question without changing the setting; the meeting ending another way
+// takes the question back.
+func TestMeetingEndAsksFirst(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Features.Meeting.Collapsed = true
+	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+	a.requestMeetingFinish()
+	if !a.meetOvUI.endAsk || a.meetingOverlayCollapsed() || !a.prefs.Features.Meeting.Collapsed {
+		t.Fatalf("asked: endAsk %v, collapsed %v, setting %v", a.meetOvUI.endAsk, a.meetingOverlayCollapsed(), a.prefs.Features.Meeting.Collapsed)
+	}
+	if a.meetSnap.State != meeting.StateRecording {
+		t.Fatalf("ended before the answer: %s", a.meetSnap.State)
+	}
+	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateFinishing, Stage: meeting.StageSaving})
+	if a.meetOvUI.endAsk || !a.meetingOverlayCollapsed() {
+		t.Fatalf("ended from the menu bar: endAsk %v, collapsed %v", a.meetOvUI.endAsk, a.meetingOverlayCollapsed())
+	}
+}

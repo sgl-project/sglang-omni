@@ -24,6 +24,9 @@ var meetingContentProtectionHook func(bool)
 const meetingCardSize = "meeting"
 
 func (a *app) meetingOverlayCollapsed() bool {
+	if a.meetOvUI.endAsk {
+		return false // its question needs the room; the setting stays
+	}
 	return a.meetOvUI.collapsed || a.prefs.Features.Meeting.Collapsed
 }
 
@@ -141,6 +144,13 @@ func (a *app) copyLiveMeetingTranscript() {
 	a.meetOvUI.menu = meetingMenuNone
 	a.copyLiveMeetingExport()
 	a.toast(i18n.T("Copied"))
+	a.syncMeetingOverlay()
+}
+
+// requestMeetingFinish asks before the overlay's End ends the meeting.
+func (a *app) requestMeetingFinish() {
+	a.meetOvUI.menu = meetingMenuNone
+	a.meetOvUI.endAsk = true
 	a.syncMeetingOverlay()
 }
 
