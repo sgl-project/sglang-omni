@@ -258,6 +258,11 @@ func TestEarlyCleanFallback(t *testing.T) {
 }
 
 func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
+	_, r := newEarlyUnitHarnessRun(t, model, terms)
+	return r
+}
+
+func newEarlyUnitHarnessRun(t *testing.T, model LLM, terms []store.Term) (*harness, *run) {
 	t.Helper()
 	h := newHarness(t, nil, model, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,7 +279,7 @@ func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.startScene()
 	close(r.svcResolved)
-	return r
+	return h, r
 }
 
 func TestEarlyCleanShortInputThinking(t *testing.T) {
