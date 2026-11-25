@@ -5,7 +5,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Added
-- **Take your library to another Mac** (#PR): Settings → Storage → Another Mac exports your settings, history, meetings, dictionary and snippets as one `.voxtlibrary` file. Import library on the other Mac replaces its library with the file's and restarts; the library it replaces stays in the data folder. Recordings, models and API keys stay on each Mac.
+- **Take your library to another Mac** (#4651): Settings → Storage → Another Mac exports your settings, history, meetings, dictionary and snippets as one `.voxtlibrary` file. Import library on the other Mac replaces its library with the file's and restarts; the library it replaces stays in the data folder. Recordings, models and API keys stay on each Mac.
 - **Three more recording sounds** (#4582): Settings → Audio → Sound → Built-in lists Kalimba, Wood and Vibraphone after Soft, two soft notes that rise as a recording starts and fall as it stops, the soft sounds friends liked most. They are Voxt's own, so every build has them. The default stays Soft.
 
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
@@ -41,7 +41,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### 中文
 
 #### 新增
-- **把资料库带到另一台 Mac**（#PR）：设置 → 存储 → 换到另一台 Mac，把设置、历史、会议、词典和片段导出成一个 `.voxtlibrary` 文件。在另一台 Mac 上导入资料库，会用文件里的资料库替换它的，然后重启；被替换的资料库留在数据文件夹里。录音、模型和 API key 不随文件走。
+- **把资料库带到另一台 Mac**（#4651）：设置 → 存储 → 换到另一台 Mac，把设置、历史、会议、词典和片段导出成一个 `.voxtlibrary` 文件。在另一台 Mac 上导入资料库，会用文件里的资料库替换它的，然后重启；被替换的资料库留在数据文件夹里。录音、模型和 API key 不随文件走。
 - **多了三组录音提示音**（#4582）：设置 → 音频 → 音效 → 自带里，“轻柔”后面多了卡林巴、木琴和颤音琴：两个轻柔的音，开始录音时上行，停止时下行，是朋友们试听时最喜欢的三组。这些声音是 Voxt 自己的，所有版本都有。默认仍是“轻柔”。
 
 - **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
