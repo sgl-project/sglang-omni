@@ -134,6 +134,8 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_SHOTS_ORDER` | `1` makes `scripts/mac-logs-shots.sh` capture the log order instead. | Unset: the normal captures |
 | `VOXTNEW_SIGN_IDENTITY` | Code signing identity for the helper and the release build. | Unset: ad hoc signing |
 | `VOXTNEW_SMOKE_LEGACY` | `1` runs the import check of the upgrade test in the app. | Unset: no check |
+| `VOXTNEW_SMOKE_LIBRARY` | `export`, `import` or `check`: one Mac's side of the library transfer test in `--smoke` (`scripts/library-e2e.sh`). | Unset: no transfer |
+| `VOXTNEW_SMOKE_LIBRARY_FILE` | The library file that `VOXTNEW_SMOKE_LIBRARY` exports to or imports from. | Unset: none |
 | `VOXTNEW_SMOKE_MODELS` | Speech model id that the app smoke test opens. | Unset: the first installed speech model |
 | `VOXTNEW_SNAPSHOTS` | Directory where `TestSnapshots` and the page snapshot tests write PNGs. | Unset: the tests skip |
 | `VOXTNEW_SNAPSHOTS_OUT` | File where `TestRealSnapshots` in `internal/models` writes its list. | Unset: the test skips |
