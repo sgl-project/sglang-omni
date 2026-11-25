@@ -162,7 +162,8 @@
       "cleanup": {
         "enhance": true,
         "cleanup": true,
-        "structure": false
+        "structure": false,
+        "while_speaking": true
       }
     },
     "prompt": {

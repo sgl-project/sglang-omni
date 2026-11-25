@@ -2,10 +2,14 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// ErrNoRecording means a finished meeting kept no recording to transcribe again.
+var ErrNoRecording = errors.New("meeting: no recording kept")
 
 // Reprocess reruns the final transcription pass for a stored meeting.
 func (m *Manager) Reprocess(ctx context.Context, id string) error {
@@ -17,6 +21,9 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	case store.MeetingInterrupted, store.MeetingFinishing, store.MeetingDone:
 	default:
 		return fmt.Errorf("meeting: cannot reprocess %s", mt.Status)
+	}
+	if mt.Status == store.MeetingDone && mt.Audio == "" {
+		return ErrNoRecording // its transcript stays as it is
 	}
 	mt.Status = store.MeetingFinishing
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {

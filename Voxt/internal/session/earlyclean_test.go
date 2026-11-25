@@ -258,6 +258,11 @@ func TestEarlyCleanFallback(t *testing.T) {
 }
 
 func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
+	_, r := newEarlyUnitHarnessRun(t, model, terms)
+	return r
+}
+
+func newEarlyUnitHarnessRun(t *testing.T, model LLM, terms []store.Term) (*harness, *run) {
 	t.Helper()
 	h := newHarness(t, nil, model, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,20 +279,20 @@ func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.startScene()
 	close(r.svcResolved)
-	return r
+	return h, r
 }
 
 func TestEarlyCleanShortInputThinking(t *testing.T) {
-	full := strings.Repeat("a", 1000)
+	full := strings.Repeat("一", 1000)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.settings.Providers.LLM = []settings.Provider{{
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
 	}}
-	r.hearPiece(full[:100])
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	r.hearPiece(strings.Repeat("一", 100))
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 4 {
@@ -307,13 +312,68 @@ func TestEarlyCleanThinkingCountsReplacedText(t *testing.T) {
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 20},
 	}}
 	r.hearPiece("aaaaaaaaaaaaaaaaaaaa")
-	_, _, err := r.cleanUpFirst("X")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("X")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 1 || reqs[0].InputChars != 1 || reqs[0].OnDelta == nil {
 		t.Fatalf("requests %+v, want one whole-text request with the replaced length 1", reqs)
+	}
+}
+
+func TestEarlyCleanMatchingTextBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		tail   string
+	}{
+		{"English spaces", "hello world.", " Next sentence."},
+		{"Chinese without spaces", "今天下午开会，讨论发布计划。", "然后确认时间。"},
+		{"mixed Chinese and English", "今天 review the API, 然后提交。", "Please send the notes."},
+		{"punctuation boundaries", "Version 1.2: ship it—today!", " (after QA)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "clean"}
+			r := newEarlyUnitRun(t, model, nil)
+			r.hearPiece(tc.prefix)
+			waitEarly(t, model, 1)
+
+			parts, answers, tail, _, _, ok := r.earlyCleanup().drain(tc.prefix + tc.tail)
+			if !ok || len(parts) == 0 || len(answers) != len(parts) || tail != tc.tail {
+				t.Fatalf("drain ok=%t, parts=%d, answers=%d, tail=%q; want matching prefix and tail %q", ok, len(parts), len(answers), tail, tc.tail)
+			}
+		})
+	}
+}
+
+func TestEarlyCleanChainedAliasesAreNormalizedOnce(t *testing.T) {
+	terms := []store.Term{
+		{Term: "Alpha", Aliases: []string{"source"}, Enabled: true},
+		{Term: "Beta", Aliases: []string{"Alpha"}, Enabled: true},
+	}
+	raw := "Say source, then stop."
+	model := &fakeLLM{text: "cleaned once"}
+	h := newHarness(t, &fakeStreamer{final: raw, pieces: []string{raw}}, model, func(config *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+		s.Dictionary.Enabled = true
+		config.Glossary = func(context.Context) ([]store.Term, error) { return terms, nil }
+	})
+	id := h.start()
+	waitEarly(t, model, 1)
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	reqs := model.requests()
+	if end.Result != "cleaned once" || len(reqs) != 1 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "cleaned once" {
+		t.Fatalf("end %+v, requests %d, pasted %q", end, len(reqs), h.text.pastes())
+	}
+	var requestText strings.Builder
+	for _, message := range reqs[0].Messages {
+		requestText.WriteString(message.Content)
+		requestText.WriteByte('\n')
+	}
+	if !strings.Contains(requestText.String(), "Say Alpha, then stop.") || strings.Contains(requestText.String(), "Say Beta, then stop.") {
+		t.Fatalf("cleanup normalized the chained aliases more than once: %q", requestText.String())
 	}
 }
 
@@ -322,14 +382,14 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	for i := range terms {
 		terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
 	}
-	first := strings.Repeat("a", 295) + "Term00"
-	full := first + strings.Repeat("b", 293) + "Term30"
+	first := strings.Repeat("一", 295) + "Term00"
+	full := first + strings.Repeat("二", 293) + "Term30"
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, terms)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 2 {
@@ -344,14 +404,14 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 }
 
 func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
-	first := strings.Repeat("a", 301)
-	full := first + strings.Repeat("b", 299)
+	first := strings.Repeat("一", 301)
+	full := first + strings.Repeat("二", 299)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 3 {
@@ -423,13 +483,14 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	r.hearPiece("one two")
 	r.hearPiece("one two three")
 	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one changed three")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("one changed three")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "fallback" {
-		t.Errorf("result %q, want the whole-text fallback", result)
+	if output.text != "fallback" {
+		t.Errorf("result %q, want the whole-text fallback", output.text)
 	}
+	waitEarlyWorker(t, r)
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	if !errors.Is(model.secondErr, context.Canceled) {
@@ -448,12 +509,12 @@ func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
 	r.hearPiece("one two")
 	r.hearPiece("one two three")
 	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one two three tail")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("one two three tail")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "early one fallback" {
-		t.Errorf("result %q, want the completed early answer and the fallback tail", result)
+	if output.text != "early one fallback" {
+		t.Errorf("result %q, want the completed early answer and the fallback tail", output.text)
 	}
 	model.mu.Lock()
 	calls := model.calls
@@ -466,7 +527,7 @@ func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
 func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	model := &earlyFallbackLLM{secondStarted: make(chan struct{}), secondRelease: make(chan struct{})}
 	r := newEarlyUnitRun(t, model, nil)
-	lastJob := strings.Repeat("a", 301)
+	lastJob := strings.Repeat("一", 301)
 	full := "one " + lastJob + " tail"
 	r.hearPiece("one")
 	r.hearPiece("one " + lastJob)
@@ -476,7 +537,7 @@ func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	r.early.mu.Unlock()
 	close(model.secondRelease)
 	waitEarlyWorker(t, r)
-	parts, answers, tail, _, ok := r.early.drain(full)
+	parts, answers, tail, _, _, ok := r.early.drain(full)
 	if !ok || len(parts) != 1 || len(answers) != 1 || answers[0] != "early one" {
 		t.Fatalf("early parts = %d, answers = %q, ok = %v; want only the completed first job", len(parts), answers, ok)
 	}
@@ -540,14 +601,14 @@ func TestEarlyCleanDrainSkipAndRethink(t *testing.T) {
 			tc.act(h.m, id)
 			model.waitFinished(t, 0)
 			if tc.name == "rethink" {
-				model.waitStarted(t, 2)
-				model.finish(t, 2)
+				model.waitStarted(t, 1)
+				model.finish(t, 1)
 			}
 			end := h.rec.wait(t)
 			if tc.name == "skip" && end.Result != "one tail" {
 				t.Errorf("skip end %+v, want the raw transcript", end)
 			}
-			if tc.name == "rethink" && (end.Result != "整理三。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
+			if tc.name == "rethink" && (end.Result != "整理二。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
 				t.Errorf("rethink end %+v", end)
 			}
 		})

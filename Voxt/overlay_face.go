@@ -25,7 +25,10 @@ var (
 	ovLiveColor = ui.RGBA(255, 255, 255, ovLiveAlpha)
 )
 
-const ovLiveAlpha = 0.85
+// ovLiveAlpha is the live text's; ovPreviewAlpha a streaming speech
+// model's words so far, before the recognised text replaces them: as dim
+// as ovText2 (macOS's secondary label), still 4.5:1 over a light desktop.
+const ovLiveAlpha, ovPreviewAlpha = 0.85, 0.6
 
 // faceStyle gives e, the face, its radius and translucent fill, hairline and
 // shadow. Give it children.
@@ -37,13 +40,15 @@ func faceStyle(c *ui.Context, e ui.Element, radius, alpha float32) ui.Element {
 
 // pillLook is how the pill draws: with the time, its live text in lines
 // (Overlay.LiveLines) and their scroll (nil: a preview's, following the
-// end), moving, at phase seconds, w DIPs wide.
+// end), moving, at phase seconds, its waveform gliding (wave, the bars at a
+// time; nil: straight from the levels), w DIPs wide.
 type pillLook struct {
 	time   bool
 	lines  bool
 	scroll *linesScroll
 	motion bool
 	phase  float64
+	wave   func(time.Time) layout.Wave
 	w      int
 }
 
@@ -63,6 +68,13 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 		col.Justify(ui.Start) // the row stays put as the lines under it grow
 	}
 	col.Children(func() {
+		// After a recording the working row is as wide as the recording's,
+		// centred, so the icon stays where it was: the loader takes the
+		// waveform's slot; when a capsule comes, the feature's name gives
+		// way, and the loader and the capsules take its and the slot's room
+		// (recordingPillRow counts the same).
+		showTime := pillShowsTime(state, look)
+		named, loader := pillRowNamed(c, state)
 		ui.Row(c).Height(layout.RowH).Shrink(0).Gap(layout.Gap).AlignItems(ui.Center).Children(func() {
 			if state.Mode == ovRecording && pill.Starting {
 				startingIcon(c, pill, look)
@@ -71,29 +83,29 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 					ui.Icon(c, overlayKindIcon(pill.Kind).Bold).Size(layout.IconSize, layout.IconSize).TextColor(ovIcon).Shrink(0).Label(pill.Title)
 				})
 			}
-			if state.Mode == ovRecording && !pill.Starting {
+			if named {
 				ui.Text(c, pill.Title).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0).
 					Label(i18n.T("Recording mode: %s", pill.Title))
 			}
 			if state.Mode == ovRecording {
 				waveform(c, pill.Levels[:], pill.Heard, look)
-				if look.time {
-					ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
-						ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
-					})
-				}
 			} else {
-				overlayLoader(c, pill.WorkingLabel, look, layout.WaveSlotW)
-			}
-			if pill.SceneText != "" {
-				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
-					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
+				overlayLoader(c, pill.WorkingLabel, look, loader)
 			}
 			if pill.CanSkip {
 				skip = cardCapsule(c.Key("ov-skip"), pill.SkipLabel, pill.SkipTooltip)
 			}
 			if pill.CanThink && pill.ThinkingLabel != "" {
 				thinkClicked = cardCapsule(c.Key("ov-think"), pill.ThinkingLabel, "")
+			}
+			if showTime {
+				ui.Box(c).Height(layout.RowH).Shrink(0).Center().Children(func() {
+					ui.Text(c, pill.ElapsedText).FontSize(12).Font("monospace").TextColor(ovText2).SingleLine().Shrink(0)
+				})
+			}
+			if pill.SceneText != "" {
+				ui.Text(c, pill.SceneText).FontSize(layout.SceneSize).TextColor(ovText2).SingleLine().Ellipsis("…").MaxWidth(layout.SceneMaxW).MinWidth(0).Shrink(1).
+					Label(i18n.T("App enhancement: %s", pill.SceneLabel))
 			}
 		})
 		switch {
@@ -104,9 +116,9 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 				ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText2).SingleLine().Shrink(0)
 			})
 		case text != "" && look.lines:
-			liveLines(c.Key("ov-lines"), look.scroll, state.SessionID, text)
+			liveLines(c.Key("ov-lines"), look.scroll, state.SessionID, text, pill.LivePreview)
 		case text != "":
-			liveLine(c.Key("ov-live-"+state.SessionID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion)
+			liveLine(c.Key("ov-live-"+state.SessionID), text, float32(max(look.w, layout.PillW)-2*layout.LivePadX), look.motion, pill.LivePreview)
 		case look.lines:
 			ui.Box(c).Height(layout.LineH).Shrink(0) // the first line's room, before any text
 		}
@@ -117,6 +129,54 @@ func overlayPill(c *ui.Context, state *sessionOverlayViewState, look pillLook, a
 	if thinkClicked {
 		actions.togglePillThinkMenu()
 	}
+}
+
+// pillShowsTime: the pill shows the recording's time (Overlay.ShowTime)
+// while it records, and after, still at its length, while it works on what
+// was heard (not for a selection, which has none).
+func pillShowsTime(state *sessionOverlayViewState, look pillLook) bool {
+	return look.time && (state.Mode == ovRecording || state.Pill.Heard)
+}
+
+// pillRowNamed is whether the pill's row shows the feature's name, and
+// its loader's slot: the name while it records (but while it starts) and
+// while it works on a recording, unless a capsule shows; then the loader
+// takes what is left of the name's and the waveform slot's room
+// (layout.LoaderSlotW). Without a recording, the working row is the icon,
+// the loader in the waveform's slot and the capsules.
+func pillRowNamed(c *ui.Context, state *sessionOverlayViewState) (bool, float32) {
+	pill := &state.Pill
+	if state.Mode == ovRecording {
+		return !pill.Starting, layout.WaveSlotW
+	}
+	if !pill.Heard {
+		return false, layout.WaveSlotW
+	}
+	width := func(key ovSized) float32 { w, _ := c.MeasureText(0, key.span()); return w }
+	if capsules := pillCapsules(pill, width); capsules > 0 {
+		return false, layout.LoaderSlotW(width(kindTitleText(pill.Title)), capsules)
+	}
+	return true, layout.WaveSlotW
+}
+
+// pillCapsules is how wide the working pill's capsules are together, the
+// Gap between them, each its text (measure) and 10 either side.
+func pillCapsules(pill *sessionPillViewState, measure func(ovSized) float32) float32 {
+	w, n := float32(0), 0
+	add := func(text string) {
+		w += measure(capsuleText(text)) + 2*10
+		n++
+	}
+	if pill.CanSkip {
+		add(pill.SkipLabel)
+	}
+	if pill.CanThink && pill.ThinkingLabel != "" {
+		add(pill.ThinkingLabel)
+	}
+	if n > 1 {
+		w += float32(n-1) * layout.Gap
+	}
+	return w
 }
 
 // startingIcon is the feature's icon while the microphone or the speech
@@ -148,7 +208,7 @@ type linesScroll struct {
 // following the newest words unless the wheel took it up to read what
 // came before, until it is back at the end (#3644: the lines before the
 // last ten were out of reach).
-func liveLines(c *ui.Context, l *linesScroll, id, text string) {
+func liveLines(c *ui.Context, l *linesScroll, id, text string, preview bool) {
 	if l == nil {
 		l = &linesScroll{}
 	}
@@ -160,7 +220,11 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 		l.st.Y = math.MaxFloat32 // the end, wherever the new words put it
 	}
 	ui.Scroll(c).Width(layout.LinesTextW).MaxHeight(layout.LinesMax * layout.LineH).Shrink(0).TrackScroll(&l.st).Label(text).Children(func() {
-		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(ovText).Shrink(0)
+		color := ovText
+		if preview {
+			color = ovText.Alpha(ovPreviewAlpha)
+		}
+		ui.Text(c, text).FontSize(layout.LiveSize).FontWeight(layout.LiveWeight).TextColor(color).Shrink(0)
 	})
 }
 
@@ -169,7 +233,7 @@ func liveLines(c *ui.Context, l *linesScroll, id, text string) {
 // edge, sliding left as more come (180 ms, Voxt's 0.2 s ease-out), the
 // letters at the left edge fading out to say that more came before. The
 // key is the session's: a new one starts where its text is, not sliding.
-func liveLine(c *ui.Context, text string, width float32, motion bool) {
+func liveLine(c *ui.Context, text string, width float32, motion, preview bool) {
 	measure := func(t string) float32 { w, _ := c.MeasureText(0, liveTextKey(t).span()); return w }
 	box := ui.Row(c).Width(width).Height(layout.LineH).Shrink(0).AlignItems(ui.Center).Clip().Label(text)
 	// Centred under the row while it fits; else its end at the right edge.
@@ -181,9 +245,13 @@ func liveLine(c *ui.Context, text string, width float32, motion bool) {
 	if motion {
 		x = box.AnimateTo("x", target, ui.Animation{Duration: 180 * time.Millisecond, Ease: ui.EaseOut})
 	}
-	shown, at, spans := text, x, []ui.Span{{Text: text, Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ovLiveColor}}
+	alpha := float32(ovLiveAlpha)
+	if preview {
+		alpha = ovPreviewAlpha
+	}
+	shown, at, spans := text, x, []ui.Span{{Text: text, Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha)}}
 	if x < 0 {
-		shown, at, spans = fadeSpans(text, -x, measure)
+		shown, at, spans = fadeSpans(text, -x, alpha, measure)
 		at = x + at
 	}
 	box.Children(func() {
@@ -194,9 +262,9 @@ func liveLine(c *ui.Context, text string, width float32, motion bool) {
 // fadeSpans are the part of text that shows when it is scrolled off DIPs
 // to the left, measure telling how wide a part of it is: the letters past
 // the edge, where the shown part starts (from the text's start), and its
-// spans: the letters in the layout.FadeW after the edge fading in from it, the
-// rest as ovText.
-func fadeSpans(text string, off float32, measure func(string) float32) (string, float32, []ui.Span) {
+// spans, at alpha: the letters in the layout.FadeW after the edge fading
+// in from it, the rest at alpha.
+func fadeSpans(text string, off, alpha float32, measure func(string) float32) (string, float32, []ui.Span) {
 	r := []rune(text)
 	// The first letter that ends past the edge.
 	lo, hi := 0, len(r)
@@ -215,11 +283,11 @@ func fadeSpans(text string, off float32, measure func(string) float32) (string, 
 		end := measure(string(r[:i+1])) - off
 		mid := max(0, (start+end)/2)
 		a := min(mid/layout.FadeW, 1)
-		spans = append(spans, ui.Span{Text: string(r[i]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, ovLiveAlpha*(0.1+0.9*a))})
+		spans = append(spans, ui.Span{Text: string(r[i]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha*(0.1+0.9*a))})
 		start = end
 	}
 	if i < len(r) {
-		spans = append(spans, ui.Span{Text: string(r[i:]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ovLiveColor})
+		spans = append(spans, ui.Span{Text: string(r[i:]), Size: layout.LiveSize, Weight: layout.LiveWeight, Color: ui.RGBA(255, 255, 255, alpha)})
 	}
 	return string(r[lo:]), from, spans
 }
@@ -276,8 +344,8 @@ func overlayNotice(c *ui.Context, notice *sessionNoticeViewState, radius, alpha 
 	}
 }
 
-// The preview's background: a desktop picture (Voxt's, Apache-2.0: see
-// NOTICE), decoded once.
+// The preview's background: a desktop picture of our own (a soft gradient,
+// blue-violet to peach), decoded once.
 //
 //go:embed assets/overlay-preview-background.png
 var ovPreviewPNG []byte
@@ -324,7 +392,7 @@ func (state settingsOverlayPreviewState) overlayPreview(c *ui.Context) {
 		}
 		place.Children(func() {
 			c.SetTheme(overlayTheme(state.palette))
-			row, _ := recordingPillRow(&pill.Pill, true, state.ShowTime, 0, func(k ovSized) (float32, bool) {
+			row, _ := recordingPillRow(&pill.Pill, false, state.ShowTime, 0, func(k ovSized) (float32, bool) {
 				width, _ := c.MeasureText(k.wrap, k.span())
 				return width, true
 			})

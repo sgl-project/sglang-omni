@@ -74,6 +74,7 @@ class Yue2Runtime:
         else:
             pass
         self.vae = vae
+        self.device_module = torch.get_device_module(next(vae.parameters()).device)
         self.vae_core_frames = vae_core_frames
         self.vae_halo_frames = vae_halo_frames
         if vae_core_frames < 1 or vae_halo_frames < vae.required_halo(vae_core_frames):
@@ -152,7 +153,7 @@ class Yue2Runtime:
         )
         model.to(device=device, dtype=torch.bfloat16).eval().requires_grad_(False)
         vae.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
-        torch.cuda.empty_cache()
+        torch.get_device_module(device).empty_cache()
         return cls(
             model,
             vae,
@@ -190,13 +191,13 @@ class Yue2Runtime:
             cancelled,
         )
         # note (ruiling): flow matching and decoding cache blocks the other cannot reuse.
-        torch.cuda.empty_cache()
+        self.device_module.empty_cache()
         audio = self.vae.decode_tiled(
             latents.T[None],
             self.vae_core_frames,
             self.vae_halo_frames,
             cancelled,
         )[0]
-        torch.cuda.empty_cache()
+        self.device_module.empty_cache()
         check_cancelled(cancelled)
         return audio
