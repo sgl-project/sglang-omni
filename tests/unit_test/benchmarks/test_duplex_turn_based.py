@@ -24,10 +24,10 @@ from websockets.asyncio.server import ServerConnection
 
 from benchmarks.duplex.client import TurnDetection, run_session
 from benchmarks.duplex.oracle import evaluate_trace
-from benchmarks.duplex.profiles import PROFILES, DuplexProfile
+from benchmarks.duplex.profiles import PROFILES, DuplexProfile, ProfileName
 from benchmarks.duplex.reference_capture import TraceFormat
 from benchmarks.duplex.reference_export import export_runs
-from benchmarks.duplex.v15_audio import TURN_BASED_BARGE_IN_CUT, reconstruct_output
+from benchmarks.duplex.v15_audio import CANCELLED_RESPONSE_CUT, reconstruct_output
 from benchmarks.eval.benchmark_duplex_reference import main as reference_main
 from benchmarks.eval.benchmark_duplex_v10 import main as v10_main
 from benchmarks.eval.benchmark_duplex_v15 import main as v15_main
@@ -41,6 +41,7 @@ from tests.unit_test.fixtures.duplex_fakes import (
 )
 
 TURN_BASED = "turn-based"
+D2 = "qwen3-omni-d2-80ms"
 LEGACY = "qwen3-omni-half-duplex"
 NATIVE = "minicpmo-native-pr2377"
 OUTPUT_RATE = 24000
@@ -444,7 +445,7 @@ def test_client_records_a_passing_turn_based_session(tmp_path: Path) -> None:
     assert summary["errors"] == []
     assert summary["sample_rate"] == OUTPUT_RATE
     assert summary["media_samples"] == round(0.7 * OUTPUT_RATE)
-    assert summary["barge_in"] == {"rule": TURN_BASED_BARGE_IN_CUT, "cuts": 1}
+    assert summary["barge_in"] == {"rule": CANCELLED_RESPONSE_CUT, "cuts": 1}
     playout = json.loads((tmp_path / "playout.json").read_text())
     (cut,) = playout["cuts"]
     assert cut["type"] == "response.done" and cut["dropped_samples"] > 0
@@ -1088,19 +1089,20 @@ def reconstruction_records(status: str) -> list[dict[str, JsonValue]]:
     return records
 
 
+@pytest.mark.parametrize("profile", [TURN_BASED, D2])
 @pytest.mark.parametrize("status", ["cancelled", "completed"])
 def test_reconstruction_cuts_playout_at_a_cancelled_response(
-    tmp_path: Path, status: str
+    tmp_path: Path, status: str, profile: ProfileName
 ) -> None:
     write_trace(tmp_path / "continuous.jsonl", reconstruction_records(status))
 
-    summary = reconstruct_output(tmp_path, profile=TURN_BASED)
+    summary = reconstruct_output(tmp_path, profile=profile)
 
     assert summary["errors"] == []
     assert summary["sample_rate"] == OUTPUT_RATE
     assert summary["media_samples"] == 5800
     cut = status == "cancelled"
-    assert summary["barge_in"] == {"rule": TURN_BASED_BARGE_IN_CUT, "cuts": int(cut)}
+    assert summary["barge_in"] == {"rule": CANCELLED_RESPONSE_CUT, "cuts": int(cut)}
     playout = json.loads((tmp_path / "playout.json").read_text())
     assert [c["playout_start_sample"] for c in playout["chunks"]] == [
         12000,
@@ -1277,19 +1279,23 @@ def test_export_reads_the_declared_rate_and_gates_on_the_verdict(
     assert not (tmp_path / "export/user_interruption/1/clean_output.wav").exists()
 
 
+@pytest.mark.parametrize(
+    ("profile", "trace_format"),
+    [(TURN_BASED, TraceFormat.TURN_BASED_PCM16), (D2, TraceFormat.PCM16)],
+)
 @pytest.mark.parametrize("status", ["cancelled", "completed"])
 def test_export_cuts_the_window_at_a_cancelled_response(
-    tmp_path: Path, status: str
+    tmp_path: Path, status: str, profile: ProfileName, trace_format: TraceFormat
 ) -> None:
     run = make_turn_based_run(
-        tmp_path, samples(8000, 0), done_at_s=0.2, done_status=status
+        tmp_path, samples(8000, 0), profile=profile, done_at_s=0.2, done_status=status
     )
 
     result = export_runs(
         [run],
         tmp_path / "export",
-        "turn-based",
-        trace_format="realtime-turn-based-pcm16-v1",
+        profile,
+        trace_format=trace_format.value,
     )
 
     overlap = result["samples"][0]["variants"]["overlap"]
@@ -1423,7 +1429,7 @@ def test_v15_recorder_records_a_turn_based_profile(tmp_path: Path) -> None:
         "type": "server_vad",
         "silence_duration_ms": 500,
     }
-    assert turn_based_config["barge_in_cut"] == TURN_BASED_BARGE_IN_CUT
+    assert turn_based_config["barge_in_cut"] == CANCELLED_RESPONSE_CUT
     assert "session_end" in turn_based_config
     result = json.loads((run / "run.json").read_text())
     variant = result["samples"][0]["variants"]["overlap"]

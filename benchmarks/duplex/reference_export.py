@@ -91,12 +91,7 @@ def export_runs(
             pass
         run, entry = chosen[sample_id]
         source_manifest = read_json(run / "manifest.json")
-        # note (luojiaxuan): load_runs already required a legacy-protocol profile.
-        profile_rate = (
-            PROFILES[source_manifest["profile"]].output_sample_rate
-            if capture_format is TraceFormat.LEGACY_PCM16
-            else None
-        )
+        profile = PROFILES.get(source_manifest.get("profile"))
         sidecar = send_receipts_required(run)
         target = output / sample_id
         target.mkdir(parents=True)
@@ -112,7 +107,10 @@ def export_runs(
                 capture_format,
                 (state.get("input") or {}).get("sha256"),
                 receipts_required=sidecar,
-                profile_rate=profile_rate,
+                profile_rate=profile.output_sample_rate if profile else None,
+                supports_server_interrupt=bool(
+                    profile and profile.supports_server_interrupt
+                ),
             )
             reasons = record["window"]["reasons"]
             # note (luojiaxuan): A legacy or turn-based session that failed its

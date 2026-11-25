@@ -142,10 +142,12 @@ def analyze_variant(
     expected_input_sha: str | None,
     receipts_required: bool = False,
     profile_rate: int | None = None,
+    *,
+    supports_server_interrupt: bool = False,
 ) -> tuple[dict[str, JsonValue], bytes | None, NDArray[np.int16] | None]:
     """Stream one trace; return (record, input_pcm or None, output int16 at 16 kHz or None).
 
-    profile_rate is the recorded profile's output rate for the legacy format.
+    The profile supplies the legacy output rate and the native interrupt contract.
     """
     reasons, post_window_events, anomalies = [], [], []
     pcm_path, trace_path = variant_dir / "input.pcm", variant_dir / "continuous.jsonl"
@@ -197,6 +199,9 @@ def analyze_variant(
     recovery_pending = False
     interrupts_on_speech = None
     barge_in_cuts = 0
+    cut_on_cancel = (
+        trace_format is TraceFormat.TURN_BASED_PCM16 or supports_server_interrupt
+    )
     created_responses, response_terminals = set(), {}
     closed_count, close_times_s = 0, []
     accepted_receipts = {}
@@ -373,11 +378,7 @@ def analyze_variant(
             elif kind == "response.done":
                 status = (event.get("response") or {}).get("status")
                 response_terminals[response_id(event)] = status
-                if (
-                    trace_format is TraceFormat.TURN_BASED_PCM16
-                    and status == "cancelled"
-                    and playout is not None
-                ):
+                if cut_on_cancel and status == "cancelled" and playout is not None:
                     cut_playout(time_s)
                 else:
                     pass
@@ -621,7 +622,7 @@ def analyze_variant(
             "first_playout_start_s": first_audio_s,
             "last_contributing_receipt_s": last_audio_s,
         }
-        if trace_format is not TraceFormat.PCM16:
+        if trace_format is not TraceFormat.PCM16 or cut_on_cancel:
             record["output"]["barge_in_cuts"] = barge_in_cuts
         else:
             pass
