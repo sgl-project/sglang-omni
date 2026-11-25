@@ -6,7 +6,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Added
 
-- **Sessions (prototype)** (#4005): three session slots, switched with Control+Option+1, Control+Option+2 and Control+Option+3 (rebindable in Settings → Shortcuts). Rewrite, Translate and Transcribe run in the current session, each keeping its own answer card and conversation; the card names its session, and switching back brings its card and conversation back, so a covered Rewrite result is never lost. With no session shortcut pressed, everything works as before.
+- **Sessions (prototype)** (#4005): three session slots, switched with Control+Option+1, Control+Option+2 and Control+Option+3 (rebindable in Settings → Shortcuts). Rewrite, Translate and Transcribe run in the current session, each keeping its own answer card and conversation; the card names its session, and switching back brings its card and conversation back, so a covered Rewrite result is never lost. The first two switches say in a short notice what a session keeps and which shortcuts switch. With no session shortcut pressed, everything works as before.
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke.
 - **Six cards to share from Looking back** (#4584): both Share buttons on Home grow under the pointer and throw stars when clicked. Looking back's Share opens six cards, one at a time: the highlights, the characters you dictated, your streak, your speed against typing, the time saved and your active days. Each has its own layout and look, on a color gradient or on colored paper, and comes in moving: numbers count up, the speed dial and the bars grow, and the little Voxt sways or blinks. Turn them with the arrows, the dots or the arrow keys, change a card's color, then copy it, save it as a picture, or post it to LinkedIn or X: the picture is copied, the window says to paste it with ⌘V, and a new post opens.
@@ -38,7 +38,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 新增
 
-- **会话（原型）**（#4005）：三个会话，用 Control+Option+1、Control+Option+2、Control+Option+3 切换（可在设置 → 快捷键里改）。改写、翻译和转录在当前会话里进行，各自保留自己的答案卡片和对话；卡片上标着它属于哪个会话，切回去时卡片和对话一起回来，被遮住的改写结果不会再丢。不按会话快捷键时，一切照旧。
+- **会话（原型）**（#4005）：三个会话，用 Control+Option+1、Control+Option+2、Control+Option+3 切换（可在设置 → 快捷键里改）。改写、翻译和转录在当前会话里进行，各自保留自己的答案卡片和对话；卡片上标着它属于哪个会话，切回去时卡片和对话一起回来，被遮住的改写结果不会再丢。前两次切换时，提示里会说明每个会话保留什么、按哪些快捷键切换。不按会话快捷键时，一切照旧。
 - **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。
 - **回顾可以分享六张卡片**（#4584）：首页的两个“分享”按钮在指针下会变大，点击时冒出星星。回顾的“分享”打开六张卡片，一次看一张：总览、口述字数、连续天数、口述和打字的速度对比、节省时间、活跃天数。每张版式和配色都不同，渐变底和彩纸底交替，出现时会动：数字滚动，速度表盘和柱条慢慢长出来，小 Voxt 晃一晃或眨眨眼。用两侧箭头、圆点或方向键翻页，可以给当前这张换个颜色，再复制、保存成图片，或发到 LinkedIn、X：图片会先复制好，窗口提示按 ⌘V 粘贴，再打开新帖子。

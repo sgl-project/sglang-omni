@@ -32,7 +32,7 @@ func TestSessionSlotSwitchKeepsConversations(t *testing.T) {
 	if p := a.slots[0]; !p.answer.open || p.answer.text != "one" || len(p.answer.turns) != 1 {
 		t.Fatalf("parked: %+v", p.answer)
 	}
-	if a.notice == nil || a.notice.text != "Session 2" {
+	if a.notice == nil || !strings.HasPrefix(a.notice.text, "Session 2") {
 		t.Fatalf("notice %+v", a.notice)
 	}
 
@@ -227,5 +227,29 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	}
 	if v := a.cachedCard(); v.Session != "" {
 		t.Fatalf("label without sessions: %q", v.Session)
+	}
+}
+
+// TestSessionGuideFirstSwitches: the first two session switches say what
+// a session keeps and which shortcuts switch, also beside a card that
+// came back; later switches only name the session, and count no further.
+func TestSessionGuideFirstSwitches(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	guide := "Session 2. Each session keeps its own card and conversation; switch with ⌃⌥1 ⌃⌥2 ⌃⌥3."
+	tap(a, "session-2", textEditApp)
+	if a.notice == nil || a.notice.text != guide {
+		t.Fatalf("first switch: notice %+v", a.notice)
+	}
+	tap(a, "session-1", textEditApp) // session 1's card comes back
+	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "keeps its own card") {
+		t.Fatalf("second switch, card back %v: notice %+v", a.answer.open, a.notice)
+	}
+	tap(a, "session-2", textEditApp)
+	if a.notice == nil || a.notice.text != "Session 2" {
+		t.Fatalf("third switch: notice %+v", a.notice)
+	}
+	if got := a.prefs.Setup.SessionSwitches; got != settings.SessionGuideTimes {
+		t.Fatalf("switches counted %d, want %d", got, settings.SessionGuideTimes)
 	}
 }

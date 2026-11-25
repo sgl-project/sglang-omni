@@ -317,7 +317,14 @@ type Setup struct {
 	// RewriteBoxTipDismissed independently hides the guidance for good.
 	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
 	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
+	// SessionSwitches counts session switches, capped at
+	// SessionGuideTimes: until then the switch's notice says how
+	// sessions work.
+	SessionSwitches int `json:"sessionSwitches,omitempty"`
 }
+
+// SessionGuideTimes is how many session switches explain sessions.
+const SessionGuideTimes = 2
 
 // Updates: what the updater offers (Settings → About → Updates). With an
 // update feed, its other preferences (automatic checks and installs) are

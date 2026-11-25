@@ -11,8 +11,12 @@ package main
 // pressed, everything stays in slot 0 and behaves as before.
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // slotCount is how many session slots the session shortcuts switch
@@ -57,12 +61,28 @@ func (a *app) switchSlot(n int) {
 	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
 	a.notice = nil
 	a.resurface()
-	if !a.answer.open && !a.bgVisible() {
+	if a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes {
+		// The first switches teach sessions, beside a card that came back too.
+		a.updateSettings(func(s *settings.Settings) { s.Setup.SessionSwitches++ })
+		a.showNotice(sessionNotice{text: sessionGuide(n, a.prefs.Features.Sessions), ok: true})
+	} else if !a.answer.open && !a.bgVisible() {
 		a.showNotice(sessionNotice{text: i18n.T("Session %d", n+1), ok: true})
 	}
 	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
+}
+
+// sessionGuide is a first switch's notice: the session's name, what a
+// session keeps, and the shortcuts that switch.
+func sessionGuide(n int, sessions [slotCount]settings.Hotkey) string {
+	var keys []string
+	for _, h := range sessions {
+		if h.Keys != "" {
+			keys = append(keys, uitext.HotkeyGlyphs(h.Keys))
+		}
+	}
+	return i18n.T("Session %d. Each session keeps its own card and conversation; switch with %s.", n+1, strings.Join(keys, " "))
 }
 
 // parkAnswer gives an ended backgrounded answer its card in its own
