@@ -148,6 +148,7 @@ func TestWeb(t *testing.T) {
 		"https://app.zoom.us/wc/123/join":             Zoom,
 		"https://us02web.zoom.us/j/123":               Zoom,
 		"meeting.tencent.com/dm/abc":                  Tencent,
+		"https://acme.webex.com/meet/ann":             Webex,
 		"https://docs.google.com/document/d/1":        "",
 		"https://notzoom.us/":                         "",
 		"https://chatgpt.com/":                        "",

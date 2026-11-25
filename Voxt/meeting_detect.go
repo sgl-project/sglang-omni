@@ -143,6 +143,9 @@ func (a *app) syncMeetingDetect() {
 	}
 	found, wait := a.detect.Update(a.micUsers, browsers, a.now())
 	if a.ask.key != "" && a.detect.Recording(a.ask.key) == a.ask.end {
+		if !a.ask.end {
+			a.detect.Forget(a.ask.key) // unanswered: a mute may have let go of the microphone
+		}
 		a.closeMeetingAsk() // the meeting is over (or, asked whether it is, goes on)
 	}
 	if a.tree != "" && !a.detect.Recording(a.tree) {

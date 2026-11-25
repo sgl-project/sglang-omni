@@ -52,7 +52,8 @@ func micSays(t *testing.T, a *app, ids ...string) {
 }
 
 // A meeting app that starts recording is asked about once, with the card;
-// the card goes when the app lets go of the microphone.
+// the card goes when the app lets go of the microphone and, unanswered,
+// comes back at its next use.
 func TestMeetingDetectedAsksOnce(t *testing.T) {
 	a, fs, _ := newTestApp(t)
 	if !slices.Contains(fs.methods(), proto.MethodMicWatch) {
@@ -76,8 +77,14 @@ func TestMeetingDetectedAsksOnce(t *testing.T) {
 		t.Fatal("the card stayed after Zoom let go of the microphone")
 	}
 	micUsers(t, a, "us.zoom.xos")
+	if !a.ask.view.Visible {
+		t.Fatal("a mute before the card was answered lost the question")
+	}
+	a.dismissMeetingAsk()
+	micUsers(t, a, "com.apple.CoreSpeech")
+	micUsers(t, a, "us.zoom.xos")
 	if a.ask.view.Visible {
-		t.Fatal("an unmute in the same meeting asked again")
+		t.Fatal("an unmute after the card was closed asked again")
 	}
 }
 
