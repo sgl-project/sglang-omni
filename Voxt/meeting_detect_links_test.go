@@ -334,3 +334,54 @@ func TestMeetingDetectedInArc(t *testing.T) {
 		t.Fatalf("Arc stopped recording: trees asked of %v, card %+v", listed, a.ask.view)
 	}
 }
+
+// Voxt's meeting ended there (its final pass runs, or it asks whether to
+// keep it): the app letting go of the microphone then asks nothing, and
+// a card that asked whether it ended goes.
+func TestMeetingEndedNotAskedOnceVoxtEnds(t *testing.T) {
+	for _, end := range []meeting.State{meeting.StateFinishing, meeting.StateAsking} {
+		a, _, _ := newTestApp(t)
+		timers := detectClock(t, a)
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+		micUsers(t, a, "us.zoom.xos")
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: end}) // ended in Voxt
+		micSays(t, a)                                            // then Zoom lets go
+		timers.advance(time.Hour)
+		if a.ask.view.Visible {
+			t.Fatalf("%s: asked whether the meeting ended: %+v", end, a.ask.view)
+		}
+
+		b, _, _ := newTestApp(t)
+		clock := detectClock(t, b)
+		b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+		micUsers(t, b, "us.zoom.xos")
+		micSays(t, b)
+		clock.advance(meetingEndAfter)
+		if !b.ask.view.Visible || !b.ask.view.End {
+			t.Fatalf("%s: Zoom is off the microphone: %+v", end, b.ask.view)
+		}
+		b.meetingChanged(meeting.Snapshot{ID: "m1", State: end})
+		if b.ask.view.Visible {
+			t.Fatalf("%s: the card stayed after Voxt's meeting ended: %+v", end, b.ask.view)
+		}
+	}
+}
+
+// A meeting app that starts to record while Voxt's last meeting is still
+// being filed (its final pass, its question) is asked about once that is
+// over, not settled by it.
+func TestMeetingDetectWaitsForTheLastMeeting(t *testing.T) {
+	for _, end := range []meeting.State{meeting.StateFinishing, meeting.StateAsking} {
+		a, _, _ := newTestApp(t)
+		detectClock(t, a)
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: end})
+		micUsers(t, a, "us.zoom.xos")
+		if a.ask.view.Visible || a.recorded.key != "" {
+			t.Fatalf("%s: card %+v, recorded for %q", end, a.ask.view, a.recorded.key)
+		}
+		a.meetingChanged(meeting.Snapshot{}) // filed
+		if view := a.ask.view; !view.Visible || view.End || view.App != "Zoom" {
+			t.Fatalf("%s, then filed: %+v", end, view)
+		}
+	}
+}

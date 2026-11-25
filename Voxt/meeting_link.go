@@ -111,6 +111,8 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 			a.recorded = meetingRecorded{endAfter: a.recorded.endAfter} // meeting_detect_end.go
 		}
 		a.syncMeetingDetect() // an app that records is settled while Voxt does
+	} else if s.State != prev.State {
+		a.followRecordedMeeting() // meeting_detect_end.go: ended in Voxt, or paused
 	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()

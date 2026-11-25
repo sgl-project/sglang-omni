@@ -6,7 +6,11 @@ package main
 // microphone while the user is muted, and a recording ended by itself
 // would lose the rest of the meeting.
 
-import "time"
+import (
+	"time"
+
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+)
 
 // meetingEndAfter is how long the meeting's app must be off the
 // microphone before the card asks.
@@ -36,12 +40,27 @@ func (a *app) adoptRecordedMeeting() {
 	}
 }
 
-// followRecordedMeeting runs when the apps recording changed: once the
-// app of the meeting Voxt records has been off the microphone for
-// meetingEndAfter, the card asks whether the meeting is over.
+// meetingRecords reports whether Voxt's meeting still records (paused
+// too). Ended in Voxt, it is not over yet (its final pass runs, or it
+// asks whether to keep it), but there is no end left to ask about.
+func (a *app) meetingRecords() bool {
+	switch a.meetSnap.State {
+	case meeting.StateStarting, meeting.StateRecording, meeting.StatePaused:
+		return a.meetMgr != nil
+	}
+	return false
+}
+
+// followRecordedMeeting runs when the apps recording or Voxt's meeting
+// changed: once the app of the meeting Voxt records has been off the
+// microphone for meetingEndAfter, the card asks whether the meeting is
+// over. A meeting ended in Voxt meanwhile takes the question with it.
 func (a *app) followRecordedMeeting() {
+	if a.ask.end && !a.meetingRecords() {
+		a.closeMeetingAsk()
+	}
 	r := &a.recorded
-	if r.key == "" || r.asked || !a.meetingActive() || a.detect.Recording(r.key) || a.ask.key != "" {
+	if r.key == "" || r.asked || !a.meetingRecords() || a.detect.Recording(r.key) || a.ask.key != "" {
 		r.seq++ // nothing to wait for (any more)
 		r.waiting = false
 		return
@@ -61,7 +80,7 @@ func (a *app) followRecordedMeeting() {
 			return
 		}
 		r.waiting = false
-		if r.key != key || r.asked || !a.meetingActive() || a.detect.Recording(key) || a.ask.key != "" || !a.detectMeetings() {
+		if r.key != key || r.asked || !a.meetingRecords() || a.detect.Recording(key) || a.ask.key != "" || !a.detectMeetings() {
 			return
 		}
 		a.showMeetingAsk(key, r.app, true)

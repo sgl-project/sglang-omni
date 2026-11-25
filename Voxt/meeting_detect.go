@@ -134,7 +134,8 @@ func (a *app) micChanged(users proto.MicUsers) {
 
 // syncMeetingDetect asks about a meeting app that records and was not
 // asked about yet. It runs when the apps recording change, and when what
-// held the question back is over (a dictation, Voxt's own meeting).
+// held the question back is over (a dictation, Voxt's own meeting, or its
+// final pass and question).
 func (a *app) syncMeetingDetect() {
 	var browsers []string
 	for _, b := range appctx.Browsers(a.prefs.AppEnhancement.Browsers) {
@@ -158,6 +159,9 @@ func (a *app) syncMeetingDetect() {
 		return
 	}
 	if a.meetingActive() {
+		if !a.meetingRecords() {
+			return // Voxt's last meeting is being filed: asked once it is
+		}
 		for _, c := range found {
 			a.detect.Settle(c.Key) // Voxt records it already
 			if a.recorded.key == "" && c.App != "" {
