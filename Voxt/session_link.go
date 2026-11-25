@@ -34,6 +34,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -51,6 +52,8 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// wave plays sess's levels out for the waveform (overlayWave).
+	wave layout.WavePlay
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
@@ -330,7 +333,7 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 
 // sessionModel is how a session (and its history entry) names a model.
 func sessionModel(m local.Model) session.Model {
-	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID}
+	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID, Remote: m.Remote}
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
@@ -346,6 +349,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	a.wave.Feed(s.ID, s.Levels, s.LevelCount, time.Now())
 	if a.box.open {
 		if s.ID == a.box.session {
 			if s.Selection != "" {

@@ -136,6 +136,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	} else {
 		a.rt.logf("info", "%s: live session with language hint %q, previewed by Final requests", a.spec.ID, hint)
 	}
+	if req.EarlyPieces && a.spec.Kind == kindQwen3ASR && a.spec.ASR.PiecesAfter > earlyPieces.After {
+		a = a.WithPieces(earlyPieces)
+	}
 	sctx, cancel := context.WithCancel(ctx)
 	s := &live{a: a, l: l, req: req, ctx: sctx, cancel: cancel, conn: conn, session: sessionID,
 		language: hint, bias: bias,

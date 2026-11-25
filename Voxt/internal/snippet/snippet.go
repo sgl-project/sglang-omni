@@ -13,7 +13,8 @@
 // match each other (lang.CanonicalChinese), as dictation may be written
 // in either. Only a trigger
 // the user said is replaced: one the language model wrote is its own
-// wording. The snippets live in a document of
+// wording. A snippet keeps its words as saved; only where it meets the
+// text is it formatted (place). The snippets live in a document of
 // their own (Key).
 //
 // Imports: lang.
@@ -109,6 +110,15 @@ func tooShort(key []rune) bool {
 	return true
 }
 
+// Alone is a snippet's text when it is all of a dictation: without the
+// white space at its ends.
+func Alone(text string) string {
+	if t := strings.TrimSpace(text); t != "" {
+		return t
+	}
+	return text
+}
+
 // Whole is the snippet whose trigger is all of text, ignoring case,
 // spaces and punctuation ("My email address." is "my email address").
 func Whole(text string, snippets []Snippet) (Snippet, bool) {
@@ -130,11 +140,60 @@ func Whole(text string, snippets []Snippet) (Snippet, bool) {
 
 // Expand replaces each trigger in text with its snippet's text: the
 // longest trigger at each place, from left to right, never inside
-// another's replacement. A snippet ending in punctuation before more
-// (fit) loses its own.
-func Expand(text string, snippets []Snippet) string {
+// another's replacement, each formatted where it meets the text (place).
+func Expand(text string, snippets []Snippet) string { return expand("", text, snippets) }
+
+// expand is Expand of text that follows prefix in the final text.
+func expand(prefix, text string, snippets []Snippet) string {
 	runes, found := find(text, snippets)
-	return rebuild(text, runes, found, func(m match) string { return fit(m.snippet.Text, string(runes[m.end:])) })
+	return rebuild(text, runes, found, func(m match, before string) string {
+		return place(m.snippet.Text, prefix+before, string(runes[m.end:]))
+	})
+}
+
+// place is a snippet's text between before and after in the final text:
+// without spaces at its ends (line breaks stay), its closing punctuation
+// fitted to after's (fit), and a space where it meets Chinese with Latin
+// letters or digits ("发到 a@b.com，"; spaced). Its words stay as saved.
+func place(text, before, after string) string {
+	t := strings.TrimFunc(text, func(r rune) bool { return r != '\n' && unicode.IsSpace(r) })
+	if t == "" {
+		return text
+	}
+	return spaced(before, fit(t, after), after)
+}
+
+// spaced is text with a space added at each end where it meets Chinese
+// with Latin text, as the clean-up writes it ("a space between CJK and
+// Latin text"). Japanese is left alone: it puts no spaces there.
+func spaced(before, text, after string) string {
+	if kana(before) || kana(text) || kana(after) {
+		return text
+	}
+	last, _ := utf8.DecodeLastRuneInString(before)
+	first, _ := utf8.DecodeRuneInString(text)
+	end, _ := utf8.DecodeLastRuneInString(text)
+	next, _ := utf8.DecodeRuneInString(after)
+	if gap(last, first) {
+		text = " " + text
+	}
+	if gap(end, next) {
+		text += " "
+	}
+	return text
+}
+
+// gap says whether a and b, side by side, are Chinese and Latin text.
+func gap(a, b rune) bool { return han(a) && latin(b) || latin(a) && han(b) }
+
+func han(r rune) bool { return unicode.Is(unicode.Han, r) }
+
+// latin: a letter or digit of a spaced script, or a sign that starts or
+// ends such a word ("@name", "#tag", "$5", "100%").
+func latin(r rune) bool { return wordRune(r) || strings.ContainsRune("@#$%", r) }
+
+func kana(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return unicode.In(r, unicode.Hiragana, unicode.Katakana) })
 }
 
 // Punctuation fit looks at: before the sentence's own, a snippet's
@@ -179,7 +238,7 @@ func Mark(text string, snippets []Snippet) (string, []Snippet) {
 	for i, m := range found {
 		marked[i] = m.snippet
 	}
-	return rebuild(text, runes, found, func(m match) string {
+	return rebuild(text, runes, found, func(m match, _ string) string {
 		return Open + string(runes[m.start:m.end]) + Close
 	}), marked
 }
@@ -190,7 +249,8 @@ func Mark(text string, snippets []Snippet) (string, []Snippet) {
 // the model unmarked are found as Expand finds them. snippets are the
 // ones the user said (Mark's): a trigger of another one that the model
 // wrote stays as written. A mark that names none of them is left as its
-// text; stray marks are dropped.
+// text; stray marks are dropped. Each snippet is formatted where it
+// meets the text (place).
 func Restore(text string, marked, snippets []Snippet) string {
 	var b strings.Builder
 	n := strings.Count(text, Open)
@@ -204,19 +264,19 @@ func Restore(text string, marked, snippets []Snippet) string {
 			break
 		}
 		inner := text[open+len(Open) : open+closing]
-		b.WriteString(Expand(unmark(text[:open]), snippets))
+		b.WriteString(expand(b.String(), unmark(text[:open]), snippets))
 		rest := unmark(text[open+closing+len(Close):])
 		switch s, ok := Whole(inner, snippets); {
 		case ok:
-			b.WriteString(fit(s.Text, rest))
+			b.WriteString(place(s.Text, b.String(), rest))
 		case n == len(marked) && i < len(marked):
-			b.WriteString(fit(marked[i].Text, rest))
+			b.WriteString(place(marked[i].Text, b.String(), rest))
 		default:
 			b.WriteString(unmark(inner))
 		}
 		text = text[open+closing+len(Close):]
 	}
-	b.WriteString(Expand(unmark(text), snippets))
+	b.WriteString(expand(b.String(), unmark(text), snippets))
 	return b.String()
 }
 
@@ -289,8 +349,9 @@ func find(text string, snippets []Snippet) ([]rune, []match) {
 	return runes, found
 }
 
-// rebuild is text with each match replaced by with(match).
-func rebuild(text string, runes []rune, found []match, with func(match) string) string {
+// rebuild is text with each match replaced by with(match, what is
+// before it in the new text).
+func rebuild(text string, runes []rune, found []match, with func(match, string) string) string {
 	if len(found) == 0 {
 		return text
 	}
@@ -298,7 +359,7 @@ func rebuild(text string, runes []rune, found []match, with func(match) string) 
 	last := 0
 	for _, m := range found {
 		b.WriteString(string(runes[last:m.start]))
-		b.WriteString(with(m))
+		b.WriteString(with(m, b.String()))
 		last = m.end
 	}
 	b.WriteString(string(runes[last:]))
