@@ -29,10 +29,24 @@ func NewSpeech(rate int, model vad.ModelStream) *Speech {
 	fb := rate * int(speechFrame/time.Millisecond) / 1000 * 2
 	s := &Speech{rate: rate, frameBytes: fb, model: model}
 	if model == nil {
-		s.energy = vad.NewDetector(rate, vad.Defaults())
+		s.energy = vad.NewDetector(rate, meetingVAD())
 	}
 	return s
 }
+
+// meetingVAD is the energy detector's tuning for a meeting: its floor
+// rises to a room's steady noise within seconds even while it hears
+// "speech" (vad.Params.SpeechRiseMS). With dictation's, -35 dBFS of steady
+// noise read as speech for good (11-25: a MacBook microphone idles at -32
+// to -42 dBFS), so Whisper's words for that noise ("ご視聴ありがとう
+// ございました", "Thank you") were never taken for silence.
+func meetingVAD() vad.Params {
+	p := vad.Defaults()
+	p.SpeechRiseMS = meetingSpeechRiseMS
+	return p
+}
+
+const meetingSpeechRiseMS = 1500
 
 // SpokeSince says whether a frame after t (on the pushed audio's
 // timeline) was speech.
@@ -72,7 +86,7 @@ func (s *Speech) frameSpeaking(pcm []byte) bool {
 		probs, err := s.model.Feed(pcm)
 		if err != nil {
 			if s.energy == nil {
-				s.energy = vad.NewDetector(s.rate, vad.Defaults())
+				s.energy = vad.NewDetector(s.rate, meetingVAD())
 			}
 		} else {
 			thr := s.model.Threshold()
@@ -85,7 +99,7 @@ func (s *Speech) frameSpeaking(pcm []byte) bool {
 		}
 	}
 	if s.energy == nil {
-		s.energy = vad.NewDetector(s.rate, vad.Defaults())
+		s.energy = vad.NewDetector(s.rate, meetingVAD())
 	}
 	s.energy.Write(pcm)
 	return s.energy.Speaking()

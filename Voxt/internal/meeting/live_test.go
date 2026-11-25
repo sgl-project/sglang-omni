@@ -2,6 +2,10 @@ package meeting
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -14,12 +18,14 @@ type liveFakeStreamer struct {
 	mu      sync.Mutex
 	streams []*liveFakeStream
 	partial string // partial text each Send reports; "" means "line"
+	after   int    // bytes of audio, over all its streams, before the first partial
+	sent    int    // bytes sent so far, over all its streams
 }
 
 func (f *liveFakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
 
 func (f *liveFakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
-	s := &liveFakeStream{events: make(chan asr.Event, 8), partial: f.partial}
+	s := &liveFakeStream{events: make(chan asr.Event, 8), partial: f.partial, after: f.after, sent: &f.sent}
 	if s.partial == "" {
 		s.partial = "line"
 	}
@@ -36,6 +42,8 @@ type liveFakeStream struct {
 	done    bool
 	events  chan asr.Event
 	partial string
+	after   int
+	sent    *int // the streamer's
 }
 
 func (s *liveFakeStream) Send(pcm []byte) error {
@@ -45,6 +53,12 @@ func (s *liveFakeStream) Send(pcm []byte) error {
 		return &asr.Error{Kind: asr.KindProtocol, Detail: "ended"}
 	}
 	s.data = append(s.data, pcm...)
+	if s.sent != nil {
+		*s.sent += len(pcm)
+		if *s.sent < s.after {
+			return nil
+		}
+	}
 	select {
 	case s.events <- asr.Event{Kind: asr.EventPartial, Text: s.partial}:
 	default:
@@ -416,4 +430,68 @@ func TestLiveDropsWordsForSilence(t *testing.T) {
 			t.Errorf("%s: %d lines %+v, want %d", tc.name, len(got), got, tc.want)
 		}
 	}
+}
+
+// Long words for a room's steady noise are no line either, once the
+// detector has taken the noise for its floor (in under 2 s); speech over
+// the noise is one (11-25: "ご視聴ありがとうございました" and runs of
+// "Thank you" over a MacBook microphone's -35 dBFS, with nobody speaking).
+func TestLiveDropsWordsForNoise(t *testing.T) {
+	const rate = 16000
+	for _, tc := range []struct {
+		name  string
+		audio []byte
+		step  int // bytes a Push takes: the recorder's 100 ms, or all at once
+		after int // when the model's words start
+		want  int
+	}{
+		{"noise", noisePCM(20*time.Second, rate, -35), rate / 10 * 2, 5 * rate * 2, 0},
+		{"said over it", mixPCM(noisePCM(3*time.Second, rate, -35), speechPCM(3*time.Second, rate)), 3 * rate * 2, 0, 1},
+	} {
+		ctx := context.Background()
+		var got []Segment
+		live := &Live{
+			Clock:    (&tickingClock{t: time.Unix(0, 0)}).Now,
+			Streamer: &liveFakeStreamer{partial: "ご視聴ありがとうございました", after: tc.after},
+			Req:      asr.StreamRequest{SampleRate: rate},
+			Speech:   NewSpeech(rate, nil), // the energy detector: no Silero
+			OnCommit: func(s Segment) { got = append(got, s) },
+		}
+		if err := live.Open(ctx); err != nil {
+			t.Fatal(err)
+		}
+		for off := 0; off < len(tc.audio); off += tc.step {
+			if err := live.Push(ctx, tc.audio[off:min(off+tc.step, len(tc.audio))]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := live.Finish(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != tc.want {
+			t.Errorf("%s: %d lines %+v, want %d", tc.name, len(got), got, tc.want)
+		}
+	}
+}
+
+// noisePCM is a steady noise of about db dBFS (seeded, the same each run).
+func noisePCM(d time.Duration, rate int, db float64) []byte {
+	rng := rand.New(rand.NewPCG(1, 2))
+	amp := math.Pow(10, db/20) * math.Sqrt(3) // a uniform noise of that RMS
+	n := int(d.Seconds() * float64(rate))
+	out := make([]byte, n*2)
+	for i := range n {
+		binary.LittleEndian.PutUint16(out[i*2:], uint16(int16((rng.Float64()*2-1)*amp*32767)))
+	}
+	return out
+}
+
+// mixPCM adds b to a, sample by sample.
+func mixPCM(a, b []byte) []byte {
+	out := slices.Clone(a)
+	for i := 0; i+1 < len(out) && i+1 < len(b); i += 2 {
+		v := int32(int16(binary.LittleEndian.Uint16(out[i:]))) + int32(int16(binary.LittleEndian.Uint16(b[i:])))
+		binary.LittleEndian.PutUint16(out[i:], uint16(int16(max(-32768, min(32767, v)))))
+	}
+	return out
 }
