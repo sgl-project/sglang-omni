@@ -412,3 +412,24 @@ func TestConnectSignIn(t *testing.T) {
 		t.Errorf("requests %+v", reqs)
 	}
 }
+
+// TestOpenAIRelaxReasoningEffort: a server without the reasoning_effort
+// field gets the request retried without it (revert: the error stands).
+func TestOpenAIRelaxReasoningEffort(t *testing.T) {
+	f := newFakeServer(t,
+		jsonReply(400, map[string]any{"error": map[string]any{"message": "Unsupported parameter: reasoning_effort"}}),
+		jsonReply(200, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "done"}, "finish_reason": "stop"}}}),
+	)
+	c := &Client{Backend: NewOpenAI(presetAt(t, "deepseek", f.srv.URL), "sk-ds", f.srv.Client())}
+	resp, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hi"}}, Thinking: &Thinking{Mode: ThinkEffort, Effort: "low"}})
+	if err != nil || resp.Text != "done" {
+		t.Fatalf("%v %+v", err, resp)
+	}
+	rs := f.requests()
+	if len(rs) != 2 || rs[0].Body["reasoning_effort"] != "low" {
+		t.Fatalf("first request %+v", rs[0].Body)
+	}
+	if rs[1].Body["reasoning_effort"] != nil {
+		t.Fatalf("retry kept reasoning_effort: %+v", rs[1].Body)
+	}
+}

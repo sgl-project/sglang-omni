@@ -4,6 +4,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Changed
+
+- **Faster meeting proofreading on reasoning models**: each proofreading batch now asks the language model to bound its reasoning (low effort), which keeps the same prompt and output format but avoids long hidden-reasoning waits and empty answers on services that reason at length; a service without that field sees no change, and one that rejects it gets the request again without it.
+
 ### Added
 
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
