@@ -1,20 +1,40 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// #4005: the multi-session prototype. The session shortcuts (session-1 …)
-// switch the slot Rewrite, Translate and Transcribe run in; each slot
+// #4005: the multi-session prototype. Rewrite, Translate and Transcribe
+// run in the current session of a list the user adds to; each session
 // keeps its own answer card and conversation. The first card is from
 // Slack (rewriteSelecting); the user goes on in TextEdit.
+
+// sessionsOn turns Settings → Shortcuts' Sessions switch on.
+func sessionsOn(a *sessionApp) {
+	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
+}
+
+// chipLine is the card's session row as text: "1 title*" is current.
+func chipLine(a *sessionApp) string {
+	var out []string
+	for i, chip := range a.cachedCard().Sessions {
+		text := strings.TrimSpace(strconv.Itoa(i+1) + " " + chip.Title)
+		if chip.Current {
+			text += "*"
+		}
+		out = append(out, text)
+	}
+	return strings.Join(out, " | ")
+}
 
 // TestSessionSlotSwitchKeepsConversations: a switch parks the current
 // slot's card, the next slot starts its own conversation (no earlier
@@ -25,15 +45,15 @@ func TestSessionSlotSwitchKeepsConversations(t *testing.T) {
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
 	conv1 := a.answer.conv
 
-	tap(a, "session-2", textEditApp)
-	if a.slot != 1 || a.answer.open || !a.slotsUsed {
-		t.Fatalf("switched: slot=%d answer=%+v slotsUsed=%v", a.slot, a.answer, a.slotsUsed)
+	a.newSession()
+	if a.slot != 1 || a.answer.open || len(a.slots) != 2 {
+		t.Fatalf("switched: slot=%d answer=%+v sessions=%d", a.slot, a.answer, len(a.slots))
 	}
 	if p := a.slots[0]; !p.answer.open || p.answer.text != "one" || len(p.answer.turns) != 1 {
 		t.Fatalf("parked: %+v", p.answer)
 	}
-	if a.notice == nil || !strings.HasPrefix(a.notice.text, "Session 2") {
-		t.Fatalf("notice %+v", a.notice)
+	if a.notice != nil {
+		t.Fatalf("a switch shows a notice: %+v", a.notice)
 	}
 
 	// A Rewrite in session 2 starts its own conversation: no earlier turn.
@@ -49,9 +69,6 @@ func TestSessionSlotSwitchKeepsConversations(t *testing.T) {
 	// Back in session 1, its card and conversation are as they were.
 	tap(a, "session-1", textEditApp)
 	slackCardBack(t, a, "back in session 1")
-	if v := a.cachedCard(); v.Session != "Session 1" {
-		t.Fatalf("card label %q", v.Session)
-	}
 
 	// Its follow-up continues its conversation, with the first turn.
 	rewriteSaid(t, a, tr, a.answer.target, "shorter", "three")
@@ -86,7 +103,7 @@ func TestSessionSlotSwitchWhileAnswerStreams(t *testing.T) {
 
 	// The switch backgrounds the stream, in Session 1; Session 2 shows
 	// nothing of it.
-	tap(a, "session-2", textEditApp)
+	a.newSession()
 	if a.slot != 1 || a.bgID == "" || !a.bgSess.State.Live() || a.answer.open || a.ov.mode == ovAnswer {
 		t.Fatalf("switched mid-stream: slot=%d bg=%q answer open=%v mode=%s", a.slot, a.bgID, a.answer.open, a.ov.mode)
 	}
@@ -108,11 +125,8 @@ func TestSessionSlotSwitchWhileAnswerStreams(t *testing.T) {
 	a.pump("the stream visible again", func() bool { return a.ov.mode == ovAnswer })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
-	if c := a.answer; !c.open || c.text != full || c.slot != 0 || len(c.turns) != 1 {
+	if c := a.answer; !c.open || c.text != full || len(c.turns) != 1 {
 		t.Fatalf("session 1's card %+v", c)
-	}
-	if v := a.cachedCard(); v.Session != "Session 1" {
-		t.Fatalf("card label %q", v.Session)
 	}
 	if p := a.slots[1]; p.answer.open || p.under.open {
 		t.Fatalf("session 2 was given a card: %+v", p)
@@ -139,7 +153,7 @@ func TestSessionSlotAnswerFinishesInItsSlot(t *testing.T) {
 	a.pump("the whole answer in the card", func() bool {
 		return a.sess.CanStop() && a.sess.Draft == full
 	})
-	tap(a, "session-2", textEditApp)
+	a.newSession()
 	if a.bgID == "" || a.slot != 1 {
 		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
 	}
@@ -149,7 +163,7 @@ func TestSessionSlotAnswerFinishesInItsSlot(t *testing.T) {
 		t.Fatalf("Session 2 shows the card: %+v mode=%s", a.answer, a.ov.mode)
 	}
 	p := a.slots[0]
-	if !p.answer.open || p.answer.text != full || p.answer.slot != 0 || len(p.answer.turns) != 1 {
+	if !p.answer.open || p.answer.text != full || len(p.answer.turns) != 1 {
 		t.Fatalf("parked in session 1: %+v", p.answer)
 	}
 	tap(a, "session-1", textEditApp)
@@ -169,7 +183,7 @@ func TestSessionSlotSwitchRestoresParkedCard(t *testing.T) {
 	if !a.answer.open || a.answer.text != "two" || !a.under.open || a.under.text != "one" {
 		t.Fatalf("before switch: answer=%q under=%q", a.answer.text, a.under.text)
 	}
-	tap(a, "session-2", textEditApp)
+	a.newSession()
 	if a.answer.open || a.under.open {
 		t.Fatalf("switched away: answer=%q under=%q", a.answer.text, a.under.text)
 	}
@@ -188,9 +202,9 @@ func TestSessionSlotSwitchWhileRecordingIgnored(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
 	startSaying(a, tr, "transcribe/0", textEditApp, "dictated")
-	tap(a, "session-2", textEditApp)
-	if a.slot != 0 || a.slotsUsed || a.sess.State != session.Recording {
-		t.Fatalf("switch during recording: slot=%d slotsUsed=%v state=%s", a.slot, a.slotsUsed, a.sess.State)
+	a.newSession()
+	if a.slot != 0 || len(a.slots) != 1 || a.sess.State != session.Recording {
+		t.Fatalf("switch during recording: slot=%d sessions=%d state=%s", a.slot, len(a.slots), a.sess.State)
 	}
 	tap(a, "transcribe/0", textEditApp)
 	a.pump("the end", func() bool { return a.sess.State.Ended() })
@@ -203,16 +217,16 @@ func TestSessionSlotSwitchWhileInsertingIgnored(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
 	a.answer.inserting = true
-	tap(a, "session-2", textEditApp)
+	a.newSession()
 	a.answer.inserting = false
-	if a.slot != 0 || a.slotsUsed {
-		t.Fatalf("switch during insert: slot=%d slotsUsed=%v", a.slot, a.slotsUsed)
+	if a.slot != 0 || len(a.slots) != 1 {
+		t.Fatalf("switch during insert: slot=%d sessions=%d", a.slot, len(a.slots))
 	}
 }
 
-// TestSessionSlotsDefaultUnchanged: with no session shortcut pressed,
-// setAside and resurface behave as before (#4013) and the card shows no
-// session label.
+// TestSessionSlotsDefaultUnchanged: with sessions off, setAside and
+// resurface behave as before (#4013), the card has no session row and
+// is as high as it was.
 func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one", "two"}}
 	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
@@ -222,68 +236,141 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	}
 	a.closeAnswer()
 	slackCardBack(t, a, "resurfaced")
-	if a.slotsUsed {
-		t.Fatal("no session shortcut was pressed")
+	if v := a.cachedCard(); len(v.Sessions) != 0 || a.boxViewState().Sessions != nil {
+		t.Fatalf("session row without sessions: %+v", v.Sessions)
 	}
-	if v := a.cachedCard(); v.Session != "" {
-		t.Fatalf("label without sessions: %q", v.Session)
+	_, off, _ := a.cardSize()
+	sessionsOn(a)
+	a.overlaySync()
+	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH {
+		t.Fatalf("card height %d with the session row, %d without", on, off)
+	}
+	if got := chipLine(a); got != "1*" {
+		t.Fatalf("session row %q", got)
+	}
+	if len(a.boxViewState().Sessions) != 1 {
+		t.Fatal("the Rewrite card has no session row")
 	}
 }
 
-// TestSessionNextCycles: the next-session shortcut goes through the
-// three sessions and around, and names the session on the card while
-// sessions are on.
-func TestSessionNextCycles(t *testing.T) {
+// TestSessionListNewDeleteNext: "+" adds sessions without a limit and
+// shows the empty card, no notice; the next-session shortcut walks the
+// list and around; "×" deletes, the current one leaving for its
+// neighbour and the last one for a new empty session.
+func TestSessionListNewDeleteNext(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
-	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
-	if v := a.cachedCard(); v.Session != "Session 1" {
-		t.Fatalf("sessions on, no switch yet: label %q", v.Session)
+	sessionsOn(a)
+	for range 4 {
+		a.newSession()
 	}
-	for _, want := range []int{1, 2, 0} {
+	if got := chipLine(a); got != "1 | 2 | 3 | 4 | 5*" {
+		t.Fatalf("five sessions: %q", got)
+	}
+	v := a.cachedCard()
+	if !v.Empty || a.overlayModeNow() != ovAnswer || a.notice != nil || len(v.Blocks) != 1 || !strings.Contains(v.Blocks[0].Text, "runs in this session") {
+		t.Fatalf("empty session: card %+v mode=%s notice=%+v", v, a.overlayModeNow(), a.notice)
+	}
+	for _, want := range []int{0, 1, 2} {
 		tap(a, "session-next", textEditApp)
 		if a.slot != want {
-			t.Fatalf("next: slot %d, want %d", a.slot, want)
+			t.Fatalf("next: session %d, want %d", a.slot, want)
 		}
 	}
-	if !a.answer.open || a.answer.text != "one" {
-		t.Fatalf("around to Session 1's card: %+v", a.answer)
+	tap(a, "session-1", textEditApp)
+	slackCardBack(t, a, "session 1")
+
+	// Deleting another session keeps the current one; deleting the
+	// current one goes to its neighbour, with its card.
+	a.deleteSession(3)
+	if got := chipLine(a); got != "1* | 2 | 3 | 4" {
+		t.Fatalf("after deleting session 4: %q", got)
+	}
+	a.switchSession(1)
+	a.deleteSession(1)
+	if a.slot != 2 || len(a.slots) != 3 {
+		t.Fatalf("deleted the current one: session %d of %d", a.slot, len(a.slots))
+	}
+	a.deleteSession(2)
+	a.deleteSession(4)
+	slackCardBack(t, a, "the one session left")
+	// The last session: its card goes, a new empty one takes its place.
+	a.deleteSession(0)
+	if len(a.slots) != 1 || a.answer.open || !a.cachedCard().Empty {
+		t.Fatalf("deleted the last one: %d sessions, card open=%v", len(a.slots), a.answer.open)
+	}
+	only := a.slot
+	tap(a, "session-3", textEditApp) // no such session: nothing
+	if a.slot != only {
+		t.Fatalf("a shortcut for a session that is not there switched to %d", a.slot)
+	}
+	// Closing the empty card takes it off the screen.
+	a.closeAnswer()
+	if a.overlayModeNow() == ovAnswer {
+		t.Fatal("the empty card stayed after its close")
 	}
 }
 
-// TestSessionGuideFirstSwitches: the first two session switches say what
-// a session keeps and which shortcuts switch, also beside a card that
-// came back; later switches only name the session, and count no further.
-func TestSessionGuideFirstSwitches(t *testing.T) {
+// TestSessionUseCounts: the user's own switches count (the shortcut, a
+// session on the card, "+"), and one back to a session with a card as a
+// return; a delete and turning sessions off do not.
+func TestSessionUseCounts(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
-	const guide = " goes to the next session."
-	tap(a, "session-2", textEditApp)
-	if a.notice == nil || !strings.HasPrefix(a.notice.text, "Session 2. ⌃⌥") || !strings.HasSuffix(a.notice.text, guide) {
-		t.Fatalf("first switch: notice %+v", a.notice)
-	}
-	tap(a, "session-1", textEditApp) // session 1's card comes back
-	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "goes to the next session") {
-		t.Fatalf("second switch, card back %v: notice %+v", a.answer.open, a.notice)
-	}
-	tap(a, "session-2", textEditApp)
-	if a.notice == nil || a.notice.text != "Session 2" {
-		t.Fatalf("third switch: notice %+v", a.notice)
-	}
-	if got := a.prefs.Setup.SessionSwitches; got != settings.SessionGuideTimes {
-		t.Fatalf("switches counted %d, want %d", got, settings.SessionGuideTimes)
-	}
-	// Every switch counts, and the one back to Session 1's card as a return.
-	if s := a.prefs.Setup; s.SessionSwitchTotal != 3 || s.SessionReturns != 1 {
+	sessionsOn(a)
+	a.newSession()                      // 1
+	tap(a, "session-next", textEditApp) // 2, back to the card
+	a.switchSession(1)                  // 3
+	a.deleteSession(1)                  // to session 1: not counted
+	a.newSession()                      // 4
+	if s := a.prefs.Setup; s.SessionSwitchTotal != 4 || s.SessionReturns != 1 {
 		t.Fatalf("use counted %d switches, %d returns", s.SessionSwitchTotal, s.SessionReturns)
 	}
-	// Turning sessions off goes back to Session 1 without a label.
+	// Turning sessions off goes back to the first session, row gone.
 	a.setSessionsOn(false)
-	if s := a.prefs.Setup; s.SessionSwitchTotal != 3 || s.SessionReturns != 1 {
+	if s := a.prefs.Setup; s.SessionSwitchTotal != 4 || s.SessionReturns != 1 {
 		t.Fatalf("turning sessions off counted as a switch: %d, %d", s.SessionSwitchTotal, s.SessionReturns)
 	}
-	if a.slot != 0 || a.slotsUsed || !a.answer.open || a.cachedCard().Session != "" {
-		t.Fatalf("off: slot=%d slotsUsed=%v card=%v label=%q", a.slot, a.slotsUsed, a.answer.open, a.cachedCard().Session)
+	if a.slot != 0 || !a.answer.open || len(a.cachedCard().Sessions) != 0 {
+		t.Fatalf("off: session=%d card=%v row=%+v", a.slot, a.answer.open, a.cachedCard().Sessions)
+	}
+}
+
+// TestSessionTitleAndRename: a session is named after its first
+// instruction; a title the user types replaces it for good, and an
+// empty one brings the automatic title back. While a title is typed the
+// cancel shortcut ends the typing, not the card.
+func TestSessionTitleAndRename(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one", "two", "three"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	sessionsOn(a)
+	a.newSession()
+	rewriteSaid(t, a, tr, textEditApp, "write a haiku about the autumn rain in Kyoto", "two")
+	if got := chipLine(a); got != "1 | 2 write a haiku abou…*" {
+		t.Fatalf("titled: %q", got)
+	}
+	// A later instruction does not rename it.
+	rewriteSaid(t, a, tr, textEditApp, "shorter", "three")
+	if got := a.slots[1].title; got != "write a haiku abou…" {
+		t.Fatalf("title after a follow-up: %q", got)
+	}
+	a.renameSession(1)
+	if !a.cachedCard().Sessions[1].Renaming || a.cardHotkeyGeneration() != 0 {
+		t.Fatal("renaming: the card still takes its keys")
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
+	if a.renaming || !a.answer.open {
+		t.Fatalf("cancel while renaming: renaming=%v card open=%v", a.renaming, a.answer.open)
+	}
+	a.renameSession(1)
+	a.nameSession(1, "  Haiku  draft ")
+	a.setSessionTitle(1, "write a haiku", "Model title") // a late answer
+	if got := chipLine(a); got != "1 | 2 Haiku draft*" {
+		t.Fatalf("renamed: %q", got)
+	}
+	a.nameSession(1, "")
+	if got := chipLine(a); got != "1 | 2 write a haiku abou…*" {
+		t.Fatalf("empty name: %q", got)
 	}
 }
 
@@ -302,14 +389,14 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 	a.pump("the whole answer in the card", func() bool {
 		return a.sess.CanStop() && a.sess.Draft == full
 	})
-	tap(a, "session-2", textEditApp)
+	a.newSession()
 	if a.bgID == "" || a.slot != 1 {
 		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
 	}
 	id := a.bgID
 	// Session 2 has an ended card of its own, and a card waiting under it.
-	a.answer = answerCard{open: true, id: "other", slot: 1, kind: store.KindTranslate, text: "bonjour"}
-	a.under = answerCard{open: true, id: "under", slot: 1, kind: store.KindTranslate, text: "hallo"}
+	a.answer = answerCard{open: true, id: "other", kind: store.KindTranslate, text: "bonjour"}
+	a.under = answerCard{open: true, id: "under", kind: store.KindTranslate, text: "hallo"}
 	if a.writingAnswer() {
 		t.Fatal("Session 2's card reads as Session 1's answer being written")
 	}
@@ -327,7 +414,7 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 	a.pump("the stream visible again", func() bool { return a.ov.mode == ovAnswer })
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
-	if c := a.answer; !c.open || c.text != full || c.slot != 0 {
+	if c := a.answer; !c.open || c.text != full {
 		t.Fatalf("session 1's card %+v", c)
 	}
 }

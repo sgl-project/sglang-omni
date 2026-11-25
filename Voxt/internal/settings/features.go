@@ -23,11 +23,11 @@ type Features struct {
 	// session whose text goes to the Notes page instead of where the
 	// cursor is. Only a tap; empty keys: off.
 	Note Hotkey `json:"note"`
-	// Sessions switch the session slot (Control+Option+1 … by default;
-	// empty keys: off): Rewrite, Translate and Transcribe then run in
-	// that slot, each keeping its own answer card and conversation (the
-	// multi-session prototype, #4005). The fourth switches to the next
-	// slot, around. Only taps.
+	// Sessions switch the session (#4005): the first three go to session
+	// 1, 2 and 3 when it exists (empty keys, the default: off), the
+	// fourth to the next session in the list, around. Rewrite, Translate
+	// and Transcribe run in the current session, each session keeping
+	// its own answer card and conversation. Only taps.
 	Sessions [4]Hotkey `json:"sessions,omitzero"`
 	// SessionsOn turns the session shortcuts on. Off by default: sessions
 	// are an experiment until people are seen to go back and forth.
@@ -199,24 +199,17 @@ func migrateReturnFinishes(data []byte, f *Features) {
 	}
 }
 
-const (
-	// DefaultSession1 … DefaultSession3 are the session slots' defaults
-	// (the multi-session prototype, #4005): Control+Option with a digit,
-	// free in the default set and unused by macOS; plain Option+digit
-	// would take the characters it types (¡, ™, £ on a US layout) from
-	// every app. ⌃⌥, as Paste the last result's ⌃⌥V.
-	DefaultSession1 = "Control+Option+1"
-	DefaultSession2 = "Control+Option+2"
-	DefaultSession3 = "Control+Option+3"
-	// One key to remember; ⌃⌥ as the slots' own.
-	DefaultSessionNext = "Control+Option+Tab"
-)
+// DefaultSessionNext is the next-session shortcut's default (#4005): the
+// one session shortcut bound by default, two keys at most (the owner's
+// rule), free in the default set and unused by macOS. The shortcuts for
+// session 1, 2 and 3 are off until the user binds them.
+const DefaultSessionNext = "Option+Tab"
 
-// migrateSessionKeys gives a document from before the session slots their
-// default shortcuts, unless another shortcut can match the same press
-// (chordOverlaps: "Control+LeftOption+1" takes "Control+Option+1" too):
-// that slot then stays off. Such a document has no sessions key; one that
-// has it is the user's.
+// migrateSessionKeys gives a document from before the session shortcuts
+// their defaults, unless another shortcut can match the same press
+// (chordOverlaps: "LeftOption+Tab" takes "Option+Tab" too): that one
+// then stays off. Such a document has no sessions key; one that has it
+// is the user's.
 func migrateSessionKeys(data []byte, f *Features) {
 	var doc struct {
 		Features struct {
@@ -228,7 +221,7 @@ func migrateSessionKeys(data []byte, f *Features) {
 	}
 	defaults := Defaults().Features.Sessions
 	for i, d := range defaults {
-		if shortcutTaken(*f, d.Keys) {
+		if d.Keys != "" && shortcutTaken(*f, d.Keys) {
 			f.Sessions[i] = Hotkey{}
 		}
 	}

@@ -317,19 +317,12 @@ type Setup struct {
 	// RewriteBoxTipDismissed independently hides the guidance for good.
 	RewriteBoxOpens        int  `json:"rewriteBoxOpens,omitempty"`
 	RewriteBoxTipDismissed bool `json:"rewriteBoxTipDismissed,omitempty"`
-	// SessionSwitches counts session switches, capped at
-	// SessionGuideTimes: until then the switch's notice says how
-	// sessions work.
-	SessionSwitches int `json:"sessionSwitches,omitempty"`
 	// SessionSwitchTotal counts every session switch and SessionReturns
 	// those that came back to a session holding a card: how often people
 	// go back and forth (#4005). They stay on this Mac.
 	SessionSwitchTotal int `json:"sessionSwitchTotal,omitempty"`
 	SessionReturns     int `json:"sessionReturns,omitempty"`
 }
-
-// SessionGuideTimes is how many session switches explain sessions.
-const SessionGuideTimes = 2
 
 // Updates: what the updater offers (Settings → About → Updates). With an
 // update feed, its other preferences (automatic checks and installs) are
@@ -388,18 +381,13 @@ func Defaults() Settings {
 		Audio:      Audio{Sounds: true},
 		Overlay:    Overlay{Position: "bottom", Opacity: DefaultOpacity, Radius: DefaultRadius, Margin: 96, LiveLines: true},
 		Features: Features{
-			Transcribe: Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, RecleanSentences: DefaultRecleanSentences},
-			Translate:  Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
-			Rewrite:    Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
-			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
-			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
-			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
-			Sessions: [4]Hotkey{
-				{Keys: DefaultSession1, Trigger: TriggerTap},
-				{Keys: DefaultSession2, Trigger: TriggerTap},
-				{Keys: DefaultSession3, Trigger: TriggerTap},
-				{Keys: DefaultSessionNext, Trigger: TriggerTap},
-			},
+			Transcribe:     Transcribe{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranscribe, Trigger: TriggerTap}}}, Enhance: true, Cleanup: true, RecleanSentences: DefaultRecleanSentences},
+			Translate:      Translate{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultTranslate, Trigger: TriggerTap}}}, Cleanup: true},
+			Rewrite:        Rewrite{Feature: Feature{Hotkeys: []Hotkey{{Keys: DefaultRewrite, Trigger: TriggerTap}}}, Cleanup: true, ShowCard: true},
+			PasteLast:      Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
+			Cancel:         Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
+			Note:           Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
+			Sessions:       [4]Hotkey{3: {Keys: DefaultSessionNext, Trigger: TriggerTap}},
 			ReturnFinishes: true,
 		},
 		AppEnhancement: AppEnhancement{Enabled: true},

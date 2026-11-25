@@ -1,43 +1,69 @@
 package main
 
-// The session slots of the multi-session prototype (#4005): the session
-// shortcuts (Control+Option+1 … by default, Settings → Shortcuts) switch
-// the slot Rewrite, Translate and Transcribe run in. Each slot keeps its
-// own answer card (and the card waiting under it, #4013) with its
+// The sessions of the multi-session prototype (#4005): a list the user
+// adds to and deletes from on the card's session row (overlay_session_row.go),
+// or walks with the next-session shortcut. Rewrite, Translate and
+// Transcribe run in the current session. Each session keeps its own
+// answer card (and the card waiting under it, #4013) with its
 // conversation; switching back restores them, so a covered Rewrite
-// result is never lost. An answer still streaming when the shortcut
-// fires finishes in the background in its own slot (wall 116): its card
-// waits there until the slot comes back. With no session shortcut
-// pressed, everything stays in slot 0 and behaves as before.
+// result is never lost. An answer still streaming when the user switches
+// finishes in the background in its own session (wall 116): its card
+// waits there until the session comes back. With Settings → Shortcuts'
+// Sessions switch off there is one session and everything behaves as
+// before.
 
 import (
+	"slices"
 	"strings"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
-// slotCount is how many session slots the session shortcuts switch
-// between (settings.Features.Sessions).
-const slotCount = 3
-
-// parkedSlot is a session slot's cards while another slot is current.
+// parkedSlot is a session: its id, which never changes (its number on
+// the card is its place in the list), its title, and its cards while
+// another session is current.
 type parkedSlot struct {
+	id    int
+	title string
+	// name is the title the user gave it: it shows instead of title, and
+	// nothing replaces it.
+	name string
+	// titled is the instruction a language model is asked a title for
+	// ("" once it answered): only that title's answer may replace it.
+	titled        string
 	answer, under answerCard
 	followUp      string
 }
 
-// switchSlot parks the current slot's cards and restores slot n's (a
-// session shortcut's tap, session_hotkeys.go). While a session records
-// or works it does nothing; a streaming answer finishes in the
-// background in its own slot. An open Rewrite box belongs to the slot
-// being left: it closes, as it does for another feature's session; its
-// answered card parks with the slot.
-func (a *app) switchSlot(n int) {
-	if n == a.slot || n < 0 || n >= slotCount || a.answer.inserting {
+// sessions is the session list; there is always one.
+func (a *app) sessions() []parkedSlot {
+	if len(a.slots) == 0 {
+		a.slots = []parkedSlot{{id: a.slot}}
+	}
+	return a.slots
+}
+
+// slotIndex is the place of session id in the list, -1 once deleted.
+func (a *app) slotIndex(id int) int {
+	return slices.IndexFunc(a.sessions(), func(p parkedSlot) bool { return p.id == id })
+}
+
+// switchSlot parks the current session's cards and restores session
+// id's. While a session records or works it does nothing; a streaming
+// answer finishes in the background in its own session. An open Rewrite
+// box belongs to the session being left: it closes, as it does for
+// another feature's session, and its recording ends with it; its
+// answered card parks with the session. A session without a card shows
+// the empty card, so that the session row stays in reach.
+func (a *app) switchSlot(id int) {
+	n := a.slotIndex(id)
+	if id == a.slot || n < 0 || a.answer.inserting {
 		return // an insert pastes: its callback must find its card in place
+	}
+	if a.box.open && a.sess.State.Live() && a.sess.ID == a.boxSessionID() && !a.answerBackgroundable() {
+		a.closeBox() // which cancels its session
+		a.sess = session.Snapshot{State: session.Idle, Rev: a.sess.Rev}
 	}
 	if a.sess.State.Live() {
 		// Only a streaming answer can keep going meanwhile; anything
@@ -54,48 +80,139 @@ func (a *app) switchSlot(n int) {
 	if a.box.open {
 		a.closeBox()
 	}
-	a.slots[a.slot] = parkedSlot{answer: a.answer, under: a.under, followUp: a.followUp}
-	p := a.slots[n]
-	a.slots[n] = parkedSlot{}
-	a.slot, a.slotsUsed = n, true
-	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
-	a.notice = nil
+	from := &a.slots[a.slotIndex(a.slot)]
+	from.answer, from.under, from.followUp = a.answer, a.under, a.followUp
+	to := &a.slots[n]
+	a.slot = id
+	a.answer, a.under, a.followUp = to.answer, to.under, to.followUp
+	to.answer, to.under, to.followUp = answerCard{}, answerCard{}, ""
+	a.notice, a.renaming = nil, false
 	a.resurface()
-	if a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes {
-		// The first switches teach sessions, beside a card that came back too.
-		a.updateSettings(func(s *settings.Settings) { s.Setup.SessionSwitches++ })
-		a.showNotice(sessionNotice{text: sessionGuide(n, a.prefs.Features.Sessions), ok: true})
-	} else if !a.answer.open && !a.bgVisible() {
-		a.showNotice(sessionNotice{text: i18n.T("Session %d", n+1), ok: true})
-	}
+	a.emptyCard = a.prefs.Features.SessionsOn && !a.answer.open && !a.bgVisible()
 	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
 }
 
-// sessionGuide is a first switch's notice: the session's name and the
-// shortcuts that switch, short enough for the notice's one line.
-func sessionGuide(n int, sessions [slotCount + 1]settings.Hotkey) string {
-	if next := sessions[slotCount].Keys; next != "" {
-		return i18n.T("Session %d. %s goes to the next session.", n+1, uitext.HotkeyGlyphs(next))
+// switchSession is the user's own switch to session id (a session on
+// the card, a session shortcut): it counts in Settings' use counts.
+func (a *app) switchSession(id int) {
+	from := a.slot
+	a.switchSlot(id)
+	if a.slot == from {
+		return
 	}
-	var keys []string
-	for _, h := range sessions[:slotCount] {
-		if h.Keys != "" {
-			keys = append(keys, uitext.HotkeyGlyphs(h.Keys))
+	back := a.answer.open
+	a.updateSettings(func(s *settings.Settings) {
+		s.Setup.SessionSwitchTotal++
+		if back {
+			s.Setup.SessionReturns++
+		}
+	})
+}
+
+// newSession adds an empty session at the end of the list and switches
+// to it (the session row's "+").
+func (a *app) newSession() {
+	a.sessions()
+	a.slotSeq++
+	a.slots = append(a.slots, parkedSlot{id: a.slotSeq})
+	if a.switchSession(a.slotSeq); a.slot != a.slotSeq {
+		a.slots = a.slots[:len(a.slots)-1] // a recording or a paste holds the session
+	}
+}
+
+// deleteSession removes session id with its cards (the session row's
+// "×"). The current one leaves for its neighbour, the last one for a new
+// empty session; an answer of its own still streaming is cancelled. It
+// is not a switch of the user's: the use counts stay.
+func (a *app) deleteSession(id int) {
+	n := a.slotIndex(id)
+	if n < 0 {
+		return
+	}
+	if id == a.slot {
+		last := len(a.slots) == 1
+		if last {
+			a.slotSeq++
+			a.slots = append(a.slots, parkedSlot{id: a.slotSeq})
+		}
+		next := n + 1
+		if next == len(a.slots) {
+			next = n - 1
+		}
+		if a.switchSlot(a.slots[next].id); a.slot == id {
+			if last {
+				a.slots = a.slots[:1]
+			}
+			return // a recording or a paste holds the session
 		}
 	}
-	return i18n.T("Session %d. Switch sessions with %s.", n+1, strings.Join(keys, " "))
+	if a.bgID != "" && a.bgSlot == id && a.mgr != nil {
+		a.mgr.Cancel(a.bgID) // its end finds no session, and leaves no card (parkAnswer)
+	}
+	a.slots = slices.Delete(a.slots, n, n+1)
+	a.renaming = false
+	a.buildTrayMenu()
+	a.overlaySync()
+}
+
+// sessionChips is the card's session row: nothing with sessions off.
+func (a *app) sessionChips() []sessionChipViewState {
+	if !a.prefs.Features.SessionsOn {
+		return nil
+	}
+	list := a.sessions()
+	chips := make([]sessionChipViewState, len(list))
+	for i, p := range list {
+		chips[i] = sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
+	}
+	return chips
+}
+
+// sessionTitleMax is how many characters of a title a chip shows.
+const sessionTitleMax = 18
+
+// sessionTitle is text as a chip's title: one line, cut short.
+func sessionTitle(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if runes := []rune(text); len(runes) > sessionTitleMax {
+		text = strings.TrimSpace(string(runes[:sessionTitleMax])) + "…"
+	}
+	return text
+}
+
+// titleSession names the session an ended session ran in after its
+// first instruction: what the user said or typed, else the text they
+// selected. The head of it shows at once; a language model's summary
+// replaces it when one answers (session_title.go).
+func (a *app) titleSession(s session.Snapshot) {
+	id := a.slot
+	if s.ID == a.bgID {
+		id = a.bgSlot
+	}
+	n := a.slotIndex(id)
+	text := strings.TrimSpace(cmpOr(cmpOr(strings.TrimSpace(s.Raw), strings.TrimSpace(s.Typed)), s.Selection))
+	if !a.prefs.Features.SessionsOn || n < 0 || a.slots[n].title != "" || text == "" {
+		return
+	}
+	a.slots[n].title, a.slots[n].titled = sessionTitle(text), text
+	a.askSessionTitle(id, text)
 }
 
 // parkAnswer gives an ended backgrounded answer its card in its own
-// session slot while another slot is current (#4005): the card, with its
-// conversation, waits there until the slot comes back. A redo of the
-// slot's card replaces its answer there; another open card of the slot
-// waits under the new one, as setAside would hold it.
+// session while another one is current (#4005): the card, with its
+// conversation, waits there until the session comes back. A redo of the
+// session's card replaces its answer there; another open card of the
+// session waits under the new one, as setAside would hold it. A session
+// deleted meanwhile gets nothing.
 func (a *app) parkAnswer(s session.Snapshot) {
-	saved := parkedSlot{answer: a.answer, under: a.under, followUp: a.followUp}
-	p := a.slots[a.bgSlot]
+	n := a.slotIndex(a.bgSlot)
+	if n < 0 {
+		return
+	}
+	p := &a.slots[n]
+	answer, under, followUp := a.answer, a.under, a.followUp
 	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
 	switch {
 	case a.answer.open && a.answer.redo == s.ID:
@@ -104,8 +221,8 @@ func (a *app) parkAnswer(s session.Snapshot) {
 		if a.answer.open && a.followUp == "" {
 			a.setAside(false)
 		}
-		a.openAnswer(s, a.bgSlot)
+		a.openAnswer(s)
 	}
-	a.slots[a.bgSlot] = parkedSlot{answer: a.answer, under: a.under, followUp: a.followUp}
-	a.answer, a.under, a.followUp = saved.answer, saved.under, saved.followUp
+	p.answer, p.under, p.followUp = a.answer, a.under, a.followUp
+	a.answer, a.under, a.followUp = answer, under, followUp
 }

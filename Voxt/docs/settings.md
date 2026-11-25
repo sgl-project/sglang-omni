@@ -196,8 +196,8 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `features.pasteLast` | shortcut | `{"keys": "Control+Option+V", "trigger": "tap"}` | Transcribe → Paste the last result |
 | `features.cancel` | shortcut | `{"keys": "Escape", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Transcribe → Cancel recording |
 | `features.note` | shortcut | `{"keys": "RightCommand", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Notes |
-| `features.sessionsOn` | boolean | `false`: the session shortcuts do nothing (sessions are an experiment) | Settings → Shortcuts → Sessions (experimental) |
-| `features.sessions` | array of 4 shortcuts: Session 1, 2, 3, then Next session (`Control+Option+Tab`) | `[{"keys": "Control+Option+1", "trigger": "tap"}, {"keys": "Control+Option+2", "trigger": "tap"}, {"keys": "Control+Option+3", "trigger": "tap"}, {"keys": "Control+Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that slot off) | Settings → Shortcuts → Sessions |
+| `features.sessionsOn` | boolean | `false`: no session row on the cards, and the session shortcuts do nothing (sessions are an experiment) | Settings → Shortcuts → Sessions (experimental) |
+| `features.sessions` | array of 4 shortcuts: Session 1, 2, 3 (go to that session when it exists), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Shortcuts → Sessions |
 | `features.strictShortcuts` | bool | `false` | Settings → Shortcuts → Strict shortcuts: only the starting feature's shortcut stops a recording |
 | `features.returnFinishes` | bool | `true` | Settings → Shortcuts → Return finishes a recording: Return stops a Transcribe, Translate or Rewrite recording (not a note's); off, Return reaches the app. Until 2.1.3 it was `features.transcribe.returnFinishes`, Transcribe's alone, which a document without this field still keeps |
 
@@ -336,8 +336,7 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.tried` | bool | A session gave a result once; Home stops offering its Try area |
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
-| `setup.sessionSwitches` | integer | Session switches, capped at two: until then a switch's notice explains sessions and their shortcuts |
-| `setup.sessionSwitchTotal` | integer | Every session switch; stays on this Mac |
+| `setup.sessionSwitchTotal` | integer | Every session switch the user makes (a shortcut, a session on the card, or a new session); stays on this Mac |
 | `setup.sessionReturns` | integer | Session switches that came back to a session with a card; stays on this Mac |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
 | `updates.dismissed` | string | The version whose "is available" card was dismissed |

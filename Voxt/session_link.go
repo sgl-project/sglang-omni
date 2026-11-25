@@ -57,7 +57,7 @@ type sessionState struct {
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
-	// bgSlot is the session slot it belongs to (#4005).
+	// bgSlot is the id of the session it belongs to (#4005).
 	bgID   string
 	bgSess session.Snapshot
 	bgSlot int
@@ -82,13 +82,18 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
-	// slot is the current session slot (0 by default): a session
-	// shortcut's tap parks this slot's cards in slots and restores the
-	// chosen one's (session_slots.go, #4005). slotsUsed turns on the
-	// card's session label once a slot shortcut was pressed.
-	slot      int
-	slots     [slotCount]parkedSlot
-	slotsUsed bool
+	// slots are the sessions, in the order the card lists them, and slot
+	// the current one's id: switching parks its cards in slots and
+	// restores the chosen one's (session_slots.go, #4005). slotSeq is the
+	// last id given. emptyCard: the current session has no card and
+	// shows the empty one, until it is closed.
+	slot, slotSeq int
+	slots         []parkedSlot
+	emptyCard     bool
+	// renaming: session renameID's title is being typed on the session
+	// row; the card's keys go to the text meanwhile.
+	renaming bool
+	renameID int
 	// reopen is the history's continuable conversations, newest first.
 	reopen     []reopenConversation
 	restoreSeq int
@@ -127,7 +132,6 @@ type answerCard struct {
 	id         string // the session whose result it shows
 	conv       string // the first session of its conversation (store.Entry.Conversation)
 	kind       store.Kind
-	slot       int // the session slot it belongs to (#4005)
 	text       string
 	highlights []dict.Span
 	title      string // Rewrite's answer title ("" for none)
@@ -402,6 +406,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.historyChanged() // a try keeps nothing, but the pages may show it
 		return
 	}
+	a.titleSession(s)
 	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
 		a.copyRecent(s.Result, false) // tray.go: the clipboard keeps each result
 	}
@@ -416,7 +421,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			case s.ID == a.bgID:
 				// The backgrounded answer's own end: its card opens (and its
 				// conversation merges) as the foreground path's would — in
-				// its own session slot when the user switched away meanwhile
+				// its own session when the user switched away meanwhile
 				// (#4005). A card that is not its own waits under it: setAside
 				// holds only Rewrite and Translate cards, so a Transcribe
 				// card is held directly.
@@ -431,14 +436,14 @@ func (a *app) sessionEnded(s session.Snapshot) {
 						a.setAside(false)
 					}
 				}
-				a.openAnswer(s, a.slot)
+				a.openAnswer(s)
 			case a.answer.open && a.answer.id != s.ID && a.bgID != "" &&
 				(a.followUp != "" && a.followUp == a.answer.id || a.answer.redo == a.bgID):
 				// The open card's own answer still streams in the background:
 				// this card waits under it, conversation and redo untouched.
 				saved, followUp := a.answer, a.followUp
 				a.followUp = ""
-				a.openAnswer(s, a.slot)
+				a.openAnswer(s)
 				a.under, a.answer = a.answer, saved
 				a.followUp = followUp
 			case a.answer.open && a.answer.id != s.ID && !(a.followUp != "" && a.followUp == a.answer.id):
@@ -446,9 +451,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 				// one and comes back when it closes, as setAside would have
 				// held it. A follow-up is the card's own: it merges instead.
 				a.setAside(false)
-				a.openAnswer(s, a.slot)
+				a.openAnswer(s)
 			default:
-				a.openAnswer(s, a.slot)
+				a.openAnswer(s)
 			}
 			a.syncHotkeys() // the cancel shortcut closes the card
 		}

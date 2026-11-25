@@ -40,7 +40,7 @@ func (a *app) backgroundAnswer() bool {
 }
 
 // bgVisible says whether the backgrounded answer belongs to the current
-// session slot: only then does it drive the visible card or take the
+// session: only then does it drive the visible card or take the
 // cancel shortcut (#4005).
 func (a *app) bgVisible() bool { return a.bgID != "" && a.bgSlot == a.slot }
 
@@ -64,7 +64,7 @@ func (a *app) backgroundChanged(s session.Snapshot) {
 }
 
 // cardSnapshot is the session snapshot the answer card reads: the
-// backgrounded answer's while it belongs to this slot, else the current
+// backgrounded answer's while it belongs to this session, else the current
 // session's.
 func (a *app) cardSnapshot() session.Snapshot {
 	if a.bgVisible() {
@@ -74,8 +74,8 @@ func (a *app) cardSnapshot() session.Snapshot {
 }
 
 // cancelCardSession cancels the session the card belongs to: this
-// slot's backgrounded answer, or the live follow-up or redo. Another
-// slot's answer keeps streaming (#4005).
+// session's backgrounded answer, or the live follow-up or redo. Another
+// session's answer keeps streaming (#4005).
 func (a *app) cancelCardSession() {
 	if a.mgr == nil {
 		return

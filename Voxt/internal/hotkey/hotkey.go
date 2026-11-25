@@ -296,12 +296,13 @@ const (
 	// Meeting is Features.Meeting's binding id (dev builds).
 	Meeting = "meeting"
 	// Session1 … Session3 are the binding ids of Features.Sessions: a
-	// tap switches the session slot (#4005).
+	// tap switches to session 1, 2 or 3 of the list, when it exists
+	// (#4005).
 	Session1 = "session-1"
 	Session2 = "session-2"
 	Session3 = "session-3"
 	// SessionNext is the binding id of Features.Sessions' last entry: a
-	// tap switches to the slot after the current one, around.
+	// tap switches to the session after the current one, around.
 	SessionNext = "session-next"
 )
 

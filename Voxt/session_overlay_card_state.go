@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -28,41 +29,42 @@ type sessionCardViewState struct {
 	ID    string `json:"id"`
 	Kind  string `json:"kind"`
 	Title string `json:"title"`
-	// Session is the card's session slot ("Session 2"), once a session
-	// shortcut was pressed (#4005); "": the one default slot.
-	Session        string                `json:"session,omitempty"`
-	Message        string                `json:"message,omitempty"`
-	Why            string                `json:"why,omitempty"`
-	TargetName     string                `json:"target_name,omitempty"`
-	Language       string                `json:"language,omitempty"`
-	LanguageLabel  string                `json:"language_label,omitempty"`
-	Thinking       sessionThinkingValue  `json:"thinking"`
-	ThinkingLabel  string                `json:"thinking_label,omitempty"`
-	FollowTooltip  string                `json:"follow_tooltip,omitempty"`
-	InsertTooltip  string                `json:"insert_tooltip,omitempty"`
-	CopyTooltip    string                `json:"copy_tooltip,omitempty"`
-	Attachment     string                `json:"attachment,omitempty"`
-	ThumbnailCount int                   `json:"thumbnail_count,omitempty"`
-	InputCount     int                   `json:"input_count,omitempty"`
-	Inputs         []sessionCardInput    `json:"inputs,omitempty"`
-	ProblemCode    string                `json:"problem_code,omitempty"`
-	SizeStep       int                   `json:"size_step"`
-	Levels         [session.Bars]float64 `json:"levels"`
-	Blocks         []sessionCardBlock    `json:"blocks"`
-	Live           [2]sessionCardBlock   `json:"live"`
-	LiveCount      int                   `json:"live_count"`
-	Busy           bool                  `json:"busy"`
-	Recording      bool                  `json:"recording"`
-	Writing        bool                  `json:"writing"`
-	Conversation   bool                  `json:"conversation"`
-	Failed         bool                  `json:"failed"`
-	Copied         bool                  `json:"copied"`
-	Heard          bool                  `json:"heard"`
-	CanInsert      bool                  `json:"can_insert"`
-	CanCopy        bool                  `json:"can_copy"`
-	CanFollowUp    bool                  `json:"can_follow_up"`
-	CanStop        bool                  `json:"can_stop"`
-	CanStopAnswer  bool                  `json:"can_stop_answer"`
+	// Sessions is the card's session row (overlay_session_row.go, #4005);
+	// none with sessions off. Empty: the session has no card yet.
+	Sessions       []sessionChipViewState `json:"sessions,omitempty"`
+	Empty          bool                   `json:"empty,omitempty"`
+	Message        string                 `json:"message,omitempty"`
+	Why            string                 `json:"why,omitempty"`
+	TargetName     string                 `json:"target_name,omitempty"`
+	Language       string                 `json:"language,omitempty"`
+	LanguageLabel  string                 `json:"language_label,omitempty"`
+	Thinking       sessionThinkingValue   `json:"thinking"`
+	ThinkingLabel  string                 `json:"thinking_label,omitempty"`
+	FollowTooltip  string                 `json:"follow_tooltip,omitempty"`
+	InsertTooltip  string                 `json:"insert_tooltip,omitempty"`
+	CopyTooltip    string                 `json:"copy_tooltip,omitempty"`
+	Attachment     string                 `json:"attachment,omitempty"`
+	ThumbnailCount int                    `json:"thumbnail_count,omitempty"`
+	InputCount     int                    `json:"input_count,omitempty"`
+	Inputs         []sessionCardInput     `json:"inputs,omitempty"`
+	ProblemCode    string                 `json:"problem_code,omitempty"`
+	SizeStep       int                    `json:"size_step"`
+	Levels         [session.Bars]float64  `json:"levels"`
+	Blocks         []sessionCardBlock     `json:"blocks"`
+	Live           [2]sessionCardBlock    `json:"live"`
+	LiveCount      int                    `json:"live_count"`
+	Busy           bool                   `json:"busy"`
+	Recording      bool                   `json:"recording"`
+	Writing        bool                   `json:"writing"`
+	Conversation   bool                   `json:"conversation"`
+	Failed         bool                   `json:"failed"`
+	Copied         bool                   `json:"copied"`
+	Heard          bool                   `json:"heard"`
+	CanInsert      bool                   `json:"can_insert"`
+	CanCopy        bool                   `json:"can_copy"`
+	CanFollowUp    bool                   `json:"can_follow_up"`
+	CanStop        bool                   `json:"can_stop"`
+	CanStopAnswer  bool                   `json:"can_stop_answer"`
 	// CanUseTranscript: Transcribe's clean-up or Translate's speech can go in as recognised instead (#3821).
 	CanUseTranscript bool `json:"can_use_transcript,omitempty"`
 	CanRetry         bool `json:"can_retry"`
@@ -110,8 +112,9 @@ type sessionCardBlock struct {
 type sessionCardProjectionInput struct {
 	Snapshot          session.Snapshot
 	Answer            answerCard
-	SlotsUsed         bool
-	Slot              int
+	Sessions          []sessionChipViewState
+	Empty             bool
+	KeepsHistory      bool
 	Own               bool
 	Writing           bool
 	HideLiveText      bool
@@ -146,7 +149,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		snapshot.Partial, snapshot.Draft = "", ""
 	}
 	if !card.open {
-		state := sessionCardViewState{SizeStep: input.SizeStep, Session: sessionSlotLabel(translator, input, input.Slot)}
+		state := sessionCardViewState{SizeStep: input.SizeStep, Sessions: input.Sessions}
 		if input.Writing {
 			state.ID, state.Kind = snapshot.ID, string(snapshot.Kind)
 			state.Title = sessionCardTitleFor(translator, snapshot.Kind, snapshot.Title)
@@ -158,6 +161,14 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 			state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 			state.Live[0] = sessionCardWritingBlock(input.ShownDraft, snapshot.Kind)
 			state.LiveCount = 1
+		} else if input.Empty {
+			// A session without a card: the session row and what to do next.
+			hint := translator.T("Nothing here yet. Start a Rewrite, Translate or Transcribe and it runs in this session.")
+			if !input.KeepsHistory {
+				hint += " " + translator.T("History is off, so sessions end when Voxt quits.")
+			}
+			state.Empty, state.Title = true, translator.T("New session")
+			state.Blocks = []sessionCardBlock{{Key: "empty", Kind: sessionCardBody, Text: hint}}
 		}
 		return state
 	}
@@ -170,8 +181,8 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	state := sessionCardViewState{
 		ID: card.id, Kind: string(card.kind), Title: sessionCardTitleFor(translator, card.kind, card.title),
-		Session: sessionSlotLabel(translator, input, card.slot),
-		Message: card.msg, Why: card.why, TargetName: card.target.Name,
+		Sessions: input.Sessions,
+		Message:  card.msg, Why: card.why, TargetName: card.target.Name,
 		Language: lang, LanguageLabel: compose.LanguageName(lang, translator.Locale()),
 		Thinking: sessionThinkingValueOf(think), SizeStep: input.SizeStep,
 		Busy: input.Own, Conversation: card.conversation || follow, Failed: card.problem != nil,
@@ -241,15 +252,6 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		state.Message, _, _ = sessionProblemTextFor(translator, card.problem)
 	}
 	return state
-}
-
-// sessionSlotLabel is the card's session slot label ("Session 2"), ""
-// until a session shortcut was pressed (#4005).
-func sessionSlotLabel(translator *i18n.Translator, input sessionCardProjectionInput, slot int) string {
-	if !input.SlotsUsed {
-		return ""
-	}
-	return translator.T("Session %d", slot+1)
 }
 
 // sessionCardBodyBlock is an ended card's text, its dictionary words'
@@ -443,8 +445,8 @@ type sessionCardProjectionKey struct {
 	own, writing, hideLiveText            bool
 	canFollowUp, copied, conversation     bool
 	copyKey, insertKey                    bool
-	slotsUsed                             bool
-	slot                                  int
+	sessions                              string
+	empty, keepsHistory                   bool
 	redoWriting                           bool
 	problemCode, attachment               string
 	thumbnailCount, inputCount            int
@@ -484,7 +486,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		own: input.Own, writing: input.Writing, hideLiveText: input.HideLiveText,
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
 		copyKey: input.CopyKey, insertKey: input.InsertKey,
-		slotsUsed: input.SlotsUsed, slot: card.slot,
+		sessions: fmt.Sprint(input.Sessions), empty: input.Empty, keepsHistory: input.KeepsHistory,
 		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
 	}
 }
@@ -504,7 +506,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		kind = snapshot.Kind
 	}
 	input := sessionCardProjectionInput{
-		Snapshot: snapshot, Answer: a.answer, SlotsUsed: a.slotsUsed || a.prefs.Features.SessionsOn, Slot: a.slot,
+		Snapshot: snapshot, Answer: a.answer, Sessions: a.sessionChips(), Empty: a.emptyCard, KeepsHistory: a.prefs.Privacy.KeepHistory,
 		Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
 		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),

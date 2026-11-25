@@ -48,7 +48,7 @@ func TestTranscribeDictionaryHighlights(t *testing.T) {
 		snap(a, s)
 		before := renderOverlay(t, a)
 		s.Highlights = testDictionaryHighlights(result)
-		a.openAnswer(s, a.slot)
+		a.openAnswer(s)
 		a.overlaySync()
 		after := renderOverlay(t, a)
 		if bytes.Equal(before.Pix, after.Pix) {
@@ -67,7 +67,7 @@ func TestRedoDropsOldHighlights(t *testing.T) {
 		Delivery: deliver.ReasonCard, Result: long}
 	snap(a, s)
 	s.Highlights = testDictionaryHighlights(long)
-	a.openAnswer(s, a.slot)
+	a.openAnswer(s)
 	a.overlaySync()
 	a.answer.redo = "t2"
 	snap(a, session.Snapshot{ID: "t2", Kind: store.KindTranscribe, State: session.Composing, Card: true, Draft: "短一些。"})
@@ -97,7 +97,7 @@ func TestDictionaryHighlightOutOfRange(t *testing.T) {
 		Delivery: deliver.ReasonCard, Result: "short"}
 	snap(a, s)
 	s.Highlights = []dict.Span{{Start: 2, End: 40}}
-	a.openAnswer(s, a.slot)
+	a.openAnswer(s)
 	a.overlaySync()
 	renderOverlay(t, a)
 }

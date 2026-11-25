@@ -38,15 +38,16 @@ func (a *app) setSessionKeys(slot int, keys string) {
 	})
 }
 
-// setSessionsOn turns the session shortcuts on or off. Off goes back to
-// Session 1 and drops the session labels; parked cards wait for on.
+// setSessionsOn turns sessions on or off. Off goes back to the first
+// session and takes the session row off the cards; the other sessions'
+// cards wait for on.
 func (a *app) setSessionsOn(on bool) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = on })
 	if !on {
-		a.switchSlot(0)
-		a.notice = nil
-		a.slotsUsed = a.slot != 0 // a switch that could not happen keeps its label
+		a.switchSlot(a.sessions()[0].id)
+		a.emptyCard = false
 	}
+	a.overlaySync()
 }
 
 func (a *app) openShortcutPermissions() {

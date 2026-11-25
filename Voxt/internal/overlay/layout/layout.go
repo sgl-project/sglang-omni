@@ -190,8 +190,11 @@ const (
 	CardBodyW = AnswerW - 2*CardPadX
 	// CardChrome is the card's height without its text.
 	CardChrome = CardPadTop + CardHeadH + CardRuleTop + 1 + CardRuleGap + CardPadY
-	CardMsgGap = 8
-	CardMsgH   = 16
+	// CardSessionsH is the session row's height with the gap over it
+	// (sessions on, #4005).
+	CardSessionsH = 30
+	CardMsgGap    = 8
+	CardMsgH      = 16
 	// CardAttachH is the height of the row that says which picture went
 	// to the language model (a thumbnail 24 high, its gap).
 	CardAttachH = 28

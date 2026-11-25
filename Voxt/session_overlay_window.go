@@ -96,7 +96,8 @@ func (a *app) overlayModeNow() overlayMode {
 	live := snapshot.State.Live() && !snapshot.Try
 	// A Transcribe leaves the card on screen (wall 116): the card keeps
 	// the overlay window, the session's pill gets its own (pillModeNow).
-	haveCard := a.answer.open || a.bgVisible()
+	// A session without a card keeps the empty card, for its session row.
+	haveCard := a.answer.open || a.bgVisible() || a.emptyCard && !a.box.open
 	card := haveCard && (!live || a.cardSessionLive() || a.bgVisible() || snapshot.Kind == store.KindTranscribe)
 	switch {
 	case a.notice != nil && a.notice.over:

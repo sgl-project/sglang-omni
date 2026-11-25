@@ -123,7 +123,7 @@ func cardCheckSteps(lang string) []ovCheckStep {
 			Selection: src, TargetLanguage: target, Result: result, Draft: draft}
 	}
 	end := func(s session.Snapshot) func(*app) {
-		return func(a *app) { a.sess = s; a.openAnswer(s, a.slot) }
+		return func(a *app) { a.sess = s; a.openAnswer(s) }
 	}
 	return []ovCheckStep{
 		// The model writes: the translation streams into the card.

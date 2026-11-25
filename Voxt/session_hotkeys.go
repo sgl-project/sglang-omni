@@ -18,7 +18,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -65,7 +64,7 @@ func (a *app) strictFeature() string {
 // event acts only on the card that was visible when the helper read its id.
 func (a *app) cardHotkeyGeneration() uint64 {
 	identity := ""
-	if a.overlayModeNow() == ovAnswer {
+	if a.overlayModeNow() == ovAnswer && !a.renaming { // a title being typed takes c and r
 		identity = a.sess.ID + "/draft"
 		if a.answer.open {
 			identity = a.answer.id + "/open"
@@ -97,6 +96,10 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		target = *e.Front
 	}
 	if a.pressDuringSelection(e) { // dictionary_selection.go
+		return
+	}
+	if e.Binding == proto.HotkeyCancel && a.renaming {
+		a.endRename() // the cancel shortcut ends the typing first, then closes the card
 		return
 	}
 	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
@@ -157,21 +160,14 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
-		if slot, ok := hotkey.SessionSlot(d.Feature); ok {
+		if n, ok := hotkey.SessionSlot(d.Feature); ok {
+			// Session 1, 2 or 3 of the list, or the next one, around (#4005).
+			list := a.sessions()
 			if d.Feature == hotkey.SessionNext {
-				slot = (a.slot + 1) % slotCount
+				n = (a.slotIndex(a.slot) + 1) % len(list)
 			}
-			from := a.slot
-			a.switchSlot(slot) // the multi-session prototype (#4005)
-			if a.slot != from {
-				// The user's own switches, for the counts in Settings.
-				back := a.answer.open
-				a.updateSettings(func(s *settings.Settings) {
-					s.Setup.SessionSwitchTotal++
-					if back {
-						s.Setup.SessionReturns++
-					}
-				})
+			if n < len(list) {
+				a.switchSession(list[n].id)
 			}
 			return
 		}

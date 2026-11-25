@@ -104,7 +104,7 @@ func TestBuildDefaults(t *testing.T) {
 	}
 	f.SessionsOn = true
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 7 {
+	if len(p.Bindings) != 4 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
 	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
@@ -121,25 +121,28 @@ func TestBuildDefaults(t *testing.T) {
 	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
 		t.Errorf("note %+v", note)
 	}
-	// The session slots, Control+Option with a digit, tapped (#4005).
-	for i, id := range Sessions {
-		b := p.Bindings[3+i]
-		if b.ID != id || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 2 ||
-			b.Modifiers[proto.ModOption] != proto.SideAny || b.Modifiers[proto.ModControl] != proto.SideAny {
-			t.Errorf("session %+v", b)
-		}
+	// Of the session shortcuts only "Next session" is bound by default:
+	// two keys, Option+Tab, tapped (#4005).
+	if b := p.Bindings[3]; b.ID != SessionNext || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 1 ||
+		b.Modifiers[proto.ModOption] != proto.SideAny {
+		t.Errorf("next session %+v", b)
 	}
-	if len(p.Carbon) != 5 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
+	if len(p.Carbon) != 2 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 7 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 4 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 9 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
-		all.Bindings[4].ID != Note || all.Bindings[5].ID != Session1 {
+	if len(all.Bindings) != 6 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+		all.Bindings[4].ID != Note || all.Bindings[5].ID != SessionNext {
+		t.Errorf("all %+v", all.Bindings)
+	}
+	// A session's own shortcut binds once the user gives it keys.
+	f.Sessions[1] = settings.Hotkey{Keys: "F6", Trigger: settings.TriggerTap}
+	if all = Build(f, Features); len(all.Bindings) != 7 || all.Bindings[5].ID != Session2 {
 		t.Errorf("all %+v", all.Bindings)
 	}
 	if got := Build(settings.Features{}, Features).Configure(false); got.Bindings == nil || len(got.Bindings) != 0 || got.SwallowFn {

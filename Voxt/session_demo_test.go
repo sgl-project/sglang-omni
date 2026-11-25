@@ -78,9 +78,15 @@ func TestAnswerCardMathRequestsPreview(t *testing.T) {
 	}
 }
 
+// sessionDemoRow gives the fixture's card a session row of two sessions.
+func sessionDemoRow(host *meetingDemoHost) {
+	host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Title: "Goroutines", Current: true}, {ID: 7}}
+}
+
 type sessionDemoActionCase struct {
 	name           string
 	fixture        string
+	setup          func(*meetingDemoHost) // changes the fixture's state before it is drawn
 	methods        []string
 	steps          []meetingDemoStep
 	notice         bool
@@ -108,6 +114,27 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				t.Fatal("close did not hide the local card")
 			}
 		}},
+		{name: "session row", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"switchSession", "newSession", "deleteSession"},
+			steps: steps("Session 2", "New session", "Delete session 2"), want: []string{"switchSession 7", "newSession", "deleteSession 7"}},
+		{name: "session rename", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"renameSession", "nameSession"},
+			check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+				// A double click on the current session, a new title, Return.
+				box, ok := tester.Find("1 Goroutines")
+				if !ok {
+					t.Fatalf("no session chip (controls %q)", tester.AccessLabels())
+				}
+				x, y := box.X+box.W/2, box.Y+box.H/2
+				tester.ClickAt(x, y)
+				tester.ClickAt(x, y)
+				frames(tester)
+				tester.Key(ui.Super, ui.KeyA)
+				tester.Type("Go notes")
+				tester.Key(0, ui.KeyEnter)
+				frames(tester)
+				if want := []string{"renameSession 3", `nameSession 3 "Go notes"`}; !slices.Equal(host.calls, want) {
+					t.Fatalf("calls %q, want %q", host.calls, want)
+				}
+			}},
 		{name: "notice models", fixture: "en/session-problem-no-asr", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction models"}},
 		{name: "notice language", fixture: "en/session-problem-no-llm", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction language"}},
 		{name: "notice permissions", fixture: "en/session-problem-microphone", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction permissions"}},
@@ -167,6 +194,9 @@ func TestSessionDemoActionControls(t *testing.T) {
 			originalText := ""
 			if original != nil && len(original.Blocks) > 0 {
 				originalText = original.Blocks[0].Text
+			}
+			if test.setup != nil {
+				test.setup(host)
 			}
 			tester := newSessionDemoActionTester(t, host)
 			if test.notice {

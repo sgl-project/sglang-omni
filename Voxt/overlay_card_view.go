@@ -21,11 +21,12 @@ func overlayCard(context *ui.Context, state *sessionOverlayViewState, layoutStat
 	if card.Message != "" {
 		messageHeight = layout.CardMsgGap + layout.CardMsgH
 	}
-	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardAttachmentHeight(card)-messageHeight, 0))
+	bodyHeight := float32(max(layoutState.Height-layout.CardChrome-sessionCardSessionsHeight(card)-sessionCardAttachmentHeight(card)-messageHeight, 0))
 	ui.Column(context).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).DragWindow().Children(func() {
 		ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 			cardHeader(context, card, layoutState.Top, actions, local, animation)
 		})
+		sessionRow(context, card.Sessions, layout.CardSessionsH-sessionChipH, actions, local.Card)
 		ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
 		cardAttachView(context, card, local)
 		cardBody(context, state.SessionID, card, bodyHeight, layoutState.Width, layoutState.CardScrolls, layoutState.Alpha, actions, local, onMeasured)
@@ -105,9 +106,6 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		icon = icons.VoxtTranscribe
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
-	if card.Session != "" {
-		ui.Text(context, card.Session).FontSize(11).TextColor(ovText2).SingleLine().Shrink(0)
-	}
 	if card.Conversation {
 		cardWave(context, card.Levels[:], animation.Wave, card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
@@ -156,7 +154,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	if card.ShowThinking && cardIconButton(context.Key("ov-card-think"), i18n.T("Thinking level"), card.ThinkingLabel, icons.Tuning2, card.CanThink) {
 		actions.toggleThinkMenu()
 	}
-	if !card.Failed {
+	if !card.Failed && !card.Empty {
 		cardInsertCopy(context, card, actions)
 	}
 	if cardIconButton(context.Key("ov-card-close"), i18n.T("Close"), "", icons.Close, true) {
