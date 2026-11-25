@@ -199,8 +199,8 @@ func TestJoinParts(t *testing.T) {
 // space, a full stop or anywhere.
 func TestPiecesKeepMarks(t *testing.T) {
 	for _, text := range []string{
-		strings.Repeat("word ", 56) + "⟦my email address⟧ " + strings.Repeat("more ", 60),
-		strings.Repeat("Words here. ", 24) + "⟦Dr. Smith's office⟧ " + strings.Repeat("More there. ", 26),
+		strings.Repeat("word ", 296) + "⟦my email address⟧ " + strings.Repeat("more ", 296),
+		strings.Repeat("Words here. ", 147) + "⟦Dr. Smith's office⟧ " + strings.Repeat("More there. ", 147),
 		strings.Repeat("字", 290) + "⟦我的邮箱⟧" + strings.Repeat("字", 200),
 		strings.Repeat("字", 296) + "⟦我的邮箱⟧" + strings.Repeat("字", 296),
 	} {
