@@ -123,7 +123,6 @@
   "How to use it": "使用说明",
   "Let programs on this Mac read the history?": "允许这台 Mac 上的程序读取历史吗？",
   "Any program you run can then read the text Voxt transcribed, translated and rewrote and the app names, but not the recordings or web addresses. Voxt cannot see where a program sends it.": "打开后，你运行的任何程序都能读到 Voxt 转录、翻译和改写的文字和 App 名称，但读不到录音和网址。程序会把文字发到哪里，Voxt 无从得知。",
-  "Turn on": "打开",
   "Read log": "读取记录",
   "Recent reads by other programs. No text is kept here.": "其他程序最近的读取记录，不保存任何文字。",
   "Could not open the connection for other programs: %v": "无法打开给其他程序的连接：%v",

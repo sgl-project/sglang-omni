@@ -9,6 +9,59 @@
       "after": " 说话",
       "model": "fixture-speech"
     },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "语音识别",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "语言模型",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "麦克风",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "辅助功能",
+        "ok": true,
+        "warn": false,
+        "text": "已允许",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "快捷键",
+        "ok": true,
+        "warn": false,
+        "text": "右 ⌘",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
     "activity": {
       "stats": [
         {
@@ -881,6 +934,210 @@
       "levels": 4,
       "can_back": true,
       "can_forward": false
-    }
+    },
+    "insights": {
+      "stats": [
+        {
+          "parts": [
+            {
+              "value": "151",
+              "unit": "字"
+            }
+          ],
+          "label": "口述字数"
+        },
+        {
+          "parts": [
+            {
+              "value": "2",
+              "unit": "分钟"
+            }
+          ],
+          "label": "节省时间"
+        },
+        {
+          "parts": [
+            {
+              "value": "200",
+              "unit": "字/分钟"
+            }
+          ],
+          "label": "平均口述速度"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "分钟"
+            }
+          ],
+          "label": "总口述时间"
+        }
+      ],
+      "days": [
+        {
+          "parts": [
+            {
+              "value": "3",
+              "unit": "天"
+            }
+          ],
+          "label": "活跃天数"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "天"
+            }
+          ],
+          "label": "当前连续天数"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "天"
+            }
+          ],
+          "label": "最长连续天数"
+        }
+      ],
+      "weeks": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          -1
+        ]
+      ],
+      "months": [
+        "",
+        "",
+        "",
+        "",
+        "11月",
+        "",
+        "",
+        "",
+        "",
+        "12月",
+        "",
+        "",
+        ""
+      ]
+    },
+    "outfit": "new-year"
   }
 }

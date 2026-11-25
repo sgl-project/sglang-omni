@@ -28,22 +28,33 @@ type homeUsage struct {
 }
 
 type homeViewState struct {
-	KeepHistory bool                `json:"keep_history"`
-	Error       string              `json:"error,omitempty"`
-	Slogan      homeSloganViewState `json:"slogan"`
+	KeepHistory bool                     `json:"keep_history"`
+	Error       string                   `json:"error,omitempty"`
+	Slogan      homeSloganViewState      `json:"slogan"`
+	Missing     []homeReadinessViewState `json:"missing"`
+	Ready       []homeReadinessViewState `json:"ready"`
 	// Activity is the activity calendar once its log was read.
 	Activity *homeActivityViewState `json:"activity,omitempty"`
+	// Insights is the log's totals above the calendar (insights_view.go).
+	Insights *insightsViewState `json:"insights,omitempty"`
+	// InsightsClosed folds Looking back to its title row.
+	InsightsClosed bool `json:"insights_closed,omitempty"`
+	// Outfit is what the mascot wears today (mascotOutfitOn), "" none.
+	Outfit string `json:"outfit,omitempty"`
 }
 
 type homeViewStateInput struct {
 	KeepHistory  bool
 	Error        string
 	Features     settings.Features
+	Readiness    []homeReadinessViewState
 	Now          time.Time
 	Activity     activity.Log
 	ActivityRead bool
 	ActivityPage int
 	Usage        homeUsage
+	// InsightsClosed is settings.Appearance.LookingBackClosed.
+	InsightsClosed bool
 }
 
 func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) homeViewState {
@@ -51,15 +62,30 @@ func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) h
 	if lastModelName == "" {
 		lastModelName = uitext.ModelNameFor(translator, input.Usage.lastModel)
 	}
+	missing, ready := homeMissing(input.Readiness)
 	state := homeViewState{
 		KeepHistory: input.KeepHistory, Error: input.Error,
-		Slogan: buildHomeSloganViewState(translator, input.Features, lastModelName),
+		Slogan: buildHomeSloganViewState(translator, input.Features, lastModelName), Missing: missing, Ready: ready,
+		Outfit: mascotOutfitOn(input.Now), InsightsClosed: input.InsightsClosed,
 	}
 	if input.ActivityRead {
 		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now, input.Usage)
 		state.Activity = &activity
+		insights := buildInsightsViewState(translator, input.Activity, input.Now)
+		state.Insights = &insights
 	}
 	return state
+}
+
+func homeMissing(list []homeReadinessViewState) (missing, ready []homeReadinessViewState) {
+	for _, item := range list {
+		if item.OK {
+			ready = append(ready, item)
+		} else {
+			missing = append(missing, item)
+		}
+	}
+	return missing, ready
 }
 
 func buildHomeSloganViewState(translator *i18n.Translator, features settings.Features, lastModel string) homeSloganViewState {

@@ -84,6 +84,9 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		// An earlier background save can publish after a newer appearance edit.
 		a.syncSavedAppearancePreview(&new.Appearance)
 	}
+	// The live detail width moves only on the main thread (a drag save or
+	// a reset); a notification published before a reset must not restore it.
+	new.Appearance.HistoryDetailWidth = a.prefs.Appearance.HistoryDetailWidth
 	a.prefs = new
 	a.familySettingsChanged(old, new) // family.go: the shared settings, the manifest
 	if (old.Dictionary.Learn && !new.Dictionary.Learn) || (old.Dictionary.Enabled && !new.Dictionary.Enabled) {
@@ -165,8 +168,9 @@ func (a *app) loadSettingsForm() {
 	f.dock, f.copyResult = general.Dock, general.CopyResult
 	appearance := a.appearanceSettingsModel()
 	f.theme, f.scale, f.reduceMotion, f.sidebar = appearance.Theme, appearance.Scale, appearance.ReduceMotion, appearance.Sidebar
+	f.opening, f.openingSpeed = appearance.Opening, float64(appearance.OpeningLength)
 	a.loadAppearancePreview() // settings_appearance_controller.go
-	f.strictShortcuts = s.Features.StrictShortcuts
+	f.strictShortcuts, f.returnFinishes = s.Features.StrictShortcuts, s.Features.ReturnFinishes
 	f.keepHistory, f.keepAudio, f.logText = s.Privacy.KeepHistory, s.Privacy.KeepAudio, s.Privacy.LogText
 	f.sendWindow, f.sendClipboard = s.Privacy.SendWindow, s.Privacy.SendClipboardImage
 	f.sendClipboardWithSelection = s.Privacy.SendClipboardImageWithSelection

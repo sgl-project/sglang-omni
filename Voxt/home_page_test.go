@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -49,6 +50,116 @@ func hasSuffix(tt *ui.Tester, s string) bool {
 func allowAll(a *app) {
 	a.perms.mic, a.perms.access, a.perms.checked = permission.Granted, true, true
 	a.hotkeys.Installed = true
+}
+
+func TestHomeReadiness(t *testing.T) {
+	a, tt := homeTester(t)
+	for _, s := range []string{
+		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
+		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
+		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
+	} {
+		if !has(tt, s) {
+			t.Errorf("no %q in %q", s, tt.Texts())
+		}
+	}
+	if !hasSuffix(tt, " steps to go") {
+		t.Errorf("no steps to go: %q", tt.Texts())
+	}
+	// The Accessibility step already says the shortcut waits for it; once
+	// allowed, a shortcut whose tap is not in yet says so itself.
+	if has(tt, "Right ⌥ (once Accessibility is allowed)") {
+		t.Errorf("the shortcut repeats the Accessibility step: %q", tt.Texts())
+	}
+	a.perms.access = true
+	if !has(tt, "Right ⌥ (once Accessibility is allowed)") {
+		t.Errorf("no shortcut waiting for its tap: %q", tt.Texts())
+	}
+	a.perms.access = false
+	// The whole line is the way to fix it: speech models are local,
+	// language models are set up on their page.
+	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {
+		t.Fatalf("no download on the speech line: %q", tt.Texts())
+	}
+	click(t, tt, "Language model: Open Language models")
+	if a.shownPath() != remotePath {
+		t.Fatalf("went to %s", a.shownPath())
+	}
+	a.navigate("/home")
+
+	// A speech model only: the language model is missing.
+	a.local = &fakeLocal{ASRP: &fakeTranscriptions{}}
+	if !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") || !has(tt, fakeASRModel.Name) {
+		t.Errorf("no language model: %q", tt.Texts())
+	}
+
+	// All ready: no list at all, neither its title nor what is ready.
+	readyModels(a)
+	allowAll(a)
+	for _, s := range []string{fakeASRModel.Name, fakeLLMModel.Name, "Speech recognition", "Microphone"} {
+		if hasExact(tt, s) {
+			t.Errorf("ready, still %q: %q", s, tt.Texts())
+		}
+	}
+	if hasSuffix(tt, " to go") {
+		t.Errorf("ready, still the list: %q", tt.Texts())
+	}
+
+	// A shortcut macOS takes says so, and opens Transcribe.
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.Hotkeys = []settings.Hotkey{{Keys: "Command+Space", Trigger: settings.TriggerTap}}
+	})
+	if !has(tt, "1 step to go") || !has(tt, "Transcribe's shortcut ⌘Space: macOS uses these keys for Spotlight.") {
+		t.Errorf("no clash: %q", tt.Texts())
+	}
+	// What is ready shows again, quieter, under what is missing.
+	if !hasExact(tt, fakeLLMModel.Name) {
+		t.Errorf("not ready, no ready line: %q", tt.Texts())
+	}
+	click(t, tt, "Shortcut: Open Transcribe")
+	if a.router.Path() != "/transcribe" {
+		t.Errorf("went to %s", a.router.Path())
+	}
+}
+
+// TestHomeReadinessLive: the list comes and goes as things stop or
+// start being ready, while Home shows.
+func TestHomeReadinessLive(t *testing.T) {
+	a, tt := homeTester(t)
+	readyModels(a)
+	allowAll(a)
+	if hasSuffix(tt, " to go") {
+		t.Fatalf("ready, a list: %q", tt.Texts())
+	}
+	// Accessibility taken away.
+	a.perms.access = false
+	if !has(tt, "1 step to go") || !has(tt, "Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.") {
+		t.Errorf("access revoked: %q", tt.Texts())
+	}
+	a.perms.access = true
+	if hasSuffix(tt, " to go") {
+		t.Errorf("access back, still a list: %q", tt.Texts())
+	}
+	// The language model removed.
+	a.local.(*fakeLocal).Chat = nil
+	if !has(tt, "1 step to go") || !has(tt, "No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.") {
+		t.Errorf("model deleted: %q", tt.Texts())
+	}
+	readyModels(a)
+	if hasSuffix(tt, " to go") {
+		t.Errorf("model back, still a list: %q", tt.Texts())
+	}
+	// The Microphone denied; the helper failed.
+	a.perms.mic = permission.Denied
+	a.host.sup.(*fakeSupervisor).set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed, Err: "exit status 2"})
+	if !has(tt, "2 steps to go") {
+		t.Errorf("mic denied, helper failed: %q", tt.Texts())
+	}
+	// A helper that is starting is not a step.
+	a.host.sup.(*fakeSupervisor).set(helper.Status{State: helper.Starting})
+	if !has(tt, "1 step to go") {
+		t.Errorf("helper starting: %q", tt.Texts())
+	}
 }
 
 func TestSloganHint(t *testing.T) {
@@ -490,17 +601,36 @@ func TestWidePageCentered(t *testing.T) {
 	if math.Abs(float64(guide.X+guide.W-(model.X+model.W))) > 20 {
 		t.Errorf("Setup guide ends at %.0f, the column's model at %.0f", guide.X+guide.W, model.X+model.W)
 	}
-	// A page of lists keeps a wider body in the middle, its header lined
-	// up with it too.
+	// Dictionary is one column too: its views and search sit in the
+	// middle, and the header's Add term ends where the search does.
 	a.navigate("/dictionary")
 	frames(tt)
-	search, ok1 := tt.Find("Search dictionary")
-	add, ok2 := tt.Find("Add term")
-	if !ok1 || !ok2 {
-		t.Fatalf("Dictionary: found search %v, Add term %v", ok1, ok2)
+	views, ok1 := tt.Find("Dictionary view")
+	search, ok2 := tt.Find("Search dictionary")
+	add, ok3 := tt.Find("Add term")
+	if !ok1 || !ok2 || !ok3 {
+		t.Fatalf("Dictionary: found views %v, search %v, Add term %v", ok1, ok2, ok3)
 	}
-	left, right = search.X-sidebarWidth, w-(add.X+add.W)
+	left, right = views.X-sidebarWidth, w-(search.X+search.W)
+	if math.Abs(float64(left-right)) > 20 || left < 300 {
+		t.Errorf("Dictionary: %.0f from the sidebar to the views, %.0f from the search to the window's edge", left, right)
+	}
+	// Find gives Add term's text; the button's padding takes it on to the
+	// search's edge.
+	if gap := (search.X + search.W) - (add.X + add.W); gap < 0 || gap > 16 {
+		t.Errorf("Dictionary: Add term's text ends at %.0f, the search at %.0f", add.X+add.W, search.X+search.W)
+	}
+	// A page of lists keeps a wider body in the middle, its header lined
+	// up with it too.
+	a.navigate("/app-enhancement")
+	frames(tt)
+	groups, ok1 := tt.Find("Groups")
+	browsers, ok2 := tt.Find("Browsers")
+	if !ok1 || !ok2 {
+		t.Fatalf("App enhancement: found Groups %v, Browsers %v", ok1, ok2)
+	}
+	left, right = groups.X-sidebarWidth, w-(browsers.X+browsers.W)
 	if math.Abs(float64(left-right)) > 30 || left < 150 {
-		t.Errorf("Dictionary: %.0f from the sidebar to the search, %.0f from Add term to the window's edge", left, right)
+		t.Errorf("App enhancement: %.0f from the sidebar to the groups, %.0f from Browsers to the window's edge", left, right)
 	}
 }

@@ -39,6 +39,9 @@ constexpr int kMinDefaultOutputTokens = 128;
 // The last mel frames, whose STFT windows take the reflected tail, change as
 // realtime audio arrives.
 constexpr int kReflectedTailFrames = 2;
+// Tokens of a Final's prompt head one background job prefills, so that a live
+// refresh waits for no more than this long.
+constexpr int kFinalPrefillChunkTokens = 256;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -233,51 +236,69 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                                   prompt_ids.begin() + audio_start);
   int held_frames = held.mel.has_value() ? held.mel->shape(1) : 0;
   int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
-  bool is_reusable = held_frames > 0 && held_frames <= frame_count &&
-                     held.head_ids == head_ids && !held.caches.empty() &&
-                     held.caches[0].offset() == audio_start + held_rows &&
-                     (!uses_draft || (!held.draft_caches.empty() &&
-                                      held.draft_caches[0].offset() ==
-                                          audio_start + held_rows));
-  if (is_reusable) {
-    is_reusable =
-        mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
-                        *held.mel)
-            .item<bool>();
-  } else {
-  }
-  if (!is_reusable) {
-    held = RefreshReuse();
-    held.caches = model_.NewCaches();
-    if (uses_draft) {
-      held.draft_caches = draft_->NewCaches();
-    } else {
-    }
+  const bool has_held_audio =
+      held_frames > 0 && held_frames + kReflectedTailFrames <= frame_count &&
+      mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
+                      *held.mel)
+          .item<bool>();
+  if (!has_held_audio) {
+    held.mel.reset();
+    held.audio_rows.reset();
     held_frames = 0;
     held_rows = 0;
   } else {
   }
+  const bool has_held_caches =
+      held.head_ids == head_ids && !held.caches.empty() &&
+      (!uses_draft ||
+       (!held.draft_caches.empty() &&
+        held.draft_caches[0].offset() == held.caches[0].offset()));
+  int reused_length = 0;
+  if (has_held_caches) {
+    reused_length = std::min(held.caches[0].offset(), audio_start + held_rows);
+    for (KVCache &cache : held.caches) {
+      cache.Trim(cache.offset() - reused_length);
+    }
+    for (KVCache &cache : held.draft_caches) {
+      cache.Trim(cache.offset() - reused_length);
+    }
+  } else {
+    held.caches = model_.NewCaches();
+    held.draft_caches =
+        uses_draft ? draft_->NewCaches() : std::vector<KVCache>();
+  }
   const mx::array new_rows = model_.EncodeAudio(
-      mx::slice(mel, {0, held_frames}, {mel_bins, frame_count}),
-      options.layout);
-  const int reused_length = held_rows > 0 ? audio_start + held_rows : 0;
+      mx::slice(mel, {0, held_frames}, {mel_bins, frame_count}), options.layout,
+      held_frames > 0);
   const std::vector<int> rest_ids(prompt_ids.begin() + reused_length,
                                   prompt_ids.end());
   mx::array embeddings = model_.EmbedTokens(mx::array(
       rest_ids.data(), {1, static_cast<int>(rest_ids.size())}, mx::int32));
+  // Rows the prompt's pass takes: the new ones, and the held ones there are no
+  // keys and values through.
+  const int cached_rows = std::max(0, reused_length - audio_start);
+  const int pass_held_rows = held_rows - cached_rows;
+  const mx::array pass_rows =
+      pass_held_rows > 0
+          ? mx::concatenate({mx::slice(*held.audio_rows, {cached_rows, 0},
+                                       held.audio_rows->shape()),
+                             new_rows},
+                            0)
+          : new_rows;
   // Note (Jiaxin Deng): the Swift layout can reserve more placeholders than
   // encoder rows; those keep the audio_pad embedding, surplus rows are dropped.
   const int filled =
       std::min(audio_token_count, held_rows + new_rows.shape(0)) - held_rows;
-  const int rows_start = audio_start + held_rows - reused_length;
+  const int rows_start = std::max(audio_start - reused_length, 0);
+  const int pass_filled = pass_held_rows + filled;
   const int hidden = embeddings.shape(2);
   embeddings = mx::slice_update(
       embeddings,
-      mx::expand_dims(
-          mx::astype(mx::slice(new_rows, {0, 0}, {filled, new_rows.shape(1)}),
-                     embeddings.dtype()),
-          0),
-      {0, rows_start, 0}, {1, rows_start + filled, hidden});
+      mx::expand_dims(mx::astype(mx::slice(pass_rows, {0, 0},
+                                           {pass_filled, pass_rows.shape(1)}),
+                                 embeddings.dtype()),
+                      0),
+      {0, rows_start, 0}, {1, rows_start + pass_filled, hidden});
 
   const int window_frame_count = model_.WindowFrameCount();
   const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
@@ -294,9 +315,154 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
   } else {
   }
   held.head_ids = head_ids;
-  return {embeddings, held.audio_rows.has_value()
-                          ? audio_start + held.audio_rows->shape(0)
-                          : 0};
+  return {embeddings,
+          audio_start +
+              (held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0),
+          held_rows, reused_length};
+}
+
+std::vector<int>
+Qwen3ASRTranscriber::HeadIds(const TranscriptionOptions &options) const {
+  std::vector<int> ids = PromptIds(1, options);
+  ids.erase(std::find(ids.begin(), ids.end(), audio_pad_id_), ids.end());
+  return ids;
+}
+
+bool Qwen3ASRTranscriber::ExtendFinalPrefill(
+    const RefreshReuse &recording_reuse,
+    const std::vector<float> &recording_samples, long recording_start_sample,
+    const TranscriptionOptions &options, const std::atomic<bool> &cancel,
+    RefreshReuse &final_reuse) const {
+  if (cancel.load()) {
+    throw GenerationCancelled();
+  } else {
+  }
+  const bool uses_draft =
+      draft_.has_value() && options.repetition_penalty == 1.0f;
+  const std::vector<int> head_ids = HeadIds(options);
+  const int head_length = static_cast<int>(head_ids.size());
+  const auto has_caches = [&](const RefreshReuse &reuse) {
+    return reuse.head_ids == head_ids && !reuse.caches.empty() &&
+           (!uses_draft ||
+            (!reuse.draft_caches.empty() &&
+             reuse.draft_caches[0].offset() == reuse.caches[0].offset()));
+  };
+  if (!has_caches(final_reuse)) {
+    if (has_caches(recording_reuse)) {
+      // note (XXXXRT666): a Final without a dictionary has the prompt of the
+      // previews, so it starts from the first segment's keys and values.
+      final_reuse = recording_reuse;
+    } else {
+      final_reuse = RefreshReuse();
+      final_reuse.head_ids = head_ids;
+      final_reuse.caches = model_.NewCaches();
+      final_reuse.draft_caches =
+          uses_draft ? draft_->NewCaches() : std::vector<KVCache>();
+    }
+  } else {
+  }
+  const auto trim_to = [&](int length) {
+    for (KVCache &cache : final_reuse.caches) {
+      cache.Trim(cache.offset() - length);
+    }
+    for (KVCache &cache : final_reuse.draft_caches) {
+      cache.Trim(cache.offset() - length);
+    }
+  };
+  if (final_reuse.recording_start_sample != recording_start_sample) {
+    final_reuse.mel.reset();
+    final_reuse.audio_rows.reset();
+    trim_to(std::min(head_length, final_reuse.caches[0].offset()));
+    final_reuse.recording_start_sample = recording_start_sample;
+  } else {
+  }
+  const auto extend = [&](const mx::array &embeddings) {
+    if (uses_draft) {
+      draft_->Prefill(model_.decoder(), embeddings, final_reuse.caches,
+                      final_reuse.draft_caches);
+    } else {
+      mx::eval(model_.decoder().Forward(embeddings, final_reuse.caches));
+    }
+  };
+  const int cached_length = final_reuse.caches[0].offset();
+  if (cached_length < head_length) {
+    const int chunk_length =
+        std::min(kFinalPrefillChunkTokens, head_length - cached_length);
+    extend(model_.EmbedTokens(mx::array(head_ids.data() + cached_length,
+                                        {1, chunk_length}, mx::int32)));
+    return true;
+  } else {
+  }
+
+  const int held_frames =
+      final_reuse.mel.has_value() ? final_reuse.mel->shape(1) : 0;
+  const int window_frame_count = model_.WindowFrameCount();
+  const auto complete_frames_of = [&](int frame_count) {
+    return std::max(0, frame_count - kReflectedTailFrames) /
+           window_frame_count * window_frame_count;
+  };
+  const int sample_frames =
+      static_cast<int>(recording_samples.size()) / omni_common::kHopLength;
+  // note (XXXXRT666): a louder frame raises the log-mel floor, which changes
+  // the windows already held, so they are compared with the audio's mel even
+  // when no window has been completed since.
+  if (held_frames == 0 && complete_frames_of(sample_frames) == 0) {
+    return false;
+  } else {
+  }
+  const mx::array mel = PromptMel(recording_samples, options.layout);
+  const int mel_bins = mel.shape(0);
+  const auto matches_mel = [&](const std::optional<mx::array> &held_mel) {
+    return held_mel.has_value() && held_mel->shape(1) <= mel.shape(1) &&
+           mx::array_equal(
+               mx::slice(mel, {0, 0}, {mel_bins, held_mel->shape(1)}),
+               *held_mel)
+               .item<bool>();
+  };
+  if (held_frames > 0 && !matches_mel(final_reuse.mel)) {
+    final_reuse.mel.reset();
+    final_reuse.audio_rows.reset();
+    trim_to(std::min(head_length, final_reuse.caches[0].offset()));
+  } else {
+  }
+  const int complete_frames = complete_frames_of(mel.shape(1));
+  const int done_frames =
+      final_reuse.mel.has_value() ? final_reuse.mel->shape(1) : 0;
+  const int held_rows =
+      final_reuse.audio_rows.has_value() ? final_reuse.audio_rows->shape(0) : 0;
+  if (complete_frames <= done_frames) {
+    return false;
+  } else {
+  }
+  const bool has_encoded_windows =
+      recording_reuse.audio_rows.has_value() &&
+      recording_reuse.mel.has_value() &&
+      recording_reuse.mel->shape(1) > done_frames &&
+      matches_mel(recording_reuse.mel);
+  const int new_frames = has_encoded_windows
+                             ? recording_reuse.mel->shape(1) - done_frames
+                             : window_frame_count;
+  const mx::array new_rows =
+      has_encoded_windows
+          ? mx::slice(*recording_reuse.audio_rows, {held_rows, 0},
+                      recording_reuse.audio_rows->shape())
+          : model_.EncodeAudio(mx::slice(mel, {0, done_frames},
+                                         {mel_bins, done_frames + new_frames}),
+                               options.layout, done_frames > 0);
+  extend(mx::expand_dims(
+      mx::astype(
+          new_rows,
+          model_.EmbedTokens(mx::array(head_ids.data(), {1, 1}, mx::int32))
+              .dtype()),
+      0));
+  final_reuse.mel =
+      mx::slice(mel, {0, 0}, {mel_bins, done_frames + new_frames});
+  final_reuse.audio_rows =
+      final_reuse.audio_rows.has_value()
+          ? mx::concatenate({*final_reuse.audio_rows, new_rows}, 0)
+          : new_rows;
+  mx::eval(*final_reuse.mel, *final_reuse.audio_rows);
+  return done_frames + new_frames < complete_frames;
 }
 
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
@@ -307,6 +473,9 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
   } else {
   }
   const int max_new_tokens = MaxNewTokens(samples.size(), options);
+  std::vector<int> guessed_ids = options.guessed_token_ids;
+  guessed_ids.resize(
+      std::min(guessed_ids.size(), static_cast<size_t>(max_new_tokens)));
   const auto is_stop = [&](int token_id) {
     return IsStopToken(token_id, options);
   };
@@ -328,15 +497,19 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     }
   };
   DraftStatistics draft_statistics;
+  int reused_audio_token_count = 0;
+  int reused_prompt_token_count = 0;
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
   const bool uses_draft =
       draft_.has_value() && options.repetition_penalty == 1.0f;
   if (reuse == nullptr && uses_draft) {
+    std::vector<KVCache> caches = model_.NewCaches();
+    std::vector<KVCache> draft_caches = draft_->NewCaches();
     draft_statistics = draft_->Decode(
-        model_.decoder(), BuildPrompt(samples, options).embeddings,
-        max_new_tokens, 0, commit, cancel, draft_policy_);
+        model_.decoder(), BuildPrompt(samples, options).embeddings, guessed_ids,
+        max_new_tokens, 0, commit, cancel, draft_policy_, caches, draft_caches);
   } else {
     // A failed refresh leaves reuse empty, so the next one starts over.
     RefreshReuse held;
@@ -344,6 +517,8 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     if (reuse != nullptr) {
       held = std::exchange(*reuse, RefreshReuse());
       refresh = BuildRefreshPrompt(samples, options, uses_draft, held);
+      reused_audio_token_count = refresh->reused_row_count;
+      reused_prompt_token_count = refresh->reused_token_count;
     } else {
       held.caches = model_.NewCaches();
     }
@@ -352,12 +527,10 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
                                      ? refresh->embeddings
                                      : BuildPrompt(samples, options).embeddings;
     if (uses_draft) {
-      draft_statistics =
-          draft_->Decode(model_.decoder(), embeddings,
-                         options.guessed_token_ids, max_new_tokens, 0, commit,
-                         cancel, draft_policy_, caches, held.draft_caches);
+      draft_statistics = draft_->Decode(
+          model_.decoder(), embeddings, guessed_ids, max_new_tokens, 0, commit,
+          cancel, draft_policy_, caches, held.draft_caches);
     } else {
-      const std::vector<int> &guessed_ids = options.guessed_token_ids;
       // A penalty would have to apply to the guesses' logits too.
       const int guessed_count = options.repetition_penalty == 1.0f
                                     ? static_cast<int>(guessed_ids.size())
@@ -414,8 +587,12 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     } else {
     }
   }
-  return FinishedResult(output_ids, options, finish_reason,
-                        stopped_on_token_loop, draft_statistics);
+  TranscriptionResult result =
+      FinishedResult(output_ids, options, finish_reason, stopped_on_token_loop,
+                     draft_statistics);
+  result.reused_audio_token_count = reused_audio_token_count;
+  result.reused_prompt_token_count = reused_prompt_token_count;
+  return result;
 }
 
 bool Qwen3ASRTranscriber::IsStopToken(

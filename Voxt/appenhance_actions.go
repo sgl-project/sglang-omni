@@ -9,6 +9,7 @@ type appEnhancementActions interface {
 	setAppEnhancementGroupName(id, name string)
 	setAppEnhancementGroupEnabled(id string, on bool)
 	setAppEnhancementGroupFeature(id, feature string, on bool)
+	setAppEnhancementGroupTranscribeCleanup(id, value string)
 	setAppEnhancementGroupPrompt(id, prompt string)
 	copyAppEnhancementVariable(token string)
 	toggleAppEnhancementApp(bundleID string)

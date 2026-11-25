@@ -35,13 +35,14 @@ func dictionaryFixtureScenarios() []meetingFixtureScenario {
 		input.Terms = input.Terms[1:2]
 	})
 	add("dictionary-off", func(input *dictionaryViewStateInput) { input.Settings.Dictionary.Enabled = false })
-	add("dictionary-scan-unavailable", func(input *dictionaryViewStateInput) { input.Installed = nil })
+	add("dictionary-scan-unavailable", func(input *dictionaryViewStateInput) { input.SettingsOpen, input.Installed = true, nil })
 	add("dictionary-suggestions-all", func(input *dictionaryViewStateInput) {
 		input.Suggestions = nil
 		for index := range 6 {
 			input.Suggestions = append(input.Suggestions, learn.Suggestion{Term: fmt.Sprintf("Term%d", index), Source: learn.FromHistory})
 		}
 	})
+	add("dictionary-settings", func(input *dictionaryViewStateInput) { input.SettingsOpen = true })
 	add("dictionary-profiles", func(input *dictionaryViewStateInput) { input.Profiles = dictionaryFixtureProfiles() })
 	add("dictionary-profile-new", func(input *dictionaryViewStateInput) {
 		input.Profiles, input.ProfileEdit = dictionaryFixtureProfiles(), dictionaryProfileEdit{open: true}

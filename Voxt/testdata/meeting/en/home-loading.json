@@ -8,6 +8,60 @@
       "keys": "Right ⌥",
       "after": " to start",
       "model": "fixture-speech"
-    }
+    },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "Speech recognition",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "Language model",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "Microphone",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "Accessibility",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "Shortcut",
+        "ok": true,
+        "warn": false,
+        "text": "Right ⌥",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
+    "outfit": "new-year"
   }
 }

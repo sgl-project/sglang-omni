@@ -110,6 +110,9 @@ func (host *meetingDemoHost) setFeatureCleanup(on bool) { host.record("setFeatur
 func (host *meetingDemoHost) setFeatureStructure(on bool) {
 	host.record("setFeatureStructure %t", on)
 }
+func (host *meetingDemoHost) setFeatureCleanWhileSpeaking(on bool) {
+	host.record("setFeatureCleanWhileSpeaking %t", on)
+}
 func (host *meetingDemoHost) selectFeatureTarget(code string) {
 	host.record("selectFeatureTarget %q", code)
 }
@@ -140,9 +143,6 @@ func (host *meetingDemoHost) scheduleFeaturePromptSave(feature string, sequence 
 func (host *meetingDemoHost) copyFeatureText(text string) { host.record("copyFeatureText %q", text) }
 func (host *meetingDemoHost) setFeatureEndWord(word string) {
 	host.record("setFeatureEndWord %q", word)
-}
-func (host *meetingDemoHost) setFeatureReturnFinish(on bool) {
-	host.record("setFeatureReturnFinish %t", on)
 }
 
 func (host *meetingDemoHost) startTry()  { host.record("startTry") }

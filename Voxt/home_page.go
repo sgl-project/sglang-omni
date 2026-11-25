@@ -1,7 +1,7 @@
 package main
 
-// Home (/home): Transcribe's shortcut and the last speech model used, four
-// usage numbers, and the persistent daily activity calendar.
+// Home (/home): Transcribe's shortcut and the last speech model used, setup
+// readiness, four usage numbers, Looking back, and the activity calendar.
 
 import (
 	"strings"
@@ -15,7 +15,10 @@ import (
 func homePage(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
 	c.After(time.Minute) // the rolling usage windows change at local midnight
-	columnPageHeader(c, i18n.T("Home"), func() {
+	centeredPageHeaderBy(c, pageMaxW, i18n.T("Home"), func() { homeMascot(c, state.Outfit) }, func() {
+		if shareSparkleButton(c.Key("home-share"), i18n.T("Share a card of Voxt and you"), i18n.T("Share"), true) {
+			actions.openShare()
+		}
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			actions.openHomeGuide()
 		}
@@ -23,9 +26,11 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions) {
 	ui.Scroll(c.Key("home-scroll")).Grow(1).MinHeight(0).Children(func() {
 		pageColumn(c).Gap(px(t, sp3)).Children(func() {
 			homeSlogan(c, state.Slogan, actions)
+			homeReadiness(c, state, actions)
 			if state.Error != "" {
 				notice(c, "home-history-error", noticeError, i18n.T("Could not read the history."), state.Error, nil, nil)
 			}
+			homeInsightsSection(c, state, actions) // insights_view.go
 			homeActivitySection(c, state, actions)
 		})
 	})

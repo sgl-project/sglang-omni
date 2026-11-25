@@ -140,6 +140,7 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 		state := buildReleaseViewState(translator, scenario.release)
 		fixture.UpdatesRelease = &state
 	case "home":
+		scenario.home.Readiness = buildHomeReadinessList(translator, scenario.home.Features, scenario.homeReadiness)
 		state := buildHomeViewState(translator, scenario.home)
 		fixture.Home = &state
 	case "onboarding":
@@ -192,6 +193,8 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "notes":
 		state := buildNotesViewState(translator, scenario.notes)
 		fixture.Notes = &state
+	case "snippets":
+		fixture.Snippets, fixture.SnippetsUI = buildSnippetsFixture(translator, scenario.snippets)
 	case "remote":
 		scenario.remote.Wait.Locale = locale
 		localizeRemotePageInput(&scenario.remote, translator)

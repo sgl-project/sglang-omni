@@ -67,8 +67,8 @@ func (a *app) applyTray() {
 		return
 	}
 	live := a.trayShowsRecording()
-	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
-	// (Voxt: 18×18 pt, template); while recording it has a dot.
+	// The star-free microphone is a 36 px template image shown 18 pt tall;
+	// while recording it has a dot.
 	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
 	if err != nil {
 		a.toast(i18n.T("Could not create the menu bar icon: %v", err))
@@ -220,7 +220,7 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
 		for _, text := range a.recent {
-			items = append(items, &mygo.MenuItem{Label: uitext.TrayLabel(text), ToolTip: trayTip(text), Click: act(func() { a.copyRecent(text) })})
+			items = append(items, &mygo.MenuItem{Label: i18n.T("Copy: %s", uitext.TrayLabel(text)), ToolTip: trayTip(text), Click: act(func() { a.copyRecent(text, true) })})
 		}
 	}
 	items = append(items,
@@ -249,14 +249,20 @@ func (a *app) trayMicrophones(act func(func()) func(*mygo.MenuItem, *mygo.Window
 	return items
 }
 
-// copyRecent copies a recent result (the menu bar).
-func (a *app) copyRecent(text string) {
+// copyRecent copies a recent result (a session's end, the menu bar);
+// a pick in the menu bar confirms the copy, a session's copy stays
+// silent (session_link.go shows its own notice).
+func (a *app) copyRecent(text string, confirm bool) {
 	cp := a.copyText
 	if cp == nil {
 		cp = func(s string) error { return mygo.Clipboard.Write(transfer.TextData(s)) }
 	}
 	if err := cp(text); err != nil {
 		a.toast(i18n.T("Could not copy: %v", err))
+		return
+	}
+	if confirm {
+		a.toast(i18n.T("Copied"))
 	}
 }
 

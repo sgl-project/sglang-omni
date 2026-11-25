@@ -5,8 +5,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -36,6 +41,8 @@ type homeState struct {
 type homeViewCacheKey struct {
 	settings      uint64
 	gen           int
+	err           string
+	readiness     homeReadinessKey
 	minute        int64
 	location      string
 	zoneOffset    int
@@ -43,6 +50,39 @@ type homeViewCacheKey struct {
 	lastModelName string
 	activityGen   int
 	activityPage  int
+}
+
+// homeReadinessKey is the comparable part of homeReadinessInput: the
+// derived scalars buildHomeReadinessList reads, not the values they came
+// from.
+type homeReadinessKey struct {
+	speechID, speechName            string
+	speechReady, speechExplicit     bool
+	speechDownloading, speechOnDisk bool
+	speechDone, speechTotal         int64
+	speechDownloadLeft              string
+	languageName                    string
+	languageReady                   bool
+	permissionsChecked              bool
+	microphone                      permission.State
+	accessibility                   bool
+	hotkeysInstalled                bool
+	helperState                     helper.State
+	helperReason                    helper.FailReason
+}
+
+func homeReadinessKeyFor(input homeReadinessInput) homeReadinessKey {
+	return homeReadinessKey{
+		speechID: input.SpeechModelID, speechName: input.SpeechModelName,
+		speechReady: input.SpeechReady, speechExplicit: input.SpeechExplicit,
+		speechDownloading: input.SpeechStatus.Downloading, speechOnDisk: input.SpeechStatus.OnDisk,
+		speechDone: input.SpeechStatus.Done, speechTotal: input.SpeechStatus.Total,
+		speechDownloadLeft: input.SpeechDownloadLeft,
+		languageName:       input.LanguageModelName, languageReady: input.LanguageModelReady,
+		permissionsChecked: input.PermissionsChecked, microphone: input.Microphone,
+		accessibility: input.Accessibility, hotkeysInstalled: input.HotkeysInstalled,
+		helperState: input.Helper.State, helperReason: input.Helper.Reason,
+	}
 }
 
 // readHomeUsage reads the newest speech model and the recognition times of
@@ -140,21 +180,63 @@ func (a *app) homePageModel(now time.Time) homeViewState {
 	} else {
 		usage.lastModelName = uitext.ModelNameFor(i18n.CurrentTranslator(), usage.lastModel)
 	}
+	readiness := a.homeReadinessInput()
 	_, zoneOffset := now.Zone()
 	key := homeViewCacheKey{
-		settings: a.settingsRevision, gen: a.hm.gen,
-		minute: now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale(),
+		settings: a.settingsRevision, gen: a.hm.gen, err: a.hm.err,
+		readiness: homeReadinessKeyFor(readiness),
+		minute:    now.Unix() / 60, location: now.Location().String(), zoneOffset: zoneOffset, locale: i18n.Locale(),
 		lastModelName: usage.lastModelName,
 		activityGen:   a.act.gen, activityPage: a.act.page,
 	}
 	if key != a.hm.viewKey {
 		a.hm.view = buildHomeViewState(i18n.CurrentTranslator(), homeViewStateInput{
-			KeepHistory: a.prefs.Privacy.KeepHistory, Error: a.hm.err, Features: a.prefs.Features, Now: now,
+			KeepHistory: a.prefs.Privacy.KeepHistory, Error: a.hm.err, Features: a.prefs.Features,
+			Readiness: buildHomeReadinessList(i18n.CurrentTranslator(), a.prefs.Features, readiness), Now: now,
 			Activity: a.act.log, ActivityRead: a.act.loaded, ActivityPage: a.act.page, Usage: usage,
+			InsightsClosed: a.prefs.Appearance.LookingBackClosed,
 		})
 		a.hm.viewKey = key
 	}
 	return a.hm.view
+}
+
+func (a *app) readinessList() []homeReadinessViewState {
+	return buildHomeReadinessList(i18n.CurrentTranslator(), a.prefs.Features, a.homeReadinessInput())
+}
+
+func (a *app) homeReadinessInput() homeReadinessInput {
+	speech, speechReady := a.featureModel(local.ASR, hotkey.Transcribe)
+	language, languageReady := a.featureModel(local.LLM, hotkey.Transcribe)
+	return homeReadinessInput{
+		SpeechModelID: speech.ID, SpeechModelName: speech.Name, SpeechReady: speechReady,
+		SpeechExplicit: featureOf(a.prefs, hotkey.Transcribe).ASR == dictation.ModelID,
+		SpeechStatus:   a.modelStatus[a.obSpeech()], SpeechDownloadLeft: a.obDownloadLeft(),
+		LanguageModelName: language.Name, LanguageModelReady: languageReady,
+		PermissionsChecked: a.perms.checked, Microphone: a.perms.mic, Accessibility: a.perms.access,
+		HotkeysInstalled: a.hotkeys.Installed, Helper: a.helperStatus(),
+	}
+}
+
+func (a *app) fixHomeReadiness(fix string) {
+	switch fix {
+	case homeFixSpeechDownload:
+		a.downloadModel(a.obSpeech())
+	case homeFixSpeechModels:
+		a.navigate(modelsPath)
+	case homeFixLanguageModels:
+		a.navigate(remotePath)
+	case homeFixMicrophone:
+		a.askPermission(proto.PermissionMicrophone, nil)
+	case homeFixPermissions:
+		a.navigate("/settings/permissions")
+	case homeFixTranscribe:
+		a.navigate("/transcribe")
+	case homeFixRestartHelper:
+		a.restartHelper()
+	case homeFixRelaunch:
+		a.relaunch()
+	}
 }
 
 func (a *app) openHomeGuide() { a.openOnboarding() }

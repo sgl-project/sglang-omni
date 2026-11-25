@@ -54,6 +54,37 @@ class RMSNormKernel(Protocol):
     ) -> torch.Tensor: ...
 
 
+class RMSNormCall(Protocol):
+    """A norm call with the ``F.rms_norm`` signature.
+
+    Model code calls this shape, so the plain path is ``F.rms_norm`` itself.
+    """
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        normalized_shape: tuple[int, ...],
+        weight: torch.Tensor | None,
+        variance_epsilon: float,
+    ) -> torch.Tensor: ...
+
+
+class RMSNormAddKernel(Protocol):
+    """Fused ``residual += hidden_states`` plus RMSNorm.
+
+    Returns the normalized tensor and the updated residual sum, so the caller
+    does not issue a separate add.
+    """
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+        weight: torch.Tensor,
+        variance_epsilon: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
 def reference_rmsnorm(
     hidden_states: torch.Tensor, weight: torch.Tensor, variance_epsilon: float
 ) -> torch.Tensor:
@@ -163,6 +194,11 @@ class OmniPlatform(DeviceMixin):
     def get_rmsnorm(self) -> RMSNormKernel:
         """The RMS normalization kernel for a bare norm call on this device."""
         return reference_rmsnorm
+
+    def get_add_rmsnorm(self) -> RMSNormAddKernel | None:
+        """The fused residual-add RMSNorm kernel, or ``None`` when the device has
+        none; callers then add the residual before normalizing."""
+        return None
 
     def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
         # Note(yzxiao): None means this platform has no implementation. The

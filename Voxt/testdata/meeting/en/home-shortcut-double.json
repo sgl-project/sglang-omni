@@ -9,6 +9,59 @@
       "after": " to start",
       "model": "fixture-speech"
     },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "Speech recognition",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "Language model",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "Microphone",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "Accessibility",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "Shortcut",
+        "ok": true,
+        "warn": false,
+        "text": "Right ⌘",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
     "activity": {
       "stats": [
         {
@@ -881,6 +934,210 @@
       "levels": 4,
       "can_back": true,
       "can_forward": false
-    }
+    },
+    "insights": {
+      "stats": [
+        {
+          "parts": [
+            {
+              "value": "151",
+              "unit": "characters"
+            }
+          ],
+          "label": "Characters dictated"
+        },
+        {
+          "parts": [
+            {
+              "value": "2",
+              "unit": "minutes"
+            }
+          ],
+          "label": "Time saved"
+        },
+        {
+          "parts": [
+            {
+              "value": "200",
+              "unit": "characters a minute"
+            }
+          ],
+          "label": "Average speed"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "minute"
+            }
+          ],
+          "label": "Time spoken"
+        }
+      ],
+      "days": [
+        {
+          "parts": [
+            {
+              "value": "3",
+              "unit": "days"
+            }
+          ],
+          "label": "Active days"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "day"
+            }
+          ],
+          "label": "Current streak"
+        },
+        {
+          "parts": [
+            {
+              "value": "1",
+              "unit": "day"
+            }
+          ],
+          "label": "Longest streak"
+        }
+      ],
+      "weeks": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          1,
+          -1
+        ]
+      ],
+      "months": [
+        "",
+        "",
+        "",
+        "",
+        "Nov",
+        "",
+        "",
+        "",
+        "",
+        "Dec",
+        "",
+        "",
+        ""
+      ]
+    },
+    "outfit": "new-year"
   }
 }
