@@ -36,9 +36,9 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 	front := helpertest.Apps["com.tinyspeck.slackmacgap"]
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
 	a.pump("the follow-up's recording", func() bool { return a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt) })
-	// It records in the card, now a conversation (Voxt's).
-	if v := a.cardNow(); !a.answer.open || a.ov.mode != ovAnswer || !v.conversation || !v.recording {
-		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.ov.mode, v)
+	// It records in the same card, the conversation above the text box.
+	if v := a.boxViewState(); !a.answer.open || !a.answer.conversation || !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
+		t.Errorf("card %v overlay %s while recording: %+v", a.answer.open, a.overlayModeNow(), v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
 	// fake helper sends a level before each 100 ms frame.
@@ -49,8 +49,8 @@ func TestRewriteAnswerFollowUp(t *testing.T) {
 		t.Errorf("card %+v", a.answer)
 	}
 	// A follow-up answers in plain text, without a title (Voxt's).
-	if v := a.cardNow(); len(v.bubbles) != 4 || !v.bubbles[2].user || v.bubbles[2].text != "shorter" || v.bubbles[3].title != "" || v.bubbles[3].text != "Running late." || !v.canFollowUp {
-		t.Errorf("the conversation %+v", v.bubbles)
+	if v := a.cachedCard(); len(cardBubblesForTest(v)) != 4 || !cardBubblesForTest(v)[2].user || cardBubblesForTest(v)[2].text != "shorter" || cardBubblesForTest(v)[3].title != "" || cardBubblesForTest(v)[3].text != "Running late." || !v.CanFollowUp {
+		t.Errorf("the conversation %+v", cardBubblesForTest(v))
 	}
 	msgs := chatMessages(chat.requests()[1])
 	if len(msgs) != 4 || msgs[2][0] != "assistant" || !strings.Contains(msgs[2][1], "Sorry, I am running late.") || msgs[3][1] != "<instruction>\nshorter\n</instruction>" {

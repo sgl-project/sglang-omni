@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "ming_tts/ming_tts_acoustic.h"
 #include "ming_tts/ming_tts_model.h"
@@ -27,7 +28,7 @@ private:
 };
 
 struct GenerationState {
-  std::vector<qwen3_asr::KVCache> caches;
+  std::vector<omni_common::KVCache> caches;
   mlx::core::array hidden, history;
   // The last patch, until the next step reads it.
   std::optional<mlx::core::array> latents;

@@ -1,8 +1,10 @@
 package session
 
 import (
+	"slices"
 	"strings"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -29,6 +31,21 @@ func TranslateTarget(s settings.Settings, locale, override string) string {
 	return "en"
 }
 
+// TranslateInto is the language Translate writes text in when the user
+// did not pick one for this text: target, but the main language when text
+// is already in target's script and not in the main language's (Chinese
+// into English and English into Chinese, #3897). Scripts cannot tell
+// English from French: languages that share one keep target.
+func TranslateInto(target, main, text string) string {
+	if main == "" || !compose.Written(text, target) || compose.Written(text, main) {
+		return target
+	}
+	if lang.Canonical(main) == "zh" {
+		return "zh-Hans" // Translate's code for Chinese (compose.TargetLanguages)
+	}
+	return main
+}
+
 // MainLanguage is the user's main language: the settings', else the UI
 // language's.
 func MainLanguage(s settings.Settings, locale string) string {
@@ -52,6 +69,16 @@ func SpeechLang(s settings.Settings, locale string) string {
 		return ""
 	}
 	return l
+}
+
+// SpeechScript is the Chinese script dictation is written in, "zh-Hans"
+// or "zh-Hant" (lang.ChineseScript), "" to keep the speech model's: the
+// main language's, else that of the first Chinese language the system
+// lists (reads), else the app's. Whisper mixes the scripts in one
+// sentence, and a dictionary term or snippet trigger in the other script
+// would not match.
+func SpeechScript(s settings.Settings, locale string, reads []string) string {
+	return lang.ChineseScript(MainLanguage(s, locale), append(slices.Clip(reads), locale))
 }
 
 // AllowCopy says whether VoxtNew may press ⌘C in an app to read its

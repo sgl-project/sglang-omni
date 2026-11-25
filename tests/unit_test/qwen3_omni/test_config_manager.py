@@ -11,6 +11,7 @@ from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni import config as qwen3_omni_config
 from sglang_omni.models.qwen3_omni.config import (
+    TALKER_START_MIN_CHUNKS,
     Qwen3OmniPipelineConfig,
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
@@ -224,20 +225,13 @@ def test_qwen3_omni_talker_stage_env_defaults(
         assert make_stage(config, "thinker").env == {}
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_talker_start_topology_reaches_bootstrap(monkeypatch, enabled):
+def test_colocated_one_chunk_start_reaches_bootstrap(monkeypatch):
     from sglang.srt import runtime_context
 
     from sglang_omni.models.qwen3_omni import bootstrap, stages
 
     manager = ConfigManager(Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy"))
-    config = manager.merge_config(
-        {
-            "talker_ar.factory.enable_talker_start_topology": enabled,
-            "talker_ar.factory.enable_partial_start": True,
-            "talker_ar.engine.disable_cuda_graph": True,
-        }
-    )
+    config = manager.merge_config({"talker_ar.engine.disable_cuda_graph": True})
     args = resolve_stage_factory_args(make_stage(config, "talker_ar"), config)
     monkeypatch.setattr(stages, "avail_gpu_mem", lambda *_: 0)
     monkeypatch.setattr(stages, "get_process_gpu_memory_bytes", lambda *_: 0)
@@ -251,9 +245,8 @@ def test_talker_start_topology_reaches_bootstrap(monkeypatch, enabled):
         lambda: SimpleNamespace(mem_fraction_static=0.5),
     )
     received = stages.create_talker_ar_executor_from_config(**args)
-    assert received["enable_talker_start_topology"] is enabled
     assert received["enable_partial_start"] is True
-    assert received["partial_start_min_chunks"] == 5
+    assert received["partial_start_min_chunks"] == TALKER_START_MIN_CHUNKS
 
 
 @pytest.mark.parametrize(

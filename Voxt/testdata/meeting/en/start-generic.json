@@ -1,0 +1,8 @@
+{
+  "name": "start-generic",
+  "kind": "start",
+  "start": {
+    "code": "meeting.start.failed",
+    "text": "Could not start the meeting: disk full"
+  }
+}

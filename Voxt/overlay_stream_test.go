@@ -48,16 +48,16 @@ func TestStreamedAnswerCalm(t *testing.T) {
 		s.Draft = long[:n]
 		snap(a, s)
 		clock.advance(20 * time.Millisecond)
-		v := a.cardNow()
-		if !v.writing || !strings.HasPrefix(s.Draft, v.text) {
-			t.Fatalf("at %d runes the card shows %q (writing %v)", n, v.text, v.writing)
+		v := a.cachedCard()
+		if !v.Writing || !strings.HasPrefix(s.Draft, cardTextForTest(v)) {
+			t.Fatalf("at %d runes the card shows %q (writing %v)", n, cardTextForTest(v), v.Writing)
 		}
 		if _, h, _ := a.cardSize(); h != lastH {
 			changes, lastH = append(changes, clock.now), h
 		}
 	}
-	if v := a.cardNow(); len(v.text) >= len(long)-8 {
-		t.Errorf("the card kept up with the model (%d of %d): no pace", len(v.text), len(long))
+	if v := a.cachedCard(); len(cardTextForTest(v)) >= len(long)-8 {
+		t.Errorf("the card kept up with the model (%d of %d): no pace", len(cardTextForTest(v)), len(long))
 	}
 	for i := range changes {
 		if i >= 2 && changes[i]-changes[i-2] < time.Second {
@@ -69,12 +69,39 @@ func TestStreamedAnswerCalm(t *testing.T) {
 	}
 	s.State, s.Result, s.Delivery = session.Done, long, deliver.ReasonCard
 	snap(a, s)
-	if v := a.cardNow(); v.text != long {
-		t.Errorf("the model ended: the card shows %d of %d runes", len(v.text), len(long))
+	if v := a.cachedCard(); a.answer.text != long || cardTextForTest(v) != strings.TrimSpace(long) {
+		t.Errorf("the model ended: result %d bytes, card shows %d of %d runes", len(a.answer.text), len(cardTextForTest(v)), len(long))
 	}
 	clock.advance(time.Second)
 	if len(clock.timers) != 0 {
 		t.Errorf("%d steps still on their way after the model ended", len(clock.timers))
+	}
+}
+
+// TestStreamedAnswerAskedAgain: a translation streams into the card, looks
+// untranslated, and the model is asked again, strictly: the draft starts
+// over. The new answer showed at once up to where the first one had got,
+// instead of at the pace from its start.
+func TestStreamedAnswerAskedAgain(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	clock := (&fakeTimers{}).install(a)
+	s := session.Snapshot{ID: "t1", Kind: store.KindTranslate, State: session.Composing, Card: true, Selection: "x", TargetLanguage: "zh-Hans",
+		Draft: strings.Repeat("The meeting moves to Thursday. ", 6)}
+	snap(a, s)
+	clock.advance(5 * time.Second)
+	if v := a.cachedCard(); !v.Writing || cardTextForTest(v) != strings.TrimSpace(s.Draft) {
+		t.Fatalf("the first answer: the card shows %q (writing %v)", cardTextForTest(v), v.Writing)
+	}
+	s.Retried, s.Draft = true, ""
+	snap(a, s)
+	s.Draft = "会议改到周四。"
+	snap(a, s)
+	if v := a.cachedCard(); !v.Writing || cardTextForTest(v) == s.Draft {
+		t.Errorf("asked again: the card shows %q at once (writing %v)", cardTextForTest(v), v.Writing)
+	}
+	clock.advance(time.Second)
+	if v := a.cachedCard(); cardTextForTest(v) != s.Draft {
+		t.Errorf("asked again: after a second the card shows %q", cardTextForTest(v))
 	}
 }
 
@@ -94,7 +121,7 @@ func TestStreamedAnswerNoDip(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		if _, h, _ := a.cardSize(); h < last {
-			t.Fatalf("at %d of %d runes (%s) the card went from %d to %d pt", len(a.cardNow().text), len(long), when, last, h)
+			t.Fatalf("at %d of %d runes (%s) the card went from %d to %d pt", len(cardTextForTest(a.cachedCard())), len(long), when, last, h)
 		} else {
 			last = h
 		}
@@ -104,7 +131,7 @@ func TestStreamedAnswerNoDip(t *testing.T) {
 		snap(a, s)
 		clock.advance(20 * time.Millisecond)
 		check("guessed")
-		for _, k := range a.overlayTexts() { // the view's measure: a line less than the guess
+		for _, k := range sessionOverlayTexts(&a.ov.projection.view, a.currentSessionOverlayLayout()) { // the view's measure: a line less than the guess
 			if _, ok := a.ov.textW[k]; !ok {
 				w, h := guessText(k)
 				if a.ov.textW == nil {

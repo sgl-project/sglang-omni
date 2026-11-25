@@ -1,0 +1,44 @@
+{
+  "name": "notices-actions",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "n5",
+      "severity": "info",
+      "title": "History grew",
+      "body": "100 entries.",
+      "action_label": "打开"
+    },
+    {
+      "id": "n4",
+      "severity": "info",
+      "title": "Download paused",
+      "body": "Get the rest.",
+      "action_label": "下载"
+    },
+    {
+      "id": "n3",
+      "severity": "warning",
+      "title": "Old data found",
+      "body": "Bring it over.",
+      "action_label": "导入"
+    },
+    {
+      "id": "n2",
+      "severity": "info",
+      "title": "Voxt 2.1 is out",
+      "body": "What is new.",
+      "summary": [
+        "What is new."
+      ],
+      "action_label": "更新内容"
+    },
+    {
+      "id": "n1",
+      "severity": "info",
+      "title": "Update ready",
+      "body": "Restart to use it.",
+      "action_label": "重启 Voxt"
+    }
+  ]
+}

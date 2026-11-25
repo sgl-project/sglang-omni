@@ -100,15 +100,17 @@ type ProviderConfig struct {
 	API        string // Preset.API
 }
 
-// Resolve merges cfg over its preset and checks the address: keys go
-// over https only, plain http only to this Mac (a local server), and
-// never with a user or password in the URL. A full chat completions or
-// Responses URL is taken for its API root.
+// Resolve merges cfg over its preset and checks the address: HTTP is
+// allowed for API-key services, while sign-in tokens require HTTPS off
+// this Mac. URLs cannot contain a user or password. A full chat completions
+// or Responses URL is taken for its API root; a host on this Mac with no
+// path gets the preset's.
 func (cfg ProviderConfig) Resolve() (Preset, error) {
 	p, ok := LookupPreset(cfg.ID)
 	if !ok {
 		return Preset{}, newErr(CodeUnknown, "provider", cfg.ID)
 	}
+	root := p.BaseURL
 	if b := strings.TrimSpace(cfg.BaseURL); b != "" {
 		p.BaseURL = b
 	}
@@ -124,8 +126,14 @@ func (cfg ProviderConfig) Resolve() (Preset, error) {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
 	}
 	u, err := url.Parse(p.BaseURL)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && !(u.Scheme == "http" && core.IsLoopback(u.Hostname()))) {
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "https" && (u.Scheme != "http" || p.SignIn && !core.IsLoopback(u.Hostname()))) {
 		return Preset{}, newErr(CodeConfig, "provider", p.ID, "field", "baseURL")
+	}
+	// A bare host on this Mac (the root Ollama prints, "http://localhost:11434")
+	// takes the preset's API path, as the 1.x settings import does (#3950).
+	// A remote one may be a proxy that serves the API at its root.
+	if r, err := url.Parse(root); u.Path == "" && core.IsLoopback(u.Hostname()) && err == nil {
+		p.BaseURL += r.Path
 	}
 	return p, nil
 }

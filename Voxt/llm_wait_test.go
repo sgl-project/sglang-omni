@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -19,15 +20,37 @@ import (
 func TestLLMWaitRow(t *testing.T) {
 	t.Cleanup(func() { i18n.SetLocale("en") })
 	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 4800)
 	a.navigate(remotePath)
 	if !hasExact(tt, "Wait for the language model") || !hasExact(tt, "Automatic") {
 		t.Fatalf("no row: %q", firstTexts(tt))
 	}
+	inView := func(what, text string) {
+		t.Helper()
+		for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+			tt.SetSize(size[0], size[1])
+			frames(tt)
+			if r, ok := tt.Find(text); !ok || r.Y+r.H > float32(size[1]) {
+				t.Errorf("%s, %dx%d: the wait needs a scroll: %v %v", what, size[0], size[1], r, ok)
+			}
+		}
+		tt.SetSize(windowWidth, windowHeight)
+		frames(tt)
+	}
+	inView("English", "Automatic")
 	click(t, tt, "Automatic")
 	click(t, tt, "5 minutes")
 	if got := a.settings.Get().Models.LLMWait; got != settings.Wait5Min {
 		t.Errorf("saved %q", got)
+	}
+	click(t, tt, "5 minutes")
+	click(t, tt, "30 minutes")
+	if got := a.settings.Get().Models.LLMWait; got != "30m" {
+		t.Errorf("saved 30 minutes as %q", got)
+	}
+	click(t, tt, "30 minutes")
+	click(t, tt, "60 minutes")
+	if got := a.settings.Get().Models.LLMWait; got != "60m" {
+		t.Errorf("saved 60 minutes as %q", got)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = settings.Wait10Min })
 	if frames(tt); !hasExact(tt, "10 minutes") {
@@ -37,17 +60,78 @@ func TestLLMWaitRow(t *testing.T) {
 	if frames(tt); !hasExact(tt, "等待语言模型") || !hasExact(tt, "10 分钟") {
 		t.Errorf("in Chinese: %q", firstTexts(tt))
 	}
+	inView("zh-Hans", "10 分钟")
+}
+
+// TestLLMWaitSavedCustom (#3941): every custom wait an earlier version
+// could save keeps its value and duration and shows as what it is, not
+// as the nearest preset.
+func TestLLMWaitSavedCustom(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	for minutes := 1; minutes <= settings.WaitMaxMinutes; minutes++ {
+		value := settings.WaitMinutes(minutes)
+		label := fmt.Sprintf("%d minutes", minutes)
+		if minutes == 1 {
+			label = "1 minute"
+		}
+		t.Run(value, func(t *testing.T) {
+			loaded, err := settings.Migrate([]byte(`{"version":4,"models":{"llmWait":"` + value + `"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := time.Duration(minutes) * time.Minute
+			if got := loaded.Models.LLMWaitFor(); got != want {
+				t.Fatalf("loaded wait %v, want %v", got, want)
+			}
+			a.updateSettings(func(s *settings.Settings) { s.Models = loaded.Models })
+			frames(tt)
+			if got := a.settings.Get().Models.LLMWait; got != value {
+				t.Errorf("showing the wait changed the saved wait to %q", got)
+			}
+			if got := a.settings.Get().Models.LLMWaitFor(); got != want {
+				t.Errorf("wait %v, want %v", got, want)
+			}
+			if !hasExact(tt, label) {
+				t.Errorf("the wait shows %q, not its own %q: texts %q", firstTexts(tt), label, firstTexts(tt))
+			}
+		})
+	}
+}
+
+// TestLLMWaitNoLimit (#3978): No limit on the wait select saves a wait
+// with no deadline and shows in Chinese.
+func TestLLMWaitNoLimit(t *testing.T) {
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, _, tt := newTestApp(t)
+	a.navigate(remotePath)
+	frames(tt)
+	click(t, tt, "Automatic")
+	click(t, tt, "No limit")
+	if got := a.settings.Get().Models.LLMWait; got != settings.WaitNoLimit {
+		t.Fatalf("saved %q", got)
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if frames(tt); !hasExact(tt, "不限") {
+		t.Errorf("in Chinese: %q", firstTexts(tt))
+	}
 }
 
 // TestSkipLLMPill (#3821): while the language model works on speech that
 // can go in as said, the working pill ends its row with Use transcript,
-// inside the face, and takes the pointer; Rewrite's pill has none and
-// lets the pointer through, as before.
+// inside the face, and takes the pointer, with the live text in one line
+// or in lines (the default); Rewrite's pill has none and lets the pointer
+// through, as before.
 func TestSkipLLMPill(t *testing.T) {
 	t.Cleanup(func() { i18n.SetLocale("en") })
-	for _, lang := range []string{"en", "zh-Hans"} {
+	for _, c := range []struct {
+		lang  string
+		lines bool
+	}{{"en", false}, {"zh-Hans", false}, {"en", true}, {"zh-Hans", true}} { // lines: a fresh install's
+		lang := c.lang
 		a, _, _ := newTestApp(t)
-		a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines, s.General.Language = false, lang })
+		a.updateSettings(func(s *settings.Settings) { s.Overlay.LiveLines, s.General.Language = c.lines, lang })
 		label := i18n.T("Use transcript")
 		snap(a, session.Snapshot{Kind: store.KindTranscribe, State: session.Composing, CanSkip: true, Partial: "so the release moves to thursday"})
 		tt := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
@@ -65,7 +149,7 @@ func TestSkipLLMPill(t *testing.T) {
 
 		snap(a, session.Snapshot{ID: "s2", Kind: store.KindRewrite, State: session.Composing, Partial: "make it shorter", Selection: "x"})
 		frames(tt)
-		if has(tt, label) || !a.ov.passThrough {
+		if has(tt, label) || !a.ov.passThrough && !c.lines { // lines take the pointer anyway
 			t.Errorf("%s: Rewrite's pill: %q, pass %v", lang, firstTexts(tt), a.ov.passThrough)
 		}
 	}

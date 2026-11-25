@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/hehehai/actnowkit/family"
@@ -207,43 +208,48 @@ func TestReserve(t *testing.T) {
 // TestPaste: the file says pasting while VoxtNew pastes; a paste waits
 // for another app's (at most famruntime.PasteWait) and goes when it ends.
 func TestPaste(t *testing.T) {
-	now := time.Now()
-	f := testFamily(t, &now)
-	r := f.Runtime()
-	ctx := context.Background()
-	during := false
-	if err := r.Paste(ctx, func() error { during = readFile(t, f).Pasting; return nil }); err != nil || !during {
-		t.Errorf("pasting during the paste: %v %v", during, err)
-	}
-	if readFile(t, f).Pasting {
-		t.Error("pasting after the paste")
-	}
-	other := famruntime.File{BundleID: "dev.hehehai.auralink", PID: os.Getpid(), Pasting: true}
-	if err := famruntime.Write(f.dir, other); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	r.Paste(ctx, func() error { return nil })
-	if d := time.Since(start); d < famruntime.PasteWait-50*time.Millisecond || d > 2*time.Second {
-		t.Errorf("waited %v for a paste that does not end", d)
-	}
-	// The other paste ends about 100 ms in: Paste goes on soon after. On
-	// a busy machine that write itself can come late, past PasteWait, and
-	// Paste then rightly gives up waiting: time it from the write.
-	cleared := make(chan time.Time, 1)
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		other.Pasting = false
-		famruntime.Write(f.dir, other)
-		cleared <- time.Now()
-	}()
-	start = time.Now()
-	r.Paste(ctx, func() error { return nil })
-	done := time.Now()
-	switch at := <-cleared; {
-	case done.Before(at) && done.Sub(start) < famruntime.PasteWait-50*time.Millisecond:
-		t.Errorf("went on after %v, before the other paste ended", done.Sub(start))
-	case done.After(at) && done.Sub(at) > 300*time.Millisecond:
-		t.Errorf("waited %v after the other paste ended", done.Sub(at))
-	}
+	updated := time.Now() // Runtime files are checked against the real system boot time.
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		f := testFamily(t, &now)
+		r := f.Runtime()
+		ctx := context.Background()
+		during := false
+		if err := r.Paste(ctx, func() error { during = readFile(t, f).Pasting; return nil }); err != nil || !during {
+			t.Errorf("pasting during the paste: %v %v", during, err)
+		}
+		if readFile(t, f).Pasting {
+			t.Error("pasting after the paste")
+		}
+		other := famruntime.File{Schema: family.SchemaOf(famruntime.Kind, 1),
+			BundleID: "dev.hehehai.auralink", PID: os.Getpid(), Updated: updated, Pasting: true}
+		if err := family.WriteJSON(f.dir.RuntimeFile(other.BundleID), other); err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		r.Paste(ctx, func() error { return nil })
+		if d := time.Since(start); d < famruntime.PasteWait-50*time.Millisecond || d > 2*time.Second {
+			t.Errorf("waited %v for a paste that does not end", d)
+		}
+		// The other paste ends 100 ms in; virtual time keeps the polling
+		// assertions independent of the host's scheduling delays.
+		cleared := make(chan time.Time, 1)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			other.Pasting = false
+			if err := family.WriteJSON(f.dir.RuntimeFile(other.BundleID), other); err != nil {
+				t.Error(err)
+			}
+			cleared <- time.Now()
+		}()
+		start = time.Now()
+		r.Paste(ctx, func() error { return nil })
+		done := time.Now()
+		switch at := <-cleared; {
+		case done.Before(at) && done.Sub(start) < famruntime.PasteWait-50*time.Millisecond:
+			t.Errorf("went on after %v, before the other paste ended", done.Sub(start))
+		case done.After(at) && done.Sub(at) > 300*time.Millisecond:
+			t.Errorf("waited %v after the other paste ended", done.Sub(at))
+		}
+	})
 }

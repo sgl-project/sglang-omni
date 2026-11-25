@@ -20,6 +20,7 @@ dependencies = [
     "PyYAML>=6.0",
     "pybase64>=1.4.0",
     "torchada>=0.1.102",
+    "mthreads-ml-py>=2.4.3",
     # Torch, torch_musa, torchaudio, torchvision, SGLang, MATE,
     # FlashAttention, and MUSA runtime packages are inherited from the SGLang
     # MUSA environment.
@@ -43,6 +44,7 @@ dependencies = [
     "qwen-vl-utils==0.0.11",
     "numba==0.65.1",
     "librosa>=0.11.0",
+    "soxr>=0.3.7",
     "pandas",
     "tabulate",
     "typer>=0.9.0",

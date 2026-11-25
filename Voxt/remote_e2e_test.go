@@ -184,10 +184,12 @@ func TestRemotePage(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
 	frames(tt)
-	if !has(tt, "On this Mac") || !has(tt, "Remote") || !has(tt, "Online services") { // Ollama's card and group, DeepSeek's
-		t.Errorf("no where labels: %q", tt.Texts())
+	// The groups say where a service runs; their cards carry no label of it.
+	if !has(tt, "On this Mac") || !has(tt, "Online services") || has(tt, "Remote") {
+		t.Errorf("where labels: %q", tt.Texts())
 	}
-	click(t, tt, "DeepSeek")
+	scrollSettingsToText(tt, "DeepSeek")
+	clickControl(t, tt, "DeepSeek")
 	frames(tt)
 	a.provDlg.key = "sk-deep-0123456789"
 	click(t, tt, "Save")
@@ -202,16 +204,17 @@ func TestRemotePage(t *testing.T) {
 	if strings.Contains(string(raw), "sk-deep") {
 		t.Fatal("the key is in the settings")
 	}
-	if !has(tt, "sk-…6789") || !has(tt, "Used by Transcribe · Translate · Rewrite") {
-		t.Errorf("no mask of the saved key, or where it is used: %q", tt.Texts())
+	// Set up, it leaves the online group, so its card says where it runs.
+	if !has(tt, "sk-…6789") || !has(tt, "Used by Transcribe · Translate · Rewrite") || !has(tt, "Remote") {
+		t.Errorf("no mask of the saved key, where it is used, or where it runs: %q", tt.Texts())
 	}
 	m, ok := a.featureModel(local.LLM, hotkey.Rewrite)
 	if !ok || m.ID != "deepseek" || m.Name != "DeepSeek · deepseek-flash" {
 		t.Fatalf("Rewrite's model %+v %v", m, ok)
 	}
-	click(t, tt, "DeepSeek")
+	a.openProviderDialog(local.LLM, "deepseek")
 	frames(tt)
-	click(t, tt, "Remove DeepSeek")
+	clickControl(t, tt, "Remove DeepSeek")
 	frames(tt)
 	if len(keys.m) != 0 || len(a.lib.settings.Get().Providers.LLM) != 0 || len(a.installed(local.LLM)) != 0 {
 		t.Fatalf("after Remove: keys %v, setups %+v", keys.m, a.lib.settings.Get().Providers.LLM)
@@ -258,7 +261,8 @@ func TestDialogTestWithoutKey(t *testing.T) {
 	useKeys(t, &memKeys{m: map[string]string{}})
 	a, _, tt := newTestApp(t)
 	a.navigate(remotePath)
-	click(t, tt, "Anthropic")
+	scrollSettingsToText(tt, "Anthropic")
+	clickControl(t, tt, "Anthropic")
 	click(t, tt, "Test connection")
 	const want = "Paste the service's API key above, then test again."
 	if a.provDlg.test.res.Err == nil || !has(tt, want) {

@@ -64,7 +64,7 @@ func (l legacySettings) codexLeftOut() string {
 	case len(used) > 0:
 		return i18n.T("Codex (used by %s): sign in to ChatGPT (Codex) or choose another language model", strings.Join(used, i18n.T(", ")))
 	case l.codexSetup:
-		return i18n.T("Codex setup: sign in to ChatGPT (Codex) on the Language models page")
+		return i18n.T("Codex setup: sign in to ChatGPT (Codex) in Settings → Language models")
 	}
 	return ""
 }

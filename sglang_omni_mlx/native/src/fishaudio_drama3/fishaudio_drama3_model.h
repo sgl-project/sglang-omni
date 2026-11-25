@@ -14,14 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/layers.h"
 #include "common/tokenizer.h"
 #include "fish_dac/fish_dac.h"
 #include "fishaudio_drama3/fishaudio_drama3_experts.h"
 #include "fishaudio_drama3/fishaudio_drama3_prompt.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_asr_transcriber.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace fishaudio_drama3 {
 
@@ -39,7 +39,7 @@ struct Sampling {
 };
 
 struct SynthesisResult {
-  qwen3_asr::FinishReason finish_reason = qwen3_asr::FinishReason::kStop;
+  omni_common::FinishReason finish_reason = omni_common::FinishReason::kStop;
   // Prompt rows of every chunk, and the frames generated for them.
   int prompt_row_count = 0;
   int frame_count = 0;
@@ -58,12 +58,12 @@ struct ReferenceInput {
 struct LayerCache {
   std::optional<mlx::core::array> convolution_state;
   std::optional<mlx::core::array> recurrent_state;
-  qwen3_asr::KVCache attention;
+  omni_common::KVCache attention;
 };
 
 struct ModelCaches {
   std::vector<LayerCache> backbone;
-  std::vector<qwen3_asr::KVCache> tower;
+  std::vector<omni_common::KVCache> tower;
 };
 
 // Encoded references and, once built, the caches of the prompt's system block.
@@ -93,7 +93,7 @@ public:
   // max_frames frames. on_audio receives the audio as it is decoded: every
   // 7 frames (0.33 s) when streaming, else at each chunk's end; on_frame
   // receives each frame's evaluated int32 codes [codebooks] first. Throws
-  // TranscriptionCancelled once cancel is set.
+  // GenerationCancelled once cancel is set.
   SynthesisResult
   Synthesize(const std::string &text, Voice &voice, const Sampling &sampling,
              int max_frames, bool stream, const std::atomic<bool> &cancel,
@@ -114,14 +114,14 @@ private:
                                    LayerCache &cache) const;
   mlx::core::array AttentionLayer(const mlx::core::array &x,
                                   const std::string &prefix,
-                                  qwen3_asr::KVCache &cache) const;
+                                  omni_common::KVCache &cache) const;
   mlx::core::array MixtureOfExperts(const mlx::core::array &x,
                                     const std::string &prefix,
                                     const std::atomic<bool> &cancel) const;
   mlx::core::array
   TowerLayer(const mlx::core::array &hidden, const mlx::core::array &codes,
              const mlx::core::array &is_semantic, int layer,
-             qwen3_asr::KVCache &cache,
+             omni_common::KVCache &cache,
              const std::optional<mlx::core::array> &unseen_embedding) const;
   // The tower's shared layers over hidden, given the input frame's codebooks
   // the backbone input left out.
@@ -129,7 +129,7 @@ private:
                           const mlx::core::array &semantic_codes,
                           const mlx::core::array &is_semantic,
                           const mlx::core::array &frames,
-                          std::vector<qwen3_asr::KVCache> &caches) const;
+                          std::vector<omni_common::KVCache> &caches) const;
   mlx::core::array EmbeddingSum(const mlx::core::array &frames, int first,
                                 int end) const;
   mlx::core::array IsSemantic(const mlx::core::array &tokens) const;
@@ -137,7 +137,7 @@ private:
   mlx::core::array CodebookHead(const mlx::core::array &hidden,
                                 int index) const;
   // Feeds rows [start, stop) into both caches; returns row stop - 1's
-  // backbone hidden state [1, 1, dim]. Throws TranscriptionCancelled between
+  // backbone hidden state [1, 1, dim]. Throws GenerationCancelled between
   // blocks of rows and before offloaded expert loads once cancel is set.
   mlx::core::array Prefill(const mlx::core::array &frames, ModelCaches &caches,
                            int start, int stop,

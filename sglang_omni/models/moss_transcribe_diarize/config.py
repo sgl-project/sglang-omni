@@ -17,6 +17,7 @@ from sglang_omni.config import (
 from sglang_omni.models.moss_transcribe_diarize import (  # noqa: F401
     hf_config as _hf_config,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.utils.cpu import bounded_intraop_threads
 
 _PKG = "sglang_omni.models.moss_transcribe_diarize"
@@ -67,7 +68,6 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 prefill_coalesce_wait_ms=12,
                 prefill_coalesce_when_idle=True,
                 prefill_coalesce_requires_pending_builds=True,
-                prefill_coalesce_after_builds_during_decode=True,
             ),
             engine=EngineArgs(
                 # Note (Jiaxin Deng): 16 left half of a C32 load queued behind
@@ -115,6 +115,14 @@ class MossTranscribeDiarizePipelineConfig(PipelineConfig):
                 )
             )
         }
+        if current_platform.is_npu():
+            # torch_npu reads its host task-queue mode once when the stage
+            # process starts. The shared queue lets a decode-graph replay
+            # overlap the graph update that rebinds the KV lengths, which
+            # deadlocks the scheduler until the request times out.
+            derived["PER_STREAM_QUEUE"] = "1"
+        else:
+            pass
         return {**derived, **self.env_defaults}
 
 

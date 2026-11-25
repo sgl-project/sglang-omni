@@ -48,6 +48,8 @@ LAYER_RENAMES: tuple[tuple[str, str, ShardName], ...] = (
 )
 QKV_SUFFIX = ".qkv_proj.weight"
 GATE_UP_SUFFIX = "mlp.gate_up_proj.weight"
+# Tensor parallelism splits these weights' input columns.
+COLUMN_SPLIT_SUFFIXES = (".o_proj.weight", ".down_proj.weight")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -127,7 +129,10 @@ def interleave_query_and_gate(
 def load_audio_decoder_weights(
     decoder: AudioDecoder, weights: Iterable[tuple[str, torch.Tensor]]
 ) -> None:
-    """Copy audio_decoder* tensors into decoder; each shard must arrive once."""
+    """Copy this tensor-parallel rank's part of the audio_decoder* tensors into
+    decoder; each shard must arrive once."""
+    tp_rank = decoder.tp_rank
+    tp_size = decoder.tp_size
     parameters = dict(decoder.named_parameters())
     expected = expected_parameter_shards(decoder)
     loaded: set[ParameterShard] = set()
@@ -150,21 +155,52 @@ def load_audio_decoder_weights(
             target = parameter[half_rows:]
         else:
             target = parameter
-        if tensor.shape != target.shape:
-            raise ValueError(
-                f"{checkpoint_name!r} has shape {tuple(tensor.shape)}; {shard} needs "
-                f"{tuple(target.shape)}"
-            )
-        else:
-            pass
         if shard.parameter_name.endswith(QKV_SUFFIX):
             attention = decoder.get_submodule(
                 shard.parameter_name.removesuffix(QKV_SUFFIX)
             )
             assert isinstance(attention, DecoderSelfAttention)
-            value = interleave_query_and_gate(
-                tensor, attention.head_count, attention.head_dim
+            head_count = attention.head_count * tp_size
+            key_value_rows = attention.total_kv_head_count * attention.head_dim
+            checkpoint_shape = (
+                2 * head_count * attention.head_dim + 2 * key_value_rows,
+                target.shape[1],
             )
+        elif shard.parameter_name.endswith(GATE_UP_SUFFIX):
+            checkpoint_shape = (target.shape[0] * tp_size, target.shape[1])
+        elif shard.parameter_name.endswith(COLUMN_SPLIT_SUFFIXES):
+            checkpoint_shape = (target.shape[0], target.shape[1] * tp_size)
+        else:
+            checkpoint_shape = tuple(target.shape)
+        if tensor.shape != checkpoint_shape:
+            raise ValueError(
+                f"{checkpoint_name!r} has shape {tuple(tensor.shape)}; {shard} needs "
+                f"{checkpoint_shape}"
+            )
+        elif shard.parameter_name.endswith(QKV_SUFFIX):
+            query_and_gate_rows, key_rows, value_rows = interleave_query_and_gate(
+                tensor, head_count, attention.head_dim
+            ).split(
+                [tensor.shape[0] - 2 * key_value_rows, key_value_rows, key_value_rows]
+            )
+            first_key_value_row = (
+                tp_rank * attention.total_kv_head_count // tp_size * attention.head_dim
+            )
+            rank_key_value_rows = slice(
+                first_key_value_row,
+                first_key_value_row + attention.kv_head_count * attention.head_dim,
+            )
+            value = torch.cat(
+                (
+                    query_and_gate_rows.chunk(tp_size)[tp_rank],
+                    key_rows[rank_key_value_rows],
+                    value_rows[rank_key_value_rows],
+                )
+            )
+        elif shard.parameter_name.endswith(GATE_UP_SUFFIX):
+            value = tensor.chunk(tp_size, dim=0)[tp_rank]
+        elif shard.parameter_name.endswith(COLUMN_SPLIT_SUFFIXES):
+            value = tensor.chunk(tp_size, dim=1)[tp_rank]
         else:
             value = tensor
         with torch.no_grad():

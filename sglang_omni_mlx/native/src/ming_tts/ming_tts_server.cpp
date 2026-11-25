@@ -23,12 +23,13 @@
 #include <stdexcept>
 #include <vector>
 
+#include "common/asr_service.h"
+#include "common/generation.h"
+#include "common/speech_service.h"
 #include "ming_tts/ming_tts_audio.h"
 #include "ming_tts/ming_tts_generator.h"
 #include "ming_tts/ming_tts_reference.h"
 #include "ming_tts/ming_tts_request.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
@@ -102,7 +103,7 @@ private:
              const speech_service::SpeechContext &context) const {
     const auto stop_if_cancelled = [&context]() {
       if (context.cancel.load()) {
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       context.check_deadline();
@@ -141,8 +142,8 @@ private:
     } else {
     }
     return speech_service::SpeechResult{
-        state.stopped ? qwen3_asr::FinishReason::kStop
-                      : qwen3_asr::FinishReason::kLength,
+        state.stopped ? omni_common::FinishReason::kStop
+                      : omni_common::FinishReason::kLength,
         synthesis.prompt.input_ids.size(), state.steps};
   }
 

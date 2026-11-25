@@ -7,6 +7,7 @@ import json
 import wave
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -15,7 +16,12 @@ from pydantic import JsonValue
 
 from benchmarks.benchmarker.data import RequestResult
 from benchmarks.dataset.seedtts import SampleInput
-from benchmarks.eval import benchmark_asr_seedtts, speculative_workloads
+from benchmarks.eval import (
+    benchmark_asr_seedtts,
+    speculative_omni,
+    speculative_sweep,
+    speculative_workloads,
+)
 from benchmarks.eval.benchmark_asr_transcribe_diarize import (
     RESULTS_FILE,
     SPEED_RESULTS_FILE,
@@ -30,15 +36,18 @@ from benchmarks.eval.speculative_workloads import (
 )
 from benchmarks.metrics.speculative import (
     AccuracyMetric,
+    DecodeBatchLine,
     Leg,
     LoadMeasurement,
     ServerLogStats,
     compare,
+    read_decode_batches,
     read_server_log,
     render,
 )
 from benchmarks.tasks.asr import build_asr_eval_results
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.platforms import current_platform
 
 # Lines from SGLang 0.5.22 servers on H100: MOSS-TD with a DFlash draft, and a Qwen3-ASR server without one that meets the same prompt twice.
 DRAFT_SERVER_LOG = """\
@@ -73,6 +82,89 @@ def test_server_log_gives_the_pool_usage_retractions_acceptance_and_cached_share
         accept_length_mean=None,
         cached_prompt_token_share=pytest.approx(68 / 138),
     )
+
+
+BASELINE_DECODE_LOG = """\
+2026-11-02 18:59:10,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 14, #token: 425966, token usage: 8.80, cuda graph: True, gen throughput (token/s): 2000.00, #queue-req: 2
+2026-11-02 18:59:12,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 14, #token: 431312, token usage: 8.90, cuda graph: False, gen throughput (token/s): 2200.00, #queue-req: 2
+2026-11-02 18:59:14,100 [INFO] sglang.srt.managers.scheduler_components.metrics_reporter: Decode batch, #running-req: 1, #token: 908, token usage: 8.00, cuda graph: True, gen throughput (token/s): 100.00, #queue-req: 0
+"""
+
+
+def test_decode_parser_reads_a_server_log_without_a_draft() -> None:
+    """A no-draft decode line has no accept length."""
+    batches = read_decode_batches(BASELINE_DECODE_LOG)
+
+    assert [batch.running_requests for batch in batches] == [14, 14, 1]
+    assert [batch.accept_length for batch in batches] == [None] * 3
+    assert [batch.used_cuda_graph for batch in batches] == [True, False, True]
+    assert [batch.gen_throughput_tokens_per_s for batch in batches] == [
+        2000.0,
+        2200.0,
+        100.0,
+    ]
+
+
+def test_decode_logs_are_bucketed_by_running_batch_size_and_reported() -> None:
+    """Batch size must select decode throughput rows, including their boundary sizes."""
+    log = "\n".join(
+        f"Decode batch, #running-req: {size}, #token: 100, token usage: 0.5, "
+        f"accept len: {size / 10:.1f}, cuda graph: {size % 2 == 0}, "
+        f"gen throughput (token/s): {size * 10:.1f}"
+        for size in (1, 2, 4, 5, 8, 9, 16, 17, 32, 33, 64, 65, 100)
+    )
+    parsed_batches = read_decode_batches(log)
+    baseline_leg = leg("baseline", None, [load(1, 10, 1)])
+    draft_leg = leg("draft", 5, [load(1, 20, 1)])
+    baseline_leg.decode_batches = [
+        DecodeBatchLine(
+            running_requests=batch.running_requests,
+            accept_length=None,
+            used_cuda_graph=batch.used_cuda_graph,
+            gen_throughput_tokens_per_s=batch.gen_throughput_tokens_per_s,
+        )
+        for batch in parsed_batches
+    ]
+    draft_leg.decode_batches = parsed_batches
+    legs = [baseline_leg, draft_leg]
+
+    comparison = compare(legs, k_gain=1.2)
+    summary = render(comparison, legs, title="draft")
+
+    assert [
+        (row.lowest_running_requests, row.highest_running_requests)
+        for row in comparison.decode_rows
+    ] == [(1, 1), (2, 4), (5, 8), (9, 16), (17, 32), (33, 64), (65, None)]
+    assert [row.baseline_lines for row in comparison.decode_rows] == [
+        1,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+    ]
+    assert [row.draft_lines for row in comparison.decode_rows] == [1, 2, 2, 2, 2, 2, 2]
+    assert comparison.decode_rows[
+        1
+    ].baseline_gen_throughput_tokens_per_s == pytest.approx(30)
+    assert comparison.decode_rows[1].decode_gain == pytest.approx(1)
+    assert comparison.decode_rows[1].draft_accept_length == pytest.approx(0.3)
+    assert "| Running | Lines, no draft | Lines, draft |" in summary
+    assert "| 2-4 | 2 | 2 | 30.0 | 30.0 | 1.00x | 0.30 |" in summary
+    assert "| 65+ | 2 | 2 | 825.0 | 825.0 | 1.00x | 8.25 |" in summary
+
+
+def test_decode_parser_reads_sglang_speculative_metrics() -> None:
+    batches = read_decode_batches(DRAFT_SERVER_LOG)
+
+    assert [batch.running_requests for batch in batches] == [14, 14]
+    assert [batch.accept_length for batch in batches] == [5.26, 4.83]
+    assert [batch.used_cuda_graph for batch in batches] == [True, True]
+    assert [batch.gen_throughput_tokens_per_s for batch in batches] == [
+        220.06,
+        3111.62,
+    ]
 
 
 def load(
@@ -310,7 +402,10 @@ def test_only_the_draft_side_serves_the_draft(
     output_dir.mkdir()
 
     config_paths = write_side_configs(
-        draft_config_path, output_dir, keep_prefix_cache=keep_prefix_cache
+        draft_config_path,
+        output_dir,
+        model_path="Qwen/Qwen3-ASR-1.7B",
+        keep_prefix_cache=keep_prefix_cache,
     )
 
     served = {
@@ -336,14 +431,53 @@ def test_a_config_without_a_draft_is_refused(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "config_cls": "Qwen3ASRPipelineConfig",
-                "model_path": "Qwen/Qwen3-ASR-1.7B",
+                "model_path": "Qwen/Qwen3-ASR-0.6B",
                 "stages": {"asr": {"engine": {"mem_fraction_static": 0.7}}},
             }
         )
     )
 
     with pytest.raises(ValueError, match="runs no stage with a draft"):
-        write_side_configs(draft_config_path, tmp_path, keep_prefix_cache=False)
+        write_side_configs(
+            draft_config_path,
+            tmp_path,
+            model_path="Qwen/Qwen3-ASR-0.6B",
+            keep_prefix_cache=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("model_path", "drafted"),
+    [("Qwen/Qwen3-ASR-1.7B", True), ("/checkpoints/Qwen3-ASR-1.7B", False)],
+)
+def test_the_launched_model_path_decides_whether_the_default_draft_is_swept(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, model_path: str, drafted: bool
+) -> None:
+    """Every leg launches with --model-path, so a file's model_path with a default draft is not what decides it."""
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: True)
+    draft_config_path = tmp_path / "qwen3_asr.yaml"
+    draft_config_path.write_text(
+        yaml.safe_dump(
+            {
+                "config_cls": "Qwen3ASRPipelineConfig",
+                "model_path": "Qwen/Qwen3-ASR-1.7B",
+            }
+        )
+    )
+    if drafted:
+        config_paths = write_side_configs(
+            draft_config_path, tmp_path, model_path=model_path, keep_prefix_cache=True
+        )
+        baseline = ConfigManager.from_file(str(config_paths["baseline"])).config
+        assert baseline.stage_named("asr").engine.disable_speculative_decoding is True
+    else:
+        with pytest.raises(ValueError, match="runs no stage with a draft"):
+            write_side_configs(
+                draft_config_path,
+                tmp_path,
+                model_path=model_path,
+                keep_prefix_cache=True,
+            )
 
 
 @pytest.mark.asyncio
@@ -645,3 +779,114 @@ def test_the_sweep_refuses_to_start_on_a_bad_setup(
 
     with pytest.raises(SystemExit):
         parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "workload_name,speed_field",
+    [("omni-mmmu", "speed"), ("omni-mmsu", "speed_metrics")],
+)
+@pytest.mark.parametrize("first_output", [0.02, None])
+def test_omni_sweep_preserves_scoring_denominator_and_missing_first_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    workload_name: str,
+    speed_field: str,
+    first_output: float | None,
+) -> None:
+    """HTTP failures and unparseable answers must stay in the accuracy denominator."""
+    workload = WORKLOADS[workload_name]
+
+    def run_client(command: list[str], log_path: Path, *, check: bool) -> None:
+        directory = Path(command[command.index("--output-dir") + 1])
+        directory.mkdir()
+        assert command[command.index("--model") + 1] == "target-model"
+        assert command[command.index("--port") + 1] == "18700"
+        assert "--stream" in command
+        payload = {
+            "summary": {"total_samples": 4, "correct": 1},
+            "config": {"wall_clock_s": 7.3},
+            speed_field: {
+                "total_requests": 4,
+                "completed_requests": 2,
+                "failed_requests": 2,
+                "throughput_qps": 0.274,
+                "latency_p95_s": 0.2,
+                "text_ttft_p95_s": first_output,
+            },
+        }
+        (directory / workload.results_file).write_text(json.dumps(payload))
+
+    monkeypatch.setattr(speculative_omni, "run_client", run_client)
+    settings = LoadSettings(
+        concurrencies=[1], repeats=2, warmup=True, max_samples=4, client_arguments=[]
+    )
+    loads = speculative_omni.measure_omni(
+        workload, settings, port=18700, model_path="target-model", leg_dir=tmp_path
+    )
+    assert len(loads) == 1
+    assert loads[0].total_requests == 8
+    assert loads[0].failed_requests == 4
+    assert loads[0].throughput_requests_per_s == pytest.approx(2 / 7.3)
+    assert loads[0].accuracy == {"Accuracy": 0.25}
+    assert bool(loads[0].incomplete_reasons) is (first_output is None)
+
+
+def test_omni_sweep_keeps_shared_gpu_processes_out_of_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The shared-host switch must reach the managed server's cleanup boundary."""
+    arguments = Namespace(
+        workload="omni-mmmu", output_dir=tmp_path, skip_gpu_cleanup=True
+    )
+    with (
+        patch.object(speculative_sweep, "managed_omni_server") as server,
+        patch.object(speculative_sweep, "measure_omni", return_value=[]),
+    ):
+        server.return_value.__enter__.side_effect = lambda: (
+            tmp_path / "draft/server.log"
+        ).write_text("")
+        leg = speculative_sweep.run_leg(
+            name="draft",
+            side="draft",
+            port=18700,
+            model_path="model",
+            server_config=tmp_path / "draft.yaml",
+            args=arguments,
+            settings=LoadSettings(
+                concurrencies=[1],
+                repeats=1,
+                warmup=False,
+                max_samples=4,
+                client_arguments=[],
+            ),
+        )
+    assert leg.name == "draft"
+    assert server.call_args.kwargs["wait_for_gpu_release"] is False
+
+
+@pytest.mark.parametrize(
+    "baseline_first_output,draft_first_output,is_worse",
+    [
+        (0.020, 0.024, False),
+        (0.020, 0.025, False),
+        (0.020, 0.0251, True),
+        (0.200, 0.208, False),
+        (0.200, 0.210, False),
+        (0.200, 0.211, True),
+    ],
+)
+def test_first_output_gate_keeps_the_absolute_and_relative_allowances(
+    baseline_first_output: float,
+    draft_first_output: float,
+    is_worse: bool,
+) -> None:
+    """A first-text change within either 5 ms or 5 percent must pass the roadmap gate."""
+    comparison = compare(
+        abba(
+            [load(16, 100.0, 1.0, first_output_latency_p95_s=baseline_first_output)],
+            [load(16, 150.0, 1.0, first_output_latency_p95_s=draft_first_output)],
+        ),
+        k_gain=1.2,
+    )
+    assert comparison.worse_concurrencies == ([16] if is_worse else [])

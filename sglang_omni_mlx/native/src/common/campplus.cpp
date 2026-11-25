@@ -248,7 +248,7 @@ CamPlusEncoder::CamPlusEncoder(WeightMap weights)
   for (const auto &[name, weight] : weights_) {
     loaded.push_back(weight);
   }
-  mx::eval(loaded);
+  mx::async_eval(loaded);
 }
 
 const mx::array &CamPlusEncoder::Weight(const std::string &name) const {
@@ -385,7 +385,7 @@ mx::array CamPlusEncoder::Embed(const std::vector<float> &samples_16k) const {
   x = mx::squeeze(
       mx::conv1d(mx::expand_dims(x, 1), Weight("dense.linear.weight")), 1);
   x = BatchNorm(x, "dense.nonlinear.0");
-  mx::eval(x);
+  mx::async_eval(x);
   return x;
 }
 

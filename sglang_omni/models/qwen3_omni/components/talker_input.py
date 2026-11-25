@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+from sglang.srt.utils.common import async_h2d, is_pin_memory_available
 
 
 def segment_chat_template(
@@ -42,6 +43,17 @@ def segment_chat_template(
     return segments
 
 
+def host_tensor_to_device(
+    host_tensor: torch.Tensor, device: torch.device
+) -> torch.Tensor:
+    """A CPU tensor on device, staged in pinned memory so the copy is enqueued instead of synchronizing."""
+    is_pinned = is_pin_memory_available(device)
+    staged = torch.empty(
+        host_tensor.shape, dtype=host_tensor.dtype, pin_memory=is_pinned
+    )
+    return staged.copy_(host_tensor).to(device, non_blocking=is_pinned)
+
+
 def build_user_part(
     *,
     thinker_embed: torch.Tensor,
@@ -51,19 +63,28 @@ def build_user_part(
     hidden_projection,
 ) -> torch.Tensor:
     """Build user segment: text_projection for text, hidden_projection for multimodal."""
-    out_size = text_projection(thinker_embed[:1]).shape[-1]
+    # note (ratish): rows are chosen from the CPU mask, so building a prompt never waits for the device.
+    multimodal_rows = multimodal_mask.nonzero(as_tuple=True)[0]
+    if multimodal_rows.numel() == 0:
+        return text_projection(thinker_embed)
+    else:
+        pass
+    multimodal_rows = host_tensor_to_device(multimodal_rows, thinker_embed.device)
+    projected_multimodal = hidden_projection(
+        thinker_hidden.index_select(0, multimodal_rows)
+    )
     result = torch.empty(
-        (thinker_embed.shape[0], out_size),
+        (thinker_embed.shape[0], projected_multimodal.shape[-1]),
         device=thinker_embed.device,
         dtype=thinker_embed.dtype,
     )
-    if multimodal_mask.any():
-        result[multimodal_mask] = hidden_projection(thinker_hidden[multimodal_mask])
-    else:
-        pass
-    text_mask = ~multimodal_mask
-    if text_mask.any():
-        result[text_mask] = text_projection(thinker_embed[text_mask])
+    result.index_copy_(0, multimodal_rows, projected_multimodal)
+    text_rows = (~multimodal_mask).nonzero(as_tuple=True)[0]
+    if text_rows.numel() > 0:
+        text_rows = host_tensor_to_device(text_rows, thinker_embed.device)
+        result.index_copy_(
+            0, text_rows, text_projection(thinker_embed.index_select(0, text_rows))
+        )
     else:
         pass
     return result
@@ -117,7 +138,7 @@ def build_assistant_part(
     )  # [9, hidden]
 
     # Codec side: [3x zeros] + [embed(6 special tokens)]
-    codec_special_ids = torch.tensor(
+    codec_special_ids = async_h2d(
         [
             codec_nothink_id,
             codec_think_bos_id,
@@ -126,8 +147,8 @@ def build_assistant_part(
             codec_pad_id,
             codec_bos_id,
         ],
-        device=device,
         dtype=torch.long,
+        device=device,
     )
     codec_embeds = codec_embed_fn(codec_special_ids)  # [6, hidden]
     codec_hidden = torch.cat(
@@ -140,12 +161,8 @@ def build_assistant_part(
 
     input_embeds = text_hidden + codec_hidden
 
-    input_ids = torch.full(
-        (text_hidden.shape[0],),
-        tts_pad_token_id,
-        dtype=torch.long,
-        device=device,
-    )
+    # note (ratish): the request's ids live on the CPU, so the constant row ids are built there.
+    input_ids = torch.full((text_hidden.shape[0],), tts_pad_token_id, dtype=torch.long)
 
     # HF's trailing_text_hidden is a FIFO stream of future assistant text rows:
     # assistant tokens after the first spoken token, then TTS EOS.
@@ -268,12 +285,7 @@ def build_prefill_input(
                 tts_pad_token_id=tts_pad_token_id,
             )
             all_embeds.append(assistant_result["input_embeds"])
-            all_ids.append(
-                assistant_result["input_ids"].to(
-                    device=thinker_input_ids.device,
-                    dtype=torch.long,
-                )
-            )
+            all_ids.append(assistant_result["input_ids"])
             future_text_rows = assistant_result["future_text_rows"]
             if (
                 not include_assistant_eos

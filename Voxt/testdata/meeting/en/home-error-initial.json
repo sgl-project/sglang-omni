@@ -1,0 +1,95 @@
+{
+  "name": "home-error-initial",
+  "kind": "home",
+  "home": {
+    "read": true,
+    "loading": false,
+    "error": "fixture read failed",
+    "keep_history": true,
+    "slogan": {
+      "before": "Press ",
+      "keys": "Right ⌥",
+      "after": " to start"
+    },
+    "missing": null,
+    "ready": [
+      {
+        "key": "home-asr",
+        "title": "Speech recognition",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture speech model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-llm",
+        "title": "Language model",
+        "ok": true,
+        "warn": false,
+        "text": "Fixture language model",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-mic",
+        "title": "Microphone",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-access",
+        "title": "Accessibility",
+        "ok": true,
+        "warn": false,
+        "text": "Allowed",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      },
+      {
+        "key": "home-keys",
+        "title": "Shortcut",
+        "ok": true,
+        "warn": false,
+        "text": "Right ⌥",
+        "kind": "",
+        "action": "",
+        "fix": ""
+      }
+    ],
+    "show_try": false,
+    "try_recording": false,
+    "today": {
+      "count": "0",
+      "count_label": "results",
+      "characters": "0",
+      "characters_label": "characters",
+      "kinds": [
+        {
+          "kind": "transcribe",
+          "title": "Transcribe",
+          "count": "0"
+        },
+        {
+          "kind": "translate",
+          "title": "Translate",
+          "count": "0"
+        },
+        {
+          "kind": "rewrite",
+          "title": "Rewrite",
+          "count": "0"
+        }
+      ]
+    },
+    "recent": [],
+    "outfit": "new-year"
+  }
+}

@@ -1,0 +1,71 @@
+MyGo patch 0020 (VoxtNew): WindowOptions.HoverWhileInactive.
+
+VoxtNew's recording pill and answer card float over the app the user
+dictates into. Since they became ordinary windows (a click focuses them,
+so a window manager such as Rectangle acts on them), their surface
+tracked the pointer only while VoxtNew was active
+(NSTrackingActiveInActiveApp): with another app in front, hover never
+showed, and a button hovered the last time VoxtNew was active stayed
+hovered after the pointer left, its tooltip shown over the text below it.
+
+A non-activating window (patch 0003) tracks the pointer always
+(NSTrackingActiveAlways). HoverWhileInactive asks the same of a window
+that can be focused. Other platforms deliver pointer moves to an inactive
+app's windows already and ignore it.
+
+diff --git a/internal/darwin/surface.go b/internal/darwin/surface.go
+index 6e960fd17..6090b4f13 100644
+--- a/internal/darwin/surface.go
++++ b/internal/darwin/surface.go
+@@ -157,9 +157,10 @@ func (w *window) createSurface(content NSRect) {
+ 	send(layer, "setContentsGravity:", uintptr(nsString("resize")))
+ 	// Tracking for hover, inside the visible part of the view.
+ 	options := uint(0x01 | 0x02 | 0x04 | 0x40 | 0x200) // entered/exited, moved, cursor update, active app, visible rect
+-	if w.opts.Flyout == nil && !w.opts.Focusable {
+-		// A non-activating window (WindowOptions.NonActivating) works
+-		// while another app is active: hover it all the same.
++	if w.opts.Flyout == nil && (!w.opts.Focusable || w.opts.HoverWhileInactive) {
++		// A non-activating window (WindowOptions.NonActivating), or one
++		// that asks to (HoverWhileInactive), works while another app is
++		// active: hover it all the same.
+ 		options = options&^0x40 | 0x80 // NSTrackingActiveAlways
+ 	}
+ 	s.tracking = msgInitTracking(send(class("NSTrackingArea"), "alloc"), sel("initWithRect:options:owner:userInfo:"), NSRect{}, options, s.view, 0)
+diff --git a/internal/platform/platform.go b/internal/platform/platform.go
+index 3f025d205..ea5e51a7c 100644
+--- a/internal/platform/platform.go
++++ b/internal/platform/platform.go
+@@ -356,6 +356,9 @@ type WindowOptions struct {
+ 	// ones included, out of the taskbar and the app switcher, and on macOS
+ 	// takes the keyboard without activating the app.
+ 	Panel bool
++	// HoverWhileInactive tracks the pointer while another app is active
++	// (mygo.WindowOptions.HoverWhileInactive).
++	HoverWhileInactive bool
+ 
+ 	// UserScripts are injected into every page, in order.
+ 	UserScripts []UserScript
+diff --git a/window.go b/window.go
+index 9e0fddf42..74cd1f3cc 100644
+--- a/window.go
++++ b/window.go
+@@ -126,6 +126,11 @@ type WindowOptions struct {
+ 	// WS_EX_NOACTIVATE. Linux ignores it. Its content cannot take the
+ 	// keyboard: no text inputs.
+ 	NonActivating bool
++	// HoverWhileInactive tracks the pointer over the window while another
++	// app is active, as a NonActivating window does, so hover shows and
++	// clears on a window that floats over the app the user works in and
++	// can still be focused. macOS; the other platforms already do.
++	HoverWhileInactive bool
+ 	// AutoHideMenuBar keeps the window's menu bar out of sight until the
+ 	// user presses Alt or F10, and hides it again once they leave it
+ 	// (Linux, Windows). Its keyboard shortcuts work all along.
+@@ -525,6 +530,7 @@ func (w *Window) platformOptions(o *WindowOptions) *platform.WindowOptions {
+ 		Schemes:        Protocol.schemes(),
+ 		Panel:          o.Panel,
+ 	}
++	p.HoverWhileInactive = o.HoverWhileInactive
+ 	if o.Panel {
+ 		p.Minimizable, p.Maximizable, p.Fullscreenable = false, false, false
+ 		p.AlwaysOnTop, p.SkipTaskbar = true, true

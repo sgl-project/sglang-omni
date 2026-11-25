@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,8 +15,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -30,12 +34,32 @@ type run struct {
 	ctx       context.Context // the session's: cancelled by Cancel and at the end
 	cancel    context.CancelFunc
 	cancelled atomic.Bool
-	// llmCtx is the language model's requests': SkipLLM cancels it
-	// (llmStop), and skipped says so; the session goes on.
-	llmCtx  context.Context
-	llmStop context.CancelFunc
-	skipped atomic.Bool
-	stop    chan struct{}
+	// llmCtx is the language model's requests': SkipLLM, StopLLM and
+	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
+	// again), and skipped, stopped or rethink says which; the session goes
+	// on.
+	llmCtx      context.Context
+	llmStop     context.CancelFunc
+	skipped     atomic.Bool
+	stopped     atomic.Bool
+	rethink     atomic.Bool
+	cleanupWake chan struct{}
+	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
+	// here before waking the session owner; only the owner delivers one.
+	cleanupChoice           cleanupChoice
+	cleanupOutcome          cleanupOutcome
+	cleanupDeadline         time.Time
+	cleanupDeadlineNotified bool
+	cleanupGeneration       uint64
+	cleanupWorkerRunning    bool
+	cleanupCandidate        *cleanupOutput
+	cleanupOutput           cleanupOutput
+	// think is the level the requests ask with: StartRequest.Thinking,
+	// then Rethink's (guarded by m.mu).
+	think    *llm.Thinking
+	stop     chan struct{}
+	stopAt   time.Time // captured by Stop before recognition or clean-up can begin
+	stopAtMu sync.Mutex
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -43,9 +67,15 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
+	// historyRetry owns a private snapshot instead of a Manager session.
+	// onDraft optionally receives its streaming answer.
+	historyRetry bool
+	onDraft      func(string)
+	own          Snapshot
 
-	svc   Services
-	terms []store.Term
+	svc      Services
+	terms    []store.Term
+	snippets []snippet.Snippet
 	// svcDone gets the services, resolved meanwhile; resolved once r.svc
 	// holds them.
 	svcDone  chan svcResult
@@ -71,9 +101,33 @@ type run struct {
 	// shot is the picture of the target's window for the language model
 	// (window.go); nil: none.
 	shot func() []byte
+	// clip is the picture on the clipboard for Rewrite's language model
+	// (window.go), read before the selection; nil: none.
+	clip []byte
+	// typed is Rewrite's typed text: StartRequest.Text's, or the input
+	// box's (Config.BoxInput) when the answer is asked for.
+	typed string
 	// heard takes the stream's live texts to the recording loop while it
 	// listens for the end word (endword.go); nil otherwise.
 	heard chan string
+	// svcResolved is closed when the session's services are resolved
+	// (useServices): the early clean-up's worker waits for it (and r.ctx).
+	svcResolved chan struct{}
+	// early cleans finalized speech stretches before Stop (earlyclean.go).
+	earlyMu sync.Mutex
+	early   *earlyClean
+	// note (luojiaxuan): live cleans the stream's live text up while the user
+	// speaks, so Stop leaves only what was said last (livepolish.go); the
+	// Once makes it on the first live text or at Stop. liveOff: the stream's
+	// own stretches took over (hearPiece). Both are the stream's reader
+	// goroutine's until it returns.
+	liveOnce sync.Once
+	live     *livePolish
+	liveOff  bool
+	// head asks the language model about the live text ahead of the Final
+	// (headstart.go); silent tells the recording loop of the user's pauses.
+	head   headStart
+	silent chan bool
 }
 
 type capResult struct {
@@ -82,9 +136,10 @@ type capResult struct {
 }
 
 type svcResult struct {
-	svc   Services
-	terms []store.Term
-	err   error
+	svc      Services
+	terms    []store.Term
+	snippets []snippet.Snippet
+	err      error
 }
 
 type openResult struct {
@@ -115,6 +170,28 @@ func (r *run) logText(s string) string {
 }
 
 func (r *run) now() time.Time { return r.m.cfg.Now() }
+
+func (r *run) recordStopAt(at time.Time) time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	if r.stopAt.IsZero() {
+		r.stopAt = at
+	}
+	return r.stopAt
+}
+
+func (r *run) stoppedAt() time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	return r.stopAt
+}
+
+func (r *run) stopRecording() {
+	r.stopOnce.Do(func() {
+		r.recordStopAt(r.now())
+		close(r.stop)
+	})
+}
 
 // firstState is where a session starts: composing with its text,
 // reading the selection (Translate), else recording.
@@ -151,7 +228,11 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
-	r.shootWindow()
+	// Rewrite's window picture waits for the clipboard's: the copied
+	// picture wins, and a picture that will not be sent is never taken.
+	if kind != store.KindRewrite {
+		r.shootWindow()
+	}
 
 	// The services and the dictionary, meanwhile. A typed text or a
 	// selection to translate is not heard: no speech model (#3838).
@@ -159,6 +240,7 @@ func (r *run) main() {
 	r.resolve(r.req.Text == nil && !selTranslate)
 
 	if t := r.req.Text; t != nil {
+		r.typed = t.Typed
 		if r.awaitServices() {
 			r.write(r.spoken(strings.TrimSpace(t.Raw)), t.Selection)
 		}
@@ -183,7 +265,16 @@ func (r *run) main() {
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
 		selDone = make(chan string, 1)
-		go func() { selDone <- r.readSelection() }()
+		go func() {
+			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
+			if !r.req.Box {
+				// The box's session shoots when the answer is asked for:
+				// pictures pasted into it while it records win, and a
+				// picture that will not be sent is never taken.
+				r.shootWindow()
+			}
+			selDone <- r.readSelection()
+		}()
 	}
 
 	raw, ok := r.listen()
@@ -193,7 +284,9 @@ func (r *run) main() {
 	text := r.spoken(raw)
 	switch kind {
 	case store.KindTranscribe:
-		r.transcribe(text)
+		if !r.insertSnippet(text) {
+			r.transcribe(text)
+		}
 	case store.KindTranslate:
 		r.write(text, "")
 	case store.KindRewrite:
@@ -218,12 +311,19 @@ func (r *run) resolve(speech bool) {
 	done := make(chan svcResult, 1)
 	r.svcDone = done
 	go func() {
-		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
+		svc, err := r.resolveServices(speech)
 		var terms []store.Term
 		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
 			terms, _ = cfg.Glossary(r.ctx)
 		}
-		done <- svcResult{svc, terms, err}
+		var snippets []snippet.Snippet
+		if err == nil && cfg.Snippets != nil {
+			snippets, _ = cfg.Snippets(r.ctx) // none read: none applied
+		}
+		if r.ctx.Err() != nil {
+			return
+		}
+		done <- svcResult{svc, terms, snippets, err}
 	}()
 }
 
@@ -255,7 +355,16 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
 	default:
-		r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		if r.req.Kind == store.KindTranscribe {
+			if !r.m.beginTranscribeDelivery(r, result) {
+				// Cancellation or loss of the current session slot must not
+				// insert this result into another session's target.
+				r.endCancelled(nil)
+				return
+			}
+		} else {
+			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		}
 		press := r.press(o.replace) // app enhancement's auto key
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DeliverTime)
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
@@ -268,6 +377,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		}
 		if dres.Err != nil {
 			r.logf("warning", "insert: %v", dres.Err)
+		}
+		if stopAt := r.stoppedAt(); !stopAt.IsZero() {
+			r.logf("info", "stop_to_delivery=%v", r.now().Sub(stopAt).Round(time.Millisecond))
 		}
 		r.logf("info", "delivery: %s", dres.Diag())
 		switch {
@@ -284,10 +396,15 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
-	snap := r.m.Current()
+	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
+	var highlights []dict.Span
+	if r.req.Kind == store.KindTranscribe && r.settings.Dictionary.Enabled {
+		highlights = dict.HighlightSpans(result, r.terms)
+	}
 	r.m.end(r, st, func(s *Snapshot) {
 		s.Result, s.Problem = result, problem
+		s.Highlights = highlights
 		s.Recording = r.keepsRecording(store.StatusDone)
 		s.Inserted = dres.Inserted
 		if l, ok := dres.Landing(); ok {
@@ -318,7 +435,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem = p
@@ -341,7 +458,7 @@ func (r *run) endCancelled(stream asr.Stream) {
 	}
 	r.cancel()
 	r.logf("info", "cancelled")
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
 	r.m.end(r, Cancelled, func(s *Snapshot) {
 		s.Timings.Total = total
@@ -380,7 +497,7 @@ func (r *run) saveNote(text string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.Current().StartedAt})
+	return r.m.cfg.Notes.Put(ctx, store.Note{ID: r.id, Text: text, CreatedAt: r.m.snapshot(r).StartedAt, AppName: r.req.Target.Name})
 }
 
 // keep writes the history entry of an ended session (and its recording),
@@ -391,9 +508,9 @@ func (r *run) keep(s Snapshot, status store.Status) {
 		return
 	}
 	e := store.Entry{
-		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status,
+		ID: r.id, Kind: r.req.Kind, CreatedAt: s.StartedAt, Status: status, Conversation: cmp.Or(r.req.Conversation, r.id), Replaces: r.req.Replaces,
 		AppBundle: s.Target.BundleID, AppName: s.Target.Name,
-		RawText: s.Raw, Result: s.Result, SourceText: s.Selection, TargetLang: s.TargetLanguage,
+		RawText: s.Raw, Result: s.Result, Title: s.Title, SourceText: s.Selection, TypedText: s.Typed, TargetLang: s.TargetLanguage,
 		ASRProvider: s.ASR.ID, ASRModel: s.ASR.Model, LLMProvider: s.LLM.ID, LLMModel: s.LLM.Model,
 		AudioMS: s.Timings.Audio.Milliseconds(), SentMS: s.Timings.Sent.Milliseconds(), ASRMS: s.Timings.ASR.Milliseconds(), LLMMS: s.Timings.LLM.Milliseconds(),
 		TotalMS: s.Timings.Total.Milliseconds(), DSP: s.DSP, GainDB: s.GainDB,
@@ -449,8 +566,8 @@ func (r *run) keep(s Snapshot, status store.Status) {
 
 // inHistory reports whether the session's history entry is written: not
 // for a try, nor for a note saved from its recognition (the Notes page
-// keeps it). A note whose recognition failed, or that was cancelled, keeps
-// its entry and recording, as a dictation does.
+// keeps it). A note whose recognition failed, or that was cancelled,
+// keeps its entry and recording, as a dictation does.
 func (r *run) inHistory(status store.Status) bool {
 	if r.req.Try || r.m.cfg.History == nil || !r.settings.Privacy.KeepHistory {
 		return false

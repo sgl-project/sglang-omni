@@ -36,6 +36,9 @@ from sglang.srt.model_executor.model_runner_components.attention_backend_setup i
 from sglang.srt.model_executor.model_runner_components.layer_setup import (
     AttentionAndMoeLayers,
 )
+from sglang.srt.model_executor.runner.decode_cuda_graph_runner import (
+    DecodeCudaGraphRunner,
+)
 from sglang.srt.model_executor.runner.eager_runner import EagerRunner
 from sglang.srt.model_executor.runner.prefill_cuda_graph_runner import (
     PrefillCudaGraphRunner,
@@ -389,6 +392,39 @@ class OmniKVCacheConfigurator(KVCacheConfigurator):
         return available_bytes
 
 
+class CFGCudaGraphRunner(DecodeCudaGraphRunner):
+    """Replay DLLM blocks once CFG padding is entirely in the cached prefix."""
+
+    def can_run_graph(self, forward_batch: ForwardBatch) -> bool:
+        if any(request.is_dllm_prefill() for request in forward_batch.reqs):
+            return False
+        elif any(
+            padding_length > prefix_length
+            for padding_length, prefix_length in zip(
+                forward_batch.dllm_left_pad_lens_cpu,
+                forward_batch.extend_prefix_lens_cpu,
+                strict=True,
+            )
+        ):
+            return False
+        else:
+            pass
+        return super().can_run_graph(forward_batch)
+
+    def load_batch(
+        self,
+        forward_batch: ForwardBatch,
+        pp_proxy_tensors: PPProxyTensors | None = None,
+    ) -> None:
+        backend = self.model_runner.attn_backend
+        # note (Anmuliar): The padded replay view omits model-specific CPU metadata.
+        backend.cfg_replay_batch = forward_batch
+        try:
+            super().load_batch(forward_batch, pp_proxy_tensors)
+        finally:
+            backend.cfg_replay_batch = None
+
+
 class SGLModelRunner(ModelRunner):
     """Thin wrapper to bootstrap SGLang ModelRunner from backend args."""
 
@@ -649,6 +685,16 @@ class SGLModelRunner(ModelRunner):
         # driver so KV-pool profiling and later replicas see the freed memory.
         torch.cuda.empty_cache()
 
+    def _decode_cuda_graph_runner_cls(  # noqa: leading-underscore - SGLang hook
+        self,
+    ) -> type[DecodeCudaGraphRunner]:
+        if self.server_args.dllm_algorithm == "LowConfidenceCFG":
+            return CFGCudaGraphRunner
+        else:
+            return (
+                super()._decode_cuda_graph_runner_cls()
+            )  # noqa: leading-underscore - SGLang hook
+
     def init_cuda_graphs(self, capture_decode_cuda_graph: bool = True):
         """Re-verify shared weights and finish post-capture KV sizing.
 
@@ -773,7 +819,7 @@ class SGLModelRunner(ModelRunner):
     def weight_update_blocked_reason(self) -> str | None:
         ws = self.weight_share_config
         if ws is None:
-            return None
+            return getattr(self.model, "weight_update_blocked_reason", None)
         else:
             pass
         return (
@@ -863,6 +909,7 @@ class SGLModelRunner(ModelRunner):
             "HYV3SpeechForCausalLM": "sglang_omni.models.hy_simulmt.sglang_model:HYV3SpeechForCausalLM",
             "NemotronTranscribeForConditionalGeneration": "sglang_omni.models.nemotron_transcribe.sglang_model:NemotronTranscribeForConditionalGeneration",
             "DotsTTSForConditionalGeneration": "sglang_omni.models.dots_tts.sglang_model:DotsTTSSGLangModel",
+            "YuE2ForCausalLM": "sglang_omni.models.yue2.sglang_model:Yue2ARForCausalLM",
             "FunCosyVoice3SGLangModel": "sglang_omni.models.fun_cosyvoice3.sglang_model:FunCosyVoice3SGLangModel",
             "FunCosyVoice3DSparkDraftModel": "sglang_omni.models.fun_cosyvoice3.dspark_draft:FunCosyVoice3DSparkDraftModel",
             "NemotronVoiceChatForCausalLM": "sglang_omni.models.nemotron_voicechat.thinker:NemotronVoiceChatForCausalLM",
@@ -871,6 +918,7 @@ class SGLModelRunner(ModelRunner):
             "MiniCPMO": "sglang_omni.models.minicpm_o.components.sglang_thinker:MiniCPMOThinkerForCausalLM",
             "LlamaForCausalLMEagle3": "sglang_omni.speculative.eagle3_draft:OmniLlamaForCausalLMEagle3",
             "ReducedVocabularyDFlashDraftModel": "sglang_omni.speculative.dflash_draft:ReducedVocabularyDFlashDraftModel",
+            "ReducedVocabularyDSparkDraftModel": "sglang_omni.speculative.dspark_draft:ReducedVocabularyDSparkDraftModel",
         }
         for arch, path in sglang_omni_models.items():
             module_path, _, attr = path.partition(":")

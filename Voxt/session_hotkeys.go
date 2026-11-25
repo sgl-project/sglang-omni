@@ -6,7 +6,9 @@ package main
 // Accessibility.
 
 import (
-	"fmt"
+	"context"
+	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -21,12 +23,22 @@ import (
 
 // ---- shortcuts ----
 
-// hotkeyPhase is the session's phase for routing.
+// hotkeyPhase is the session's phase for routing. An answer streaming
+// into its card is Composing: the transcribe shortcut can start beside
+// it (wall 116); the other busy states wait.
 func (a *app) hotkeyPhase() hotkey.Phase {
+	if a.bgID != "" && a.bgSess.State.Live() && !a.sess.State.Live() {
+		return hotkey.Composing
+	}
 	switch a.sess.State {
 	case session.Recording:
 		return hotkey.Recording
-	case session.Reading, session.Recognizing, session.Composing, session.Delivering:
+	case session.Composing:
+		if a.answerBackgroundable() {
+			return hotkey.Composing
+		}
+		return hotkey.Busy
+	case session.Reading, session.Recognizing, session.Delivering:
 		return hotkey.Busy
 	}
 	return hotkey.Idle
@@ -48,9 +60,37 @@ func (a *app) strictFeature() string {
 	return hotkey.Transcribe
 }
 
+// cardHotkeyGeneration numbers each visible answer-card incarnation. An
+// event acts only on the card that was visible when the helper read its id.
+func (a *app) cardHotkeyGeneration() uint64 {
+	identity := ""
+	if a.overlayModeNow() == ovAnswer {
+		identity = a.sess.ID + "/draft"
+		if a.answer.open {
+			identity = a.answer.id + "/open"
+		}
+	}
+	if identity == "" {
+		a.hotkeyCardIdentity = ""
+		return 0
+	}
+	if identity != a.hotkeyCardIdentity {
+		a.hotkeyCardGeneration++
+		a.hotkeyCardIdentity = identity
+	}
+	return a.hotkeyCardGeneration
+}
+
 // hotkeyFired acts on a shortcut (the helper's hotkey.event, or a Carbon
 // shortcut).
 func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
+	// An event the helper decided under a configuration since replaced
+	// (it was on its way when the session changed) belongs to that old
+	// configuration, not to whatever runs now: drop it. Generation 0 is
+	// an old helper or a Carbon shortcut the app fired itself.
+	if e.Generation > 0 && e.Generation < a.hotkeyGen {
+		return
+	}
 	target := a.front
 	if e.Front != nil {
 		target = *e.Front
@@ -58,8 +98,18 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && a.answer.langOpen {
+	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
+		return
+	}
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
+		// The backgrounded answer still streams (the session beside it
+		// ended): stop a partial answer, cancel one with no text yet.
+		if a.cardSnapshot().CanStop() {
+			a.stopLLM()
+		} else {
+			a.cancelCardSession()
+		}
 		return
 	}
 	if e.Binding == proto.HotkeyCancel && a.answer.open {
@@ -70,19 +120,53 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.closeAnswer()
 			return
 		case a.followUp != "" && a.followUp == a.answer.id:
-			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's).
-			a.cancelSession()
+			// A follow-up: the cancel shortcut cancels it, the card stays (Voxt's);
+			// its answer streaming, it stops there and the card keeps it (#3886).
+			if a.sess.CanStop() {
+				a.stopLLM()
+			} else {
+				a.cancelSession()
+			}
 			return
 		}
 	}
-	d := hotkey.Route(e, a.hotkeyPhase(), a.sess.HoldBinding, a.strictFeature())
+	if action, generation, ok := hotkey.CardAction(e.Binding); ok {
+		if generation != a.cardHotkeyGeneration() {
+			return
+		}
+		switch action {
+		case hotkey.CardCopy: // the card's c: what its Copy does (#4127)
+			if a.answer.open && a.answer.text != "" && !sessionCardRedoWriting(a.sessionCardProjectionInput()) {
+				a.copyAnswer()
+			}
+		case hotkey.CardInsert: // the card's r: what its Insert does
+			if a.answer.open && a.answer.problem == nil && a.answer.text != "" && !a.cardSessionLive() {
+				a.insertAnswer()
+			}
+		}
+		return
+	}
+	finish := a.returnFinishes()
+	if e.Binding == hotkey.PasteLast && finish {
+		chord, err := hotkey.Parse(a.prefs.Features.PasteLast.Keys)
+		returnChord, _ := hotkey.Parse("Return")
+		finish = err == nil && chord.Equal(returnChord)
+	}
+	phase := a.hotkeyPhase()
+	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
+		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {
+			return // only Transcribe starts beside a streaming answer (wall 116)
+		}
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
 		}
-		if d.Feature == hotkey.Rewrite && a.followUpAnswer(hold) {
+		// In another app than the card's, the Rewrite shortcut begins a new
+		// conversation (the card waits under it, setAside); the card's
+		// Continue still follows up from any app (#4013).
+		if d.Feature == hotkey.Rewrite && a.inCardApp(target) && a.followUpAnswer(hold) {
 			return
 		}
 		kind := store.KindTranscribe
@@ -114,10 +198,25 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 			a.transcribeOrAddSelection(req) // dictionary_selection.go: a few words selected go to the dictionary
 			return
 		}
+		if kind == store.KindRewrite {
+			// The Rewrite card with the input box opens with the
+			// microphone; the next press (or the hold's release)
+			// finishes the recording and sends.
+			a.openBox(target, req)
+			return
+		}
 		a.startSession(req)
 	case hotkey.Stop:
-		a.stopSession()
+		if a.box.open && a.box.session != "" && a.box.session == a.sess.ID {
+			a.boxShortcutSend()
+		} else {
+			a.stopSession()
+		}
 	case hotkey.Cancel:
+		if a.writingAnswer() && a.sess.CanStop() {
+			a.stopLLM() // the writing card's Stop: the answer so far stays (#3886)
+			return
+		}
 		if a.sess.State == session.Composing && a.sess.CanSkip {
 			a.skipLLM() // the preview's Use transcript (#3821)
 			return
@@ -128,9 +227,20 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	}
 }
 
+// returnFinishes is whether Return finishes the session: a Transcribe,
+// Translate or Rewrite recording (not a note) with Settings → Shortcuts'
+// switch on. The plan binds Finish then, and routing reads it for a
+// paste-last tap on the same key.
+func (a *app) returnFinishes() bool {
+	return a.sess.State == session.Recording && !a.sess.Note && a.prefs.Features.ReturnFinishes
+}
+
 // hotkeyPlan is what the settings' shortcuts become.
 func (a *app) hotkeyPlan() hotkey.Plan {
 	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	if a.returnFinishes() {
+		shown = append(shown, hotkey.FinishID)
+	}
 	return hotkey.Build(a.prefs.Features, shown)
 }
 
@@ -143,20 +253,43 @@ func (a *app) syncHotkeys() {
 	if paused {
 		plan = hotkey.Plan{} // the keys go to the field that records them
 	}
+	cardGeneration := a.cardHotkeyGeneration()
 	a.syncCarbon(plan)
 	if !a.helperReady() {
 		a.hotkeysSent = ""
 		return
 	}
-	params := plan.Configure(a.sess.State.Live() || a.answer.open)
-	key := fmt.Sprintf("%+v", params)
+	params := plan.Configure(a.sess.State.Live() || a.answer.open || a.bgID != "")
+	if cardGeneration != 0 && !paused {
+		// The card's single-letter keys (#4127) bind only while it shows.
+		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings(cardGeneration, plan.Cancel)...)
+	}
+	// The JSON, not %+v: that prints the address of Cancel (a new one from
+	// each plan), so every call looked changed, counted the generation up
+	// and dropped the events the helper had decided under the last one.
+	raw, _ := json.Marshal(params) // plain data: cannot fail
+	key := string(raw)
 	if key == a.hotkeysSent {
 		return
 	}
 	a.hotkeysSent = key
+	a.hotkeyConfigureSequence++
+	params.Sequence = a.hotkeyConfigureSequence
+	a.hotkeyGen++
+	generation := a.hotkeyGen
+	params.Generation = generation
 	helperCall(a, proto.MethodHotkeyConfigure, params, 5*time.Second, func(st proto.HotkeyStatus, err error) {
+		if params.Sequence < a.hotkeyStatusSequence {
+			return
+		}
+		a.hotkeyStatusSequence = params.Sequence
 		if err != nil {
-			a.hotkeysSent = ""
+			if a.hotkeysSent == key {
+				a.hotkeysSent = ""
+			}
+			if errors.Is(err, context.DeadlineExceeded) && a.hotkeyGen == generation {
+				a.syncHotkeys()
+			}
 			a.logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: "hotkey.configure: " + err.Error()})
 			return
 		}
@@ -213,4 +346,9 @@ func (a *app) syncCarbon(plan hotkey.Plan) {
 		}
 		a.carbon = append(a.carbon, acc)
 	}
+}
+
+// inCardApp says whether app is the answer card's (or Voxt, or unknown).
+func (a *app) inCardApp(app proto.App) bool {
+	return app.BundleID == "" || isSelf(app) || strings.EqualFold(app.BundleID, a.answer.target.BundleID)
 }

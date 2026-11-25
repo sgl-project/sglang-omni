@@ -253,7 +253,7 @@ func TestRemoteSpeechPage(t *testing.T) {
 	a.navigate(modelsPath)
 	frames(tt)
 	if !has(tt, "Online services") || hasExact(tt, "Set up") || !has(tt, "OpenAI Transcribe") {
-		t.Fatal("no speech services on the Speech models page, or a Set up group with none set up")
+		t.Fatal("no speech services in Settings → Speech models, or a Set up group with none set up")
 	}
 	// A service that takes no key from a server on this Mac says so.
 	keyless := "Optional for a server on this Mac. Saved in this Mac's Keychain."

@@ -161,13 +161,14 @@ def create_thinker_scheduler(
         trust_remote_code=True,
     )
     thinker_config = model_config.hf_config.thinker_config
+    is_speculative = model_worker.speculative_worker is not None
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,
         vocab_size=model_config.vocab_size,
         thinker_config=thinker_config,
         capture_prompt_hidden_states=capture_prompt_hidden_states,
         speech_enabled=speech_enabled,
-        is_speculative=model_worker.speculative_worker is not None,
+        is_speculative=is_speculative,
     )
     # Note (Junnan Li): A session turn streams its tokens to the talker like any request; the session only owns the lifecycle.
     stream_output_builder = make_thinker_stream_output_builder(
@@ -182,6 +183,7 @@ def create_thinker_scheduler(
             model_config.vocab_size,
             thinker_config,
             speech_enabled=speech_enabled,
+            is_speculative=is_speculative,
         )
 
     scheduler = OmniScheduler(
@@ -228,7 +230,6 @@ def create_talker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
-    enable_talker_start_topology: bool = False,
     code2wav_in_process: bool = False,
     operator_selected_prefill_backend: bool = False,
     codec_coalesce_frames: int = 0,
@@ -396,7 +397,6 @@ def create_talker_scheduler(
         session_adapter=session_adapter,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
-        enable_talker_start_topology=enable_talker_start_topology,
         im_end_token_id=root_config.im_end_token_id,
         continuation_aware_admission=continuation_aware_admission,
     )

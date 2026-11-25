@@ -24,6 +24,7 @@ func (s *live) finishLive(pcm []byte) {
 		s.a.rt.logf("warning", "%s: live result: %s; recognising the whole recording", s.a.spec.ID, why)
 		s.mu.Lock()
 		s.preview = false
+		s.finalOnly = true
 		s.mu.Unlock()
 		s.finalPass(pcm)
 	}

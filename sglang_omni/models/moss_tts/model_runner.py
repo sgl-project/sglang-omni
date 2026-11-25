@@ -25,6 +25,10 @@ from sglang_omni.models.moss_tts.sampler import DelayGraphBatch
 from sglang_omni.models.moss_tts.sampling_kernels import (
     multinomial_with_seed_and_token_ids,
 )
+from sglang_omni.models.moss_tts.sampling_npu import (
+    multinomial_with_seed_and_token_ids_npu,
+    multinomial_with_seed_npu,
+)
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -932,7 +936,12 @@ class MossTTSModelRunner(ModelRunner):
                     positions_row,
                 )
             else:
-                candidate_sampled = multinomial_with_seed_and_token_ids(
+                candidate_sampler = (
+                    multinomial_with_seed_and_token_ids_npu
+                    if device.type == "npu"
+                    else multinomial_with_seed_and_token_ids
+                )
+                candidate_sampled = candidate_sampler(
                     scores,
                     seeds_row,
                     positions_row,
@@ -948,6 +957,12 @@ class MossTTSModelRunner(ModelRunner):
             if device.type == "cpu":
                 sampled[sample_mask] = MossTTSModelRunner.multinomial_with_seed_cpu(
                     probs[sample_mask],
+                    seeds_row[sample_mask],
+                    positions_row[sample_mask],
+                )
+            elif device.type == "npu":
+                sampled[sample_mask] = multinomial_with_seed_npu(
+                    scores[sample_mask],
                     seeds_row[sample_mask],
                     positions_row[sample_mask],
                 )

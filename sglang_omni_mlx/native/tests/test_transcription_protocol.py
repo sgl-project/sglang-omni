@@ -49,6 +49,36 @@ def test_a_streamed_request_ends_with_its_metadata_and_done(
     ]
 
 
+@pytest.mark.parametrize("include_metadata", [False, True])
+def test_draft_statistics_are_reported_only_with_generation_metadata(
+    asr_server: SupervisedServer, include_metadata: bool
+) -> None:
+    """Draft counters must survive SSE serialization only when metadata is requested."""
+    response = asr_server.post_form(
+        {
+            "outcome": "draft",
+            "stream": "true",
+            "include_generation_metadata": str(include_metadata).lower(),
+        },
+        silent_wav(FRAME_COUNT),
+    )
+    assert response.status == 200
+    payloads = sse_payloads(response.body)
+    assert payloads[-1] == "[DONE]"
+    done = json.loads(payloads[0])
+    if include_metadata:
+        assert done["generation_metadata"] == {
+            "generated_token_count": 0,
+            "language": None,
+            "finish_reason": "stop",
+            "verify_round_count": 2,
+            "proposed_draft_token_count": 7,
+            "accepted_draft_token_count": 3,
+        }
+    else:
+        assert "generation_metadata" not in done
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_speaker_segments_come_with_the_text(
     asr_server: SupervisedServer, stream: bool

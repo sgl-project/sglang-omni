@@ -30,13 +30,15 @@
 #include <thread>
 #include <vector>
 
+#include "common/asr_service.h"
+#include "common/generation.h"
 #include "common/http.h"
+#include "common/realtime_connection.h"
 #include "common/service.h"
+#include "common/speech_service.h"
+#include "common/transcription.h"
 #include "ming3_audio/ming3_audio_service.h"
 #include "ming_tts/ming_tts_request.h"
-#include "qwen3_asr/asr_service.h"
-#include "qwen3_asr/realtime.h"
-#include "qwen3_asr/speech_service.h"
 
 namespace {
 
@@ -50,7 +52,7 @@ constexpr size_t kMaxRequestBodyBytes = 64 * 1024;
 constexpr int kChatPromptTokenCount = 17;
 constexpr int kChatCompletionTokenCount = 3;
 
-class StubRealtimeConnection : public qwen3_asr::RealtimeConnection {
+class StubRealtimeConnection : public omni_server::RealtimeConnection {
 public:
   using RealtimeConnection::RealtimeConnection;
 
@@ -102,19 +104,23 @@ public:
         while (!cancel.load()) {
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
-      qwen3_asr::TranscriptionResult result;
+      omni_common::TranscriptionResult result;
       result.text = std::to_string(sample_count);
       result.language = language;
       result.generated_token_count = max_new_tokens;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       if (outcome == "segments") {
         result.segments.push_back({.start_seconds = 0.5,
                                    .end_seconds = 1.5,
                                    .speaker = "S01",
                                    .text = result.text});
+      } else if (outcome == "draft") {
+        result.verify_round_count = 2;
+        result.proposed_draft_token_count = 7;
+        result.accepted_draft_token_count = 3;
       } else {
       }
       return result;
@@ -122,13 +128,13 @@ public:
   }
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &) override {
+                   omni_server::TranscriptionWorker &) override {
     asr_service::AddRealtimeHandler(context, realtime_factory_);
   }
 
 private:
   const asr_service::RealtimeFactory realtime_factory_ =
-      [](qwen3_asr::RealtimeConnection::Sender sender) {
+      [](omni_server::RealtimeConnection::Sender sender) {
         return std::make_shared<StubRealtimeConnection>(std::move(sender));
       };
 };
@@ -139,7 +145,7 @@ public:
   void ReleaseIdleMemory() override {}
 
   void AddHandlers(mg_context *context,
-                   qwen3_asr::TranscriptionWorker &worker) override {
+                   omni_server::TranscriptionWorker &worker) override {
     SpeechServedModel::AddHandlers(context, worker);
     mg_set_request_handler(context, "/generate$", HandleGenerate, this);
   }
@@ -171,11 +177,11 @@ protected:
           context.check_deadline();
           std::this_thread::sleep_for(kBlockPollInterval);
         }
-        throw qwen3_asr::TranscriptionCancelled();
+        throw omni_common::GenerationCancelled();
       } else {
       }
       speech_service::SpeechResult result;
-      result.finish_reason = qwen3_asr::FinishReason::kStop;
+      result.finish_reason = omni_common::FinishReason::kStop;
       result.completion_token_count = chunk_count;
       return result;
     };

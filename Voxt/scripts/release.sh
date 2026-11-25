@@ -31,12 +31,12 @@
 # then every Mach-O file and framework inside the app are signed
 # with it, with the hardened runtime and a secure timestamp (mygo build:
 # signNestedCode), and the build takes the update feed of
-# release/mygo.release.json if it has one (scripts/release-config.sh; 2.0.0
-# has none and never updates itself), or its beta/ feed for a version with
-# a "-". With a feed, the update files are signed with VoxtNew's update key:
-# MYGO_UPDATER_PRIVATE_KEY (the key itself) or the file VOXTNEW_UPDATE_KEY
-# (default ~/.config/voxtnew-release/update-keys/mygo-update.key), which
-# must match the public key of release/mygo.release.json. Without an
+# release/mygo.release.json if it has one (scripts/release-config.sh; the
+# GitHub release workflow writes Voxt 2's feed there), or its beta/ feed for
+# a version with a "-". With a feed, the update files are signed with
+# VoxtNew's update key: MYGO_UPDATER_PRIVATE_KEY (the key itself) or the file
+# VOXTNEW_UPDATE_KEY (default ~/.config/voxtnew-release/update-keys/mygo-update.key),
+# which must match the public key of release/mygo.release.json. Without an
 # identity everything is signed ad hoc and the app has no update feed, as
 # every development build. Every release build's Info.plist has the
 # CFBundleVersion and SUPublicEDKey that Voxt 1.x's in-app update needs
@@ -130,7 +130,8 @@ if [[ "$v" != "$version" ]]; then
   exit 1
 fi
 notes="$(awk -v v="$version" '/^## /{f = index($0, "[" v "]") || $2 == v; next} f' CHANGELOG.md)"
-if [[ -z "${notes//[[:space:]]/}" ]]; then
+# Note (Akazaakane): Bash 3.2 repeatedly scans the remaining UTF-8 text during global substitution.
+if [[ ! "$notes" =~ [^[:space:]] ]]; then
   if ((PUBLISH)); then
     echo "CHANGELOG.md has no section for $version" >&2
     exit 1
@@ -232,7 +233,7 @@ else
 fi
 scripts/release-verify.sh build/darwin-arm64 "$mode"
 
-if compgen -G "build/darwin-arm64/update-*.json" >/dev/null; then
+if compgen -G "build/darwin-arm64/update-*.json" >/dev/null && [[ "$feed" == https://actnow.dev/updates/voxtnew* ]]; then
   echo "== actnow.dev ($channel)"
   publish=(--app voxtnew --channel "$channel" --dir build/darwin-arm64 --changelog CHANGELOG.md --min-macos 15.0 --version "$version")
   if ((PUBLISH)); then
@@ -240,6 +241,8 @@ if compgen -G "build/darwin-arm64/update-*.json" >/dev/null; then
   else
     bash scripts/actnow-publish.sh "${publish[@]}" --dry-run
   fi
+elif compgen -G "build/darwin-arm64/update-*.json" >/dev/null; then
+  echo "update files: attach them to the GitHub release"
 else
   echo "no update files: nothing to publish"
 fi

@@ -3,7 +3,9 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -51,8 +53,9 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 	a.pump("the follow-up's recording", func() bool {
 		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
 	})
-	if v := a.cardNow(); a.ov.mode != ovAnswer || !v.conversation || !v.recording || !v.canStop || v.canFollowUp {
-		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)
+	// It is asked in the same card, the conversation above the text box.
+	if v := a.boxViewState(); !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
+		t.Errorf("recording the follow-up: box shown %v, overlay %s, %+v", a.box.shown, a.overlayModeNow(), v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
 	// fake helper sends a level before each 100 ms frame.
@@ -68,11 +71,11 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 func TestRewriteShortAnswerInCard(t *testing.T) {
 	chat := &fakeChat{text: `{"title":"Help","content":"Sure: tell me the problem."}`}
 	a, _ := rewriteOnce(t, "", chat, "help me with a problem")
-	v := a.cardNow()
+	v := a.cachedCard()
 	if a.sess.State != session.Done || a.sess.Inserted || !a.answer.open || a.ov.mode != ovAnswer || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v.title != "Help" || v.text != "Sure: tell me the problem." || !v.canFollowUp || !v.canInsert || !v.canCopy || v.conversation {
+	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || v.Conversation {
 		t.Errorf("card %+v", v)
 	}
 	a.insertAnswer()
@@ -92,11 +95,11 @@ func TestRewriteSelectionInCard(t *testing.T) {
 	if a.sess.Inserted || !a.answer.open || a.answer.input.Selection != "hey all, ship friday" || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v := a.cardNow(); v.title != "AI answer" || !v.canFollowUp || !v.canInsert {
+	if v := a.cachedCard(); v.Title != "Rewrite" || !v.CanFollowUp || !v.CanInsert {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])
-	if msgs[1][1] != "<instruction>\nmake it formal\n</instruction>\n\n<selected_text>\nhey all, ship friday\n</selected_text>" {
+	if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
 		t.Errorf("user message %q", msgs[1][1])
 	}
 	es := a.history()
@@ -127,9 +130,9 @@ func TestRewriteConversation(t *testing.T) {
 		t.Fatalf("card %+v", a.answer)
 	}
 	a.recordFollowUp(t, tr, "shorter")
-	v := a.cardNow()
-	if !v.conversation || len(v.bubbles) != 4 || v.bubbles[0].text != "write that I am late" || v.bubbles[1].title != "Late" ||
-		v.bubbles[2].text != "shorter" || v.bubbles[3].text != "Running late." || !v.canFollowUp || v.recording {
+	v := a.cachedCard()
+	if !v.Conversation || len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].text != "write that I am late" || cardBubblesForTest(v)[1].title != "Late" ||
+		cardBubblesForTest(v)[2].text != "shorter" || cardBubblesForTest(v)[3].text != "Running late." || !v.CanFollowUp || v.Recording {
 		t.Errorf("conversation %+v", v)
 	}
 	// A second follow-up, cancelled while it records.
@@ -144,7 +147,7 @@ func TestRewriteConversation(t *testing.T) {
 	if !a.answer.open || a.ov.mode != ovAnswer || a.answer.text != "Running late." || a.followUp != "" || len(chat.requests()) != 2 {
 		t.Errorf("after Escape: %s %+v", a.ov.mode, a.answer)
 	}
-	if v := a.cardNow(); !v.conversation || len(v.bubbles) != 4 || !v.canFollowUp {
+	if v := a.cachedCard(); !v.Conversation || len(cardBubblesForTest(v)) != 4 || !v.CanFollowUp {
 		t.Errorf("the conversation after Escape %+v", v)
 	}
 	a.hotkeyFired(proto.HotkeyEventParams{Binding: proto.HotkeyCancel, Phase: proto.PhaseTrigger})
@@ -196,8 +199,81 @@ func TestRewriteNoCard(t *testing.T) {
 	t.Run("nothing takes text", func(t *testing.T) {
 		chat := &fakeChat{text: `{"title":"Note","content":"A note."}`}
 		a, _ := rewriteWith(t, "readonly,", chat, "write a note", false)
-		if v := a.cardNow(); a.sess.Inserted || !a.answer.open || len(a.pasted()) != 0 || v.text != "A note." || !v.canFollowUp {
-			t.Fatalf("end %+v card %+v", a.sess, v)
+		if v := a.cachedCard(); a.sess.Inserted || !a.answer.open || len(a.pasted()) != 0 || cardTextForTest(v) != "A note." || !v.CanFollowUp {
+			t.Fatalf("end %+v card %+v, pasted %+v", a.sess, v, a.pasted())
 		}
 	})
+}
+
+// TestRewriteBlankSelectionReadsTheCopy: Accessibility gives a selection
+// of one blank (a Lark block selection in Chrome) or of the object
+// replacement character (an image-only block selection): that is not the
+// selection. The text ⌘C copies is, and the model gets it.
+func TestRewriteBlankSelectionReadsTheCopy(t *testing.T) {
+	for _, ax := range []string{" ", "\uFFFC"} {
+		chat := &fakeChat{text: "Team: the release moves to Friday."}
+		opts := helpertest.Opt("selection", ax) + "," + helpertest.Opt("copy-selection", "hey all, ship friday") + ","
+		a, _ := rewriteOnce(t, opts, chat, "make it formal")
+		if a.sess.SelectionVia != proto.ViaCopy || a.answer.input.Selection != "hey all, ship friday" {
+			t.Fatalf("ax %q: end %+v card %+v", ax, a.sess, a.answer)
+		}
+		msgs := chatMessages(chat.requests()[0])
+		if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
+			t.Errorf("ax %q: user message %q", ax, msgs[1][1])
+		}
+	}
+}
+
+// TestRewriteBoxAutomaticStopWaitsForConversion: a recording that stops
+// at its length limit or end word waits for a box picture just as Enter
+// does. A failed conversion needs confirmation instead of a silent send.
+func TestRewriteBoxAutomaticStopWaitsForConversion(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		provider   asr.Provider
+		configure  func(*settings.Settings)
+		conversion string
+	}{
+		{"length limit", &fakeTranscriptions{text: "make it shorter"}, func(s *settings.Settings) { s.Audio.MaxSeconds = 2 }, ""},
+		{"end word", fakeStreamer{final: "make it shorter over", partial: "make it shorter over"}, func(s *settings.Settings) { s.Features.EndWord = "over" }, ""},
+		{"failed conversion", &fakeTranscriptions{text: "make it shorter"}, func(s *settings.Settings) { s.Audio.MaxSeconds = 2 }, "This image could not be read."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &fakeChat{text: "A shorter text."}
+			ev := helpertest.Opt("selection", "the selected text") + "," + script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+			a := newSessionApp(t, ev, tc.configure, withChat(&fakeLocal{ASRP: tc.provider}, chat))
+			a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+			var gen, seq int
+			a.postQueue(func() { gen, seq = a.boxGen, a.boxReserve() })
+			a.drain(2400 * time.Millisecond)
+			if n := len(chat.requests()); n != 0 {
+				t.Errorf("%d chats before the conversion landed", n)
+			}
+			jpeg := boxJPEG(t)
+			if tc.conversion != "" {
+				jpeg = nil
+			}
+			a.postQueue(func() { a.boxConverted(gen, seq, jpeg, tc.conversion) })
+			if tc.conversion != "" {
+				a.drain(100 * time.Millisecond)
+				if !a.box.open || !a.box.shown || a.box.err != tc.conversion || len(chat.requests()) != 0 {
+					t.Fatalf("failed conversion: box %+v, %d chats", a.box, len(chat.requests()))
+				}
+				a.postQueue(a.boxSend) // confirm the remaining text without the picture
+			}
+			a.pump("the answer", func() bool { return a.answer.open })
+			reqs := chat.requests()
+			if len(reqs) != 1 {
+				t.Fatalf("%d chats", len(reqs))
+			}
+			imgs, _ := reqs[0]["images"].([][]byte)
+			want := 1
+			if tc.conversion != "" {
+				want = 0
+			}
+			if len(imgs) != want {
+				t.Errorf("%d images sent, want %d", len(imgs), want)
+			}
+		})
+	}
 }

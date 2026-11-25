@@ -177,7 +177,7 @@ func (tr *trackTranscriber) transcribeFile(ctx context.Context, u Utterance) {
 	if err != nil {
 		return
 	}
-	text := res.Text
+	text := sanitizeSegmentText(res.Text, tr.fileReq, true)
 	if text == "" {
 		return
 	}
@@ -214,6 +214,7 @@ func (m *Manager) updateLive(src Source, text string) {
 }
 
 func (m *Manager) commitSegment(seg Segment) {
+	seg.Text = collapseLoops(seg.Text)
 	if seg.Text == "" {
 		return
 	}
@@ -221,6 +222,15 @@ func (m *Manager) commitSegment(seg Segment) {
 		seg.ID = core.NewID(m.cfg.Now())
 	}
 	m.mu.Lock()
+	// The system track may not have committed this speech yet: its live text counts too.
+	if seg.Source == SourceMic && isEcho(seg.Text, systemTextNear(m.snap.Segments, seg.Start, seg.End)+m.snap.Live[SourceSystem]) {
+		m.mu.Unlock()
+		m.noteMicText() // the microphone works; it heard the speakers
+		return
+	}
+	idx := m.segIdx
+	m.segIdx++
+	seg.StoreIdx = idx // before the snapshot's copy: translations find lines by it
 	if m.snap.Segments == nil {
 		m.snap.Segments = []Segment{}
 	}
@@ -228,9 +238,6 @@ func (m *Manager) commitSegment(seg Segment) {
 	if len(m.snap.Segments) > maxSnapshotSegments {
 		m.snap.Segments = m.snap.Segments[len(m.snap.Segments)-maxSnapshotSegments:]
 	}
-	idx := m.segIdx
-	m.segIdx++
-	seg.StoreIdx = idx
 	seq := m.seq
 	target := m.snap.Translate
 	tr := m.translator
@@ -247,20 +254,24 @@ func (m *Manager) commitSegment(seg Segment) {
 	go func() {
 		defer m.segWrites.Done()
 		ctx := context.Background()
-		row := store.MeetingSegment{
-			Idx:     idx,
-			Source:  toSegmentSource(seg.Source),
-			Speaker: seg.Speaker,
-			StartMS: seg.Start.Milliseconds(),
-			EndMS:   seg.End.Milliseconds(),
-			Text:    seg.Text,
-			Final:   seg.Final,
-		}
-		_ = m.cfg.Store.AppendSegments(ctx, seq, []store.MeetingSegment{row})
+		_ = m.cfg.Store.AppendSegments(ctx, seq, []store.MeetingSegment{seg.Row()})
 		if tr != nil && strings.TrimSpace(target) != "" {
 			tr.Enqueue([]Segment{seg})
 		}
 	}()
+}
+
+// Row is the line as the store keeps it.
+func (s Segment) Row() store.MeetingSegment {
+	return store.MeetingSegment{
+		Idx:     s.StoreIdx,
+		Source:  toSegmentSource(s.Source),
+		Speaker: s.Speaker,
+		StartMS: s.Start.Milliseconds(),
+		EndMS:   s.End.Milliseconds(),
+		Text:    s.Text,
+		Final:   s.Final,
+	}
 }
 
 func toSegmentSource(s Source) store.SegmentSource {

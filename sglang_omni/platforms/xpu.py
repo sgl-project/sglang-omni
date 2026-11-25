@@ -13,6 +13,8 @@ from sglang_omni.platforms.interface import JointRopeInplaceKernel, OmniPlatform
 
 logger = logging.getLogger(__name__)
 
+XPU_JOINT_ROTARY_DIMENSIONS = (64, 80, 96, 128, 256, 512)
+
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
     from sglang.srt.server_args import ServerArgs
@@ -48,7 +50,21 @@ class XPUOmniPlatform(XpuDeviceMixin, OmniPlatform):
             return None
         return fused_inplace_qknorm_rope
 
-    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
+    def get_joint_rope_inplace_kernel(
+        self, *, rotary_dimension: int | None = None
+    ) -> JointRopeInplaceKernel | None:
+        if (
+            rotary_dimension is not None
+            and rotary_dimension not in XPU_JOINT_ROTARY_DIMENSIONS
+        ):
+            logger.info(
+                f"XPU joint RoPE kernel does not support rotary dimension "
+                f"{rotary_dimension} (supported: {list(XPU_JOINT_ROTARY_DIMENSIONS)}); "
+                "using the unfused RoPE path"
+            )
+            return None
+        else:
+            pass
         from sgl_kernel.jit.rope import apply_rope_inplace
 
         return apply_rope_inplace

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -30,7 +31,7 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			if run.lang != "en" {
 				a.updateSettings(func(s *settings.Settings) { s.General.Language = run.lang })
 			}
-			tt.SetDark(run.dark)
+			setSnapshotMode(a, tt, run.dark)
 			tt.SetScale(2)
 			a.version = "0.1.0"
 			readyModels(a)
@@ -68,22 +69,31 @@ func snapshotsAppEnhance(t *testing.T, out string) {
 			a.urlReads["com.google.Chrome"] = urlRead{ok: true}
 			a.urlReads["com.apple.Safari"] = urlRead{err: "no web area"}
 			a.helperNotified(appActivated(slackApp))
-			a.aePage.sel = "g-chat"
+			a.aeUI.sel = "g-chat"
 			a.navigate("/app-enhancement")
 			save("ae-page")
+			scrollTo("Transcribe clean-up")
+			clickControl(t, tt, i18n.T("Transcribe clean-up"))
+			save("ae-cleanup-options")
+			tt.Key(0, ui.KeyEnd)
+			tt.Key(0, ui.KeyEnter)
+			save("ae-cleanup-off")
+			clickControl(t, tt, i18n.T("Transcribe clean-up"))
+			tt.Key(0, ui.KeyHome)
+			tt.Key(0, ui.KeyEnter)
 			scrollTo("Group prompt")
 			save("ae-scene")
 			scrollTo("Apps")
 			save("ae-apps")
 			a.navigate("/home")
 			a.navigate("/app-enhancement")
-			a.aePage.appsOpen = true
+			a.aeUI.appsOpen = true
 			a.loadApps()
 			save("ae-apps-dialog")
-			a.aePage.appsOpen = false
-			a.aePage.browsersOpen = true
+			a.aeUI.appsOpen = false
+			a.aeUI.browsersOpen = true
 			save("ae-browsers-dialog")
-			a.aePage.browsersOpen = false
+			a.aeUI.browsersOpen = false
 		}
 	}
 }

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import gc
 import threading
 import time
 import weakref
 from collections.abc import Iterator
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +30,15 @@ from sglang_omni.models.fun_asr.encoder_service import (
 HIDDEN_SIZE = 4
 NAMESPACE = "testns"
 SERVICES: list[FunASRPreLMEncoderService] = []
+
+
+@dataclass(frozen=True)
+class NpuDevice:
+    type: str = "npu"
+    index: int = 1
+
+
+NPU_DEVICE = NpuDevice()
 
 
 @pytest.fixture(autouse=True)
@@ -144,6 +155,7 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = object.__new__(FunASRPreLMEncoderService)
+    service.device = torch.device("cpu")
     service.stream = object()
 
     def fail_stream(stream):  # noqa: ANN001, ANN202
@@ -156,6 +168,124 @@ def test_batch_context_unwinds_inference_mode_when_stream_context_fails(
         with service.batch_context():
             pass
     assert not torch.is_inference_mode_enabled()
+
+
+def test_npu_batch_context_guards_the_selected_logical_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = object.__new__(FunASRPreLMEncoderService)
+    service.device = NPU_DEVICE
+    service.stream = None
+    events: list[str] = []
+
+    class DeviceModule:
+        @contextlib.contextmanager
+        def device(self, device: NpuDevice) -> Iterator[None]:
+            assert device is NPU_DEVICE
+            events.append("enter-device")
+            yield
+            events.append("exit-device")
+
+    monkeypatch.setattr(torch, "get_device_module", lambda device: DeviceModule())
+
+    with service.batch_context():
+        assert torch.is_inference_mode_enabled()
+        events.append("encode")
+
+    assert events == ["enter-device", "encode", "exit-device"]
+    assert not torch.is_inference_mode_enabled()
+
+
+def test_unhashed_npu_result_is_synchronized_before_future_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = StubModel()
+    service = make_service(model)
+    service.device = NPU_DEVICE
+    service.stream = None
+    events: list[str] = []
+
+    class CurrentStream:
+        def synchronize(self) -> None:
+            events.append("synchronize")
+
+    class DeviceModule:
+        @contextlib.contextmanager
+        def device(self, device: NpuDevice) -> Iterator[None]:
+            assert device is NPU_DEVICE
+            yield
+
+        def current_stream(self, device: NpuDevice) -> CurrentStream:
+            assert device is NPU_DEVICE
+            return CurrentStream()
+
+    monkeypatch.setattr(torch, "get_device_module", lambda device: DeviceModule())
+    original_to = torch.Tensor.to
+
+    def transfer_to_device(
+        tensor: torch.Tensor,
+        device: NpuDevice | torch.device | str,
+        *,
+        non_blocking: bool = False,
+    ) -> torch.Tensor:
+        if device is NPU_DEVICE:
+            assert not non_blocking
+            events.append("attach")
+            return tensor
+        else:
+            return original_to(tensor, device, non_blocking=non_blocking)
+
+    monkeypatch.setattr(torch.Tensor, "to", transfer_to_device)
+    future = service.submit(make_item(None, 3))
+    published = threading.Event()
+
+    def publish(completed: concurrent.futures.Future[torch.Tensor]) -> None:
+        assert completed.done()
+        events.append("publish")
+        published.set()
+
+    future.add_done_callback(publish)
+
+    result = future.result(timeout=5)
+
+    assert result.shape == (3, HIDDEN_SIZE)
+    assert published.wait(timeout=2)
+    assert events == ["synchronize", "attach", "publish"]
+
+
+def test_cached_npu_embedding_transfer_is_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = make_service()
+    service.device = NPU_DEVICE
+    item = make_item(81, 3)
+    embedding = torch.ones(3, HIDDEN_SIZE)
+    cache_key = service.cache_key(item)
+    assert cache_key is not None
+    service.cache.put(cache_key, embedding)
+    transfers: list[bool] = []
+    original_to = torch.Tensor.to
+
+    def transfer_to_device(
+        tensor: torch.Tensor,
+        device: NpuDevice | torch.device | str,
+        *,
+        non_blocking: bool = False,
+    ) -> torch.Tensor:
+        if device is NPU_DEVICE:
+            transfers.append(non_blocking)
+            return tensor
+        else:
+            return original_to(tensor, device, non_blocking=non_blocking)
+
+    monkeypatch.setattr(torch.Tensor, "to", transfer_to_device)
+
+    service.encode_item(item)
+
+    assert transfers == [False]
+    assert torch.equal(item.precomputed_embeddings, embedding)
+    assert item.feature is None
+    assert service.stats()["hits"] == 1
 
 
 def test_cache_hit_skips_reencode() -> None:
@@ -171,6 +301,75 @@ def test_cache_hit_skips_reencode() -> None:
     assert torch.equal(first.precomputed_embeddings, second.precomputed_embeddings)
     assert second.feature is None
     assert service.stats()["hits"] == 1
+
+
+def test_early_cache_lookup_retains_embedding_across_eviction() -> None:
+    """A hit between validation and admission must survive another request's eviction."""
+    model = StubModel()
+    service = make_service(model, cache_max_entries=1)
+    original = make_item(11, 3)
+    service.encode_item(original)
+    cached = service.get_cached_embedding("11", 3)
+    assert cached is not None
+    assert service.stats()["hits"] == 0
+    service.encode_item(make_item(12, 3))
+    assert service.get_cached_embedding("11", 3) is None
+    resumed = make_item(11, 3, with_feature=False)
+    service.attach_embedding(resumed, cached, cache_hit=True)
+    assert torch.equal(resumed.precomputed_embeddings, original.precomputed_embeddings)
+    assert resumed.format == MultimodalInputFormat.PRECOMPUTED_EMBEDDING
+    assert model.encode_calls == 2
+    assert service.stats()["hits"] == 1
+    assert service.stats()["misses"] == 2
+
+
+def test_early_cache_lookup_uses_namespace_and_validates_shape() -> None:
+    """A waveform match alone must not bypass namespace or embedding validation."""
+    service = make_service()
+    service.cache.put("other:11", torch.ones(3, HIDDEN_SIZE))
+    assert service.get_cached_embedding("11", 3) is None
+    for invalid in (
+        torch.zeros(4, HIDDEN_SIZE),
+        torch.zeros(3, HIDDEN_SIZE + 1),
+        torch.zeros(3, HIDDEN_SIZE, dtype=torch.float64),
+        torch.zeros(HIDDEN_SIZE),
+    ):
+        service.cache.put(f"{NAMESPACE}:11", invalid)
+        assert service.get_cached_embedding("11", 3) is None
+        assert service.cache.get(f"{NAMESPACE}:11") is None
+    assert service.stats()["hits"] == service.stats()["misses"] == 0
+
+
+def test_concurrent_early_hits_count_once_per_consuming_request() -> None:
+    """Concurrent early lookups must neither reencode nor double-count hits."""
+    service = make_service()
+    original = make_item(11, 3)
+    service.encode_item(original)
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+    outputs = [make_item(11, 3, with_feature=False) for _ in range(4)]
+
+    def consume(item: MultimodalDataItem) -> None:
+        try:
+            cached = service.get_cached_embedding("11", 3)
+            assert cached is not None
+            barrier.wait(timeout=10)
+            service.attach_embedding(item, cached, cache_hit=True)
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=consume, args=(item,)) for item in outputs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert not errors
+    assert service.stats()["hits"] == 4
+    assert service.stats()["misses"] == 1
+    assert service.stats()["merged"] == 0
+    for item in outputs:
+        assert torch.equal(item.precomputed_embeddings, original.precomputed_embeddings)
 
 
 def test_cache_key_prefers_full_waveform_fingerprint() -> None:

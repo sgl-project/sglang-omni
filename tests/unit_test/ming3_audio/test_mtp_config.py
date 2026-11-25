@@ -142,7 +142,10 @@ def test_factory_builds_isolated_native_mtp_configs(
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"speculative_algorithm": "DFLASH"}, "bundled MTP"),
+        (
+            {"speculative_algorithm": "DFLASH"},
+            "DFLASH needs speculative_draft_model_path",
+        ),
         ({"speculative_algorithm": "EAGLE3"}, "bundled MTP"),
         (
             {"speculative_algorithm": None, "speculative_draft_model_path": "other"},

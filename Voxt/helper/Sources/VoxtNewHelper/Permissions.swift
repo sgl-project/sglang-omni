@@ -47,9 +47,9 @@ enum Permissions {
     }
 
     /// Shows macOS's prompt, then reports: the microphone's and Speech
-    /// Recognition's wait for the user's answer; Accessibility's adds
-    /// VoxtNew to the list in System Settings and answers at once (the
-    /// user grants it there).
+    /// Recognition's wait for the user's answer; Accessibility's and
+    /// System Audio Recording's add VoxtNew to the list in System Settings
+    /// and answer at once (the user grants it there).
     static func request(_ permission: String) async throws -> PermissionsResult {
         switch permission {
         case PermissionName.microphone:
@@ -65,6 +65,13 @@ enum Permissions {
             // Asks once and adds Voxt to the list in System Settings; the
             // user grants it there.
             _ = CGRequestScreenCaptureAccess()
+        case PermissionName.systemAudio:
+            // macOS asks (and lists Voxt in System Settings) when a tap
+            // starts; there is no call that asks or reads it.
+            let tap = try SystemTap(ownPIDs: [getpid(), getppid()]) {}
+            defer { tap.stop() }
+            try tap.start { _ in }
+            try? await Task.sleep(for: .milliseconds(500))
         default:
             throw RPCError(Code.badRequest, "Unknown permission \(permission)")
         }

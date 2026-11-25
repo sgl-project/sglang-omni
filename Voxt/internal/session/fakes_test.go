@@ -148,7 +148,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.failAt > 0 && n == f.failAt {
 				return proto.CaptureResult{}, f.failErr
 			}
-			if f.maxFrame > 0 && n == f.maxFrame {
+			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}
@@ -209,18 +209,25 @@ func (f *fakeAudio) lateEvents(id string) {
 
 // fakeStreamer streams: a partial per frame, the final on Finish.
 type fakeStreamer struct {
-	final    string
-	openErr  error
-	finalErr error         // the stream fails instead of answering
-	errAfter int           // the stream fails after this many sends
-	hang     bool          // no final after Finish
-	openWait time.Duration // Open takes this long
-	openGate chan struct{} // Open waits for it to close (nil: no wait)
-	silent   bool          // no partials
+	final         string
+	openErr       error
+	finalErr      error           // the stream fails instead of answering
+	errAfter      int             // the stream fails after this many sends
+	hang          bool            // no final after Finish
+	openWait      time.Duration   // Open takes this long
+	openGate      chan struct{}   // Open waits for it to close (nil: no wait)
+	finishGate    <-chan struct{} // Finish waits for it to close (nil: no wait)
+	finishStarted chan struct{}   // signalled once Finish begins
+	finishEmitted chan bool       // whether Finish emitted its Final event
+	silent        bool            // no partials
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
-	salvage  string // the text its streams salvage (asr.Salvager), "" for none
+	// pieces are the cumulative "final so far" texts it reports while
+	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
+	pieces  []string
+	salvage string    // the text its streams salvage (asr.Salvager), "" for none
+	onSend  func(int) // called after the i-th send (nil: not)
 
 	mu      sync.Mutex
 	streams []*fakeStream
@@ -276,7 +283,7 @@ func (s *fakeStream) emit(ev asr.Event) {
 	if s.closed || s.done {
 		return
 	}
-	if ev.Kind != asr.EventPartial {
+	if ev.Kind == asr.EventFinal || ev.Kind == asr.EventError {
 		s.done = true
 	}
 	s.events <- ev
@@ -307,12 +314,38 @@ func (s *fakeStream) Send(pcm []byte) error {
 		}
 		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 	}
+	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
+		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
+	}
+	if s.f.onSend != nil {
+		s.f.onSend(n)
+	}
 	return nil
 }
 
 func (s *fakeStream) Salvage() string { return s.f.salvage }
 
 func (s *fakeStream) Finish() error {
+	defer func() {
+		if s.f.finishEmitted != nil {
+			s.mu.Lock()
+			emitted := s.done
+			s.mu.Unlock()
+			select {
+			case s.f.finishEmitted <- emitted:
+			default:
+			}
+		}
+	}()
+	if s.f.finishStarted != nil {
+		select {
+		case s.f.finishStarted <- struct{}{}:
+		default:
+		}
+	}
+	if s.f.finishGate != nil {
+		<-s.f.finishGate
+	}
 	switch {
 	case s.f.hang:
 	case s.f.finalErr != nil:
@@ -339,6 +372,7 @@ func (s *fakeStream) Events() <-chan asr.Event { return s.events }
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
 	text string
+	said string // the language it reports (asr.Result.Lang)
 	err  error
 	hang bool
 
@@ -348,6 +382,7 @@ type fakeFile struct {
 	audio  []byte // the last request's audio
 	lang   string // the last request's language hint
 	prompt string // the last request's prompt
+	most   int    // the last request's MaxBytes
 }
 
 func (f *fakeFile) Caps() asr.Caps { return asr.Caps{File: true, Prompt: true} }
@@ -357,30 +392,39 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.calls++
 	f.bytes = len(req.Audio)
 	f.audio = req.Audio
-	f.lang, f.prompt = req.Lang, req.Prompt
+	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
 	if f.hang {
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
 	}
-	return asr.Result{Text: f.text, Model: "fake-file"}, f.err
+	return asr.Result{Text: f.text, Lang: f.said, Model: "fake-file"}, f.err
 }
 
 // fakeLLM answers chats: text, or texts in turn (the last repeats),
 // streamed in pieces of chunk runes to OnDelta (0: in one), each after
 // pause; err fails every request, or only request failOn (from 1).
 type fakeLLM struct {
-	text   string
-	texts  []string
-	err    error
-	failOn int
-	hang   bool
-	chunk  int
-	pause  time.Duration
-	finish string // the response's FinishReason
+	text      string
+	texts     []string
+	err       error
+	failOn    int
+	failDelta string
+	hang      bool
+	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
+	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
+	chunk     int
+	pause     time.Duration
+	finish    string // the response's FinishReason
+	drop      bool   // the response reports the images dropped (llm.Response.ImagesDropped)
+	// copyExample answers with the earlier assistant message when there is
+	// one, as a model that repeats the prompt's example does.
+	copyExample bool
 
-	mu   sync.Mutex
-	reqs []llm.Request
+	mu       sync.Mutex
+	reqs     []llm.Request
+	answered int           // the requests answered so far
+	answerCh chan struct{} // closed on the next answer; see answerSignal
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -390,17 +434,36 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
 	}
+	if f.copyExample {
+		for _, message := range req.Messages {
+			if message.Role == llm.Assistant {
+				text = message.Content
+			}
+		}
+	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	failDelta := f.failDelta
+	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
-	if f.hang {
+	if hang {
 		if req.OnDelta != nil {
-			req.OnDelta("Half an ans")
+			req.OnDelta(cmp.Or(f.hangDelta, "Half an ans"))
 		}
 		<-ctx.Done()
 		return llm.Response{}, ctx.Err()
 	}
 	if failed {
+		if req.OnDelta != nil && failDelta != "" {
+			req.OnDelta(failDelta)
+		}
 		return llm.Response{}, f.err
+	}
+	if req.OnDelta == nil && f.pause > 0 {
+		select {
+		case <-time.After(f.pause):
+		case <-ctx.Done():
+			return llm.Response{}, ctx.Err()
+		}
 	}
 	if req.OnDelta != nil {
 		rs := []rune(text)
@@ -410,18 +473,45 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 		for i := 0; i < len(rs); i += n {
 			if f.pause > 0 {
-				time.Sleep(f.pause)
+				select {
+				case <-time.After(f.pause):
+				case <-ctx.Done(): // a real service's stream ends with the request
+					return llm.Response{}, ctx.Err()
+				}
 			}
 			req.OnDelta(string(rs[i:min(i+n, len(rs))]))
 		}
 	}
-	return llm.Response{Text: text, FinishReason: f.finish}, nil
+	f.mu.Lock()
+	f.answered++
+	if f.answerCh != nil {
+		close(f.answerCh)
+		f.answerCh = nil
+	}
+	f.mu.Unlock()
+	return llm.Response{Text: text, FinishReason: f.finish, ImagesDropped: f.drop}, nil
 }
 
 func (f *fakeLLM) requests() []llm.Request {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]llm.Request(nil), f.reqs...)
+}
+
+// answerSignal returns a channel that closes when the next request is answered.
+func (f *fakeLLM) answerSignal() <-chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.answerCh == nil {
+		f.answerCh = make(chan struct{})
+	}
+	return f.answerCh
+}
+
+func (f *fakeLLM) answeredCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.answered
 }
 
 // fakeText is the app in front.
@@ -475,12 +565,20 @@ func (f *fakeText) pastes() []string {
 
 // memHistory keeps entries in memory.
 type memHistory struct {
-	dir     string
-	mu      sync.Mutex
-	entries []store.Entry
+	dir        string
+	mu         sync.Mutex
+	entries    []store.Entry
+	putStarted chan struct{}
+	putRelease chan struct{}
+	putBlockID string
+	putOnce    sync.Once
 }
 
 func (h *memHistory) Put(_ context.Context, e store.Entry) error {
+	if h.putStarted != nil && (h.putBlockID == "" || h.putBlockID == e.ID) {
+		h.putOnce.Do(func() { close(h.putStarted) })
+		<-h.putRelease
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.entries = append(h.entries, e)
@@ -566,11 +664,12 @@ var errHelperForTest = core.ErrHelper
 // fakeSelector is the selection of the app in front: text read through
 // Accessibility, or copyText only when ⌘C is allowed.
 type fakeSelector struct {
-	text     string
-	copyText string
-	steps    []string
-	err      error
-	delay    time.Duration
+	text      string
+	copyText  string
+	copyImage []byte
+	steps     []string
+	err       error
+	delay     time.Duration
 
 	mu    sync.Mutex
 	calls []proto.SelectionParams
@@ -594,7 +693,7 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	case f.text != "":
 		return proto.SelectionResult{Text: f.text, Via: proto.ViaAX, MS: 2}, nil
 	case f.copyText != "" && p.AllowCopy:
-		return proto.SelectionResult{Text: f.copyText, Via: proto.ViaCopy, MS: 40}, nil
+		return proto.SelectionResult{Text: f.copyText, Image: f.copyImage, Via: proto.ViaCopy, MS: 40}, nil
 	}
 	return proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: f.steps}, nil
 }

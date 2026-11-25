@@ -29,15 +29,10 @@ from sglang_omni.utils.cpu import effective_cpu_count
 _PKG = "sglang_omni.models.qwen3_omni"
 _PLACEMENT_POLICY = f"{_PKG}.placement.Qwen3OmniPlacementPolicy"
 THINKER_STAGE = "thinker"
-# Note (wenyao): Config and pre-boot gates preserve the legacy three-chunk floor;
-# TALKER_START_MIN_CHUNKS reflects the prompt topology's one-chunk minimum.
-MIN_PARTIAL_START_CHUNKS = 3
 
 # Note (wenyao): the talker assistant prompt needs one chunk
 # for a 9-row tail (3 template + 4 pad + BOS + text); later chunks feed decode.
 TALKER_START_MIN_CHUNKS = 1
-
-ENABLE_TALKER_START_TOPOLOGY = False
 
 TALKER_MAX_RUNNING_REQUESTS = 32
 
@@ -218,7 +213,7 @@ def talker_stage(
     *,
     gpu: int,
     process: str,
-    enable_partial_start: bool,
+    partial_start_min_chunks: int,
 ) -> StageConfig:
     return EngineStageConfig(
         name="talker_ar",
@@ -229,8 +224,8 @@ def talker_stage(
         merge_fn=f"{_PKG}.request_builders.merge_for_talker",
         factory_path=f"{_PKG}.stages.create_talker_ar_executor_from_config",
         factory=FactoryArgs(
-            enable_partial_start=enable_partial_start,
-            partial_start_min_chunks=5,
+            enable_partial_start=True,
+            partial_start_min_chunks=partial_start_min_chunks,
             # Note (wenyao): Match the default serial Code2Wav window so later
             # 10-row messages keep the captured 10/20/30/35-frame graph shapes.
             codec_coalesce_frames=10,
@@ -275,7 +270,7 @@ def speech_stages(
     thinker_gpu: int,
     talker_gpu: int,
     process_by_stage: dict[str, str],
-    enable_partial_start: bool,
+    partial_start_min_chunks: int,
 ) -> list[StageConfig]:
     return [
         preprocessing_stage(
@@ -301,7 +296,7 @@ def speech_stages(
         talker_stage(
             gpu=talker_gpu,
             process=process_by_stage["talker_ar"],
-            enable_partial_start=enable_partial_start,
+            partial_start_min_chunks=partial_start_min_chunks,
         ),
         code2wav_stage(gpu=thinker_gpu, process=process_by_stage["code2wav"]),
     ]
@@ -452,7 +447,7 @@ class Qwen3OmniSpeechPipelineConfig(Qwen3OmniBasePipelineConfig):
             thinker_gpu=0,
             talker_gpu=1,
             process_by_stage=SPEECH_DEFAULT_PROCESSES,
-            enable_partial_start=True,
+            partial_start_min_chunks=5,
         )
     )
 
@@ -520,7 +515,8 @@ class Qwen3OmniSpeechColocatedPipelineConfig(Qwen3OmniSpeechPipelineConfig):
             thinker_gpu=0,
             talker_gpu=0,
             process_by_stage=COLOCATED_SPEECH_PROCESSES,
-            enable_partial_start=False,
+            # note (ratish): a talker row without its next text is excluded from the step, so the talker starts at the prompt's one-chunk minimum.
+            partial_start_min_chunks=TALKER_START_MIN_CHUNKS,
         )
     )
 
@@ -620,6 +616,9 @@ class Qwen3OmniSessionPipelineConfig(AudioSessionPipelineConfig):
         "thinker": EngineStageConfig,
         "talker_ar": EngineStageConfig,
     }
+    realtime_deployment_factory: ClassVar[str] = (
+        "sglang_omni.models.qwen3_omni.realtime.build_realtime_deployment"
+    )
     max_sessions: int = Field(ge=1)
     # The audio the dialog holds for one user turn before speech.stopped or a commit ends it; a client that never ends a turn is cut here.
     max_utterance_seconds: float = Field(default=60, gt=0)

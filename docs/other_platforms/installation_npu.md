@@ -259,3 +259,11 @@ graphs enabled, and runs the image and audio encoders on their own NPU stream.
 On NPU the reference audio for voice cloning is decoded through the soundfile
 fallback because torchcodec is not usable in NPU images. Validated on Ascend
 910 / CANN 9.1.0 / torch 2.10 / torch_npu 2.10.0.post6 / SGLang 0.5.22.
+
+### MiniMax-Music3
+
+Use this command to launch MiniMax-Music3 on Ascend NPU:
+
+```bash
+sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --dit_dav.factory.compile_acoustic False --minimax_music3_ar.engine.enable_deterministic_inference False
+```

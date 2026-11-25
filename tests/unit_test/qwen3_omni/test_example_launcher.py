@@ -16,7 +16,7 @@ from examples.launchers.qwen3_omni import _parse_thinker_tp_gpu_list
 from examples.launchers.qwen3_omni import (
     launch_qwen_speech_server as _launch_speech_server,
 )
-from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+from sglang_omni.models.qwen3_omni.config import TALKER_START_MIN_CHUNKS
 
 EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[3] / "examples"
 
@@ -174,7 +174,7 @@ def make_args(**overrides) -> argparse.Namespace:
         thinker_mem_fraction_static=None,
         talker_mem_fraction_static=None,
         enable_partial_start=None,
-        partial_start_min_chunks=5,
+        partial_start_min_chunks=None,
         colocated=False,
         host="0.0.0.0",
         port=8000,
@@ -308,24 +308,15 @@ def test_partial_start_defaults_on(mock_launch_server):
     assert talker.factory.enable_partial_start is True
 
 
-def test_partial_start_colocated_defaults_off(mock_launch_server):
+def test_partial_start_colocated_defaults_to_the_one_chunk_start(mock_launch_server):
     args = make_args(colocated=True)
     _launch_speech_server(args)
 
     config = mock_launch_server.call_args[0][0]
     talker = make_stage(config, "talker_ar")
 
-    assert talker.factory.enable_partial_start is False
-
-
-def test_partial_start_colocated_can_be_enabled(mock_launch_server):
-    args = make_args(colocated=True, enable_partial_start=True)
-    _launch_speech_server(args)
-
-    config = mock_launch_server.call_args[0][0]
-    talker = make_stage(config, "talker_ar")
-
     assert talker.factory.enable_partial_start is True
+    assert talker.factory.partial_start_min_chunks == TALKER_START_MIN_CHUNKS
 
 
 def test_partial_start_can_be_disabled(mock_launch_server):
@@ -338,22 +329,9 @@ def test_partial_start_can_be_disabled(mock_launch_server):
     assert talker.factory.enable_partial_start is False
 
 
-def test_partial_start_disabled_does_not_propagate_subfloor_min_chunks(
-    mock_launch_server,
-):
-    args = make_args(enable_partial_start=False, partial_start_min_chunks=2)
-    _launch_speech_server(args)
-
-    config = mock_launch_server.call_args[0][0]
-    talker = make_stage(config, "talker_ar")
-
-    assert talker.factory.enable_partial_start is False
-    assert talker.factory.partial_start_min_chunks >= MIN_PARTIAL_START_CHUNKS
-
-
 def test_partial_start_min_chunks_rejects_below_floor(mock_launch_server):
-    args = make_args(enable_partial_start=True, partial_start_min_chunks=2)
-    with pytest.raises(ValueError, match="partial-start-min-chunks must be >= 3"):
+    args = make_args(enable_partial_start=True, partial_start_min_chunks=0)
+    with pytest.raises(ValueError, match="partial-start-min-chunks must be >= 1"):
         _launch_speech_server(args)
 
     mock_launch_server.assert_not_called()

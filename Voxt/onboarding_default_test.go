@@ -109,7 +109,7 @@ func TestGuideOnDiskNoDownload(t *testing.T) {
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
 	}
-	if r := homeSpeech(a); r.action != "Open Speech models" {
+	if r := homeSpeech(a); r.Action != "Open Speech models" {
 		t.Errorf("Home: %+v", r)
 	}
 }
@@ -295,13 +295,13 @@ func TestTranslateByVoiceWaits(t *testing.T) {
 	}
 }
 
-func homeSpeech(a *app) readiness {
+func homeSpeech(a *app) homeReadinessViewState {
 	for _, r := range a.readinessList() {
-		if r.key == "home-asr" {
+		if r.Key == "home-asr" {
 			return r
 		}
 	}
-	return readiness{}
+	return homeReadinessViewState{}
 }
 
 func TestHomeSpeechRow(t *testing.T) {
@@ -309,10 +309,10 @@ func TestHomeSpeechRow(t *testing.T) {
 	a, tt := homeTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	if r := homeSpeech(a); r.ok || !strings.HasPrefix(r.action, "Download (") {
+	if r := homeSpeech(a); r.OK || !strings.HasPrefix(r.Action, "Download (") {
 		t.Fatalf("no model: %+v", r)
 	}
-	click(t, tt, "Speech recognition: "+homeSpeech(a).action)
+	click(t, tt, "Speech recognition: "+homeSpeech(a).Action)
 	if a.shownPath() == modelsPath {
 		t.Error("the line left Home instead of downloading")
 	}
@@ -324,7 +324,7 @@ func TestHomeSpeechRow(t *testing.T) {
 	a.local = onlyDictation{&fakeLocal{}}
 	a.modelStatus = map[string]models.Status{}
 	r := homeSpeech(a)
-	if r.ok || r.kind != noticeInfo || r.text != "Using System dictation for now." || !strings.HasPrefix(r.action, "Download the recommended model (") {
+	if r.OK || r.Kind != "info" || r.Text != "Using System dictation for now." || !strings.HasPrefix(r.Action, "Download the recommended model (") {
 		t.Errorf("automatic on System dictation: %+v", r)
 	}
 	if missing, _ := homeMissing(a.readinessList()); !containsKey(missing, "home-asr") {
@@ -332,20 +332,20 @@ func TestHomeSpeechRow(t *testing.T) {
 	}
 
 	downloading(a, a.obSpeech())
-	if r := homeSpeech(a); r.ok || r.text != "The speech model is still downloading (33%)." {
+	if r := homeSpeech(a); r.OK || r.Text != "The speech model is still downloading (33%)." {
 		t.Errorf("downloading: %+v", r)
 	}
 
 	a.modelStatus = map[string]models.Status{}
 	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = dictation.ModelID })
-	if r := homeSpeech(a); !r.ok || r.text != "System dictation" {
+	if r := homeSpeech(a); !r.OK || r.Text != "System dictation" {
 		t.Errorf("System dictation chosen: %+v", r)
 	}
 }
 
-func containsKey(list []readiness, key string) bool {
+func containsKey(list []homeReadinessViewState, key string) bool {
 	for _, r := range list {
-		if r.key == key {
+		if r.Key == key {
 			return true
 		}
 	}

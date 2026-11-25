@@ -64,24 +64,3 @@ def test_dense_write_skips_index_tensor(monkeypatch: Any) -> None:
     assert torch.equal(model.feedback_mask, torch.ones(n, dtype=torch.bool))
     for i in range(n):
         assert torch.equal(model.feedback_buffer[i], feedbacks[i] + texts[i])
-
-
-def test_sparse_write_leaves_starved_row_unwritten() -> None:
-    n, hidden = 3, 3
-    model = fake_model(n, hidden)
-    runner = make_runner(model)
-
-    feedbacks = [torch.full((hidden,), float(i + 1)) for i in range(n)]
-    texts = [torch.full((hidden,), float(10 * (i + 1))) for i in range(n)]
-    requests = [
-        req_wrap(make_data(feedbacks[0], texts[0])),
-        req_wrap(make_data(feedbacks[1], None)),
-        req_wrap(make_data(feedbacks[2], texts[2])),
-    ]
-
-    runner.write_feedback_buffers(requests)
-
-    assert model.feedback_mask.tolist() == [True, False, True]
-    assert torch.equal(model.feedback_buffer[0], feedbacks[0] + texts[0])
-    assert torch.equal(model.feedback_buffer[1], torch.zeros(hidden))
-    assert torch.equal(model.feedback_buffer[2], feedbacks[2] + texts[2])

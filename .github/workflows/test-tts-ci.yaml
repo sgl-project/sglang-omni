@@ -3,6 +3,11 @@ name: TTS CI
 on:
   workflow_call:
     inputs:
+      run_serving:
+        description: Run the Higgs serving stress job.
+        type: boolean
+        required: false
+        default: true
       tts_ci_model:
         description: TTS CI model preset selected by the parent omni-ci preflight.
         type: string
@@ -20,18 +25,17 @@ env:
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
-# DAG:
-#   stage-1-non-streaming + stage-2-streaming -> stage-3-consistency
-#   stage-latency and stage-4-serving depend on no other stage
-# stage-3-consistency compares the speed artifacts of stages 1 and 2. No other
-# stage reads another stage's output, so the rest run side by side.
+# No job waits for another, so all three run side by side. seedtts runs the
+# non-streaming and streaming benchmarks back to back and then checks that
+# their results agree: the check only reads two JSON files, and as its own job
+# it waited for a free H100 runner after both benchmarks.
 # The MPS validation runs separately in test-mps-ci.yaml.
 
 jobs:
-  stage-1-non-streaming:
-    name: stage 1 - non-streaming
+  seedtts:
+    name: SeedTTS voice cloning
     runs-on: [self-hosted, h100]
-    timeout-minutes: 25
+    timeout-minutes: 50
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
       options: >-
@@ -46,7 +50,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/omni-setup
+      - id: setup
+        uses: ./.github/actions/omni-setup
         with:
           venv-name: omni
 
@@ -84,11 +89,11 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      - name: Post-stage cleanup
+      - name: Non-streaming post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 1 (non-streaming)
+          stage-label: TTS non-streaming
           artifact-upload-name: tts-generation-budget-nonstream-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
@@ -98,29 +103,10 @@ jobs:
             */wer_results.json
             */similarity_results.json
 
-  stage-2-streaming:
-    name: stage 2 - streaming
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 25
-    container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
+      # The streaming stage still reports its own results when non-streaming
+      # fails, as it did in a separate job.
       - name: Run TTS streaming benchmark stage
+        if: always() && !cancelled() && steps.setup.outcome == 'success'
         shell: bash
         run: |
           source omni/bin/activate
@@ -144,11 +130,11 @@ jobs:
           retention-days: 7
           overwrite: true
 
-      - name: Post-stage cleanup
+      - name: Streaming post-stage cleanup
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 2 (streaming)
+          stage-label: TTS streaming
           artifact-upload-name: tts-generation-budget-stream-${{ github.run_attempt }}
           artifact-upload-path: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}/generation_budget_*/**
@@ -157,8 +143,21 @@ jobs:
             */speed_results.json
             */wer_results.json
 
-  stage-latency:
-    name: stage latency - streaming first audio
+      - name: Run consistency check
+        if: always() && !cancelled() && steps.setup.outcome == 'success'
+        shell: bash
+        run: |
+          source omni/bin/activate
+          export PYTHONPATH=$PWD
+          "${OMNI_CI_PYTHON}" -m pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
+        env:
+          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
+          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
+          TTS_CONSISTENCY_CONCURRENCY: "16"
+
+  latency:
+    name: streaming first audio
     if: startsWith(inputs.tts_ci_model, 'qwen3-tts')
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
@@ -214,69 +213,15 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage latency (streaming first audio)
+          stage-label: TTS streaming first audio
           artifact-search-root: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/latency/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
           artifact-path-globs: |
             */speed_results.json
 
-  stage-3-consistency:
-    name: stage 3 - consistency
-    needs: [stage-1-non-streaming, stage-2-streaming]
-    if: always() && !cancelled()
-    runs-on: [self-hosted, h100]
-    timeout-minutes: 5
-    container:
-      image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
-      options: >-
-        --rm
-        -e NVIDIA_VISIBLE_DEVICES
-        -e OMNI_CI_CPUSET
-        -v /dev/shm:/dev/shm
-        -v /data/omni-ci:/data/omni-ci
-        -v /data/cache/huggingface:/github/home/.cache/huggingface
-        -v /data/cache/huggingface:/root/.cache/huggingface
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - uses: ./.github/actions/omni-setup
-        with:
-          venv-name: omni
-
-      - name: Download non-streaming speed artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tts-stage-nonstream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-
-      - name: Download streaming speed artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tts-stage-stream-speed-results
-          path: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-
-      - name: Run consistency check
-        shell: bash
-        run: |
-          source omni/bin/activate
-          export PYTHONPATH=$PWD
-          bash .github/scripts/run_flaky_pytest.sh \
-            pytest tests/test_model/test_tts_consistency_artifacts.py -v -s -x
-        env:
-          TTS_CI_MODEL: ${{ inputs.tts_ci_model }}
-          TTS_STAGE1_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/nonstream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-          TTS_STAGE2_SPEED_RESULTS_DIR: ${{ env.OMNI_CI_HOME }}/tts-stage-results/stream/run-${{ github.run_id }}/attempt-${{ github.run_attempt }}
-          TTS_CONSISTENCY_CONCURRENCY: "16"
-
-      - name: Post-stage cleanup
-        if: always()
-        uses: ./.github/actions/omni-post-stage
-        with:
-          stage-label: TTS stage 3 (consistency)
-
-  stage-4-serving:
-    name: stage 4 - serving stress
+  higgs-serving-stress:
+    name: Higgs serving stress
+    if: inputs.run_serving
     runs-on: [self-hosted, h100]
     timeout-minutes: 75
     container:
@@ -315,7 +260,7 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: TTS stage 4 (serving stress)
+          stage-label: TTS Higgs serving stress
           artifact-search-root: >-
             ${{ env.OMNI_CI_HOME }}/tts-stage-results/serving/run-attempt-${{ github.run_attempt }}
           artifact-path-globs: |

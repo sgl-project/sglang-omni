@@ -12,6 +12,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "common/text.h"
 #include "nlohmann/json.hpp"
 
@@ -24,17 +25,6 @@ namespace {
 constexpr const char *kQwen2SplitPattern =
     R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N})"
     R"(| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // Note (Jiaxin Deng): GPT-2's byte-to-unicode table; printable bytes map to
 // themselves, the rest to code points from 256 upward.

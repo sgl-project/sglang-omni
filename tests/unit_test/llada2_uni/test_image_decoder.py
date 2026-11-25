@@ -29,7 +29,6 @@ from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.patch import ConfigPatchSet
 from sglang_omni.config.resolver import ConfigResolver
 from sglang_omni.models.llada2_uni import stages
-from sglang_omni.models.llada2_uni.components import common as common_module
 from sglang_omni.models.llada2_uni.components import decoder_runtime
 from sglang_omni.models.llada2_uni.components.decoder_model import (
     DecoderConfig,
@@ -66,6 +65,7 @@ from sglang_omni.models.llada2_uni.request_builders import (
     merge_image_tokens_for_thinker,
     thinker_next,
 )
+from sglang_omni.models.llada2_uni.serial_offload import SerialOffloadCoordinator
 from sglang_omni.models.llada2_uni.stages import (
     create_decode_executor,
     create_image_decode_executor,
@@ -237,7 +237,7 @@ def test_sglang_decoder_factory_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
     decoder = Mock(spec=LLaDA2ImageDecoder)
     decoder.decode.return_value = Image.new("RGB", (8, 8))
     constructor = Mock(return_value=decoder)
-    monkeypatch.setattr(decoder_runtime, "initialize_decoder_runtime", initialize)
+    monkeypatch.setattr(stages, "initialize_decoder_runtime", initialize)
     monkeypatch.setattr(stages, "LLaDA2ImageDecoder", constructor)
 
     scheduler = create_image_decode_executor("unused", device="cpu", backend="sglang")
@@ -476,6 +476,70 @@ def test_decode_pipeline(decode_probe):
     torch.testing.assert_close(
         observed.latents, (expected_noise.squeeze(2) + 1) / 2 + 3
     )
+
+
+@pytest.mark.parametrize("failing_phase", [None, "sigvq", "semantic_decoder", "vae"])
+def test_decoder_offload_phase_order_and_failure_cleanup(decode_probe, failing_phase):
+    decoder, observed = decode_probe
+    if failing_phase is None:
+        reference = decoder.decode([1, 2], 1, 2, seed=9)
+        reference_latents = observed.latents.clone()
+    else:
+        pass
+    coordinator = SerialOffloadCoordinator(torch.device("cpu"))
+    decoder.offload_coordinator = coordinator
+    transitions = []
+    resident = set()
+
+    def transfer(label, device):
+        assert coordinator.lock.locked()
+        if isinstance(device, torch.device):
+            assert not resident
+            resident.add(label)
+            transitions.append((label, "restore"))
+        else:
+            assert resident == {label}
+            resident.remove(label)
+            transitions.append((label, "release"))
+
+    for attribute, label in (
+        ("sigvq", "sigvq"),
+        ("diff_model", "semantic_decoder"),
+        ("vae", "vae"),
+    ):
+        component = Mock(wraps=getattr(decoder, attribute))
+        component.to = Mock(
+            side_effect=lambda device, label=label: transfer(label, device)
+        )
+        if label == "vae":
+            component.config = decoder.vae.config
+        else:
+            pass
+        if failing_phase == label:
+            if label == "vae":
+                component.decode.side_effect = ValueError("phase failed")
+            else:
+                component.side_effect = ValueError("phase failed")
+        else:
+            pass
+        setattr(decoder, attribute, component)
+
+    if failing_phase is None:
+        actual = decoder.decode([1, 2], 1, 2, seed=9)
+        assert actual.tobytes() == reference.tobytes()
+        torch.testing.assert_close(observed.latents, reference_latents, rtol=0, atol=0)
+        phases = ["sigvq", "semantic_decoder", "vae"]
+    else:
+        with pytest.raises(ValueError, match="phase failed"):
+            decoder.decode([1, 2], 1, 2, seed=9)
+        phases = ["sigvq", "semantic_decoder", "vae"]
+        phases = phases[: phases.index(failing_phase) + 1]
+    assert transitions == [
+        (phase, action) for phase in phases for action in ("restore", "release")
+    ]
+    assert not resident
+    assert not coordinator.lock.locked()
+    assert coordinator.failure is None
 
 
 def test_decode_rejects_invalid_tokens_before_loading(tmp_path, monkeypatch):
@@ -781,7 +845,7 @@ def test_thinking_stops_at_boundary_then_generates_image(
     assert thinker_next(payload.request_id, output) == ["decode", "image_decode"]
     assert extract_image_vq_tokens(state)[:3] == ([7] * 1024, 32, 32)
 
-    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    monkeypatch.setattr(stages, "load_llada2_tokenizer", lambda path: tokenizer)
     output.data = state.to_dict()
     decoded = create_decode_executor("unused").fn(output)
     thinking_tokens = text_request.output_ids.index(preprocessor.boi_id) + 1
@@ -805,7 +869,7 @@ def test_single_pass_usage_is_unchanged(
     task_kind: str,
 ) -> None:
     tokenizer = preprocessor.tokenizer
-    monkeypatch.setattr(common_module, "load_llada2_tokenizer", lambda path: tokenizer)
+    monkeypatch.setattr(stages, "load_llada2_tokenizer", lambda path: tokenizer)
     state = LLaDA2UniPipelineState(
         prompt={"input_ids": torch.tensor([[1, 2, 3]])},
         thinker_out={"output_ids": [IMAGE_TOKEN_OFFSET + 7] * 4},

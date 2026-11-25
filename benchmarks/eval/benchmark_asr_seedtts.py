@@ -654,6 +654,12 @@ def add_common_args(
         help="Server-side base directory for profiler event JSONL.",
     )
     parser.add_argument(
+        "--profile-event-buffer-capacity",
+        type=_positive_int,
+        default=None,
+        help="Events buffered per producer during profiling. Defaults to the server setting.",
+    )
+    parser.add_argument(
         "--sample-util",
         action="store_true",
         help=(
@@ -709,7 +715,7 @@ def parse_args() -> argparse.Namespace:
         "--fallback-percentage",
         type=int,
         default=0,
-        help="Percentage of clips sent with repetition_penalty=1.2 to exercise plain fallback.",
+        help="Percentage of clips sent with repetition_penalty=1.2. Whether they decode plainly depends on the server: a draft that applies the penalty keeps them.",
     )
     parser.add_argument(
         "--unique-audio",
@@ -743,6 +749,7 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
         run_id=run_id,
         event_dir=event_dir,
         profile_urls=profile_urls,
+        event_buffer_capacity=args.profile_event_buffer_capacity,
         run_pass=lambda: _run_repeat(args, samples, concurrency, repeat=0),
         log_prefix=f"[conc={concurrency}]",
     )

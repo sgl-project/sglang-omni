@@ -61,7 +61,8 @@ func oaText(text string) map[string]any {
 	return map[string]any{
 		"model":   "m-reported",
 		"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}},
-		"usage":   map[string]any{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+		"usage": map[string]any{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18,
+			"prompt_tokens_details": map[string]any{"cached_tokens": 5}},
 	}
 }
 
@@ -96,7 +97,7 @@ func TestOpenAIChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Text != "hola" || resp.Model != "m-reported" || resp.Provider != "openai" || resp.FinishReason != FinishStop || resp.Usage.TotalTokens != 18 {
+	if resp.Text != "hola" || resp.Model != "m-reported" || resp.Provider != "openai" || resp.FinishReason != FinishStop || resp.Usage.TotalTokens != 18 || resp.Usage.CachedTokens != 5 {
 		t.Fatalf("resp %+v", resp)
 	}
 	r := f.requests()[0]
@@ -268,8 +269,8 @@ func TestOpenAIErrorsHideKey(t *testing.T) {
 	}
 }
 
-// TestResolveAddress: keys go over https, plain http only to this Mac,
-// never with credentials in the URL; a custom server needs an address.
+// TestResolveAddress: API-key services accept HTTP, sign-in tokens only
+// use remote HTTPS, and URLs cannot contain credentials.
 func TestResolveAddress(t *testing.T) {
 	for base, ok := range map[string]bool{
 		"":                                           true, // the preset's
@@ -277,8 +278,9 @@ func TestResolveAddress(t *testing.T) {
 		"http://localhost:11434/v1":                  true,
 		"http://127.0.0.1:8080/v1":                   true,
 		"http://[::1]:8080/v1":                       true,
-		"http://example.com/v1":                      false,
-		"http://192.168.1.5:11434/v1":                false,
+		"http://example.com/v1":                      true,
+		"http://192.168.1.5:11434/v1":                true,
+		"http://user:pass@example.com/v1":            false,
 		"https://user:pass@example.com/v1":           false,
 		"ftp://example.com/v1":                       false,
 		"example.com/v1":                             false,
@@ -292,6 +294,9 @@ func TestResolveAddress(t *testing.T) {
 	}
 	if _, err := (ProviderConfig{ID: Custom}).Resolve(); Code(err) != CodeConfig {
 		t.Errorf("custom without an address: %v", err)
+	}
+	if _, err := (ProviderConfig{ID: "codex", BaseURL: "http://example.com/backend-api/codex"}).Resolve(); Code(err) != CodeConfig {
+		t.Errorf("sign-in token over remote HTTP: %v", err)
 	}
 	if _, err := (ProviderConfig{ID: "nope"}).Resolve(); Code(err) != CodeUnknown {
 		t.Errorf("unknown preset: %v", err)
@@ -365,5 +370,45 @@ func TestProbe(t *testing.T) {
 		if e, _ := err.(*Error); tc.code == CodeBadRequest && (e == nil || e.Params["detail"] == "") {
 			t.Errorf("no detail: %v", err)
 		}
+	}
+}
+
+// TestConnect: the chat after Connect uses the connection it opened, with
+// a request that carries no key and follows no redirect.
+func TestConnect(t *testing.T) {
+	var from []string
+	f := newFakeServer(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			from = append(from, r.RemoteAddr)
+			http.Redirect(w, r, "/docs", http.StatusFound)
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			from = append(from, r.RemoteAddr)
+			jsonReply(200, oaText("hi"))(w, r)
+		})
+	c := &Client{Backend: NewOpenAI(Preset{ID: "x", BaseURL: f.srv.URL + "/v1", DefaultModel: "m"}, "sk-secret", f.srv.Client())}
+	if err := c.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Chat(context.Background(), Request{Messages: []Message{{Role: User, Content: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.requests()
+	if len(reqs) != 2 || reqs[0].Path != "/v1" || reqs[0].Header.Get("Authorization") != "" {
+		t.Fatalf("requests %+v", reqs)
+	}
+	if from[0] != from[1] {
+		t.Errorf("the chat came from %s, Connect from %s", from[1], from[0])
+	}
+}
+
+// TestConnectSignIn: nothing is sent to a service one signs in to.
+func TestConnectSignIn(t *testing.T) {
+	f := newFakeServer(t, jsonReply(200, oaText("hi")))
+	if err := NewOpenAI(Preset{ID: "x", BaseURL: f.srv.URL, SignIn: true}, "", f.srv.Client()).Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reqs := f.requests(); len(reqs) != 0 {
+		t.Errorf("requests %+v", reqs)
 	}
 }

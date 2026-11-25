@@ -1,0 +1,13 @@
+{
+  "name": "notices-models-pending",
+  "kind": "shell-notices",
+  "shell_notices": [
+    {
+      "id": "problem/models",
+      "severity": "warning",
+      "title": "没有模型",
+      "body": "先安装语音识别模型，再设置语言模型，就可以开始了。",
+      "action_label": "打开语音识别模型页"
+    }
+  ]
+}

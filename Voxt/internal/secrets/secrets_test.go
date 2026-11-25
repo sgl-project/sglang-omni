@@ -55,6 +55,23 @@ func TestItems(t *testing.T) {
 	}
 }
 
+func TestClean(t *testing.T) {
+	for in, want := range map[string]struct {
+		key   string
+		inner int
+	}{
+		"sk-abc":             {"sk-abc", 0},
+		" sk-abc\n":          {"sk-abc", 0},
+		"rxinf_9a97836 4624": {"rxinf_9a978364624", 1},
+		"sk-a\tb\r\nc ":      {"sk-abc", 3},
+		"":                   {"", 0},
+	} {
+		if key, inner := Clean(in); key != want.key || inner != want.inner {
+			t.Errorf("Clean(%q) = %q, %d; want %q, %d", in, key, inner, want.key, want.inner)
+		}
+	}
+}
+
 // TestMacKeychain saves, reads, replaces and removes a secret through
 // /usr/bin/security. It runs with VOXTNEW_MAC=1 on macOS:
 //

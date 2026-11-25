@@ -1,3 +1,5 @@
-// Package meeting records meetings: dual-track audio, timelines, and on-disk
-// WAV archives. UI and live transcription live in package main and C1-2.
+// Package meeting records meetings: dual-track audio, timelines and on-disk
+// WAV archives, live captions, the pass after the meeting, its correction
+// and its summary. The UI lives in package main and reads a Manager's
+// Snapshot.
 package meeting

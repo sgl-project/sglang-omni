@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
+#include "common/kv_cache.h"
 #include "common/tokenizer.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_model.h"
@@ -21,6 +23,7 @@ int main(int argc, char **argv) {
   std::string model_path;
   std::string draft_model_path;
   int draft_quantization_bits = 0;
+  omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   std::string encode_text;
   std::string dump_mel_filters;
   std::string encode_lines;
@@ -39,6 +42,8 @@ int main(int argc, char **argv) {
       model_path = value();
     } else if (argument == "--draft-model-path") {
       draft_model_path = value();
+    } else if (argument == "--draft-policy") {
+      draft_policy = omni_common::ParseDraftPolicy(value());
     } else if (argument == "--draft-bits") {
       draft_quantization_bits = std::stoi(value());
     } else if (argument == "--layout") {
@@ -137,7 +142,7 @@ int main(int argc, char **argv) {
       const std::vector<int> ids = tokenizer.Encode(prompt);
       const mx::array input(ids.data(), {1, static_cast<int>(ids.size())},
                             mx::int32);
-      std::vector<qwen3_asr::KVCache> caches = model.NewCaches();
+      std::vector<omni_common::KVCache> caches = model.NewCaches();
       mx::array token =
           mx::argmax(model.Decode(model.EmbedTokens(input), caches));
       mx::eval(token);
@@ -163,8 +168,8 @@ int main(int argc, char **argv) {
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const qwen3_asr::Qwen3ASRTranscriber transcriber(model_path, draft_model_path,
-                                                   draft_quantization_bits);
+  const qwen3_asr::Qwen3ASRTranscriber transcriber(
+      model_path, draft_model_path, draft_quantization_bits, draft_policy);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)
@@ -186,7 +191,7 @@ int main(int argc, char **argv) {
                          ? nlohmann::json(*result.language)
                          : nlohmann::json()},
         {"generated_token_count", result.generated_token_count},
-        {"finish_reason", qwen3_asr::FinishReasonName(result.finish_reason)},
+        {"finish_reason", omni_common::FinishReasonName(result.finish_reason)},
         {"verify_rounds", result.verify_round_count},
         {"seconds", std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - started)
