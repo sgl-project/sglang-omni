@@ -2,8 +2,11 @@
 """The resident Qwen3-Omni D2 model and its captured graphs, serving one conversation at a time."""
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from sglang_omni.admission import ContextExhaustedError
 from sglang_omni.models.qwen3_omni_d2.components.mandarin import (
@@ -33,6 +36,23 @@ CONVERSATION_PROMPT = (
     "You are a helpful spoken conversational assistant. "
     "Respond naturally when the user finishes speaking."
 )
+# note (cuzimi): cuDNN attention, chosen for masked decode queries, changed replays of identical sessions; these backends do not.
+REPRODUCIBLE_ATTENTION_BACKENDS = [
+    SDPBackend.FLASH_ATTENTION,
+    SDPBackend.EFFICIENT_ATTENTION,
+    SDPBackend.MATH,
+]
+
+
+@contextmanager
+def inference_scope(device: torch.device) -> Iterator[None]:
+    """No autograd, the stage's device, and attention kernels that replay identically."""
+    with (
+        torch.no_grad(),
+        device_guard(device),
+        sdpa_kernel(REPRODUCIBLE_ATTENTION_BACKENDS),
+    ):
+        yield
 
 
 class Qwen3OmniD2Runtime:
@@ -47,7 +67,7 @@ class Qwen3OmniD2Runtime:
         language: Qwen3OmniD2Language,
     ) -> None:
         self.device = torch.device(device)
-        with torch.no_grad(), device_guard(self.device):
+        with inference_scope(self.device):
             model = load_release_model(resolve_release(model_path), self.device)
             prompt = MANDARIN_PROMPT if language == "zh" else CONVERSATION_PROMPT
             prompt_token_ids = model.tokenizer.encode(
@@ -104,7 +124,7 @@ class Qwen3OmniD2Runtime:
             self.step(silence)
 
     def open_session(self) -> None:
-        with torch.no_grad(), device_guard(self.device):
+        with inference_scope(self.device):
             self.session.reset()
 
     def step(self, pcm16: bytes) -> list[Qwen3OmniD2Frame]:
@@ -114,5 +134,5 @@ class Qwen3OmniD2Runtime:
                 f"{ContextExhaustedError.CODE}: D2 session reached its fixed context limit"
             )
         else:
-            with torch.no_grad(), device_guard(self.device):
+            with inference_scope(self.device):
                 return self.session.step(pcm16)
