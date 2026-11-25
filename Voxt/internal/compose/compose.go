@@ -136,6 +136,10 @@ type Input struct {
 	// context of a block of a dictation cleaned up while it is spoken
 	// (before.go). "" for none: Text is the whole dictation.
 	Before string
+	// PieceLimit caps the words of one piece (Transcribe with parts);
+	// 0 cuts at PieceWords (default). Only the live clean-up's fallback
+	// sets it: smaller pieces answer sooner after a failure.
+	PieceLimit int
 	// Selected: Translate's Text is selected text, not speech (no clean-up,
 	// its form kept).
 	Selected bool

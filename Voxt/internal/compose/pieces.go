@@ -88,7 +88,7 @@ func BuildParts(in Input) ([]Part, error) {
 	if in.Task != Transcribe {
 		return []Part{{Output: out, Piece: Piece{Text: in.Text}}}, nil
 	}
-	pieces := LanguagePieces(in.Text)
+	pieces := languagePieces(in.Text, in.PieceLimit)
 	parts := make([]Part, len(pieces))
 	for i, p := range pieces {
 		o, piece := out, in
@@ -147,11 +147,21 @@ var boundaries = []*regexp.Regexp{
 // The pieces are about as long as each other. Joined with their After,
 // they are text, trimmed.
 func Pieces(text string) []Piece {
+	return piecesOf(text, 0)
+}
+
+// piecesOf is Pieces with a piece word cap other than PieceWords
+// (limit <= 0: the default).
+func piecesOf(text string, limit int) []Piece {
 	text = strings.TrimSpace(text)
-	if words(text) <= LongWords {
+	long, cap := LongWords, PieceWords
+	if limit > 0 {
+		long, cap = limit, limit
+	}
+	if words(text) <= long {
 		return []Piece{{Text: text}}
 	}
-	return pack(text, 0)
+	return pack(text, 0, cap)
 }
 
 // LanguagePieces is Pieces, also cut wherever whole sentences change
@@ -160,6 +170,12 @@ func Pieces(text string) []Piece {
 // Chinese sentence with English words is Chinese; one without letters
 // goes with the run before it), each run cut as Pieces cuts it.
 func LanguagePieces(text string) []Piece {
+	return languagePieces(text, 0)
+}
+
+// languagePieces is LanguagePieces with a piece word cap other than
+// PieceWords (limit <= 0: the default).
+func languagePieces(text string, limit int) []Piece {
 	text = strings.TrimSpace(text)
 	var runs []Piece
 	runCJK, runLetters := false, false
@@ -178,11 +194,11 @@ func LanguagePieces(text string) []Piece {
 		runCJK, runLetters = cjk, letters
 	}
 	if len(runs) <= 1 {
-		return Pieces(text)
+		return piecesOf(text, limit)
 	}
 	var out []Piece
 	for _, r := range runs {
-		ps := Pieces(r.Text)
+		ps := piecesOf(r.Text, limit)
 		ps[len(ps)-1].After = r.After
 		out = append(out, ps...)
 	}
@@ -202,9 +218,9 @@ func isCJK(r rune) bool {
 }
 
 // pack cuts text at the boundaries of level and below.
-func pack(text string, level int) []Piece {
+func pack(text string, level, cap int) []Piece {
 	total := words(text)
-	n := (total + PieceWords - 1) / PieceWords
+	n := (total + cap - 1) / cap
 	target := total / n
 	var out []Piece
 	var cur strings.Builder
@@ -218,19 +234,19 @@ func pack(text string, level int) []Piece {
 	}
 	for _, u := range units(text, level) {
 		un := words(u.Text)
-		if un > PieceWords {
+		if un > cap {
 			flush()
 			var sub []Piece
 			if level+1 < len(boundaries) {
-				sub = pack(u.Text, level+1)
+				sub = pack(u.Text, level+1, cap)
 			} else {
-				sub = hardCut(u.Text)
+				sub = hardCut(u.Text, cap)
 			}
 			sub[len(sub)-1].After = u.After
 			out = append(out, sub...)
 			continue
 		}
-		if size+un > PieceWords {
+		if size+un > cap {
 			flush()
 		}
 		if cur.Len() > 0 {
@@ -278,14 +294,14 @@ func units(text string, level int) []Piece {
 
 // hardCut cuts text into pieces of equal length, the last resort, never
 // inside a snippet's mark.
-func hardCut(text string) []Piece {
+func hardCut(text string, cap int) []Piece {
 	var at []int // the byte each rune starts at, and the end
 	for i := range text {
 		at = append(at, i)
 	}
 	runes := len(at)
 	at = append(at, len(text))
-	n := (runes + PieceWords - 1) / PieceWords
+	n := (runes + cap - 1) / cap
 	size := (runes + n - 1) / n
 	var out []Piece
 	for i := 0; i < runes; {

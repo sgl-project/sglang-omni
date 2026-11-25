@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -411,5 +412,37 @@ func TestCleanupProtocolFallback(t *testing.T) {
 				t.Fatalf("pasted %q", pasted)
 			}
 		})
+	}
+}
+
+// note (luojiaxuan): TestFallbackCleansInSmallerPieces: when the live
+// clean-up's request fails, the whole-text clean-up at Stop asks in
+// pieces of at most fallbackPieceLimit words (reverted: the default
+// PieceWords pieces, the first of them longer than fallbackPieceLimit).
+func TestFallbackCleansInSmallerPieces(t *testing.T) {
+	full := strings.Repeat("嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。", 8)
+	model := &fakeLLM{text: "清理。", err: errors.New("503"), failOn: 1}
+	_, r := newEarlyUnitHarnessRun(t, model, nil)
+	r.hearLive(string([]rune(full)[:33]))
+	waitLiveFor(t, r, "the live clean-up's request fails", func(lp *livePolish) bool { return lp.failed })
+	result, err := liveCleanUp(r, full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "清理。") {
+		t.Errorf("result %q, want the fallback's answers", result)
+	}
+	reqs := model.requests()
+	if len(reqs) < 4 {
+		t.Fatalf("%d requests, want the failed live one and several fallback ones", len(reqs))
+	}
+	for i, req := range reqs[1:] {
+		if n := utf8.RuneCountInString(inputOf(req)); n > fallbackPieceLimit {
+			t.Fatalf("fallback request %d cleans %d runes, over fallbackPieceLimit %d", i+1, n, fallbackPieceLimit)
+		}
+	}
+	def := compose.Pieces(full)
+	if utf8.RuneCountInString(def[0].Text) <= fallbackPieceLimit {
+		t.Fatalf("the fixture does not discriminate: first default piece %d runes", utf8.RuneCountInString(def[0].Text))
 	}
 }
