@@ -33,6 +33,23 @@ func TestActivate(t *testing.T) {
 	}
 }
 
+// TestFocusedWindowFrame: off macOS there is no focused window. On a Mac,
+// VOXTNEW_MAC=1 also checks that the Accessibility bindings load; permission
+// or a windowless front app may legitimately make the lookup unavailable.
+func TestFocusedWindowFrame(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		if _, ok := FocusedWindowFrame(); ok {
+			t.Error("found a focused window off macOS")
+		}
+		return
+	}
+	if os.Getenv("VOXTNEW_MAC") == "" {
+		t.Skip("set VOXTNEW_MAC=1 on a Mac")
+	}
+	frame, ok := FocusedWindowFrame()
+	t.Logf("focused window: frame %+v, available %v", frame, ok)
+}
+
 // TestSystemProxies: off macOS nothing; on a Mac (VOXTNEW_MAC=1) the
 // settings scutil --proxy shows (mac-air: 127.0.0.1:7897 for both).
 func TestSystemProxies(t *testing.T) {

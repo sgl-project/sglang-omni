@@ -16,8 +16,9 @@ Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	
 Answer card	L	TestAnswerCardMarkdown	none
 Answer card	L	TestCardThinkingLevel	none
 Answer card	L	TestRewriteNoCard	none
-Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position and several displays are checked by hand only
+Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position within a display and full-screen Space behavior are checked by hand only
 Recording overlay and live text	L	TestOverlayHidesWhileInserting	none
+Recording overlay and live text	L	TestOverlayDisplayPrefersFocusedWindow	none
 Shortcuts	L	TestStrictShortcuts	Real key events run only in the Mac script
 Shortcuts	L	TestTranscribeMouseButton	none
 Shortcuts	M	scripts/mac-hotkey-coexist.sh	none

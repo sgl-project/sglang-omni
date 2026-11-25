@@ -9,6 +9,7 @@ package main
 // the menus and the answer's stream pacing.
 
 import (
+	"log"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -27,12 +28,15 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		a.pill.live.id, a.pill.live.w = "", 0
 		a.pill.dragged.x, a.pill.dragged.y = 0, 0
 		if was {
+			log.Printf("pill: hide display=%v", a.pill.area)
 			a.pillFadeOut()
 		}
 		return
 	}
 	if !was {
-		a.pill.area = a.overlayArea()
+		area, display := a.overlayDisplay()
+		a.pill.area = area
+		log.Printf("pill: show %s", display)
 	}
 	width, height := a.pillFace(mode)
 	frame := a.pillFrame(width, height)
@@ -180,12 +184,12 @@ func (a *app) pillOverlaySize(mode overlayMode) (width, height int, exact bool) 
 }
 
 // pillAnchor is the pill window's frame before clamping and the user's
-// drag: beside the card's current frame — above a bottom-anchored card,
-// below a top-anchored one (adjacent never intersects it). The default
-// anchor when the card is not showing.
+// drag: beside a same-display card — above a bottom-anchored card, below a
+// top-anchored one (adjacent never intersects it). The default anchor when
+// the card is not showing or is on another display.
 func (a *app) pillAnchor(width, height int) mygo.Rectangle {
 	frame := layout.Frame(a.pill.area, a.prefs.Overlay, width, height)
-	if a.ov.shown && a.ov.mode == ovAnswer {
+	if a.ov.shown && a.ov.mode == ovAnswer && a.ov.area == a.pill.area {
 		if a.prefs.Overlay.Position == "top" {
 			frame.Y = a.ov.frame.Y + a.ov.frame.Height
 		} else {

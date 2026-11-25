@@ -34,8 +34,9 @@ github.com/sgl-project/sglang-omni/Voxt
 │   │                     Fake for tests); system audio is asked for through the helper    (leaf)
 │   ├── macx/             activating an app again before a paste (purego on darwin); the       (leaf)
 │   │                     recording's sounds (afplay, Voxt's presets and how long each is
-│   │                     heard); the system's web proxies (CFNetwork);
-│   │                     a process's memory (proc_pid_rusage)
+│   │                     heard); the system's web proxies (CFNetwork); the front app's
+│   │                     focused-window frame (Application Services); a process's memory
+│   │                     (proc_pid_rusage)
 │   ├── asr/              the shape of speech recognition: FileTranscriber, Diarizer, Streamer/Stream, error
 │   │                     kinds, WAV/PCM helpers, the remote endpoint policy and WebSocket dial
 │   │                     (the local models are internal/local's); its subpackages are the
