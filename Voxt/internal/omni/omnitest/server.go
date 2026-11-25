@@ -171,6 +171,9 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		language = "Chinese"
 	}
 	text := strings.ReplaceAll(o.Text, "{n}", strconv.Itoa(n))
+	if fields["prompt"] == "" && o.NoPromptText != "" {
+		text = o.NoPromptText
+	}
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}

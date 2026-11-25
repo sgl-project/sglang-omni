@@ -45,6 +45,7 @@ report	fix	symptom	level	check
 #4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
+#4416	#4418	MOSS meeting Finals ignore the personal dictionary's hotwords	L	TestMossTranscribeHotwords
 #4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
 #4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
 #4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
