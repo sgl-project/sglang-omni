@@ -263,6 +263,7 @@ func (a *app) boxAnswered() bool {
 func (a *app) boxKeep() {
 	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
 	target, dragged, front := a.box.target, a.box.dragged, a.box.front
+	ui.segmentText = nil // Segment IDs restart with the emptied input.
 	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)

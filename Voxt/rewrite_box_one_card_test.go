@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -154,6 +155,49 @@ func TestRewriteFollowUpTypedInTheCard(t *testing.T) {
 	a.boxCloseCard()
 	if a.box.open || a.answer.open {
 		t.Errorf("after Close: box open %v, answer open %v", a.box.open, a.answer.open)
+	}
+}
+
+// TestRewriteNativePasteAfterFollowUpKeepsOnlyNewInput: a completed request's
+// typed segments must not reappear when the next follow-up pastes a block.
+func TestRewriteNativePasteAfterFollowUpKeepsOnlyNewInput(t *testing.T) {
+	chat := &fakeChat{texts: []string{"First answer", "Second answer"}}
+	a := newBoxApp(t, boxScript(t), chat)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	long := "hello world\nsecond\nthird\nfourth"
+	paste := func(text string) {
+		tt.SetClipboardData(transfer.TextData(text))
+		tt.Command("paste")
+		frames(tt)
+	}
+	tt.Type("keep me")
+	paste(long)
+	tt.Type("after")
+	frames(tt)
+	a.pump("the first answer", func() bool { return a.answer.open && a.sess.State.Ended() })
+	requests := chat.requests()
+	if len(requests) != 1 || !strings.Contains(lastUserOf(requests[0]), "keep me\n"+long+"\nafter") {
+		t.Fatalf("the first request did not keep the typed and pasted input: %q", requests)
+	}
+
+	frames(tt)
+	paste("hello")
+	paste(strings.Repeat("x", (32<<20)+1))
+	if a.box.err == "" {
+		t.Fatal("the oversize paste was not rejected")
+	}
+	paste(long)
+	tt.Type("after native")
+	frames(tt)
+	a.boxSend()
+	a.pump("the follow-up answer", func() bool { return len(chat.requests()) == 2 && a.sess.State.Ended() })
+
+	requests = chat.requests()
+	want := "<instruction>\nhello\n" + long + "\nafter native\n</instruction>"
+	if got := lastUserOf(requests[1]); got != want {
+		t.Fatalf("the follow-up request %q, want %q", got, want)
 	}
 }
 
