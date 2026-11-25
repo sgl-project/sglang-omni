@@ -24,10 +24,12 @@ type TranscriptContext struct {
 	Speech string
 }
 
-// A correction request holds at most this many lines and runes of text.
+// A correction request holds at most this many lines and runes of text. A
+// whole meeting's transcript usually fits one request: every extra request
+// is another full round trip of queueing on the language model.
 const (
-	correctBatchLines = 30
-	correctBatchRunes = 3000
+	correctBatchLines = 250
+	correctBatchRunes = 20000
 )
 
 const correctionRequest = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].`

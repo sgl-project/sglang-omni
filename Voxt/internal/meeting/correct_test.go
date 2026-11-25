@@ -116,7 +116,7 @@ func TestCorrectSystemBlankStyleUsesDefault(t *testing.T) {
 // keeps its own prompt and the JSON correction contract stays intact.
 func TestCorrectTranscriptCustomStyle(t *testing.T) {
 	var segs []store.MeetingSegment
-	for i := range 35 {
+	for i := range 260 {
 		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, Text: "Box"})
 	}
 	m, _, chat := correctFixture(t, segs...)
@@ -170,10 +170,10 @@ func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 // Long transcripts go in several requests, each within its limits.
 func TestCorrectionBatches(t *testing.T) {
 	var segs []store.MeetingSegment
-	for i := range 70 {
+	for i := range 300 {
 		segs = append(segs, store.MeetingSegment{Idx: i, Text: strings.Repeat("字", 100)})
 	}
-	segs = append(segs, store.MeetingSegment{Idx: 70, Text: "  "})
+	segs = append(segs, store.MeetingSegment{Idx: 300, Text: "  "})
 	b := correctionBatches(segs)
 	n := 0
 	for _, batch := range b {
@@ -186,8 +186,20 @@ func TestCorrectionBatches(t *testing.T) {
 		}
 		n += len(batch)
 	}
-	if n != 70 || len(b) != 3 {
+	if n != 300 || len(b) != 2 {
 		t.Fatalf("%d lines in %d batches", n, len(b))
+	}
+}
+
+// A whole meeting's transcript fits one request: the proofread finishes
+// after one language-model round trip instead of several queued ones.
+func TestCorrectionBatchesMeetingFitsOneRequest(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := range 170 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Text: "The meeting goes over the plan."})
+	}
+	if b := correctionBatches(segs); len(b) != 1 {
+		t.Fatalf("a 170-line meeting became %d requests", len(b))
 	}
 }
 
