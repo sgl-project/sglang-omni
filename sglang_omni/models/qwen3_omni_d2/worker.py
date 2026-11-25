@@ -3,8 +3,11 @@
 
 import asyncio
 import base64
+import ctypes
 import json
 import logging
+import os
+import signal
 import sys
 from multiprocessing.connection import Connection
 
@@ -12,6 +15,7 @@ from d2_qwen.inference.runtime import Runtime
 from d2_qwen.inference.session import INPUT_FRAME_SAMPLES, D2LiveSession
 
 logger = logging.getLogger(__name__)
+PR_SET_PDEATHSIG = 1
 
 
 async def serve(connection: Connection, runtime: Runtime) -> None:
@@ -83,7 +87,19 @@ async def serve(connection: Connection, runtime: Runtime) -> None:
 
 
 if __name__ == "__main__":
-    _, socket_descriptor, model_path, device, kv_budget, seed = sys.argv
+    _, socket_descriptor, stage_pid, model_path, device, kv_budget, seed = sys.argv
+    if sys.platform == "linux":
+        # note (cuzimi): A cold CUDA capture cannot poll the socket after the stage watchdog kills its owner.
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0) != 0:
+            error_number = ctypes.get_errno()
+            raise OSError(error_number, os.strerror(error_number))
+        elif os.getppid() != int(stage_pid):
+            raise SystemExit("D2 stage exited during worker startup")
+        else:
+            pass
+    else:
+        pass
     with Connection(int(socket_descriptor)) as stage_connection:
         asyncio.run(
             serve(

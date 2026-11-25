@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Session-scoped access to the D2 GPU worker in its own Python environment."""
 
+import os
 import socket
 import subprocess
 import threading
@@ -48,6 +49,7 @@ class D2Runtime:
                     "-I",
                     str(Path(__file__).with_name("worker.py")),
                     str(worker_socket.fileno()),
+                    str(os.getpid()),
                     model_path,
                     device,
                     str(kv_budget),
