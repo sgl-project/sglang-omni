@@ -63,6 +63,7 @@
       }
     ],
     "storage": {
+      "ImportKeptName": "voxtnew.db.before-import",
       "data_directory": "testdata/fixture-home/data",
       "data_path": "~/data",
       "recordings_path": "~/recordings",
