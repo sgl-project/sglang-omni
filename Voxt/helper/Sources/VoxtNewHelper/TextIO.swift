@@ -208,6 +208,9 @@ final class TextIO: @unchecked Sendable {
         return r
     }
 
+    /// How long the clipboard stays still before the ⌘C's result is read.
+    static let copySettleMs = 50.0
+
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
     static func copySelection(timeoutMs: Double, modifierWaitMs: Double, world: CopyWorld = .live) async -> (text: String?, image: Data?, note: String) {
         // Keys the user still holds (Control of a Control+C shortcut) turn
@@ -241,7 +244,23 @@ final class TextIO: @unchecked Sendable {
             await world.sleep(10_000_000)
         }
         guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
+        // Some editors write a copied selection in more than one step (the
+        // text, then more types a moment later): read once the clipboard
+        // has been still for copySettleMs, so the restore comes after the
+        // last write and the user's clipboard ends as it was (VX-141).
+        let polls = Int(copySettleMs / 10)
+        var last = await world.changeCount(), still = 0
+        for _ in 0..<Int((timeoutMs + copySettleMs) / 10) where still < polls {
+            await world.sleep(10_000_000)
+            let c = await world.changeCount()
+            if c == last { still += 1 } else { last = c; still = 0 }
+        }
         let (text, types, data, file) = await world.readAndRestore(snap)
+        // A write that still lands just after the restore is the app's
+        // copy, not the user's: put the user's clipboard back once more.
+        let ours = await world.changeCount()
+        await world.sleep(UInt64(copySettleMs) * 1_000_000)
+        if await world.changeCount() != ours { await world.restore(snap) }
         let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
         let image = selected.flatMap { ScreenWindow.jpeg($0) }
         return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
@@ -519,6 +538,8 @@ struct CopyWorld: Sendable {
     var heldFlags: @Sendable () -> CGEventFlags
     var postCopy: @Sendable () -> Void
     var readAndRestore: @Sendable ([[NSPasteboard.PasteboardType: Data]]) async -> (String?, [String], [String: Data], URL?)
+    /// Puts the snapshot back again (a late write by the app).
+    var restore: @Sendable ([[NSPasteboard.PasteboardType: Data]]) async -> Void = { _ in }
     var now: @Sendable () -> Double
     var sleep: @Sendable (UInt64) async -> Void
 
@@ -540,6 +561,7 @@ struct CopyWorld: Sendable {
                 return (text, types, data, file)
             }
         },
+        restore: { snap in await onMain { Clipboard.restore(NSPasteboard.general, snap) } },
         now: { monotonicMs() },
         sleep: { ns in try? await Task.sleep(nanoseconds: ns) }
     )

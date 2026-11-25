@@ -273,7 +273,9 @@ func (r *run) main() {
 				// picture that will not be sent is never taken.
 				r.shootWindow()
 			}
-			selDone <- r.readSelection()
+			sel := r.readSelection()
+			r.previewClip()
+			selDone <- sel
 		}()
 	}
 

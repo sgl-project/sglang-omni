@@ -60,8 +60,14 @@ func (r *run) readClipboardImage() {
 		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
 	}
 	r.clip = jpeg
-	if jpeg != nil {
-		r.previewImage("clipboard", jpeg)
+}
+
+// previewClip shows the clipboard's picture in the box once it is known
+// to go with the request: a selection drops it (readSelection), and the
+// box never shows a picture that will not be sent (VX-141).
+func (r *run) previewClip() {
+	if r.clip != nil {
+		r.previewImage("clipboard", r.clip)
 	}
 }
 

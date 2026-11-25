@@ -312,8 +312,9 @@ func (a *app) boxShortcutSend() {
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
-// it finishes the recording and the session sends; a newly captured window
-// preview waits for one more confirmation. After a send failed, it sends
+// it finishes the recording and the session sends, the window picture
+// with it; a resend's new window picture waits for one more
+// confirmation. After a send failed, it sends
 // the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
@@ -328,7 +329,11 @@ func (a *app) boxSend() {
 	a.boxShare.clearError() // a failed conversion is confirmed by this send
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
+			// The stop is the send (VX-141): the window picture taken
+			// next goes without waiting for another Enter.
+			a.boxShare.approveReview()
 			a.stopSession()
+			return
 		}
 		if a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
 			a.boxShare.approveReview()

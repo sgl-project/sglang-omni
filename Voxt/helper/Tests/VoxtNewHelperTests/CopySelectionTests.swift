@@ -51,7 +51,13 @@ final class CopySelectionTests: XCTestCase {
                     self.readCalls += 1
                     self.restoredSnap = snap
                     let text = self.items.first?[.string].flatMap { String(data: $0, encoding: .utf8) }
+                    self.items = snap
+                    self.changes += 1
                     return (text, ["public.utf8-plain-text"], [:], nil)
+                },
+                restore: { snap in
+                    self.items = snap
+                    self.changes += 1
                 },
                 now: { self.now },
                 sleep: { ns in
@@ -122,5 +128,27 @@ final class CopySelectionTests: XCTestCase {
         XCTAssertEqual(r.note, "copy: skipped held=control")
         XCTAssertEqual(f.now, 100, "the wait is modifierWaitMs, no more")
         XCTAssertEqual(f.readCalls, 0, "the clipboard is never touched")
+    }
+
+    /// VX-141: the app writes the copied selection in two steps, the text
+    /// and, 20 ms later, a picture of it. The user's clipboard ends as it
+    /// was, not as the app's picture.
+    func testLateSecondWriteLeavesTheUserClipboard() async {
+        let f = Fake()
+        f.flags = []
+        f.copyText = "selected text"
+        var landed = false
+        let late: (Fake) -> Void = { f in
+            guard !landed, let at = f.nowAtPost, f.now >= at + 20 else { return }
+            landed = true
+            f.items[0][.png] = Data([0x89])
+            f.changes += 1
+        }
+        f.onSleep = { _, f in late(f) }
+        let r = await TextIO.copySelection(timeoutMs: 300, modifierWaitMs: 800, world: f.world())
+        f.now += 100
+        late(f) // the app's second write, if it had not landed yet
+        XCTAssertEqual(r.text, "selected text", r.note)
+        XCTAssertEqual(f.items, [[.string: Data("user text".utf8)]], "the user's clipboard changed")
     }
 }

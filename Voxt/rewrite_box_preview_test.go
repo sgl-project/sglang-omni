@@ -247,6 +247,23 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 	}
 }
 
+// VX-141: the Rewrite shortcut's stop sends. The window picture taken for
+// the request goes with it, without waiting for another Enter.
+func TestBoxShortcutStopSendsWithoutReview(t *testing.T) {
+	chat := &fakeChat{}
+	chat.set("Shorter.", 0)
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
+	a.postQueue(a.boxShortcutSend)
+	a.pump("the request, with no second Enter", func() bool { return len(chat.requests()) > 0 })
+}
+
 func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
 	set, keys, _ := fileSetup(t, "make it shorter", chat)
