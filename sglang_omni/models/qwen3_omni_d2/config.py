@@ -4,14 +4,19 @@
 import sys
 from typing import ClassVar
 
-from pydantic import Field, PositiveInt
+from pydantic import Field
 
 from sglang_omni.config.schema import FactoryArgs, PipelineConfig, StageConfig
+
+INPUT_SAMPLE_RATE_HZ = 16_000
+OUTPUT_SAMPLE_RATE_HZ = 24_000
+NATIVE_FRAME_MS = 80
+MAX_SESSIONS = 1
 
 
 class D2FactoryArgs(FactoryArgs):
     runtime_python: str = Field(default_factory=lambda: sys.executable, min_length=1)
-    kv_budget: PositiveInt = 2048
+    kv_budget: int = Field(default=2048, ge=128)
     seed: int = 1337
 
 
@@ -25,6 +30,7 @@ def duplex_stages() -> list[StageConfig]:
             name="duplex",
             process="duplex",
             gpu=0,
+            allow_child_processes=True,
             factory_path="sglang_omni.models.qwen3_omni_d2.stages.create_scheduler",
             terminal=True,
         )
