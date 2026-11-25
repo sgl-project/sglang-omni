@@ -509,6 +509,13 @@ target_compile_options(moss_preview_timing_test PRIVATE -Wall -Wextra)
 set_target_properties(moss_preview_timing_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+# The startup warmup must not leak state into later streams.
+add_executable(silero_vad_warmup_test EXCLUDE_FROM_ALL tests/silero_vad_warmup_test.cpp)
+target_link_libraries(silero_vad_warmup_test PRIVATE silero_vad)
+target_compile_options(silero_vad_warmup_test PRIVATE -Wall -Wextra)
+set_target_properties(silero_vad_warmup_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)
