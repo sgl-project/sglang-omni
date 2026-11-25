@@ -10,8 +10,8 @@ namespace haru {
 
 // Reads the WAV bytes, resamples to sample_rate, cuts leading and trailing
 // audio quieter than -45 dBFS and keeps the last max_seconds.
-std::vector<float> PrepareReference(std::string_view wav_bytes,
-                                    int sample_rate = 24000,
+// Throws std::invalid_argument for a file that is not such a WAV.
+std::vector<float> PrepareReference(std::string_view wav_bytes, int sample_rate,
                                     int max_seconds = 180);
 
 } // namespace haru

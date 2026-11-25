@@ -7,8 +7,8 @@
 #include <stdexcept>
 #include <string>
 
-#include "civetweb.h"
 #include "common/audio.h"
+#include "common/http.h"
 #include "common/realtime_connection.h"
 #include "common/text.h"
 #include "haru/haru_audio.h"
@@ -59,6 +59,47 @@ double ResampleKernel(double t) {
   return sinc * window;
 }
 
+// config with a session.update's sglang.sampling applied. Throws
+// std::exception naming the value that is out of range.
+DuplexConfig WithSampling(DuplexConfig config, const nlohmann::json &sampling) {
+  if (sampling.contains("temperature")) {
+    const double value = sampling.at("temperature").get<double>();
+    if (!(value >= 0.0 && value <= 2.0)) {
+      throw std::invalid_argument("temperature must be in [0, 2]");
+    }
+    config.temperature = static_cast<float>(value);
+  }
+  if (sampling.contains("top_k")) {
+    const long long value = sampling.at("top_k").get<long long>();
+    if (value < 1 || value > static_cast<long long>(INT32_MAX)) {
+      throw std::invalid_argument("top_k must be >= 1");
+    }
+    config.top_k = static_cast<int>(value);
+  }
+  if (sampling.contains("top_p")) {
+    const double value = sampling.at("top_p").get<double>();
+    if (!(value > 0.0 && value <= 1.0)) {
+      throw std::invalid_argument("top_p must be in (0, 1]");
+    }
+    config.top_p = static_cast<float>(value);
+  }
+  if (sampling.contains("guidance_scale")) {
+    const double value = sampling.at("guidance_scale").get<double>();
+    if (!(value >= 1.0 && value <= 2.0)) {
+      throw std::invalid_argument("guidance_scale must be in [1, 2]");
+    }
+    config.guidance_scale = static_cast<float>(value);
+  }
+  if (sampling.contains("seed")) {
+    const long long value = sampling.at("seed").get<long long>();
+    if (value < 0 || value > static_cast<long long>(INT32_MAX)) {
+      throw std::invalid_argument("seed must be in [0, 2147483647]");
+    }
+    config.seed = static_cast<int>(value);
+  }
+  return config;
+}
+
 } // namespace
 
 nlohmann::json Capabilities(int input_sample_rate, int output_sample_rate) {
@@ -97,20 +138,21 @@ StreamResampler::StreamResampler(int input_rate, int output_rate)
     : input_rate_(input_rate), output_rate_(output_rate) {
   // The 3:2 ratio visits three sub-sample positions, so the kernel is evaluated
   // once per phase instead of once per output sample.
+  double sum = 0.0;
   for (int phase = 0; phase < 3; ++phase) {
     const double fraction = static_cast<double>(phase) / 3.0;
-    std::vector<double> &taps = phases_[phase].taps;
-    taps.assign(2 * kResampleHalfTaps + 1, 0.0);
-    double sum = 0.0;
     for (int offset = -kResampleHalfTaps; offset <= kResampleHalfTaps;
          ++offset) {
       const double weight =
           ResampleKernel(fraction - static_cast<double>(offset));
-      taps[static_cast<size_t>(offset + kResampleHalfTaps)] = weight;
+      phase_taps_[phase].push_back(weight);
       sum += weight;
     }
+  }
+  // One gain for the whole filter, as scipy.signal.firwin normalizes it.
+  for (std::vector<double> &taps : phase_taps_) {
     for (double &weight : taps) {
-      weight /= sum;
+      weight *= 3.0 / sum;
     }
   }
 }
@@ -147,7 +189,7 @@ std::vector<float> StreamResampler::Convert() {
     if (last >= origin_ + static_cast<int64_t>(buffer_.size())) {
       break;
     }
-    const std::vector<double> &taps = phases_[phase].taps;
+    const std::vector<double> &taps = phase_taps_[phase];
     double value = 0.0;
     for (int offset = -kResampleHalfTaps; offset <= kResampleHalfTaps;
          ++offset) {
@@ -175,7 +217,7 @@ std::vector<float> StreamResampler::Convert() {
 }
 
 HaruRealtimeSession::HaruRealtimeSession(
-    HaruModel &model, const omni_common::Tokenizer &tokenizer,
+    const HaruModel &model, const omni_common::Tokenizer &tokenizer,
     const DuplexConfig &config, omni_server::TranscriptionWorker &worker,
     std::string system_prompt, std::vector<float> reference,
     int input_sample_rate, Sender sender)
@@ -222,6 +264,7 @@ void HaruRealtimeSession::StepFrame(const std::vector<float> &frame,
                                     bool is_padding,
                                     std::vector<Frame> &frames) {
   frames.push_back(session_->Step(frame));
+  finished_ = frames.back().done;
   ++stepped_frames_;
   if (!is_padding && stepped_frames_ % kNativeUnitFrames == 0) {
     pending_units_.push_back(static_cast<double>(kNativeUnitMs));
@@ -247,9 +290,6 @@ void HaruRealtimeSession::EmitPendingUnits() {
 }
 
 void HaruRealtimeSession::EmitFrame(const Frame &frame) {
-  if (finished_) {
-    return;
-  }
   if (!response_open_) {
     response_open_ = true;
     SendEvent("response.created",
@@ -264,16 +304,9 @@ void HaruRealtimeSession::EmitFrame(const Frame &frame) {
       {"item_id", "item_" + std::to_string(response_index_)},
       {"output_index", 0},
       {"content_index", 0}};
-  const std::string pcm = omni_common::Pcm16Bytes(frame.audio);
-  std::string encoded(4 * ((pcm.size() + 2) / 3) + 1, '\0');
-  size_t encoded_length = encoded.size();
-  mg_base64_encode(reinterpret_cast<const unsigned char *>(pcm.data()),
-                   static_cast<int>(pcm.size()), encoded.data(),
-                   &encoded_length);
-  // civetweb counts the terminating NUL it writes.
-  encoded.resize(encoded_length - 1);
   nlohmann::json audio_event = position;
-  audio_event["delta"] = encoded;
+  audio_event["delta"] =
+      omni_server::EncodeBase64(omni_common::Pcm16Bytes(frame.audio));
   SendEvent("response.output_audio.delta", audio_event);
   if (!frame.text.empty()) {
     transcript_ += frame.text;
@@ -282,7 +315,6 @@ void HaruRealtimeSession::EmitFrame(const Frame &frame) {
     SendEvent("response.output_audio_transcript.delta", text_event);
   }
   if (frame.done) {
-    finished_ = true;
     FinishResponse("incomplete", "max_output_tokens");
   }
 }
@@ -322,100 +354,59 @@ void HaruRealtimeSession::FinishResponse(const std::string &status,
   transcript_.clear();
 }
 
-void HaruRealtimeSession::ApplySampling(const nlohmann::json &sampling) {
-  if (sampling.contains("temperature")) {
-    const double value = sampling.at("temperature").get<double>();
-    if (!(value >= 0.0 && value <= 2.0)) {
-      throw std::invalid_argument("temperature must be in [0, 2]");
-    }
-    config_.temperature = static_cast<float>(value);
-  }
-  if (sampling.contains("top_k")) {
-    const long long value = sampling.at("top_k").get<long long>();
-    if (value < 1 || value > static_cast<long long>(INT32_MAX)) {
-      throw std::invalid_argument("top_k must be >= 1");
-    }
-    config_.top_k = static_cast<int>(value);
-  }
-  if (sampling.contains("top_p")) {
-    const double value = sampling.at("top_p").get<double>();
-    if (!(value > 0.0 && value <= 1.0)) {
-      throw std::invalid_argument("top_p must be in (0, 1]");
-    }
-    config_.top_p = static_cast<float>(value);
-  }
-  if (sampling.contains("guidance_scale")) {
-    const double value = sampling.at("guidance_scale").get<double>();
-    if (!(value >= 1.0 && value <= 2.0)) {
-      throw std::invalid_argument("guidance_scale must be in [1, 2]");
-    }
-    config_.guidance_scale = static_cast<float>(value);
-  }
-  if (sampling.contains("seed")) {
-    const long long value = sampling.at("seed").get<long long>();
-    if (value < 0 || value > static_cast<long long>(INT32_MAX)) {
-      throw std::invalid_argument("seed must be in [0, 2147483647]");
-    }
-    config_.seed = static_cast<int>(value);
-  }
-  if (sampling.contains("speak_first")) {
-    // A UI encodes this flag as 0/1, so accept both forms.
-    const nlohmann::json value = sampling.at("speak_first");
-    if (value.is_boolean()) {
-      config_.speak_first = value.get<bool>();
-    } else if (value.is_number_integer()) {
-      config_.speak_first = value.get<int>() != 0;
-    } else {
-      throw std::invalid_argument("speak_first must be a boolean");
-    }
-  }
-}
-
 bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
   const std::string type = message.at("type").get<std::string>();
   const std::string client_event_id = message.value("event_id", std::string{});
   if (type == "session.update") {
     if (started_) {
       SendError("invalid_request_error", "invalid_state",
-                "session.update is only allowed before the first append");
+                "session.update is accepted once per session");
       return true;
     }
-    const auto &session = message.at("session");
-    const auto &audio = session.value("audio", nlohmann::json::object());
-    if (audio.contains("input") && audio.at("input").contains("format")) {
-      const auto &format = audio.at("input").at("format");
-      const std::string format_type = format.value("type", "audio/pcm");
-      const int format_rate = format.value("rate", input_sample_rate_);
-      if (format_type != "audio/pcm" || format_rate != input_sample_rate_) {
-        SendError("invalid_request_error", "invalid_input_audio_format",
-                  "this process accepts audio/pcm at " +
-                      std::to_string(input_sample_rate_) + " Hz");
-        return true;
+    std::string system_prompt = system_prompt_;
+    std::vector<float> reference = reference_;
+    DuplexConfig config = config_;
+    const nlohmann::json input_format = {{"type", "audio/pcm"},
+                                         {"rate", input_sample_rate_}};
+    const char *error_code = "invalid_session";
+    try {
+      const nlohmann::json session = message.at("session");
+      system_prompt = session.value("instructions", system_prompt);
+      const nlohmann::json sglang =
+          session.value("sglang", nlohmann::json::object());
+      error_code = "invalid_input_audio_format";
+      const nlohmann::json requested_format =
+          session.value(nlohmann::json::json_pointer("/audio/input/format"),
+                        nlohmann::json());
+      if (!requested_format.is_null() && requested_format != input_format) {
+        throw std::invalid_argument("this server takes audio/pcm at " +
+                                    std::to_string(input_sample_rate_) + " Hz");
       }
-    }
-    if (session.contains("instructions")) {
-      system_prompt_ = session.at("instructions").get<std::string>();
-    }
-    const auto &sglang = session.value("sglang", nlohmann::json::object());
-    if (sglang.contains("reference_audio")) {
-      const auto &ref = sglang.at("reference_audio");
-      if (ref.value("media_type", "") == "audio/wav" && ref.contains("data")) {
-        const auto bytes =
-            omni_common::DecodeBase64(ref.at("data").get<std::string>());
-        if (bytes) {
-          const std::string wav(bytes->begin(), bytes->end());
-          reference_ = PrepareReference(wav);
+      error_code = "invalid_reference_audio";
+      if (sglang.contains("reference_audio")) {
+        const nlohmann::json &reference_audio = sglang.at("reference_audio");
+        const auto wav_bytes = omni_common::DecodeBase64(
+            reference_audio.at("data").get<std::string>());
+        if (reference_audio.at("media_type") != "audio/wav" ||
+            !wav_bytes.has_value()) {
+          throw std::invalid_argument(
+              "reference_audio must be base64 audio/wav");
         }
+        reference =
+            PrepareReference(std::string(wav_bytes->begin(), wav_bytes->end()),
+                             model_sample_rate_);
       }
+      error_code = "invalid_sampling";
+      config.speak_first = sglang.value("speak_first", config.speak_first);
+      config = WithSampling(config,
+                            sglang.value("sampling", nlohmann::json::object()));
+    } catch (const std::exception &error) {
+      SendError("invalid_request_error", error_code, error.what());
+      return true;
     }
-    if (sglang.contains("sampling")) {
-      try {
-        ApplySampling(sglang.at("sampling"));
-      } catch (const std::exception &error) {
-        SendError("invalid_request_error", "invalid_sampling", error.what());
-        return true;
-      }
-    }
+    system_prompt_ = std::move(system_prompt);
+    reference_ = std::move(reference);
+    config_ = config;
     // Start() runs before session.updated so the first append is served
     // without waiting for the prompt prefill.
     RunOnWorker([&] {
@@ -424,8 +415,6 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
     });
     const nlohmann::json capabilities =
         Capabilities(input_sample_rate_, model_sample_rate_);
-    const nlohmann::json input_format = {{"type", "audio/pcm"},
-                                         {"rate", input_sample_rate_}};
     const nlohmann::json output_format = {{"type", "audio/pcm"},
                                           {"rate", model_sample_rate_}};
     SendEvent("session.updated", {{"client_event_id", client_event_id},
@@ -454,8 +443,13 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
                 "input_audio_buffer.append after sglang.input_audio.end");
       return true;
     }
+    if (finished_) {
+      SendError("invalid_request_error", "invalid_state",
+                "the session reached its frame limit");
+      return true;
+    }
     const std::optional<std::vector<float>> samples =
-        AppendedSamples(message.at("audio"));
+        AppendedSamples(message.value("audio", nlohmann::json()));
     if (!samples.has_value()) {
       return true;
     }
@@ -476,7 +470,8 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
       }
       const std::vector<float> resampled = resampler_.Process(*samples);
       pending_.insert(pending_.end(), resampled.begin(), resampled.end());
-      while (pending_.size() >= static_cast<size_t>(frame_samples_)) {
+      while (!finished_ &&
+             pending_.size() >= static_cast<size_t>(frame_samples_)) {
         std::vector<float> frame(pending_.begin(),
                                  pending_.begin() + frame_samples_);
         pending_.erase(pending_.begin(), pending_.begin() + frame_samples_);
@@ -504,7 +499,7 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
         }
         const std::vector<float> tail = resampler_.Flush();
         pending_.insert(pending_.end(), tail.begin(), tail.end());
-        while (!pending_.empty()) {
+        while (!finished_ && !pending_.empty()) {
           std::vector<float> frame(
               pending_.begin(),
               pending_.begin() +
@@ -516,13 +511,16 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
           frame.resize(frame_samples_, 0.0f);
           StepFrame(frame, is_padding, frames);
         }
-        while (stepped_frames_ % kNativeUnitFrames != 0) {
+        while (!finished_ && stepped_frames_ % kNativeUnitFrames != 0) {
           StepFrame(std::vector<float>(frame_samples_, 0.0f), true, frames);
         }
         // The last unit may cover less than 400 ms of real input.
-        const double partial_ms =
-            AcceptedEndMs() - static_cast<double>(unit_count_) * kNativeUnitMs;
-        if (partial_ms > 0.0) {
+        const double completed_ms =
+            static_cast<double>(unit_count_ +
+                                static_cast<int64_t>(pending_units_.size())) *
+            kNativeUnitMs;
+        const double partial_ms = AcceptedEndMs() - completed_ms;
+        if (!finished_ && partial_ms > 0.0) {
           pending_units_.push_back(partial_ms);
         }
       });
@@ -531,10 +529,13 @@ bool HaruRealtimeSession::Handle(const nlohmann::json &message) {
       }
       EmitPendingUnits();
       FinishResponse("completed", "stop");
+      // Input is left over only when the session reached its frame limit.
+      const double discarded_ms =
+          static_cast<double>(pending_.size()) * 1000.0 / model_sample_rate_;
       SendEvent("sglang.input_audio.drained",
                 {{"accepted_end_ms", AcceptedEndMs()},
-                 {"consumed_ms", AcceptedEndMs()},
-                 {"discarded_ms", 0.0},
+                 {"consumed_ms", AcceptedEndMs() - discarded_ms},
+                 {"discarded_ms", discarded_ms},
                  {"padding_ms", PaddingMs()},
                  {"client_event_id", client_event_id}});
     }
