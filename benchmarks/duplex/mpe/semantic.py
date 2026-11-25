@@ -424,6 +424,7 @@ def validate_transcribed_against_tasks(
     expected_asr_model: str | None = None,
     expected_asr_endpoint_sha256: str | None = None,
     allowed_unselected_task_keys: frozenset[str] | None = None,
+    allow_partial: bool = False,
 ) -> dict[str, dict[str, JsonValue]]:
     """Ensure cached ASR records match current scenario contexts, gold answers, and segments."""
     indexed_expected = index_semantic_tasks(expected_tasks, require_hypothesis=False)
@@ -432,7 +433,7 @@ def validate_transcribed_against_tasks(
     )
     missing_keys = set(indexed_expected) - set(indexed_transcribed)
     extra_keys = set(indexed_transcribed) - set(indexed_expected)
-    if missing_keys:
+    if missing_keys and not allow_partial:
         raise ValueError(
             "Cached transcribed.json task keys do not match current scenario tasks"
         )
@@ -451,7 +452,10 @@ def validate_transcribed_against_tasks(
         pass
     selected_transcribed: dict[str, dict[str, JsonValue]] = {}
     for task_key, expected_task in indexed_expected.items():
-        cached_task = indexed_transcribed[task_key]
+        if task_key not in indexed_transcribed:
+            continue
+        else:
+            cached_task = indexed_transcribed[task_key]
         normalized_expected = json.loads(json.dumps(expected_task))
         for field_name, field_value in normalized_expected.items():
             if cached_task.get(field_name) != field_value:
