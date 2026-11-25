@@ -50,6 +50,18 @@ python -m benchmarks.eval.benchmark_duplex \
 
 When testing another D2 release, use the matching replay profile, for example `qwen3-omni-d2-320ms` with the `qwen-320ms` checkpoint.
 
+## Reference comparison
+
+On one RTX PRO 6000 Blackwell, a question asking for the sum of two and two produced the transcript “4” in the 80 ms release with seed 1337. The 160,166 input samples included trailing silence. Omni streamed 125 of 126 frames before input EOS, and all 241,920 output samples matched the official runtime byte for byte. A second session on the same server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). User speech resumed during the smartphone answer, D2 emitted an interrupt at 9.92 s on the media timeline, and its next reply discussed smartwatches.
+
+To compare your own recording, stop the Omni server to release its GPU, then run the reference with the same input, revision, seed and trailing silence. It writes the waveform and a JSON file of per-frame events next to it.
+
+```bash
+.venv-d2/bin/d2-qwen infer --model penguinfish1688/dialogue-to-duplex \
+  --revision "$D2_REV" --seed 1337 --kv-budget 2048 --tail-seconds 0 \
+  --input question-with-silence.wav --output d2-reference.wav
+```
+
 ## Session limits
 
 The stage owns one model and one fixed KV allocation. Closing or disconnecting releases the conversation for the next client. `--duplex.factory.kv_budget` defaults to 2,048 Thinker tokens, including the system prompt. A full cache ends the session with `context_exhausted`. `--duplex.factory.seed` defaults to 1337 and resets when each session opens. The D2 checkpoint fixes the system prompt and voice. Its interruption decision is driven by incoming audio.
