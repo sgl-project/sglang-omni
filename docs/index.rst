@@ -188,7 +188,6 @@ Community & Resources
    :caption: Cookbook
 
    cookbook/companies/qwen.md
-   cookbook/qwen3_omni_d2.md
    cookbook/companies/openmoss.md
    cookbook/companies/openai.md
    cookbook/companies/nvidia.md
