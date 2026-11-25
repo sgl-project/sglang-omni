@@ -64,70 +64,46 @@ func sentences(s string) []string {
 	return out
 }
 
-// cleanedSpan is s from its first to its last sentence of the cleaned
-// text: a sentence whose folded bigrams mostly occur in the folded
-// input. Short connectors (嗯, OK) next to such a sentence are part of
-// it. ok is false when no sentence is the cleaned text: a wholesale
-// rewrite (a custom prompt's translation, say), an input too short to
-// tell its material from the model's words, or a stream that has not
-// reached the final text yet — the caller then keeps the text as it is.
+// cleanedSpan is s from the first sentence of the cleaned text on: a
+// sentence whose folded bigrams mostly occur in the folded input, with
+// short connectors (嗯, OK) just before it included. The deliberation a
+// noncompliant model writes comes before the final text, so only what
+// precedes that sentence is dropped; what follows it stays, since a
+// custom prompt may legitimately expand the dictation and a foreign
+// tail cannot be told from that expansion. ok is false when no sentence
+// is the cleaned text: a wholesale rewrite (a custom prompt's
+// translation, say), an input too short to tell its material from the
+// model's words, or a stream that has not reached the final text yet —
+// the caller then keeps the text as it is.
 // shortcut: deliberation quoting a whole input sentence anchors that
-// sentence too, and a short aside below ballooned stays; a model that
-// wraps its deliberation around near-verbatim quotes still leaks.
+// sentence too; a tag-less tail after the cleaned text (I removed…)
+// stays, as does any aside when the answer did not balloon.
 func cleanedSpan(s, input string) (string, bool) {
 	in := folded(input)
 	if len([]rune(in)) < 8 {
 		return "", false
 	}
 	segs := sentences(s)
-	first, last := -1, -1
 	for i, seg := range segs {
-		if f := folded(seg); len([]rune(f)) >= 4 && inputShare(f, in) >= 0.5 {
-			if first < 0 {
-				first = i
+		f := folded(seg)
+		if len([]rune(f)) < 4 {
+			continue
+		}
+		// An unfinished sentence anchors at a higher share: its share
+		// still moves as it grows — a quoted fragment or a coincidental
+		// pair reads as a half before the rest of the words dilute it.
+		bar := 0.5
+		if !terminated(seg) {
+			bar = 0.65
+		}
+		if inputShare(f, in) >= bar {
+			for i > 0 && len([]rune(folded(segs[i-1]))) < 4 {
+				i--
 			}
-			last = i
+			return strings.TrimSpace(strings.Join(segs[i:], "")), true
 		}
 	}
-	if first < 0 {
-		return "", false
-	}
-	for first > 0 && len([]rune(folded(segs[first-1]))) < 4 {
-		first--
-	}
-	for last+1 < len(segs) && len([]rune(folded(segs[last+1]))) < 4 {
-		last++
-	}
-	return strings.TrimSpace(strings.Join(segs[first:last+1], "")), true
-}
-
-// ballooned reports whether an answer is far longer than a clean-up of
-// input can produce: the sign that the model added its deliberation.
-func ballooned(s, input string) bool {
-	out, in := len([]rune(folded(s))), len([]rune(folded(input)))
-	return out > 80 && out > in*3/2+24
-}
-
-// deliberating reports whether a streaming tag-less answer has shown
-// itself to be the model's deliberation rather than the cleaned text
-// (#4086): a sentence of clearly foreign material (eight or more folded
-// runes, under a quarter of them the input's) that is complete and
-// followed by more text, or still growing past sixteen runes. The bar
-// is lower than cleanedSpan's, so prose that merely mentions the
-// input's words still shows. Until a sentence shows itself foreign the
-// stream shows as it is: a deliberation's first sentence can stream
-// into the draft before a second one reveals it, and CleanOutput's
-// trimmed result replaces it.
-func deliberating(s, in string) bool {
-	segs := sentences(s)
-	for i, seg := range segs {
-		if f := folded(seg); len([]rune(f)) >= 8 && inputShare(f, in) < 0.25 {
-			if i+1 < len(segs) || len([]rune(f)) >= 16 && !terminated(seg) {
-				return true
-			}
-		}
-	}
-	return false
+	return "", false
 }
 
 // terminated reports whether a sentence piece ends on a sentence end.
@@ -137,4 +113,26 @@ func terminated(seg string) bool {
 		return true
 	}
 	return strings.ContainsRune("。！？!?.", rs[len(rs)-1])
+}
+
+// deliberating reports whether a streaming tag-less answer has a
+// finished sentence of clearly foreign material: the model's
+// deliberation about its edits, which the draft hides (#4086). A
+// sentence still being typed passes through as it is — it may be the
+// cleaned text's start, and the draft corrects when the sentence
+// completes and shows itself foreign.
+func deliberating(s, in string) bool {
+	for _, seg := range sentences(s) {
+		if f := folded(seg); terminated(seg) && len([]rune(f)) >= 8 && inputShare(f, in) < 0.25 {
+			return true
+		}
+	}
+	return false
+}
+
+// ballooned reports whether an answer is far longer than a clean-up of
+// input can produce: the sign that the model added its deliberation.
+func ballooned(s, input string) bool {
+	out, in := len([]rune(folded(s))), len([]rune(folded(input)))
+	return out > 80 && out > in*3/2+24
 }

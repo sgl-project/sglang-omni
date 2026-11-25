@@ -335,16 +335,22 @@ func PartialOutput(s, input string) string {
 	if i < 0 {
 		// No opening tag came: a stream ending in the opening tag's
 		// start holds back — the tag may complete, and the commentary
-		// before it then goes. Without the tags at all, the draft shows
-		// the cleaned text's sentences (cleanedSpan) and hides the
-		// model's deliberation once it shows as such (deliberating,
-		// #4086); anything else — an input too short to tell, a
-		// wholesale rewrite — shows as it is, as CleanOutput keeps it.
+		// before it then goes. Without the tags at all, the draft is
+		// what CleanOutput makes of the final text: with the cleaned
+		// text's first sentence in view, the same span it keeps; before
+		// it, nothing once a finished sentence has shown itself to be
+		// the model's deliberation (deliberating, #4086) — a sentence
+		// still being typed shows as it is, and the draft corrects when
+		// it completes. An input too short to tell its material shows
+		// as it is, as CleanOutput keeps it.
 		if partialTagSuffix(t, outputOpen) > 0 {
 			return ""
 		}
 		if trimmed, ok := cleanedSpan(t, input); ok {
-			return trimmed
+			if ballooned(t, input) {
+				return trimmed
+			}
+			return t
 		}
 		if in := folded(input); len([]rune(in)) >= 8 && deliberating(t, in) {
 			return ""
@@ -369,11 +375,12 @@ func PartialOutput(s, input string) string {
 // commentary outside them, #4086); when the input itself has the tags,
 // one outermost pair the model wrapped its whole answer in goes and the
 // text keeps its own tags. A tag-less answer that ballooned past a
-// clean-up keeps only the cleaned text's sentences (cleanedSpan): the
-// model thought out loud around them. Then Clean's tidy. Only the
-// Transcribe clean-up asks for the tags: Rewrite's and Translate's
-// answers go to Clean, so tags their text itself has (HTML they were
-// asked for) stay.
+// clean-up starts at the cleaned text's first sentence (cleanedSpan):
+// the model thought out loud before it. What follows that sentence
+// stays, since a custom prompt may legitimately expand the dictation.
+// Then Clean's tidy. Only the Transcribe clean-up asks for the tags:
+// Rewrite's and Translate's answers go to Clean, so tags their text
+// itself has (HTML they were asked for) stay.
 func CleanOutput(out, input string) string {
 	s := strings.TrimSpace(out)
 	if strings.Contains(input, outputOpen) {

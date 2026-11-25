@@ -177,9 +177,11 @@ func TestCleanedTextWithoutCommentary(t *testing.T) {
 		t.Errorf("result %q", end.Result)
 	}
 	for _, s := range h.rec.all() {
-		// The deliberation's first sentence may stream in before a
-		// second one reveals it; nothing past it ever shows.
-		if strings.Contains(s.Draft, "misrecognition") || strings.Contains(s.Draft, "reconsider") || strings.Contains(s.Draft, "stutter") {
+		// The first sentence may show while it is typed; once it
+		// completes and shows itself foreign, nothing of the
+		// deliberation streams.
+		if strings.Contains(s.Draft, "re-read.") || strings.Contains(s.Draft, "misrecognition") ||
+			strings.Contains(s.Draft, "reconsider") || strings.Contains(s.Draft, "stutter") {
 			t.Errorf("a draft with the deliberation: %q", s.Draft)
 		}
 	}

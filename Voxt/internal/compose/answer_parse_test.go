@@ -168,9 +168,15 @@ func TestCleanOutput(t *testing.T) {
 		{`Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. Also "不并不需要" looks like a self-correction or stutter. 我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。`,
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"},
+		// What follows the cleaned text's first sentence stays: a
+		// custom prompt may legitimately expand the dictation, and a
+		// foreign tail cannot be told from that expansion.
+		{"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers.",
+			"our launch is friday",
+			"Our launch is Friday. The team should prepare the release notes and confirm the build before sharing it with customers."},
 		{"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation.",
 			"we need to ship the release on friday, uh, and tell the team tomorrow",
-			"We need to ship the release on Friday and tell the team tomorrow."},
+			"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation."},
 		// Near the input's own length the answer is trusted as it is…
 		{"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
 			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
@@ -240,21 +246,44 @@ func TestPartialOutput(t *testing.T) {
 	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
 		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
 	}
-	// A tag-less stream of the model's deliberation (#4086) never shows
-	// it: the draft waits for the cleaned text's sentences.
+	// A tag-less stream of the model's deliberation (#4086): a
+	// finished deliberation sentence never shows, not even standing
+	// alone; once the first sentence shows itself foreign, nothing
+	// more of the deliberation streams. A sentence still being typed
+	// passes through — it may be the cleaned text's start, and the
+	// draft corrects when it completes.
 	const input = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
 	const cleaned = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
 	const tagless = `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". ` + cleaned
-	for i := 1; i <= len(tagless); i++ {
-		got := PartialOutput(tagless[:i], input)
-		// The first sentence may stream in before a second reveals
-		// it; nothing past it ever shows.
-		if strings.Contains(got, "misrecognition") || strings.Contains(got, "reconsider") || strings.Contains(got, "stutter") {
+	if got := PartialOutput("Wait, I need to re-read.", input); got != "" {
+		t.Errorf("a completed deliberation sentence = %q, want hidden", got)
+	}
+	runes := []rune(tagless)
+	for i := 1; i <= len(runes); i++ {
+		got := PartialOutput(string(runes[:i]), input)
+		if strings.Contains(got, "re-read.") || strings.Contains(got, "misrecognition") || strings.Contains(got, "reconsider") ||
+			strings.Contains(got, "stutter") || strings.Contains(got, "self-correction") || strings.Contains(got, "time-varying") {
 			t.Fatalf("at %d: the deliberation in the draft %q", i, got)
+		}
+		if anchor := strings.Index(got, "我觉得"); anchor >= 0 && !strings.HasPrefix(cleaned, got[anchor:]) {
+			t.Fatalf("at %d: draft %q is not the cleaned text's start", i, got)
 		}
 	}
 	if got := PartialOutput(tagless, input); got != cleaned {
 		t.Errorf("PartialOutput(tagless) = %q, want %q", got, cleaned)
+	}
+	// Streaming and final agree on a near-length answer whose tail is
+	// not the input's material (a custom prompt's expansion, say):
+	// both keep it whole.
+	const nearIn = "the release is friday. tell the quality team"
+	const nearOut = "The release is Friday. Notify QA."
+	for i := 1; i <= len(nearOut); i++ {
+		if got := PartialOutput(nearOut[:i], nearIn); got != nearOut[:i] {
+			t.Fatalf("at %d: PartialOutput = %q, want the text as it is", i, got)
+		}
+	}
+	if got := CleanOutput(nearOut, nearIn); got != nearOut {
+		t.Errorf("CleanOutput(%q) = %q, want it whole", nearOut, got)
 	}
 }
 
