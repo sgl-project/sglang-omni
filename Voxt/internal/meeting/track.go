@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,7 +20,9 @@ type track struct {
 	settled  chan struct{} // closed after the track's reconnect decision has settled
 }
 
-func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
+// runTrack starts src's capture for mode: the mode the meeting has, or
+// the one SetMode is changing to.
+func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio, mode Mode) *StartError {
 	if audio == nil {
 		return &StartError{
 			Source:   src,
@@ -28,6 +31,9 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		}
 	}
 	job := m.nextJob(src)
+	// Voice processing only where the speakers play into the meeting: a
+	// recording of the microphone alone keeps its raw input.
+	echoCancel := src == SourceMic && slices.Contains(mode.Sources(), SourceSystem) && !m.cfg.Settings().NoEchoCancel
 	m.mu.Lock()
 	if m.timeline == nil { // the meeting ended while a reconnect waited for the lock
 		m.mu.Unlock()
@@ -76,7 +82,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 		}
 	}()
 	go func() {
-		_, err := audio.Record(ctx, job, proto.CaptureParams{}, func(ev session.AudioEvent) {
+		params := proto.CaptureParams{EchoCancel: echoCancel}
+		_, err := audio.Record(ctx, job, params, func(ev session.AudioEvent) {
 			if ev.Started != nil {
 				select {
 				case started <- nil:
@@ -156,11 +163,22 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 			return &StartError{Source: src, Err: err, Guidance: guidance}
 		}
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(startWait(echoCancel)):
 		return &StartError{Source: src, Err: fmt.Errorf("meeting: capture start timeout")}
 	case <-ctx.Done():
 		return &StartError{Source: src, Err: ctx.Err()}
 	}
+}
+
+// startWait bounds how long a track waits for its capture to start. With
+// echoCancel the helper gives voice processing up to 5 s to start
+// (VPChild.startLimit) before it records without it, which needs the
+// usual time too.
+func startWait(echoCancel bool) time.Duration {
+	if echoCancel {
+		return 10 * time.Second
+	}
+	return 5 * time.Second
 }
 
 // lostFinalWait bounds how long a lost track waits for its transcriber's

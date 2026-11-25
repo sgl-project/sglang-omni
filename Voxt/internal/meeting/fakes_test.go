@@ -2,6 +2,7 @@ package meeting_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ type fakeAudio struct {
 	mu         sync.Mutex
 	stops      map[string]chan struct{}
 	jobs       []string
+	params     []proto.CaptureParams
 	// onStop runs once, at the next Stop, before the capture stops: a
 	// test acts on the meeting while the manager waits for it.
 	onStop func()
@@ -55,6 +57,13 @@ func (f *fakeAudio) running() int {
 	return len(f.stops)
 }
 
+// captureParams are the params of each Record, in order.
+func (f *fakeAudio) captureParams() []proto.CaptureParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.params)
+}
+
 func (f *fakeAudio) jobIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -63,7 +72,10 @@ func (f *fakeAudio) jobIDs() []string {
 	return out
 }
 
-func (f *fakeAudio) Record(ctx context.Context, id string, _ proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
+func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
+	f.mu.Lock()
+	f.params = append(f.params, p)
+	f.mu.Unlock()
 	if f.startErr != nil {
 		return proto.CaptureResult{}, f.startErr
 	}

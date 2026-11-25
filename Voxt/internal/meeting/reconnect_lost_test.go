@@ -3,6 +3,8 @@ package meeting_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,5 +61,67 @@ func TestLostMicReconnectsWhileFinalHangs(t *testing.T) {
 	case <-mic.reconnected:
 	case <-time.After(3 * time.Second):
 		t.Fatal("the lost microphone did not reconnect behind its hung Final")
+	}
+}
+
+// flakyAudio loses its first capture, fails to start the next, then
+// records, keeping that last start's params.
+type flakyAudio struct {
+	*fakeAudio
+	starts      atomic.Int32
+	dropped     chan struct{} // closed by the test: the first capture is lost
+	reconnected chan struct{} // closed at the third start, after last is set
+	last        proto.CaptureParams
+}
+
+func (a *flakyAudio) Record(ctx context.Context, id string, params proto.CaptureParams, fn func(session.AudioEvent)) (proto.CaptureResult, error) {
+	switch a.starts.Add(1) {
+	case 1:
+		fn(session.AudioEvent{Started: &proto.CaptureStartedParams{Job: id, SampleRate: asr.SampleRate}})
+		<-a.dropped
+		return proto.CaptureResult{}, errors.New("device lost")
+	case 2:
+		return proto.CaptureResult{}, errors.New("no input could start")
+	case 3:
+		a.last = params
+		close(a.reconnected)
+	}
+	return a.fakeAudio.Record(ctx, id, params, fn)
+}
+
+// A mode chosen while a lost track waits to reconnect is the one it
+// reconnects in: a microphone back in Recording mode records without
+// echo cancellation, which only a meeting with the system's sound asks for.
+func TestReconnectAfterSetModeUsesTheNewMode(t *testing.T) {
+	waiting, release := make(chan struct{}), make(chan time.Time)
+	var once sync.Once
+	t.Cleanup(meeting.SetReconnectAfterForTest(func(time.Duration) <-chan time.Time {
+		once.Do(func() { close(waiting) })
+		return release
+	}))
+	mic := &flakyAudio{fakeAudio: newFakeAudio([]byte{9}), dropped: make(chan struct{}), reconnected: make(chan struct{})}
+	m, ctx := testManagerStreams(t, mic, newFakeAudio([]byte{8}), &meetTestStreamer{}, &meetTestStreamer{})
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeMeeting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, id)
+	close(mic.dropped)
+	select {
+	case <-waiting:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the lost microphone did not wait to reconnect")
+	}
+	if err := m.SetMode(ctx, id, meeting.ModeRecording); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	select {
+	case <-mic.reconnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the microphone did not reconnect")
+	}
+	if mic.last.EchoCancel {
+		t.Error("the microphone reconnected in Recording mode with echoCancel: the mode from before the wait")
 	}
 }

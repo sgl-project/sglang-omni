@@ -250,6 +250,7 @@ And their own fields:
 | `features.meeting.speakers` | bool | `false` | | (no settings row) |
 | `features.meeting.noFinalPass` | bool | `false` | `true` skips re-recognising the meeting afterwards | (no settings row) |
 | `features.meeting.noAutoSummary` | bool | `false` | `true` skips the summary when a meeting ends | (no settings row) |
+| `features.meeting.noEchoCancel` | bool | `false` | `true` records the meeting's microphone without echo cancellation | (no settings row) |
 
 ### Dictionary (Dictionary page)
 

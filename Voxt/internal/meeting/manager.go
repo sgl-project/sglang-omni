@@ -153,8 +153,7 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	m.refreshProblem(nil)
 	go m.watchDisk(runCtx)
 
-	sources := req.Mode.Sources()
-	if err := m.startTracks(runCtx, sources); err != nil {
+	if err := m.startTracks(runCtx, req.Mode); err != nil {
 		return fail(err)
 	}
 	m.mu.Lock()
@@ -174,9 +173,9 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 	return id, nil
 }
 
-func (m *Manager) startTracks(ctx context.Context, sources []Source) error {
-	for _, src := range sources {
-		se := m.runTrack(ctx, src, m.audioFor(src))
+func (m *Manager) startTracks(ctx context.Context, mode Mode) error {
+	for _, src := range mode.Sources() {
+		se := m.runTrack(ctx, src, m.audioFor(src), mode)
 		if se != nil {
 			m.stopAllTracks()
 			return se
@@ -219,12 +218,12 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	m.timeline.NoteResume()
 	m.state = StateRecording
 	m.snap.State = StateRecording
-	sources := m.mode.Sources()
+	mode := m.mode
 	runCtx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.runCtx = runCtx
 	m.mu.Unlock()
-	if err := m.startTracks(runCtx, sources); err != nil {
+	if err := m.startTracks(runCtx, mode); err != nil {
 		return err
 	}
 	m.mu.Lock()

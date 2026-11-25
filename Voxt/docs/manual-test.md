@@ -1346,6 +1346,10 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
 
 **应看到**：底部浮窗出现，计时递增，mic/sys 电平有变化；听写快捷键（右 ⌥ 等）不能开始转录；按 **Esc**（取消快捷键）结束会议而不是开答案卡。会议结束后列表里有一条记录；数据目录 `meetings/<id>/` 下有 `mic.wav` 与 `system.wav`（字幕/仅录音模式按设置可能只有一路）。
 
+**做**：不戴耳机，用 Mac 的扬声器外放一段有人说话的视频，开一场 **会议**（两路都录），中间自己插几句话，再结束会议。
+
+**应看到**：日志里有 `capture: voice processing on (echo cancellation, its own process)`；外放的音量在开始时可能被压低一下，随后恢复；播放 `mic.wav`，外放的声音只隐约可闻，你的话清楚；`system.wav` 完整录下视频的声音；转录稿里视频里的话只记在「对方」，不再出现在「你」下面。录制中插上耳机或连上 AirPods，麦克风电平几秒内恢复，日志里有 `capture: echo cancellation off: not on the built-in speakers and microphone`；拔掉或断开、回到扬声器后，又有一行 voice processing on。改用 **录音** 模式再录一段，日志里没有上面这行。
+
 **做**：再开一场，说一句话后立刻点 **结束**，不等浮窗出字。
 
 **应看到**：会议详情的转录稿里有这句话（说话人「你」，对方的话是「对方」）。

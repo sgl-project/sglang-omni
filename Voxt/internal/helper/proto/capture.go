@@ -38,6 +38,10 @@ type CaptureParams struct {
 	// MaxSeconds ends the recording on its own (0 = until stopped): a
 	// guard against a capture.stop that never comes.
 	MaxSeconds float64 `json:"maxSeconds,omitempty"`
+	// EchoCancel records through Apple's voice processing, which removes
+	// the sound the Mac plays from the microphone (a meeting on the
+	// speakers).
+	EchoCancel bool `json:"echoCancel,omitempty"`
 }
 
 // SystemParams starts capture.system: the sound the Mac plays (every

@@ -121,13 +121,18 @@ public struct CaptureParams: Codable, Sendable {
     public var frameMs: Int?
     public var levelHz: Int?
     public var maxSeconds: Double?
+    /// The microphone through Apple's voice processing (echo cancellation
+    /// of what the Mac plays); nil or false: the raw input.
+    public var echoCancel: Bool?
 
-    public init(devices: [String]? = nil, sampleRate: Int? = nil, frameMs: Int? = nil, levelHz: Int? = nil, maxSeconds: Double? = nil) {
+    public init(devices: [String]? = nil, sampleRate: Int? = nil, frameMs: Int? = nil, levelHz: Int? = nil, maxSeconds: Double? = nil,
+                echoCancel: Bool? = nil) {
         self.devices = devices
         self.sampleRate = sampleRate
         self.frameMs = frameMs
         self.levelHz = levelHz
         self.maxSeconds = maxSeconds
+        self.echoCancel = echoCancel
     }
 }
 

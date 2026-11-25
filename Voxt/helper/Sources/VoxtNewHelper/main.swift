@@ -9,6 +9,9 @@ import Foundation
 // and NSPasteboard live there. Requests are read on a
 // thread of their own (Server.serve).
 
+// capture.start's echoCancel: the helper's own child (VoiceProcessing.swift).
+if CommandLine.arguments.dropFirst().first == "--vp-capture" { runVoiceProcessingChild() }
+
 let out = Writer()
 let server = Server(out: out)
 server.serve()

@@ -10,6 +10,13 @@ func SetLostFinalWaitForTest(d time.Duration) func() {
 	return func() { lostFinalWait = old }
 }
 
+// SetReconnectAfterForTest replaces the wait between reconnects.
+func SetReconnectAfterForTest(after func(time.Duration) <-chan time.Time) func() {
+	old := reconnectAfter
+	reconnectAfter = after
+	return func() { reconnectAfter = old }
+}
+
 func TrackDoneForTest(m *Manager, src Source) <-chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()

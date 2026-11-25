@@ -3,6 +3,7 @@ package meeting_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,6 +28,11 @@ type captureRig struct {
 
 func newCaptureRig(t *testing.T) captureRig {
 	t.Helper()
+	return newCaptureRigWith(t, settings.Meeting{})
+}
+
+func newCaptureRigWith(t *testing.T, s settings.Meeting) captureRig {
+	t.Helper()
 	ctx := context.Background()
 	root := t.TempDir()
 	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
@@ -39,6 +45,7 @@ func newCaptureRig(t *testing.T) captureRig {
 		Mic: r.mic, System: r.sys, Store: r.meetings, Dir: r.dir,
 		Now:       newFakeClock(time.Unix(1_700_000_000, 0)).Now,
 		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings:  func() settings.Meeting { return s },
 		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
 	})
 	return r
@@ -48,7 +55,9 @@ func newCaptureRig(t *testing.T) captureRig {
 // the tracks both modes have open, on the capture they had (it used to
 // stop them all and start only the new ones, so a meeting switched to
 // Recording went on with nothing recording), starts the new mode's and
-// stops the old one's.
+// stops the old one's. The microphone records through voice processing
+// (echoCancel) when the mode it starts in records the system's sound too,
+// unless the settings turn it off.
 func TestSetModeKeepsSharedTracks(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
@@ -56,46 +65,52 @@ func TestSetModeKeepsSharedTracks(t *testing.T) {
 		micJobs, sysJobs int // captures ever started
 		micOpen, sysOpen int // captures open after the change
 		micSame, sysSame bool
+		micEcho          bool // the microphone's capture asked for echoCancel
 	}{
-		{"meeting to recording", meeting.ModeMeeting, meeting.ModeRecording, 1, 1, 1, 0, true, false},
-		{"meeting to subtitles", meeting.ModeMeeting, meeting.ModeSubtitles, 1, 1, 0, 1, false, true},
-		{"recording to meeting", meeting.ModeRecording, meeting.ModeMeeting, 1, 1, 1, 1, true, false},
-		{"subtitles to meeting", meeting.ModeSubtitles, meeting.ModeMeeting, 1, 1, 1, 1, false, true},
-		{"subtitles to recording", meeting.ModeSubtitles, meeting.ModeRecording, 1, 1, 1, 0, false, false},
+		{"meeting to recording", meeting.ModeMeeting, meeting.ModeRecording, 1, 1, 1, 0, true, false, true},
+		{"meeting to subtitles", meeting.ModeMeeting, meeting.ModeSubtitles, 1, 1, 0, 1, false, true, true},
+		{"recording to meeting", meeting.ModeRecording, meeting.ModeMeeting, 1, 1, 1, 1, true, false, false},
+		{"subtitles to meeting", meeting.ModeSubtitles, meeting.ModeMeeting, 1, 1, 1, 1, false, true, true},
+		{"subtitles to recording", meeting.ModeSubtitles, meeting.ModeRecording, 1, 1, 1, 0, false, false, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			r := newCaptureRig(t)
-			id, err := r.m.Start(ctx, meeting.StartRequest{Mode: tc.from})
-			if err != nil {
-				t.Fatal(err)
-			}
-			micBefore, sysBefore := r.mic.jobIDs(), r.sys.jobIDs()
-			if err := r.m.SetMode(ctx, id, tc.to); err != nil {
-				t.Fatal(err)
-			}
-			if got := r.m.Current(); got.Mode != tc.to || got.State != meeting.StateRecording {
-				t.Fatalf("after the change: mode %s, state %s", got.Mode, got.State)
-			}
-			if n, open := len(r.mic.jobIDs()), r.mic.running(); n != tc.micJobs || open != tc.micOpen {
-				t.Errorf("microphone: %d captures started, %d open; want %d and %d", n, open, tc.micJobs, tc.micOpen)
-			}
-			if n, open := len(r.sys.jobIDs()), r.sys.running(); n != tc.sysJobs || open != tc.sysOpen {
-				t.Errorf("system audio: %d captures started, %d open; want %d and %d", n, open, tc.sysJobs, tc.sysOpen)
-			}
-			if tc.micSame && (len(micBefore) != 1 || r.mic.jobIDs()[0] != micBefore[0]) {
-				t.Errorf("the microphone's capture changed: %v, was %v", r.mic.jobIDs(), micBefore)
-			}
-			if tc.sysSame && (len(sysBefore) != 1 || r.sys.jobIDs()[0] != sysBefore[0]) {
-				t.Errorf("system audio's capture changed: %v, was %v", r.sys.jobIDs(), sysBefore)
-			}
-			if err := r.m.Finish(ctx, id); err != nil {
-				t.Fatal(err)
-			}
-			if r.mic.running() != 0 || r.sys.running() != 0 {
-				t.Errorf("after Finish: %d microphone and %d system captures open", r.mic.running(), r.sys.running())
-			}
-		})
+		for _, off := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, noEchoCancel %v", tc.name, off), func(t *testing.T) {
+				ctx := context.Background()
+				r := newCaptureRigWith(t, settings.Meeting{NoEchoCancel: off})
+				id, err := r.m.Start(ctx, meeting.StartRequest{Mode: tc.from})
+				if err != nil {
+					t.Fatal(err)
+				}
+				micBefore, sysBefore := r.mic.jobIDs(), r.sys.jobIDs()
+				if err := r.m.SetMode(ctx, id, tc.to); err != nil {
+					t.Fatal(err)
+				}
+				if got := r.m.Current(); got.Mode != tc.to || got.State != meeting.StateRecording {
+					t.Fatalf("after the change: mode %s, state %s", got.Mode, got.State)
+				}
+				if n, open := len(r.mic.jobIDs()), r.mic.running(); n != tc.micJobs || open != tc.micOpen {
+					t.Errorf("microphone: %d captures started, %d open; want %d and %d", n, open, tc.micJobs, tc.micOpen)
+				}
+				if n, open := len(r.sys.jobIDs()), r.sys.running(); n != tc.sysJobs || open != tc.sysOpen {
+					t.Errorf("system audio: %d captures started, %d open; want %d and %d", n, open, tc.sysJobs, tc.sysOpen)
+				}
+				if tc.micSame && (len(micBefore) != 1 || r.mic.jobIDs()[0] != micBefore[0]) {
+					t.Errorf("the microphone's capture changed: %v, was %v", r.mic.jobIDs(), micBefore)
+				}
+				if tc.sysSame && (len(sysBefore) != 1 || r.sys.jobIDs()[0] != sysBefore[0]) {
+					t.Errorf("system audio's capture changed: %v, was %v", r.sys.jobIDs(), sysBefore)
+				}
+				if p := r.mic.captureParams(); len(p) != 1 || p[0].EchoCancel != (tc.micEcho && !off) {
+					t.Errorf("microphone capture params %+v, want echoCancel %v", p, tc.micEcho && !off)
+				}
+				if err := r.m.Finish(ctx, id); err != nil {
+					t.Fatal(err)
+				}
+				if r.mic.running() != 0 || r.sys.running() != 0 {
+					t.Errorf("after Finish: %d microphone and %d system captures open", r.mic.running(), r.sys.running())
+				}
+			})
+		}
 	}
 }
 

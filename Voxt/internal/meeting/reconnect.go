@@ -9,6 +9,9 @@ import (
 
 var reconnectDelays = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
+// reconnectAfter is time.After; a test holds the wait.
+var reconnectAfter = time.After
+
 // handleTrackLost tries to reopen src after an unexpected capture end.
 func (m *Manager) handleTrackLost(ctx context.Context, src Source) {
 	if ctx.Err() != nil { // the run was cancelled: an end, not a loss
@@ -35,19 +38,20 @@ func (m *Manager) handleTrackLost(ctx context.Context, src Source) {
 	}
 	if wait > 0 {
 		select {
-		case <-time.After(wait):
+		case <-reconnectAfter(wait):
 		case <-ctx.Done():
 			return
 		}
 	}
 	m.mu.Lock()
+	mode = m.mode // SetMode may have run during the wait
 	if !m.state.Active() || !modeNeedsSource(mode, src) {
 		m.mu.Unlock()
 		return
 	}
 	m.mu.Unlock()
 
-	if err := m.runTrack(runCtx, src, m.audioFor(src)); err != nil {
+	if err := m.runTrack(runCtx, src, m.audioFor(src), mode); err != nil {
 		m.handleTrackLost(ctx, src)
 		return
 	}

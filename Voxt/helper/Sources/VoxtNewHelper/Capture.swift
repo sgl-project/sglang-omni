@@ -117,6 +117,17 @@ final class CaptureRun: @unchecked Sendable {
 
     private var engine: AVAudioEngine?
     private var tap: SystemTap?
+    /// capture.start's echoCancel.
+    private let echoCancel: Bool
+    /// The microphone comes from a VPChild now, as it does on the built-in
+    /// speakers and microphone.
+    private var useVP = false
+    /// Voice processing did not start: this recording goes on without it.
+    private var vpFailed = false
+    private var vpChild: VPChild?
+    private var outputListener: AudioObjectPropertyListenerBlock?
+    private var defaultOutputAddress = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                                  mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     private var deviceID: AudioObjectID = 0
     private var deviceUID = ""
     private var usingDefault = true
@@ -149,6 +160,7 @@ final class CaptureRun: @unchecked Sendable {
 
     init(out: Writer, job: String, params: CaptureParams, system: Bool, file: CaptureFileConfig?, t0: Double, onEnd: @escaping (CaptureRun) -> Void) {
         self.out = out
+        echoCancel = !system && params.echoCancel == true
         self.job = job
         self.params = params
         self.system = system
@@ -174,6 +186,11 @@ final class CaptureRun: @unchecked Sendable {
                 startSystemSilenceTimer()
             }
         }
+        // One child on the default input (VoiceProcessing.swift): the
+        // devices are not tried in turn.
+        if wantsVP(), tryVoiceProcessing() {
+            return startWatchersUnlessEnded()
+        }
         var reasons: [String] = []
         for uid in params.devices ?? [] where !uid.isEmpty {
             do {
@@ -183,7 +200,8 @@ final class CaptureRun: @unchecked Sendable {
                 reasons.append(errorMessage(error))
             }
         }
-        if lock.withLock({ engine == nil }) {
+        // A chosen input that turned out to be the default can have started voice processing.
+        if lock.withLock({ engine == nil && vpChild == nil }) {
             if !reasons.isEmpty {
                 lock.withLock {
                     fellBack = true
@@ -200,11 +218,24 @@ final class CaptureRun: @unchecked Sendable {
                 out.logLine("warning", "capture: \(reasons.joined(separator: "; ")): recording from the default input", job: job)
             }
         }
+        startWatchersUnlessEnded()
+    }
+
+    /// Stopped or cancelled while it started (voice processing takes
+    /// seconds): the teardown has run, and nothing is left to watch.
+    private func startWatchersUnlessEnded() {
+        if lock.withLock({ ended }) { return }
         startWatchers()
     }
 
     /// Builds and starts an engine on uid (nil: the default input).
     private func startEngine(uid: String?) throws {
+        if wantsVP(), tryVoiceProcessing() {
+            return
+        }
+        if echoCancel, !lock.withLock({ vpFailed }) {
+            out.logLine("info", "capture: echo cancellation off: not on the built-in speakers and microphone, or another input chosen", job: job)
+        }
         let (ids, def) = inputDeviceIDs()
         let device: AudioObjectID
         if let uid {
@@ -229,10 +260,12 @@ final class CaptureRun: @unchecked Sendable {
         guard let res = MonoResampler(inputRate: format.sampleRate, rate: rate) else {
             throw RPCError(Code.deviceUnavailable, "cannot convert \(Int(format.sampleRate)) Hz")
         }
-        let gen: Int = lock.withLock {
+        let gen: Int? = lock.withLock {
+            guard !ended else { return nil } // stopped or cancelled meanwhile: the job is answered
             generation += 1
             callbacksThisEngine = 0
             self.engine = engine
+            useVP = false
             deviceID = device
             deviceUID = stringProperty(device, kAudioDevicePropertyDeviceUID) ?? ""
             usingDefault = uid == nil
@@ -240,6 +273,7 @@ final class CaptureRun: @unchecked Sendable {
             inputFormat = format
             return generation
         }
+        guard let gen else { return }
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.receive(buffer, generation: gen)
         }
@@ -252,6 +286,53 @@ final class CaptureRun: @unchecked Sendable {
             throw RPCError(Code.deviceUnavailable, "\(deviceName(device)) did not start (\((error as NSError).code))")
         }
         armWatchdog(generation: gen)
+    }
+
+    /// Starts voice processing; false when it does not start, which is
+    /// logged and not tried again in this recording: the microphone then
+    /// records without it rather than not at all.
+    private func tryVoiceProcessing() -> Bool {
+        do {
+            try startVPChild()
+            return true
+        } catch {
+            lock.withLock { vpFailed = true }
+            out.logLine("warning", "capture: echo cancellation did not start (\(errorMessage(error))): recording without it", job: job)
+            return false
+        }
+    }
+
+    /// echoCancel: the default input through voice processing in a child
+    /// process, whose buffers go through receive() (a meeting chooses no
+    /// input). A child that dies rebuilds it as a stopped engine does.
+    private func startVPChild() throws {
+        let (device, child, res) = try startVoiceProcessing(rate: rate)
+        let gen: Int? = lock.withLock {
+            guard !ended else { return nil } // stopped or cancelled while it started: the job is answered
+            generation += 1
+            callbacksThisEngine = 0
+            vpChild = child
+            useVP = true
+            deviceID = device
+            deviceUID = stringProperty(device, kAudioDevicePropertyDeviceUID) ?? ""
+            usingDefault = true
+            resampler = res
+            inputFormat = res.mono
+            return generation
+        }
+        guard let gen else { return child.stop() }
+        child.start({ [weak self] b in self?.receive(b, generation: gen) }, ended: { [weak self] in
+            // On the queue, after a restart already queued (the output's
+            // listener, as headphones go in): stopEngine lets go of the child
+            // first, so only a death restarts, once.
+            guard let run = self else { return }
+            run.queue.async {
+                guard run.lock.withLock({ run.vpChild === child && !run.ended }) else { return }
+                run.restart(reason: CaptureReason.configurationChange)
+            }
+        })
+        armWatchdog(generation: gen)
+        out.logLine("info", "capture: voice processing on (echo cancellation, its own process)", job: job)
     }
 
     private func startSystemSilenceTimer() {
@@ -354,7 +435,7 @@ final class CaptureRun: @unchecked Sendable {
     /// turn. A chosen input that went away makes it deviceLost; when no
     /// other input starts, that recording ends with what it has.
     private func restart(reason: String, silentGeneration: Int? = nil) {
-        let restart = lock.withLock { () -> (attempt: Int, preferred: String?, wasDefault: Bool, step: NoAudioEscalation.Step?)? in
+        let restart = lock.withLock { () -> (attempt: Int, preferred: String?, wasDefault: Bool, step: NoAudioEscalation.Step?, vpSilent: Bool)? in
             guard !ended else { return nil }
             if let silentGeneration {
                 guard generation == silentGeneration, callbacksThisEngine == 0 else { return nil }
@@ -364,9 +445,16 @@ final class CaptureRun: @unchecked Sendable {
             let silent = callbacksThisEngine == 0 && (!system || silentGeneration != nil)
             restarts += 1
             let step = silent ? escalation.silentEngine() : nil
-            return (restarts, usingDefault ? nil : deviceUID, usingDefault, step)
+            // Voice processing that delivered nothing (the watchdog), or a second child in a row
+            // that ended before any audio: the rest of the recording goes without it.
+            let vpSilent = useVP && (silentGeneration != nil || step == .default)
+            if vpSilent { vpFailed = true }
+            return (restarts, usingDefault ? nil : deviceUID, usingDefault, step, vpSilent)
         }
-        guard let (attempt, preferred, wasDefault, step) = restart else { return }
+        guard let (attempt, preferred, wasDefault, step, vpSilent) = restart else { return }
+        if vpSilent {
+            out.logLine("warning", "capture: echo cancellation delivered no audio: recording without it", job: job)
+        }
         if step == .end {
             let id = lock.withLock { deviceID }
             if system {
@@ -377,7 +465,7 @@ final class CaptureRun: @unchecked Sendable {
         stopEngine()
         let gone = !system && preferred.map { findDevice(uid: $0).map(isAlive) != true } ?? false
         var failure: Error?
-        for uid in system ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: step == .default) {
+        for uid in system || wantsVP() ? [nil] : restartOrder(devices: params.devices ?? [], current: preferred, gone: gone, toDefault: step == .default) {
             do {
                 try system ? startSystem() : startEngine(uid: uid)
                 failure = nil
@@ -389,6 +477,7 @@ final class CaptureRun: @unchecked Sendable {
         if let failure {
             return gone ? endAsync(reason: CaptureReason.deviceLost) : endAsync(noAudio: "restart failed: \(errorMessage(failure))")
         }
+        if lock.withLock({ ended }) { return } // cancelled while voice processing started
         let (uid, id) = lock.withLock { () -> (String, AudioObjectID) in
             if !wasDefault && !startedSent && (usingDefault || deviceUID != preferred) {
                 fellBack = true
@@ -400,7 +489,27 @@ final class CaptureRun: @unchecked Sendable {
                                                             device: uid, deviceName: system ? nil : deviceName(id)))
     }
 
+    /// echoCancel runs voice processing now: the Mac plays and records
+    /// through its own speakers and microphone (VoiceProcessing.swift), and
+    /// no other input is chosen (voice processing records the default one).
+    private func wantsVP() -> Bool {
+        guard echoCancel, !lock.withLock({ vpFailed }), onBuiltInSpeakersAndMic() else { return false }
+        guard let chosen = params.devices?.first(where: { !$0.isEmpty }) else { return true }
+        return findDevice(uid: chosen) == inputDeviceIDs().defaultID
+    }
+
     private func startWatchers() {
+        if echoCancel {
+            // A new default output can call for voice processing or end it
+            // (headphones plugged in or out); a running child also ends itself.
+            let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+                guard let self, self.wantsVP() != self.lock.withLock({ self.useVP }) else { return }
+                self.restart(reason: CaptureReason.configurationChange)
+            }
+            if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, queue, block) == noErr {
+                outputListener = block
+            }
+        }
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: nil) { [weak self] n in
             guard let self, let notifiedEngine = n.object as? AVAudioEngine else { return }
             let notifiedGeneration: Int? = self.lock.withLock {
@@ -431,15 +540,17 @@ final class CaptureRun: @unchecked Sendable {
     }
 
     private func stopEngine() {
-        let (e, t, tp): (AVAudioEngine?, DispatchSourceTimer?, SystemTap?) = lock.withLock {
-            let r = (engine, fileTimer, tap)
+        let (e, t, tp, vc): (AVAudioEngine?, DispatchSourceTimer?, SystemTap?, VPChild?) = lock.withLock {
+            let r = (engine, fileTimer, tap, vpChild)
             engine = nil
             fileTimer = nil
             tap = nil
+            vpChild = nil
             return r
         }
         t?.cancel()
         tp?.stop()
+        vc?.stop()
         guard let e else { return }
         e.inputNode.removeTap(onBus: 0)
         e.stop()
@@ -525,6 +636,9 @@ final class CaptureRun: @unchecked Sendable {
 
     private func teardown() {
         watcher?.cancel()
+        if let l = outputListener {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultOutputAddress, queue, l)
+        }
         if let o = configObserver { NotificationCenter.default.removeObserver(o) }
         stopSource()
         onEnd(self)

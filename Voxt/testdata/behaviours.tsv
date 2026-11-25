@@ -43,6 +43,8 @@ Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
 Meeting speakers and clean-up	L	TestCorrectTranscript	none
 Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none
 Meeting permissions	manual	docs/manual-test.md	System permission state can only be checked on a Mac
+Meeting echo cancellation	L	TestSetModeKeepsSharedTracks	none
+Meeting echo cancellation	manual	docs/manual-test.md	Voice processing needs a Mac's speakers and microphone
 History	L	TestHistoryTabs	No real-app check that each session leaves one entry
 History	L	TestHistoryAllTab	none
 Reopen a card from the menu bar, history for other programs	L	TestHistoryAccessOff	none

@@ -35,7 +35,7 @@ func (m *Manager) SetMode(_ context.Context, id string, mode Mode) error {
 	m.mu.Unlock()
 	added, dropped := sourcesToAdd(old, next), sourcesToAdd(next, old)
 	for _, src := range added {
-		if se := m.runTrack(runCtx, src, m.audioFor(src)); se != nil {
+		if se := m.runTrack(runCtx, src, m.audioFor(src), mode); se != nil {
 			m.mu.Lock()
 			m.dropTracksLocked(added)
 			m.mu.Unlock()

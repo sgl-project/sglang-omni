@@ -14,7 +14,7 @@
 {"to":"app","msg":{"id":"c3","result":{"stopped":true}}}
 {"to":"helper","msg":{"id":"c4","method":"capture.stop","params":{"job":"01JB0C1000000000000000000A"}}}
 {"to":"app","msg":{"id":"c4","result":{"stopped":false}}}
-{"to":"helper","msg":{"id":"01JB0C7000000000000000000A","method":"capture.start","params":{"devices":["USBMic:input","AirPodsPro:input"],"frameMs":100,"levelHz":20,"maxSeconds":300}}}
+{"to":"helper","msg":{"id":"01JB0C7000000000000000000A","method":"capture.start","params":{"devices":["USBMic:input","AirPodsPro:input"],"frameMs":100,"levelHz":20,"maxSeconds":300,"echoCancel":true}}}
 {"to":"app","msg":{"method":"capture.started","params":{"job":"01JB0C7000000000000000000A","device":"USBMic:input","deviceName":"USB Microphone","fellBack":false,"deviceSampleRate":48000,"deviceChannels":1,"sampleRate":16000,"startMs":131.0}}}
 {"to":"app","msg":{"method":"capture.pcm","params":{"job":"01JB0C7000000000000000000A","seq":0,"offset":0,"data":"AQAHAAEABwABAAcAAQAHAA=="}}}
 {"to":"app","msg":{"method":"capture.restarted","params":{"job":"01JB0C7000000000000000000A","reason":"deviceLost","attempt":1,"device":"AirPodsPro:input","deviceName":"AirPods Pro"}}}
