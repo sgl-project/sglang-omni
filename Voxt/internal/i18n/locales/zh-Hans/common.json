@@ -72,7 +72,6 @@
   "Could not import: %v": "无法导入：%v",
   "Could not insert: %v": "无法插入：%v",
   "Could not read the history.": "无法读取历史。",
-
   "Could not save the term: %v": "无法保存词条：%v",
   "Custom": "自定义",
   "Custom (OpenAI-compatible)": "自定义（OpenAI 兼容）",
@@ -175,7 +174,6 @@
   "Press twice quickly to start; once more to stop.": "快速按两下开始，再按一下停止。",
   "Qwen (Alibaba Cloud Model Studio)": "通义千问（阿里云百炼）",
   "Reading the selection…": "正在读取选中的文字…",
-
   "Recognised text": "识别原文",
   "Recognising…": "识别中…",
   "Recognition": "识别",
@@ -284,7 +282,6 @@
   "Translation": "翻译",
   "Translation %s": "翻译 %s",
   "Try again": "重试",
-
   "Type a website, as in github.com.": "请输入网站，例如 github.com。",
   "Type the keys, as in Control+Option+Space.": "请输入按键，例如 Control+Option+Space。",
   "Type the term as it should be written.": "请输入词条的正确写法。",
@@ -457,5 +454,6 @@
   "characters": "字",
   "Undo": "撤销",
   "Share": "分享",
-  "Turn on": "打开"
+  "Turn on": "打开",
+  "Export…": "导出…"
 }
