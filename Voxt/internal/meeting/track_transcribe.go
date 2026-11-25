@@ -25,6 +25,9 @@ type TrackASR struct {
 	Prompt    string
 	Hints     []string
 	VAD       vad.ModelStream // optional Silero for Speech
+	// Script is the script Chinese is written in, "zh-Hans" or "zh-Hant"
+	// ("": the speech model's), whatever Lang leaves to the model.
+	Script string
 }
 
 type trackTranscriber struct {
@@ -36,6 +39,7 @@ type trackTranscriber struct {
 	cutter   Cutter
 	file     asr.FileTranscriber
 	fileReq  asr.FileRequest
+	script   string // TrackASR.Script
 	pcmBytes int64
 	timeBase time.Duration
 
@@ -53,7 +57,7 @@ func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job strin
 	if err != nil {
 		return nil, err
 	}
-	tr := &trackTranscriber{mgr: m, src: src, job: job}
+	tr := &trackTranscriber{mgr: m, src: src, job: job, script: ta.Script}
 	path := PickLivePath(ta.Caps)
 	tr.path = path
 	switch path {
@@ -77,7 +81,7 @@ func (m *Manager) newTrackTranscriber(ctx context.Context, src Source, job strin
 		if ta.File == nil {
 			return nil, fmt.Errorf("meeting: file ASR missing for %s", src)
 		}
-		tr.file = ta.File
+		tr.file = scriptedFile{ta.File, ta.Script}
 		tr.fileReq = asr.FileRequest{
 			SampleRate: asr.SampleRate,
 			Lang:       ta.Lang,
@@ -104,7 +108,7 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 		if err := tr.live.Push(ctx, pcm); err != nil {
 			return err
 		}
-		tr.mgr.updateLive(tr.src, tr.live.LiveText())
+		tr.mgr.updateLive(tr.src, inScript(tr.live.LiveText(), "", tr.script))
 		return nil
 	}
 	for _, u := range tr.cutter.Push(pcm) {
@@ -138,6 +142,7 @@ func (tr *trackTranscriber) finish(ctx context.Context) error {
 }
 
 func (tr *trackTranscriber) emit(seg Segment) {
+	seg.Text = inScript(seg.Text, "", tr.script)
 	seg.Start += tr.timeBase
 	seg.End += tr.timeBase
 	if seg.Source == SourceMic {

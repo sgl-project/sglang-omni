@@ -134,6 +134,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 		if ta.File == nil {
 			return nil, fmt.Errorf("meeting: no file ASR for %s", src)
 		}
+		file := asr.FileTranscriber(scriptedFile{ta.File, ta.Script})
 		chunks := PlanChunks(speech, total, chunkP)
 		req := asr.FileRequest{
 			SampleRate: rate, Lang: ta.Lang, Prompt: ta.Prompt, Hints: ta.Hints, Format: "pcm",
@@ -144,7 +145,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return nil, err
 			}
 			if d != nil {
-				segs, err := diarizeTrack(ctx, src, d, req, rate, pcm, speech, onProgress)
+				segs, err := diarizeTrack(ctx, src, scriptedDiarizer{d, ta.Script}, req, rate, pcm, speech, onProgress)
 				if err != nil {
 					return nil, err
 				}
@@ -154,7 +155,7 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, diar
 				return segs, nil
 			}
 		}
-		segs, err := transcribeChunks(ctx, src, ta.File, req, rate, pcm, chunks, onProgress)
+		segs, err := transcribeChunks(ctx, src, file, req, rate, pcm, chunks, onProgress)
 		if err != nil {
 			return nil, err
 		}
