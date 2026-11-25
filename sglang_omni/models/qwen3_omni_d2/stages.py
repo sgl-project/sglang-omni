@@ -30,6 +30,18 @@ class D2SessionHooks(SessionHooks):
             interval_ms * INPUT_SAMPLE_RATE_HZ * PCM16_BYTES_PER_SAMPLE // 1000
         )
 
+    def warm_up_serving_thread(self) -> None:
+        """Compile the fixed system prompt and first interval before admitting a caller."""
+        try:
+            self.runtime.open_session()
+            try:
+                self.runtime.step(bytes(self.input_bytes_per_interval))
+            finally:
+                self.runtime.close_session()
+        except BaseException:
+            self.runtime.shutdown()
+            raise
+
     def open(self, session_identity: SessionIdentity, request: OmniRequest) -> None:
         self.runtime.open_session()
 
