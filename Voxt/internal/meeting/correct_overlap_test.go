@@ -634,3 +634,72 @@ func TestSystemCorrectionOverlapKeepsCrossTrackBatch(t *testing.T) {
 		t.Fatalf("remaining batches %+v, want one 3-line batch", chat.batches)
 	}
 }
+
+// An echo-dropped mic line invalidates only the batches that contained
+// it (#4644 review): the final pass asks those again, every other batch
+// is asked once, and no text is reused from an invalidated batch.
+func TestSystemCorrectionOverlapEchoInvalidatesOnlyItsBatches(t *testing.T) {
+	echo := "the quick brown fox jumps over"
+	micTexts := []string{echo}
+	sysTexts := []string{echo}
+	for i := 0; i < 30; i++ {
+		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d %s", i, strings.Repeat("言", 90)))
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, strings.Repeat("字", 90)))
+	}
+	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 32, micTexts, sysTexts)
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := repo.Meeting(ctx, mt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 61 {
+		t.Fatalf("%d lines, want 61 (the echo line dropped)", len(segs))
+	}
+	for _, s := range segs {
+		if strings.Contains(s.Text, "Box") {
+			t.Fatalf("line %d not corrected: %q", s.Idx, s.Text)
+		}
+		if s.Source == store.SegmentMic && s.Text == echo {
+			t.Fatalf("the echo line survived on the mic track")
+		}
+	}
+	// The same batch content was never asked twice: the drop re-asks only
+	// its own lines, inside their new batches.
+	asked := map[string]int{}
+	batchSeen := map[string]int{}
+	for _, batch := range chat.batches {
+		key := strings.Join(batch, "\x00")
+		batchSeen[key]++
+		if batchSeen[key] > 1 {
+			t.Fatalf("same batch content asked twice: %q", batch[0][:30])
+		}
+	}
+	for _, text := range chat.requested() {
+		asked[text]++
+	}
+	// The surviving lines are all covered (>=95% runes), in order, one
+	// request in flight.
+	covered, total := 0, 0
+	for _, s := range segs {
+		n := len([]rune(s.Text))
+		total += n
+		recognised := strings.ReplaceAll(s.Text, "Voxt", "Box")
+		if asked[recognised] > 0 {
+			covered += n
+		}
+	}
+	if total == 0 || covered*100 < total*95 {
+		t.Fatalf("correction coverage %d/%d runes, under 95%%", covered, total)
+	}
+	if chat.max != 1 {
+		t.Fatalf("%d correction requests in flight at once, want 1", chat.max)
+	}
+	t.Logf("%d requests for 60 surviving lines (echo line dropped)", len(chat.batches))
+}
