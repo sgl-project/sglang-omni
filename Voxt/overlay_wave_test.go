@@ -10,10 +10,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
 
-// TestWaveformGlides: while it moves, the recording pill draws the bars
-// it is given (the levels played out, overlayWave) rather than the
-// snapshot's own, and asks for a frame at every refresh; a recording's
-// levels reach the player with their count.
+// TestWaveformGlides: while it moves, the recording pill's waveform draws
+// the bars it is given at the time of the frame it paints (the levels
+// played out, overlayWave) rather than the snapshot's own, and asks for a
+// frame at every refresh; a recording's levels reach the player with their
+// count.
 func TestWaveformGlides(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	now := time.Now()
@@ -27,7 +28,7 @@ func TestWaveformGlides(t *testing.T) {
 			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui}, animation,
 			a.postSessionOverlayMeasurements, func() { a.ov.reveal = false })
 	}, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
-	draw := func(levels []float64, gliding *layout.Wave) []byte {
+	draw := func(levels []float64, gliding func(time.Time) layout.Wave) []byte {
 		recording.Levels, recording.LevelCount = levels, len(levels)
 		snap(a, recording)
 		animation = sessionOverlayAnimation{Motion: true, Phase: 1, Wave: gliding}
@@ -40,12 +41,16 @@ func TestWaveformGlides(t *testing.T) {
 	}
 	own := draw(wave(), nil)
 	bars := layout.WaveBars(wave())
-	glide := draw(nil, &bars)
+	var asked time.Time
+	glide := draw(nil, func(at time.Time) layout.Wave { asked = at; return bars })
 	if !tt.FramePending() {
 		t.Error("the gliding waveform did not ask for the next refresh's frame")
 	}
 	if bytes.Equal(glide, flat) || !bytes.Equal(glide, own) {
 		t.Error("the pill did not draw the bars it was given")
+	}
+	if !asked.Equal(tt.Now()) {
+		t.Errorf("the bars were asked for at %v, not at the frame's time %v", asked, tt.Now())
 	}
 
 	// The levels reach the player as they come: played out, it shows them.
@@ -62,7 +67,11 @@ func TestWaveformGlides(t *testing.T) {
 	// check), shows its levels.
 	a.ov.native = true
 	a.sess = session.Snapshot{ID: "set", State: session.Recording, Levels: wave()}
-	if got := a.overlayWave(); got == nil || *got != bars {
+	glides := a.overlayWave()
+	if glides == nil {
+		t.Fatal("a snapshot set as it is: no gliding bars")
+	}
+	if got := glides(time.Now()); got != bars {
 		t.Errorf("a snapshot set as it is: %v, want the levels' %v", got, bars)
 	}
 }

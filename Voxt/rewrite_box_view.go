@@ -103,10 +103,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
 
 				if state.Recording {
-					if state.Wave != nil {
-						context.AnimationFrame() // the waveform glides
-					}
-					cardWave(context, waveBars(state.Levels[:], state.Wave), state.Recording, state.Heard, state.Motion, state.Phase)
+					cardWave(context, state.Levels[:], state.Wave, state.Recording, state.Heard, state.Motion, state.Phase)
 				}
 				ui.Box(context).Grow(1).MinWidth(0)
 				if state.CanSend {

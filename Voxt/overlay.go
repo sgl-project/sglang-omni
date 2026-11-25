@@ -69,11 +69,12 @@ type sessionOverlayLayout struct {
 }
 
 // sessionOverlayAnimation is what moves in a frame: Phase seconds in, and
-// the waveform's bars as they glide (Wave; nil: straight from the levels).
+// the waveform's bars at a time as they glide (Wave; nil: straight from
+// the levels), which its drawing asks for at every frame it paints.
 type sessionOverlayAnimation struct {
 	Motion bool
 	Phase  float64
-	Wave   *layout.Wave
+	Wave   func(time.Time) layout.Wave
 }
 
 type sessionOverlayMeasurement struct {
@@ -115,9 +116,6 @@ func sessionOverlayView(
 		context.DisableAnimations()
 	}
 	switch {
-	case animation.Wave != nil && (state.Mode == ovRecording || state.Mode == ovAnswer && state.Card != nil && state.Card.Recording):
-		// The waveform glides: a frame whenever the display shows one.
-		context.AnimationFrame()
 	case animation.Motion && (state.Mode == ovRecording || state.Mode == ovWorking || state.Mode == ovAnswer && state.Card != nil && (state.Card.Recording || state.Card.Busy && !state.Card.Conversation)):
 		context.After(layout.Tick)
 	case state.Mode == ovRecording && layoutState.ShowTime:

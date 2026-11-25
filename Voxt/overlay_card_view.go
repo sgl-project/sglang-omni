@@ -4,6 +4,7 @@ package main
 
 import (
 	"math"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -105,7 +106,7 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 	}
 	ui.Icon(context, icon.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Opacity(ovCardIconA(card)).Shrink(0).Label(sessionCardKindLabel(card.Kind))
 	if card.Conversation {
-		cardWave(context, waveBars(card.Levels[:], animation.Wave), card.Recording, card.Heard, animation.Motion, animation.Phase)
+		cardWave(context, card.Levels[:], animation.Wave, card.Recording, card.Heard, animation.Motion, animation.Phase)
 		ui.Spacer(context)
 	} else {
 		if !sessionCardLanguageCapsule(card) {
@@ -273,20 +274,31 @@ func cardLanguage(context *ui.Context, card *sessionCardViewState, actions sessi
 	})
 }
 
-func cardWave(context *ui.Context, bars layout.Wave, recording, heard, motion bool, phase float64) {
+// cardWave draws a conversation's waveform in the card's header: the
+// waveform's bars at 84 % by 82 %, gliding as the pill's do (glide, the
+// bars at a time; nil: the levels' own); still, quiet heights until the
+// first audio.
+func cardWave(context *ui.Context, levels []float64, glide func(time.Time) layout.Wave, recording, heard, motion bool, phase float64) {
 	const scaleX, scaleY = 0.84, 0.82
 	quiet := [...]float32{3.2, 3.9, 4.6, 5.1, 4.2, 3.5, 4.4, 4.9}
-	label := i18n.T("Input level")
-	ui.Row(context.Key("ov-card-wave")).Width(layout.CardWaveW).Height(layout.CardIcon).Shrink(0).Gap(layout.WaveBarGap * scaleX).AlignItems(ui.Center).Label(label).Children(func() {
+	live := recording && heard
+	if !live {
+		glide = nil
+	}
+	wave := newWaveDraw(context, levels, glide, phase)
+	ui.Box(context.Key("ov-card-wave")).Width(layout.CardWaveW).Height(layout.CardIcon).Shrink(0).Label(i18n.T("Input level")).Draw(func(p *ui.Painter, r ui.Rect) {
+		bars, phase := wave.at(p)
 		for index, level := range bars {
 			height := quiet[index%len(quiet)] * scaleY
-			if recording && heard {
+			if live {
 				height = (layout.WaveBarMinH + (layout.WaveBarMaxH-layout.WaveBarMinH)*float32(level)) * scaleY
 				if motion {
 					height += float32(layout.WaveIdle(index, level, phase)) * scaleY
 				}
 			}
-			ui.Box(context).Width(layout.WaveBarW*scaleX).Height(height).Radius(layout.WaveBarR).Gradient(ui.RGBA(255, 255, 255, 0.98), ui.RGBA(255, 255, 255, 0.8), 180).Shrink(0)
+			x := r.X + float32(index)*(layout.WaveBarW+layout.WaveBarGap)*scaleX
+			bar := ui.Rect{X: x, Y: r.Y + (r.H-height)/2, W: layout.WaveBarW * scaleX, H: height}
+			p.FillGradient(bar, ui.LinearGradient{From: ui.RGBA(255, 255, 255, 0.98), To: ui.RGBA(255, 255, 255, 0.8), Angle: 180}, layout.WaveBarR)
 		}
 	})
 }

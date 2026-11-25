@@ -437,19 +437,18 @@ func (a *app) closeOverlay() {
 
 func (a *app) overlayMotion() bool { return a.overlayNative() && !a.prefs.Appearance.ReduceMotion }
 
-// overlayWave are the waveform's bars now, gliding between the levels as
-// they come (a.wave, fed in sessionChanged as they arrive); nil when
-// nothing records or nothing moves, and the bars are the levels' own. It
-// feeds the player too, which changes nothing for levels it has and shows
-// a snapshot set without sessionChanged (the overlay's check) as it is.
-func (a *app) overlayWave() *layout.Wave {
+// overlayWave gives the waveform's bars at a time, gliding between the
+// levels as they come (a.wave, fed in sessionChanged as they arrive), for
+// the waveform's drawing to ask at every frame it paints; nil when nothing
+// records or nothing moves, and the bars are the levels' own. It feeds the
+// player too, which changes nothing for levels it has and shows a snapshot
+// set without sessionChanged (the overlay's check) as it is.
+func (a *app) overlayWave() func(time.Time) layout.Wave {
 	if !a.overlayMotion() || a.sess.State != session.Recording {
 		return nil
 	}
-	now := time.Now()
-	a.wave.Feed(a.sess.ID, a.sess.Levels, a.sess.LevelCount, now)
-	bars := a.wave.Bars(now)
-	return &bars
+	a.wave.Feed(a.sess.ID, a.sess.Levels, a.sess.LevelCount, time.Now())
+	return a.wave.Bars
 }
 
 func (a *app) overlayPhase() float64 {

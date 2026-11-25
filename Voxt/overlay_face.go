@@ -40,15 +40,15 @@ func faceStyle(c *ui.Context, e ui.Element, radius, alpha float32) ui.Element {
 
 // pillLook is how the pill draws: with the time, its live text in lines
 // (Overlay.LiveLines) and their scroll (nil: a preview's, following the
-// end), moving, at phase seconds, its waveform gliding (wave; nil: straight
-// from the levels), w DIPs wide.
+// end), moving, at phase seconds, its waveform gliding (wave, the bars at a
+// time; nil: straight from the levels), w DIPs wide.
 type pillLook struct {
 	time   bool
 	lines  bool
 	scroll *linesScroll
 	motion bool
 	phase  float64
-	wave   *layout.Wave
+	wave   func(time.Time) layout.Wave
 	w      int
 }
 
