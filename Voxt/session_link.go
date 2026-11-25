@@ -333,7 +333,7 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 
 // sessionModel is how a session (and its history entry) names a model.
 func sessionModel(m local.Model) session.Model {
-	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID}
+	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID, Remote: m.Remote}
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
