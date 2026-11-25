@@ -20,6 +20,10 @@ const partsTogether = 4
 // cleanPartsTogether is cleanParts with the requests side by side: the
 // draft shows the answers in order, up to the first part not answered yet.
 func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
+	return r.cleanPartsTogetherGeneration(text, parts, answered, think, ctx, 0)
+}
+
+func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, answered []string, think *llm.Thinking, ctx context.Context, generation uint64) (string, string, error) {
 	answers := make([]string, len(parts))
 	copy(answers, answered)
 	fails := make([]error, len(parts))
@@ -44,11 +48,18 @@ func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []s
 			so = append(so, compose.PartialOutput(drafts[n].String(), parts[n].Text, parts[n].Custom()))
 		}
 		draft := r.draftSnippets(compose.JoinParts(parts[:min(n+1, len(parts))], so), parts[:min(n+1, len(parts))])
-		r.m.update(r, func(s *Snapshot) {
-			if ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupDecisionOpenLocked() {
+		raw := ""
+		visible := r.m.updateIf(r, func(s *Snapshot) bool {
+			raw = s.Raw
+			if ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupGeneration == generation && r.cleanupDecisionOpenLocked() {
 				s.Draft = draft
+				return true
 			}
+			return false
 		})
+		if visible {
+			r.noteCleanDraftPublication(generation, r.now(), draft, raw)
+		}
 	}
 	slots := make(chan struct{}, partsTogether)
 	var wg sync.WaitGroup

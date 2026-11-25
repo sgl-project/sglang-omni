@@ -89,6 +89,23 @@ func (clock *softDeadlineClock) Fire(t *testing.T, index int) {
 	callback()
 }
 
+func (clock *softDeadlineClock) FireNext(t *testing.T) {
+	t.Helper()
+	clock.mu.Lock()
+	for index, timer := range clock.timers {
+		if timer.fired || timer.stopped {
+			continue
+		}
+		clock.timers[index].fired = true
+		callback := timer.callback
+		clock.mu.Unlock()
+		callback()
+		return
+	}
+	clock.mu.Unlock()
+	t.Fatal("no active deadline timer")
+}
+
 type cleanupGateLLM struct {
 	started    chan llm.Request
 	release    chan struct{}

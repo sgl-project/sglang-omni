@@ -147,6 +147,7 @@ func TestLivePolishLeavesNothingAfterStop(t *testing.T) {
 	full := "Hello there. How are you?"
 	model := newLiveLLM()
 	h := newHarness(t, &fakeStreamer{final: full, partials: []string{"Hello there.", "Hello there. How are", full}}, model, nil)
+	signals := observeInitializationTimings(h)
 	id := h.start()
 	model.waitAnswered(t, full)
 	before := len(model.requests())
@@ -157,6 +158,11 @@ func TestLivePolishLeavesNothingAfterStop(t *testing.T) {
 	}
 	if n := len(model.requests()); n != before {
 		t.Errorf("%d requests after Stop, want none", n-before)
+	}
+	waitInitializationSignal(t, signals.cleanedResult, "reused Live Polish result publication")
+	waitInitializationSignal(t, signals.cleanedPublished, "reused Live Polish cleaned publication")
+	if _, ok := optionalBenchmarkTime(signals.cleanedDraft); ok {
+		t.Fatal("Live Polish result was reported as a session draft publication")
 	}
 }
 

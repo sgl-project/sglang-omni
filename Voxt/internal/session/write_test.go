@@ -623,6 +623,22 @@ func (p *prefillLLM) Prefill(_ context.Context, req llm.Request) error {
 	return nil
 }
 
+type blockingPrefillLLM struct {
+	*fakeLLM
+	started  chan llm.Request
+	release  <-chan struct{}
+	returned chan struct{}
+}
+
+func (p *blockingPrefillLLM) Prefill(_ context.Context, request llm.Request) error {
+	p.started <- request
+	<-p.release
+	p.returned <- struct{}{}
+	return nil
+}
+
+func (p *blockingPrefillLLM) CanPrefill() bool { return true }
+
 // TestWarmLLM: while the user speaks, the session warms a model with a
 // prompt cache up with the prompt it will send, but for the text:
 // Transcribe's clean-up and Translate of speech, not Rewrite (its prompt
@@ -675,6 +691,50 @@ func TestWarmLLM(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTranslateAutoTargetWarmupDoesNotBlockRecognition(t *testing.T) {
+	release, releasePrefill := controlledRelease(t)
+	model := &blockingPrefillLLM{
+		fakeLLM: &fakeLLM{text: "早上好。"}, started: make(chan llm.Request, 1),
+		release: release, returned: make(chan struct{}, 1),
+	}
+	h := newHarness(t, &fakeStreamer{final: "おはようございます"}, model, func(_ *Config, s *settings.Settings) {
+		s.General.MainLanguage, s.Features.Translate.Target = "zh", "ja"
+	})
+	drained := readinessRecording(h.audio, 4)
+	signals := observeInitializationTimings(h)
+	id, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitInitializationSignal(t, signals.asrOpenDone, "Translate ASR Open")
+	var warmup llm.Request
+	select {
+	case warmup = <-model.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Translate warmup did not start")
+	}
+	waitInitializationSignal(t, drained, "fixed recording to drain")
+	h.m.Stop(id)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "早上好。" || end.TargetLanguage != "zh-Hans" || len(h.text.pastes()) != 1 {
+		t.Fatalf("Translate result=%+v deliveries=%q", end, h.text.pastes())
+	}
+	if warmup.Skill != llm.SkillTranslateText || len(warmup.Messages) == 0 || !strings.Contains(warmup.Messages[0].Content, "翻译成日语") {
+		t.Fatalf("warmup request was not prepared from the initial automatic target: %+v", warmup)
+	}
+	chats := model.requests()
+	if len(chats) != 1 || !strings.Contains(chats[0].Messages[0].Content, "简体中文") {
+		t.Fatalf("Translate did not select the source-dependent target: %+v", chats)
+	}
+	select {
+	case <-model.returned:
+		t.Fatal("blocked Prefill delayed its gate until after session delivery")
+	default:
+	}
+	releasePrefill()
+	waitInitializationSignal(t, model.returned, "blocked Prefill to return")
 }
 
 // TestTranslateOpensNoSpeechModelItDoesNotUse: a selection to translate

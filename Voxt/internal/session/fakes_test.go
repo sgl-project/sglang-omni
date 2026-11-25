@@ -410,7 +410,11 @@ func (s *fakeStream) Finish() error {
 		}
 	}
 	if s.f.finishGate != nil {
-		<-s.f.finishGate
+		select {
+		case <-s.f.finishGate:
+		case <-s.ctx.Done():
+			return &asr.Error{Kind: asr.KindCancelled, Detail: s.ctx.Err().Error()}
+		}
 	}
 	switch {
 	case s.f.hang:
@@ -437,10 +441,12 @@ func (s *fakeStream) Events() <-chan asr.Event { return s.events }
 
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
-	text string
-	said string // the language it reports (asr.Result.Lang)
-	err  error
-	hang bool
+	text              string
+	said              string // the language it reports (asr.Result.Lang)
+	err               error
+	hang              bool
+	transcribeGate    <-chan struct{}
+	transcribeStarted chan<- struct{}
 
 	mu     sync.Mutex
 	calls  int
@@ -460,6 +466,19 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.audio = req.Audio
 	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
+	if f.transcribeStarted != nil {
+		select {
+		case f.transcribeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.transcribeGate != nil {
+		select {
+		case <-f.transcribeGate:
+		case <-ctx.Done():
+			return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
+		}
+	}
 	if f.hang {
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}

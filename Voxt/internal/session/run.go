@@ -38,13 +38,13 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx         context.Context
-	llmStop        context.CancelFunc
-	firstCleanText atomic.Bool
-	skipped        atomic.Bool
-	stopped        atomic.Bool
-	rethink        atomic.Bool
-	cleanupWake    chan struct{}
+	llmCtx                context.Context
+	llmStop               context.CancelFunc
+	firstCleanPublication atomic.Bool
+	skipped               atomic.Bool
+	stopped               atomic.Bool
+	rethink               atomic.Bool
+	cleanupWake           chan struct{}
 	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
 	// here before waking the session owner; only the owner delivers one.
 	cleanupChoice           cleanupChoice
@@ -55,6 +55,8 @@ type run struct {
 	cleanupWorkerRunning    bool
 	cleanupCandidate        *cleanupOutput
 	cleanupOutput           cleanupOutput
+	cleanDraftGeneration    uint64
+	cleanDraftAt            time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -371,6 +373,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
 			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx, KeepClipboard: r.settings.General.CopyResult})
 		cancel()
+		if dres.Inserted {
+			r.logTiming("paste_completed")
+		}
 		if r.cancelled.Load() && errors.Is(dres.Err, context.Canceled) {
 			// Cancelled before the paste was sent: nothing went in.
 			r.endCancelled(nil)

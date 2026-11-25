@@ -31,12 +31,14 @@ type initializationDelayCase struct {
 
 type initializationLatencySample struct {
 	openStart, open, captured, sent, partial                time.Duration
-	asrFinal, cleanText, cleanup, paste                     time.Duration
+	asrFinal, cleanDraft, cleanResult, cleanPublication     time.Duration
+	cleanup, delivery, paste                                time.Duration
 	audioDuration                                           time.Duration
 	pcmBytes, frames, prefillCalls, chatsBefore, chatsAfter int
 	insertions                                              int
 	cleanupOutcome, deliveredText                           string
-	cleanTextBeforeStop, finalEqual, livePolishReuse        bool
+	hasCleanDraft, hasCleanResult, hasCleanPublication      bool
+	hasPaste, finalEqual, livePolishReuse, livePolish       bool
 }
 
 type initializationBenchmarkLLM struct {
@@ -235,13 +237,12 @@ func runInitializationLatencySample(b *testing.B, delays initializationDelayCase
 	}
 	asrFinal := receiveBenchmarkTime(b, signals.asrFinal, "ASR Final")
 	cleanupDone := receiveBenchmarkTime(b, signals.cleanupComplete, "cleanup completion")
-	pasteDone := receiveBenchmarkTime(b, signals.deliveryComplete, "delivery completion")
+	deliveryDone := receiveBenchmarkTime(b, signals.deliveryComplete, "delivery completion")
 	end := waitBenchmarkEnd(b, h)
-	cleanTextAt, gotCleanText := optionalBenchmarkTime(signals.cleanupFirstText)
-	cleanText := time.Duration(-1)
-	if gotCleanText && !cleanTextAt.Before(stopAt) {
-		cleanText = cleanTextAt.Sub(stopAt)
-	}
+	cleanDraftAt, gotCleanDraft := optionalBenchmarkTime(signals.cleanedDraft)
+	cleanResultAt, gotCleanResult := optionalBenchmarkTime(signals.cleanedResult)
+	cleanPublicationAt, gotCleanPublication := optionalBenchmarkTime(signals.cleanedPublished)
+	pasteAt, gotPaste := optionalBenchmarkTime(signals.pasteComplete)
 	finalDelivered := ""
 	insertions := 0
 	if pasted := h.text.pastes(); len(pasted) > 0 {
@@ -255,6 +256,19 @@ func runInitializationLatencySample(b *testing.B, delays initializationDelayCase
 	if got := h.audio.recorded(); got != frames {
 		b.Fatalf("fixed recording frames=%d, expected=%d", got, frames)
 	}
+	cleanDraft, cleanResult, cleanPublication, paste := time.Duration(0), time.Duration(0), time.Duration(0), time.Duration(0)
+	if gotCleanDraft {
+		cleanDraft = cleanDraftAt.Sub(stopAt)
+	}
+	if gotCleanResult {
+		cleanResult = cleanResultAt.Sub(stopAt)
+	}
+	if gotCleanPublication {
+		cleanPublication = cleanPublicationAt.Sub(stopAt)
+	}
+	if gotPaste {
+		paste = pasteAt.Sub(stopAt)
+	}
 	if len(finalDelivered) == 0 || finalDelivered != end.Result || insertions != 1 {
 		b.Fatalf("final delivery text=%q, session result=%q, insertions=%d", finalDelivered, end.Result, insertions)
 	}
@@ -262,13 +276,16 @@ func runInitializationLatencySample(b *testing.B, delays initializationDelayCase
 	sample := initializationLatencySample{
 		openStart: openStart.Sub(started), open: openDone.Sub(started), captured: captured.Sub(started),
 		sent: sent.Sub(started), partial: partial.Sub(started), asrFinal: asrFinal.Sub(stopAt),
-		cleanText: cleanText, cleanup: cleanupDone.Sub(stopAt), paste: pasteDone.Sub(stopAt),
+		cleanDraft: cleanDraft, cleanResult: cleanResult, cleanPublication: cleanPublication,
+		cleanup: cleanupDone.Sub(stopAt), delivery: deliveryDone.Sub(stopAt), paste: paste,
 		audioDuration: pcmDuration(pcmBytes), pcmBytes: pcmBytes, frames: frames,
 		prefillCalls: int(model.prefills.Load()), chatsBefore: int(model.chatsBefore.Load()),
 		chatsAfter: int(model.chatsAfter.Load()), insertions: insertions, cleanupOutcome: outcome,
-		deliveredText: finalDelivered, cleanTextBeforeStop: gotCleanText && cleanTextAt.Before(stopAt),
+		deliveredText: finalDelivered, hasCleanDraft: gotCleanDraft, hasCleanResult: gotCleanResult,
+		hasCleanPublication: gotCleanPublication, hasPaste: gotPaste,
 		finalEqual:      finalDelivered == end.Result,
 		livePolishReuse: delays.livePolish && model.chatsBefore.Load() > 0 && model.chatsAfter.Load() == 0,
+		livePolish:      delays.livePolish,
 	}
 	h.m.Close()
 	return sample
@@ -354,16 +371,17 @@ func benchmarkCleanupOutcome(h *harness) string {
 
 func reportLatencyPercentiles(b *testing.B, prefix string, samples []initializationLatencySample) {
 	b.Helper()
-	report := func(name string, value func(initializationLatencySample) time.Duration) {
+	report := func(name string, value func(initializationLatencySample) (time.Duration, bool)) {
 		values := make([]float64, 0, len(samples))
 		for _, sample := range samples {
-			duration := value(sample)
-			if duration >= 0 {
+			duration, ok := value(sample)
+			if ok {
 				values = append(values, float64(duration)/float64(time.Millisecond))
 			}
 		}
+		b.ReportMetric(float64(len(values)), prefix+"_"+name+"_valid_n")
 		if len(values) == 0 {
-			b.Logf("%s_%s_ms=N/A", prefix, name)
+			b.Logf("%s_%s_ms=N/A valid_n=0", prefix, name)
 			return
 		}
 		sort.Float64s(values)
@@ -379,15 +397,20 @@ func reportLatencyPercentiles(b *testing.B, prefix string, samples []initializat
 		b.ReportMetric(p95, prefix+"_"+name+"_p95_ms")
 	}
 	b.ReportMetric(float64(len(samples)), prefix+"_samples")
-	report("start_to_asr_open_start", func(s initializationLatencySample) time.Duration { return s.openStart })
-	report("start_to_asr_open_complete", func(s initializationLatencySample) time.Duration { return s.open })
-	report("start_to_first_pcm_captured", func(s initializationLatencySample) time.Duration { return s.captured })
-	report("start_to_first_pcm_sent", func(s initializationLatencySample) time.Duration { return s.sent })
-	report("start_to_first_asr_partial", func(s initializationLatencySample) time.Duration { return s.partial })
-	report("stop_to_asr_final", func(s initializationLatencySample) time.Duration { return s.asrFinal })
-	report("stop_to_first_visible_clean_text", func(s initializationLatencySample) time.Duration { return s.cleanText })
-	report("stop_to_cleanup_complete", func(s initializationLatencySample) time.Duration { return s.cleanup })
-	report("stop_to_delivery", func(s initializationLatencySample) time.Duration { return s.paste })
+	report("start_to_asr_open_start", func(s initializationLatencySample) (time.Duration, bool) { return s.openStart, true })
+	report("start_to_asr_open", func(s initializationLatencySample) (time.Duration, bool) { return s.open, true })
+	report("start_to_first_pcm_captured", func(s initializationLatencySample) (time.Duration, bool) { return s.captured, true })
+	report("start_to_first_pcm_sent", func(s initializationLatencySample) (time.Duration, bool) { return s.sent, true })
+	report("start_to_first_asr_partial", func(s initializationLatencySample) (time.Duration, bool) { return s.partial, true })
+	report("stop_to_asr_final", func(s initializationLatencySample) (time.Duration, bool) { return s.asrFinal, true })
+	report("stop_to_first_cleaned_draft_publication", func(s initializationLatencySample) (time.Duration, bool) { return s.cleanDraft, s.hasCleanDraft })
+	report("stop_to_first_cleaned_result_publication", func(s initializationLatencySample) (time.Duration, bool) { return s.cleanResult, s.hasCleanResult })
+	report("stop_to_first_cleaned_publication", func(s initializationLatencySample) (time.Duration, bool) {
+		return s.cleanPublication, s.hasCleanPublication
+	})
+	report("stop_to_cleanup_complete", func(s initializationLatencySample) (time.Duration, bool) { return s.cleanup, true })
+	report("stop_to_delivery", func(s initializationLatencySample) (time.Duration, bool) { return s.delivery, true })
+	report("stop_to_paste", func(s initializationLatencySample) (time.Duration, bool) { return s.paste, s.hasPaste })
 }
 
 func reportInitializationCounts(b *testing.B, prefix string, samples []initializationLatencySample) {
@@ -406,11 +429,11 @@ func reportInitializationCounts(b *testing.B, prefix string, samples []initializ
 	b.ReportMetric(mean(func(s initializationLatencySample) int { return s.chatsBefore }), prefix+"_chat_requests_before_stop_per_sample")
 	b.ReportMetric(mean(func(s initializationLatencySample) int { return s.chatsAfter }), prefix+"_chat_requests_after_stop_per_sample")
 	b.ReportMetric(mean(func(s initializationLatencySample) int { return s.insertions }), prefix+"_insertions_per_sample")
-	var visibleBeforeStop, equal, reused int
-	var outcome string
+	var cleanPublicationBeforeStop, equal, reused, livePolishEligible int
+	outcomes := make(map[string]int)
 	for _, sample := range samples {
-		if sample.cleanTextBeforeStop {
-			visibleBeforeStop++
+		if sample.hasCleanPublication && sample.cleanPublication < 0 {
+			cleanPublicationBeforeStop++
 		}
 		if sample.finalEqual {
 			equal++
@@ -418,14 +441,16 @@ func reportInitializationCounts(b *testing.B, prefix string, samples []initializ
 		if sample.livePolishReuse {
 			reused++
 		}
-		if outcome == "" {
-			outcome = sample.cleanupOutcome
-		} else if outcome != sample.cleanupOutcome {
-			outcome = "mixed"
+		if sample.livePolish {
+			livePolishEligible++
 		}
+		outcomes[sample.cleanupOutcome]++
 	}
-	b.Logf("%s cleanup_outcome=%s final_delivered_equal=%d/%d clean_text_before_stop=%d/%d live_polish_reuse=%d/%d prefill_calls=%d chat_before_stop=%d chat_after_stop=%d insertions=%d/%d",
-		prefix, outcome, equal, total, visibleBeforeStop, total, reused, total,
+	b.Logf("%s cleanup_outcome_counts=%v final_delivered_equal=%d/%d cleaned_publication_before_stop=%d/%d live_polish_reuse=%d/%d",
+		prefix, outcomes, equal, total, cleanPublicationBeforeStop, total, reused, livePolishEligible,
+	)
+	b.Logf("%s prefill_calls=%d chat_before_stop=%d chat_after_stop=%d insertions=%d/%d",
+		prefix,
 		int(mean(func(s initializationLatencySample) int { return s.prefillCalls })*float64(total)),
 		int(mean(func(s initializationLatencySample) int { return s.chatsBefore })*float64(total)),
 		int(mean(func(s initializationLatencySample) int { return s.chatsAfter })*float64(total)),

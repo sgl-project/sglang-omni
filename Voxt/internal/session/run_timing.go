@@ -1,24 +1,60 @@
 package session
 
+import (
+	"strings"
+	"time"
+)
+
 func (r *run) noteVisibleCleanupResult(result string) {
-	if result == "" {
+	if strings.TrimSpace(result) == "" {
 		return
 	}
 	r.m.mu.Lock()
-	cleaned := r.cleanupOutcome == cleanupOutcomeCleaned
-	r.m.mu.Unlock()
-	if cleaned {
-		r.noteVisibleCleanupText()
+	cleaned := r.cleanupOutcome == cleanupOutcomeCleaned && !r.firstCleanPublication.Load()
+	generation := r.cleanupOutput.generation
+	draftAt := time.Time{}
+	if r.cleanDraftGeneration == generation {
+		draftAt = r.cleanDraftAt
 	}
+	if cleaned {
+		r.firstCleanPublication.Store(true)
+	}
+	r.m.mu.Unlock()
+	if !cleaned {
+		return
+	}
+	resultAt := r.now()
+	if !draftAt.IsZero() {
+		r.logTimingAt("first_cleaned_draft_published", draftAt)
+	}
+	r.logTimingAt("first_cleaned_result_published", resultAt)
+	publicationAt := resultAt
+	if !draftAt.IsZero() && draftAt.Before(publicationAt) {
+		publicationAt = draftAt
+	}
+	r.logTimingAt("first_cleaned_publication", publicationAt)
 }
 
-func (r *run) noteVisibleCleanupText() {
-	if r.firstCleanText.CompareAndSwap(false, true) {
-		r.logTiming("cleanup_first_visible_text")
+func (r *run) noteCleanDraftPublication(generation uint64, at time.Time, draft, raw string) {
+	draft, raw = strings.TrimSpace(draft), strings.TrimSpace(raw)
+	if at.IsZero() || draft == "" || raw != "" && strings.HasPrefix(raw, draft) {
+		return
+	}
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	if r.ended || generation != r.cleanupGeneration || !r.cleanupChoiceOpenLocked() {
+		return
+	}
+	if r.cleanDraftGeneration != generation || r.cleanDraftAt.IsZero() || at.Before(r.cleanDraftAt) {
+		r.cleanDraftGeneration, r.cleanDraftAt = generation, at
 	}
 }
 
 func (r *run) logTiming(event string) {
+	r.logTimingAt(event, r.now())
+}
+
+func (r *run) logTimingAt(event string, at time.Time) {
 	startedAt := r.m.snapshot(r).StartedAt
-	r.logf("debug", "timing event=%s elapsed=%v", event, r.now().Sub(startedAt).Round(1_000_000))
+	r.logf("debug", "timing event=%s elapsed=%v at_unix_nano=%d", event, at.Sub(startedAt).Round(1_000_000), at.UnixNano())
 }

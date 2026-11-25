@@ -136,11 +136,14 @@ func (r *run) listen() (string, bool) {
 	sceneDone = r.sceneReadySignal()
 	maybeWarm := func() {
 		cleanupReady := !r.init.split || r.init.cleanupReady
-		if warmed || !openReturned || openDone != nil || !cleanupReady || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
+		if warmed || !openReturned || openDone != nil || !cleanupReady || r.sceneReadySignal() != nil || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
 			return
 		}
 		warmed = true
-		go r.warmLLM()
+		prefiller, ctx, request, ok := r.prepareWarmup()
+		if ok {
+			go prefiller.Prefill(ctx, request)
+		}
 	}
 	open := func() chan openResult {
 		st, ok := r.streamer()
@@ -416,7 +419,7 @@ func (r *run) listen() (string, bool) {
 	asrStart := r.now()
 
 	if r.init.split || !r.resolved {
-		if !r.awaitASRReadiness(stream, startOpen) {
+		if !r.awaitASRReadiness(stream, startOpen, &sceneDone) {
 			return "", false
 		}
 	}
@@ -434,6 +437,13 @@ func (r *run) listen() (string, bool) {
 			case <-r.ctx.Done():
 				r.endCancelled(stream)
 				return "", false
+			case <-sceneDone:
+				sceneDone = nil
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(stream)
+					return "", false
+				}
+				r.markSceneReady()
 			case o := <-openDone:
 				openDone = nil
 				openReturned = true
@@ -513,7 +523,12 @@ func (r *run) listen() (string, bool) {
 		}
 		sent := asr.Duration(upload, asr.SampleRate)
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
-		res, err = ft.Transcribe(actx, asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20})
+		request := asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20}
+		var ok bool
+		res, err, ok = r.transcribeFile(actx, ft, request, &sceneDone)
+		if !ok {
+			return "", false
+		}
 		if err != nil && actx.Err() != nil {
 			err = r.ctxErr(actx)
 		}

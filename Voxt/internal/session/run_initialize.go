@@ -131,8 +131,15 @@ func (r *run) needsSpeechHints() bool {
 }
 
 func (r *run) sceneReadySignal() <-chan struct{} {
-	if !r.init.split || r.init.sceneReady {
+	if r.init.sceneReady {
 		return nil
+	}
+	if !r.init.split {
+		select {
+		case <-r.sc.done:
+			return nil
+		default:
+		}
 	}
 	return r.sc.done
 }

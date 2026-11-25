@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,10 +30,13 @@ type initializationSignals struct {
 	firstPartial     chan time.Time
 	asrFinal         chan time.Time
 	llmRequest       chan time.Time
-	cleanupFirstText chan time.Time
+	cleanedDraft     chan time.Time
+	cleanedResult    chan time.Time
+	cleanedPublished chan time.Time
 	cleanupReady     chan time.Time
 	cleanupComplete  chan time.Time
 	deliveryComplete chan time.Time
+	pasteComplete    chan time.Time
 }
 
 func observeInitializationTimings(h *harness) initializationSignals {
@@ -42,40 +46,57 @@ func observeInitializationTimings(h *harness) initializationSignals {
 		asrOpenStarted: make(chan time.Time, 1), asrOpenDone: make(chan time.Time, 1),
 		firstPCMCaptured: make(chan time.Time, 1), firstPCM: make(chan time.Time, 1),
 		firstPartial: make(chan time.Time, 1), asrFinal: make(chan time.Time, 1),
-		llmRequest: make(chan time.Time, 1), cleanupFirstText: make(chan time.Time, 1),
+		llmRequest: make(chan time.Time, 1), cleanedDraft: make(chan time.Time, 1),
+		cleanedResult: make(chan time.Time, 1), cleanedPublished: make(chan time.Time, 1),
 		cleanupReady: make(chan time.Time, 1), cleanupComplete: make(chan time.Time, 1),
-		deliveryComplete: make(chan time.Time, 1),
+		deliveryComplete: make(chan time.Time, 1), pasteComplete: make(chan time.Time, 1),
 	}
 	channels := map[string]chan time.Time{
-		"session_started":            signals.sessionStarted,
-		"asr_resolve_completed":      signals.asrResolveDone,
-		"llm_resolve_started":        signals.llmResolveStart,
-		"llm_resolve_completed":      signals.llmResolveDone,
-		"asr_open_started":           signals.asrOpenStarted,
-		"asr_open_completed":         signals.asrOpenDone,
-		"first_pcm_captured":         signals.firstPCMCaptured,
-		"first_pcm_sent":             signals.firstPCM,
-		"first_asr_partial":          signals.firstPartial,
-		"asr_final_completed":        signals.asrFinal,
-		"llm_request_started":        signals.llmRequest,
-		"cleanup_first_visible_text": signals.cleanupFirstText,
-		"cleanup_context_ready":      signals.cleanupReady,
-		"cleanup_completed":          signals.cleanupComplete,
-		"delivery_completed":         signals.deliveryComplete,
+		"session_started":                signals.sessionStarted,
+		"asr_resolve_completed":          signals.asrResolveDone,
+		"llm_resolve_started":            signals.llmResolveStart,
+		"llm_resolve_completed":          signals.llmResolveDone,
+		"asr_open_started":               signals.asrOpenStarted,
+		"asr_open_completed":             signals.asrOpenDone,
+		"first_pcm_captured":             signals.firstPCMCaptured,
+		"first_pcm_sent":                 signals.firstPCM,
+		"first_asr_partial":              signals.firstPartial,
+		"asr_final_completed":            signals.asrFinal,
+		"llm_request_started":            signals.llmRequest,
+		"first_cleaned_draft_published":  signals.cleanedDraft,
+		"first_cleaned_result_published": signals.cleanedResult,
+		"first_cleaned_publication":      signals.cleanedPublished,
+		"cleanup_context_ready":          signals.cleanupReady,
+		"cleanup_completed":              signals.cleanupComplete,
+		"delivery_completed":             signals.deliveryComplete,
+		"paste_completed":                signals.pasteComplete,
 	}
 	previous := h.m.cfg.Log
 	h.m.cfg.Log = func(level, message string) {
 		previous(level, message)
 		for event, signal := range channels {
 			if strings.Contains(message, "timing event="+event+" ") {
+				at := initializationTimingAt(message)
 				select {
-				case signal <- time.Now():
+				case signal <- at:
 				default:
 				}
 			}
 		}
 	}
 	return signals
+}
+
+func initializationTimingAt(message string) time.Time {
+	for _, field := range strings.Fields(message) {
+		if value, ok := strings.CutPrefix(field, "at_unix_nano="); ok {
+			nanos, err := strconv.ParseInt(value, 10, 64)
+			if err == nil {
+				return time.Unix(0, nanos)
+			}
+		}
+	}
+	return time.Now()
 }
 
 func waitInitializationSignal[T any](t testing.TB, signal <-chan T, what string) {

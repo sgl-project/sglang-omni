@@ -1,8 +1,8 @@
 package session
 
 import (
+	"context"
 	"strings"
-	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
@@ -10,41 +10,36 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-func (r *run) warmLLM() {
+func (r *run) prepareWarmup() (llm.Prefiller, context.Context, llm.Request, bool) {
 	r.m.mu.Lock()
 	client, ctx := r.svc.LLM, r.llmCtx
 	r.m.mu.Unlock()
 	prefiller, ok := client.(llm.Prefiller)
-	if !ok {
-		return
+	if !ok || ctx == nil {
+		return nil, nil, llm.Request{}, false
 	}
 	if capability, ok := client.(llm.PrefillCapability); ok && !capability.CanPrefill() {
-		return
+		return nil, nil, llm.Request{}, false
 	}
 	var input compose.Input
 	var skill llm.Skill
 	switch r.req.Kind {
 	case store.KindTranscribe:
 		if !r.transcribeCleanup() {
-			return
+			return nil, nil, llm.Request{}, false
 		}
 		input, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance
 	case store.KindTranslate:
 		input, skill = r.writeInput("", ""), llm.SkillTranslateText
 	default:
-		return
+		return nil, nil, llm.Request{}, false
 	}
 	output, err := compose.Build(input)
 	if err != nil {
-		return
+		return nil, nil, llm.Request{}, false
 	}
 	request := llm.Request{Skill: skill, Messages: llmMessages(output)}
-	start := r.now()
-	if err := prefiller.Prefill(ctx, request); err != nil && r.ctx.Err() == nil {
-		r.logf("info", "warming the language model up: %v", err)
-	} else if err == nil {
-		r.logf("debug", "warmed the language model up in %v", r.now().Sub(start).Round(time.Millisecond))
-	}
+	return prefiller, ctx, request, true
 }
 
 // transcribeInput is Transcribe's request to compose for raw, its
