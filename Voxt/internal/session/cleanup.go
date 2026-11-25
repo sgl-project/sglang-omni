@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,6 +12,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -119,10 +121,10 @@ func (r *run) transcribe(text string) {
 				return
 			}
 			r.cleanupWorkerRunning = true
-			generation := r.cleanupGeneration
+			request := cleanupRequest{generation: r.cleanupGeneration, ctx: r.llmCtx, thinking: r.think}
 			r.m.mu.Unlock()
 			go func() {
-				output := r.cleanTranscribe(text, generation)
+				output := r.cleanTranscribe(text, request)
 				r.m.publishCleanupCandidate(r, output, output.generation, time.Time{})
 			}()
 		}
@@ -216,23 +218,24 @@ func (r *run) transcribeOpts() finishOpts {
 	return o
 }
 
-func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
+func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput {
 	output := cleanupOutput{text: text, completedAt: r.now()}
-	if r.cleanupMayContinue() {
-		output = r.cleanUpFirst(text)
+	if r.cleanupMayContinue() && request.ctx.Err() == nil {
+		output = r.cleanUpFirstContext(text, request)
 	}
+	r.head.drop() // what is asked again is asked anew
 	for {
-		if request, ok := r.takeRethink(); ok {
-			generation = request.generation
+		if nextRequest, ok := r.takeRethink(); ok {
+			request = nextRequest
 			output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
 			output.generation = request.generation
 			continue
 		}
 		if !r.cleanupMayContinue() {
-			return cleanupOutput{text: text, completedAt: r.now(), generation: generation}
+			return cleanupOutput{text: text, completedAt: r.now(), generation: request.generation}
 		}
 		if !r.useFallback(output.err) {
-			output.generation = generation
+			output.generation = request.generation
 			return output
 		}
 		// The fallback joins the re-ask loop: it keeps the level chosen,
@@ -242,29 +245,64 @@ func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
 			// Leave it pending for the loop's single generation-capturing path.
 			continue
 		}
-		request, ok := r.currentCleanupRequest()
+		nextRequest, ok := r.currentCleanupRequest()
 		if !ok {
 			continue
 		}
-		generation = request.generation
+		request = nextRequest
 		output = r.cleanUpOutputContext(text, request.thinking, request.ctx)
 		output.generation = request.generation
 	}
 }
 
-// cleanUpFirst is a dictation's first clean-up: what the early clean-up
+// cleanUpFirstContext is a dictation's first clean-up: what the early clean-up
 // finished while the recording went on is not asked again, only the
 // tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
 // whole text instead.
-func (r *run) cleanUpFirst(text string) cleanupOutput {
-	parts, answers, tail, failed, completedAt, ok := r.earlyCleanup().drain(text)
-	if !ok {
-		if !r.cleanupMayContinue() {
-			return cleanupOutput{text: text, completedAt: r.now()}
-		}
-		return r.cleanUpOutput(text, nil)
+//
+// note (luojiaxuan): without the speech model's stretches, the clean-ups of
+// the live text (livepolish.go) count the same way; their tail goes with the
+// end of the cleaned text before it (liveContext), after the last sentences
+// of that text that are asked again (redo).
+func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOutput {
+	if r.head.enabled && r.earlyCleanup().working() {
+		// The tail does not wait for the stretch under way.
+		r.head.send(text)
 	}
-	if len(answers) > 0 {
+	parts, answers, tail, failed, completedAt, ok := r.earlyCleanup().drain(text)
+	before := ""
+	livePath := false
+	var flight *liveFlight
+	if !ok {
+		r.liveOnce.Do(func() {})
+		var redo string
+		if r.live != nil {
+			livePath = true
+			parts, answers, redo, tail, flight = r.live.finish(text)
+			completedAt = r.now()
+			if flight != nil {
+				if result, adopted := r.live.adopt(text, flight, request); adopted {
+					r.live.mu.Lock()
+					blocks := slices.Clone(r.live.blocks)
+					r.live.mu.Unlock()
+					parts, answers, tail = laid(append(blocks, result), text)
+					redo = ""
+					completedAt = r.now()
+				}
+			}
+		}
+		if len(answers) == 0 && redo == "" {
+			if !r.cleanupMayContinue() {
+				return cleanupOutput{text: text, completedAt: r.now()}
+			}
+			if livePath && !r.publishCleanupDraft(request, "") {
+				return cleanupOutput{text: text, completedAt: r.now()}
+			}
+			return r.cleanUpOutputContext(text, nil, request.ctx)
+		}
+		before = liveContext(compose.JoinParts(parts, answers))
+		tail = joinRedo(redo, tail)
+	} else if len(answers) > 0 {
 		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
 	}
 	if strings.TrimSpace(tail) == "" {
@@ -273,15 +311,48 @@ func (r *run) cleanUpFirst(text string) cleanupOutput {
 	if !r.cleanupMayContinue() {
 		return cleanupOutput{text: text, completedAt: r.now()}
 	}
-	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
+	if livePath {
+		retained := r.draftSnippets(compose.JoinParts(parts, answers), parts)
+		if !r.publishCleanupDraft(request, retained) {
+			return cleanupOutput{text: text, completedAt: r.now()}
+		}
+	}
+	in := r.transcribeInput(tail)
+	in.Before = before
+	tailParts, err := compose.BuildParts(in)
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
-	result, profile, err := r.cleanParts(text, append(parts, tailParts...), answers, nil)
+	result, profile, err := r.cleanPartsContext(text, append(parts, tailParts...), answers, nil, request.ctx)
 	if err == nil {
 		err = failed
 	}
 	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
+}
+
+func (r *run) publishCleanupDraft(request cleanupRequest, draft string) bool {
+	return r.m.updateIf(r, func(s *Snapshot) bool {
+		if s.State != Composing || request.ctx == nil || request.ctx.Err() != nil || r.ctx.Err() != nil ||
+			r.cleanupGeneration != request.generation || !r.cleanupMayContinueLocked() {
+			return false
+		}
+		s.Draft = draft
+		return true
+	})
+}
+
+// note (luojiaxuan): joinRedo is the cleaned sentences asked again (redo,
+// without the snippets' marks, which the request marks again) and the text
+// left after them, joined as the clean-up joins Latin text (a space) or
+// Chinese (nothing).
+func joinRedo(redo, tail string) string {
+	if redo = snippet.Unmark(redo); redo == "" {
+		return tail
+	}
+	if last, _ := utf8.DecodeLastRuneInString(redo); last < utf8.RuneSelf {
+		return redo + " " + tail
+	}
+	return redo + tail
 }
 
 // cleanUp runs the language model over text, a request per part, each
@@ -321,6 +392,9 @@ func (r *run) cleanParts(text string, parts []compose.Part, answers []string, th
 }
 
 func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
+	if len(parts)-len(answers) > 1 && r.svc.LLMInfo.Remote && !r.m.resting(r.svc.LLMInfo.ID) {
+		return r.cleanPartsTogether(text, parts, answers, think, ctx)
+	}
 	var failed error
 	for i := len(answers); i < len(parts); i++ {
 		p := parts[i]
@@ -328,8 +402,7 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			return text, p.Profile(), context.DeadlineExceeded
 		}
 		draft := newDrafter(r, ctx, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
-		resp, err := r.llmChatContext(ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
+		resp, err := r.askPart(ctx, r.partRequest(text, p, think, draft.add), p.Text)
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
 			return text, p.Profile(), err
@@ -344,6 +417,9 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			answers = append(answers, p.Text)
 		default:
 			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+			if u := resp.Usage; u.PromptTokens > 0 && !u.Estimated {
+				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
+			}
 		}
 		draft.done(answers)
 	}

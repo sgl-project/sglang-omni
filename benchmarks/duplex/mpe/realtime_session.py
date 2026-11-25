@@ -123,10 +123,10 @@ def is_admission_rejection(event: dict[str, JsonValue]) -> bool:
     )
 
 
-def turn_detection_type(
+def turn_detection_block(
     session: JsonValue, protocol: RealtimeProtocolMode
-) -> JsonValue:
-    """Extract turn_detection.type from top-level legacy session or turn-based audio.input."""
+) -> dict[str, JsonValue] | None:
+    """Extract the turn_detection mapping from top-level legacy session or turn-based audio.input."""
     fields = session if isinstance(session, dict) else {}
     if protocol == "turn_based":
         audio = fields.get("audio")
@@ -135,7 +135,15 @@ def turn_detection_type(
     else:
         pass
     turn = fields.get("turn_detection")
-    return turn.get("type") if isinstance(turn, dict) else None
+    return turn if isinstance(turn, dict) else None
+
+
+def turn_detection_type(
+    session: JsonValue, protocol: RealtimeProtocolMode
+) -> JsonValue:
+    """Extract turn_detection.type from top-level legacy session or turn-based audio.input."""
+    turn = turn_detection_block(session, protocol)
+    return turn.get("type") if turn is not None else None
 
 
 async def connect_realtime_websocket(
@@ -215,6 +223,7 @@ class RealtimeEndpointSpec:
     output_sample_rate_hz: int
     turn_detection: dict[str, JsonValue] | None
     reported_model: str | None = None
+    supports_truncate: bool | None = None
     trust_env: bool = False
 
 
@@ -256,7 +265,7 @@ def sanitize_realtime_origin(endpoint_url: str) -> str:
 
 def summarize_transport_exception(exc: BaseException) -> str:
     if isinstance(exc, ProtocolSessionError):
-        return str(exc)
+        return str(exc) or type(exc).__name__
     elif isinstance(exc, httpx.HTTPStatusError):
         return f"HTTPStatusError(status={exc.response.status_code})"
     elif isinstance(exc, websockets.InvalidStatus):
@@ -311,12 +320,13 @@ def derive_realtime_urls(base_url: str) -> tuple[str, str]:
 
 def extract_session_created_capabilities(
     session_payload: dict[str, JsonValue],
-) -> tuple[RealtimeProtocolMode, int | None, int | None, str | None]:
+) -> tuple[RealtimeProtocolMode, int | None, int | None, str | None, bool | None]:
     raw_model = session_payload.get("model")
     reported_model = raw_model if isinstance(raw_model, str) and raw_model else None
 
     detected_input_rate: int | None = None
     detected_output_rate: int | None = None
+    detected_supports_truncate: bool | None = None
     audio_block = session_payload.get("audio")
     if isinstance(audio_block, dict):
         input_block = audio_block.get("input")
@@ -344,6 +354,11 @@ def extract_session_created_capabilities(
             "capabilities"
         ) or sglang_extension.get("granted")
         if isinstance(sglang_capabilities, dict):
+            raw_supports_truncate = sglang_capabilities.get("supports_truncate")
+            if type(raw_supports_truncate) is bool:
+                detected_supports_truncate = raw_supports_truncate
+            else:
+                pass
             input_audio_format = sglang_capabilities.get("input_audio_format")
             if (
                 detected_input_rate is None
@@ -371,6 +386,7 @@ def extract_session_created_capabilities(
                     detected_input_rate,
                     detected_output_rate,
                     reported_model,
+                    detected_supports_truncate,
                 )
             else:
                 return (
@@ -378,6 +394,7 @@ def extract_session_created_capabilities(
                     detected_input_rate,
                     detected_output_rate,
                     reported_model,
+                    detected_supports_truncate,
                 )
         else:
             pass
@@ -386,9 +403,21 @@ def extract_session_created_capabilities(
 
     legacy_caps = session_payload.get("capabilities")
     if isinstance(legacy_caps, dict) and "turn_detection" in legacy_caps:
-        return ("legacy", detected_input_rate, detected_output_rate, reported_model)
+        return (
+            "legacy",
+            detected_input_rate,
+            detected_output_rate,
+            reported_model,
+            True,
+        )
     elif isinstance(audio_block, dict):
-        return ("native", detected_input_rate, detected_output_rate, reported_model)
+        return (
+            "native",
+            detected_input_rate,
+            detected_output_rate,
+            reported_model,
+            None,
+        )
     else:
         raise ValueError("session.created lacks recognizable realtime capabilities")
 
@@ -429,7 +458,7 @@ async def open_websocket_with_admission_state(
 
 async def probe_session_created_over_websocket(
     websocket_url: str, *, timeout_seconds: float, trust_env: bool = False
-) -> tuple[RealtimeProtocolMode, int | None, int | None, str | None]:
+) -> tuple[RealtimeProtocolMode, int | None, int | None, str | None, bool | None]:
     admission_state = AdmissionState()
     connection = await asyncio.wait_for(
         open_websocket_with_admission_state(
@@ -520,11 +549,17 @@ async def negotiate_realtime_endpoint(
     detected_input_rate: int | None = None
     detected_output_rate: int | None = None
     reported_model: str | None = None
+    detected_supports_truncate: bool | None = None
 
     if capabilities_payload is not None:
         raw_model = capabilities_payload.get("model")
         if isinstance(raw_model, str) and raw_model:
             reported_model = raw_model
+        else:
+            pass
+        raw_supports_truncate = capabilities_payload.get("supports_truncate")
+        if type(raw_supports_truncate) is bool:
+            detected_supports_truncate = raw_supports_truncate
         else:
             pass
         input_format = capabilities_payload.get("input_audio_format")
@@ -564,6 +599,7 @@ async def negotiate_realtime_endpoint(
                     detected_input_rate,
                     detected_output_rate,
                     reported_model,
+                    detected_supports_truncate,
                 ) = await probe_session_created_over_websocket(
                     websocket_url,
                     timeout_seconds=timeout_seconds,
@@ -662,8 +698,23 @@ async def negotiate_realtime_endpoint(
         output_sample_rate_hz=resolved_output_rate,
         turn_detection=resolved_turn_detection,
         reported_model=reported_model,
+        supports_truncate=detected_supports_truncate,
         trust_env=trust_env,
     )
+
+
+@dataclass(frozen=True, kw_only=True)
+class QueuedAudioSegment:
+    start_sample_index: int
+    samples: NDArray[np.float32]
+    response_id: str | None = None
+    item_id: str | None = None
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlaybackTruncationRecord:
+    item_id: str
+    audio_end_milliseconds: int
 
 
 class PlaybackTimelineBuffer:
@@ -675,49 +726,158 @@ class PlaybackTimelineBuffer:
         else:
             pass
         self.sample_rate_hz: int = int(sample_rate_hz)
-        self.queued_segments: list[tuple[int, NDArray[np.float32]]] = []
+        self.queued_segments: list[QueuedAudioSegment] = []
         self.render_cursor_samples: int = 0
         self.tail_samples: int = 0
         self.cancelled_unplayed_samples: int = 0
+        self.played_samples_by_item_id: dict[str, int] = {}
+        self.truncated_item_ids: set[str] = set()
 
     def append_audio(
-        self, arrival_seconds: float, pcm_samples: NDArray[np.float32]
+        self,
+        arrival_seconds: float,
+        pcm_samples: NDArray[np.float32],
+        *,
+        response_id: str | None = None,
+        item_id: str | None = None,
     ) -> None:
         flat_samples = np.asarray(pcm_samples, dtype=np.float32).reshape(-1)
         if not np.isfinite(flat_samples).all():
             raise ValueError("Received non-finite PCM audio samples from server")
         elif len(flat_samples) == 0:
             return
+        elif item_id is not None and item_id in self.truncated_item_ids:
+            self.cancelled_unplayed_samples += len(flat_samples)
+            return
         else:
+            if item_id is not None and item_id not in self.played_samples_by_item_id:
+                self.played_samples_by_item_id[item_id] = 0
+            else:
+                pass
             arrival_sample_index = int(round(arrival_seconds * self.sample_rate_hz))
             start_sample_index = max(
                 self.render_cursor_samples, self.tail_samples, arrival_sample_index
             )
-            self.queued_segments.append((start_sample_index, flat_samples))
+            self.queued_segments.append(
+                QueuedAudioSegment(
+                    start_sample_index=start_sample_index,
+                    samples=flat_samples,
+                    response_id=response_id,
+                    item_id=item_id,
+                )
+            )
             self.tail_samples = start_sample_index + len(flat_samples)
 
-    def cancel_unplayed(self, cutoff_seconds: float) -> None:
+    def cancel_unplayed(
+        self,
+        cutoff_seconds: float,
+        *,
+        target_response_id: str | None = None,
+        target_item_id: str | None = None,
+        include_unstarted_target_item: bool = False,
+    ) -> list[PlaybackTruncationRecord]:
         cutoff_sample_index = max(
             self.render_cursor_samples,
             int(round(cutoff_seconds * self.sample_rate_hz)),
         )
-        retained_segments: list[tuple[int, NDArray[np.float32]]] = []
-        for start_sample_index, segment_samples in self.queued_segments:
-            keep_count = max(
-                0, min(len(segment_samples), cutoff_sample_index - start_sample_index)
+        retained_segments: list[QueuedAudioSegment] = []
+        affected_item_ids: list[str] = []
+        dropped_samples_by_item_id: dict[str, int] = {}
+        kept_ahead_samples_by_item_id: dict[str, int] = {}
+        for segment in self.queued_segments:
+            matches_target = (
+                (target_response_id is None and target_item_id is None)
+                or (
+                    target_response_id is not None
+                    and segment.response_id == target_response_id
+                )
+                or (target_item_id is not None and segment.item_id == target_item_id)
             )
-            self.cancelled_unplayed_samples += len(segment_samples) - keep_count
+            if not matches_target:
+                retained_segments.append(segment)
+                continue
+            else:
+                pass
+            keep_count = max(
+                0,
+                min(
+                    len(segment.samples),
+                    cutoff_sample_index - segment.start_sample_index,
+                ),
+            )
+            dropped_count = len(segment.samples) - keep_count
+            self.cancelled_unplayed_samples += dropped_count
+            if segment.item_id is not None:
+                if segment.item_id not in affected_item_ids:
+                    affected_item_ids.append(segment.item_id)
+                else:
+                    pass
+                dropped_samples_by_item_id[segment.item_id] = (
+                    dropped_samples_by_item_id.get(segment.item_id, 0) + dropped_count
+                )
+                if keep_count > 0:
+                    kept_ahead_samples_by_item_id[segment.item_id] = (
+                        kept_ahead_samples_by_item_id.get(segment.item_id, 0)
+                        + keep_count
+                    )
+                else:
+                    pass
+            else:
+                pass
             if keep_count > 0:
                 retained_segments.append(
-                    (start_sample_index, segment_samples[:keep_count])
+                    QueuedAudioSegment(
+                        start_sample_index=segment.start_sample_index,
+                        samples=segment.samples[:keep_count],
+                        response_id=segment.response_id,
+                        item_id=segment.item_id,
+                    )
                 )
             else:
                 pass
+        if (
+            target_item_id is not None
+            and target_item_id not in affected_item_ids
+            and (
+                target_item_id in self.played_samples_by_item_id
+                or include_unstarted_target_item
+            )
+        ):
+            affected_item_ids.append(target_item_id)
+        else:
+            pass
         self.queued_segments = retained_segments
         self.tail_samples = max(
             [self.render_cursor_samples]
-            + [start_index + len(samples) for start_index, samples in retained_segments]
+            + [
+                segment.start_sample_index + len(segment.samples)
+                for segment in retained_segments
+            ]
         )
+        truncation_records: list[PlaybackTruncationRecord] = []
+        for item_id in affected_item_ids:
+            if item_id in self.truncated_item_ids:
+                continue
+            else:
+                played_samples = self.played_samples_by_item_id.get(
+                    item_id, 0
+                ) + kept_ahead_samples_by_item_id.get(item_id, 0)
+                had_dropped_samples = dropped_samples_by_item_id.get(item_id, 0) > 0
+                if had_dropped_samples or target_item_id == item_id:
+                    self.truncated_item_ids.add(item_id)
+                    audio_end_milliseconds = max(
+                        0,
+                        int((played_samples * 1000) // self.sample_rate_hz),
+                    )
+                    truncation_records.append(
+                        PlaybackTruncationRecord(
+                            item_id=item_id,
+                            audio_end_milliseconds=audio_end_milliseconds,
+                        )
+                    )
+                else:
+                    pass
+        return truncation_records
 
     def render_interval(
         self, start_sample_index: int, end_sample_index: int
@@ -730,11 +890,14 @@ class PlaybackTimelineBuffer:
         else:
             pass
         rendered = np.zeros(end_sample_index - start_sample_index, dtype=np.float32)
-        remaining_segments: list[tuple[int, NDArray[np.float32]]] = []
-        for segment_offset, segment_samples in self.queued_segments:
+        remaining_segments: list[QueuedAudioSegment] = []
+        for segment in self.queued_segments:
+            segment_offset = segment.start_sample_index
+            segment_samples = segment.samples
             overlap_start = max(start_sample_index, segment_offset)
             overlap_end = min(end_sample_index, segment_offset + len(segment_samples))
             if overlap_end > overlap_start:
+                overlap_count = overlap_end - overlap_start
                 rendered[
                     overlap_start
                     - start_sample_index : overlap_end
@@ -742,10 +905,27 @@ class PlaybackTimelineBuffer:
                 ] = segment_samples[
                     overlap_start - segment_offset : overlap_end - segment_offset
                 ]
+                if segment.item_id is not None:
+                    self.played_samples_by_item_id[segment.item_id] = (
+                        self.played_samples_by_item_id.get(segment.item_id, 0)
+                        + overlap_count
+                    )
+                else:
+                    pass
             else:
                 pass
             if segment_offset + len(segment_samples) > end_sample_index:
-                remaining_segments.append((segment_offset, segment_samples))
+                if overlap_end > segment_offset:
+                    remaining_segments.append(
+                        QueuedAudioSegment(
+                            start_sample_index=overlap_end,
+                            samples=segment_samples[overlap_end - segment_offset :],
+                            response_id=segment.response_id,
+                            item_id=segment.item_id,
+                        )
+                    )
+                else:
+                    remaining_segments.append(segment)
             else:
                 pass
         self.queued_segments = remaining_segments
@@ -834,11 +1014,42 @@ def validate_accepted_session(
     if endpoint_spec.protocol in ("turn_based", "legacy"):
         assert endpoint_spec.turn_detection is not None
         requested_detector = endpoint_spec.turn_detection.get("type")
-        echoed_detector = turn_detection_type(session_payload, endpoint_spec.protocol)
+        echoed_turn = turn_detection_block(session_payload, endpoint_spec.protocol)
+        echoed_detector = echoed_turn.get("type") if echoed_turn is not None else None
         if echoed_detector != requested_detector:
             raise RuntimeError("session.updated echoed unexpected turn_detection.type")
         else:
             pass
+        for field_name, requested_value in endpoint_spec.turn_detection.items():
+            if field_name == "type" or requested_value is None:
+                continue
+            else:
+                echoed_value = (
+                    echoed_turn.get(field_name) if echoed_turn is not None else None
+                )
+                if type(requested_value) is bool:
+                    is_match = (
+                        type(echoed_value) is bool and echoed_value == requested_value
+                    )
+                elif isinstance(requested_value, (int, float)):
+                    is_match = (
+                        isinstance(echoed_value, (int, float))
+                        and type(echoed_value) is not bool
+                        and math.isclose(
+                            float(echoed_value),
+                            float(requested_value),
+                            rel_tol=0.0,
+                            abs_tol=1e-9,
+                        )
+                    )
+                else:
+                    is_match = echoed_value == requested_value
+                if not is_match:
+                    raise RuntimeError(
+                        f"session.updated echoed unexpected turn_detection.{field_name}"
+                    )
+                else:
+                    pass
     else:
         pass
 
@@ -1128,7 +1339,7 @@ async def run_realtime_scenario(
     effective_trust_env = endpoint_spec.trust_env if trust_env is None else trust_env
 
     async def execute_exchange() -> (
-        tuple[ScenarioScheduleResult, float, float, NDArray[np.float32]]
+        tuple[ScenarioScheduleResult, float, float, NDArray[np.float32], int]
     ):
         admission_state = AdmissionState()
         connection = await open_websocket_with_admission_state(
@@ -1150,9 +1361,23 @@ async def run_realtime_scenario(
             expected_accepted_end_milliseconds_by_sequence: dict[int, float] = {}
             next_expected_accepted_sequence = 0
             eos_requested = False
+            close_requested = False
             frozen_final_input_samples: int | None = None
             input_ended_receipt_seen = False
             input_drained_receipt_seen = False
+            send_lock = asyncio.Lock()
+            truncate_supported = (
+                True
+                if endpoint_spec.protocol == "legacy"
+                else bool(
+                    endpoint_spec.protocol == "turn_based"
+                    and endpoint_spec.supports_truncate is True
+                )
+            )
+            truncations_sent = 0
+            active_response_ids: set[str] = set()
+            cancelled_response_ids: set[str] = set()
+            item_id_by_response_id: dict[str, str] = {}
 
             async def send_client_event(
                 event_type: str,
@@ -1160,7 +1385,11 @@ async def run_realtime_scenario(
                 session_payload: dict[str, JsonValue] | None = None,
                 audio_base64: str | None = None,
                 sglang_metadata: dict[str, JsonValue] | None = None,
-            ) -> None:
+                item_id: str | None = None,
+                content_index: int | None = None,
+                audio_end_milliseconds: int | None = None,
+            ) -> bool:
+                nonlocal eos_requested, close_requested
                 envelope: dict[str, JsonValue] = {
                     "type": event_type,
                     "event_id": uuid.uuid4().hex,
@@ -1177,12 +1406,59 @@ async def run_realtime_scenario(
                     envelope["sglang"] = sglang_metadata
                 else:
                     pass
+                if item_id is not None:
+                    envelope["item_id"] = item_id
+                else:
+                    pass
+                if content_index is not None:
+                    envelope["content_index"] = content_index
+                else:
+                    pass
+                if audio_end_milliseconds is not None:
+                    envelope["audio_end_ms"] = audio_end_milliseconds
+                else:
+                    pass
                 try:
-                    await websocket.send(json.dumps(envelope, allow_nan=False))
+                    async with send_lock:
+                        if event_type == "conversation.item.truncate" and (
+                            close_requested
+                            or is_closing_expected
+                            or (
+                                endpoint_spec.protocol == "turn_based" and eos_requested
+                            )
+                        ):
+                            return False
+                        elif event_type == "sglang.input_audio.end":
+                            eos_requested = True
+                        elif event_type == "session.close":
+                            close_requested = True
+                        else:
+                            pass
+                        await websocket.send(json.dumps(envelope, allow_nan=False))
+                        return True
                 except websockets.ConnectionClosed:
                     raise RuntimeError(
                         f"WebSocket connection closed while sending {event_type}"
                     ) from None
+
+            async def send_playback_truncations(
+                records: list[PlaybackTruncationRecord],
+            ) -> None:
+                nonlocal truncations_sent
+                if not records or not truncate_supported or is_closing_expected:
+                    return
+                else:
+                    for record in records:
+                        sent = await send_client_event(
+                            "conversation.item.truncate",
+                            item_id=record.item_id,
+                            content_index=0,
+                            audio_end_milliseconds=record.audio_end_milliseconds,
+                        )
+                        if sent:
+                            truncations_sent += 1
+                        else:
+                            pass
 
             async def wait_for_server_event(
                 event_type: str, wait_timeout_seconds: float | None = None
@@ -1281,17 +1557,62 @@ async def run_realtime_scenario(
                             raise ProtocolSessionError(
                                 format_server_error_event(parsed_event)
                             )
+                        elif event_type == "response.created":
+                            created_response = parsed_event.get("response")
+                            if isinstance(created_response, dict):
+                                created_id = created_response.get("id")
+                                if isinstance(created_id, str) and created_id:
+                                    active_response_ids.add(created_id)
+                                else:
+                                    pass
+                            else:
+                                pass
                         elif event_type == audio_delta_event_type:
                             raw_delta = parsed_event.get("delta")
+                            raw_response_id = parsed_event.get("response_id")
+                            delta_response_id = (
+                                raw_response_id
+                                if isinstance(raw_response_id, str) and raw_response_id
+                                else None
+                            )
+                            raw_item_id = parsed_event.get("item_id")
+                            delta_item_id = (
+                                raw_item_id
+                                if isinstance(raw_item_id, str) and raw_item_id
+                                else None
+                            )
+                            if (
+                                delta_response_id is not None
+                                and delta_item_id is not None
+                            ):
+                                item_id_by_response_id[delta_response_id] = (
+                                    delta_item_id
+                                )
+                            else:
+                                pass
                             if not isinstance(raw_delta, str):
                                 raise ProtocolSessionError(
                                     f"Malformed {event_type} payload: delta must be a string"
                                 )
                             elif raw_delta:
-                                playback_buffer.append_audio(
-                                    arrival_seconds,
-                                    decode_pcm16_base64_to_float32(raw_delta),
+                                decoded_samples = decode_pcm16_base64_to_float32(
+                                    raw_delta
                                 )
+                                if (
+                                    endpoint_spec.protocol in ("turn_based", "legacy")
+                                    and delta_response_id is not None
+                                    and delta_response_id in cancelled_response_ids
+                                ):
+                                    playback_buffer.cancelled_unplayed_samples += len(
+                                        decoded_samples
+                                    )
+                                else:
+                                    playback_buffer.append_audio(
+                                        arrival_seconds,
+                                        decoded_samples,
+                                        response_id=delta_response_id,
+                                        item_id=delta_item_id,
+                                    )
                             else:
                                 pass
                         elif event_type == "sglang.input_audio.accepted":
@@ -1453,13 +1774,61 @@ async def run_realtime_scenario(
                                 raise ProtocolSessionError(
                                     "Server reported failed response.done"
                                 )
-                            elif (
-                                endpoint_spec.protocol in ("turn_based", "legacy")
-                                and response_payload.get("status") == "cancelled"
-                            ):
-                                playback_buffer.cancel_unplayed(arrival_seconds)
                             else:
-                                pass
+                                raw_done_response_id = response_payload.get("id")
+                                done_response_id = (
+                                    raw_done_response_id
+                                    if isinstance(raw_done_response_id, str)
+                                    and raw_done_response_id
+                                    else None
+                                )
+                                if done_response_id is not None:
+                                    active_response_ids.discard(done_response_id)
+                                else:
+                                    pass
+                                done_item_id: str | None = (
+                                    item_id_by_response_id.get(done_response_id)
+                                    if done_response_id is not None
+                                    else None
+                                )
+                                raw_output_items = response_payload.get("output")
+                                if (
+                                    done_item_id is None
+                                    and isinstance(raw_output_items, list)
+                                    and raw_output_items
+                                    and isinstance(raw_output_items[0], dict)
+                                ):
+                                    candidate_output_id = raw_output_items[0].get("id")
+                                    if (
+                                        isinstance(candidate_output_id, str)
+                                        and candidate_output_id
+                                    ):
+                                        done_item_id = candidate_output_id
+                                    else:
+                                        pass
+                                else:
+                                    pass
+                                if (
+                                    endpoint_spec.protocol in ("turn_based", "legacy")
+                                    and response_payload.get("status") == "cancelled"
+                                ):
+                                    if done_response_id is not None:
+                                        cancelled_response_ids.add(done_response_id)
+                                    else:
+                                        pass
+                                    truncation_records = (
+                                        playback_buffer.cancel_unplayed(
+                                            arrival_seconds,
+                                            target_response_id=done_response_id,
+                                            target_item_id=done_item_id,
+                                            include_unstarted_target_item=(
+                                                endpoint_spec.protocol == "turn_based"
+                                            ),
+                                        )
+                                    )
+                                    await send_playback_truncations(truncation_records)
+                                else:
+                                    pass
                         elif endpoint_spec.protocol == "legacy" and (
                             event_type == "output_audio_buffer.cleared"
                             or (
@@ -1467,7 +1836,13 @@ async def run_realtime_scenario(
                                 and event_type == "input_audio_buffer.speech_started"
                             )
                         ):
-                            playback_buffer.cancel_unplayed(arrival_seconds)
+                            for open_response_id in list(active_response_ids):
+                                cancelled_response_ids.add(open_response_id)
+                            active_response_ids.clear()
+                            truncation_records = playback_buffer.cancel_unplayed(
+                                arrival_seconds
+                            )
+                            await send_playback_truncations(truncation_records)
                         else:
                             pass
                         event_waiters.setdefault(event_type, asyncio.Event()).set()
@@ -1504,6 +1879,29 @@ async def run_realtime_scenario(
                 await wait_for_server_event(
                     "session.created", HANDSHAKE_TIMEOUT_SECONDS
                 )
+                created_session_payload = latest_events["session.created"].get(
+                    "session"
+                )
+                if endpoint_spec.protocol == "turn_based" and isinstance(
+                    created_session_payload, dict
+                ):
+                    created_sglang = created_session_payload.get("sglang")
+                    created_granted = (
+                        (
+                            created_sglang.get("granted")
+                            or created_sglang.get("capabilities")
+                        )
+                        if isinstance(created_sglang, dict)
+                        else None
+                    )
+                    if isinstance(created_granted, dict) and (
+                        type(created_granted.get("supports_truncate")) is bool
+                    ):
+                        truncate_supported = bool(created_granted["supports_truncate"])
+                    else:
+                        pass
+                else:
+                    pass
                 configure_payload = build_session_update_payload(endpoint_spec)
 
                 async def send_session_update() -> None:
@@ -1576,9 +1974,34 @@ async def run_realtime_scenario(
                         f"combined admission denials (budget {ADMISSION_RETRIES} retries)"
                     )
                 else:
+                    accepted_session_payload = latest_events["session.updated"].get(
+                        "session"
+                    )
                     validate_accepted_session(
                         latest_events["session.updated"], endpoint_spec
                     )
+                    if endpoint_spec.protocol == "turn_based" and isinstance(
+                        accepted_session_payload, dict
+                    ):
+                        accepted_sglang = accepted_session_payload.get("sglang")
+                        accepted_granted = (
+                            (
+                                accepted_sglang.get("granted")
+                                or accepted_sglang.get("capabilities")
+                            )
+                            if isinstance(accepted_sglang, dict)
+                            else None
+                        )
+                        if isinstance(accepted_granted, dict) and (
+                            type(accepted_granted.get("supports_truncate")) is bool
+                        ):
+                            truncate_supported = bool(
+                                accepted_granted["supports_truncate"]
+                            )
+                        else:
+                            pass
+                    else:
+                        pass
 
                 rendered_output_samples = 0
                 packet_sequence = 0
@@ -1746,17 +2169,29 @@ async def run_realtime_scenario(
                     elapsed_wall_seconds,
                     max_observed_pacing_lag_seconds,
                     drain_tail_waveform,
+                    truncations_sent,
                 )
             finally:
                 receiver_task.cancel()
                 await asyncio.gather(receiver_task, return_exceptions=True)
 
-    (
-        schedule_result,
-        elapsed_wall_seconds,
-        max_observed_pacing_lag_seconds,
-        drain_tail_waveform,
-    ) = await asyncio.wait_for(execute_exchange(), timeout=effective_timeout_seconds)
+    try:
+        (
+            schedule_result,
+            elapsed_wall_seconds,
+            max_observed_pacing_lag_seconds,
+            drain_tail_waveform,
+            truncations_sent_count,
+        ) = await asyncio.wait_for(
+            execute_exchange(), timeout=effective_timeout_seconds
+        )
+    except TimeoutError as exc:
+        if str(exc):
+            raise
+        else:
+            raise TimeoutError(
+                f"Realtime session exceeded deadline of {effective_timeout_seconds:.1f}s"
+            ) from None
     assert schedule_result.assistant_waveform is not None
     full_captured_waveform = (
         np.concatenate([schedule_result.assistant_waveform, drain_tail_waveform])
@@ -1792,6 +2227,7 @@ async def run_realtime_scenario(
             "max_pacing_lag_ms": round(max_observed_pacing_lag_seconds * 1000.0, 3),
             "effective_session_timeout_s": round(effective_timeout_seconds, 4),
             "cancelled_unplayed_samples": playback_buffer.cancelled_unplayed_samples,
+            "truncations_sent": truncations_sent_count,
             "drain_tail_samples": int(len(drain_tail_waveform)),
             "assistant_audio_sha256": audio_sha256,
         }

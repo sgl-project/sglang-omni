@@ -164,6 +164,27 @@ foreach(runtime_file ${MLX_RUNTIME_FILES})
   install(FILES "${resolved_file}" DESTINATION bin)
 endforeach()
 
+# Haru: full-duplex spoken dialogue on /v1/realtime (a Qwen3.5 backbone, the
+# VibeVoice codec and a MeanFlow head), and the tool its golden runs.
+add_library(haru STATIC
+  src/haru/haru_config.cpp
+  src/haru/haru_model.cpp
+  src/haru/haru_codec.cpp
+  src/haru/haru_head.cpp
+  src/haru/haru_session.cpp
+  src/haru/haru_audio.cpp
+  src/haru/haru_realtime.cpp)
+target_link_libraries(haru PUBLIC omni_service)
+target_compile_options(haru PRIVATE -Wall -Wextra)
+add_executable(haru_server src/haru/haru_server.cpp)
+target_link_libraries(haru_server PRIVATE haru asr_service)
+add_executable(haru_session_probe tools/haru_session_probe.cpp)
+target_link_libraries(haru_session_probe PRIVATE haru)
+set_target_properties(haru_server haru_session_probe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS haru_server haru_session_probe RUNTIME DESTINATION bin)
+
 # Note (khazic): Whisper: whisper_server, with qwen3_asr_server's API without realtime, and
 # its parity tool. Both reuse the WAV decoder, form parser and byte-level
 # tokenizer above.

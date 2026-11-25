@@ -116,6 +116,18 @@ type run struct {
 	// early cleans finalized speech stretches before Stop (earlyclean.go).
 	earlyMu sync.Mutex
 	early   *earlyClean
+	// note (luojiaxuan): live cleans the stream's live text up while the user
+	// speaks, so Stop leaves only what was said last (livepolish.go); the
+	// Once makes it on the first live text or at Stop. liveOff: the stream's
+	// own stretches took over (hearPiece). Both are the stream's reader
+	// goroutine's until it returns.
+	liveOnce sync.Once
+	live     *livePolish
+	liveOff  bool
+	// head asks the language model about the live text ahead of the Final
+	// (headstart.go); silent tells the recording loop of the user's pauses.
+	head   headStart
+	silent chan bool
 }
 
 type capResult struct {
