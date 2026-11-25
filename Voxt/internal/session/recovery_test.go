@@ -210,6 +210,34 @@ func TestRetry(t *testing.T) {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})
+	t.Run("rewrite keeps typed text", func(t *testing.T) {
+		for _, tc := range []struct{ name, selected, typed string }{
+			{"typed only", "", "a rough draft"},
+			{"selected and typed", "the selected text", "and the tickets"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				model := &fakeLLM{text: `{"title":"Short","content":"Short."}`}
+				h, e := retryHarness(t, &fakeFile{text: "make it shorter"}, model, false)
+				e.Kind, e.SourceText, e.TypedText = store.KindRewrite, tc.selected, tc.typed
+				out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+				if err != nil || out.TypedText != tc.typed {
+					t.Fatalf("entry %+v, %v", out, err)
+				}
+				reqs := model.requests()
+				if len(reqs) != 1 {
+					t.Fatalf("%d requests", len(reqs))
+				}
+				got := reqs[0].Messages[len(reqs[0].Messages)-1].Content
+				want := "<selected_text>\n" + tc.selected + "\n</selected_text>\n\n<typed_text>\n" + tc.typed + "\n</typed_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+				if tc.selected == "" {
+					want = "<selected_text>\n" + tc.typed + "\n</selected_text>\n\n<instruction>\nmake it shorter\n</instruction>"
+				}
+				if got != want {
+					t.Errorf("request:\n%s\nwant:\n%s", got, want)
+				}
+			})
+		}
+	})
 	t.Run("keeping recordings", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, true)
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
@@ -243,6 +271,14 @@ func TestRetry(t *testing.T) {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 	})
+	t.Run("transcribe falls back", func(t *testing.T) {
+		h, e := retryHarness(t, &fakeFile{text: "hello aura link"}, &fakeLLM{err: errors.New("boom")}, false)
+		h.fallback = &fakeLLM{text: "Hello, VoxtNew."}
+		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
+		if err != nil || out.Status != store.StatusDone || out.Result != "Hello, VoxtNew." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
+			t.Fatalf("entry %+v, %v", out, err)
+		}
+	})
 	t.Run("no recording", func(t *testing.T) {
 		h, e := retryHarness(t, &fakeFile{text: "x"}, nil, false)
 		e.Audio = ""
@@ -251,17 +287,18 @@ func TestRetry(t *testing.T) {
 		}
 	})
 	t.Run("beside a session", func(t *testing.T) {
-		h, e := retryHarness(t, &fakeFile{text: "again"}, nil, false)
+		h, e := retryHarness(t, &fakeFile{text: "again"}, &fakeLLM{err: errors.New("primary unavailable")}, false)
+		h.fallback = &fakeLLM{text: "Again."}
 		id := h.start()
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
-		if err != nil || out.Result != "again" {
+		if err != nil || out.Result != "Again." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 		if cur := h.m.Current(); cur.ID != id || cur.State != Recording {
 			t.Fatalf("the session changed: %+v", cur)
 		}
 		h.speak(id, 3)
-		if end := h.rec.wait(t); end.State != Done || end.Result != "again" {
+		if end := h.rec.wait(t); end.State != Done || end.Result != "Again." || end.LLM.ID != "ollama" {
 			t.Errorf("session %+v", end)
 		}
 	})

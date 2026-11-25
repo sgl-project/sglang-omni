@@ -24,12 +24,13 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		if appearance := state.Appearance; appearance != nil {
 			host.settingsForm.settingsAppearanceLocalUI = settingsAppearanceLocalUI{
 				theme: appearance.Theme, scale: appearance.Scale, sidebar: appearance.Sidebar, reduceMotion: appearance.ReduceMotion,
+				opening: appearance.Opening, openingSpeed: float64(appearance.OpeningLength),
 			}
 		}
 		if privacy := state.Privacy; privacy != nil {
 			host.settingsForm.settingsPrivacyLocalUI = settingsPrivacyLocalUI{
 				keepHistory: privacy.KeepHistory, keepAudio: privacy.KeepAudio, logText: privacy.LogText,
-				sendWindow: privacy.SendWindow, sendClipboard: privacy.SendClipboard, clearHistoryAsk: privacy.ClearHistoryAsk,
+				sendWindow: privacy.SendWindow, sendClipboard: privacy.SendClipboard, sendClipboardWithSelection: privacy.SendClipboardWithSelection, clearHistoryAsk: privacy.ClearHistoryAsk,
 			}
 			access := privacy.HistoryAccess
 			host.historyAccessUI = historyAccessLocalUI{
@@ -43,7 +44,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 			}
 		}
 		if shortcuts := state.Shortcuts; shortcuts != nil {
-			host.settingsForm.strictShortcuts = shortcuts.StrictShortcuts
+			host.settingsForm.strictShortcuts, host.settingsForm.returnFinishes = shortcuts.StrictShortcuts, shortcuts.ReturnFinishes
 		}
 		if overlay := state.Overlay; overlay != nil {
 			host.settingsForm.ovStyle = overlayForm{
@@ -63,6 +64,7 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		host.pageUI.setOpen = true
 		host.settingsMeetingUI = meetingSettingsUI{
 			mode: settingsLanguageCode(state.CaptureModeSelected, state.CaptureModeOptions), hide: state.HideFromSharing,
+			correction: speechContextState{text: state.CorrectionStyle},
 		}
 	}
 	host.settingsDialogUI = settingsDialogLocalUI{
@@ -94,6 +96,8 @@ func (host *meetingDemoHost) setSidebarChoice(choice string) {
 	host.record("setSidebarChoice %s", choice)
 }
 func (host *meetingDemoHost) setReduceMotion(on bool) { host.record("setReduceMotion %t", on) }
+func (host *meetingDemoHost) setOpening(on bool)      { host.record("setOpening %t", on) }
+func (host *meetingDemoHost) setOpeningLength(ms int) { host.record("setOpeningLength %d", ms) }
 func (host *meetingDemoHost) setPaletteColor(color string) {
 	host.record("setPaletteColor %s", color)
 }
@@ -155,9 +159,14 @@ func (host *meetingDemoHost) openShortcutFeature(path string) {
 }
 func (host *meetingDemoHost) setStrictShortcuts(on bool) { host.record("setStrictShortcuts %t", on) }
 
+func (host *meetingDemoHost) setReturnFinishes(on bool) { host.record("setReturnFinishes %t", on) }
+
 func (host *meetingDemoHost) setSendWindow(on bool) { host.record("setSendWindow %t", on) }
 func (host *meetingDemoHost) setSendClipboardImage(on bool) {
 	host.record("setSendClipboardImage %t", on)
+}
+func (host *meetingDemoHost) setSendClipboardImageWithSelection(on bool) {
+	host.record("setSendClipboardImageWithSelection %t", on)
 }
 func (host *meetingDemoHost) setKeepHistory(on bool) { host.record("setKeepHistory %t", on) }
 func (host *meetingDemoHost) setKeepAudio(on bool)   { host.record("setKeepAudio %t", on) }
@@ -213,6 +222,21 @@ func (host *meetingDemoHost) setMeetingLanguage(languageCode string) {
 }
 func (host *meetingDemoHost) setMeetingLLM(languageModelID string) {
 	host.record("setMeetingLLM %s", languageModelID)
+}
+func (host *meetingDemoHost) autosaveMeetingCorrectionStyle(changed, focused bool) {
+	correction := &host.settingsMeetingUI.correction
+	if changed {
+		correction.dirty = true
+		correction.seq++
+		host.record("autosaveMeetingCorrectionStyle %t %t", changed, focused)
+	} else if correction.dirty && !focused {
+		correction.dirty = false
+		host.record("saveMeetingCorrectionStyle")
+	}
+}
+func (host *meetingDemoHost) resetMeetingCorrectionStyle() {
+	host.settingsMeetingUI.correction.dirty = false
+	host.record("resetMeetingCorrectionStyle")
 }
 
 func (host *meetingDemoHost) answerShortcutPrompt() { host.record("answerShortcutPrompt") }

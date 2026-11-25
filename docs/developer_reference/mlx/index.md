@@ -94,7 +94,10 @@ For adaptive Qwen3-ASR, the draft counts cover speculative rounds only; plain pr
 - Keep the reference's behavior. Behavior changes go in a separate PR.
 - Report English WER, Chinese CER and mixed MER on the 392-clip corpus,
   reference vs native, plus the count of identical clips. Explain where
-  differing clips diverge.
+  differing clips diverge. Report silence and noise separately: for each, count
+  clips whose rendered transcript contains a letter or number. On an unrecorded
+  chip neither count may exceed the reference chip's count. Recorded chips
+  still require exact matches.
 
 **Golden and pins**
 

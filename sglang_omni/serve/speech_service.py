@@ -17,7 +17,10 @@ import torch
 from pydantic import AliasChoices, BaseModel, ValidationError
 
 from sglang_omni.client import ClientError, GenerateRequest, SamplingParams
-from sglang_omni.client.audio import audio_encoding_unavailable_reason
+from sglang_omni.client.audio import (
+    audio_encoding_unavailable_reason,
+    audio_output_sample_rate_error,
+)
 from sglang_omni.config.schema import MAX_SPEECH_INPUT_CHARS, CustomVoiceConfig
 from sglang_omni.preprocessing.base import MediaIO
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
@@ -44,6 +47,7 @@ from sglang_omni.serve.speech_errors import (
     speech_generation_error,
 )
 from sglang_omni.serve.speech_limits import MAX_REFERENCE_AUDIO_BYTES
+from sglang_omni.utils.json import JsonValue
 
 if TYPE_CHECKING:
     from sglang_omni.client import Client
@@ -51,7 +55,6 @@ if TYPE_CHECKING:
         SpeakerSampleStore,
         UploadedVoiceReference,
     )
-    from sglang_omni.utils.json import JsonValue
 else:
     pass
 
@@ -316,7 +319,10 @@ class SpeechRequestValidator:
             uploaded_voice=prepared_references.uploaded_voice,
         )
 
-    def validate_input_text(self, input_text: str) -> None:
+    def validate_input_text(
+        self, input_text: str, *, task_type: str | None = None
+    ) -> None:
+        """Validate text; model overrides may use task_type for audio editing."""
         if not isinstance(input_text, str) or not input_text.strip():
             raise bad_request("input must be a non-empty string", param="input")
         else:
@@ -333,10 +339,11 @@ class SpeechRequestValidator:
     def prepare_generation_updates(
         self, request: CreateSpeechRequest
     ) -> SpeechRequestUpdates:
-        self.validate_input_text(request.input)
+        self.validate_input_text(request.input, task_type=request.task_type)
         updates: SpeechRequestUpdates = {}
         stream = request.stream or request.stream_format == "sse"
         response_format = normalize_response_format(request.response_format)
+        validate_output_sample_rate(request.sample_rate, response_format)
         if stream and response_format not in ("pcm", "wav"):
             raise bad_request(
                 "Streaming requires response_format='pcm' or 'wav'",
@@ -360,7 +367,7 @@ class SpeechRequestValidator:
             pass
 
         if request.task_type is not None:
-            updates["task_type"] = normalize_task_type(request.task_type)
+            updates["task_type"] = self.normalize_task_type(request.task_type)
         else:
             pass
         self.validate_custom_voice_request(request, task_type=updates.get("task_type"))
@@ -597,6 +604,13 @@ class SpeechRequestValidator:
             uploaded_voice=uploaded_voice,
         )
 
+    def resolve_encode_speed(self, request: CreateSpeechRequest) -> float:
+        return request.speed
+
+    @staticmethod
+    def normalize_task_type(value: str) -> str:
+        return normalize_task_type(value)
+
     def build_generate_request(
         self,
         request: CreateSpeechRequest,
@@ -622,7 +636,11 @@ class SpeechRequestValidator:
             prompt=build_speech_prompt(request, reference_descriptors),
             sampling=build_sampling_params(request),
             stage_params=request.stage_params,
-            extra_params=build_extra_params(request),
+            extra_params=(
+                {INITIAL_CODEC_CHUNK_FRAMES_PARAM: request.initial_codec_chunk_frames}
+                if request.initial_codec_chunk_frames is not None
+                else {}
+            ),
             stream=request.stream,
             output_modalities=["audio"],
             metadata={
@@ -737,8 +755,9 @@ class SpeechRequestValidator:
                 gen_req,
                 request_id=request_id,
                 response_format=prepared.request.response_format,
-                speed=prepared.request.speed,
+                speed=self.resolve_encode_speed(prepared.request),
                 allow_format_fallback=False,
+                output_sample_rate=prepared.request.sample_rate,
             )
         except ClientError as exc:
             raise speech_generation_error(exc) from exc
@@ -748,7 +767,9 @@ class SpeechRequestValidator:
             audio_data=base64.b64encode(result.audio_bytes).decode("ascii"),
             format=result.format,
             media_type=result.mime_type,
+            sample_rate=result.sample_rate,
             finish_reason=result.finish_reason,
+            text=result.text,
         )
 
     async def prepare_batch_item_request(
@@ -840,6 +861,7 @@ class SpeechRequestValidator:
 
     def validate_batch_defaults(self, batch: CreateSpeechBatchRequest) -> None:
         response_format = normalize_response_format(batch.response_format)
+        validate_output_sample_rate(batch.sample_rate, response_format)
         self.validate_encoder_dependency(response_format)
         if not TTS_SPEED_MIN <= float(batch.speed) <= TTS_SPEED_MAX:
             raise bad_request(
@@ -849,7 +871,7 @@ class SpeechRequestValidator:
         else:
             pass
         task_type = (
-            normalize_task_type(batch.task_type)
+            self.normalize_task_type(batch.task_type)
             if batch.task_type is not None
             else None
         )
@@ -925,7 +947,7 @@ class SpeechRequestValidator:
             pass
         if uploaded_voice is not None:
             task_type = request.task_type
-            if task_type is not None and normalize_task_type(task_type) != "Base":
+            if task_type is not None and self.normalize_task_type(task_type) != "Base":
                 raise bad_request(
                     "uploaded voice requests require task_type='Base'",
                     param="task_type",
@@ -959,6 +981,7 @@ class SpeechRequestValidator:
             else:
                 pass
         for field_name in (
+            "sample_rate",
             "max_new_tokens",
             "initial_codec_chunk_frames",
             "token_count",
@@ -1267,17 +1290,6 @@ def build_speech_prompt(
     return request.input
 
 
-def build_extra_params(request: CreateSpeechRequest) -> dict[str, int]:
-    extra_params: dict[str, int] = {}
-    if request.initial_codec_chunk_frames is not None:
-        extra_params[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = (
-            request.initial_codec_chunk_frames
-        )
-    else:
-        pass
-    return extra_params
-
-
 class SpeechReferenceMediaIO(MediaIO[dict[str, str]]):
     """Return backend reference descriptors after connector policy checks."""
 
@@ -1361,6 +1373,14 @@ def media_reference_from_descriptor(descriptor: dict[str, str]) -> str:
     else:
         pass
     return f"data:{descriptor['media_type']};base64,{descriptor['data']}"
+
+
+def validate_output_sample_rate(sample_rate: int | None, response_format: str) -> None:
+    sample_rate_error = audio_output_sample_rate_error(response_format, sample_rate)
+    if sample_rate_error is not None:
+        raise bad_request(sample_rate_error, param="sample_rate")
+    else:
+        pass
 
 
 def normalize_response_format(value: str) -> str:

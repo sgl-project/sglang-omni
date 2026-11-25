@@ -44,6 +44,7 @@
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
       "insert_tooltip": "No text field is focused. Click where the text should go and insert, or copy it.",
+      "copy_tooltip": "Copy (C)",
       "size_step": 0,
       "levels": [
         0,

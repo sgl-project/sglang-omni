@@ -22,7 +22,8 @@ func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]mee
 	t.Helper()
 	for _, name := range []string{
 		"home-loading", "home-empty", "home-normal", "home-error", "home-error-initial", "home-reloading",
-		"home-history-off", "home-history-off-empty", "home-hidden-features", "home-speech-missing",
+		"home-history-off", "home-history-off-empty", "home-hidden-features", "home-looking-back",
+		"home-looking-back-closed", "home-speech-missing",
 		"home-speech-on-disk", "home-speech-downloading", "home-speech-dictation-auto", "home-speech-dictation-explicit",
 		"home-permissions-unchecked", "home-access-missing", "home-shortcut-missing", "home-shortcut-waiting", "home-shortcut-carbon",
 	} {

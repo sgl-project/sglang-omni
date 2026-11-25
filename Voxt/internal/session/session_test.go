@@ -83,6 +83,7 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 	}
 	cfg.Settings = func() settings.Settings { return s }
 	h.m = New(cfg)
+	t.Cleanup(h.m.Close)
 	return h
 }
 
@@ -244,14 +245,14 @@ func TestPipeline(t *testing.T) {
 				if len(reqs) != 1 {
 					t.Fatalf("%d llm requests", len(reqs))
 				}
-				// The system prompt, the clean-up's example turn, the input.
+				// The system prompt and the input, with no example turn.
 				msgs := reqs[0].Messages
 				sys, user := msgs[0].Content, msgs[len(msgs)-1].Content
-				if len(msgs) != 4 || msgs[1].Role != llm.User || msgs[2].Role != llm.Assistant || !strings.Contains(sys, "Be brief.") || !strings.Contains(sys, "- VoxtNew") || strings.Contains(sys, "Off") ||
+				if len(msgs) != 2 || !strings.Contains(sys, "Be brief.") || !strings.Contains(sys, "- VoxtNew") || strings.Contains(sys, "Off") ||
 					strings.Contains(sys, "hello") || user != "<input>\nhello VoxtNew\n</input>" || reqs[0].Skill != llm.SkillTranscribeEnhance {
 					t.Errorf("request %+v", reqs[0])
 				}
-				if end.Profile != "custom:glossary" {
+				if end.Profile != "custom:cleanup+glossary" {
 					t.Errorf("profile %q", end.Profile)
 				}
 			}
@@ -564,10 +565,15 @@ func TestBusyTryShortAndMore(t *testing.T) {
 		h := newHarness(t, &fakeFile{text: "x"}, nil, nil)
 		id := h.start()
 		h.speak(id, 30)
-		h.rec.wait(t)
+		end := h.rec.wait(t)
 		s := h.rec.waitFor(t, "levels", func(s Snapshot) bool { return len(s.Levels) == Bars })
 		if s.Levels[0] < 0.6 || s.Levels[0] > 0.7 || s.Device != "MacBook Air Microphone" {
 			t.Errorf("levels %v device %q", s.Levels, s.Device)
+		}
+		// Every level counts, past the Bars kept: the waveform tells the
+		// new ones by it (layout.WavePlay).
+		if sent := h.audio.recorded(); end.LevelCount != sent || len(end.Levels) != Bars {
+			t.Errorf("%d levels counted, %d kept; sent %d", end.LevelCount, len(end.Levels), sent)
 		}
 	})
 }

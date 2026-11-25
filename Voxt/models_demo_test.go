@@ -66,6 +66,39 @@ func TestModelsDemoActionControls(t *testing.T) {
 				t.Fatal("all-app deletion stayed open")
 			}
 		}},
+		{name: "assign open", fixture: "en/models-page-normal", steps: historySteps("Apply Qwen3-ASR 1.7B (8bit) to features"), want: []string{"openModelAssignment asr " + models.ASRAccurate}},
+		{name: "assign cancel", fixture: "en/models-assign-asr", steps: historySteps("Cancel"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.modelsUI.assign.open {
+				t.Fatal("the assignment dialog stayed open")
+			}
+		}},
+		{name: "assign apply", fixture: "en/models-assign-asr", steps: historySteps("Apply"), want: []string{"applyModelAssignment"}, check: func(t *testing.T, host *meetingDemoHost) {
+			if host.modelsUI.assign.open {
+				t.Fatal("the assignment dialog stayed open after applying")
+			}
+		}},
+		{name: "assign remote notice", fixture: "en/models-assign-remote", wantText: "Recordings from the selected features will be sent to this speech service."},
+		{name: "assign unsupported", fixture: "en/models-assign-llm", wantText: "This model does not support this feature."},
+		{name: "assign cleanup off", fixture: "en/models-assign-cleanup-off", wantText: "Clean-up is off. This model will be used when you turn it on."},
+		{name: "assign unavailable", fixture: "en/models-assign-unavailable", wantText: "This model is no longer available. Close this dialog and set it up again."},
+		{name: "assign toggle disables apply", fixture: "en/models-assign-asr", steps: historySteps("Apply model to Transcribe", "Apply model to Rewrite"), check: func(t *testing.T, host *meetingDemoHost) {
+			state := host.modelsViewState()
+			if state.Assignment == nil || state.Assignment.CanApply {
+				t.Fatal("Apply stays enabled with nothing checked")
+			}
+			if err := newMeetingDemoTester(t, host).ClickControl("Apply"); err == nil {
+				t.Fatal("disabled Apply accepted a click")
+			}
+		}},
+		{name: "assign toggle enables apply", fixture: "en/models-assign-asr", steps: historySteps("Apply model to Transcribe", "Apply model to Rewrite", "Apply model to Transcribe"), check: func(t *testing.T, host *meetingDemoHost) {
+			state := host.modelsViewState()
+			if state.Assignment == nil || !state.Assignment.CanApply {
+				t.Fatal("Apply stays disabled with Transcribe checked again")
+			}
+			if !state.Assignment.Checked[0] {
+				t.Fatal("the Transcribe check did not come back")
+			}
+		}},
 		{name: "hide", fixture: "en/models-download-fresh", steps: historySteps("Hide Qwen3-ASR 0.6B (4bit)"), want: []string{"setModelHidden " + models.ASRFast + " true"}},
 		{name: "show", fixture: "en/models-hidden-open", steps: historySteps("Show Qwen3-ASR 0.6B (4bit)"), want: []string{"setModelHidden " + models.ASRFast + " false"}},
 		{name: "faster on", fixture: "en/models-page-normal", steps: historySteps("Faster transcription for Qwen3-ASR 1.7B (8bit)"), want: []string{"setModelFaster " + models.ASRAccurate + " true"}},

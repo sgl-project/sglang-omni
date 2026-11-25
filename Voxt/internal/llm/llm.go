@@ -32,7 +32,7 @@ const (
 	Assistant Role = "assistant"
 )
 
-// Message is one chat turn: text (Request.Image adds a picture).
+// Message is one chat turn: text (Request.Images adds pictures).
 type Message struct {
 	Role    Role   `json:"role"`
 	Content string `json:"content"`
@@ -51,10 +51,14 @@ type Request struct {
 	// Model is the backend's model id. Empty: the backend's default.
 	Model    string
 	Messages []Message
-	// Image, a JPEG, goes with the last user message, for a model that
-	// takes images (the window the user speaks into). A server that
-	// refuses the request (400) gets it again without the image.
-	Image []byte
+	// Images, JPEGs, go with the last user message, for a model that
+	// takes images (the window the user speaks into, a copied picture,
+	// the Rewrite box's). A server that refuses the request (400) gets
+	// it again without the images, unless ImagesRequired: then the
+	// refusal is the request's error (the box's images are the user's
+	// own: dropping them silently would answer about nothing).
+	Images         [][]byte
+	ImagesRequired bool
 
 	Temperature *float64 // nil: the backend's default
 	TopP        *float64
@@ -72,6 +76,10 @@ type Request struct {
 	// order, on the calling goroutine, before Chat returns. It must not
 	// block for long. The Response still carries the whole text.
 	OnDelta func(delta string)
+	// RetryPrivateStream may authorize a retry after OnDelta emitted output.
+	// The caller must atomically discard that output and confirm it has not
+	// been exposed. Nil preserves the default of not retrying streamed output.
+	RetryPrivateStream func() bool
 
 	// Timeout bounds one attempt (0: the Client's default).
 	Timeout time.Duration
@@ -99,10 +107,13 @@ type Request struct {
 // Usage is the token count of a call. Estimated is true when the
 // backend reported none and the counts come from EstimateTokens.
 type Usage struct {
-	PromptTokens     int  `json:"promptTokens"`
-	CompletionTokens int  `json:"completionTokens"`
-	TotalTokens      int  `json:"totalTokens"`
-	Estimated        bool `json:"estimated,omitempty"`
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+	// note (luojiaxuan): CachedTokens are the prompt tokens the service read from its prompt
+	// cache, when it says (OpenAI's prompt_tokens_details); 0 otherwise.
+	CachedTokens int  `json:"cachedTokens,omitempty"`
+	Estimated    bool `json:"estimated,omitempty"`
 }
 
 // Add returns u + v.
@@ -111,6 +122,7 @@ func (u Usage) Add(v Usage) Usage {
 		PromptTokens:     u.PromptTokens + v.PromptTokens,
 		CompletionTokens: u.CompletionTokens + v.CompletionTokens,
 		TotalTokens:      u.TotalTokens + v.TotalTokens,
+		CachedTokens:     u.CachedTokens + v.CachedTokens,
 		Estimated:        u.Estimated || v.Estimated,
 	}
 }
@@ -133,6 +145,9 @@ type Response struct {
 	Latency      time.Duration // of the successful attempt
 	Attempts     int           // 1 + retries (Client)
 	Repairs      int           // JSON repair turns (Client.JSON)
+	// ImagesDropped: the model refused the images and the answer came
+	// from the text alone (only the session may claim an image went).
+	ImagesDropped bool
 	// JSON is the validated value for FormatJSON requests made through
 	// Client.JSON (the extracted JSON text otherwise empty).
 	JSON json.RawMessage

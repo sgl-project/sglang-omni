@@ -21,6 +21,8 @@ type meetingFixtureState struct {
 	AppEnhancementDetails []appEnhancementGroupDetail `json:"appenhance_details,omitempty"`
 	Dictionary            *dictionaryViewState        `json:"dictionary,omitempty"`
 	Notes                 *notesViewState             `json:"notes,omitempty"`
+	Snippets              *snippetsViewState          `json:"snippets,omitempty"`
+	SnippetsUI            *snippetsFixtureUI          `json:"snippets_ui,omitempty"`
 	Remote                *remoteViewState            `json:"remote,omitempty"`
 	RemoteCards           *remoteCardsViewState       `json:"remote_cards,omitempty"`
 	RemoteDialog          *remoteDialogViewState      `json:"remote_dialog,omitempty"`
@@ -51,6 +53,17 @@ type shellFixtureUI struct {
 	AnnouncementOpen bool   `json:"announcement_open,omitempty"`
 }
 
+// snippetsFixtureUI seeds the Snippets page's local state in the demo:
+// its search, and the dialog with its fields and problem.
+type snippetsFixtureUI struct {
+	Query    string `json:"query,omitempty"`
+	EditOpen bool   `json:"edit_open,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Trigger  string `json:"trigger,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 type sessionOverlayFixtureUI struct {
 	Menu             string                    `json:"menu,omitempty"`
 	OpenQuotes       []int                     `json:"open_quotes,omitempty"`
@@ -69,6 +82,7 @@ func cloneSessionOverlayViewState(state sessionOverlayViewState) sessionOverlayV
 	if state.Card != nil {
 		card := *state.Card
 		card.Blocks = slices.Clone(state.Card.Blocks)
+		card.Inputs = slices.Clone(state.Card.Inputs)
 		clone.Card = &card
 	}
 	clone.Menu = cloneSessionMenuViewState(state.Menu)

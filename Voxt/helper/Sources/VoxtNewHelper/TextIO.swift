@@ -145,11 +145,12 @@ final class TextIO: @unchecked Sendable {
         guard p.allowCopy ?? false else { return done(nil, SelectionVia.none) }
         let copied = await copySelection(timeoutMs: Double(p.copyTimeoutMs ?? 300))
         steps.append(copied.note)
-        return done(copied.text, copied.text != nil ? SelectionVia.copy : SelectionVia.none)
+        return SelectionResult(text: copied.text, image: copied.image, via: copied.text != nil ? SelectionVia.copy : SelectionVia.none,
+                               ms: round1(monotonicMs() - t0), steps: steps)
     }
 
     /// ⌘C, wait for the clipboard to change, read it, put the old one back.
-    private func copySelection(timeoutMs: Double) async -> (text: String?, note: String) {
+    private func copySelection(timeoutMs: Double) async -> (text: String?, image: Data?, note: String) {
         let (snap, c0) = await onMain { (Clipboard.snapshot(NSPasteboard.general), NSPasteboard.general.changeCount) }
         // Keys the user still holds (Control of a Control+C shortcut), for the log: the app may see them with ⌘C.
         let held = flags(CGEventSource.flagsState(.hidSystemState))
@@ -163,14 +164,21 @@ final class TextIO: @unchecked Sendable {
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        guard changed else { return (nil, "copy: clipboard unchanged" + held) }
-        let text = await onMain { () -> String? in
+        guard changed else { return (nil, nil, "copy: clipboard unchanged" + held) }
+        let (text, types, data, file) = await onMain { () -> (String?, [String], [String: Data], URL?) in
             let pb = NSPasteboard.general
-            let s = pb.string(forType: .string)
+            let text = pb.string(forType: .string)
+            let types = (pb.types ?? []).map(\.rawValue)
+            let data = ClipboardPicture.copiedSelectionImageData(types: types, text: text) {
+                pb.data(forType: NSPasteboard.PasteboardType($0))
+            }
+            let file = (pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
             Clipboard.restore(pb, snap)
-            return s
+            return (text, types, data, file)
         }
-        return (text?.isEmpty == false ? text : nil, "copy: changed" + held)
+        let selected = ClipboardPicture.imageForCopiedSelection(types: types, data: data, file: file, maxSide: screenMaxSide, text: text)
+        let image = selected.flatMap { ScreenWindow.jpeg($0) }
+        return (text?.isEmpty == false ? text : nil, image, "copy: changed" + held)
     }
 
     func paste(_ p: PasteParams) async throws -> PasteResult {

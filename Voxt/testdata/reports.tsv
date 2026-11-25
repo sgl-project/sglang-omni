@@ -1,0 +1,61 @@
+report	fix	symptom	level	check
+#3180	#3769	Dictated text is not inserted into a panel that does not become the active app (Raycast)	L	testTargetReached
+#3387	#3768	Meeting live and final speech requests omit dictation's main-language hint	L	TestMeetingTrackASRUsesDictationLanguage
+#3387	#4481	Meeting segment transcription ignores the Simplified or Traditional Chinese preference	L	TestTranscribeChunksChineseScript
+#3387	#4481	Meeting prompt and dictionary echoes escape suppression when Chinese scripts differ	L	TestTranscribeChunksSuppressesCrossScriptGuidance
+#3387	#4481	Imported-file transcription ignores the Chinese script preference	L	TestTranscribeUsesTranscribesSpeechModel
+#3431	#3767	The live meeting bubble repeats a sentence after a pause	L	TestCommitterPauseRevisedTail
+#3776	#3777	A settings dialog needs two presses of Escape to close	L	TestOneEscapeClosesDialogs
+#3778	#3779	A Logs filter with no match says there are no log lines yet	L	TestLogsFilterNoMatch
+#3781	#3783	The Try prompts dialog cannot be closed	L	TestLLMDebugCloses
+#3785	#3787	The overlay preview's pill leaves the chosen side at some edge distances	L	TestOverlayPreviewKeepsItsSide
+#3788	#3792	Show in the Dock loses the choice made in 1.x	L	TestLegacyDockAtStart
+#3788	#3792	Find in settings misses Show in the Dock for Dock searches in English and Simplified Chinese	L	TestSettingsSearchFindsRows
+#3790	#3792	Settings search misses rows that are on the page	L	TestSettingsSearchFindsRows
+#3798	#3799	Test connection without a key shows the raw message key llm.no_key	L	TestDialogTestWithoutKey
+#3801	#3803	The release command palette's Meetings command opens a Not found page	L	TestMeetingsPaletteDestinationExists
+#3835	#3841	Rewrite gets no selected text from a PDF view or a web page that reports an empty range	L	testEndsAtCaret
+#3838	#3843	Translating a selection opens a speech model it does not use	L	TestTranslateOpensNoSpeechModelItDoesNotUse
+#3840	#3844	A long dictation over the speech service's upload limit gets no transcript	L	TestLongRecordingInPieces
+#3854	#3855	Single-model cards on Speech models do not line up with family cards	L	TestModelCardsLineUp
+#3895	#4028	The History settings dialog repeats Privacy's Keep recordings switch	L	TestHistorySettingsDialog
+#3917	#3934	The setup guide's Set up a language model button does not open Language models	L	TestOnboardingTryStepLeaves
+#3918	#3928	With Show in the Dock off, Voxt can enter the Dock before the launch-time setting is applied	L	TestMainAppliesDockBeforeReady
+#3950	#3952	A local server's Model menu does not list the models the server has	L	TestOllamaModelMenuListsServer
+#3981	#3992	The live meeting transcript repeats a phrase in a loop	L	TestCollapseLoops
+#3982	#3994	A meeting's microphone track repeats speech from the system track in the saved transcript	L	TestFinalizeDropsMicEcho
+#3982	#3994	A meeting's microphone track repeats speech from the system track in the live transcript	L	TestCommitSegmentDropsLiveEcho
+#3983	#3995	A meeting stream's rotation sends the first ten minutes again	L	TestLiveRotateFinalDoesNotRepeat
+#3984	#3996	The meeting overlay does not stay where it was dragged	L	TestMeetingOverlayFrame
+#3985	#3997	The meeting overlay does not follow the newest speech	L	TestMeetingOverlayFollowsNewestLine
+#3987	#3999	A meeting segment cut by length ends with a full stop	L	TestCommitterForcedCut
+#3988	#4002	A meeting's transcript ignores dictionary terms	L	TestMeetingTrackASRUsesDictionary
+#3990	#4003	The Meetings page says No meetings yet while a meeting is in progress	L	TestMeetingsPageListsMeetingInProgress
+#4000	#4001	A pasted API key keeps the spaces of a wrapped line	L	TestRemoteKeyWhitespace
+#4011	#4012	A meeting's summary is not in the meeting's language when no main language is set	L	TestMeetingPromptsLanguage
+#4018	#4020	A meeting's transcript is not corrected with the dictionary	L	TestCorrectTranscript
+#4019	#4021	A meeting's details sit in a narrow panel with a scroll box inside	L	TestMeetingDetailIsWideAndScrollsOnce
+#4022	#4023	Meetings are missing from release builds	L	TestMeetingsInReleaseBuild
+#4024	#4025	Translate does not switch back to the main language for languages that share a script	L	TestTranslateBack
+#4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
+#4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
+#4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
+#4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
+#4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
+#4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
+#4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
+#4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
+#4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
+#4421	#4422	A width save's change notification delivered after the reset restores the resized width	L	TestResetKeepsHistoryWidthAfterLateNotification
+#4421	#4422	The reset's late background write erases a History width saved after the reset	L	TestResetKeepsNewerHistoryWidthSave
+#3893	#4396	Transcribe clean-up applies to every app, so dictation into a terminal waits on the language model	L	TestSceneTranscribeCleanup
+#4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
+#4429	#4430	The release pre-flight reports no English entry in a long valid CHANGELOG section	L	TestReleasePreflight
+#4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
+#4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
+#4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
+#4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
+#3875	#4498	The setup guide does not explain language model service choices, API key entry, or connection testing	L	TestOnboardingSteps
+#3875	#4498	Transcribe does not explain that a language model prompt can translate or reformat dictation	L	TestTranscribePageRenders
+#4365	#4399	Check again in the Permissions step shows this process's permission read before the helper's answer, so the rows flash	L	TestPermissionsSettings
+#4364	#4452	System audio recording's Ask showed no change after it ran, so a granted permission looked unknown	L	TestPermissionsMeetingSystemAudio

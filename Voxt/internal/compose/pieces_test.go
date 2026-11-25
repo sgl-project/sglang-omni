@@ -112,7 +112,7 @@ func TestLanguagePieces(t *testing.T) {
 }
 
 // TestBuildParts: Transcribe of long or mixed speech gets a part per
-// piece, every one with the same system prompt and example turn;
+// piece, every one with the same system prompt and no example turn;
 // Translate, Rewrite and short speech get one.
 func TestBuildParts(t *testing.T) {
 	zh := "嗯，那个，我们下周二，呃不对，下周三下午三点开个会，讨论一下预算。"
@@ -133,7 +133,7 @@ func TestBuildParts(t *testing.T) {
 	for i, p := range parts {
 		// The glossary of a large dictionary is the whole text's, in each
 		// user message: Auralink is in the last piece only.
-		if p.System != whole.System || len(p.History) != 2 || p.User != whole.Glossary+"\n\n"+UserMessage(p.Text) ||
+		if p.System != whole.System || len(p.History) != 0 || p.User != whole.Glossary+"\n\n"+UserMessage(p.Text) ||
 			!strings.Contains(p.User, "- Auralink") || strings.Contains(p.System, "Auralink") {
 			t.Errorf("part %d: %+v", i, p)
 		}
@@ -171,6 +171,27 @@ func TestJoinParts(t *testing.T) {
 	} {
 		if got := JoinParts(parts, c.answers); got != c.want {
 			t.Errorf("%q: %q, want %q", c.answers, got, c.want)
+		}
+	}
+}
+
+// TestPiecesKeepMarks: a piece never ends inside a snippet's mark, at a
+// space, a full stop or anywhere.
+func TestPiecesKeepMarks(t *testing.T) {
+	for _, text := range []string{
+		strings.Repeat("word ", 56) + "⟦my email address⟧ " + strings.Repeat("more ", 60),
+		strings.Repeat("Words here. ", 24) + "⟦Dr. Smith's office⟧ " + strings.Repeat("More there. ", 26),
+		strings.Repeat("字", 290) + "⟦我的邮箱⟧" + strings.Repeat("字", 200),
+		strings.Repeat("字", 296) + "⟦我的邮箱⟧" + strings.Repeat("字", 296),
+	} {
+		pieces := LanguagePieces(text)
+		if len(pieces) < 2 {
+			t.Fatalf("one piece for %d characters", len([]rune(text)))
+		}
+		for _, p := range pieces {
+			if strings.Count(p.Text, "⟦") != strings.Count(p.Text, "⟧") {
+				t.Errorf("a piece cuts a mark: %q", p.Text)
+			}
 		}
 	}
 }

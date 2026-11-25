@@ -5,17 +5,17 @@ import (
 	"testing"
 )
 
-// TestExample: speech with clean-up gets the example turn, in the main
-// language's set, its answer in the target language when the set has
-// one; a selection, Rewrite or no clean-up get none.
+// TestExample: spoken Translate with clean-up gets the example turn, in
+// the main language's set, its answer in the target language when the set
+// has one; Transcribe, a selection, Rewrite or no clean-up get none.
 func TestExample(t *testing.T) {
 	for _, c := range []struct {
 		in     Input
 		answer string // a part of the answer, "" for no example
 	}{
-		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "zh"}, "发给小李，今天下班前"},
-		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "en"}, "to Anna before 5"},
-		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "fr"}, "to Anna before 5"},
+		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "zh"}, ""},
+		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "en"}, ""},
+		{Input{Task: Transcribe, Cleanup: true, MainLanguage: "fr"}, ""},
 		{Input{Task: Transcribe, MainLanguage: "zh"}, ""},
 		{Input{Task: Translate, Cleanup: true, MainLanguage: "zh", TargetLanguage: "en"}, "Xiao Li before the end of today"},
 		{Input{Task: Translate, Cleanup: true, MainLanguage: "zh", TargetLanguage: "zh-Hans"}, "把周报发给 Anna"},
@@ -41,14 +41,8 @@ func TestExample(t *testing.T) {
 		if !ok || !strings.Contains(answer, c.answer) {
 			t.Errorf("%+v: example %q, want %q", c.in, answer, c.answer)
 		}
-		// Transcribe's contract asks for the <output> tags, so its
-		// example turn answers with them.
-		inHistory := answer
-		if c.in.Task == Transcribe {
-			inHistory = "<output>\n" + answer + "\n</output>"
-		}
 		if len(out.History) != 2 || out.History[0].Role != "user" || !strings.HasPrefix(out.History[0].Content, "<input>") ||
-			out.History[1].Role != "assistant" || out.History[1].Content != inHistory {
+			out.History[1].Role != "assistant" || out.History[1].Content != answer {
 			t.Errorf("%+v: history %+v", c.in, out.History)
 		}
 		if m := out.Messages(); len(m) != 4 || m[3].Content != UserMessage("x") {

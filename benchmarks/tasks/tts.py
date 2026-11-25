@@ -29,7 +29,12 @@ import soundfile as sf
 import torch
 from tqdm import tqdm
 
-from benchmarks.benchmarker.data import RequestResult, finish_reason_from_server
+from benchmarks.benchmarker.data import (
+    MixtureWindow,
+    RequestClass,
+    RequestResult,
+    finish_reason_from_server,
+)
 from benchmarks.benchmarker.runner import AfterSendFn, SendFn
 from benchmarks.benchmarker.utils import (
     WAV_HEADER_SIZE,
@@ -175,15 +180,30 @@ def run_seedtts_similarity(
     generated_path = os.path.join(output_dir, "generated.json")
     with open(generated_path) as f:
         generated: list[dict] = json.load(f)
-    if config.max_samples is not None:
-        generated = generated[: config.max_samples]
-    logger.info(f"Loaded {len(generated)} entries from {generated_path}")
 
     split = config.lang
     ref_audio_by_id = {
         sample.sample_id: sample.ref_audio
         for sample in load_seedtts_samples(config.meta, config.max_samples, split=split)
     }
+    if config.max_samples is not None:
+        # note (db-ol): select by row, since a mixture run lists the repeats of a row in completion order.
+        generated = [
+            entry
+            for entry in generated
+            if (entry.get("sample_id") or "").rsplit("#", 1)[0] in ref_audio_by_id
+        ]
+    else:
+        pass
+    logger.info(f"Loaded {len(generated)} entries from {generated_path}")
+    # note (db-ol): mixture and overshoot runs send a row again under its id plus a suffix after "#", so each repeat takes the reference audio of its row.
+    for entry in generated:
+        sample_id = entry.get("sample_id") or ""
+        dataset_id = sample_id.rsplit("#", 1)[0]
+        if sample_id not in ref_audio_by_id and dataset_id in ref_audio_by_id:
+            ref_audio_by_id[sample_id] = ref_audio_by_id[dataset_id]
+        else:
+            pass
     device = config.device
     if "cuda" in device:
         torch.cuda.set_device(device)
@@ -1491,8 +1511,13 @@ def save_speed_results(
     metrics: dict,
     config: dict,
     output_dir: str,
+    *,
+    summary_by_class: dict[RequestClass, dict[str, float | int | None]] | None = None,
+    mixture: MixtureWindow | None = None,
 ) -> None:
-    json_results = build_speed_results(outputs, metrics, config)
+    json_results = build_speed_results(
+        outputs, metrics, config, summary_by_class=summary_by_class, mixture=mixture
+    )
     save_json_results(json_results, output_dir, "speed_results.json")
 
     csv_path = os.path.join(output_dir, "results.csv")

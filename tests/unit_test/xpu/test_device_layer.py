@@ -3,8 +3,16 @@
 
 from __future__ import annotations
 
+import pytest
+
 import sglang_omni.utils.device as dev
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.xpu import XPU_JOINT_ROTARY_DIMENSIONS
+
+if current_platform.is_xpu():
+    from sgl_kernel.jit import rope
+else:
+    pass
 
 
 def test_none_is_the_only_automatic_selection():
@@ -32,8 +40,6 @@ def test_a_device_string_naming_its_own_index_is_rejected():
     """device names only the type; a caller who wants a card passes gpu_id, not
     'cpu:N'.
     """
-    import pytest
-
     with pytest.raises(ValueError, match="names an index"):
         dev.resolve_device_spec("cpu:1")
     with pytest.raises(ValueError, match="names an index"):
@@ -44,8 +50,6 @@ def test_a_device_this_host_cannot_serve_is_rejected_not_retargeted():
     """Silently remapping could not tell a legacy 'cuda' default from an operator
     genuinely asking for CUDA, so a mismatch is an error at the boundary now.
     """
-    import pytest
-
     live = current_platform.device_type
     absent = "xpu" if live == "cuda" else "cuda"
 
@@ -78,3 +82,11 @@ def test_sglang_caps_xpu_free_memory_against_the_allocator(monkeypatch) -> None:
     free_gb = get_available_gpu_memory("xpu", 0, distributed=False, empty_cache=False)
 
     assert free_gb == (total_bytes - allocated_bytes) / (1 << 30)
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="Requires an XPU")
+def test_xpu_joint_rope_dimensions_match_the_installed_kernel() -> None:
+    kernel_dimensions = rope._SUPPORTED_XPU_ROPE_DIMS  # noqa: leading-underscore
+
+    assert tuple(kernel_dimensions) == XPU_JOINT_ROTARY_DIMENSIONS

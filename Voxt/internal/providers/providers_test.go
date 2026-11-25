@@ -45,9 +45,6 @@ func TestReady(t *testing.T) {
 	if m := Missing(settings.Provider{ID: llm.Custom, Model: "x"}, true); m != MissingEndpoint {
 		t.Errorf("custom without an address: %q", m)
 	}
-	if m := Missing(settings.Provider{ID: llm.Custom, Endpoint: "http://192.168.1.20/v1", Model: "x"}, true); m != MissingAddress {
-		t.Errorf("an address Resolve refuses: %q", m)
-	}
 	if m := Missing(settings.Provider{ID: llm.Custom, Endpoint: "http://127.0.0.1:9/v1", Model: "x"}, true); m != "" {
 		t.Errorf("an address Resolve accepts: %q", m)
 	}

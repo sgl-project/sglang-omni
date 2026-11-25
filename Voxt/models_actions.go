@@ -9,6 +9,7 @@ const (
 	modelActionDelete   modelActionKind = "delete"
 	modelActionDiscard  modelActionKind = "discard"
 	modelActionUse      modelActionKind = "use"
+	modelActionAssign   modelActionKind = "assign"
 	modelActionDownload modelActionKind = "download"
 )
 
@@ -27,4 +28,6 @@ type modelsActions interface {
 	setModelFaster(id string, on bool)
 	setModelsKeepLoaded(value string)
 	autosaveSpeechContext(changed, focused bool)
+	openModelAssignment(kind, id string)
+	applyModelAssignment()
 }

@@ -65,6 +65,11 @@ public:
                          const std::atomic<bool> &cancel, DraftPolicy policy,
                          std::vector<omni_common::KVCache> &caches,
                          std::vector<omni_common::KVCache> &draft_caches) const;
+  // Extends caches the caller keeps, the target's and the draft's over the
+  // same positions, by embeddings [1, length, hidden] without decoding.
+  void Prefill(const Qwen3Decoder &target, const mlx::core::array &embeddings,
+               std::vector<omni_common::KVCache> &caches,
+               std::vector<omni_common::KVCache> &draft_caches) const;
   // Empty caches for the draft's context.
   std::vector<omni_common::KVCache> NewCaches() const {
     return decoder_.NewCaches();

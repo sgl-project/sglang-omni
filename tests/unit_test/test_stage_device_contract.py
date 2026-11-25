@@ -6,11 +6,12 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 from huggingface_hub.errors import LocalEntryNotFoundError, RepositoryNotFoundError
 
 import sglang_omni.platforms as platforms
@@ -32,7 +33,18 @@ CPU_ONLY_GPU_PLACED = {
 }
 
 
+@pytest.fixture(autouse=True)
+def restore_cudnn_switches() -> Iterator[None]:
+    # note (wilsonzheng0327): the MiniMax-Music3 factories turn cuDNN off process-wide, and Inductor's cache key does not record it.
+    is_cudnn_enabled = torch.backends.cudnn.enabled
+    is_cudnn_attention_enabled = torch.backends.cuda.cudnn_sdp_enabled()
+    yield
+    torch.backends.cudnn.enabled = is_cudnn_enabled
+    torch.backends.cuda.enable_cudnn_sdp(is_cudnn_attention_enabled)
+
+
 def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
+    model_path = str(MODELS_DIR)
     profiles = {
         Qwen3OmniSessionPipelineConfig: "examples/qwen3_omni/session_h200.yaml",
         StreamingCascadePipelineConfig: "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml",
@@ -40,10 +52,10 @@ def pipeline_config(config_cls: type[PipelineConfig]) -> PipelineConfig:
     if config_cls in profiles:
         profile = MODELS_DIR.parent.parent / profiles[config_cls]
         return ConfigManager.from_file(str(profile)).config.model_copy(
-            update={"model_path": "unused"}
+            update={"model_path": model_path}
         )
     else:
-        return config_cls(model_path="unused")
+        return config_cls(model_path=model_path)
 
 
 def iter_stages():
@@ -108,6 +120,8 @@ def factory_parameters(dotted: str) -> dict[str, object]:
 # note (lennox): these factories raise on torch.cuda.is_available() before
 # this test's mocks run, so they need a static accelerator mark (tests/README.md).
 REQUIRES_REAL_ACCELERATOR = {
+    ("firered_tts3", "talker"),
+    ("firered_tts3", "vocoder"),
     ("minimax_music3", "minimax_music3_ar"),
     ("minimax_music3", "dit_dav"),
     ("zonos2", "tts_engine"),
@@ -268,6 +282,11 @@ def test_gpu_stage_factories_forward_gpu_id_into_device_spec_resolution(
 # note (lennox): forwarding into resolve_device_spec isn't the same as binding
 # its result -- this drives the real build() chain and checks what it fixed.
 ENGINE_FACTORIES = {
+    "firered_tts3": (
+        "sglang_omni.models.firered_tts3.stages.create_talker_executor",
+        "sglang_omni.models.firered_tts3.engine_builder",
+        "FireRedTTS3EngineBuilder",
+    ),
     "nemotron_voicechat_thinker": (
         "sglang_omni.models.nemotron_voicechat.stages.create_thinker_executor",
         "sglang_omni.models.nemotron_voicechat.engine_builder",
@@ -369,7 +388,7 @@ ENGINE_FACTORIES = {
 
 # note (lennox): same CUDA-only models as REQUIRES_REAL_ACCELERATOR,
 # at this test's per-model (not per-stage) granularity.
-ACCELERATOR_ONLY_ENGINE_MODELS = {"minimax_music3", "zonos2"}
+ACCELERATOR_ONLY_ENGINE_MODELS = {"firered_tts3", "minimax_music3", "zonos2"}
 
 
 def engine_factory_ids():
@@ -415,14 +434,19 @@ def test_engine_factories_bind_the_placed_gpu(monkeypatch, model):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
+    stage_factory_arguments = (
+        pipeline_wiring("firered_tts3", "default", "talker")
+        if model == "firered_tts3"
+        else {}
+    )
 
     with pytest.raises(Stop):
-        factory(model_path="unused", device=None, gpu_id=2)
+        factory(model_path="unused", device=None, gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
     final.clear()
     with pytest.raises(Stop):
-        factory(model_path="unused", device="cuda", gpu_id=2)
+        factory(model_path="unused", device="cuda", gpu_id=2, **stage_factory_arguments)
     assert final == {"device": "cuda:2", "gpu_id": 2}
 
 

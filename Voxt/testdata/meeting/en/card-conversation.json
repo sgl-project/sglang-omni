@@ -42,7 +42,8 @@
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
-      "insert_tooltip": "Insert into Slack",
+      "insert_tooltip": "Insert into Slack (R)",
+      "copy_tooltip": "Copy (C)",
       "size_step": 0,
       "levels": [
         0,
@@ -67,7 +68,6 @@
           "key": "turn-0-user",
           "kind": "bubble",
           "turn": 0,
-          "title": "You",
           "text": "write that I am late",
           "user": true,
           "selectable": true
@@ -85,7 +85,6 @@
           "key": "turn-1-user",
           "kind": "bubble",
           "turn": 1,
-          "title": "You",
           "text": "shorter",
           "user": true,
           "selectable": true

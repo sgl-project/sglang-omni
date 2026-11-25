@@ -30,9 +30,12 @@ type fakeLocal struct {
 	ASRP asr.Provider
 	Chat local.Chat
 	// MoreLLM are more language models installed (their opens get Chat).
-	MoreLLM []local.Model
+	MoreLLM  []local.Model
+	LLMModel local.Model
 	// NoStream: its speech model gets the recording once it stops.
 	NoStream bool
+	// ASRFeatures: its speech model serves only these features (nil: all).
+	ASRFeatures []string
 }
 
 // readyLocal is a speech model and a language model, both installed,
@@ -41,14 +44,22 @@ func readyLocal() *fakeLocal {
 	return &fakeLocal{ASRP: &fakeTranscriptions{}, Chat: &llm.Client{Backend: &fakeChat{}}}
 }
 
+func (f *fakeLocal) languageModel() local.Model {
+	if f.LLMModel.ID != "" {
+		return f.LLMModel
+	}
+	return fakeLLMModel
+}
+
 func (f *fakeLocal) Installed(kind local.Kind) []local.Model {
 	switch {
 	case kind == local.ASR && f.ASRP != nil:
 		m := fakeASRModel
 		m.Stream = !f.NoStream
+		m.Features = f.ASRFeatures
 		return []local.Model{m}
 	case kind == local.LLM && f.Chat != nil:
-		return append([]local.Model{fakeLLMModel}, f.MoreLLM...)
+		return append([]local.Model{f.languageModel()}, f.MoreLLM...)
 	}
 	return nil
 }
@@ -64,7 +75,7 @@ func (f *fakeLocal) LLM(_ context.Context, id string) (local.Chat, local.Model, 
 	if f.Chat == nil {
 		return nil, local.Model{}, local.NotInstalledError(local.LLM, id)
 	}
-	return f.Chat, fakeLLMModel, nil
+	return f.Chat, f.languageModel(), nil
 }
 
 // withChat is s with chat as its language model (a fakeChat behind
@@ -85,8 +96,12 @@ type fakeChat struct {
 	status int
 	delay  time.Duration
 	// stall: after the text, the stream waits for the request's end.
-	stall  bool
-	bodies []map[string]any
+	stall bool
+	// chunkDelay: between streamed pieces, instead of 5 ms; above
+	// draftEvery, every piece publishes, so the card's draft is
+	// deterministic under any load.
+	chunkDelay time.Duration
+	bodies     []map[string]any
 	// onRequest runs as each request comes (mute_e2e_test.go: is the
 	// output back by then?).
 	onRequest func()
@@ -106,7 +121,7 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 	}
 	f.mu.Lock()
 	f.bodies = append(f.bodies, requestBody(req))
-	text, status, delay, stall := f.text, f.status, f.delay, f.stall
+	text, status, delay, stall, chunkDelay := f.text, f.status, f.delay, f.stall, f.chunkDelay
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.bodies), len(f.texts))-1]
 	}
@@ -122,10 +137,13 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 		return llm.Response{}, llm.HTTPError(fakeLLMModel.ID, req.Model, status, "overloaded", 0)
 	}
 	if req.OnDelta != nil {
+		if chunkDelay <= 0 {
+			chunkDelay = 5 * time.Millisecond
+		}
 		rs := []rune(text)
 		for i := 0; i < len(rs); i += 6 {
 			req.OnDelta(string(rs[i:min(i+6, len(rs))]))
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(chunkDelay)
 		}
 	}
 	if stall {
@@ -149,8 +167,8 @@ func requestBody(req llm.Request) map[string]any {
 	if req.Temperature != nil {
 		body["temperature"] = *req.Temperature
 	}
-	if req.Image != nil {
-		body["image"] = req.Image
+	if len(req.Images) > 0 {
+		body["images"] = req.Images
 	}
 	if req.Format == llm.FormatJSON {
 		body["response_format"] = map[string]any{"type": "json_object"}
@@ -202,22 +220,23 @@ func (f *fakeTranscriptions) uploads() (calls, size int) {
 	return f.calls, f.size
 }
 
-// fakeStreamer is a streaming speech model: a partial "hello" after
-// three pieces of audio, the final text on Finish.
-type fakeStreamer struct{ final string }
+// fakeStreamer is a streaming speech model: a partial after three pieces
+// of audio ("hello" unless partial says otherwise), the final on Finish.
+type fakeStreamer struct{ final, partial string }
 
 func (fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true} }
 
 func (f fakeStreamer) Open(context.Context, asr.StreamRequest) (asr.Stream, error) {
-	return &fakeStream{final: f.final, ev: make(chan asr.Event, 16)}, nil
+	return &fakeStream{final: f.final, partial: f.partial, ev: make(chan asr.Event, 16)}, nil
 }
 
 type fakeStream struct {
-	mu     sync.Mutex
-	final  string
-	sends  int
-	ev     chan asr.Event
-	closed bool
+	mu      sync.Mutex
+	final   string
+	partial string
+	sends   int
+	ev      chan asr.Event
+	closed  bool
 }
 
 func (s *fakeStream) Send([]byte) error {
@@ -225,7 +244,11 @@ func (s *fakeStream) Send([]byte) error {
 	defer s.mu.Unlock()
 	s.sends++
 	if s.sends == 3 && !s.closed {
-		s.ev <- asr.Event{Kind: asr.EventPartial, Text: "hello"}
+		text := s.partial
+		if text == "" {
+			text = "hello"
+		}
+		s.ev <- asr.Event{Kind: asr.EventPartial, Text: text}
 	}
 	return nil
 }

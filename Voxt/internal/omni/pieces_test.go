@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -99,8 +101,72 @@ func TestLivePieces(t *testing.T) {
 			t.Errorf("piece %d ends %d samples into a stretch of speech", i+1, in)
 		}
 	}
+	// The rest starts after the recording: it gets the session for what its
+	// server prefilled, and not the preview's text.
+	if r := finals[4]; r.Fields["realtime_session"] != "fake-session" || r.Fields["guessed_text"] != "" {
+		t.Errorf("the rest: %+v", r.Fields)
+	}
+	for i, r := range finals[:4] {
+		if r.Fields["realtime_session"] != "" || r.Fields["guessed_text"] != "" {
+			t.Errorf("piece %d: %+v", i+1, r.Fields)
+		}
+	}
+	// Each piece's end is where the server starts the Final's prefill.
+	st.Close()
+	f.rt.Close() // the server records its live sessions before it exits
+	var ends []string
+	at = 0
+	for _, r := range finals[:4] {
+		at += r.Samples
+		ends = append(ends, strconv.Itoa(at))
+	}
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["final_start"] != strings.Join(ends, ",") {
+		t.Errorf("live %+v, want the Final's starts %v", l, ends)
+	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
+	}
+}
+
+// TestLivePiecesEvents: every piece recognised while recording reports
+// the final text so far (asr.EventPiece), growing, before the Final,
+// each a prefix of it, so the session can start its clean-up of the
+// finished stretches.
+func TestLivePiecesEvents(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "zh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcm := speechAndPauses(5)
+	sendAll(t, st, pcm)
+	f.waitLogged(t, "piece 4 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	evs := drain(t, st)
+	final := evs[len(evs)-1]
+	if final.Kind != asr.EventFinal {
+		t.Fatalf("last %+v", final)
+	}
+	var pieces []string
+	for _, ev := range evs[:len(evs)-1] {
+		if ev.Kind == asr.EventPiece {
+			pieces = append(pieces, ev.Text)
+		}
+	}
+	if want := []string{"p1", "p1 p2", "p1 p2 p3", "p1 p2 p3 p4"}; !slices.Equal(pieces, want) {
+		t.Fatalf("pieces %q, want %q", pieces, want)
+	}
+	for _, p := range pieces {
+		if !strings.HasPrefix(final.Text, p) {
+			t.Errorf("%q is not a prefix of the final %q", p, final.Text)
+		}
+	}
+	// Without a dictionary the rest still has its windows to reuse.
+	if r := f.records("final"); r[len(r)-1].Fields["realtime_session"] != "fake-session" {
+		t.Errorf("the rest without a dictionary: %+v", r[len(r)-1].Fields)
 	}
 }
 

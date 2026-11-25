@@ -150,6 +150,159 @@ func TestStreamingNotRetriedOnceStarted(t *testing.T) {
 	}
 }
 
+func TestStreamedFailureWithoutRetryTimeIsMetered(t *testing.T) {
+	failure := HTTPError("fake", "m", 503, "reset", 10*time.Minute)
+	backend := &fakeBackend{steps: []step{
+		{deltas: []string{"private output"}, err: failure},
+		text("must not run"),
+	}}
+	meter := &Meter{}
+	var records int
+	var recordedCode string
+	meter.OnRecord = func(_ UsageKey, _ Usage, code string) {
+		records++
+		recordedCode = code
+	}
+	client := &Client{
+		Backend: backend,
+		Retry:   RetryPolicy{MaxAttempts: 2, MaxRetryAfter: time.Hour},
+		Meter:   meter,
+	}
+	callerContext, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	var privateOutput strings.Builder
+	var retryAuthorizations int
+	response, err := client.Chat(callerContext, Request{
+		Messages: msgs("x"),
+		OnDelta:  func(delta string) { privateOutput.WriteString(delta) },
+		RetryPrivateStream: func() bool {
+			retryAuthorizations++
+			return true
+		},
+	})
+	if Code(err) != CodeServer || response.Attempts != 1 || callerContext.Err() != nil {
+		t.Fatalf("response %+v, error %v, caller context error %v", response, err, callerContext.Err())
+	}
+	if privateOutput.String() != "private output" || retryAuthorizations != 0 || len(backend.requests()) != 1 {
+		t.Fatalf("private output %q, retry authorizations %d, requests %d", privateOutput.String(), retryAuthorizations, len(backend.requests()))
+	}
+	snapshot := meter.Snapshot()
+	if records != 1 || recordedCode != CodeServer || len(snapshot) != 1 || snapshot[0].Calls != 1 || snapshot[0].Failures != 1 || snapshot[0].Attempts != 1 || snapshot[0].Usage.TotalTokens != 0 {
+		t.Fatalf("meter callback records %d code %q, snapshot %+v", records, recordedCode, snapshot)
+	}
+}
+
+func TestRetryPrivateStreamResetsAttemptBeforeRetry(t *testing.T) {
+	f := &fakeBackend{steps: []step{
+		{deltas: []string{"old attempt"}, err: HTTPError("fake", "m", 503, "reset", 0)},
+		{deltas: []string{"new attempt"}, resp: Response{Text: "new attempt", FinishReason: FinishStop}},
+	}}
+	c := &Client{Backend: f, Sleep: noSleep, Retry: RetryPolicy{MaxAttempts: 2}}
+	var streamed strings.Builder
+	var retryAuthorizations int
+	resp, err := c.Chat(context.Background(), Request{
+		Messages: msgs("x"),
+		OnDelta:  func(delta string) { streamed.WriteString(delta) },
+		RetryPrivateStream: func() bool {
+			retryAuthorizations++
+			streamed.Reset()
+			return true
+		},
+	})
+	if err != nil || resp.Text != "new attempt" || resp.Attempts != 2 || streamed.String() != "new attempt" || retryAuthorizations != 1 || len(f.requests()) != 2 {
+		t.Fatalf("response %+v, stream %q, authorizations %d, error %v, requests %d", resp, streamed.String(), retryAuthorizations, err, len(f.requests()))
+	}
+}
+
+func TestRetryPrivateStreamCanRejectRetry(t *testing.T) {
+	f := &fakeBackend{steps: []step{
+		{deltas: []string{"already visible"}, err: HTTPError("fake", "m", 503, "reset", 0)},
+		text("must not run"),
+	}}
+	c := &Client{Backend: f, Sleep: noSleep, Retry: RetryPolicy{MaxAttempts: 2}}
+	var authorizations int
+	_, err := c.Chat(context.Background(), Request{
+		Messages: msgs("x"),
+		OnDelta:  func(string) {},
+		RetryPrivateStream: func() bool {
+			authorizations++
+			return false
+		},
+	})
+	if Code(err) != CodeServer || authorizations != 1 || len(f.requests()) != 1 {
+		t.Fatalf("error %v, authorizations %d, requests %d", err, authorizations, len(f.requests()))
+	}
+}
+
+func TestRetryPrivateStreamDoesNotRetryNonRetryableError(t *testing.T) {
+	f := &fakeBackend{steps: []step{
+		{deltas: []string{"private"}, err: HTTPError("fake", "m", 400, "invalid request", 0)},
+		text("must not run"),
+	}}
+	c := &Client{Backend: f, Sleep: noSleep, Retry: RetryPolicy{MaxAttempts: 2}}
+	var authorizations int
+	_, err := c.Chat(context.Background(), Request{
+		Messages: msgs("x"), OnDelta: func(string) {},
+		RetryPrivateStream: func() bool {
+			authorizations++
+			return true
+		},
+	})
+	if Code(err) != CodeBadRequest || authorizations != 0 || len(f.requests()) != 1 {
+		t.Fatalf("error %v, authorizations %d, requests %d", err, authorizations, len(f.requests()))
+	}
+}
+
+func TestRetryPrivateStreamRespectsAttemptLimit(t *testing.T) {
+	f := &fakeBackend{steps: []step{
+		{deltas: []string{"first attempt"}, err: HTTPError("fake", "m", 503, "reset", 0)},
+		{deltas: []string{"last attempt"}, err: HTTPError("fake", "m", 503, "reset", 0)},
+		text("must not run"),
+	}}
+	c := &Client{Backend: f, Sleep: noSleep, Retry: RetryPolicy{MaxAttempts: 2}}
+	var streamed strings.Builder
+	var authorizations int
+	_, err := c.Chat(context.Background(), Request{
+		Messages: msgs("x"), OnDelta: func(delta string) { streamed.WriteString(delta) },
+		RetryPrivateStream: func() bool {
+			authorizations++
+			streamed.Reset()
+			return true
+		},
+	})
+	if Code(err) != CodeServer || len(f.requests()) != 2 || authorizations != 1 || streamed.String() != "last attempt" {
+		t.Fatalf("error %v, requests %d, authorizations %d, stream %q", err, len(f.requests()), authorizations, streamed.String())
+	}
+}
+
+func TestRetryPrivateStreamCancellationDuringBackoff(t *testing.T) {
+	f := &fakeBackend{steps: []step{{deltas: []string{"private"}, err: HTTPError("fake", "m", 503, "reset", 0)}, text("unused")}}
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &Client{
+		Backend: f,
+		Retry:   RetryPolicy{MaxAttempts: 2, Base: time.Second, Max: time.Second},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Chat(ctx, Request{
+			Messages: msgs("x"), OnDelta: func(string) {},
+			RetryPrivateStream: func() bool { return true },
+		})
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; Code(err) != CodeCancelled || len(f.requests()) != 1 {
+		t.Fatalf("error %v, requests %d", err, len(f.requests()))
+	}
+}
+
 func TestEmptyAnswer(t *testing.T) {
 	c := &Client{Backend: &fakeBackend{steps: []step{text("<think>only this</think>")}}}
 	if _, err := c.Chat(context.Background(), Request{Messages: msgs("x")}); Code(err) != CodeEmpty {
@@ -260,11 +413,11 @@ func TestExtractJSONAndSchema(t *testing.T) {
 		}
 	}
 	s := Object(map[string]*Schema{
-		"e":    Enum("a", "b"),
-		"n":    Number().Range(0, 1),
-		"i":    Integer(),
+		"e":    {Type: "string", Enum: []string{"a", "b"}},
+		"n":    (&Schema{Type: "number"}).Range(0, 1),
+		"i":    {Type: "integer"},
 		"opt":  {Type: "string", Nullable: true},
-		"list": Array(Boolean()).Count(1, -1),
+		"list": Array(&Schema{Type: "boolean"}).Count(1, -1),
 	}, "e", "n", "list")
 	errs := s.Validate(json.RawMessage(`{"e":"c","n":2,"i":1.5,"opt":null,"list":[],"x":1}`))
 	var paths []string
@@ -289,5 +442,27 @@ func TestEstimateTokens(t *testing.T) {
 	}
 	if n := EstimateTokens("abcdefgh"); n != 2 {
 		t.Fatal(n)
+	}
+}
+
+// TestSerializedToolReply: internal tool messages must not reach the answer or streaming preview.
+func TestSerializedToolReply(t *testing.T) {
+	for _, test := range []struct {
+		reply  string
+		finish string
+	}{
+		{`<|open|>tools<|sep|><|open|>call tool="thinking" index="1"<|sep|>The input is just "As."<|close|>call<|sep|><|close|>tools<|sep|><|close|>message<|sep|>`, FinishStop},
+		{`<|open|>tools<|sep|><|open|>call tool="response"<|sep|><|close|>response<|sep|><|close|>message<|sep|>`, FinishLength},
+	} {
+		reply := test.reply
+		for split := 0; split <= len(reply); split++ {
+			var streamed strings.Builder
+			backend := &fakeBackend{steps: []step{{resp: Response{Text: reply, FinishReason: test.finish}, deltas: []string{reply[:split], reply[split:]}}}}
+			client := &Client{Backend: backend}
+			response, err := client.Chat(context.Background(), Request{Skill: SkillTranscribeEnhance, Messages: msgs("As."), OnDelta: func(delta string) { streamed.WriteString(delta) }})
+			if Code(err) != CodeEmpty || response.Text != "" || streamed.Len() != 0 {
+				t.Fatalf("split %d: answer %q, stream %q, error %v", split, response.Text, streamed.String(), err)
+			}
+		}
 	}
 }

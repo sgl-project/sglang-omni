@@ -42,6 +42,7 @@ type remoteInputsCacheKey struct {
 type remoteViewCacheKey struct {
 	remoteInputsCacheKey
 	wait, awayTo   string
+	llmSwitch      bool
 	onboardingOpen bool
 	onboardingStep int
 }
@@ -102,7 +103,7 @@ func (a *app) remoteInputsCacheKey(kind local.Kind) remoteInputsCacheKey {
 func (a *app) remotePageCacheKey() remoteViewCacheKey {
 	return remoteViewCacheKey{
 		remoteInputsCacheKey: a.remoteInputsCacheKey(local.LLM), wait: a.prefs.Models.LLMWait,
-		awayTo: a.ob.awayTo, onboardingOpen: a.ob.open, onboardingStep: a.ob.step,
+		llmSwitch: a.prefs.Models.LLMSwitch, awayTo: a.ob.awayTo, onboardingOpen: a.ob.open, onboardingStep: a.ob.step,
 	}
 }
 
@@ -146,8 +147,9 @@ func (a *app) remotePageModel() remoteViewState {
 		return cache.state
 	}
 	input := remotePageStateInput{
-		Wait:  remoteWaitStateInput{Value: a.prefs.Models.LLMWait, Locale: i18n.Locale(), CurrentMinutes: a.prefs.Models.LLMWaitFor().Minutes()},
-		Cards: a.remoteCardsStateInput(local.LLM), Dialog: a.remoteDialogStateInput(),
+		Wait:   remoteWaitStateInput{Value: a.prefs.Models.LLMWait, Locale: i18n.Locale(), CurrentMinutes: a.prefs.Models.LLMWaitFor().Minutes()},
+		Switch: a.prefs.Models.LLMSwitch,
+		Cards:  a.remoteCardsStateInput(local.LLM), Dialog: a.remoteDialogStateInput(),
 	}
 	if a.ob.awayTo == remotePath && !a.ob.open {
 		input.BackBarText = i18n.T("The setup guide is paused at the %s step.", obStepTitles()[a.ob.step])

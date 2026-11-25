@@ -105,3 +105,13 @@ func TestCompareMeasuredNoise(t *testing.T) {
 		t.Fatalf("unexpected noise report:\n%s", report)
 	}
 }
+
+// TestCompareRejectsEmptySet: two empty directories are a set nothing
+// rendered (go test passes when its -run pattern matches no test), not
+// a set without differences.
+func TestCompareRejectsEmptySet(t *testing.T) {
+	result, err := compare(t.TempDir(), t.TempDir(), options{setName: "overlay"})
+	if err == nil {
+		t.Fatalf("an empty set passed: %+v", result)
+	}
+}

@@ -55,6 +55,8 @@ func settingsDemoStorageCases() []settingsDemoCase {
 		{name: "meeting speech model", fixture: "en/meeting-settings-normal", steps: settingsDemoSelect("Speech model for meetings", ui.KeyUp), want: []string{"setMeetingASR fixture-speech-one"}},
 		{name: "meeting language", fixture: "en/meeting-settings-normal", steps: settingsDemoSelect("Spoken language in meetings", ui.KeyDown), want: []string{"setMeetingLanguage ja"}},
 		{name: "meeting language model", fixture: "en/meeting-settings-normal", steps: settingsDemoSelect("Language model", ui.KeyUp), want: []string{"setMeetingLLM fixture-language-one"}},
+		{name: "meeting correction style edit and blur", fixture: "en/meeting-settings-custom-style", steps: []historyDemoStep{{label: "Correction style for meeting transcripts", text: " Be concise."}, {label: "Capture mode", click: true}}, want: []string{"autosaveMeetingCorrectionStyle true true", "saveMeetingCorrectionStyle"}},
+		{name: "meeting correction style reset", fixture: "en/meeting-settings-custom-style", steps: historySteps("Reset to default prompt"), want: []string{"resetMeetingCorrectionStyle"}},
 		{name: "meeting settings done", fixture: "en/meeting-settings-normal", steps: historySteps("Done"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.pageUI.setOpen {
 				t.Fatal("meeting settings stayed open")

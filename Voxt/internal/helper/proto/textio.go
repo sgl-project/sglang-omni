@@ -37,9 +37,12 @@ type SelectionParams struct {
 	CopyTimeoutMS int  `json:"copyTimeoutMs,omitempty"`
 }
 
-// SelectionResult is the text ("" for none) and how it was read.
+// SelectionResult is the text ("" for none) and how it was read. Image
+// is the JPEG from the image the copy fallback captured before restoring
+// the old clipboard, so a selected image is not an earlier copied one.
 type SelectionResult struct {
 	Text  string   `json:"text,omitempty"`
+	Image []byte   `json:"image,omitempty"`
 	Via   string   `json:"via"` // Via*
 	MS    float64  `json:"ms"`
 	Steps []string `json:"steps,omitempty"` // what was tried, for the log

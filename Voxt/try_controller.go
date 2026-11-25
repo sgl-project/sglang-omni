@@ -4,21 +4,8 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
-
-// kindIcon is a feature's icon; uitext.KindTitle its name.
-func kindIcon(k store.Kind) icons.Icon {
-	switch k {
-	case store.KindTranslate:
-		return translateIcon
-	case store.KindRewrite:
-		return rewriteIcon
-	}
-	return transcribeIcon
-}
 
 type tryOpts struct {
 	prefix  string
