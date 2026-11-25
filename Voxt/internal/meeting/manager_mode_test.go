@@ -223,9 +223,10 @@ func TestDiscardWhileEnding(t *testing.T) {
 	speech := &seqFileASR{texts: []string{"hello"}}
 	var ending atomic.Bool
 	release := make(chan struct{})
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
 	r.m = meeting.NewManager(meeting.Config{
 		Mic: r.mic, System: r.sys, Store: r.meetings, Dir: r.dir,
-		Now:       newFakeClock(time.Unix(1_700_000_000, 0)).Now,
+		Now:       clk.Now,
 		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
 		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
 			if ending.Load() { // the final pass: held until the test is done
@@ -239,6 +240,10 @@ func TestDiscardWhileEnding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Long enough that End files it: a meeting of a moment with nothing
+	// heard would ask whether it was started by mistake, and a Cancel
+	// pressed with it would then discard it.
+	clk.Advance(meeting.MistakeWithin)
 	var finishErr error
 	r.mic.onStop = func() {
 		ending.Store(true)

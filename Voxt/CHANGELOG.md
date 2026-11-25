@@ -26,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Dictations over a minute answer sooner after you stop** (#4593): the part left to recognise now reuses what was prepared while you spoke, including a dictionary. On an M4 MacBook Air with the 1.7B model and Faster transcription, that part came about 1.8 times as fast, and about 4 times with a dictionary of several hundred terms.
 - **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
 - **Ending a meeting asks first, shows at once, and its progress moves steadily** (#4622): the overlay's End button, next to Pause, now asks "End this meeting?" (Meetings and the menu bar still end at once). Ending switches the overlay to "Finishing the meeting…" right away; before, it kept counting for a few seconds while both tracks recognised their last words, one after the other, and now they do it together. The transcript's progress counts the speech recognised in both tracks, instead of half per track by pieces, so it no longer sits at a few percent. When the meeting is filed, or saved from "Save this meeting?", the overlay says "Meeting saved", and View meeting opens it. Saving from that question also lets the overlay go: it used to stay, as the meeting still showed as asking.
+- **A meeting started by mistake asks before it is filed** (#4577): a meeting that ends within two minutes with fewer than five words heard asks "Started by mistake?" in its overlay, with Keep and Discard. Keep files it as any meeting; Discard deletes it and its recording. With no answer in 30 seconds it is kept, so nothing is lost and dictation is free again; with history off it waits for the answer, as "Save this meeting?" does. Longer meetings, and ones that heard more, end as before.
 
 ### Fixed
 
@@ -59,6 +60,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **超过一分钟的听写，松键后出结果更快**（#4593）：剩下要识别的那一段会直接用上说话时准备好的部分，包括词典。M4 MacBook Air 上用 1.7B 模型并开启“转录加速”，这一段平均快约 1.8 倍；词典有几百个词时快约 4 倍。
 - **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
 - **结束会议先确认，确认后立刻有反应，整理进度走得更匀**（#4622）：浮窗上紧挨“暂停”的“结束”按钮会先问“结束这场会议？”（会议页和菜单栏里的“结束会议”照旧直接结束）。确认后浮窗马上显示“正在结束会议…”。以前两路要一路接一路把最后几秒识别完，这几秒浮窗还在计时，现在两路同时收尾。整理转录稿的进度按两路已识别的人声算，不再一路占一半、按段数涨，不会长时间停在百分之几。整理完，或在“要保存这场会议吗？”里保存后，浮窗会显示“会议已保存”，点“查看会议”就打开它。在这个问题里保存后浮窗也会消失了：以前会议一直显示在提问，浮窗留着不走。
+- **误开的会议，结束时先问一句**（#4577）：会议不到两分钟就结束、而且听到的不足五个词时，浮窗会问“是误开的吗？”，可以选“保留”或“丢弃”。保留就和普通会议一样归档；丢弃会删掉这场会议和它的录音。30 秒没有回答就自动保留，什么都不会丢，听写也恢复可用。更长的会议和听到更多内容的会议照旧直接结束。
 
 #### 修复
 

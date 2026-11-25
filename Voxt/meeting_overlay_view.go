@@ -17,6 +17,18 @@ const (
 	meetingOvMenuRowH   = 40
 )
 
+// The question with a line under it ("Started by mistake?") is a card:
+// an icon, two lines, and two buttons centred beside them. It is wider
+// than the pill, for both lines and both buttons in English too.
+const (
+	meetingOvAskCardW  = 448 + 2*layout.Pad
+	meetingOvAskCardH  = 64 + 2*layout.Pad
+	meetingOvAskRadius = 16
+	meetingOvAskPadX   = 14
+	meetingOvAskBadge  = 30
+	meetingOvAskBtnH   = 36
+)
+
 var meetingOvWidths = [3]int{520, 600, 760}
 
 const meetingOvChrome = layout.CardPadTop + layout.CardHeadH + layout.CardRuleTop + 1 + layout.CardRuleGap + layout.CardPadY
@@ -32,6 +44,7 @@ type meetingOverlayModel struct {
 	ShowBar       bool
 	ShowExpanded  bool
 	ShowAsking    bool
+	AskingCard    bool
 	ShowFinishing bool
 }
 
@@ -45,6 +58,7 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		ShowBar:       state.ShowBar,
 		ShowExpanded:  state.ShowExpanded,
 		ShowAsking:    asking,
+		AskingCard:    asking && state.AskingHint != "",
 		ShowFinishing: finishing,
 	}
 	problem := state.ProblemText != "" && !asking && !finishing
@@ -61,6 +75,8 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		model.Layout.Width, model.Layout.Height = width+2*layout.Pad, min(height, meetingOvMaxFaceH)+2*layout.Pad
 	} else if problem {
 		model.Layout.Height += meetingOvProblemH
+	} else if model.AskingCard {
+		model.Layout.Width, model.Layout.Height = meetingOvAskCardW, meetingOvAskCardH
 	}
 	return model
 }
@@ -122,6 +138,10 @@ func meetingOverlayFace(model meetingOverlayModel) (overlayMode, int) {
 	mode := ovRecording
 	if model.ShowExpanded {
 		mode = ovAnswer
+	}
+	if model.AskingCard {
+		// A card's corners, not a pill's ends: the height that gives them.
+		return mode, 2 * meetingOvAskRadius
 	}
 	return mode, model.Layout.Height - 2*layout.Pad
 }

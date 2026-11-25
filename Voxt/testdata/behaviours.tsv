@@ -35,6 +35,8 @@ Notes	L	TestSessionNote	none
 Meeting live captions	L	TestCommitterLive	none
 Meeting live captions	L	TestMeetingPlaythrough	none
 Meeting live captions	L	TestDedupeOverlapText	none
+Meeting started by mistake	L	TestFewWordsAskAndKeep	none
+Meeting started by mistake	L	TestMeetingMistakeEndToEnd	none
 Meeting speakers and clean-up	L	TestDiarizeTrackChunksAndCarriesSpeakers	none
 Meeting speakers and clean-up	L	TestCorrectTranscript	none
 Meeting speakers and clean-up	E	TestEvalMTDSpeakers	none

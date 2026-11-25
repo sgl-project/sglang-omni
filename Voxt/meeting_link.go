@@ -115,11 +115,31 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 		a.syncMeetingDetect() // an app that records is settled while Voxt does
 	}
 	a.followRecordedMeeting() // meeting_detect_end.go: quiet, a sound, or ended in Voxt
+	if s.State == meeting.StateAsking && s.Mistake && (prev.State != meeting.StateAsking || prev.ID != s.ID) {
+		a.keepUnanswered(s.ID)
+	}
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {
 		a.buildTrayMenu()
 	}
+}
+
+// meetingMistakeWait is how long "Started by mistake?" waits for an
+// answer. A meeting that asks blocks dictation and the next meeting, so a
+// question nobody answers is answered Keep: nothing is lost.
+const meetingMistakeWait = 30 * time.Second
+
+// keepUnanswered keeps meeting id when its question is still open after
+// meetingMistakeWait. With history off it waits for the user, as "Save
+// this meeting?" does: kept by itself, it would keep what they chose not
+// to.
+func (a *app) keepUnanswered(id string) {
+	a.later(meetingMistakeWait, func() {
+		if s := a.meetSnap; s.ID == id && s.State == meeting.StateAsking && s.Mistake && a.prefs.Privacy.KeepHistory {
+			a.meetingSave()
+		}
+	})
 }
 
 func meetingModeFrom(s settings.Meeting) meeting.Mode {

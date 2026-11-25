@@ -35,6 +35,10 @@ type meetingOverlayViewState struct {
 	ShowBar          bool                          `json:"show_bar"`
 	ShowExpanded     bool                          `json:"show_expanded"`
 	ShowAsking       bool                          `json:"show_asking"`
+	AskingText       string                        `json:"asking_text"`
+	AskingHint       string                        `json:"asking_hint"`
+	KeepLabel        string                        `json:"keep_label"`
+	DiscardLabel     string                        `json:"discard_label"`
 	ShowFinishing    bool                          `json:"show_finishing"`
 	Live             bool                          `json:"live"`
 	Paused           bool                          `json:"paused"`
@@ -90,6 +94,14 @@ func buildMeetingOverlayViewState(translator *i18n.Translator, snapshot meeting.
 	}
 	if paused {
 		state.StatusText = translator.T("Meeting paused")
+	}
+	if asking {
+		state.AskingText, state.KeepLabel, state.DiscardLabel = translator.T("Save this meeting?"), translator.T("Save"), translator.T("Discard")
+		if snapshot.Mistake {
+			// It ended with hardly anything heard (meeting.MistakeWords).
+			state.AskingText, state.KeepLabel = translator.T("Started by mistake?"), translator.T("Keep")
+			state.AskingHint = translator.T("Only a few words were captured.")
+		}
 	}
 	if snapshot.Problem != nil {
 		state.ProblemKey = snapshot.Problem.Key
