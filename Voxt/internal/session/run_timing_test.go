@@ -87,7 +87,7 @@ func TestCleanedPublicationTimingNamesAndTagOnlyDeltas(t *testing.T) {
 }
 
 func TestFailedCleanupDoesNotReportCleanedPublication(t *testing.T) {
-	text := strings.Repeat("First sentence should be cleaned. Second sentence should also be cleaned. ", 10)
+	text := strings.Repeat("First sentence should be cleaned. Second sentence should also be cleaned. ", 30)
 	model := &fakeLLM{
 		texts: []string{"<output>First sentence cleaned.</output>", "<output>Second sentence cleaned.</output>"},
 		err:   errors.New("second piece failed"), failOn: 2,

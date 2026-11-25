@@ -16,16 +16,16 @@ func (r *run) warmLLM() {
 		return
 	}
 	r.m.mu.Lock()
-	client, ctx, remote := r.svc.LLM, r.llmCtx, r.svc.LLMInfo.Remote
+	client, llmContext, remote := r.svc.LLM, r.llmCtx, r.svc.LLMInfo.Remote
 	r.m.mu.Unlock()
-	if client == nil || ctx == nil {
+	if client == nil || llmContext == nil {
 		return
 	}
 	if connector, ok := client.(llm.Connector); ok && remote {
 		go func() {
 			start := r.now()
-			if err := connector.Connect(ctx); err != nil {
-				if ctx.Err() == nil {
+			if err := connector.Connect(llmContext); err != nil {
+				if llmContext.Err() == nil {
 					r.logf("info", "warming the language model up: %v", err)
 				}
 				return
@@ -33,14 +33,14 @@ func (r *run) warmLLM() {
 			r.logf("debug", "connected to the language model in %v", r.now().Sub(start).Round(time.Millisecond))
 		}()
 	}
-	prefiller, ctx, request, ok := r.prepareWarmup()
+	prefiller, prefillContext, request, ok := r.prepareWarmup()
 	if !ok {
 		return
 	}
 	go func() {
 		start := r.now()
-		if err := prefiller.Prefill(ctx, request); err != nil {
-			if ctx.Err() == nil {
+		if err := prefiller.Prefill(prefillContext, request); err != nil {
+			if prefillContext.Err() == nil {
 				r.logf("info", "warming the language model up: %v", err)
 			}
 			return
