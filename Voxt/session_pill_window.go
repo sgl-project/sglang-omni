@@ -58,7 +58,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 			a,
 			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 			func() sessionOverlayAnimation {
-				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.pillPhase()}
+				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.pillPhase(), Wave: a.overlayWave()}
 			},
 			a.postPillOverlayMeasurements,
 			func() { a.pill.reveal = false; a.post(a.revealPillOverlay) },

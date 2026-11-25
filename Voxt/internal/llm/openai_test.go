@@ -61,7 +61,8 @@ func oaText(text string) map[string]any {
 	return map[string]any{
 		"model":   "m-reported",
 		"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": text}, "finish_reason": "stop"}},
-		"usage":   map[string]any{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+		"usage": map[string]any{"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18,
+			"prompt_tokens_details": map[string]any{"cached_tokens": 5}},
 	}
 }
 
@@ -96,7 +97,7 @@ func TestOpenAIChat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Text != "hola" || resp.Model != "m-reported" || resp.Provider != "openai" || resp.FinishReason != FinishStop || resp.Usage.TotalTokens != 18 {
+	if resp.Text != "hola" || resp.Model != "m-reported" || resp.Provider != "openai" || resp.FinishReason != FinishStop || resp.Usage.TotalTokens != 18 || resp.Usage.CachedTokens != 5 {
 		t.Fatalf("resp %+v", resp)
 	}
 	r := f.requests()[0]
