@@ -320,3 +320,22 @@ func TestCorrectTranscriptFailureIsWhole(t *testing.T) {
 		}
 	}
 }
+
+// TestCorrectTranscriptBoundsReasoning: the proofreading request carries
+// the low-effort thinking bound (revert: it goes out with no Thinking).
+func TestCorrectTranscriptBoundsReasoning(t *testing.T) {
+	m, _, chat := correctFixture(t,
+		store.MeetingSegment{Idx: 0, Source: store.SegmentMic, Text: "Box one"},
+		store.MeetingSegment{Idx: 1, Source: store.SegmentMic, Text: "Box two"},
+	)
+	if err := m.CorrectTranscript(context.Background(), "m"); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.reqs) != 1 {
+		t.Fatalf("requests %d", len(chat.reqs))
+	}
+	th := chat.reqs[0].Thinking
+	if th == nil || th.Mode != llm.ThinkEffort || th.Effort != "low" {
+		t.Fatalf("correction request thinking %+v", th)
+	}
+}
