@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -317,5 +318,34 @@ func TestSnapshotKeepsLevelHistory(t *testing.T) {
 	}
 	if len(got[meeting.SourceSystem]) != 0 {
 		t.Fatalf("system levels %v in a microphone-only meeting", got[meeting.SourceSystem])
+	}
+}
+
+// Quiet counts the meeting's time since a track was last as loud as
+// SoundDBFS: a quiet room adds to it, a sound sets it back to 0.
+func TestSnapshotQuiet(t *testing.T) {
+	mic := newFakeAudio(nil)
+	mic.levelsSent = make(chan struct{})
+	mic.levels = []float64{-20, -70, -70, -70, meeting.SoundDBFS, -70}
+	m, ctx, clk, _ := testManagerMic(t, mic, nil, false)
+	var quiet []time.Duration
+	mic.beforeLevel = func() {
+		quiet = append(quiet, m.Current().Quiet)
+		clk.Advance(time.Minute)
+	}
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Finish(ctx, id)
+	select {
+	case <-mic.levelsSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("microphone did not finish sending its level events")
+	}
+	quiet = append(quiet, m.Current().Quiet) // levels are taken in as they come
+	want := []time.Duration{0, 0, time.Minute, 2 * time.Minute, 3 * time.Minute, 0, time.Minute}
+	if !slices.Equal(quiet, want) {
+		t.Fatalf("quiet %v, want %v", quiet, want)
 	}
 }

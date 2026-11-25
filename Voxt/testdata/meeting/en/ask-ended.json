@@ -4,7 +4,7 @@
   "ask": {
     "visible": true,
     "title": "Meeting ended?",
-    "app": "Zoom",
+    "app": "No sound for 5 minutes",
     "start_label": "End recording",
     "menu_label": "",
     "close_label": "Dismiss",

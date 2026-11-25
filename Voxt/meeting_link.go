@@ -102,18 +102,14 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	}
 	a.followMeeting(s, prev)
 	if s.State.Active() != prev.State.Active() {
-		if s.State.Active() {
-			a.adoptRecordedMeeting() // meeting_detect_end.go: started by hand
-		}
 		a.closeMeetingAsk() // meeting_detect.go: it records now
 		a.ask.snoozed = ""  // and is not asked about again later
 		if !s.State.Active() {
-			a.recorded = meetingRecorded{endAfter: a.recorded.endAfter} // meeting_detect_end.go
+			a.recorded = meetingRecorded{quietAsk: a.recorded.quietAsk} // meeting_detect_end.go
 		}
 		a.syncMeetingDetect() // an app that records is settled while Voxt does
-	} else if s.State != prev.State {
-		a.followRecordedMeeting() // meeting_detect_end.go: ended in Voxt, or paused
 	}
+	a.followRecordedMeeting() // meeting_detect_end.go: quiet, a sound, or ended in Voxt
 	a.syncMeetingOverlay()
 	a.syncHotkeys()
 	if a.tray != nil {

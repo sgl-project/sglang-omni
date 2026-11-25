@@ -14,6 +14,11 @@ const (
 	ProblemKeyTrackDegraded = "meeting.track.degraded."
 )
 
+// SoundDBFS is the level at which a track hears sound (Snapshot.Quiet):
+// speech, at the microphone or from the meeting, is well above it, a
+// quiet room below.
+const SoundDBFS = -45
+
 const (
 	silentLevelDBFS       = -120
 	systemSilenceDuration = 30 * time.Second

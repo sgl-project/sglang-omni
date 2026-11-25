@@ -120,8 +120,8 @@ func meetingAskBadgeIcon(c *ui.Context, size float32) {
 	})
 }
 
-// meetingAskLiveLine is the app's name behind a dot: green while the app
-// records, grey once it let go of the microphone (ended).
+// meetingAskLiveLine is the card's second line behind a dot: green for
+// the app that records, grey when the card asks whether the meeting ended.
 func meetingAskLiveLine(c *ui.Context, app string, size float32, ended bool) {
 	dot := meetingAskLive
 	if ended {

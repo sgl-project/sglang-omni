@@ -198,100 +198,66 @@ func TestMeetingDetectWatchRefused(t *testing.T) {
 	}
 }
 
-// A meeting started by hand (the shortcut, the Meetings page) while the
-// card asks about an app, or after the card was closed, is that app's
-// meeting: its end is asked about as well.
-func TestMeetingStartedByHandAsksAtItsEnd(t *testing.T) {
-	for name, before := range map[string]func(*app){
-		"the card is up":      func(*app) {},
-		"the card was closed": func(a *app) { a.dismissMeetingAsk() },
-	} {
-		a, _, _ := newTestApp(t)
-		timers := detectClock(t, a)
-		micUsers(t, a, "us.zoom.xos")
-		if !a.ask.view.Visible {
-			t.Fatalf("%s: Zoom records: %+v", name, a.ask.view)
-		}
-		before(a)
-		a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
-		if a.ask.view.Visible || a.recorded.key != "us.zoom.xos" {
-			t.Fatalf("%s: started by hand: card %+v, recorded for %q", name, a.ask.view, a.recorded.key)
-		}
-		micSays(t, a) // Zoom lets go
-		timers.advance(meetingEndAfter)
-		if view := a.ask.view; !view.Visible || !view.End || view.App != "Zoom" {
-			t.Fatalf("%s: Zoom is off the microphone: %+v", name, view)
-		}
-	}
-
-	// An app that let go before the meeting started is not its app.
-	a, _, _ := newTestApp(t)
-	detectClock(t, a)
-	micUsers(t, a, "us.zoom.xos")
-	micSays(t, a)
-	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
-	if a.recorded.key != "" {
-		t.Fatalf("Zoom had stopped: recorded for %q", a.recorded.key)
-	}
-}
-
-// Voxt records a meeting and its app lets go of the microphone: after
-// meetingEndAfter the card asks whether the meeting is over, once.
+// Voxt's meeting hears no sound for meetingQuietAsk: the card asks whether
+// it is over, once per quiet stretch, also for a meeting started by hand
+// with no meeting app, and never ends it by itself.
 func TestMeetingEndedAsks(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	timers := detectClock(t, a)
-	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording}) // started by hand
-	micUsers(t, a, "us.zoom.xos")
-	if a.ask.view.Visible || a.recorded.key != "us.zoom.xos" {
-		t.Fatalf("Zoom records while Voxt does: card %+v, recorded for %q", a.ask.view, a.recorded.key)
+	detectClock(t, a)
+	quiet := func(d time.Duration) {
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Quiet: d})
 	}
-	micSays(t, a, "com.apple.CoreSpeech") // Zoom lets go
-	micSays(t, a)                         // and others come and go meanwhile
-	timers.advance(meetingEndAfter - time.Second)
+	quiet(0) // started by hand
+	quiet(meetingQuietAsk - time.Second)
 	if a.ask.view.Visible {
-		t.Fatal("asked before Zoom was off the microphone for long")
+		t.Fatalf("asked before %v without sound: %+v", meetingQuietAsk, a.ask.view)
 	}
-	timers.advance(time.Second)
+	quiet(meetingQuietAsk)
 	view := a.ask.view
-	if !view.Visible || !view.End || view.Title != "Meeting ended?" || view.App != "Zoom" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
-		t.Fatalf("Zoom is off the microphone: %+v", view)
+	if !view.Visible || !view.End || view.Title != "Meeting ended?" || view.App != "No sound for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
+		t.Fatalf("five quiet minutes: %+v", view)
 	}
-	if !a.meetingActive() {
-		t.Fatal("the recording ended by itself")
+	quiet(time.Hour)
+	if !a.ask.view.Visible || !a.meetingActive() {
+		t.Fatalf("an hour without an answer: card %+v, meeting active %v", a.ask.view, a.meetingActive())
 	}
 
-	micUsers(t, a, "us.zoom.xos") // only muted: the meeting goes on
+	quiet(0) // a sound: the meeting goes on
 	if a.ask.view.Visible {
-		t.Fatal("the card stayed after Zoom took the microphone again")
+		t.Fatal("the card stayed after a sound")
 	}
-	micSays(t, a)
-	timers.advance(meetingEndAfter)
+	quiet(meetingQuietAsk)
 	if !a.ask.view.Visible || !a.ask.view.End {
-		t.Fatalf("Zoom let go again: %+v", a.ask.view)
+		t.Fatalf("quiet again: %+v", a.ask.view)
 	}
 	a.dismissMeetingAsk()
-	micUsers(t, a, "us.zoom.xos")
-	micSays(t, a)
-	timers.advance(time.Hour)
+	quiet(time.Hour)
 	if a.ask.view.Visible {
-		t.Fatal("asked again after the card was closed")
+		t.Fatal("asked again in the quiet stretch whose card was closed")
+	}
+	quiet(0)
+	quiet(meetingQuietAsk)
+	if !a.ask.view.Visible {
+		t.Fatal("not asked about the quiet after a sound")
 	}
 
 	// Its button ends the recording (here: a meeting the manager does not
 	// know, so the end is refused and says so).
 	b, _, _ := newTestApp(t)
-	clock := detectClock(t, b)
-	b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
-	micUsers(t, b, "us.zoom.xos")
-	micSays(t, b)
-	clock.advance(meetingEndAfter)
+	detectClock(t, b)
+	b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Quiet: meetingQuietAsk})
 	b.startDetectedMeeting()
 	if b.ask.view.Visible || len(b.toasts) != 1 || !strings.Contains(b.toasts[0], "end the meeting") {
 		t.Fatalf("End recording: card %+v, toasts %q", b.ask.view, b.toasts)
 	}
-	b.meetingChanged(meeting.Snapshot{})
-	if b.recorded.key != "" {
-		t.Fatalf("after Voxt's meeting: still recorded for %q", b.recorded.key)
+
+	// Detect meetings off: nothing asks.
+	c, _, _ := newTestApp(t)
+	detectClock(t, c)
+	c.setMeetingDetect(false)
+	c.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Quiet: time.Hour})
+	if c.ask.view.Visible {
+		t.Fatalf("detection off: %+v", c.ask.view)
 	}
 }
 
@@ -336,31 +302,25 @@ func TestMeetingDetectedInArc(t *testing.T) {
 }
 
 // Voxt's meeting ended there (its final pass runs, or it asks whether to
-// keep it): the app letting go of the microphone then asks nothing, and
-// a card that asked whether it ended goes.
+// keep it): quiet then asks nothing, and a card that asked whether it
+// ended goes.
 func TestMeetingEndedNotAskedOnceVoxtEnds(t *testing.T) {
 	for _, end := range []meeting.State{meeting.StateFinishing, meeting.StateAsking} {
 		a, _, _ := newTestApp(t)
-		timers := detectClock(t, a)
+		detectClock(t, a)
 		a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
-		micUsers(t, a, "us.zoom.xos")
-		a.meetingChanged(meeting.Snapshot{ID: "m1", State: end}) // ended in Voxt
-		micSays(t, a)                                            // then Zoom lets go
-		timers.advance(time.Hour)
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: end, Quiet: time.Hour})
 		if a.ask.view.Visible {
 			t.Fatalf("%s: asked whether the meeting ended: %+v", end, a.ask.view)
 		}
 
 		b, _, _ := newTestApp(t)
-		clock := detectClock(t, b)
-		b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
-		micUsers(t, b, "us.zoom.xos")
-		micSays(t, b)
-		clock.advance(meetingEndAfter)
+		detectClock(t, b)
+		b.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording, Quiet: meetingQuietAsk})
 		if !b.ask.view.Visible || !b.ask.view.End {
-			t.Fatalf("%s: Zoom is off the microphone: %+v", end, b.ask.view)
+			t.Fatalf("%s: five quiet minutes: %+v", end, b.ask.view)
 		}
-		b.meetingChanged(meeting.Snapshot{ID: "m1", State: end})
+		b.meetingChanged(meeting.Snapshot{ID: "m1", State: end, Quiet: meetingQuietAsk})
 		if b.ask.view.Visible {
 			t.Fatalf("%s: the card stayed after Voxt's meeting ended: %+v", end, b.ask.view)
 		}
@@ -376,8 +336,8 @@ func TestMeetingDetectWaitsForTheLastMeeting(t *testing.T) {
 		detectClock(t, a)
 		a.meetingChanged(meeting.Snapshot{ID: "m1", State: end})
 		micUsers(t, a, "us.zoom.xos")
-		if a.ask.view.Visible || a.recorded.key != "" {
-			t.Fatalf("%s: card %+v, recorded for %q", end, a.ask.view, a.recorded.key)
+		if a.ask.view.Visible {
+			t.Fatalf("%s: card %+v", end, a.ask.view)
 		}
 		a.meetingChanged(meeting.Snapshot{}) // filed
 		if view := a.ask.view; !view.Visible || view.End || view.App != "Zoom" {

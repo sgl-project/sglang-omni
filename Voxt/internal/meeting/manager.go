@@ -31,6 +31,7 @@ type Manager struct {
 	state         State
 	snap          Snapshot
 	timeline      *Timeline
+	heard         time.Duration // the timeline's time at the last sound (Snapshot.Quiet)
 	archive       *Archive
 	cancel        context.CancelFunc
 	runCtx        context.Context
@@ -482,6 +483,7 @@ func (m *Manager) resetIdle() {
 		Levels: map[Source][]float64{}, Live: map[Source]string{},
 	}
 	m.timeline = nil
+	m.heard = 0
 	m.archive = nil
 	m.tracks = map[Source]*track{}
 	m.trackFails = map[Source]int{}

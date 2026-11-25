@@ -37,7 +37,7 @@ type meetingAskMenuItem struct {
 }
 
 // meetingAskInput is what the card shows: the meeting app (a meetdetect
-// name, "" for no card) and the card's own state.
+// name, "" for no card unless End) and the card's own state.
 type meetingAskInput struct {
 	App      string
 	Compact  bool
@@ -47,16 +47,16 @@ type meetingAskInput struct {
 }
 
 func buildMeetingAskViewState(translator *i18n.Translator, input meetingAskInput) meetingAskViewState {
-	if input.App == "" {
-		return meetingAskViewState{Menu: []meetingAskMenuItem{}}
-	}
 	if input.End {
 		// One answer, no menu: End recording, or close the card.
 		return meetingAskViewState{
-			Visible: true, Title: translator.T("Meeting ended?"), App: meetingAppNameFor(translator, input.App),
+			Visible: true, Title: translator.T("Meeting ended?"), App: translator.T("No sound for 5 minutes"),
 			StartLabel: translator.T("End recording"), CloseLabel: translator.T("Dismiss"),
 			Compact: input.Compact, End: true, Menu: []meetingAskMenuItem{},
 		}
+	}
+	if input.App == "" {
+		return meetingAskViewState{Menu: []meetingAskMenuItem{}}
 	}
 	return meetingAskViewState{
 		Visible:    true,

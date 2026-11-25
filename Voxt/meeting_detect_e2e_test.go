@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,7 +40,6 @@ func detectApp(t *testing.T, opts string, set func(*settings.Settings), svc loca
 // decides again about what the helper said before.
 func shortHold(s *sessionApp) {
 	s.detect.Hold = 20 * time.Millisecond
-	s.recorded.endAfter = 30 * time.Millisecond
 	s.laterHook = func(d time.Duration, fn func()) { time.AfterFunc(d, func() { s.post(fn) }) }
 	s.post(s.syncMeetingDetect)
 }
@@ -163,15 +164,21 @@ func TestMeetingDetectDuringDictationEndToEnd(t *testing.T) {
 	s.pump("its end", func() bool { return !s.meetingActive() })
 }
 
-// Voxt records the meeting and Zoom lets go of the microphone: the card
-// asks whether the meeting is over, and its button ends the recording.
+// Voxt records the meeting, and its capture (silence here, not the fake
+// helper's tone) hears no sound: the card asks whether the meeting is
+// over, and its button ends the recording.
 func TestMeetingDetectEndedEndToEnd(t *testing.T) {
-	s := detectApp(t, script(t, micLine(1500)), nil, hearsMeeting())
+	quiet := filepath.Join(t.TempDir(), "quiet.pcm")
+	if err := os.WriteFile(quiet, make([]byte, 2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := detectApp(t, script(t, micLine(1500))+","+helpertest.Opt("pcm", quiet)+","+helpertest.Opt("system", quiet), nil, hearsMeeting())
+	s.recorded.quietAsk = 300 * time.Millisecond
 	s.pump("the card", func() bool { return s.ask.view.Visible })
 	s.startDetectedMeeting()
 	s.pump("the meeting", func() bool { return s.meetSnap.State == meeting.StateRecording })
 	s.pump("the card that asks whether it ended", func() bool { return s.ask.view.Visible && s.ask.view.End })
-	if view := s.ask.view; view.Title != "Meeting ended?" || view.App != "Zoom" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
+	if view := s.ask.view; view.Title != "Meeting ended?" || view.App != "No sound for 5 minutes" || view.StartLabel != "End recording" || len(view.Menu) != 0 {
 		t.Fatalf("the card: %+v", view)
 	}
 	if !s.meetingActive() {

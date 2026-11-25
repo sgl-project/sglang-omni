@@ -61,9 +61,7 @@ type meetingAsk struct {
 	// startAfter is the app whose meeting starts when the dictation that
 	// records now ends ("": none): its button was pressed meanwhile.
 	startAfter string
-	// lastKey and lastApp are the app the card last asked about recording
-	// (meeting_detect_end.go: a meeting started by hand is its meeting).
-	lastKey, lastApp string
+
 	meetingAskWindow // meeting_ask_window.go
 }
 
@@ -142,17 +140,14 @@ func (a *app) syncMeetingDetect() {
 		browsers = append(browsers, b.BundleID)
 	}
 	found, wait := a.detect.Update(a.micUsers, browsers, a.now())
-	if a.ask.key != "" && a.detect.Recording(a.ask.key) == a.ask.end {
-		if !a.ask.end {
-			a.detect.Forget(a.ask.key) // unanswered: a mute may have let go of the microphone
-		}
-		a.closeMeetingAsk() // the meeting is over (or, asked whether it is, goes on)
+	if a.ask.key != "" && !a.ask.end && !a.detect.Recording(a.ask.key) {
+		a.detect.Forget(a.ask.key) // unanswered: a mute may have let go of the microphone
+		a.closeMeetingAsk()        // the app let go of the microphone
 	}
 	if a.tree != "" && !a.detect.Recording(a.tree) {
 		a.tree = ""
 		a.syncTrees() // appenhance.go: the browser no longer records
 	}
-	a.followRecordedMeeting() // meeting_detect_end.go
 	if wait > 0 {
 		// An app took the microphone a moment ago: a test of it is over
 		// before meetdetect.Hold, a meeting is not.
@@ -167,9 +162,6 @@ func (a *app) syncMeetingDetect() {
 		}
 		for _, c := range found {
 			a.detect.Settle(c.Key) // Voxt records it already
-			if a.recorded.key == "" && c.App != "" {
-				a.recorded.key, a.recorded.app = c.Key, c.App // started by hand during it
-			}
 		}
 		return
 	}
@@ -224,7 +216,7 @@ func (a *app) meetingAfterDictation() {
 	key := a.ask.startAfter
 	a.ask.startAfter = ""
 	if key != "" && a.detect.Recording(key) && a.detectMeetings() && !a.meetingActive() {
-		a.startMeetingFor(key, a.recorded.app)
+		a.startMeetingFor(key)
 		return
 	}
 	a.syncMeetingDetect()
@@ -234,9 +226,8 @@ func (a *app) meetingAfterDictation() {
 // it at once when the user chose so.
 func (a *app) askMeeting(key, app string) {
 	a.detect.Settle(key)
-	a.ask.lastKey, a.ask.lastApp = key, app
 	if a.prefs.Features.Meeting.AutoStart {
-		a.startMeetingFor(key, app)
+		a.startMeetingFor(key)
 		return
 	}
 	a.showMeetingAsk(key, app, false)
@@ -298,28 +289,24 @@ func (a *app) meetingAskHovered() {
 // is in the meeting's app, and Voxt's window may be closed: a start that
 // fails says so in the overlay too, with the way to fix it.
 func (a *app) startDetectedMeeting() {
-	key, app, end := a.ask.key, a.ask.app, a.ask.end
+	key, end := a.ask.key, a.ask.end
 	a.closeMeetingAsk()
 	if end {
-		a.recorded.asked = true
 		a.meetingFinish() // "End recording": the meeting it asked about is over
 		return
 	}
-	a.startMeetingFor(key, app)
+	a.startMeetingFor(key)
 }
 
-// startMeetingFor starts a meeting for the one detected in app (key).
-func (a *app) startMeetingFor(key, app string) {
-	a.recorded.app = app
+// startMeetingFor starts a meeting for the app the detector knows as key.
+func (a *app) startMeetingFor(key string) {
 	if a.sess.State.Live() && key != "" {
 		// The dictation has the microphone, and a second recording of it
 		// fails: the meeting starts when the dictation ends.
 		a.ask.startAfter = key
 		return
 	}
-	a.recorded.key, a.recorded.asked = key, false
 	a.startMeetingThen(func(msg string, err error) {
-		a.recorded.key = ""
 		a.showNotice(sessionNotice{text: msg, action: meetingStartAction(err)})
 	})
 }
@@ -339,10 +326,7 @@ func meetingStartAction(err error) string {
 }
 
 func (a *app) dismissMeetingAsk() {
-	if a.ask.end {
-		a.recorded.asked = true // not asked again about this meeting
-	}
-	a.closeMeetingAsk()
+	a.closeMeetingAsk() // the end question: asked again after a sound
 }
 
 func (a *app) toggleMeetingAskMenu() {
