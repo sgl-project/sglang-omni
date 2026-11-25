@@ -528,10 +528,7 @@ def evaluate_trace(
                             event.response.status_details if event.response else None
                         )
                         reason = details.reason if details is not None else None
-                        if (
-                            turn_based
-                            and (status, reason) == INTERRUPTED_TERMINAL
-                        ):
+                        if turn_based and (status, reason) == INTERRUPTED_TERMINAL:
                             # note (luojiaxuan): The server can put a reply on the
                             # wire after the speech_started that cancels it, so each
                             # interruption is matched to its own earlier speech_started
@@ -582,8 +579,7 @@ def evaluate_trace(
                             pass
                         # note (wenyao): The pump consumes EOS before enqueueing drain.
                         check(
-                            (status, reason) not in native_terminals
-                            or not drained,
+                            (status, reason) not in native_terminals or not drained,
                             "native completed terminal after the drain receipt",
                         )
                         check(
@@ -760,8 +756,7 @@ def evaluate_trace(
             )
         else:
             check(
-                (response_state.terminal, response_state.reason)
-                in native_terminals,
+                (response_state.terminal, response_state.reason) in native_terminals,
                 f"response {response_id} ended {response_state.terminal}/"
                 f"{response_state.reason}, expected one of {sorted(native_terminals)}",
             )
