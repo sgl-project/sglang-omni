@@ -26,8 +26,9 @@ type Features struct {
 	// Sessions switch the session slot (Control+Option+1 … by default;
 	// empty keys: off): Rewrite, Translate and Transcribe then run in
 	// that slot, each keeping its own answer card and conversation (the
-	// multi-session prototype, #4005). Only taps.
-	Sessions [3]Hotkey `json:"sessions,omitzero"`
+	// multi-session prototype, #4005). The fourth switches to the next
+	// slot, around. Only taps.
+	Sessions [4]Hotkey `json:"sessions,omitzero"`
 	// SessionsOn turns the session shortcuts on. Off by default: sessions
 	// are an experiment until people are seen to go back and forth.
 	SessionsOn bool `json:"sessionsOn,omitempty"`
@@ -207,6 +208,8 @@ const (
 	DefaultSession1 = "Control+Option+1"
 	DefaultSession2 = "Control+Option+2"
 	DefaultSession3 = "Control+Option+3"
+	// One key to remember; ⌃⌥ as the slots' own.
+	DefaultSessionNext = "Control+Option+Tab"
 )
 
 // migrateSessionKeys gives a document from before the session slots their

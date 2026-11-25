@@ -230,19 +230,40 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	}
 }
 
+// TestSessionNextCycles: the next-session shortcut goes through the
+// three sessions and around, and names the session on the card while
+// sessions are on.
+func TestSessionNextCycles(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
+	if v := a.cachedCard(); v.Session != "Session 1" {
+		t.Fatalf("sessions on, no switch yet: label %q", v.Session)
+	}
+	for _, want := range []int{1, 2, 0} {
+		tap(a, "session-next", textEditApp)
+		if a.slot != want {
+			t.Fatalf("next: slot %d, want %d", a.slot, want)
+		}
+	}
+	if !a.answer.open || a.answer.text != "one" {
+		t.Fatalf("around to Session 1's card: %+v", a.answer)
+	}
+}
+
 // TestSessionGuideFirstSwitches: the first two session switches say what
 // a session keeps and which shortcuts switch, also beside a card that
 // came back; later switches only name the session, and count no further.
 func TestSessionGuideFirstSwitches(t *testing.T) {
 	chat := &fakeChat{texts: []string{"one"}}
 	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
-	guide := "Session 2. Switch sessions with ⌃⌥1 ⌃⌥2 ⌃⌥3."
+	const guide = " goes to the next session."
 	tap(a, "session-2", textEditApp)
-	if a.notice == nil || a.notice.text != guide {
+	if a.notice == nil || !strings.HasPrefix(a.notice.text, "Session 2. ⌃⌥") || !strings.HasSuffix(a.notice.text, guide) {
 		t.Fatalf("first switch: notice %+v", a.notice)
 	}
 	tap(a, "session-1", textEditApp) // session 1's card comes back
-	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "Switch sessions with") {
+	if !a.answer.open || a.notice == nil || !strings.Contains(a.notice.text, "goes to the next session") {
 		t.Fatalf("second switch, card back %v: notice %+v", a.answer.open, a.notice)
 	}
 	tap(a, "session-2", textEditApp)
@@ -258,6 +279,9 @@ func TestSessionGuideFirstSwitches(t *testing.T) {
 	}
 	// Turning sessions off goes back to Session 1 without a label.
 	a.setSessionsOn(false)
+	if s := a.prefs.Setup; s.SessionSwitchTotal != 3 || s.SessionReturns != 1 {
+		t.Fatalf("turning sessions off counted as a switch: %d, %d", s.SessionSwitchTotal, s.SessionReturns)
+	}
 	if a.slot != 0 || a.slotsUsed || !a.answer.open || a.cachedCard().Session != "" {
 		t.Fatalf("off: slot=%d slotsUsed=%v card=%v label=%q", a.slot, a.slotsUsed, a.answer.open, a.cachedCard().Session)
 	}

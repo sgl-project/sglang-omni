@@ -300,13 +300,18 @@ const (
 	Session1 = "session-1"
 	Session2 = "session-2"
 	Session3 = "session-3"
+	// SessionNext is the binding id of Features.Sessions' last entry: a
+	// tap switches to the slot after the current one, around.
+	SessionNext = "session-next"
 )
 
-// Sessions lists the session slots' binding ids, in slot order.
-var Sessions = []string{Session1, Session2, Session3}
+// Sessions lists the session bindings' ids as Features.Sessions holds
+// their shortcuts: the slots in slot order, then SessionNext.
+var Sessions = []string{Session1, Session2, Session3, SessionNext}
 
-// SessionSlot is the slot a session binding id switches to (0-based),
-// false for any other id.
+// SessionSlot is the index of a session binding id in Sessions (the slot
+// it switches to, 0-based; SessionNext comes after the slots), false for
+// any other id.
 func SessionSlot(feature string) (int, bool) {
 	i := slices.Index(Sessions, feature)
 	return i, i >= 0

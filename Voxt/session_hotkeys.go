@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -157,7 +158,21 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	switch d.Action {
 	case hotkey.Start:
 		if slot, ok := hotkey.SessionSlot(d.Feature); ok {
+			if d.Feature == hotkey.SessionNext {
+				slot = (a.slot + 1) % slotCount
+			}
+			from := a.slot
 			a.switchSlot(slot) // the multi-session prototype (#4005)
+			if a.slot != from {
+				// The user's own switches, for the counts in Settings.
+				back := a.answer.open
+				a.updateSettings(func(s *settings.Settings) {
+					s.Setup.SessionSwitchTotal++
+					if back {
+						s.Setup.SessionReturns++
+					}
+				})
+			}
 			return
 		}
 		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {

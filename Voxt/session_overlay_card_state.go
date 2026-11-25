@@ -504,7 +504,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		kind = snapshot.Kind
 	}
 	input := sessionCardProjectionInput{
-		Snapshot: snapshot, Answer: a.answer, SlotsUsed: a.slotsUsed, Slot: a.slot,
+		Snapshot: snapshot, Answer: a.answer, SlotsUsed: a.slotsUsed || a.prefs.Features.SessionsOn, Slot: a.slot,
 		Own: a.cardSessionLive(), Writing: a.writingAnswer(),
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShownDraft: a.shownDraft(snapshot),
 		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),

@@ -104,7 +104,7 @@ func TestBuildDefaults(t *testing.T) {
 	}
 	f.SessionsOn = true
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 6 {
+	if len(p.Bindings) != 7 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
 	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
@@ -129,7 +129,7 @@ func TestBuildDefaults(t *testing.T) {
 			t.Errorf("session %+v", b)
 		}
 	}
-	if len(p.Carbon) != 4 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
+	if len(p.Carbon) != 5 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
@@ -366,7 +366,7 @@ func TestCheck(t *testing.T) {
 		PasteLast:  hk("Command+Control+V", ""),
 		Note:       hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
 		Cancel:     hk("Fn", ""),
-		Sessions:   [3]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
+		Sessions:   [4]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
 		SessionsOn: true,
 	}
 	got := map[string]Problem{}

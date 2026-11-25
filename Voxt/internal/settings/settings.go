@@ -394,10 +394,11 @@ func Defaults() Settings {
 			PasteLast:  Hotkey{Keys: DefaultPasteLast, Trigger: TriggerTap},
 			Cancel:     Hotkey{Keys: DefaultCancel, Trigger: TriggerTap},
 			Note:       Hotkey{Keys: DefaultNote, Trigger: TriggerTap},
-			Sessions: [3]Hotkey{
+			Sessions: [4]Hotkey{
 				{Keys: DefaultSession1, Trigger: TriggerTap},
 				{Keys: DefaultSession2, Trigger: TriggerTap},
 				{Keys: DefaultSession3, Trigger: TriggerTap},
+				{Keys: DefaultSessionNext, Trigger: TriggerTap},
 			},
 			ReturnFinishes: true,
 		},

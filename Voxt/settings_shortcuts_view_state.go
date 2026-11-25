@@ -87,7 +87,11 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 			state.Rows = append(state.Rows, buildSettingsShortcutRow(translator, feature, index, &bindings[index], lines))
 		}
 	}
-	for i, id := range hotkey.Sessions {
+	sessions := hotkey.Sessions
+	if !input.Features.SessionsOn {
+		sessions = sessions[:len(sessions)-1] // shortcut: the fixtures of before the switch list three; drop this when they are next regenerated
+	}
+	for i, id := range sessions {
 		recorder := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.Features.Sessions[i].Keys)
 		if input.Features.Sessions[i].Keys == "" {
 			recorder.DisplayedKeys = uitext.HotkeyGlyphs("") // "—": the slot is off

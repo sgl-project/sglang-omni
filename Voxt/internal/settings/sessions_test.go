@@ -15,10 +15,11 @@ import (
 // hand-written trigger is read as the tap it always is.
 func TestSessionShortcuts(t *testing.T) {
 	s, err := Migrate([]byte(`{"version":4,"features":{"transcribe":{"hotkeys":[{"keys":"RightOption","trigger":"tap"}]}}}`))
-	want := [3]Hotkey{
+	want := [4]Hotkey{
 		{Keys: DefaultSession1, Trigger: TriggerTap},
 		{Keys: DefaultSession2, Trigger: TriggerTap},
 		{Keys: DefaultSession3, Trigger: TriggerTap},
+		{Keys: DefaultSessionNext, Trigger: TriggerTap},
 	}
 	if err != nil || s.Features.Sessions != want || s.Features.SessionsOn {
 		t.Fatalf("older document: %+v %v", s.Features.Sessions, err)

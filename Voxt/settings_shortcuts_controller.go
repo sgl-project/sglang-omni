@@ -30,7 +30,7 @@ func (a *app) shortcutsSettingsModel() settingsShortcutsViewState {
 // setSessionKeys saves a session slot's shortcut (Settings → Shortcuts'
 // Sessions); the settings' change re-syncs the shortcuts.
 func (a *app) setSessionKeys(slot int, keys string) {
-	if slot < 0 || slot >= slotCount {
+	if slot < 0 || slot >= len(hotkey.Sessions) {
 		return
 	}
 	a.updateSettings(func(s *settings.Settings) {

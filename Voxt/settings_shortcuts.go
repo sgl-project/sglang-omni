@@ -22,8 +22,8 @@ import (
 type settingsShortcutsLocalUI struct {
 	strictShortcuts, returnFinishes bool
 	sessionsOn                      bool
-	sessions                        [3]keyRow
-	sessionEditing                  [3]bool
+	sessions                        [4]keyRow
+	sessionEditing                  [4]bool
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.

@@ -61,18 +61,9 @@ func (a *app) switchSlot(n int) {
 	a.answer, a.under, a.followUp = p.answer, p.under, p.followUp
 	a.notice = nil
 	a.resurface()
-	guide := a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes
-	a.updateSettings(func(s *settings.Settings) {
-		s.Setup.SessionSwitchTotal++
-		if p.answer.open {
-			s.Setup.SessionReturns++
-		}
-		if guide {
-			s.Setup.SessionSwitches++
-		}
-	})
-	if guide {
+	if a.prefs.Setup.SessionSwitches < settings.SessionGuideTimes {
 		// The first switches teach sessions, beside a card that came back too.
+		a.updateSettings(func(s *settings.Settings) { s.Setup.SessionSwitches++ })
 		a.showNotice(sessionNotice{text: sessionGuide(n, a.prefs.Features.Sessions), ok: true})
 	} else if !a.answer.open && !a.bgVisible() {
 		a.showNotice(sessionNotice{text: i18n.T("Session %d", n+1), ok: true})
@@ -84,9 +75,12 @@ func (a *app) switchSlot(n int) {
 
 // sessionGuide is a first switch's notice: the session's name and the
 // shortcuts that switch, short enough for the notice's one line.
-func sessionGuide(n int, sessions [slotCount]settings.Hotkey) string {
+func sessionGuide(n int, sessions [slotCount + 1]settings.Hotkey) string {
+	if next := sessions[slotCount].Keys; next != "" {
+		return i18n.T("Session %d. %s goes to the next session.", n+1, uitext.HotkeyGlyphs(next))
+	}
 	var keys []string
-	for _, h := range sessions {
+	for _, h := range sessions[:slotCount] {
 		if h.Keys != "" {
 			keys = append(keys, uitext.HotkeyGlyphs(h.Keys))
 		}
