@@ -135,6 +135,7 @@ def generation_request(
     cache_dit_params: dict[str, JsonValue] | None = None,
     num_inference_steps: int = STEPS,
     guidance_scale: float = 4.0,
+    img_cfg_scale: float = 1.0,
     edit: bool = False,
     prompts: tuple[str, ...] = ("a red apple",),
 ) -> Req:
@@ -145,6 +146,7 @@ def generation_request(
         height=64,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
+        img_cfg_scale=img_cfg_scale,
         seed=7,
         generator_device="cpu",
         enable_cache_dit=enable_cache_dit,
@@ -574,8 +576,6 @@ def test_request_settings_override_server_settings_per_key(
         ({"Bn_compute_blocks": True}, {}, "Bn_compute_blocks"),
         ({"residual_diff_threshold": 1.5}, {}, "residual_diff_threshold"),
         ({"Fn_compute_blocks": 2, "Bn_compute_blocks": 1}, {}, "decoder layers"),
-        (None, {"edit": True, "img_cfg_scale": 2.0}, "three guidance branches"),
-        (None, {"cfg_interval": (0.0, 0.5)}, "guidance on every step"),
     ],
 )
 @pytest.mark.parametrize("switch_source", ["request", "server"])
@@ -614,6 +614,80 @@ def test_unservable_cache_dit_requests_are_rejected(
     accepted = sampling_params(False)
     accepted.resolve_cache_dit(checkpoint_path, None)
     assert (accepted.enable_cache_dit, accepted.cache_dit_params) == (False, None)
+
+
+UNSUPPORTED_GUIDANCE = [
+    pytest.param(
+        {"edit": True, "img_cfg_scale": 2.0},
+        "editing with three guidance branches, where img_cfg_scale is neither 1 "
+        "nor equal to guidance_scale",
+        id="three-branch-edit",
+    ),
+    pytest.param(
+        {"cfg_interval": (0.0, 0.5)},
+        r"guidance on only part of the steps, with cfg_interval other than \(0\.0, 1\.0\)",
+        id="partial-cfg-interval",
+    ),
+]
+
+
+@pytest.mark.parametrize(("request_options", "message"), UNSUPPORTED_GUIDANCE)
+def test_unsupported_guidance_fails_only_an_explicit_enable(
+    monkeypatch: pytest.MonkeyPatch,
+    checkpoint_path: str,
+    request_options: dict[str, JsonValue],
+    message: str,
+) -> None:
+    """The server switch runs unsupported guidance uncached; only a request's own enable is refused."""
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    edit = bool(request_options.get("edit", False))
+    sampling_options = {
+        name: value for name, value in request_options.items() if name != "edit"
+    }
+
+    def sampling_params(enable_cache_dit: bool | None) -> SenseNovaU1SamplingParams:
+        return SenseNovaU1SamplingParams(
+            prompt="edit" if edit else "a red apple",
+            image_path="reference.png" if edit else None,
+            width=64,
+            height=64,
+            num_inference_steps=STEPS,
+            enable_cache_dit=enable_cache_dit,
+            cache_dit_params={"residual_diff_threshold": 0.5},
+            **sampling_options,
+        )
+
+    explicit = sampling_params(True)
+    with pytest.raises(
+        ValueError, match=f"Cache-DiT does not support {message}; omit enable_cache_dit"
+    ):
+        explicit.resolve_cache_dit(checkpoint_path, None)
+    for request_switch in (None, False):
+        uncached = sampling_params(request_switch)
+        uncached.resolve_cache_dit(checkpoint_path, None)
+        assert (uncached.enable_cache_dit, uncached.cache_dit_params) == (False, None)
+
+
+def test_server_switch_runs_unsupported_guidance_uncached(
+    monkeypatch: pytest.MonkeyPatch,
+    new_stage: StageFactory,
+) -> None:
+    """A three-branch edit on a stage whose server switch is on never mounts and matches an uncached run."""
+    calls = view_calls(monkeypatch)
+    uncached = generate(
+        new_stage(),
+        generation_request(enable_cache_dit=False, edit=True, img_cfg_scale=2.0),
+    )
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    stage = new_stage()
+    defaulted = generate(
+        stage,
+        generation_request(enable_cache_dit=None, edit=True, img_cfg_scale=2.0),
+    )
+    assert stage.cache_dit.active_key is None
+    assert stage.model.language_model.model.generation_blocks is None
+    assert calls == []
+    assert torch.equal(defaulted, uncached)
 
 
 def test_requests_with_the_same_resolved_switch_batch_together(

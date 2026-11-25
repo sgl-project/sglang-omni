@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, JsonValue
-from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.configs.sample.sampling_params import (
     DataType,
     SamplingParams,
@@ -14,12 +13,12 @@ from sglang.multimodal_gen.configs.sample.sampling_params import (
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
 from sglang_omni.models.sensenova_u1.native.cache_dit import (
-    check_cache_dit_guidance,
     check_compute_blocks,
     checkpoint_decoder_layer_count,
     guidance_branch_count,
     request_cache_dit_overrides,
     resolve_cache_dit_config,
+    resolve_cache_dit_switch,
 )
 from sglang_omni.models.sensenova_u1.native.image_edit import (
     MIN_REFERENCE_PIXELS,
@@ -127,25 +126,26 @@ class SenseNovaU1SamplingParams(SamplingParams):
 
     def resolve_cache_dit(self, model_path: str, revision: str | None) -> None:
         """Settle this request's Cache-DiT switch and overrides, rejecting what it cannot run."""
-        if self.enable_cache_dit is None:
-            self.enable_cache_dit = envs.SGLANG_CACHE_DIT_ENABLED
-        elif not isinstance(self.enable_cache_dit, bool):
+        if self.enable_cache_dit is not None and not isinstance(
+            self.enable_cache_dit, bool
+        ):
             # note (Wes): the JSON generations route passes this field through unchecked, so a string "false" would enable the cache.
             raise ValueError(
                 f"enable_cache_dit must be true, false or omitted, got {self.enable_cache_dit!r}"
             )
         else:
             pass
+        self.enable_cache_dit = resolve_cache_dit_switch(
+            self.enable_cache_dit,
+            branch_count=guidance_branch_count(
+                is_edit=bool(self.image_path),
+                cfg_scale=float(self.guidance_scale),
+                img_cfg_scale=float(self.img_cfg_scale),
+            ),
+            cfg_interval=tuple(self.cfg_interval),
+        )
         if self.enable_cache_dit:
             overrides = request_cache_dit_overrides(self.cache_dit_params)
-            check_cache_dit_guidance(
-                guidance_branch_count(
-                    is_edit=bool(self.image_path),
-                    cfg_scale=float(self.guidance_scale),
-                    img_cfg_scale=float(self.img_cfg_scale),
-                ),
-                tuple(self.cfg_interval),
-            )
             config = resolve_cache_dit_config(overrides, int(self.num_inference_steps))
             check_compute_blocks(
                 config.Fn_compute_blocks,

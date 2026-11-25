@@ -251,24 +251,47 @@ def guidance_branch_count(
         return 1
 
 
-def check_cache_dit_guidance(
+def unsupported_guidance(
     branch_count: int, cfg_interval: tuple[float, float]
-) -> None:
-    """Reject guidance whose per-step model calls do not alternate the way cache-dit counts them."""
+) -> str | None:
+    """Describe guidance whose per-step model calls do not alternate the way cache-dit counts them."""
     if branch_count > SEPARATE_GUIDANCE_BRANCH_COUNT:
-        raise ValueError(
-            "Cache-DiT does not support editing with three guidance branches; set "
-            "enable_cache_dit=false, img_cfg_scale=1, or img_cfg_scale equal to guidance_scale"
+        return (
+            "editing with three guidance branches, where img_cfg_scale is neither 1 "
+            "nor equal to guidance_scale"
         )
     elif branch_count == SEPARATE_GUIDANCE_BRANCH_COUNT and tuple(
         cfg_interval
     ) != tuple(DEFAULT_CFG_INTERVAL):
-        raise ValueError(
-            "Cache-DiT requires guidance on every step; "
-            f"set enable_cache_dit=false or cfg_interval={DEFAULT_CFG_INTERVAL}"
-        )
+        return f"guidance on only part of the steps, with cfg_interval other than {DEFAULT_CFG_INTERVAL}"
     else:
-        pass
+        return None
+
+
+def resolve_cache_dit_switch(
+    request_switch: bool | None,
+    *,
+    branch_count: int,
+    cfg_interval: tuple[float, float],
+) -> bool:
+    """Return whether a request runs with Cache-DiT.
+
+    Guidance the cache cannot follow fails a request that set enable_cache_dit=true,
+    and runs uncached when the switch comes from SGLANG_CACHE_DIT_ENABLED.
+    """
+    enabled = (
+        envs.SGLANG_CACHE_DIT_ENABLED if request_switch is None else request_switch
+    )
+    problem = unsupported_guidance(branch_count, cfg_interval) if enabled else None
+    if problem is None:
+        return enabled
+    elif request_switch is None:
+        logger.info(f"Running a request without Cache-DiT: it uses {problem}")
+        return False
+    else:
+        raise ValueError(
+            f"Cache-DiT does not support {problem}; omit enable_cache_dit or set it to false"
+        )
 
 
 class SenseNovaCacheDit:
@@ -287,14 +310,13 @@ class SenseNovaCacheDit:
         cfg_interval: tuple[float, float],
     ) -> None:
         sampling_params = batch.sampling_params
-        requested = (
-            envs.SGLANG_CACHE_DIT_ENABLED
-            if sampling_params.enable_cache_dit is None
-            else sampling_params.enable_cache_dit
+        requested = resolve_cache_dit_switch(
+            sampling_params.enable_cache_dit,
+            branch_count=branch_count,
+            cfg_interval=cfg_interval,
         )
         if requested:
             overrides = request_cache_dit_overrides(sampling_params.cache_dit_params)
-            check_cache_dit_guidance(branch_count, cfg_interval)
             config = resolve_cache_dit_config(overrides, int(batch.num_inference_steps))
             desired_key = CacheDitMountKey(
                 overrides=cache_dit_overrides_key(overrides),
