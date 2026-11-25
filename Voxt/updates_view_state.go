@@ -146,13 +146,9 @@ func buildSidebarUpdateViewState(translator *i18n.Translator, bundleUpdated bool
 	if availableVersion == "" {
 		return nil
 	}
-	label := translator.T("Update %s", availableVersion)
-	if strings.Contains(availableVersion, "-beta") {
-		label = translator.T("Update Beta")
-	}
 	return &sidebarUpdateViewState{
 		Version: availableVersion,
-		Label:   label,
+		Label:   translator.T("Update %s", availableVersion),
 		Tooltip: translator.T("Voxt %s is available", availableVersion),
 	}
 }

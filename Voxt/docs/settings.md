@@ -335,6 +335,7 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.rewriteBoxOpens` | integer | Successful Rewrite input-box opens, capped at three for the first-use tip |
 | `setup.rewriteBoxTipDismissed` | bool | Got it dismissed the Rewrite input-box tip for good |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
+| `updates.available` | string | Newest GitHub release found by a check-only build, kept across restarts until installed or cleared |
 | `updates.dismissed` | string | Legacy version whose sidebar "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |
 | `network.proxyAuthHost` | string | The proxy host that user name is for |

@@ -212,12 +212,11 @@ type releaseUpdates struct {
 	open    func() // CheckNow: the app's dialog (main thread)
 	bgCheck func() // CheckBackground: non-dialog check (main thread)
 
-	mu        sync.Mutex
-	pre       bool        // SetPrereleases
-	etag      string      // of list
-	list      []ghRelease // the last answer; nil: none yet
-	available string      // newest available version not dismissed
-	changes   []*func()
+	mu      sync.Mutex
+	pre     bool        // SetPrereleases
+	etag    string      // of list
+	list    []ghRelease // the last answer; nil: none yet
+	changes []*func()
 }
 
 func newReleaseUpdates(store settings.Service, url, version string, open func()) *releaseUpdates {
@@ -226,11 +225,11 @@ func newReleaseUpdates(store settings.Service, url, version string, open func())
 
 func (r *releaseUpdates) Prefs() updatePrefs {
 	u := r.store.Get().Updates
-	r.mu.Lock()
-	avail := r.available
-	r.mu.Unlock()
-	if u.Dismissed == avail {
-		avail = ""
+	avail := u.Available
+	if avail != "" {
+		if v, ok := parseVersion(avail); !ok || !r.newer(v) || u.Dismissed == avail {
+			avail = ""
+		}
 	}
 	return updatePrefs{
 		Enabled: true, CheckOnly: true, AutoCheck: !u.NoAutoCheck, LastCheck: u.LastCheck,
@@ -260,18 +259,11 @@ func (r *releaseUpdates) CheckBackground() {
 }
 
 func (r *releaseUpdates) clearAvailable(version string) {
-	r.mu.Lock()
-	changed := r.available != "" && (version == "" || r.available == version)
-	if changed {
-		r.available = ""
+	u := r.store.Get().Updates
+	if u.Available == "" || (version != "" && u.Available != version) {
+		return
 	}
-	changes := slices.Clone(r.changes)
-	r.mu.Unlock()
-	if changed {
-		for _, c := range changes {
-			(*c)()
-		}
-	}
+	r.save(func(u *settings.Updates) { u.Available = "" })
 }
 
 func (r *releaseUpdates) OnChange(fn func()) func() {
@@ -321,14 +313,14 @@ func (r *releaseUpdates) check(ctx context.Context, client *http.Client) (releas
 	}
 	rel, v, ok := newestRelease(list, beta)
 	isNewer := ok && r.newer(v)
-	r.mu.Lock()
+	avail := ""
 	if isNewer {
-		r.available = rel.Version
-	} else {
-		r.available = ""
+		avail = rel.Version
 	}
-	r.mu.Unlock()
-	r.save(func(u *settings.Updates) { u.LastCheck = time.Now() })
+	r.save(func(u *settings.Updates) {
+		u.LastCheck = time.Now()
+		u.Available = avail
+	})
 	return rel, isNewer, nil
 }
 
@@ -445,15 +437,20 @@ func (a *app) watchReleases() {
 	}()
 }
 
-// keepReleaseCard drops a card kept from before a restart whose version
-// is not newer than running (it was installed since); main calls it.
+// keepReleaseCard drops a legacy card and any persisted Available version
+// kept from before a restart that is not newer than running; main calls it.
 func (a *app) keepReleaseCard(running string) {
+	now, runningOK := parseVersion(running)
+	if avail := a.prefs.Updates.Available; avail != "" && runningOK {
+		if v, ok := parseVersion(avail); !ok || slices.Compare(v[:], now[:]) <= 0 {
+			a.updateSettings(func(s *settings.Settings) { s.Updates.Available = "" })
+		}
+	}
 	i := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemRelease })
 	if i < 0 {
 		return
 	}
 	v, ok := parseVersion(a.notices[i].Version)
-	now, _ := parseVersion(running)
 	if !ok || slices.Compare(v[:], now[:]) <= 0 {
 		a.setProblem(problemRelease, "", nil)
 	}

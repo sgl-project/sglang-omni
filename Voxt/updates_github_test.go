@@ -361,7 +361,25 @@ func TestReleaseAutoCheck(t *testing.T) {
 		t.Errorf("Download: opened %v", *got)
 	}
 
-	// A newer version updates the pill.
+	// A restart within 24 hours keeps the sidebar button and tray item
+	// from persisted settings without needing another network request.
+	beforeRestart := len(srv.requests)
+	a.quit()
+	a.lib.close()
+	a, _, tt = newTestAppIn(t, dir)
+	a.upd = newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)
+	a.connectUpdates()
+	a.loadUpdates()
+	a.autoCheckReleases() // still within 24 hours: no new request
+	if len(srv.requests) != beforeRestart || a.updPrefs.AvailableVersion != "2.0.4" {
+		t.Fatalf("after restart: requests=%d (want %d) avail=%q", len(srv.requests), beforeRestart, a.updPrefs.AvailableVersion)
+	}
+	a.navigate("/home")
+	if !has(tt, "Update 2.0.4") || a.trayItems()[0].Label != "Update available (2.0.4)…" {
+		t.Fatalf("after restart UI: tray=%q texts=%q", a.trayItems()[0].Label, firstTexts(tt))
+	}
+
+	// A newer version updates the button.
 	srv.set(func(s *ghServer) { s.list = ghList([]string{"voxt-v2.0.5"}) })
 	a.settings.Update(context.Background(), func(s *settings.Settings) { s.Updates.LastCheck = time.Time{} })
 	a.autoCheckReleases()
@@ -369,18 +387,18 @@ func TestReleaseAutoCheck(t *testing.T) {
 		t.Fatalf("newer: avail=%q texts=%q", a.updPrefs.AvailableVersion, firstTexts(tt))
 	}
 
-	// Legacy persisted release card from an older version is cleared once updated.
+	// Legacy persisted release card and Available version clear once updated.
 	a.setProblem(problemRelease, "2.0.5", &core.Notification{Title: "Voxt 2.0.5 is available", Version: "2.0.5", Link: linkDownload + "https://dl/dmg-2.0.5"})
 	a.quit()
 	a.lib.close()
 	a, _, _ = newTestAppIn(t, dir)
 	a.keepReleaseCard("2.0.4")
-	if len(cards(a)) != 1 {
-		t.Fatalf("the legacy card was not kept: %+v", a.notices)
+	if len(cards(a)) != 1 || a.prefs.Updates.Available != "2.0.5" {
+		t.Fatalf("still older: cards=%+v avail=%q", a.notices, a.prefs.Updates.Available)
 	}
 	a.keepReleaseCard("2.0.5")
-	if len(cards(a)) != 0 {
-		t.Errorf("the installed version's card stayed: %+v", cards(a))
+	if len(cards(a)) != 0 || a.prefs.Updates.Available != "" {
+		t.Errorf("the installed version's state stayed: cards=%+v avail=%q", cards(a), a.prefs.Updates.Available)
 	}
 
 	// Back on 2.0.3: failures say nothing; off, nothing is asked.

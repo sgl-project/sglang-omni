@@ -147,6 +147,7 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a.openWindow()           // shell.go
 		a.applyBeta()            // updates.go: betas or not, before the first check
+		a.loadUpdates()          // updates.go: restore persisted update state for sidebar and tray
 		a.startHelper()          // helperlink.go
 		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
 		a.applyDock()            // tray.go: in the Dock or not

@@ -373,10 +373,10 @@ func TestSidebarUpdateControlAndTray(t *testing.T) {
 		t.Fatalf("tray click checks = %d, want 2", f.checked())
 	}
 
-	// Beta version uses compact "Update Beta" label in the sidebar bar.
+	// Beta version keeps its version string in the sidebar bar.
 	f.change(func(p *updatePrefs) { p.AvailableVersion = "2.1.4-beta.20261125.1" })
 	frames(tt)
-	if !has(tt, "Update Beta") {
+	if !has(tt, "Update 2.1.4-beta.20261125.1") {
 		t.Fatalf("beta button missing: %q", firstTexts(tt))
 	}
 

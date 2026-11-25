@@ -235,9 +235,11 @@ func shellFixtureApply(t *testing.T, a *app, in shellFixtureScenario) {
 	}
 	if in.updateInstalled != "" {
 		a.updPrefs.InstalledVersion = in.updateInstalled
+		a.updKnown = true
 		a.bundleUpdated = true
 	} else if in.updateAvailable != "" {
 		a.updPrefs.AvailableVersion = in.updateAvailable
+		a.updKnown = true
 	}
 }
 

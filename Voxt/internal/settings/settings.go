@@ -333,8 +333,12 @@ type Updates struct {
 	// default); LastCheck is when one last succeeded.
 	NoAutoCheck bool      `json:"noAutoCheck,omitempty"`
 	LastCheck   time.Time `json:"lastCheck,omitzero"`
-	// Dismissed is the version whose "is available" card the user
-	// dismissed: no card for it again, one for a newer version.
+	// Available is the newest GitHub release found by a check without an
+	// update feed, kept across restarts until a check clears it or Voxt
+	// updates to that version or newer.
+	Available string `json:"available,omitempty"`
+	// Dismissed is the legacy version whose "is available" card the user
+	// dismissed: kept so previously dismissed versions stay quiet.
 	Dismissed string `json:"dismissed,omitempty"`
 }
 

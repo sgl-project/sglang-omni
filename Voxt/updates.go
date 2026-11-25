@@ -129,6 +129,7 @@ const bundleWatch = time.Minute
 func (a *app) connectUpdates() {
 	// A card kept from before a restart: the restart finished the update.
 	a.setProblem(problemUpdate, "", nil)
+	a.updKnown = false
 	if a.upd == nil {
 		return
 	}
@@ -170,6 +171,7 @@ func (a *app) availableUpdateVersion() string {
 }
 
 func (a *app) sidebarUpdateModel() *sidebarUpdateViewState {
+	a.loadUpdates()
 	return buildSidebarUpdateViewState(i18n.CurrentTranslator(), a.bundleUpdated, a.updPrefs.InstalledVersion, a.availableUpdateVersion())
 }
 
