@@ -96,6 +96,9 @@ type sessionCardBlock struct {
 	Selectable bool   `json:"selectable"`
 	Cut        bool   `json:"cut,omitempty"`
 	Open       bool   `json:"open,omitempty"`
+	// Preview: a live user side still shows the streaming speech
+	// model's words, drawn dim until the recognised text replaces them.
+	Preview bool `json:"preview,omitempty"`
 	// Markdown: the text renders as Markdown (a Rewrite's answer, #4119);
 	// a live one is still being written, its half-written syntax healed.
 	Markdown bool `json:"markdown,omitempty"`
@@ -331,6 +334,7 @@ func buildSessionCardLiveTail(input sessionCardProjectionInput, follow bool) ([2
 	count := 0
 	said := cmpOr(strings.TrimSpace(snapshot.Raw), strings.TrimSpace(snapshot.Partial))
 	if user, ok := sessionCardUserBlock(input.Answer.ui.quotesOpen, len(input.Answer.turns), said, snapshot.Selection, true); ok {
+		user.Preview = strings.TrimSpace(snapshot.Raw) == "" && strings.TrimSpace(snapshot.Partial) != ""
 		live[0], count = user, 1
 	}
 	if snapshot.State != session.Recording {

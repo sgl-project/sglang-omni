@@ -109,6 +109,7 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `appearance.sidebarWidth` | number | `0` | 0 (default) or 170–320 (clamped) | Dragging the sidebar's edge |
 | `appearance.historyDetailWidth` | number | `0` | 0 (default) or 290–350 (clamped) | Dragging the edge of History's detail panel |
 | `appearance.closedSections` | array of strings | `[]` | sidebar sections the user closed | The sidebar's section headers |
+| `appearance.lookingBackClosed` | bool | `false` | `true` folds Looking back to its title row | Home's Looking back title |
 
 ### Privacy (Settings → Privacy)
 
@@ -219,6 +220,8 @@ And their own fields:
 | `features.transcribe.enhance` | bool | `true` | | Clean up with a language model |
 | `features.transcribe.cleanup` | bool | `true` | | Basic clean-up |
 | `features.transcribe.structure` | bool | `false` | | Structure |
+| `features.transcribe.cleanAfterStop` | bool | `false` | | Clean up while you speak, inverted: `true` sends nothing to the language model until Stop. With it `false`, a dictation costs more requests and input tokens (a block goes again each time it gains a sentence); a language model on this Mac, or a clean-up that sends a picture, waits for Stop all the same |
+| `features.transcribe.recleanSentences` | integer | `2` | `0` or more: how many sentences of the text cleaned while you speak go back to the language model with the text left at Stop | none (settings file only) |
 | `features.endWord` | string | `""` | a word that ends the recording; `""` = off (streaming speech models only) | Transcribe → End with a word |
 | `features.translate.target` | string | `""` | a language code; `""` = English, or Chinese when the main language is English | Target language |
 | `features.translate.cleanup` | bool | `true` | | Basic clean-up |

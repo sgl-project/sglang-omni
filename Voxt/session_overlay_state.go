@@ -77,6 +77,7 @@ type sessionPillViewState struct {
 	SkipTooltip   string                `json:"skip_tooltip,omitempty"`
 	Levels        [session.Bars]float64 `json:"levels"`
 	LiveHint      bool                  `json:"live_hint,omitempty"`
+	LivePreview   bool                  `json:"live_preview,omitempty"` // LiveText is livePreview's: drawn dim
 	Heard         bool                  `json:"heard"`
 	Starting      bool                  `json:"starting"`
 	Waiting       string                `json:"waiting"`
@@ -161,6 +162,8 @@ func buildSessionPillViewState(translator *i18n.Translator, input sessionOverlay
 		CanThink:      input.CanThink,
 	}
 	state.LiveText, state.LiveHint = pillLineFor(translator, snapshot, now)
+	noted := input.PillNoteText != "" && input.PillNoteID == snapshot.ID && snapshot.State == session.Recording
+	state.LivePreview = !state.LiveHint && !noted && livePreview(snapshot)
 	if state.CanSkip {
 		state.SkipLabel = translator.T("Use transcript")
 		state.SkipTooltip = translator.T("Insert the recognised text without waiting for the language model")
@@ -276,6 +279,22 @@ func liveText(snapshot session.Snapshot) string {
 		return strings.TrimSpace(snapshot.Selection)
 	}
 	return ""
+}
+
+// livePreview says whether liveText is the streaming speech model's
+// Partial: a preview the recognised text may still change, not the
+// Spoken text the language model gets.
+func livePreview(snapshot session.Snapshot) bool {
+	if strings.TrimSpace(snapshot.Partial) == "" {
+		return false
+	}
+	switch snapshot.State {
+	case session.Recording, session.Recognizing:
+		return true
+	case session.Composing, session.Delivering:
+		return strings.TrimSpace(snapshot.Spoken) == ""
+	}
+	return false
 }
 
 // clock shows a duration as m:ss.

@@ -43,9 +43,16 @@ type oaMessage struct {
 }
 
 type oaUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens     int           `json:"prompt_tokens"`
+	CompletionTokens int           `json:"completion_tokens"`
+	TotalTokens      int           `json:"total_tokens"`
+	PromptDetails    *tokenDetails `json:"prompt_tokens_details"`
+}
+
+// note (luojiaxuan): tokenDetails is a usage's breakdown of the prompt: the part read from
+// the service's prompt cache.
+type tokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 func (u *oaUsage) usage() Usage {
@@ -56,7 +63,11 @@ func (u *oaUsage) usage() Usage {
 	if t == 0 {
 		t = u.PromptTokens + u.CompletionTokens
 	}
-	return Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: t}
+	cached := 0
+	if u.PromptDetails != nil {
+		cached = u.PromptDetails.CachedTokens
+	}
+	return Usage{PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens, TotalTokens: t, CachedTokens: cached}
 }
 
 func (o *OpenAI) body(req Request, model string, stream, streamUsage, extra bool) map[string]any {

@@ -106,7 +106,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				}
 
 				if state.Recording {
-					cardWave(context, state.Levels[:], state.Recording, state.Heard, state.Motion, state.Phase)
+					cardWave(context, state.Levels[:], state.Wave, state.Recording, state.Heard, state.Motion, state.Phase)
 				}
 				ui.Box(context).Grow(1).MinWidth(0)
 				if state.CanSend {

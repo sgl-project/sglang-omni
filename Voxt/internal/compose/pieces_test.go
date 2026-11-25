@@ -174,3 +174,24 @@ func TestJoinParts(t *testing.T) {
 		}
 	}
 }
+
+// TestPiecesKeepMarks: a piece never ends inside a snippet's mark, at a
+// space, a full stop or anywhere.
+func TestPiecesKeepMarks(t *testing.T) {
+	for _, text := range []string{
+		strings.Repeat("word ", 56) + "⟦my email address⟧ " + strings.Repeat("more ", 60),
+		strings.Repeat("Words here. ", 24) + "⟦Dr. Smith's office⟧ " + strings.Repeat("More there. ", 26),
+		strings.Repeat("字", 290) + "⟦我的邮箱⟧" + strings.Repeat("字", 200),
+		strings.Repeat("字", 296) + "⟦我的邮箱⟧" + strings.Repeat("字", 296),
+	} {
+		pieces := LanguagePieces(text)
+		if len(pieces) < 2 {
+			t.Fatalf("one piece for %d characters", len([]rune(text)))
+		}
+		for _, p := range pieces {
+			if strings.Count(p.Text, "⟦") != strings.Count(p.Text, "⟧") {
+				t.Errorf("a piece cuts a mark: %q", p.Text)
+			}
+		}
+	}
+}
