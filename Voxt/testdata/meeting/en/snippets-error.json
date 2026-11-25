@@ -1,0 +1,12 @@
+{
+  "name": "snippets-error",
+  "kind": "snippets",
+  "snippets": {
+    "ready": false,
+    "error": "Could not read the snippets: fixture read failed",
+    "rows": [],
+    "total": 0,
+    "order": 0
+  },
+  "snippets_ui": {}
+}

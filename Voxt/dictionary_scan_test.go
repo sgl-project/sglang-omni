@@ -161,19 +161,19 @@ func TestScanShowsProgressThenTheNewSuggestions(t *testing.T) {
 	a, tt, chat, posts := scanTester(t, 13)
 	a.lib.store.Dictionary().Put(context.Background(), store.Term{ID: "t", Term: "OnlyInTheDictionary", Enabled: true})
 	clickControl(t, tt, "开始")
-	if !has(tt, "已读 0/13 · 0 条建议") {
+	if !has(tt, "已扫描 0/13 · 0 条建议") {
 		t.Fatalf("no progress at the start: %q", tt.Texts())
 	}
 	first := <-chat.requests
 	chat.answers <- scanAnswer{text: `{"terms":["Name00"]}`}
 	nextPost(tt, posts)
-	if !has(tt, "已读 12/13 · 1 条建议") {
+	if !has(tt, "已扫描 12/13 · 1 条建议") {
 		t.Fatalf("no progress: %q", tt.Texts())
 	}
 	<-chat.requests
 	chat.answers <- scanAnswer{text: `{"terms":["Name12"]}`}
 	nextPost(tt, posts)
-	if !has(tt, "已读 13/13 · 2 条建议") {
+	if !has(tt, "已扫描 13/13 · 2 条建议") {
 		t.Fatalf("no progress: %q", tt.Texts())
 	}
 	nextPost(tt, posts) // the end
@@ -261,7 +261,7 @@ func TestScanRunsOnWithTheDialogClosed(t *testing.T) {
 		t.Fatalf("open %v running %v", a.dictUI.scanOpen, a.dv.scan.running)
 	}
 	chooseDictionaryMenuItem(t, tt, i18n.T("Scan history…"))
-	if !has(tt, "已读 0/2 · 0 条建议") {
+	if !has(tt, "已扫描 0/2 · 0 条建议") {
 		t.Fatalf("reopening lost the progress: %q", tt.Texts())
 	}
 	click(t, tt, "关闭")
