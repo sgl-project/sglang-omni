@@ -85,7 +85,8 @@ func TestMeetingOverlayContentProtection(t *testing.T) {
 
 // TestMeetingOverlayFrame: the overlay first shows at the bottom centre,
 // then stays where the user dragged it as it grows or shrinks (#3984),
-// kept inside the work area of the screen it is on.
+// about its centre (11-25: the user expanded it from the top-right
+// button), kept inside the work area of the screen it is on.
 func TestMeetingOverlayFrame(t *testing.T) {
 	area := mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 775}
 	if f := meetingOverlayFrame(mygo.Rectangle{}, area, 400, 60); f != (mygo.Rectangle{X: 440, Y: 25 + 775 - 60 - 28, Width: 400, Height: 60}) {
@@ -95,8 +96,12 @@ func TestMeetingOverlayFrame(t *testing.T) {
 	if f := meetingOverlayFrame(dragged, area, 400, 60); f != dragged {
 		t.Errorf("an update after a drag moved it: %+v, want %+v", f, dragged)
 	}
-	if f := meetingOverlayFrame(dragged, area, 560, 420); f.X != 100 || f.Y != 200 || f.Width != 560 || f.Height != 420 {
-		t.Errorf("expanded after a drag: %+v", f)
+	expanded := meetingOverlayFrame(dragged, area, 560, 420)
+	if expanded.X != 100-80 || expanded.Y != 200 || expanded.Width != 560 || expanded.Height != 420 {
+		t.Errorf("expanded after a drag: %+v, want it about the same centre", expanded)
+	}
+	if f := meetingOverlayFrame(expanded, area, 400, 60); f != dragged {
+		t.Errorf("expanded, then collapsed: %+v, want it back at %+v", f, dragged)
 	}
 	low := mygo.Rectangle{X: 1000, Y: 730, Width: 400, Height: 60}
 	if f := meetingOverlayFrame(low, area, 560, 420); f.X != 1280-560+layout.Pad || f.Y != 730+60-420 {

@@ -35,10 +35,12 @@ const (
 // overlay sits low on the screen (the window grows upwards there), else
 // below it.
 const (
-	meetingOvEndBubbleH = 34
+	meetingOvEndBubbleH = 44
+	meetingOvEndBtnH    = 30
+	meetingOvEndRadius  = 12
 	meetingOvEndGap     = 6
 	meetingOvEndAskH    = meetingOvEndBubbleH + meetingOvEndGap
-	meetingOvEndBubbleW = 300
+	meetingOvEndBubbleW = 330
 )
 
 var meetingOvWidths = [3]int{520, 600, 760}
@@ -147,7 +149,8 @@ func meetingOverlayFrame(at, area mygo.Rectangle, width, height int) mygo.Rectan
 	if at.Width == 0 {
 		return mygo.Rectangle{X: area.X + (area.Width-width)/2, Y: area.Y + area.Height - height - 28, Width: width, Height: height}
 	}
-	x := max(min(at.X, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
+	x := at.X + (at.Width-width)/2 // it grows and shrinks about its centre
+	x = max(min(x, area.X+area.Width-width+layout.Pad), area.X-layout.Pad)
 	y := at.Y
 	if at.Y+at.Height/2 > area.Y+area.Height/2 {
 		y = at.Y + at.Height - height

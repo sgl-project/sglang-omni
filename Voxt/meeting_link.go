@@ -181,24 +181,34 @@ func (a *app) startMeetingThen(failed func(msg string, err error)) {
 }
 
 func (a *app) meetingPauseResume() {
-	if a.meetMgr == nil || a.meetSnap.ID == "" {
+	if a.meetMgr == nil || a.meetSnap.ID == "" || a.meetOvPending != "" {
+		return // one at a time: the last press is still on its way
+	}
+	id, target := a.meetSnap.ID, meeting.StatePaused
+	switch a.meetSnap.State {
+	case meeting.StateRecording:
+	case meeting.StatePaused:
+		target = meeting.StateRecording
+	default:
 		return
 	}
-	id := a.meetSnap.ID
+	a.meetOvPending = target // shown at once (meeting_overlay_window.go)
+	a.syncMeetingOverlay()
 	a.async(func() {
 		ctx := context.Background()
 		var err error
-		switch a.meetSnap.State {
-		case meeting.StateRecording:
+		if target == meeting.StatePaused {
 			err = a.meetMgr.Pause(ctx, id)
-		case meeting.StatePaused:
+		} else {
 			err = a.meetMgr.Resume(ctx, id)
 		}
-		if err != nil {
-			a.post(func() {
+		a.post(func() {
+			a.meetOvPending = "" // the manager's state has come (or the press failed)
+			a.syncMeetingOverlay()
+			if err != nil {
 				a.meetingFailed("pause", i18n.T("Could not pause or resume the meeting: %v", err), err)
-			})
-		}
+			}
+		})
 	})
 }
 

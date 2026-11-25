@@ -70,7 +70,7 @@ func meetingOverlayView(
 	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
 		if model.EndAsk && local.endAbove {
-			meetingEndBubble(c, model, actions, true)
+			meetingEndBubble(c, actions, style, true)
 		}
 		face := faceStyle(c, ui.Column(c.Key("mt-face")), style.radius, style.alpha).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
 		if model.EndAsk {
@@ -98,56 +98,45 @@ func meetingOverlayView(
 			}
 		})
 		if model.EndAsk && !local.endAbove {
-			meetingEndBubble(c, model, actions, false)
+			meetingEndBubble(c, actions, style, false)
 		}
 	})
 	meetingAbandonDialog(c, actions, local)
 }
 
-// meetingEndBubble is End's question: a small translucent bubble out of
-// the overlay beside End (above the face, or below it), with Keep
-// recording and End. Not a card in the card (11-25, the user: a
-// dialog stacked on the overlay looked odd).
-func meetingEndBubble(c *ui.Context, model meetingOverlayModel, actions meetingOverlayActions, above bool) {
-	row := ui.Row(c).Height(meetingOvEndAskH).Shrink(0).Justify(ui.End).Padding(0, layout.PillPadX-6, 0, 0)
+// meetingEndBubble is End's question: a small box out of the overlay
+// beside End (above the face, or below it), in the overlay's own face,
+// line and shadow, with squared corners and the question's buttons
+// (meetingAskingButton): Keep recording and End. Not a dialog over the
+// overlay (11-25, the user: a card in the card looked odd; then: the same
+// colour and style, square corners).
+func meetingEndBubble(c *ui.Context, actions meetingOverlayActions, style meetingOverlayFaceStyle, above bool) {
+	k := tok(c.Theme())
+	row := ui.Row(c).Height(meetingOvEndAskH).Shrink(0).Justify(ui.End).Padding(0, layout.PillPadX-8, 0, 0)
 	if above {
 		row.AlignItems(ui.Start)
 	} else {
 		row.AlignItems(ui.End)
 	}
 	row.Children(func() {
-		bubble := ui.Row(c.Key("mt-end-ask")).Height(meetingOvEndBubbleH).Shrink(0).Gap(6).AlignItems(ui.Center).
-			Padding(0, 4, 0, 12).Radius(meetingOvEndBubbleH/2).Background(ui.RGBA(22, 22, 25, 0.62)).
-			Border(1, ui.RGBA(255, 255, 255, 0.14)).Shadow(0, 3, 10, 0, ui.RGBA(0, 0, 0, 0.22)).Label(i18n.T("End this meeting?"))
+		// No blur under the box (the window's is the face's): a face as
+		// opaque as the overlay looks over it.
+		face := k.OverlayFace.Alpha(max(style.alpha, 0.94))
+		bubble := ui.Row(c.Key("mt-end-ask")).Height(meetingOvEndBubbleH).Shrink(0).Gap(8).AlignItems(ui.Center).
+			Padding(0, 6, 0, 14).Radius(meetingOvEndRadius).Background(face).Border(1, k.OverlayLine).
+			Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).Label(i18n.T("End this meeting?"))
 		bubble.Children(func() {
-			ui.Text(c, i18n.T("End this meeting?")).FontSize(12).FontWeight(600).TextColor(ovText).SingleLine().Shrink(0)
-			if meetingEndBubbleButton(c.Key("mt-end-no"), i18n.T("Keep recording"), false) {
-				actions.keepMeetingRecording()
-			}
-			if meetingEndBubbleButton(c.Key("mt-end-yes"), i18n.T("End"), true) {
-				actions.meetingFinish()
-			}
+			ui.Text(c, i18n.T("End this meeting?")).FontSize(12.5).FontWeight(600).TextColor(ovText).SingleLine().Shrink(0)
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+				if meetingAskingButton(c.Key("mt-end-no"), i18n.T("Keep recording"), meetingOvEndBtnH, false) {
+					actions.keepMeetingRecording()
+				}
+				if meetingAskingButton(c.Key("mt-end-yes"), i18n.T("End"), meetingOvEndBtnH, true) {
+					actions.meetingFinish()
+				}
+			})
 		})
 	})
-}
-
-// meetingEndBubbleButton is a capsule in End's bubble: End in red, Keep
-// recording quiet.
-func meetingEndBubbleButton(c *ui.Context, label string, end bool) bool {
-	b := ui.ButtonBase(c).Height(meetingOvEndBubbleH-8).Padding(0, 10).Radius((meetingOvEndBubbleH - 8) / 2).Center().Shrink(0).Label(label)
-	fill, ink := ui.RGBA(255, 255, 255, 0.1), ovText
-	if b.Hovered() {
-		fill = ui.RGBA(255, 255, 255, 0.18)
-	}
-	if end {
-		fill, ink = mtRecDot, ui.RGB(255, 255, 255)
-		if b.Hovered() {
-			fill = mtRecDot.Mix(ui.RGB(255, 255, 255), 0.12)
-		}
-	}
-	return b.Background(fill).Children(func() {
-		ui.Text(c, label).FontSize(11.5).FontWeight(600).TextColor(ink).SingleLine()
-	}).Clicked()
 }
 
 var (

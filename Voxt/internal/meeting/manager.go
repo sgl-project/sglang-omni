@@ -187,11 +187,12 @@ func (m *Manager) startTracks(ctx context.Context, sources []Source) error {
 // Pause stops capture without ending the meeting.
 func (m *Manager) Pause(_ context.Context, id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 	if m.state != StateRecording {
+		m.mu.Unlock()
 		return fmt.Errorf("meeting: not recording")
 	}
 	m.stopAllTracksLocked()
@@ -201,6 +202,9 @@ func (m *Manager) Pause(_ context.Context, id string) error {
 	m.state = StatePaused
 	m.snap.State = StatePaused
 	m.snap.Elapsed = m.timeline.Elapsed()
+	paused := m.snap
+	m.mu.Unlock()
+	m.notify(paused) // it sent nothing: the overlay waited for another change
 	return nil
 }
 

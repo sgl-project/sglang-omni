@@ -16,6 +16,10 @@ type meetingOverlayState struct {
 	meetOvTranslator *i18n.Translator
 	meetOvLocale     string
 	meetOvUI         meetingOverlayLocalUI
+	// meetOvPending is the state Pause or Resume asked for, shown at once
+	// ("": none): a pause waits for the tracks' last words, which took
+	// seconds on a busy Mac while the button seemed not to answer.
+	meetOvPending meeting.State
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -32,7 +36,11 @@ func (a *app) rebuildMeetingOverlay() {
 		a.meetOvTranslator = i18n.NewTranslator(i18n.Locale())
 		a.meetOvLocale = i18n.Locale()
 	}
-	a.meetOvView = buildMeetingOverlayViewState(a.meetOvTranslator, a.meetSnap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize))
+	snap := a.meetSnap
+	if p := a.meetOvPending; p != "" && (snap.State == meeting.StateRecording || snap.State == meeting.StatePaused) {
+		snap.State = p // the press shows before the tracks have stopped or started
+	}
+	a.meetOvView = buildMeetingOverlayViewState(a.meetOvTranslator, snap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize))
 	menu := a.meetOvUI.menu
 	if a.meetOvUI.endAsk {
 		menu = meetingMenuEnd // End's bubble: the window makes room for it
@@ -63,7 +71,7 @@ func (a *app) syncMeetingOverlay() {
 		content := meetingOverlayContent(
 			func() meetingOverlayViewState { return a.meetOvView },
 			func() meetingOverlayModel { return a.meetOvModel },
-			a,
+			meetingOverlayAfterFrame{a},
 			&a.meetOvUI,
 			func() meetingOverlayAnimation {
 				return meetingOverlayAnimation{motion: a.overlayMotion(), phase: a.overlayPhase()}
@@ -92,9 +100,6 @@ func (a *app) syncMeetingOverlay() {
 	a.meetOvUI.endAbove = at.Width > 0 && at.Y+at.Height/2 > area.Y+area.Height/2
 	frame := meetingOverlayFrame(at, area, width, height)
 	x, y := frame.X, frame.Y
-	if frame != at {
-		a.meetOvWin.SetContentBounds(frame)
-	}
 	mode, faceHeight := meetingOverlayFace(model)
 	top, bottom := float64(layout.Pad), float64(layout.Pad)
 	if model.EndAsk { // the blur is the face's; the bubble draws its own
@@ -104,8 +109,15 @@ func (a *app) syncMeetingOverlay() {
 			bottom += meetingOvEndAskH
 		}
 	}
-	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: top, Right: layout.Pad, Bottom: bottom, Left: layout.Pad,
-		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceHeight)), Dark: true})
+	blur := mygo.VibrancyStyle{Top: top, Right: layout.Pad, Bottom: bottom, Left: layout.Pad,
+		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceHeight)), Dark: true}
+	if frame != at {
+		// The resize draws the new frame at once: the blur's corners are
+		// the new ones by then, and its insets fit the new size after.
+		a.meetOvWin.SetVibrancyStyle(blur)
+		a.meetOvWin.SetContentBounds(frame)
+	}
+	a.meetOvWin.SetVibrancyStyle(blur)
 	a.meetOvWin.Invalidate()
 	a.applyMeetingOverlayProtection()
 	if !a.meetOvShown {
