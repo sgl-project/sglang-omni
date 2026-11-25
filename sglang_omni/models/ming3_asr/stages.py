@@ -13,9 +13,12 @@ from pydantic import JsonValue
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import AutoConfig, PreTrainedTokenizerFast
+from transformers.utils.hub import cached_file
 
 from sglang_omni.models.ming3_asr.encoder_service import Ming3ASRPreLMEncoderService
+from sglang_omni.models.ming3_asr.mtp import Ming3ASRMTP
 from sglang_omni.models.ming3_asr.preprocessing import (
     Ming3ASRPreprocessor,
     TranscriptionState,
@@ -32,6 +35,7 @@ from sglang_omni.modules.ming_audio.audio_encoder import (
 from sglang_omni.modules.ming_audio.hf_config import Ming3AudioConfig
 from sglang_omni.modules.ming_audio.thinker import (
     Ming3AudioModelRunner,
+    Ming3AudioMTP,
     Ming3AudioThinker,
 )
 from sglang_omni.proto.request import StagePayload
@@ -64,7 +68,7 @@ class Ming3ASRConfig(Ming3AudioConfig):
 
 
 def load_checkpoint_config(model_path: str) -> dict[str, JsonValue]:
-    return json.loads((Path(model_path) / "config.json").read_text())
+    return json.loads(Path(cached_file(model_path, "config.json")).read_text())
 
 
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
@@ -114,10 +118,13 @@ def create_thinker_executor(
     else:
         pass
     overrides = dict(server_args_overrides or {})
+    speculative_algorithm = SpeculativeAlgorithm.from_string(
+        overrides.get("speculative_algorithm")
+    )
     resolved_device = resolve_concrete_device(device, gpu_id)
     with ExitStack() as resources:
         draft_checkpoint = None
-        if overrides.get("speculative_algorithm") == "DSPARK":
+        if speculative_algorithm == SpeculativeAlgorithm.DSPARK:
             draft_checkpoint = materialize_draft_checkpoint(
                 overrides["speculative_draft_model_path"],
                 overrides.get("speculative_draft_model_revision"),
@@ -129,9 +136,66 @@ def create_thinker_executor(
                 disable_overlap_schedule=True,
                 enable_mixed_chunk=False,
             )
+        elif speculative_algorithm == SpeculativeAlgorithm.EAGLE:
+            draft_path = overrides.get("speculative_draft_model_path")
+            draft_revision = overrides.get("speculative_draft_model_revision")
+            use_bundled_mtp = draft_path in (None, model_path)
+            model_overrides = json.loads(
+                overrides.get("json_model_override_args") or "{}"
+            )
+            if not isinstance(model_overrides, dict):
+                raise ValueError("json_model_override_args must be a JSON object")
+            else:
+                pass
+
+            model_rules = {
+                "model_type": lambda value: value == "bailing_hybrid",
+                "architectures": lambda value: value == ["BailingMoeV3ForCausalLM"],
+            }
+            engine_rules = {
+                "speculative_eagle_topk": lambda value: value in (None, 1),
+                "enable_multi_layer_eagle": lambda value: not value,
+                "enable_mixed_chunk": lambda value: not value,
+                "speculative_draft_model_revision": lambda value: not use_bundled_mtp
+                or value in (None, overrides.get("revision")),
+            }
+            for settings, rules in (
+                (model_overrides, model_rules),
+                (overrides, engine_rules),
+            ):
+                for field, is_valid in rules.items():
+                    if field in settings and not is_valid(settings[field]):
+                        raise ValueError(
+                            f"Unsupported Ming ASR MTP setting: {field}={settings[field]!r}"
+                        )
+                    else:
+                        pass
+
+            model_overrides["model_type"] = "bailing_hybrid"
+            if use_bundled_mtp:
+                draft_model = Ming3AudioMTP
+            else:
+                model_overrides.update(
+                    mtp_weights_path=draft_path, mtp_weights_revision=draft_revision
+                )
+                draft_model = Ming3ASRMTP
+            # note (wirybeaver): Both drafts read shared embeddings and the LM head from the target checkpoint.
+            overrides.update(
+                json_model_override_args=json.dumps(model_overrides),
+                speculative_draft_model_path=model_path,
+                speculative_draft_model_revision=overrides.get("revision"),
+                speculative_num_steps=overrides.get("speculative_num_steps", 3),
+                speculative_eagle_topk=1,
+                enable_mixed_chunk=False,
+            )
+            ModelRegistry.models["BailingMoeForCausalLMNextN"] = draft_model
+        elif speculative_algorithm.is_some():
+            raise ValueError(
+                "Ming ASR supports speculative algorithms DSPARK and NEXTN (EAGLE)"
+            )
         elif overrides.get("speculative_draft_model_path") is not None:
             raise ValueError(
-                "speculative_draft_model_path needs speculative_algorithm DSPARK"
+                "speculative_draft_model_path needs speculative_algorithm DSPARK or NEXTN"
             )
         else:
             pass
@@ -163,7 +227,7 @@ def create_thinker_executor(
                 tp_rank=tp_rank,
                 nccl_port=nccl_port,
                 total_gpu_memory_fraction=total_gpu_memory_fraction,
-                supports_speculative_decoding=draft_checkpoint is not None,
+                supports_speculative_decoding=speculative_algorithm.is_some(),
             )
         )
         tokenizer = PreTrainedTokenizerFast.from_pretrained(model_path)
@@ -178,21 +242,8 @@ def create_thinker_executor(
 
         def build_request(payload: StagePayload) -> Ming3ASRRequestData:
             parameters = payload.request.params
-            temperature = parameters.get("temperature", 0.0)
-            if draft_checkpoint is not None and temperature != 0.0:
-                raise ValueError(
-                    "Ming 3 ASR request: DSpark decoding requires temperature=0"
-                )
-            else:
-                pass
-            state: TranscriptionState = payload.data
-            if state["features"]:
-                state["audio_embeddings"] = encoder_service.encode(state["features"])
-                state["features"] = []
-            else:
-                pass
             sampling = SamplingParams(
-                temperature=temperature,
+                temperature=parameters.get("temperature", 0.0),
                 max_new_tokens=parameters.get("max_new_tokens", max_new_tokens),
                 top_p=parameters.get("top_p", 1.0),
                 top_k=parameters.get("top_k", -1),
@@ -200,7 +251,16 @@ def create_thinker_executor(
                 sampling_seed=parameters.get("seed"),
             )
             sampling.normalize(tokenizer)
-            sampling.verify(model_config.vocab_size)
+            try:
+                sampling.verify(model_config.vocab_size)
+            except ValueError as error:
+                raise ValueError(f"Ming 3 ASR request: {error}") from error
+            state: TranscriptionState = payload.data
+            if state["features"]:
+                state["audio_embeddings"] = encoder_service.encode(state["features"])
+                state["features"] = []
+            else:
+                pass
             request = Req(
                 rid=payload.request_id,
                 origin_input_text="",
@@ -241,6 +301,12 @@ def create_thinker_executor(
             }
             return payload
 
+        model_runner = Ming3AudioModelRunner(worker, SGLangOutputProcessor())
+        if draft_checkpoint is not None:
+            # note (wilsonzheng0327): SGLang's DSpark verify never applies repetition_penalty, so the shared verify rows apply it exactly.
+            model_runner.speculative_repetition_penalty_owner = "verify_logits"
+        else:
+            pass
         scheduler = OmniScheduler(
             tp_worker=worker,
             tree_cache=tree_cache,
@@ -248,7 +314,7 @@ def create_thinker_executor(
             token_to_kv_pool_allocator=token_pool,
             server_args=server_args,
             model_config=model_config,
-            model_runner=Ming3AudioModelRunner(worker, SGLangOutputProcessor()),
+            model_runner=model_runner,
             request_builder=build_request,
             result_adapter=build_result,
             request_build_max_workers=request_build_max_workers,

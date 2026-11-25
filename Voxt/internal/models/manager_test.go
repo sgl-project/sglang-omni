@@ -336,6 +336,47 @@ func TestMigrateRetired(t *testing.T) {
 	}
 }
 
+// TestImportDraft: a speech model's draft that is already on disk in a
+// Hugging Face cache (another app put it there) is linked into the
+// library by Import and installed, downloading nothing (the endpoint is
+// dead); the start's Migrate claims it, as for any model.
+func TestImportDraft(t *testing.T) {
+	repoDraft := conformance.TestRepo("wilsonzheng0327/test-asr-dflash", "4444444444444444444444444444444444444444", 32<<10)
+	cat := testCatalog()
+	draft := repoModel("draft", Draft, repoDraft)
+	cat[0].Draft = draft.ID
+	cat = append(cat, draft)
+	e := newEnv(t, cat, Options{})
+	e.m.SetNetwork(Network{Endpoints: []string{dead}})
+	// Seed the draft in the legacy Hugging Face cache ($HF_HUB_CACHE).
+	hub := e.fx.Hub
+	e.fx.Hub = e.fx.Legacy
+	e.fx.Install(repoDraft)
+	e.fx.Hub = hub
+	if e.m.Status(draft.ID).OnDisk {
+		t.Fatal("on disk before the import")
+	}
+	n, _, err := e.m.Import(ctxT(t), false)
+	if err != nil || n != 1 {
+		t.Fatalf("imported %d: %v", n, err)
+	}
+	if s := e.m.Status(draft.ID); !s.Installed {
+		t.Fatalf("after the import: %+v", s)
+	}
+	if err := e.m.Migrate(ctxT(t)); err != nil || !e.m.Status(draft.ID).Mine {
+		t.Errorf("claimed at the start: %v, %+v", err, e.m.Status(draft.ID))
+	}
+	// Linked, not copied: the blob is the same file.
+	was, err := os.Stat(filepath.Join(e.fx.Legacy, "models--wilsonzheng0327--test-asr-dflash", "blobs", repoDraft.Files[2].BlobID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, err := os.Stat(filepath.Join(e.m.Dir(draft.ID), "model.safetensors"))
+	if err != nil || !os.SameFile(was, now) {
+		t.Errorf("not the same file: %v", err)
+	}
+}
+
 // TestMoveTo: choosing another model folder brings VoxtNew's models
 // there, claimed again, and the models other apps claim too (not a model
 // no app claims); the library stays as it was.

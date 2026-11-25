@@ -39,7 +39,7 @@
     "card": {
       "id": "session-problem",
       "kind": "rewrite",
-      "title": "AI answer",
+      "title": "Rewrite",
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",

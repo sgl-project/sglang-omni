@@ -156,6 +156,8 @@ func (b *Book) Propose(ctx context.Context, proposed []Suggestion) (int, error) 
 func (b *Book) Accept(ctx context.Context, key string, t store.Term) (store.Term, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.terms.Lock()
+	defer b.terms.Unlock()
 	have, err := b.terms.List(ctx, "")
 	if err != nil {
 		return store.Term{}, err

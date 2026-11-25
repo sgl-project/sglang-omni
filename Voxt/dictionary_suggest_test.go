@@ -75,7 +75,7 @@ func TestSuggestionsAddThenRowGoes(t *testing.T) {
 			t.Errorf("no control %q: %q", want, labels)
 		}
 	}
-	if !has(tt, "听成：Cloud Code") || !has(tt, "来自你的改正") || !has(tt, "来自历史记录") {
+	if !has(tt, "可能听成 Cloud Code") || !has(tt, "来自你的改正") || !has(tt, "来自历史记录") {
 		t.Errorf("row %q", tt.Texts())
 	}
 	clickControl(t, tt, "把 Claude Code 加入词典")

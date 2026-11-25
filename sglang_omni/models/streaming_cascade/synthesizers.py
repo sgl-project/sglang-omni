@@ -2,6 +2,7 @@
 """Synthesizer kinds: reply audio from the reply text."""
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -11,6 +12,7 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
 from sglang_omni.models.streaming_cascade.base import (
+    SENTENCE_END,
     SPEECH_SAMPLE_RATE_HZ,
     ComponentConfig,
     Replier,
@@ -18,24 +20,37 @@ from sglang_omni.models.streaming_cascade.base import (
     StreamComponent,
     audio_chunk,
     bearer_headers,
+    blank_screen_blocks,
     control_chunk,
     iterate,
     replying,
     sentences,
+    text_chunk,
     with_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.proto.streams import (
+    PCM_F32,
     REPLY_PROGRESS,
     REPLY_SENTENCE,
+    REPLY_TRUNCATED,
+    SPEECH_ERROR,
+    SPOKEN_TEXT_END,
     TEXT_DELTA,
+    TOOL_CALL,
     TURN_DONE,
     chunk_language,
     chunk_style,
     control_type,
 )
+from sglang_omni.proto.tools import is_partial_call, tool_calls_of
 from sglang_omni.scheduling.session import ChunkEmitter
+
+logger = logging.getLogger(__name__)
+
+# The error of a speech that ended without audio, which a text with no words to speak leaves and so does a service that answers with none.
+NOTHING_TO_SPEAK = "no audio was produced: the text may have no words to speak"
 
 # Note (ruoyu): Qwen3-TTS reads an emoji as stray syllables or runs on for minutes and spells out a link target.
 MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
@@ -49,6 +64,10 @@ SPEECH_PREROLL_S = 0.05
 LINE_MARKER = re.compile(r"(?m)^[ \t]*(?:#{1,6}|[-+\u2022>])[ \t]+")
 TABLE_EDGE_PIPE = re.compile(r"(?m)^[ \t]*\||\|[ \t]*$")
 TABLE_PIPE = re.compile(r"[ \t]*\|[ \t]*")
+# note (Haoling Pu): sentences() cuts after a title such as "Dr.", but the name after it belongs to the same sentence.
+TITLE_BEFORE_NAME = re.compile(
+    r"(?:^|\s)(?:Mr|Mrs|Ms|Mx|Dr|Prof|Rev|Capt|Col|Gen|Lt|Sgt)\.$"
+)
 BARE_URL = re.compile(
     r"(?<![A-Za-z0-9])(?:https?://|www\.)(?:www\.)?([A-Za-z0-9.-]+)(?::[0-9]+)?(?:[/?#][!-{}~]*?)??(?=[.,!?;:)\]]*(?:[^!-~]|[|]|$))"
 )
@@ -84,10 +103,17 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     it, which is tagged by its script, and any other name tags every sentence
     without Chinese characters. Without a known user language `auto` tags by
     script like `English`. A sentence tagged English reaches the service with
-    its numbers read out as words.
+    its numbers read out as words. sentence_pause_ms of silence goes before
+    the audio of each sentence after the reply's first audio, but not inside a
+    sentence cut by max_sentence_words, after a title such as Dr., or after
+    a sentence end inside a screen block that skip_screen_blocks leaves out,
+    and a sentence that plays nothing sends none.
     styles maps a style name to the recording a sentence of that style
     clones, and a sentence of a style it lacks clones reference_audio_path;
     the language model names a style with a tag such as [calm].
+    skip_screen_blocks leaves out of every request what the reply writes
+    between <screen> and </screen>, a block still open included, and a
+    stray </screen>.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -100,6 +126,8 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     language: str = ""
     max_sentence_words: int = Field(default=24, gt=0)
     drop_quiet_start: bool = False
+    sentence_pause_ms: float = Field(default=0, ge=0)
+    skip_screen_blocks: bool = False
     api_key_env: str = "OPENAI_API_KEY"
 
 
@@ -108,6 +136,12 @@ class TurnSpeaker(Replier):
 
     `speak_reply` turns one reply's deltas into emitted audio; an `interrupt`
     control of that turn cancels it and the rest of the reply's text is dropped.
+    A tool_call chunk holds one speech of its own turn as a whole: its text is
+    emitted as a text delta for the nodes that follow the spoken words, and a
+    service failure ends the speech with the error and the end of its last
+    spoken sentence on its turn.done, so the model is told instead of the
+    Session failing. A reply or speech whose generation stopped at its token
+    budget ends with REPLY_TRUNCATED on its turn.done.
     """
 
     async def speak_reply(
@@ -129,14 +163,96 @@ class TurnSpeaker(Replier):
         self, inputs: AsyncIterator[TimedChunk], emit: ChunkEmitter
     ) -> None:
         deltas: asyncio.Queue[TimedChunk | None] = asyncio.Queue()
+        # Turns whose generation stopped at its token budget, until the turn.done that repeats it.
+        truncated_turns: set[int] = set()
+
+        def end_turn(turn: int, **fields: object) -> None:
+            if turn in truncated_turns:
+                truncated_turns.discard(turn)
+                fields[REPLY_TRUNCATED] = True
+            else:
+                pass
+            emit(control_chunk(TURN_DONE, turn=turn, **fields))
 
         async def speak_then_end(turn: int) -> None:
             await self.speak_reply(iterate(deltas), turn, emit)
-            emit(control_chunk(TURN_DONE, turn=turn))
+            end_turn(turn)
+
+        # The turn of the call whose text is arriving in pieces, until its complete chunk; a piece for it once its speech ended, cut or failed, is dropped.
+        streamed_turn: int | None = None
+
+        async def published(
+            speech: asyncio.Queue[TimedChunk | None],
+        ) -> AsyncIterator[TimedChunk]:
+            async for text in iterate(speech):
+                emit(text)
+                yield text
+
+        async def speak_call_then_end(
+            turn: int, speech: asyncio.Queue[TimedChunk | None]
+        ) -> None:
+            audio_count = 0
+            spoken_text_end = 0
+
+            def emit_counting(chunk: TimedChunk) -> None:
+                nonlocal audio_count, spoken_text_end
+                if chunk.format == PCM_F32:
+                    audio_count += 1
+                elif control_type(chunk) == REPLY_PROGRESS:
+                    spoken_text_end = int(chunk.payload["text_end"])
+                else:
+                    pass
+                emit(chunk)
+
+            try:
+                await self.speak_reply(published(speech), turn, emit_counting)
+            except httpx.HTTPError as error:
+                logger.error(f"speech of turn {turn} failed: {error!r}")
+                # note (Jingwen): the dialog reads reply.progress through the aligner, which can deliver it after this turn.done and out of order, so the failure carries where the speech stopped.
+                end_turn(
+                    turn,
+                    **{SPEECH_ERROR: repr(error), SPOKEN_TEXT_END: spoken_text_end},
+                )
+            else:
+                if audio_count == 0:
+                    # note (Jinyan Su): a text of only symbols, such as "..." or an emoji, leaves nothing to speak, and the model must not be told it was heard.
+                    logger.warning(f"speech of turn {turn} had nothing to speak")
+                    end_turn(turn, **{SPEECH_ERROR: NOTHING_TO_SPEAK})
+                else:
+                    end_turn(turn)
 
         async def handle(chunk: TimedChunk, replies: Replies) -> None:
-            nonlocal deltas
-            if chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
+            nonlocal deltas, streamed_turn
+            if chunk.format == TOOL_CALL and chunk.turn in replies.interrupted:
+                # note (Jingwen): an interrupt can overtake a piece of its turn on the way here, and a speech started from that piece would wait for text that never arrives and hold every later speech.
+                pass
+            elif chunk.format == TOOL_CALL:
+                [call] = tool_calls_of(chunk)
+                text = text_chunk(
+                    call.arguments["text"], chunk.turn, chunk_language(chunk)
+                )
+                is_streamed = chunk.turn == streamed_turn
+                if not is_streamed:
+                    await replies.finish()
+                    deltas = asyncio.Queue()
+                    replies.start(chunk.turn, speak_call_then_end(chunk.turn, deltas))
+                    deltas.put_nowait(text)
+                elif is_partial_call(chunk) and replies.is_running(chunk.turn):
+                    deltas.put_nowait(text)
+                else:
+                    pass
+                if is_partial_call(chunk):
+                    streamed_turn = chunk.turn
+                else:
+                    streamed_turn = None
+                    if is_streamed and not replies.is_running(chunk.turn):
+                        pass
+                    elif chunk.payload.get(REPLY_TRUNCATED) is True:
+                        truncated_turns.add(chunk.turn)
+                        deltas.put_nowait(None)
+                    else:
+                        deltas.put_nowait(None)
+            elif chunk.format == TEXT_DELTA and chunk.turn in replies.interrupted:
                 # Note (Junnan Li): The generator may emit a few deltas after the interrupt before it stops.
                 pass
             elif chunk.format == TEXT_DELTA:
@@ -147,13 +263,17 @@ class TurnSpeaker(Replier):
                 else:
                     pass
                 deltas.put_nowait(chunk)
+            elif control_type(chunk) == TURN_DONE and chunk.turn in replies.interrupted:
+                replies.interrupted.discard(chunk.turn)
             elif control_type(chunk) == TURN_DONE:
+                if chunk.payload.get(REPLY_TRUNCATED) is True:
+                    truncated_turns.add(chunk.turn)
+                else:
+                    pass
                 if replies.is_running(chunk.turn):
                     deltas.put_nowait(None)
-                elif chunk.turn in replies.interrupted:
-                    replies.interrupted.discard(chunk.turn)
                 else:
-                    emit(control_chunk(TURN_DONE, turn=chunk.turn))
+                    end_turn(chunk.turn)
             else:
                 pass
 
@@ -317,13 +437,24 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter
     ) -> None:
+        reply_text = ""
         text_end = 0
         audio_ms = 0.0
+        pause_samples = round(
+            self.config.sentence_pause_ms * self.sample_rate_hz / 1000
+        )
+        follows_sentence_end = True
         delta_styles: list[tuple[int, str | None]] = []
-        async for span in sentences(
+        async for span, ends_sentence in sentences(
             self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
-            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
+            reply_text += span
+            if self.config.skip_screen_blocks:
+                # note (Haoling Pu): a span can start inside a block an earlier span opened, so the reply so far is blanked before the span is cut from it.
+                spoken = blank_screen_blocks(reply_text)[text_end:]
+            else:
+                spoken = span
+            text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", spoken))
             text = TABLE_PIPE.sub(
                 ", ",
                 TABLE_EDGE_PIPE.sub("", LINE_MARKER.sub("", BARE_URL.sub(r"\1", text))),
@@ -335,6 +466,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
             emit(
                 control_chunk(REPLY_SENTENCE, turn=turn, **with_language({}, language))
             )
+            # note (Haoling Pu): each request ends at its last word, so back-to-back requests leave about 0.12 s between sentences, against about 0.35 s when one request reads the whole reply; a cut inside a sentence gets no pause.
+            is_pause_due = bool(audio_ms and pause_samples and follows_sentence_end)
+            plays_audio = False
             # Note (ruoyu): Qwen3-TTS answers 500 to a sentence with no word in it, which would close the session.
             if re.search(r"\w", sentence):
                 # note (Haoling Pu): a span starts with the spacing after the sentence before it, which the model wrote before the tag of this one.
@@ -345,10 +479,36 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                     if text_start <= spoken_start
                 )
                 async for samples in self.speak(sentence, language, style):
+                    if is_pause_due:
+                        audio_ms += pause_samples * 1000 / self.sample_rate_hz
+                        emit(
+                            audio_chunk(
+                                np.zeros(pause_samples, dtype="<f4"),
+                                self.sample_rate_hz,
+                                turn,
+                            )
+                        )
+                        is_pause_due = False
+                    else:
+                        pass
+                    plays_audio = True
                     audio_ms += len(samples) * 1000 / self.sample_rate_hz
                     emit(audio_chunk(samples, self.sample_rate_hz, turn))
             else:
                 pass
+            heard = spoken.rstrip()
+            if TITLE_BEFORE_NAME.search(heard):
+                ends_heard_sentence = False
+            elif len(heard) < len(span.rstrip()):
+                # note (Haoling Pu): a span that ends inside a screen block ends a sentence for the pause only where the words heard before the block do, so a period on the screen adds no silence.
+                ends_heard_sentence = bool(SENTENCE_END.search(heard))
+            else:
+                ends_heard_sentence = ends_sentence
+            if plays_audio:
+                follows_sentence_end = ends_heard_sentence
+            else:
+                # note (Haoling Pu): a span that plays nothing, with no word in it or dropped whole by drop_quiet_start, sends no pause, so a sentence end before it or at its end still puts one pause before the next audio.
+                follows_sentence_end = follows_sentence_end or ends_heard_sentence
             text_end += len(span)
             self.progress(emit, turn, text_end, audio_ms)
 

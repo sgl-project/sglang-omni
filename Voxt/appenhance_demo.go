@@ -31,6 +31,9 @@ func (host *meetingDemoHost) setAppEnhancementGroupEnabled(id string, on bool) {
 func (host *meetingDemoHost) setAppEnhancementGroupFeature(id, feature string, on bool) {
 	host.record("setAppEnhancementGroupFeature %s %s %t", id, feature, on)
 }
+func (host *meetingDemoHost) setAppEnhancementGroupTranscribeCleanup(id, value string) {
+	host.record("setAppEnhancementGroupTranscribeCleanup %s %s", id, value)
+}
 func (host *meetingDemoHost) setAppEnhancementGroupPrompt(id, prompt string) {
 	host.record("setAppEnhancementGroupPrompt %s %q", id, prompt)
 }

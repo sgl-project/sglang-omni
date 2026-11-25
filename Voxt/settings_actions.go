@@ -19,6 +19,8 @@ type settingsAppearanceActions interface {
 	setInterfaceScale(scale float64)
 	setSidebarChoice(choice string)
 	setReduceMotion(on bool)
+	setOpening(on bool)
+	setOpeningLength(ms int)
 	setPaletteColor(color string) // "#0d9384"
 }
 
@@ -73,6 +75,7 @@ type settingsShortcutsActions interface {
 	openShortcutPermissions()
 	openShortcutFeature(path string)
 	setStrictShortcuts(on bool)
+	setReturnFinishes(on bool)
 }
 
 type keyRecorderActions interface {

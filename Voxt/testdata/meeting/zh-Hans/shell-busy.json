@@ -77,6 +77,11 @@
               "title": "词典",
               "badge": "2",
               "selected": false
+            },
+            {
+              "path": "/snippets",
+              "title": "片段",
+              "selected": false
             }
           ]
         },
@@ -145,24 +150,21 @@
         "severity": "error",
         "title": "Third card",
         "body": "Before both.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       },
       {
         "id": "fixture-2",
         "severity": "warning",
         "title": "Second card",
         "body": "Before that.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       },
       {
         "id": "fixture-1",
         "severity": "info",
         "title": "First card",
         "body": "The newest thing that happened.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       }
     ],
     "logs": {
@@ -216,6 +218,10 @@
         {
           "code": "helper",
           "label": "辅助进程"
+        },
+        {
+          "code": "dictionary",
+          "label": "词典"
         }
       ],
       "source": "全部来源",
