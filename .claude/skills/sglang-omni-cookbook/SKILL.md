@@ -9,6 +9,8 @@ metadata:
 
 Start with the [repository documentation workflow](../../../docs/README.md). For a PR, pin the head and its merge base. Read the model page, the relevant shared guide, and any existing refactor for that page in [the Cookbook tracker](https://github.com/sgl-project/sglang-omni/issues/3926). Open [the reference cases](references/cases.md) for the closest task or a comparable editorial decision.
 
+**Prose-only edits.** When a task asks to simplify wording, edit explanatory prose only. Keep every existing command, code example, and configuration snippet verbatim, in its original section and order. This includes inline commands and flags. Preserve the instructions that say where, when, and under which conditions to run each step. Keep repeated examples in place, even when a shared guide contains an equivalent example. If a command appears incorrect or outdated, flag it separately for review.
+
 ## Edit the path to a first result
 
 1. Find the installed backend, checkpoint, launch configuration, readiness signal, and smallest supported request. Match the command and request to the checked-in configuration, package extras, CLI, and request implementation at the target revision. Make the advertised result observable, such as a WAV file or a transcript. If a shared example works with substitutions, link to its exact section and name those substitutions.
