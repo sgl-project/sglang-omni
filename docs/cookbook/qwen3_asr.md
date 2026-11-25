@@ -456,16 +456,7 @@ One RTX 3090 (24 GB, SM86), SGLang-Omni `c15bfc80`, SGLang 0.5.23 and PyTorch 2.
 | 32 | 1.74x | -33.6% | -20.0% | 1.62x | -32.8% | -22.4% |
 | 64 | 1.72x | -37.4% | -34.4% | 1.63x | -35.5% | -32.8% |
 
-The c1 within-side throughput spread was:
-
-| workload | A1 / A2 without draft (requests/s) | A gap | B1 / B2 with draft (requests/s) | B gap | mean gain |
-|---|---:|---:|---:|---:|---:|
-| EN | 25.2077 / 25.2847 | 0.31% | 44.9510 / 45.5248 | 1.27% | 1.7919x |
-| ZH | 27.9618 / 27.8936 | 0.24% | 44.6375 / 44.6872 | 0.11% | 1.5992x |
-
-The largest within-side gap anywhere in the two sweeps was 2.08%, on EN plain decoding at c8. The c1 throughput increases were 79.19% on EN and 59.92% on ZH.
-
-The c32 and c64 points set client concurrency above the profile's 16-request running cap. Server logs showed at most 16 running requests, with as many as 16 queued at c32 and 48 at c64. The client measured p95 from immediately before the HTTP POST through response completion. Server admission-queue time is included; time waiting for the benchmark client's own concurrency semaphore is outside the measurement. From c32 to c64, throughput stayed nearly flat while p95 rose with the longer queue. At c32, the steady backlog kept the faster draft side full while plain decoding was already saturated. The server cap remained 16, and the roadmap's not-worse gate ends at c16.
+The c32 and c64 points set client concurrency above the profile's 16-request running cap. At c16, the client offers only enough requests to fill that cap. After a response completes, its replacement must pass through the client and HTTP path before reaching the freed slot. These gaps cost the faster draft side more because it turns requests over more often. At c32, up to 16 requests are already waiting in the server's admission queue, so a freed slot can be refilled without a client round trip. Server logs showed at most 16 running requests, with as many as 16 queued at c32 and 48 at c64. The client measured p95 from immediately before the HTTP POST through response completion. Server admission-queue time is included; time waiting for the benchmark client's own concurrency semaphore is outside the measurement. From c32 to c64, throughput stayed nearly flat while p95 rose with the longer queue. The server cap remained 16, and the roadmap's not-worse gate ends at c16.
 
 A second clean sweep at `2e35ab6c` repeated the same prompts with the prefix cache on. It used the same ABBA order, loads, repeats and request counts. The cache served 95.20% of prompt tokens in every EN leg and 95.21% in every ZH leg.
 
