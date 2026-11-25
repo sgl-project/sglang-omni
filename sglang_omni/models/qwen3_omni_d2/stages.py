@@ -7,6 +7,7 @@ from sglang_omni.models.qwen3_omni_d2.config import (
     INPUT_SAMPLE_RATE_HZ,
     MAX_SESSIONS,
     NATIVE_FRAME_MS,
+    D2Language,
 )
 from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
 from sglang_omni.proto.request import OmniRequest, StagePayload
@@ -100,6 +101,7 @@ def create_scheduler(
     runtime_python: str,
     kv_budget: int,
     seed: int,
+    language: D2Language,
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> D2SessionScheduler:
@@ -116,5 +118,6 @@ def create_scheduler(
             runtime_python=runtime_python,
             kv_budget=kv_budget,
             seed=seed,
+            language=language,
         )
         return D2SessionScheduler(D2SessionHooks(runtime, interval_ms))

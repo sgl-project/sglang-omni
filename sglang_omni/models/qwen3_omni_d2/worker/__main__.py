@@ -87,7 +87,9 @@ async def serve(connection: Connection, runtime: Runtime) -> None:
 
 
 if __name__ == "__main__":
-    _, socket_descriptor, stage_pid, model_path, device, kv_budget, seed = sys.argv
+    _, socket_descriptor, stage_pid, model_path, device, kv_budget, seed, language = (
+        sys.argv
+    )
     if sys.platform == "linux":
         # note (cuzimi): A cold CUDA capture cannot poll the socket after the stage watchdog kills its owner.
         libc = ctypes.CDLL(None, use_errno=True)
@@ -100,11 +102,19 @@ if __name__ == "__main__":
             pass
     else:
         pass
+    if language == "zh":
+        from mandarin import MandarinRuntime
+
+        runtime_type = MandarinRuntime
+    elif language == "auto":
+        runtime_type = Runtime
+    else:
+        raise ValueError(f"Unsupported D2 response language: {language!r}")
     with Connection(int(socket_descriptor)) as stage_connection:
         asyncio.run(
             serve(
                 stage_connection,
-                Runtime(
+                runtime_type(
                     model_path, device=device, kv_budget=int(kv_budget), seed=int(seed)
                 ),
             )

@@ -2,7 +2,7 @@
 """One GPU owns the D2 encoder, decoder caches and delayed playback feedback."""
 
 import sys
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field
 
@@ -12,6 +12,8 @@ INPUT_SAMPLE_RATE_HZ = 16_000
 OUTPUT_SAMPLE_RATE_HZ = 24_000
 NATIVE_FRAME_MS = 80
 MAX_SESSIONS = 1
+
+D2Language = Literal["zh", "auto"]
 
 
 class D2FactoryArgs(FactoryArgs):
@@ -47,6 +49,16 @@ class Qwen3OmniD2PipelineConfig(PipelineConfig):
         "duplex": D2StageConfig
     }
     stages: list[StageConfig] = Field(default_factory=duplex_stages)
+    language: D2Language = Field(
+        default="zh",
+        description="Spoken response language. Use auto for checkpoint defaults.",
+    )
+
+    def stage_factory_kwargs(self, stage_name: str) -> dict[str, str]:
+        if stage_name == "duplex":
+            return {"language": self.language}
+        else:
+            return {}
 
 
 EntryClass = Qwen3OmniD2PipelineConfig

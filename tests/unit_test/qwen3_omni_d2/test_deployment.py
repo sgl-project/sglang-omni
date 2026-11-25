@@ -8,14 +8,53 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 from huggingface_hub import constants
+from typer.testing import CliRunner
 
+from sglang_omni.cli import app
 from sglang_omni.client.client import Client
 from sglang_omni.config.manager import ConfigManager
+from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.models.qwen3_omni_d2.config import Qwen3OmniD2PipelineConfig
 from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
 from sglang_omni.models.qwen3_omni_d2.stages import create_scheduler
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.utils.imports import import_string
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_language"),
+    [
+        ([], "zh"),
+        (["--language=zh"], "zh"),
+        (["language=zh"], "zh"),
+        (["--language", "auto"], "auto"),
+        (["--language=fr"], None),
+    ],
+)
+def test_serve_selects_d2_output_language(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    expected_language: str | None,
+) -> None:
+    (tmp_path / "d2.json").write_text(
+        json.dumps({"format": "d2.release.v1", "family": "qwen", "latency_ms": 80})
+    )
+    launch = Mock()
+    monkeypatch.setattr("sglang_omni.cli.serve.launch_server", launch)
+    result = CliRunner().invoke(
+        app, ["serve", "--model-path", str(tmp_path), "--enable-realtime", *arguments]
+    )
+    if expected_language is None:
+        assert result.exit_code == 2, result.output
+        assert "language" in result.output
+        launch.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        config = launch.call_args.args[0]
+        assert config.language == expected_language
+        kwargs = resolve_stage_factory_kwargs(config.stage_named("duplex"), config)
+        assert kwargs["language"] == expected_language
 
 
 @pytest.mark.parametrize("interval_ms", [80, 160, 320, 640, 1040])
@@ -110,7 +149,9 @@ def test_cached_release_serves_without_repository_metadata_files(
         runtime_python="python",
         kv_budget=128,
         seed=1,
+        language="auto",
     )
     assert load_runtime.call_args.kwargs["model_path"] == str(snapshot)
+    assert load_runtime.call_args.kwargs["language"] == "auto"
     scheduler.warm_up_serving_thread()
     runtime.step.assert_called_once_with(bytes(5120))

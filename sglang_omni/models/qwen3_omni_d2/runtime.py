@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from sglang_omni.admission import ContextExhaustedError
+from sglang_omni.models.qwen3_omni_d2.config import D2Language
 
 
 class D2Frame(BaseModel):
@@ -39,6 +40,7 @@ class D2Runtime:
         runtime_python: str,
         kv_budget: int,
         seed: int,
+        language: D2Language,
     ) -> None:
         self.operation_lock = threading.Lock()
         stage_socket, worker_socket = socket.socketpair()
@@ -54,6 +56,7 @@ class D2Runtime:
                     device,
                     str(kv_budget),
                     str(seed),
+                    language,
                 ],
                 pass_fds=(worker_socket.fileno(),),
             )

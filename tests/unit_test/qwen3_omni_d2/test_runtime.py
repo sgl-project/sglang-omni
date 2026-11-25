@@ -55,7 +55,7 @@ def runtime_python(tmp_path: Path) -> str:
 def test_worker_reopens_with_a_full_budget_and_lossless_pcm(
     runtime_python: str,
 ) -> None:
-    runtime = D2Runtime("fixture", "cpu", runtime_python, 128, 1)
+    runtime = D2Runtime("fixture", "cpu", runtime_python, 128, 1, language="auto")
     pcm16 = bytes(range(256)) * 10
     try:
         for _ in range(2):
@@ -80,7 +80,7 @@ def test_worker_dies_with_its_stage_during_a_blocking_forward(
     stage_program = (
         "import sys\n"
         "from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime\n"
-        "runtime = D2Runtime('fixture', 'cpu', sys.argv[1], 128, 1)\n"
+        "runtime = D2Runtime('fixture', 'cpu', sys.argv[1], 128, 1, language='auto')\n"
         "runtime.open_session()\n"
         "runtime.step(b'wait')\n"
     )
