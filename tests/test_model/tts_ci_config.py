@@ -210,30 +210,30 @@ QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
 )
 
 # Fun-CosyVoice3 0.5B.
-COSYVOICE3_VC_WER_MAX_CORPUS = 0.0134
+COSYVOICE3_VC_WER_MAX_CORPUS = 0.0126
 COSYVOICE3_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(COSYVOICE3_VC_WER_MAX_CORPUS)
-COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 0.0128
+COSYVOICE3_VC_STREAM_WER_MAX_CORPUS = 0.0127
 COSYVOICE3_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
     COSYVOICE3_VC_STREAM_WER_MAX_CORPUS
 )
-COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 68.71527511596679
-COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 3.9894
+COSYVOICE3_VC_SIMILARITY_MEAN_MIN = 67.92197944641113
+COSYVOICE3_VC_UTMOS_MEAN_REFERENCE = 3.9885
 COSYVOICE3_VC_UTMOS_MEAN_MIN = apply_mos_slack(COSYVOICE3_VC_UTMOS_MEAN_REFERENCE)
 
 COSYVOICE3_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 28.539,
-        "output_tok_per_req_s": 298.6,
-        "latency_mean_s": 0.558,
-        "rtf_mean": 0.1238,
+        "throughput_qps": 34.849,
+        "output_tok_per_req_s": 445.2,
+        "latency_mean_s": 0.456,
+        "rtf_mean": 0.1021,
     }
 }
 
 COSYVOICE3_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 26.173,
-        "latency_mean_s": 0.609,
-        "rtf_mean": 0.1343,
+        "throughput_qps": 35.297,
+        "latency_mean_s": 0.451,
+        "rtf_mean": 0.1002,
     }
 }
 

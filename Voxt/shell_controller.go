@@ -199,6 +199,7 @@ func (a *app) currentPage() string { return section(a.router.Path())[1:] }
 func (a *app) openWindow() {
 	a.version = mygo.App.Version()
 	a.systemLocale = systemLanguage() // settings_locale.go
+	readSystemLanguages()
 	a.hasMenu = true
 	a.applyLocale() // the system's language, unless the settings name one
 	a.buildMenu()

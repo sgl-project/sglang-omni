@@ -92,21 +92,35 @@ class VerifyRunner:
 
 
 @pytest.mark.parametrize(
-    ("takes_logits_hooks", "repetition_penalty_owner", "applied_hooks"),
+    (
+        "takes_logits_hooks",
+        "repetition_penalty_owner",
+        "verify_rows",
+        "ragged_verify_layout",
+        "applied_hooks",
+    ),
     [
-        (True, None, ["logits hooks, 3 rows per request"]),
-        (False, "verify_logits", ["repetition penalty on (2, 3, 5)"]),
-        (False, "draft_worker", []),
+        (True, None, 6, None, ["logits hooks, 3 rows per request"]),
+        (False, "verify_logits", 6, None, ["repetition penalty on (2, 3, 5)"]),
+        (False, "draft_worker", 6, None, []),
+        # A compact verify packs 2 and 3 rows and pads them to a 7-row graph tier.
+        (True, "verify_logits", 7, SimpleNamespace(), []),
     ],
 )
 def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
     takes_logits_hooks: bool,
     repetition_penalty_owner: Literal["draft_worker", "verify_logits"] | None,
+    verify_rows: int,
+    ragged_verify_layout: SimpleNamespace | None,
     applied_hooks: list[str],
 ) -> None:
-    """A runner whose draft worker applies the penalty must not get the shared one too, and the penalty sees one block per request."""
+    """A runner whose draft worker applies the penalty must not get the shared one too, and the penalty sees one block per request.
+
+    A compact verify takes no hooks: its graph epilogue copies the logits first, so
+    the scheduler admits only requests whose hooks would change nothing.
+    """
     verify_output = SimpleNamespace(
-        logits_output=SimpleNamespace(next_token_logits=torch.zeros(6, 5)),
+        logits_output=SimpleNamespace(next_token_logits=torch.zeros(verify_rows, 5)),
         can_run_graph=False,
         expert_distribution_metrics=None,
         routed_experts_output=None,
@@ -125,6 +139,7 @@ def test_verify_rows_take_only_the_hooks_their_runner_opted_into(
     verify_batch = SimpleNamespace(
         apply_deprecated_skip_attn_backend_init=lambda skip_attn_backend_init: None,
         kv_loc_plan=None,
+        spec_info=SimpleNamespace(ragged_verify_layout=ragged_verify_layout),
     )
 
     target_worker.forward_batch_generation(None, verify_batch, is_verify=True)

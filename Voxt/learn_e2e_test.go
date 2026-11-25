@@ -276,8 +276,9 @@ func TestLearnNeverLogsTheEdit(t *testing.T) {
 	}
 }
 
-// TestLearnSwitch: the page's switch is off at first, saves the setting,
-// and its tip says how long the field is read, from the watch's constant.
+// TestLearnSwitch: the switch in Dictionary settings is off at first,
+// saves the setting, and its ⓘ says how long the field is read, from the
+// watch's constant.
 func TestLearnSwitch(t *testing.T) {
 	a, _, tt := newTestAppIn(t, testDir(t))
 	a.navigate("/dictionary")
@@ -285,16 +286,21 @@ func TestLearnSwitch(t *testing.T) {
 	if a.prefs.Dictionary.Learn {
 		t.Fatal("learning is on by default")
 	}
+	clickControl(t, tt, "Dictionary settings")
 	const name = "Learn from my corrections"
-	r, ok := tt.Find(name)
-	if !ok {
+	if _, ok := tt.Find(name); !ok {
 		t.Fatalf("no switch: %q", tt.AccessLabels())
+	}
+	want := i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds)
+	r, ok := tt.Find(want)
+	if !ok || !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
+		t.Fatalf("no ⓘ %q in %q", want, tt.AccessLabels())
 	}
 	tt.Move(r.X+r.W/2, r.Y+r.H/2)
 	frames(tt)
 	tt.Advance(time.Second)
 	frames(tt)
-	if want := i18n.T("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds); !hasExact(tt, want) || !strings.Contains(want, fmt.Sprintf("For %d seconds", learn.WatchSeconds)) {
+	if !hasExact(tt, want) {
 		t.Fatalf("no tip %q in %q", want, firstTexts(tt))
 	}
 	clickControl(t, tt, name)

@@ -228,8 +228,9 @@ async function pollStatus() {
 }
 
 function renderTranscript() {
-  // The transcript keeps the text of screen blocks, without the tags around them.
-  const text = session ? session.transcript.replace(/<\/?screen>/gi, "") : "";
+  let text = session ? session.transcript : "";
+  // The transcript keeps the text of screen blocks, without the tags around them, when the reply audio skips them.
+  if (session && session.skipsScreenBlocks) text = text.replace(/<\/?screen>/gi, "");
   const paragraphs = text.split("\n").filter((line) => line.trim());
   // Audio-only models never send text; the transcript control appears with the first words.
   ui.transcriptBtn.hidden = !paragraphs.length;

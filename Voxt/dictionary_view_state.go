@@ -93,6 +93,7 @@ type dictionaryViewState struct {
 	Suggestions       []dictionarySuggestionViewState `json:"suggestions"`
 	SuggestionCount   int                             `json:"suggestion_count"`
 	ScanOpen          bool                            `json:"scan_open"`
+	SettingsOpen      bool                            `json:"settings_open"`
 	Scan              dictionaryScanViewState         `json:"scan"`
 	Edit              dictionaryTermEditViewState     `json:"edit"`
 	NotesText         string                          `json:"notes_text"`
@@ -152,6 +153,7 @@ type dictionaryViewStateInput struct {
 	LegacyImport      bool
 	Tab               int
 	ScanOpen          bool
+	SettingsOpen      bool
 	Scan              dictionaryScanStateInput
 	Edit              dictionaryTermEditStateInput
 	NotesText         string
@@ -169,7 +171,7 @@ func buildDictionaryViewState(translator *i18n.Translator, input dictionaryViewS
 		Read: input.Read, Loading: input.Loading, Error: input.Error, Query: input.Query, ListFor: input.ListFor,
 		Enabled: input.Settings.Dictionary.Enabled, ASRHints: input.Settings.Dictionary.ASRHints,
 		Glossary: input.Settings.Dictionary.Glossary, Learn: input.Settings.Dictionary.Learn,
-		CanScan: canScan, LegacyImport: input.LegacyImport, Tab: input.Tab, ScanOpen: input.ScanOpen,
+		CanScan: canScan, LegacyImport: input.LegacyImport, Tab: input.Tab, ScanOpen: input.ScanOpen, SettingsOpen: input.SettingsOpen,
 		Scan: buildDictionaryScanViewState(translator, input.Scan), Edit: buildDictionaryTermEditViewState(translator, input.Edit),
 		NotesText: input.NotesText, NotesQuery: input.NotesQuery, NotesFindCurrent: input.NotesFind,
 		Notes: buildDictionaryNotesViewState(input.Settings), SuggestionCount: len(input.Suggestions), GlossaryAllUpTo: compose.GlossaryAllUpTo,
@@ -271,7 +273,7 @@ func buildDictionaryScanViewState(translator *i18n.Translator, input dictionaryS
 	switch {
 	case input.Running:
 		state.Stage = "running"
-		state.Body = translator.N(input.Found, "Read %d/%d · %d suggestion", "Read %d/%d · %d suggestions", input.Read, input.Total, input.Found)
+		state.Body = translator.N(input.Found, "Scanned %d/%d · %d suggestion", "Scanned %d/%d · %d suggestions", input.Read, input.Total, input.Found)
 	case input.Ended:
 		state.Stage = "ended"
 		state.Body = dictionaryScanFoundTextFor(translator, input.Found)
