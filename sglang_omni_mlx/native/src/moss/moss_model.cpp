@@ -34,7 +34,8 @@ constexpr int kDecoderQuantizationGroupSize = 64;
 // lm_head is a copy of the tied embedding table, kept as the decoder's output
 // projection.
 WeightMap LoadedWeights(WeightMap weights) {
-  weights.insert_or_assign(
+  // A prequantized checkpoint already carries its own output projection.
+  weights.emplace(
       std::string(kDecoderPrefix) + ".output_projection.weight",
       weights.at(std::string(kDecoderPrefix) + ".embed_tokens.weight"));
   weights.erase("lm_head.weight");
