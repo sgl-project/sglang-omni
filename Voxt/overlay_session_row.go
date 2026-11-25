@@ -52,7 +52,10 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 
 // sessionChip draws one session; removable is false for the only one.
 func sessionChip(context *ui.Context, number int, chip sessionChipViewState, removable bool, actions sessionOverlayActions, local *answerCardUI) {
-	title := cmpOr(chip.Title, i18n.T("New session"))
+	title := chip.Title
+	if title == "" {
+		title = i18n.T("New session")
+	}
 	if chip.Renaming {
 		// The field starts empty over the title it replaces, so typing
 		// needs no clearing first; nothing typed keeps the title.
