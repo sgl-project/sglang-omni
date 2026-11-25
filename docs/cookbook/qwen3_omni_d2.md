@@ -66,9 +66,9 @@ On one H200, a question asking for the sum of two and two (160,166 input samples
 
 | Checkpoint | Output frames | Output samples at 24 kHz | Reply | Token trace against the official runtime | Mean / p95 per frame |
 | --- | ---: | ---: | --- | --- | --- |
-| [80 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/0237f21b29d2a762750ddee08e37ec4fe8e00473) | 126 | 241,920 | "4" at frame 54 | Identical except a learned interrupt before the reply, at frame 9 instead of 8, where the two candidates differ by one BF16 step | 52.8 / 67.1 ms |
+| [80 ms](https://huggingface.co/penguinfish1688/dialogue-to-duplex/tree/0237f21b29d2a762750ddee08e37ec4fe8e00473) | 126 | 241,920 | "4" at frame 54 | Identical except a learned interrupt before the reply, at frame 9 instead of 8, where the two candidates differ by one BF16 step | 48.9 / 63.6 ms |
 
-Repeating a conversation on one server reproduces it byte for byte. The stage restricts attention to the flash, memory-efficient and math kernels because cuDNN attention made identical conversations drift. After the encoder history fills, an 80 ms frame takes about 33 ms.
+Repeating a conversation on one server reproduces it byte for byte. The stage restricts attention to the flash, memory-efficient and math kernels because cuDNN attention made identical conversations drift. After the encoder history fills, an 80 ms frame takes about 36 ms.
 
 A second session on the same Mandarin-mode server replayed the user channel of the [public interruption example](https://d2-duplex-demo.github.io/assets/audio/qwen-interruption.wav). D2 answered the question about smartphones, cut itself off when the user spoke over the reply, and its next reply, starting at 9.84 s on the media timeline, discussed smartwatches. Mandarin mode steers only the opening word: in this run each reply began with Chinese words and continued in English.
 
