@@ -162,6 +162,25 @@ func TestCleanOutput(t *testing.T) {
 		// …but a contract-abiding model wrapped it in one more pair:
 		// exactly that pair goes.
 		{"<output>use <output> and </output> here</output>", "use <output> and </output> here", "use <output> and </output> here"},
+		// A tag-less answer that ballooned past what a clean-up
+		// produces: the model thought out loud around the final text
+		// (#4086), and only the cleaned text stays.
+		{`Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. Also "不并不需要" looks like a self-correction or stutter. 我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。`,
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"},
+		{"We need to ship the release on Friday and tell the team tomorrow. I removed the filler \"uh\" and kept the rest of the sentence as it was, changing only its punctuation.",
+			"we need to ship the release on friday, uh, and tell the team tomorrow",
+			"We need to ship the release on Friday and tell the team tomorrow."},
+		// Near the input's own length the answer is trusted as it is…
+		{"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。",
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。",
+			"我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"},
+		// …and so is a wholesale rewrite nothing like the input (a
+		// custom prompt's translation, say): no sentence is the cleaned
+		// text, so there is nothing to trim to.
+		{"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。",
+			"the quick brown fox jumps over the lazy dog near the river bank",
+			"我们的周五发布计划已经定下来了。这次改动比较大，涉及转录、改写和设置三个页面。下周先内部试用一周，没有问题再对外发布。"},
 	} {
 		if got := CleanOutput(tc.out, tc.in); got != tc.want {
 			t.Errorf("CleanOutput(%q) = %q, want %q", tc.out, got, tc.want)
@@ -220,6 +239,22 @@ func TestPartialOutput(t *testing.T) {
 	}
 	if got := PartialOutput("<output>use <output> and </output> here</output>", "use <output> and </output> here"); got != "use <output> and </output> here" {
 		t.Errorf("PartialOutput with the model's wrapper around the user's tags = %q", got)
+	}
+	// A tag-less stream of the model's deliberation (#4086) never shows
+	// it: the draft waits for the cleaned text's sentences.
+	const input = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
+	const cleaned = "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
+	const tagless = `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". ` + cleaned
+	for i := 1; i <= len(tagless); i++ {
+		got := PartialOutput(tagless[:i], input)
+		// The first sentence may stream in before a second reveals
+		// it; nothing past it ever shows.
+		if strings.Contains(got, "misrecognition") || strings.Contains(got, "reconsider") || strings.Contains(got, "stutter") {
+			t.Fatalf("at %d: the deliberation in the draft %q", i, got)
+		}
+	}
+	if got := PartialOutput(tagless, input); got != cleaned {
+		t.Errorf("PartialOutput(tagless) = %q, want %q", got, cleaned)
 	}
 }
 

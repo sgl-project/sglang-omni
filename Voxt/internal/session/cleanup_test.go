@@ -161,6 +161,30 @@ func TestOnlyTheCleanedText(t *testing.T) {
 	}
 }
 
+// TestCleanedTextWithoutCommentary (#4086): a model that ignores the
+// <output> contract thinks out loud without any tags — its deliberation
+// about recognition ambiguities and stutters, then the cleaned sentence.
+// Only the cleaned text is streamed into the card, shown and inserted.
+func TestCleanedTextWithoutCommentary(t *testing.T) {
+	text := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得不并不需要时变这个东西。"
+	cleaned := "我觉得现在的时变已经非常快了。就是虽然说这是个 low-hunting fruit，但我觉得并不需要时变这个东西。"
+	deliberation := `Wait, I need to re-read. "时变" might not be a misrecognition - let me reconsider. The user might mean "时变" as a technical term (time-varying), or it could be ASR misrecognition of something else. I should preserve it as-is since I can't determine it's a misrecognition. Also "不并不需要" looks like a self-correction or stutter - "不，并不需要" → "并不需要". `
+	model := &fakeLLM{text: deliberation + cleaned, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		// The deliberation's first sentence may stream in before a
+		// second one reveals it; nothing past it ever shows.
+		if strings.Contains(s.Draft, "misrecognition") || strings.Contains(s.Draft, "reconsider") || strings.Contains(s.Draft, "stutter") {
+			t.Errorf("a draft with the deliberation: %q", s.Draft)
+		}
+	}
+}
+
 // note (luojiaxuan): TestCleanupHasNoExampleTurn (#4228): Transcribe's example
 // is the last part of the system prompt, never an earlier conversation turn
 // that a short dictation could take as the text to rewrite. A model that
