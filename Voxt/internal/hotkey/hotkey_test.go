@@ -134,11 +134,11 @@ func TestBuildDefaults(t *testing.T) {
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 6 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 7 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 8 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+	if len(all.Bindings) != 9 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
 		all.Bindings[4].ID != Note || all.Bindings[5].ID != Session1 {
 		t.Errorf("all %+v", all.Bindings)
 	}
