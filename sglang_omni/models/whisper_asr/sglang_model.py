@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
+from sglang.srt.layers.amx_utils import PackWeightMethod
 from sglang.srt.layers.logits_processor import LogitsProcessor, LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -23,6 +24,7 @@ from sglang.srt.mem_cache.memory_pool import KVWriteLoc
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.forward_context import get_attn_backend
 from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.utils.common import use_intel_amx_backend
 from torch import nn
 from transformers import WhisperConfig
 from transformers.activations import ACT2FN
@@ -30,6 +32,7 @@ from transformers.activations import ACT2FN
 from sglang_omni.models.whisper_asr.encoder_cuda_graph import (
     WhisperEncoderCudaGraphRunner,
 )
+from sglang_omni.platforms import current_platform
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import MultimodalDataItem
@@ -50,6 +53,29 @@ logger = logging.getLogger(__name__)
 
 _QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
 _KV_SHARDS = {"k_proj": 0, "v_proj": 1}
+
+
+class WhisperAMXLinear(nn.Linear):
+    def __init__(self, input_features: int, output_features: int) -> None:
+        super().__init__(input_features, output_features)
+        self.amx_weight_method = PackWeightMethod(weight_names=["weight"])
+
+    def pack_amx_weights(self) -> None:
+        self.amx_weight_method.process_weights_after_loading(self)
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if use_intel_amx_backend(self):
+            input_shape = hidden_states.shape
+            flattened_states = hidden_states.reshape(-1, self.in_features)
+            output = torch.ops.sgl_kernel.weight_packed_linear(
+                flattened_states,
+                self.weight,
+                self.bias,
+                True,
+            )
+            return output.reshape(*input_shape[:-1], self.out_features)
+        else:
+            return super().forward(hidden_states)
 
 
 class WhisperDecoderLayerNorm(nn.LayerNorm):
@@ -143,12 +169,10 @@ class WhisperEncoderAttention(nn.Module):
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.backend = config.to_dict().get("encoder_attention_backend", "auto")
-        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
-        # Whisper K projections have no bias. The zero K shard preserves that
-        # checkpoint structure while issuing one GEMM for all three projections.
+        self.qkv_proj = whisper_linear(self.embed_dim, 3 * self.embed_dim)
         with torch.no_grad():
             self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.out_proj = whisper_linear(self.embed_dim, self.embed_dim)
 
     def shape(self, states: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = states.shape
@@ -172,8 +196,8 @@ class WhisperEncoderLayer(nn.Module):
         super().__init__()
         self.self_attn = WhisperEncoderAttention(config)
         self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
-        self.fc1 = nn.Linear(config.d_model, config.encoder_ffn_dim)
-        self.fc2 = nn.Linear(config.encoder_ffn_dim, config.d_model)
+        self.fc1 = whisper_linear(config.d_model, config.decoder_ffn_dim)
+        self.fc2 = whisper_linear(config.decoder_ffn_dim, config.d_model)
         self.final_layer_norm = nn.LayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
@@ -244,10 +268,10 @@ class WhisperSGLangSelfAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.qkv_proj = nn.Linear(self.embed_dim, 3 * self.embed_dim)
+        self.qkv_proj = whisper_linear(self.embed_dim, 3 * self.embed_dim)
         with torch.no_grad():
             self.qkv_proj.bias[self.embed_dim : 2 * self.embed_dim].zero_()
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.out_proj = whisper_linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
             self.num_heads,
             self.head_dim,
@@ -284,11 +308,11 @@ class WhisperSGLangCrossAttention(nn.Module):
         self.num_heads = config.decoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
-        self.kv_proj = nn.Linear(self.embed_dim, 2 * self.embed_dim)
+        self.kv_proj = whisper_linear(self.embed_dim, 2 * self.embed_dim)
         with torch.no_grad():
             self.kv_proj.bias[: self.embed_dim].zero_()
-        self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
-        self.out_proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.q_proj = whisper_linear(self.embed_dim, self.embed_dim)
+        self.out_proj = whisper_linear(self.embed_dim, self.embed_dim)
         self.attn = RadixAttention(
             self.num_heads,
             self.head_dim,
@@ -345,8 +369,8 @@ class WhisperDecoderLayer(nn.Module):
             quant_config=quant_config,
         )
         self.encoder_attn_layer_norm = WhisperDecoderLayerNorm(config.d_model)
-        self.fc1 = nn.Linear(config.d_model, config.decoder_ffn_dim)
-        self.fc2 = nn.Linear(config.decoder_ffn_dim, config.d_model)
+        self.fc1 = whisper_linear(config.d_model, config.decoder_ffn_dim)
+        self.fc2 = whisper_linear(config.decoder_ffn_dim, config.d_model)
         self.final_layer_norm = WhisperDecoderLayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
@@ -462,6 +486,13 @@ class WhisperModel(WhisperDecoderModel):
     ) -> None:
         super().__init__(config, quant_config=quant_config)
         self.encoder = WhisperEncoder(config)
+
+    def pack_amx_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, WhisperAMXLinear):
+                module.pack_amx_weights()
+            else:
+                pass
 
 
 class WhisperForConditionalGeneration(nn.Module):
@@ -712,6 +743,14 @@ class WhisperForConditionalGeneration(nn.Module):
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
+        self.model.pack_amx_weights()
+
+
+def whisper_linear(input_features: int, output_features: int) -> nn.Linear:
+    if current_platform.is_cpu():
+        return WhisperAMXLinear(input_features, output_features)
+    else:
+        return nn.Linear(input_features, output_features)
 
 
 EntryClass = WhisperForConditionalGeneration
