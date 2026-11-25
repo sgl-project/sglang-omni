@@ -102,6 +102,9 @@ func (a *app) meetingChanged(s meeting.Snapshot) {
 	}
 	a.followMeeting(s, prev)
 	if s.State.Active() != prev.State.Active() {
+		if s.State.Active() {
+			a.adoptRecordedMeeting() // meeting_detect_end.go: started by hand
+		}
 		a.closeMeetingAsk() // meeting_detect.go: it records now
 		a.ask.snoozed = ""  // and is not asked about again later
 		if !s.State.Active() {

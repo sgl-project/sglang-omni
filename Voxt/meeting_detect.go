@@ -60,7 +60,10 @@ type meetingAsk struct {
 	snoozed string
 	// startAfter is the app whose meeting starts when the dictation that
 	// records now ends ("": none): its button was pressed meanwhile.
-	startAfter       string
+	startAfter string
+	// lastKey and lastApp are the app the card last asked about recording
+	// (meeting_detect_end.go: a meeting started by hand is its meeting).
+	lastKey, lastApp string
 	meetingAskWindow // meeting_ask_window.go
 }
 
@@ -224,6 +227,7 @@ func (a *app) meetingAfterDictation() {
 // it at once when the user chose so.
 func (a *app) askMeeting(key, app string) {
 	a.detect.Settle(key)
+	a.ask.lastKey, a.ask.lastApp = key, app
 	if a.prefs.Features.Meeting.AutoStart {
 		a.startMeetingFor(key, app)
 		return

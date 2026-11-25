@@ -198,6 +198,43 @@ func TestMeetingDetectWatchRefused(t *testing.T) {
 	}
 }
 
+// A meeting started by hand (the shortcut, the Meetings page) while the
+// card asks about an app, or after the card was closed, is that app's
+// meeting: its end is asked about as well.
+func TestMeetingStartedByHandAsksAtItsEnd(t *testing.T) {
+	for name, before := range map[string]func(*app){
+		"the card is up":      func(*app) {},
+		"the card was closed": func(a *app) { a.dismissMeetingAsk() },
+	} {
+		a, _, _ := newTestApp(t)
+		timers := detectClock(t, a)
+		micUsers(t, a, "us.zoom.xos")
+		if !a.ask.view.Visible {
+			t.Fatalf("%s: Zoom records: %+v", name, a.ask.view)
+		}
+		before(a)
+		a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+		if a.ask.view.Visible || a.recorded.key != "us.zoom.xos" {
+			t.Fatalf("%s: started by hand: card %+v, recorded for %q", name, a.ask.view, a.recorded.key)
+		}
+		micSays(t, a) // Zoom lets go
+		timers.advance(meetingEndAfter)
+		if view := a.ask.view; !view.Visible || !view.End || view.App != "Zoom" {
+			t.Fatalf("%s: Zoom is off the microphone: %+v", name, view)
+		}
+	}
+
+	// An app that let go before the meeting started is not its app.
+	a, _, _ := newTestApp(t)
+	detectClock(t, a)
+	micUsers(t, a, "us.zoom.xos")
+	micSays(t, a)
+	a.meetingChanged(meeting.Snapshot{ID: "m1", State: meeting.StateRecording})
+	if a.recorded.key != "" {
+		t.Fatalf("Zoom had stopped: recorded for %q", a.recorded.key)
+	}
+}
+
 // Voxt records a meeting and its app lets go of the microphone: after
 // meetingEndAfter the card asks whether the meeting is over, once.
 func TestMeetingEndedAsks(t *testing.T) {

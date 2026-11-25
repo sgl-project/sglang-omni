@@ -26,6 +26,16 @@ type meetingRecorded struct {
 	endAfter time.Duration
 }
 
+// adoptRecordedMeeting runs when Voxt starts to record a meeting that was
+// not started from the card (the shortcut, the Meetings page): while the
+// app the card last asked about still records, it is that app's meeting,
+// and its end is asked about as well.
+func (a *app) adoptRecordedMeeting() {
+	if a.recorded.key == "" && a.ask.lastKey != "" && a.detect.Recording(a.ask.lastKey) {
+		a.recorded.key, a.recorded.app = a.ask.lastKey, a.ask.lastApp
+	}
+}
+
 // followRecordedMeeting runs when the apps recording changed: once the
 // app of the meeting Voxt records has been off the microphone for
 // meetingEndAfter, the card asks whether the meeting is over.
