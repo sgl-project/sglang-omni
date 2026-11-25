@@ -54,7 +54,6 @@
   "Exported %d recording": "已导出 %d 段录音",
   "Exported %d recordings": "已导出 %d 段录音",
   "Exporting the recordings… %d of %d": "正在导出录音… %d / %d",
-  "Export…": "导出…",
   "Failed: %s": "失败：%s",
   "History is off, so new results are not kept.": "历史已关闭，新的结果不会保存。",
   "Instruction": "指令",
