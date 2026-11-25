@@ -294,7 +294,7 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
             is_base = self.variant == "base"
             return {
                 "max_concurrency": 8,
-                # note (yucheng): Batched references can differ at bf16 rounding level, which Instruct cannot take because its stop head needs bit-exact conditioning.
+                # note (yucheng): Instruct's stop head needs exact conditioning.
                 "max_batch_size": 8 if is_base else 1,
                 "max_batch_wait_ms": 4.0,
                 "warmup_on_init": True,

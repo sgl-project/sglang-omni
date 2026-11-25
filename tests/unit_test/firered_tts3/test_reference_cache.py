@@ -214,7 +214,7 @@ def test_reference_cache_disabled_encodes_every_call(tmp_path: Path) -> None:
 
 
 class LengthSensitiveSpeaker(torch.nn.Module):
-    """Stands in for CAM++, whose statistics pooling makes padded audio change the embedding."""
+    """CAM++ stand-in: its pooling makes padding change the embedding."""
 
     def forward(self, audio: torch.Tensor, audio_sr: int) -> torch.Tensor:
         return torch.stack(
@@ -230,7 +230,7 @@ class LengthSensitiveSpeaker(torch.nn.Module):
 def reference_bundle() -> FireRedReferenceBundle:
     """A tiny random RedAE encoder whose sliding window is 24 patches."""
     torch.manual_seed(0)
-    # note (yucheng): Only the 16-patch short clip is under the window, so alone it takes the mask-free attention path and inside a batch the explicit-mask path.
+    # note (yucheng): The 16-patch clip exercises both attention mask paths.
     config = FireRedTTS3Config(
         audio_patch_size=8,
         bottleneck_dim=6,
@@ -245,7 +245,7 @@ def reference_bundle() -> FireRedReferenceBundle:
     )
     encoder = build_redae_encoder(config)
     drop_embedding_tables(encoder)
-    # Large weights make attention a visible share of the output, so a leak would not hide in rounding.
+    # Large weights make attention visible, so a padding leak shows.
     for parameter in encoder.parameters():
         if parameter.dim() > 1:
             torch.nn.init.normal_(parameter, std=0.5)
@@ -266,13 +266,13 @@ def reference_bundle() -> FireRedReferenceBundle:
 
 @pytest.fixture
 def fp32_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the encoder in fp32 instead of bf16 autocast, so comparisons can be tight."""
+    """Run the encoder in fp32 so comparisons can be tight."""
     monkeypatch.setattr(torch, "autocast", lambda **kwargs: contextlib.nullcontext())
 
 
 @pytest.fixture
 def batch_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Send every request through the batch queue, where the first arrival at an idle service would otherwise encode alone."""
+    """Route every request through the batch queue (no solo path)."""
     monkeypatch.setattr(FireRedReferenceHook, "can_encode_alone", lambda self: False)
 
 
@@ -293,7 +293,7 @@ def make_waveforms() -> dict[str, np.ndarray]:
 
 @pytest.fixture
 def decoded_audio() -> Iterator[list[tuple[str, str]]]:
-    """Serve synthetic clips by file name and yield the (source, thread name) of every decode."""
+    """Serve synthetic clips by name and record (source, thread) per decode."""
     waveforms = make_waveforms()
     decodes: list[tuple[str, str]] = []
 
@@ -314,7 +314,7 @@ def decoded_audio() -> Iterator[list[tuple[str, str]]]:
         yield decodes
 
 
-# Padded lengths are 320, 128, 384 (capped to 375 samples) and 192 samples: distinct frame counts expose any reorder.
+# Padded lengths 320, 128, 384 (capped to 375) and 192 expose any reorder.
 MIXED_REFERENCES = [
     ReferenceAudioInput("long", None),
     ReferenceAudioInput("short", None),
@@ -344,7 +344,7 @@ def assert_matches_per_clip(
 def test_batched_reference_encode_matches_per_clip(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
-    """One right-padded RedAE forward must give every clip its own encode, in input order."""
+    """One padded forward gives each clip its own encode, in input order."""
     hook = FireRedReferenceHook(reference_bundle, model_id="stub", cache_enabled=False)
     batched = encode_prepared_batch(hook, MIXED_REFERENCES)
     assert len(batched) == len(MIXED_REFERENCES)
@@ -356,7 +356,7 @@ def test_batched_reference_encode_matches_per_clip(
 def test_batched_reference_encode_bounds_padded_samples_per_forward(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
-    """A drained batch splits into forwards whose rows x longest clip stay under the budget."""
+    """A drained batch splits into forwards within the padded budget."""
     budget = 640
     reference_bundle.batch_sample_budget = budget
     forward_shapes: list[tuple[int, ...]] = []
@@ -369,7 +369,7 @@ def test_batched_reference_encode_bounds_padded_samples_per_forward(
     assert (
         max(rows for rows, _ in forward_shapes) > 1
     ), "clips must still share forwards"
-    # A group of one is the only way to run a clip that alone exceeds the budget.
+    # A clip over the budget can only run as a group of one.
     assert all(
         rows == 1 or rows * samples <= budget for rows, samples in forward_shapes
     )
@@ -382,8 +382,8 @@ def test_batched_reference_encode_bounds_padded_samples_per_forward(
 def test_reference_hook_splits_a_drained_batch_by_the_padded_sample_budget(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
-    """The service delivers each of these groups on its own, so they must be the forwards encode_batch runs."""
-    # Groups by ascending length: [short, mid] (24 patches), [long] (40), [capped] (48).
+    """The hook's groups must be the forwards encode_batch runs."""
+    # Groups: [short, mid] (24 patches), [long] (40), [capped] (48).
     reference_bundle.batch_sample_budget = 640
     hook = FireRedReferenceHook(reference_bundle, model_id="stub", cache_enabled=False)
     prepared = [hook.prepare_batch_input(item) for item in MIXED_REFERENCES]
@@ -394,8 +394,8 @@ def test_reference_hook_splits_a_drained_batch_by_the_padded_sample_budget(
 def test_failed_forward_fails_only_its_own_group(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
-    """An oversize clip that runs out of memory must not discard the clips batched with others, nor keep its activations alive while the larger groups run."""
-    # Groups by ascending length: [short, mid] (24 patches), [long] (40), [capped] (48).
+    """An OOM group keeps other groups' results and frees its activations."""
+    # Groups: [short, mid] (24 patches), [long] (40), [capped] (48).
     reference_bundle.batch_sample_budget = 640
     failed_activations: list[weakref.ref[torch.Tensor]] = []
     failed_activation_alive_at_next_group: list[bool] = []
@@ -431,8 +431,8 @@ def test_failed_forward_fails_only_its_own_group(
 def test_a_group_that_fails_together_retries_its_clips_alone(
     reference_bundle: FireRedReferenceBundle,
 ) -> None:
-    """A forward that fails only because clips share it, such as out of memory on the padded group, must not fail clips that encode alone."""
-    # Groups by ascending length: [short, mid] (24 patches), [long] (40), [capped] (48).
+    """A group that fails only when shared (OOM) still encodes each clip."""
+    # Groups: [short, mid] (24 patches), [long] (40), [capped] (48).
     reference_bundle.batch_sample_budget = 640
     forward_rows: list[int] = []
 
@@ -459,7 +459,7 @@ def test_a_group_that_fails_together_retries_its_clips_alone(
 def test_bad_reference_fails_alone_without_re_encoding_its_batch_mates(
     reference_bundle: FireRedReferenceBundle, decoded_audio: list[tuple[str, str]]
 ) -> None:
-    """A clip that cannot be decoded, or is empty, must not send its batch-mates to serial encodes."""
+    """An undecodable or empty clip must not serialize its batch-mates."""
     reference_encoder = FireRedReferenceEncoder(
         reference_bundle,
         model_id="stub",
@@ -502,7 +502,7 @@ def test_normalize_runs_in_caller_threads_and_never_for_cache_hits(
     decoded_audio: list[tuple[str, str]],
     tmp_path: Path,
 ) -> None:
-    """Decoding must not queue behind the single batch worker, and a hit decodes nothing."""
+    """Decoding runs in caller threads, and a cache hit decodes nothing."""
     references = []
     for name in ("long", "short", "mid"):
         reference_audio_path = tmp_path / name
@@ -542,7 +542,7 @@ def test_reference_encode_batching_follows_variant_default_and_yaml_override(
     yaml_max_batch_size: int | None,
     expected_max_batch_size: int,
 ) -> None:
-    """Base enables batching by default, Instruct stays per clip, a YAML value wins for both, and a lone request takes the per-clip encode in every row."""
+    """Variant defaults and YAML override; a lone request encodes per clip."""
     config_values = FireRedTTS3PipelineConfig(
         model_path=str(tmp_path), variant=variant
     ).model_dump()
@@ -562,7 +562,7 @@ def test_reference_encode_batching_follows_variant_default_and_yaml_override(
         **resolve_stage_typed_kwargs(stage),
     }
     assert factory_kwargs["max_batch_size"] == expected_max_batch_size
-    # note (yucheng): Base keeps main's 8 request threads; raising it needs a c=1 TTFP check after c=16 load.
+    # note (yucheng): Raising 8 threads needs a post-load c=1 TTFP check.
     assert factory_kwargs["max_concurrency"] == 8
     reference_audio_path = tmp_path / "ref.wav"
     reference_audio_path.write_bytes(b"ref-audio-bytes")
@@ -597,12 +597,12 @@ def test_reference_encode_batching_follows_variant_default_and_yaml_override(
 def test_lone_reference_request_takes_the_per_clip_encode(
     reference_bundle: FireRedReferenceBundle, decoded_audio: list[tuple[str, str]]
 ) -> None:
-    """With no other encode in flight, a request must run the per-clip encode on the service's solo thread, with no batch worker hop and no linger, so its conditioning is the per-clip one."""
+    """A lone request runs the per-clip encode on the solo thread, no linger."""
     reference_encoder = FireRedReferenceEncoder(
         reference_bundle,
         model_id="stub",
         max_batch_size=8,
-        # A request that reached the batch worker would sit out this whole linger.
+        # A request that reached the batch worker would wait out this linger.
         max_batch_wait_ms=5000.0,
         cache_enabled=False,
     )

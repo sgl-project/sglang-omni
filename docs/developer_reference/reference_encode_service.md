@@ -181,9 +181,12 @@ path:
   (default: one group), calls one hook batch encode per group, and resolves each
   group's items as soon as that group finishes, so a short clip does not wait for
   a longer group of the same batch;
-- drop a queued item whose caller timed out before its encode started, and refuse
-  new items once `close()` has queued the shutdown sentinel, so neither is encoded
-  or waited on for nobody;
+- drop a queued item whose caller timed out before the worker drained it (an item
+  already drained into a batch still runs), and refuse a new item once `close()`
+  has started, before its prepare step and again before it joins the queue, so
+  neither is encoded or waited on for nobody; a subclass that overrides
+  `encode_leader`, such as the MOSS-TTS encoder, keeps its own admission, so its
+  timed-out items stay queued;
 - let a hook opt in to `can_encode_alone()` (default `False`): a leader that finds no other encode in flight and the service's one solo thread idle hands `encode_one` to that thread instead of joining the queue, so a lone request skips the batch wait and keeps the per-item result, and sequential lone requests always run on the same thread (a solo encode that outlives its timed-out caller sends the next lone request to the queue instead), while a leader arriving during any other encode joins the queue and batches as usual; because that leader skips `prepare_batch_input`, `encode_one` must work on an item that `prepare_batch_input` has not processed;
 - let `encode_batch` return an `Exception` in a slot to fail only that item;
   if it raises as a whole or returns the wrong number of results, retry per

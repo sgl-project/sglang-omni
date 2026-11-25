@@ -59,19 +59,22 @@ class ReferenceEncodeHook(Generic[InputT, ArtifactT, StoredT, RawInputT]):
         return False
 
     def can_encode_alone(self) -> bool:
-        """Whether a request with no other encode in flight may call encode_one on the service's solo thread instead of joining the batch queue. encode_one must then work on an item that prepare_batch_input has not processed."""
+        """Whether a lone request may run encode_one on the solo thread.
+
+        encode_one then gets an item that prepare_batch_input has not seen.
+        """
         return False
 
     def prepare_batch_input(self, item: InputT) -> InputT:
-        """Do per-item work such as decoding in the calling thread, before the item joins the batch queue."""
+        """Per-item work such as decoding, run in the caller before queueing."""
         return item
 
     def batch_groups(self, items: list[InputT]) -> list[list[int]]:
-        """Split a drained batch into the index groups that encode_batch runs one after another; the service delivers each group's results as soon as that group finishes."""
+        """Split a drained batch into groups that are encoded one by one."""
         return [list(range(len(items)))]
 
     def encode_batch(self, items: list[InputT]) -> Sequence[ArtifactT | Exception]:
-        """Encode prepared items; an Exception in a slot fails only that item."""
+        """Encode prepared items; an Exception fails only its own slot."""
         return [self.encode_one(item) for item in items]
 
 
@@ -213,7 +216,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             )
             self.batch_thread.start()
             if self.encodes_alone:
-                # note (yucheng): Lone requests share one thread so they keep running on a thread that encodes often, instead of on request threads that the batch worker leaves idle.
+                # note (yucheng): Lone requests share one warm thread.
                 self.solo_executor = concurrent.futures.ThreadPoolExecutor(
                     max_workers=1, thread_name_prefix=f"{batch_worker_name}-solo"
                 )
@@ -232,7 +235,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
 
     def close(self) -> None:
         if self.batch_queue is not None:
-            # note (yucheng): Admission checks this flag under the same lock, so no request joins the queue after the shutdown sentinel.
+            # note (yucheng): Admission checks closing under this lock.
             with self.lock:
                 self.closing = True
                 self.batch_queue.put(None)
@@ -265,10 +268,13 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             pass
         solo_future: concurrent.futures.Future[ArtifactT] | None = None
         with self.lock:
-            # note (yucheng): A lone request would only pay the batch linger, so it takes the per-item path, but only while the solo thread is idle: an encode that outlived its timed-out caller would otherwise hold it up.
+            if self.closing:
+                raise RuntimeError("reference encode service is shutting down")
+            else:
+                pass
+            # note (yucheng): Lone requests skip the linger unless solo is busy.
             is_solo = (
                 self.encodes_alone
-                and not self.closing
                 and self.encodes_in_flight == 0
                 and (self.solo_future is None or self.solo_future.done())
             )
@@ -282,7 +288,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 pass
         try:
             if solo_future is not None:
-                # note (yucheng): The service drops its reference once the solo encode ends, so a failed encode's traceback does not keep its tensors alive: here when the caller sees the result, or in the callback when the caller timed out first.
+                # note (yucheng): A kept future's traceback can pin tensors.
                 solo_future.add_done_callback(self.release_solo_future)
                 try:
                     return solo_future.result(timeout=self.timeout_s)
@@ -303,7 +309,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
             try:
                 return future.result(timeout=self.timeout_s)
             except concurrent.futures.TimeoutError:
-                # note (yucheng): The worker skips a cancelled entry, so a request that times out before its encode starts is dropped instead of encoded for nobody.
+                # note (yucheng): The worker skips undrained cancelled entries.
                 future.cancel()
                 raise
         finally:
@@ -362,7 +368,7 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 continue
             if batch:
                 items = [item for item, _ in batch]
-                # note (yucheng): A failed split falls back to one group, because an exception here would end the worker and leave every later request to time out.
+                # note (yucheng): A raising split must not end the worker.
                 try:
                     groups = self._hook.batch_groups(items)  # noqa: leading-underscore
                     if sorted(index for group in groups for index in group) != list(
