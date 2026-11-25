@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import torch.nn as nn
-from huggingface_hub import hf_hub_download
+from huggingface_hub import constants, hf_hub_download
 from transformers import AutoConfig, PretrainedConfig
 from transformers.initialization import no_init_weights
 from transformers.utils.hub import cached_file
@@ -327,7 +327,10 @@ def qwen_d2_interval_ms(model_path: str) -> int | None:
         try:
             manifest_path = Path(
                 hf_hub_download(
-                    repo_id=repo_id, filename="d2.json", revision=revision or None
+                    repo_id=repo_id,
+                    filename="d2.json",
+                    revision=revision or None,
+                    local_files_only=constants.HF_HUB_OFFLINE,
                 )
             )
         except (OSError, ValueError):

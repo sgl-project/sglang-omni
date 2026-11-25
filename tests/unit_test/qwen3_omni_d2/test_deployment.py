@@ -7,10 +7,13 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
+from huggingface_hub import constants
 
 from sglang_omni.client.client import Client
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.models.qwen3_omni_d2.config import Qwen3OmniD2PipelineConfig
+from sglang_omni.models.qwen3_omni_d2.runtime import D2Runtime
+from sglang_omni.models.qwen3_omni_d2.stages import create_scheduler
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.utils.imports import import_string
 
@@ -69,3 +72,45 @@ def test_other_release_formats_do_not_select_qwen_d2(
     )
     with pytest.raises(ValueError):
         ConfigManager.from_model_path(str(tmp_path))
+
+
+def test_cached_release_serves_without_repository_metadata_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offline startup used to fetch .gitattributes despite both weights being cached."""
+    revision = "1" * 40
+    repository = tmp_path / "models--example--d2"
+    snapshot = repository / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "d2.json").write_text(
+        json.dumps({"format": "d2.release.v1", "family": "qwen", "latency_ms": 160})
+    )
+    for weight_filename in ("d2.safetensors", "encoder.safetensors"):
+        (snapshot / weight_filename).write_bytes(b"weights")
+    tree_files = {
+        path.name: {"size": path.stat().st_size, "blob_id": None}
+        for path in snapshot.iterdir()
+    }
+    tree_files[".gitattributes"] = {"size": 100, "blob_id": None}
+    (repository / "trees").mkdir()
+    (repository / "trees" / f"{revision}.json").write_text(
+        json.dumps({"format_version": 1, "files": tree_files})
+    )
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(constants, "HF_HUB_OFFLINE", True)
+    runtime = Mock(spec=D2Runtime)
+    load_runtime = Mock(return_value=runtime)
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni_d2.stages.D2Runtime", load_runtime
+    )
+
+    scheduler = create_scheduler(
+        f"example/d2@{revision}",
+        device="cpu",
+        runtime_python="python",
+        kv_budget=128,
+        seed=1,
+    )
+    assert load_runtime.call_args.kwargs["model_path"] == str(snapshot)
+    scheduler.warm_up_serving_thread()
+    runtime.step.assert_called_once_with(bytes(5120))

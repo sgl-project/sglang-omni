@@ -103,7 +103,9 @@ def create_scheduler(
     device: str | None = None,
     gpu_id: int | None = None,
 ) -> D2SessionScheduler:
-    release_directory = resolve_checkpoint(model_path)
+    release_directory = resolve_checkpoint(
+        model_path, allow_patterns=["d2.json", "d2.safetensors", "encoder.safetensors"]
+    )
     interval_ms = qwen_d2_interval_ms(release_directory)
     if interval_ms is None:
         raise ValueError("Expected a Qwen3-Omni D2 release with a d2.json manifest")
