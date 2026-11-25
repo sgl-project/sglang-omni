@@ -39,6 +39,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Reprocess transcript no longer deletes other meetings' recordings**: a finished meeting's recording is deleted once it is transcribed (unless Save each recording is on, or the meeting was in Recording mode). Choosing Reprocess transcript on such a meeting removed the whole folder of meeting recordings: those of Recording-mode meetings, of meetings waiting for Continue processing, and of a meeting being recorded. The menu item now shows only while the meeting still has its recording, and Continue processing on a meeting without one deletes nothing.
 - **Cancel meeting stops the recording first**: cancelling while recording deleted the meeting but left the microphone and system audio captures open, and the overlay went on showing a recording of a meeting that was gone. The captures now stop before the meeting goes, and the overlay closes.
 - **Changing a meeting's mode keeps it recording**: switching from Meeting to Recording or Subtitles while recording stopped every track, so the meeting went on with nothing recorded; switching to Meeting stopped the track the meeting already had. The tracks both modes have now carry on without a gap, and when the new one cannot start (system audio not allowed, say) the meeting stays in its mode.
+- **Transcribe inserts only the cleaned text, also when the model ignores the output contract** (#4604): with the language-model clean-up on, a model that thinks out loud — explaining how it read a doubtful word or removed a stutter before or after the final text — had its deliberation inserted along with the cleaned sentence whenever it did not wrap the text in the contract's tags. A tag-less answer to the built-in clean-up now keeps only the cleaned text's sentences, before or after; and while the answer streams, a finished deliberation sentence never shows in the draft. With your own clean-up prompt, the answer is yours: a heading, an expansion or a translation shows and stays whole.
 
 ### 中文
 
@@ -77,6 +78,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **「重新整理」不再删除其他会议的录音**：会议整理完后，录音会被删除（开了「保存每段录音」或用的是录音模式除外）。对这样的会议选「重新整理」，整个会议录音文件夹都会被删掉：录音模式会议的录音、等待「继续整理」的录音、正在录的会议都在里面。现在只有还留着录音的会议才显示这一项；对没有录音的会议点「继续整理」也不会删任何文件。
 - **取消会议会先停止录音**：录音中取消会议，会议被删掉，麦克风和系统音频却还在采集，浮窗也还显示在录一个已经不存在的会议。现在先停止采集，再删除会议并关闭浮窗。
 - **会议中切换模式不再停录**：录音时从「会议」切到「录音」或「字幕」，所有音轨都会停下，会议继续计时却什么都没录；切到「会议」时，原有的音轨也会停下。现在两种模式都有的音轨不中断；新音轨启动不了（比如未允许系统音频）时，会议保持原来的模式继续录。
+- **转录只插入整理后的文字，模型不遵守输出约定时也一样**（#4604）：开着语言模型整理时，有的模型会先「想出声」——在最终文字之前或之后解释它怎么判断拿不准的词、怎么去掉结巴；如果它没用约定的标签包住最终文字，这些解释会连同整理后的句子一起被插进去。现在内置整理的无标签回答只保留属于整理结果的句子，前后的解释都不会被插入；答案流式返回时，已经写完的解释句不会出现在草稿里。如果你自己写了整理提示词，回答就按你的提示词来：标题、扩写、翻译都原样显示和保留。
 
 ## [2.1.3] - 2026-11-22
 

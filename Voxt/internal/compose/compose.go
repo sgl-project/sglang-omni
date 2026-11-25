@@ -188,6 +188,19 @@ type Output struct {
 	Layers []string
 }
 
+// Custom says whether the request carried the user's own prompt (a
+// "custom" layer from the full-prompt path): the built-in output
+// contract does not apply to its answer, and CleanOutput/PartialOutput
+// use the answer as it is.
+func (o Output) Custom() bool {
+	for _, l := range o.Layers {
+		if l == "custom" {
+			return true
+		}
+	}
+	return false
+}
+
 // Profile is a short name of the composition.
 func (o Output) Profile() string {
 	if len(o.Layers) == 0 {

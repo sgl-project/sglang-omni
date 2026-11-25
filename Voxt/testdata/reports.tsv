@@ -38,6 +38,7 @@ report	fix	symptom	level	check
 #4022	#4023	Meetings are missing from release builds	L	TestMeetingsInReleaseBuild
 #4024	#4025	Translate does not switch back to the main language for languages that share a script	L	TestTranslateBack
 #4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
+#4086	#4604	Transcribe inserts the model's tag-less deliberation about its edits along with the cleaned text	L	TestCleanedTextWithoutCommentary
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
 #4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
