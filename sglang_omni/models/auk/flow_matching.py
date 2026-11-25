@@ -242,7 +242,12 @@ class AuKFlowMatching(nn.Module):
         )
 
         def step(inputs, t, x):
-            kwargs = dict(inputs, x=x.to(weight_dtype), time=t)
+            kwargs = dict(
+                inputs,
+                x=x.to(weight_dtype),
+                time=t,
+                allow_npu_fused_attention=padding is None,
+            )
             if cfg_strength < 1e-5:
                 return self.transformer(
                     **kwargs, drop_audio_cond=False, drop_text=False

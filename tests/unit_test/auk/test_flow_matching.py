@@ -190,20 +190,25 @@ def test_shape_padding_does_not_change_the_sampled_latents(monkeypatch, count):
         ]
     ]
     widths = []
+    allow_npu_fused_attention = []
     original = type(flow.transformer).forward
 
     def forward(self, x, *args, **kwargs):
         widths.append(x.shape[1])
+        allow_npu_fused_attention.append(kwargs["allow_npu_fused_attention"])
         return original(self, x, *args, **kwargs)
 
     monkeypatch.setattr(type(flow.transformer), "forward", forward)
 
     sampling = dict(steps=3, cfg_strength=2.0)
     expected = flow.sample_batch(items, **sampling)
+    assert set(allow_npu_fused_attention) == {True}
     unpadded = set(widths)
     widths.clear()
+    allow_npu_fused_attention.clear()
     actual = flow.sample_batch(items, **sampling, step_graph=ShapePadding())
 
+    assert set(allow_npu_fused_attention) == {False}
     assert unpadded == {max(item.target_frames for item in items)}
     assert set(widths) == {32}
     for output, reference in zip(actual, expected):
