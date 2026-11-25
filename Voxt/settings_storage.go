@@ -5,7 +5,6 @@ package main
 
 import (
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
@@ -130,7 +129,7 @@ func storageDialogs(c *ui.Context, state settingsStorageViewState, actions setti
 	importOpen := local.resetAsk == "import"
 	ui.Modal(c.Key("st-ask-import"), &importOpen, func() {
 		ui.Text(c, i18n.T("Import a library?")).Bold()
-		ui.Text(c, i18n.T("Voxt restarts with the file's settings, history, meetings, dictionary and snippets in place of this Mac's. This Mac's library is kept in the data folder as %s.", datadir.BeforeImport)).Width(px(t, 380))
+		ui.Text(c, i18n.T("Voxt restarts with the file's settings, history, meetings, dictionary and snippets in place of this Mac's. This Mac's library is kept in the data folder as %s.", state.ImportKeptName)).Width(px(t, 380))
 		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
 			if ui.Button(c.Key("st-import-cancel"), i18n.T("Cancel")).AutoFocus().Clicked() {
 				local.resetAsk = ""
