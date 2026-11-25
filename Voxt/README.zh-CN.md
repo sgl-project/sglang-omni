@@ -148,6 +148,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 - **提问和建议**：加入 SGLang 的 [Slack][slack]。
 - **给你自己的脚本和 agent**：让这台 Mac 上的其他程序[读取听写历史](docs/history-access.md)，默认关闭。
 - **用脚本或 agent 改设置**：[每一项设置、存在哪里、怎样安全地修改](docs/settings.md)。
+- **从 Raycast、Karabiner、快捷指令或 Stream Deck 启动 Voxt**：[`Voxt toggle`](docs/trigger.md) 做的事和功能快捷键一样，任何能执行命令的 App 或设备都能用它。
 - **把录音和视频转成字幕**：[`Voxt transcribe`](docs/transcribe.md) 用你的语音识别模型把本地音频或视频文件转成 SRT 或纯文本。
 
 ## 开发者

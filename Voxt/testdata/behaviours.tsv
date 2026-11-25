@@ -59,6 +59,10 @@ Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
 Command-line transcription	L	TestTranscribeCLIFailures	none
 Command-line dictionary import	L	TestDictionaryCLIImports	none
 Command-line dictionary import	L	TestDictionaryCLIFailures	none
+Command-line toggle and cancel	L	TestTriggerTogglesLikeTheShortcut	Running it from Raycast or Karabiner and pasting into the app in front is checked by hand only
+Command-line toggle and cancel	L	TestTriggerCancelsAndRefusesHiddenFeatures	none
+Command-line toggle and cancel	L	TestTriggerCLISendsTheAction	none
+Command-line toggle and cancel	L	TestTriggerCLIFailures	none
 In-app update	L	TestAppUpdated	The upgrade from 1.x has no automatic run
 In-app update	M	scripts/mac-update-e2e.sh	none
 First use: opening, setup guide, import from 1.x	L	TestOnboardingDemoActionControls	none

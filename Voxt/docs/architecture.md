@@ -104,6 +104,7 @@ github.com/sgl-project/sglang-omni/Voxt
 │   ├── deliver/          the insert transaction: textio.focus, then textio.paste or the answer card
 │   ├── historyapi/       other programs reading the history: the exported fields (Row), its renderers, the Unix-socket server and client (`Voxt history`, docs/history-access.md)  (store)
 │   ├── dictapi/          `Voxt dictionary import`: the command sends a file to the running app over a Unix socket; the app merges it as Dictionary → Import… does and answers with counts
+│   ├── triggerapi/       `Voxt toggle` and `Voxt cancel` (docs/trigger.md): the command sends an action to the running app over a Unix socket; the app takes it as one tap of the feature's shortcut  (leaf)
 │   ├── hotkey/           the shortcuts' grammar, bindings for hotkey.configure and the Carbon
 │   │                     fallback, conflict checks, routing an event to an action
 │   ├── appctx/           app enhancement: groups (document appctx:rules), URL rules and their
@@ -166,7 +167,7 @@ compose ──▶ lang              deliver ──▶ helper/proto      hotkey �
 appctx ──▶ helper/proto, hotkey, settings                    dict ──▶ store
 appicons ──▶ helper/proto        outmute ──▶ helper/proto
 actnow ──▶ models (HubIn: VoxtNew's own model folder), settings
-core, settings, helper/proto, i18n, lang, permission, macx, vad, appbundle, updates, models, resident, secrets ──▶ (nothing internal)
+core, settings, helper/proto, i18n, lang, permission, macx, vad, appbundle, updates, models, resident, secrets, triggerapi ──▶ (nothing internal)
 actnow, models, local, uitext ──▶ github.com/hehehai/actnowkit (archtest: actnowUsers; its conformance package only in tests)
 icons ──▶ mygo/ui
 ```

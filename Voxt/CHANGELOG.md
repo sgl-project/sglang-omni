@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Added
 - **Three more recording sounds** (#4582): Settings → Audio → Sound → Built-in lists Kalimba, Wood and Vibraphone after Soft, two soft notes that rise as a recording starts and fall as it stops, the soft sounds friends liked most. They are Voxt's own, so every build has them. The default stays Soft.
 
+- **Start Voxt from other apps and devices**: `Voxt toggle transcribe` (or `translate`, `rewrite`, `note`) does what one tap of the feature's shortcut does, and `Voxt cancel` what the cancel shortcut does. Run them from Raycast, Karabiner-Elements, BetterTouchTool, the Shortcuts app or a Stream Deck to dictate with a key or button Voxt's own shortcuts cannot use, such as a third-party keyboard's Fn key or a mouse's side button. See [docs/trigger.md](docs/trigger.md).
 - **Share a card of Voxt and you** (#4533): Home's Share opens a card of Voxt in a hat beside a sentence you say to it. Click "What would you like to say?", or press a feature's shortcut, to record it. Shuffle the background and the hat, draw your own hat (it stays in the wardrobe), then copy the card as a picture.
 - **Looking back on Home** (#4533): above Activity, the characters you dictated, the time saved, your speed and the time you spoke.
 - **Six cards to share from Looking back** (#4584): both Share buttons on Home grow under the pointer and throw stars when clicked. Looking back's Share opens six cards, one at a time: the highlights, the characters you dictated, your streak, your speed against typing, the time saved and your active days. Each has its own layout and look, on a color gradient or on colored paper, and comes in moving: numbers count up, the speed dial and the bars grow, and the little Voxt sways or blinks. Turn them with the arrows, the dots or the arrow keys, change a card's color, then copy it, save it as a picture, or post it to LinkedIn or X: the picture is copied, the window says to paste it with ⌘V, and a new post opens.
@@ -42,6 +43,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 新增
 - **多了三组录音提示音**（#4582）：设置 → 音频 → 音效 → 自带里，“轻柔”后面多了卡林巴、木琴和颤音琴：两个轻柔的音，开始录音时上行，停止时下行，是朋友们试听时最喜欢的三组。这些声音是 Voxt 自己的，所有版本都有。默认仍是“轻柔”。
 
+- **从其他 App 和设备启动 Voxt**：`Voxt toggle transcribe`（或 `translate`、`rewrite`、`note`）和按一下这个功能的快捷键效果一样，`Voxt cancel` 和取消快捷键一样。在 Raycast、Karabiner-Elements、BetterTouchTool、快捷指令或 Stream Deck 里运行它们，就能用 Voxt 自己的快捷键用不了的键或按钮来听写，比如第三方键盘的 Fn 键或鼠标侧键。见 [docs/trigger.md](docs/trigger.md)。
 - **分享你和 Voxt 的卡片**（#4533）：首页的“分享”打开一张卡片，戴着帽子的 Voxt 旁边是你对它说的一句话。点“想说点什么？”或按功能快捷键就能录。可以换背景和帽子，也可以自己画帽子（画好的会留在衣柜里），最后把卡片复制成图片。
 - **首页的回顾**（#4533）：活跃日历上面显示口述字数、节省时间、平均口述速度和总口述时间。
 - **回顾可以分享六张卡片**（#4584）：首页的两个“分享”按钮在指针下会变大，点击时冒出星星。回顾的“分享”打开六张卡片，一次看一张：总览、口述字数、连续天数、口述和打字的速度对比、节省时间、活跃天数。每张版式和配色都不同，渐变底和彩纸底交替，出现时会动：数字滚动，速度表盘和柱条慢慢长出来，小 Voxt 晃一晃或眨眨眼。用两侧箭头、圆点或方向键翻页，可以给当前这张换个颜色，再复制、保存成图片，或发到 LinkedIn、X：图片会先复制好，窗口提示按 ⌘V 粘贴，再打开新帖子。
