@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/whisper_encoder.h"
 
 namespace auk {
 
@@ -38,19 +39,13 @@ LoadConditionerWeights(const std::filesystem::path &directory,
           "AuK conditioner weights must be floating point");
     } else {
     }
-    mx::array value = mx::astype(weight, dtype);
-    if (normalized == "audio_tower.conv1.weight" ||
-        normalized == "audio_tower.conv2.weight") {
-      value = mx::transpose(value, {0, 2, 1});
-    } else {
-    }
-    if (!weights.emplace(normalized, std::move(value)).second) {
+    if (!weights.emplace(normalized, mx::astype(weight, dtype)).second) {
       throw std::invalid_argument("duplicate AuK conditioner weight: " +
                                   normalized);
     } else {
     }
   }
-  return weights;
+  return omni_common::WhisperConvMlxLayout(std::move(weights), "audio_tower");
 }
 
 } // namespace
