@@ -314,6 +314,41 @@ def try_resolve_arch_from_zonos3_layout(
     return ZONOS3_ARCHITECTURE
 
 
+def qwen_d2_interval_ms(model_path: str) -> int | None:
+    """Read the interaction interval from a local or revision-pinned D2 release."""
+    if os.path.isdir(model_path):
+        manifest_path = Path(model_path) / "d2.json"
+        if not manifest_path.is_file():
+            return None
+        else:
+            pass
+    else:
+        repo_id, _, revision = model_path.partition("@")
+        try:
+            manifest_path = Path(
+                hf_hub_download(
+                    repo_id=repo_id, filename="d2.json", revision=revision or None
+                )
+            )
+        except (OSError, ValueError):
+            return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("format") != "d2.release.v1"
+        or manifest.get("family") != "qwen"
+    ):
+        return None
+    else:
+        interval_ms = manifest.get("latency_ms")
+    if type(interval_ms) is not int or interval_ms not in {80, 160, 320, 640, 1040}:
+        raise ValueError(
+            f"Unsupported Qwen3-Omni D2 interval in milliseconds: {interval_ms}"
+        )
+    else:
+        return interval_ms
+
+
 def auk_architecture_from_config(path: str) -> str | None:
     """Return the AuK architecture if the file names AuK or AuK-Flash."""
     import yaml
