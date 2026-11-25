@@ -458,3 +458,75 @@ def test_one_encoder_call_per_kind_serves_every_request_of_the_batch() -> None:
     assert all(
         data.input_features is None and data.pixel_values is None for data in batch
     )
+
+
+def test_a_step_launched_before_the_previous_one_resolves_matches_the_host_state_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Async decode launches step N+1 before step N resolves, and the two pinned staging buffers take turns; every resolve must still commit what its own launch staged."""
+    host_runner = make_runner()
+    device_runner = make_seeded_runner(monkeypatch)
+    staging: list[torch.Tensor] = []
+
+    def next_host_staging(shape: torch.Size, dtype: torch.dtype) -> torch.Tensor:
+        if len(staging) < 2:
+            staging.append(torch.empty(shape, dtype=dtype))
+        else:
+            staging.append(staging.pop(0))
+        return staging[-1]
+
+    monkeypatch.setattr(device_runner, "next_host_staging", next_host_staging)
+    prompts = (TOKENS.audio_start_token_id, TOKENS.mixed_start_token_id)
+    host_requests = [make_request(f"r{i}", token) for i, token in enumerate(prompts)]
+    device_requests = [make_request(f"r{i}", token) for i, token in enumerate(prompts)]
+    forward_batch = types.SimpleNamespace(req_pool_indices=torch.tensor([2, 1]))
+    generator = torch.Generator().manual_seed(1)
+    choices = torch.tensor([1000, 1001, TOKENS.text_end_token_id])
+
+    def result_of(sampled: list[int]) -> types.SimpleNamespace:
+        return types.SimpleNamespace(
+            logits_output=types.SimpleNamespace(
+                hidden_states=torch.zeros(2, HIDDEN_SIZE)
+            ),
+            next_token_ids=torch.tensor(sampled),
+        )
+
+    pending = None
+    for step in range(30):
+        sampled = choices[torch.randint(0, 3, (2,), generator=generator)].tolist()
+        frames = torch.randint(0, 50, (2, TOKENS.num_codebooks), generator=generator)
+        speaking = [
+            row
+            for row, request in enumerate(host_requests)
+            if request.data.speech.needs_frame()
+        ]
+        expected = run_speech_step(
+            host_runner, host_requests, sampled, frames[speaking], monkeypatch
+        )
+        monkeypatch.setattr(
+            model_runner_module, "seeded_frame_codes", lambda *args, **kwargs: frames
+        )
+        result = result_of(sampled)
+        if step == 0:
+            device_runner.post_prefill(result, forward_batch, None, device_requests)
+        else:
+            launch_buf = device_runner.post_decode_launch(
+                result, forward_batch, device_requests
+            )
+            if pending is not None:
+                device_runner.post_decode_resolve(
+                    *pending, forward_batch, None, device_requests
+                )
+            else:
+                pass
+            pending = (launch_buf, result)
+        assert result.next_token_ids.tolist() == expected, step
+    device_runner.post_decode_resolve(*pending, forward_batch, None, device_requests)
+
+    for host_request, device_request in zip(
+        host_requests, device_requests, strict=True
+    ):
+        assert device_request.data.speech.text_out == host_request.data.speech.text_out
+        assert [frame.tolist() for frame in device_request.data.speech.frames] == [
+            frame.tolist() for frame in host_request.data.speech.frames
+        ]

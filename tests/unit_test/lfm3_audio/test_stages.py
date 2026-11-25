@@ -58,6 +58,9 @@ def test_speech_sampling_fields_of_tts_and_chat() -> None:
         {"top_k": 1.5},
         {"repetition_penalty": 0},
         {"repetition_penalty": float("inf")},
+        {"temperature": 1e-45},
+        {"repetition_penalty": 1e-40},
+        {"top_k": 10**20},
     ],
 )
 def test_speech_sampling_values_the_sampler_rejects_are_request_errors(
@@ -113,6 +116,8 @@ def test_the_codec_process_imports_no_engine_code() -> None:
         {"min_p": 2},
         {"repetition_penalty": 0},
         {"repetition_penalty": 2.5},
+        {"top_k": 0, "temperature": 0.7},
+        {"top_k": 2**40},
     ],
 )
 def test_text_sampling_values_the_engine_rejects_are_request_errors(
@@ -150,3 +155,16 @@ def test_an_undecodable_image_is_a_request_error() -> None:
     with pytest.raises(ValueError, match="could not read the image") as error:
         asyncio.run(preprocessor.read_part(part, stages.Media()))
     assert is_bad_request_error(error.value)
+
+
+@pytest.mark.parametrize("value", [0, -1, 2.5, "8", True])
+def test_a_max_new_tokens_outside_the_positive_integers_is_a_request_error(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError) as error:
+        stages.max_new_tokens({"max_new_tokens": value})
+    assert is_bad_request_error(error.value)
+
+
+def test_an_unset_max_new_tokens_takes_the_default() -> None:
+    assert stages.max_new_tokens({}) == stages.DEFAULT_MAX_NEW_TOKENS

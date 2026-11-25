@@ -115,69 +115,115 @@ class SpeechSamplingParams:
     repetition_penalty: float | None
 
 
+def is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True, kw_only=True)
+class FieldRange:
+    """The values a request field may take: a number (or integer) in [low, high], or (low, high] when low_open, or exactly also."""
+
+    low: float
+    high: float
+    description: str
+    low_open: bool = False
+    integer: bool = False
+    also: float | None = None
+
+    def contains(self, value: object) -> bool:
+        if not (is_integer(value) if self.integer else is_finite_number(value)):
+            return False
+        elif self.also is not None and value == self.also:
+            return True
+        else:
+            above_low = self.low < value if self.low_open else self.low <= value
+            return above_low and value <= self.high
+
+
+def checked_fields(
+    params: Mapping[str, object],
+    ranges: Mapping[str, FieldRange],
+    prefix: str = "",
+) -> dict[str, object]:
+    """The fields the request set, each checked against its range; a value outside it is a request error."""
+    fields = {}
+    for name, field_range in ranges.items():
+        value = params.get(prefix + name)
+        if value is None:
+            continue
+        elif not field_range.contains(value):
+            raise ValueError(
+                f"{REQUEST_ERROR_PREFIX} {prefix}{name} must be {field_range.description}, got {value!r}"
+            )
+        else:
+            fields[name] = value
+    return fields
+
+
+# note (ruilin): the frame sampler runs on the whole batch, so a value it cannot use would fail every request beside this one; a temperature or penalty near 0 overflows the scores.
+SPEECH_SAMPLING_RANGES = {
+    "temperature": FieldRange(
+        low=0.01, high=100, also=0, description="0 or a number in [0.01, 100]"
+    ),
+    "top_k": FieldRange(
+        low=0, high=2**31 - 1, integer=True, description="an integer >= 0"
+    ),
+    "repetition_penalty": FieldRange(
+        low=0.01, high=100, description="a number in [0.01, 100]"
+    ),
+}
+# The ranges the engine's text sampling accepts, checked before the request reaches it.
+TEXT_SAMPLING_RANGES = {
+    "temperature": FieldRange(low=0, high=100, description="a number in [0, 100]"),
+    "top_p": FieldRange(low=0, high=1, low_open=True, description="in (0, 1]"),
+    "top_k": FieldRange(
+        low=1,
+        high=2**31 - 1,
+        integer=True,
+        also=-1,
+        description="-1 or an integer >= 1",
+    ),
+    "min_p": FieldRange(low=0, high=1, description="in [0, 1]"),
+    "repetition_penalty": FieldRange(
+        low=0, high=2, low_open=True, description="in (0, 2]"
+    ),
+}
+
+
 def speech_sampling_params(
     params: Mapping[str, object], is_tts: bool
 ) -> SpeechSamplingParams:
-    """A TTS request's sampling fields, or a chat request's talker_ fields, checked before they reach the batch."""
-    prefix = "" if is_tts else "talker_"
-    temperature = params.get(f"{prefix}temperature")
-    top_k = params.get(f"{prefix}top_k")
-    repetition_penalty = params.get(f"{prefix}repetition_penalty")
-    # note (ruilin): the frame sampler runs on the whole batch, so a value it rejects would fail every request beside this one.
-    if temperature is not None and not (
-        is_finite_number(temperature) and temperature >= 0
-    ):
-        raise ValueError(
-            f"{REQUEST_ERROR_PREFIX} {prefix}temperature must be a number >= 0"
-        )
-    elif top_k is not None and not (
-        isinstance(top_k, int) and not isinstance(top_k, bool) and top_k >= 0
-    ):
-        raise ValueError(
-            f"{REQUEST_ERROR_PREFIX} {prefix}top_k must be an integer >= 0"
-        )
-    elif repetition_penalty is not None and not (
-        is_finite_number(repetition_penalty) and repetition_penalty > 0
-    ):
-        raise ValueError(
-            f"{REQUEST_ERROR_PREFIX} {prefix}repetition_penalty must be a number > 0"
-        )
-    else:
-        return SpeechSamplingParams(
-            temperature=temperature,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-        )
+    """A TTS request's sampling fields, or a chat request's talker_ fields."""
+    fields = checked_fields(
+        params, SPEECH_SAMPLING_RANGES, prefix="" if is_tts else "talker_"
+    )
+    return SpeechSamplingParams(
+        temperature=fields.get("temperature"),
+        top_k=fields.get("top_k"),
+        repetition_penalty=fields.get("repetition_penalty"),
+    )
 
 
 def text_sampling_params(params: Mapping[str, object]) -> dict[str, object]:
-    """A chat request's text sampling fields, checked against the ranges the engine accepts."""
-    checks = {
-        "temperature": lambda value: is_finite_number(value) and value >= 0,
-        "top_p": lambda value: is_finite_number(value) and 0 < value <= 1,
-        "top_k": lambda value: isinstance(value, int)
-        and not isinstance(value, bool)
-        and value >= -1,
-        "min_p": lambda value: is_finite_number(value) and 0 <= value <= 1,
-        "repetition_penalty": lambda value: is_finite_number(value) and 0 < value <= 2,
-    }
-    sampling = {}
-    for name, in_range in checks.items():
-        value = params.get(name)
-        if value is None:
-            continue
-        elif not in_range(value):
-            raise ValueError(f"{REQUEST_ERROR_PREFIX} {name}={value!r} is out of range")
-        else:
-            sampling[name] = value
-    return sampling
+    """A chat request's text sampling fields."""
+    return checked_fields(params, TEXT_SAMPLING_RANGES)
+
+
+def max_new_tokens(params: Mapping[str, object]) -> int:
+    value = params.get("max_new_tokens")
+    if value is None:
+        return DEFAULT_MAX_NEW_TOKENS
+    elif is_integer(value) and value >= 1:
+        return value
+    else:
+        raise ValueError(
+            f"{REQUEST_ERROR_PREFIX} max_new_tokens must be an integer >= 1, got {value!r}"
+        )
 
 
 def request_seed(params: Mapping[str, object]) -> int | None:
     seed = params.get("seed")
-    if seed is None or (
-        isinstance(seed, int) and not isinstance(seed, bool) and 0 <= seed < 2**63
-    ):
+    if seed is None or (is_integer(seed) and 0 <= seed < 2**63):
         return seed
     else:
         raise ValueError(
@@ -240,12 +286,16 @@ class Lfm3AudioPreprocessor:
             marker = MIXED_START if speaks else NO_THINKING
             text_only = not speaks
             text_sampling = text_sampling_params(params)
-        encoded = self.processor(
-            text=self.render_prompt(messages, marker),
-            sampling_rate=INPUT_SAMPLE_RATE,
-            return_tensors="pt",
-            **media.processor_inputs(),
-        )
+        try:
+            encoded = self.processor(
+                text=self.render_prompt(messages, marker),
+                sampling_rate=INPUT_SAMPLE_RATE,
+                return_tensors="pt",
+                **media.processor_inputs(),
+            )
+        except ValueError as error:
+            # note (ruilin): the checkpoint's processor refuses a prompt whose text holds media placeholders the request did not send.
+            raise ValueError(f"{REQUEST_ERROR_PREFIX} {error}") from error
         state = Lfm3AudioState(
             input_ids=encoded["input_ids"][0].tolist(),
             input_features=encoded.get("input_features"),
@@ -255,7 +305,7 @@ class Lfm3AudioPreprocessor:
             pixel_values_videos=encoded.get("pixel_values_videos"),
             video_grid_thw=encoded.get("video_grid_thw"),
             text_only=text_only,
-            max_new_tokens=params.get("max_new_tokens") or DEFAULT_MAX_NEW_TOKENS,
+            max_new_tokens=max_new_tokens(params),
             seed=request_seed(params),
             audio_temperature=speech_sampling.temperature,
             audio_top_k=speech_sampling.top_k,
