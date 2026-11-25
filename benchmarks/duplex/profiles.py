@@ -26,6 +26,7 @@ class DuplexProfile:
     stop_requires_eos: bool
     continuous_output: bool
     protocol: Protocol
+    supports_server_interrupt: bool = False
 
 
 PROFILES: dict[ProfileName, DuplexProfile] = {
@@ -49,6 +50,7 @@ PROFILES: dict[ProfileName, DuplexProfile] = {
         stop_requires_eos=True,
         continuous_output=True,
         protocol="native",
+        supports_server_interrupt=True,
     ),
     "qwen3-omni-half-duplex": DuplexProfile(
         native_unit_ms=20,

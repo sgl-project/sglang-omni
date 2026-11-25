@@ -26,6 +26,27 @@ def test_known_good_trace_and_hand_calculated_metrics() -> None:
     assert result["metrics"]["input_output_overlap"] is True
 
 
+def test_d2_learned_interruption_can_end_audio_before_input_eos() -> None:
+    trace = trace_fixture()
+    grant = find_event(trace, "session.updated")["session"]["sglang"]["granted"]
+    grant["supports_server_interrupt"] = True
+    grant["output_audio_format"]["rate"] = 24000
+    for record in trace:
+        event = record["event"]
+        if event["type"] == "response.output_audio.delta":
+            event["delta"] = base64.b64encode(bytes(1920 * 2)).decode()
+        elif event["type"] == "response.output_audio.done":
+            record["time_s"] = 100.215
+        elif event["type"] == "response.done":
+            record["time_s"] = 100.22
+            event["response"].update(status="cancelled", status_details={"reason": "interrupted"})
+    trace.sort(key=lambda record: record["time_s"])
+    result = evaluate_trace(trace, profile="qwen3-omni-d2-80ms")
+    assert result["status"] == "pass", result["violations"]
+    assert result["metrics"]["responses_interrupted"] == 1
+    assert result["metrics"]["output_audio_s"] == pytest.approx(0.16)
+
+
 @pytest.mark.parametrize(
     ("event_type", "key", "value", "violation"),
     [

@@ -59,7 +59,6 @@ REQUIRED_CAPABILITIES = {
     "proactive_output": False,
     "pressure_policy": "reject",
     "strict_order": True,
-    "supports_server_interrupt": False,
     "supports_resume": False,
 }
 
@@ -92,7 +91,7 @@ TURN_BASED_TERMINALS = {
     ("completed", "empty_turn"),
     ("incomplete", "max_output_tokens"),
 }
-TURN_BASED_INTERRUPTED_TERMINAL = ("cancelled", "interrupted")
+INTERRUPTED_TERMINAL = ("cancelled", "interrupted")
 # note (jeffro): a cascade ends a reply whose speech service failed this way and goes on with the session, so the session kept the protocol; it is counted on its own rather than as a protocol failure.
 TURN_BASED_SPEECH_FAILED_TERMINAL = ("failed", "speech_error")
 TURN_BASED_OBSERVATIONS = (
@@ -171,9 +170,15 @@ def evaluate_trace(
     turn_based = profile_contract.protocol == "turn_based"
     unit_duration_ms = profile_contract.native_unit_ms
     input_bytes_per_unit = INPUT_SAMPLE_RATE * unit_duration_ms // 1000 * 2
+    native_terminals = NATIVE_ENDED_TERMINALS
+    if profile_contract.supports_server_interrupt:
+        native_terminals = native_terminals | {INTERRUPTED_TERMINAL}
+    else:
+        pass
     required_capabilities = {
         **(TURN_BASED_CAPABILITIES if turn_based else REQUIRED_CAPABILITIES),
         "native_unit_ms": unit_duration_ms,
+        "supports_server_interrupt": profile_contract.supports_server_interrupt,
         "output_audio_format": {
             "type": "audio/pcm",
             "rate": profile_contract.output_sample_rate,
@@ -525,7 +530,7 @@ def evaluate_trace(
                         reason = details.reason if details is not None else None
                         if (
                             turn_based
-                            and (status, reason) == TURN_BASED_INTERRUPTED_TERMINAL
+                            and (status, reason) == INTERRUPTED_TERMINAL
                         ):
                             # note (luojiaxuan): The server can put a reply on the
                             # wire after the speech_started that cancels it, so each
@@ -536,6 +541,11 @@ def evaluate_trace(
                                 f"response {response_id} cancelled by an interruption "
                                 "without a preceding speech_started",
                             )
+                            interruptions += 1
+                        elif (
+                            profile_contract.supports_server_interrupt
+                            and (status, reason) == INTERRUPTED_TERMINAL
+                        ):
                             interruptions += 1
                         elif (
                             turn_based
@@ -572,7 +582,7 @@ def evaluate_trace(
                             pass
                         # note (wenyao): The pump consumes EOS before enqueueing drain.
                         check(
-                            (status, reason) not in NATIVE_ENDED_TERMINALS
+                            (status, reason) not in native_terminals
                             or not drained,
                             "native completed terminal after the drain receipt",
                         )
@@ -751,10 +761,9 @@ def evaluate_trace(
         else:
             check(
                 (response_state.terminal, response_state.reason)
-                in NATIVE_ENDED_TERMINALS,
+                in native_terminals,
                 f"response {response_id} ended {response_state.terminal}/"
-                f"{response_state.reason}, expected completed/stop or "
-                "incomplete/max_output_tokens",
+                f"{response_state.reason}, expected one of {sorted(native_terminals)}",
             )
     coverage = {
         "input_output_overlap": bool(audio_times)
@@ -784,7 +793,7 @@ def evaluate_trace(
                 "responses_interrupted": interruptions,
                 "responses_speech_failed": speech_failures,
             }
-            if turn_based
+            if turn_based or profile_contract.supports_server_interrupt
             else {}
         ),
     }
