@@ -10,6 +10,16 @@ from sglang_omni.models.auk import stages
 from sglang_omni.models.auk.dit import Attention, AuKDit, Rope
 from sglang_omni.models.auk.flow_matching import AuKFlowMatching
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
+from sglang_omni.platforms import current_platform
+
+
+@pytest.fixture
+def triton_device() -> torch.device:
+    if current_platform.device_type not in ("cuda", "xpu"):
+        pytest.skip("requires a CUDA or XPU device for the Triton kernel")
+    else:
+        pass
+    return current_platform.get_device(0)
 
 
 def make_rope(freqs: torch.Tensor) -> Rope:
@@ -17,19 +27,21 @@ def make_rope(freqs: torch.Tensor) -> Rope:
     return Rope(freqs, 1.0, freqs.cos(), freqs.sin())
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_qk_fusion_matches_native_norm_and_rope():
+def test_qk_fusion_matches_native_norm_and_rope(triton_device):
     from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
     torch.manual_seed(0)
-    attention = Attention(dim=128, heads=2, dim_head=64).cuda()
-    qkv = torch.randn(2, 17, 384, device="cuda", dtype=torch.bfloat16)
+    attention = Attention(dim=128, heads=2, dim_head=64).to(triton_device)
+    qkv = torch.randn(2, 17, 384, device=triton_device, dtype=torch.bfloat16)
     query, key, _ = qkv.chunk(3, dim=-1)
     query = attention.split_heads(query, 2, 64)
     key = attention.split_heads(key, 2, 64)
-    rope = make_rope(torch.randn(2, 17, 64, device="cuda"))
+    rope = make_rope(torch.randn(2, 17, 64, device=triton_device))
 
-    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+    with (
+        torch.inference_mode(),
+        torch.autocast(triton_device.type, dtype=torch.bfloat16),
+    ):
         expected = attention.apply_rope(
             attention.q_norm(query), attention.k_norm(key), rope
         )
@@ -37,20 +49,25 @@ def test_qk_fusion_matches_native_norm_and_rope():
             query, key, attention.q_norm, attention.k_norm, rope
         )
 
-    assert all(torch.equal(left, right) for left, right in zip(actual, expected))
+    if triton_device.type == "cuda":
+        assert all(torch.equal(left, right) for left, right in zip(actual, expected))
+    else:
+        for left, right in zip(actual, expected):
+            torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_qk_fusion_supports_native_bf16_backbone():
+def test_qk_fusion_supports_native_bf16_backbone(triton_device):
     from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
     torch.manual_seed(0)
-    attention = Attention(dim=128, heads=2, dim_head=64).cuda().to(torch.bfloat16)
-    qkv = torch.randn(2, 17, 384, device="cuda", dtype=torch.bfloat16)
+    attention = (
+        Attention(dim=128, heads=2, dim_head=64).to(triton_device).to(torch.bfloat16)
+    )
+    qkv = torch.randn(2, 17, 384, device=triton_device, dtype=torch.bfloat16)
     query, key, _ = qkv.chunk(3, dim=-1)
     query = attention.split_heads(query, 2, 64)
     key = attention.split_heads(key, 2, 64)
-    rope = make_rope(torch.randn(2, 17, 64, device="cuda"))
+    rope = make_rope(torch.randn(2, 17, 64, device=triton_device))
 
     with torch.inference_mode():
         actual = fused_qk_norm_rope(

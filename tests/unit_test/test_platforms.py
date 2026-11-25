@@ -193,6 +193,18 @@ def test_xpu_joint_rope_returns_the_kernel_for_a_supported_or_unstated_rotary_di
     assert platform.get_joint_rope_inplace_kernel() is kernel
 
 
+def test_auk_platform_hooks_default_off_and_xpu_takes_its_measured_path() -> None:
+    hooks = {
+        "enable_auk_dit_graph": (True, False),
+        "enable_auk_fused_vae_activations": (False, True),
+        "enable_auk_fused_qk_norm_rope": (False, True),
+    }
+    for hook, (default, xpu) in hooks.items():
+        assert getattr(OmniPlatform(), hook)() is default
+        assert getattr(CUDAOmniPlatform(), hook)() is default
+        assert getattr(XPUOmniPlatform(), hook)() is xpu
+
+
 def test_xpu_platform_resolves_to_the_omni_xpu_platform() -> None:
     platform = platforms.as_omni_platform(XpuSRTPlatform())
 
