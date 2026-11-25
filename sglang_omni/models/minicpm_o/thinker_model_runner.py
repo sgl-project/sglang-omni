@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -38,6 +39,12 @@ if TYPE_CHECKING:
     from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 else:
     pass
+
+
+def thinker_length_penalty(sched_req: SchedulerRequest) -> float:
+    params = sched_req.data.stage_payload.request.params or {}
+    thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+    return thinker_params.get("length_penalty", 1.0)
 
 
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
@@ -104,9 +111,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         """Scale end-of-sequence logits by each request's length_penalty."""
         logits = logits_output.next_token_logits
         for row_idx, sched_req in enumerate(requests):
-            params = sched_req.data.stage_payload.request.params or {}
-            thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
-            length_penalty = thinker_params.get("length_penalty", 1.0)
+            length_penalty = thinker_length_penalty(sched_req)
             if length_penalty == 1.0:
                 continue
             else:
@@ -117,6 +122,12 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     eos_logits / length_penalty,
                     eos_logits * length_penalty,
                 )
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Only a length_penalty or a codec suppress set changes a thinker verify row."""
+        return super().verify_rows_take_logits_hooks(requests) or any(
+            thinker_length_penalty(sched_req) != 1.0 for sched_req in requests
+        )
 
     def eos_token_id_tensor(self, device: torch.device) -> torch.Tensor:
         """Keep the EOS ids on the logits device so indexing needs no H2D copy."""
@@ -173,13 +184,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 seq.append(hidden_rows[-1].detach().clone())
 
     def after_speculative_step(
-        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+        self,
+        batch: ScheduleBatch,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: RaggedVerifyLayout | None = None,
     ) -> None:
         """Queue each request's hidden rows for the tokens this step commits.
 
         A prefill commits one token, generated from the last prompt row. A chain
         verify commits the leading rows of a request's block, the rows plain decode
-        would have produced; emission trims the block to its committed tokens.
+        would have produced; emission trims the block to its committed tokens. A
+        compact verify packs each request's block at its own start row.
         """
         model = self.outer_model
         if not self.hands_hidden_to_talker:
@@ -219,15 +236,29 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 return
             else:
                 pass
-            rows = model.speculative_hidden_rows[
-                : len(batch.reqs) * num_draft_tokens
-            ].clone()
+            hidden_rows = model.speculative_hidden_rows
+            if verify_layout is None:
+                starts = (
+                    torch.arange(len(batch.reqs), device=hidden_rows.device)
+                    * num_draft_tokens
+                )
+            else:
+                # note (0xtoward): the starts stay on the device; rows gathered past a request's
+                # own block are never emitted, since it commits at most the rows it verified.
+                starts = verify_layout.extend_start_loc[: len(batch.reqs)].to(
+                    torch.long
+                )
+            offsets = torch.arange(num_draft_tokens, device=hidden_rows.device)
+            rows_index = (starts[:, None] + offsets[None, :]).clamp_(
+                max=hidden_rows.shape[0] - 1
+            )
+            blocks = hidden_rows.index_select(0, rows_index.reshape(-1)).view(
+                len(batch.reqs), num_draft_tokens, -1
+            )
             for index in speaking:
                 request = batch.reqs[index]
-                start = index * num_draft_tokens
-                end = start + num_draft_tokens
                 self.speculative_hidden_queue.setdefault(request.rid, deque()).append(
-                    rows[start:end]
+                    blocks[index]
                 )
 
     def on_speculative_tokens(

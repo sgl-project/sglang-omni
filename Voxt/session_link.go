@@ -194,6 +194,12 @@ func (a *app) openSessions() {
 	lib := a.lib
 	logs := a.logs
 	st := a.settings
+	cleanupLatency, cleanupDiagnostic := cleanupLatencyFromEnv()
+	if cleanupDiagnostic != "" {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: cleanupDiagnostic})
+	} else if cleanupLatency.AutoFallbackAfter > 0 {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "experimental cleanup fallback enabled: " + cleanupLatency.AutoFallbackAfter.String() + " after Stop"})
+	}
 	a.mgr = session.New(session.Config{
 		Audio:  session.HelperAudio{H: sup},
 		Text:   a.textIO(), // family_runtime.go: the family's paste rule
@@ -219,16 +225,19 @@ func (a *app) openSessions() {
 		BoxReview:         a.boxShare.waitForReview,
 		Resolve:           resolver(lm),
 		History:           lib.store.History(),
+		Languages:         readingLanguages, // settings_locale.go
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
-		Notes:    lib.store.Notes(),
-		Settings: st.Get,
-		Locale:   i18n.Locale,
-		Scene:    a.sceneConfig(), // appenhance.go
-		Self:     os.Getpid(),
-		Activate: func(pid int) bool { ok, _ := activateTarget(pid); return ok },
-		OnChange: func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
+		Snippets:       snippetsReader(lib.store.Documents()),
+		Notes:          lib.store.Notes(),
+		Settings:       st.Get,
+		Locale:         i18n.Locale,
+		Scene:          a.sceneConfig(), // appenhance.go
+		CleanupLatency: cleanupLatency,
+		Self:           os.Getpid(),
+		Activate:       func(pid int) bool { ok, _ := activateTarget(pid); return ok },
+		OnChange:       func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
 		Log: func(level, msg string) {
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: sessionSource, Message: msg})
 		},

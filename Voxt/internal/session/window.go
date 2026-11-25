@@ -72,3 +72,13 @@ func (r *run) previewImage(kind string, jpeg []byte) {
 		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
 	})
 }
+
+func (r *run) previewImageContext(ctx context.Context, kind string, jpeg []byte) {
+	r.m.updateIf(r, func(s *Snapshot) bool {
+		if ctx.Err() != nil || r.ctx.Err() != nil || !r.cleanupDecisionOpenLocked() {
+			return false
+		}
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+		return true
+	})
+}

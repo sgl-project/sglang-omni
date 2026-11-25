@@ -14,6 +14,7 @@ type historyDemoStep struct {
 	menu    bool
 	context bool
 	click   bool
+	hover   bool // move the pointer onto it: controls that show under the pointer
 	command string
 	mods    ui.Modifiers
 	key     ui.Key

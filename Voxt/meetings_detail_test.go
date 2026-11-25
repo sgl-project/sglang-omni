@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -304,5 +305,42 @@ func TestMeetingDetailIsWideAndScrollsOnce(t *testing.T) {
 	frames(tt)
 	if r, ok := tt.Find("line 299 " + long); !ok || r.X > a.navUI.sideW+sp6+80 {
 		t.Fatalf("in a narrow window the details are not the page alone: %v %v", r, ok)
+	}
+}
+
+// waitLoadingLine lets a "Loading…" line (want) show: it waits for the
+// read to last (loadingShows).
+func waitLoadingLine(tester *ui.Tester, want string) {
+	if want == i18n.T("Loading…") {
+		tester.Advance(loadingDelay)
+		frames(tester)
+	}
+}
+
+// Transcribe again shows only for a finished meeting that still has its
+// recording (by default it is deleted once transcribed: the item then
+// had nothing to work on), and the menu only with an item in it.
+func TestMeetingDetailReprocessNeedsRecording(t *testing.T) {
+	translator := i18n.NewTranslator("en")
+	for _, tc := range []struct {
+		name               string
+		status             store.MeetingStatus
+		audio              string
+		llm                bool
+		reprocess, more    bool
+		continueProcessing bool
+	}{
+		{"finished, recording deleted", store.MeetingDone, "", true, false, true, false},
+		{"finished, recording deleted, no language model", store.MeetingDone, "", false, false, false, false},
+		{"finished, recording kept", store.MeetingDone, "m1", false, true, true, false},
+		{"interrupted, recording kept", store.MeetingInterrupted, "m1", false, false, true, true},
+	} {
+		state := buildMeetingDetailViewState(translator, meetingDetailStateInput{
+			Meeting: store.Meeting{ID: "m1", Status: tc.status, Mode: store.MeetingModeMeeting, Audio: tc.audio}, CanUseLLM: tc.llm,
+		})
+		if state.CanReprocess != tc.reprocess || state.ShowMore != tc.more || state.CanContinue != tc.continueProcessing {
+			t.Errorf("%s: reprocess %v, menu %v, continue %v; want %v, %v, %v", tc.name,
+				state.CanReprocess, state.ShowMore, state.CanContinue, tc.reprocess, tc.more, tc.continueProcessing)
+		}
 	}
 }
