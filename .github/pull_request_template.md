@@ -23,6 +23,7 @@
 ## Checklist
 
 - [ ] Format your code according with pre-commit.
+- [ ] If this PR changes docs or claims a performance difference, paste the contributor checklist from `CONTRIBUTING.md`.
 - [ ] Add unit tests.
 - [ ] Update documentation / docstrings / example tutorials as needed.
 - [ ] Provide throughput / latency benchmark results and accuracy evaluation results as needed.
