@@ -14,7 +14,6 @@
 #include "common/kv_cache.h"
 #include "common/text.h"
 #include "common/transcription.h"
-#include "qwen3_asr/realtime.h"
 
 namespace qwen3_asr {
 
@@ -534,8 +533,7 @@ TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     } else {
     }
   }
-  // Scripts written with spaces need one between pieces; CJK text does not.
-  merged.text = JoinTranscriptParts(texts);
+  merged.text = omni_common::JoinTranscriptParts(texts);
   return merged;
 }
 
