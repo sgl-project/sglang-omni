@@ -74,6 +74,7 @@ Opening at each start of the app	L	TestOpeningLength	none
 Settings and appearance	L	TestWindowTransparencySettings	none
 Settings and appearance	M	TestTextFitsItsOwnWidth	none
 Settings and appearance	M	TestTranslationsFit	none
+Feature settings navigation	L	TestFeaturesMovedToSettings	none
 Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
 Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded

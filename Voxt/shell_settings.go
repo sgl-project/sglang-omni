@@ -4,8 +4,8 @@ package main
 // /settings/{section}, and the theme. The dialog is AudioSmith's, with the sections
 // every app of the family has and VoxtNew's own: Audio
 // (settings_audio.go), Overlay style (settings_overlay.go) and the table
-// of Shortcuts (settings_shortcuts.go). The features' own settings live
-// on their pages (Transcribe, Translate, Rewrite…).
+// of Shortcuts (settings_shortcuts.go) and a section for each feature
+// (feature_page.go).
 
 import (
 	"strings"
@@ -34,6 +34,7 @@ type settingsForm struct {
 	searchFocus bool
 	find        finder // Return steps through the matches (find_marks.go)
 	findN       int    // the matches in the names the section showed last
+	tryHidden   bool   // the current feature search hides its Try card
 }
 
 // settingsSectionIcon is a settings section's icon.
@@ -41,6 +42,12 @@ func settingsSectionIcon(id string) icons.Icon {
 	switch id {
 	case "general":
 		return icons.Settings
+	case "transcribe":
+		return transcribeIcon
+	case "translate":
+		return translateIcon
+	case "rewrite":
+		return rewriteIcon
 	case "models":
 		return modelsIcon
 	case "language-models":
@@ -96,12 +103,13 @@ type settingsDialogLocalUI struct {
 	Storage       *settingsStorageLocalUI
 	Updates       *updatesLocalUI
 	Models        *modelsLocalUI
+	Feature       *featureUI
 	Remote        remoteLocalUI
 }
 
 // settingsDialog is Settings (⌘,): a dialog over the page, its sections
 // in a column on the left (AudioSmith 0.3: Typeless-style).
-func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI) {
+func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI, featureTryActions tryCardActions) {
 	if !state.Open {
 		return
 	}
@@ -113,6 +121,12 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 	w, h := c.Size()
 	dw, dh := settingsDialogSize(t, w, h)
 	ui.DialogBase(c.Key("settings-dialog"), local.Open, func(backdrop, panel ui.Element) {
+		// Moved feature pages keep their shortcuts inside the modal; the window's wait behind it.
+		for _, page := range state.ShortcutPages {
+			if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(page.Num-1)) {
+				actions.navigate(page.Path)
+			}
+		}
 		backdrop.Background(ui.RGBA(0, 0, 0, 0.32))
 		panel.Width(dw).Height(dh).Radius(px(t, radiusCard)).Background(k.Bg).Clip().
 			Shadow(0, 16, 48, 0, ui.RGBA(0, 0, 0, 0.28)).Label(i18n.T("Settings"))
@@ -194,13 +208,14 @@ func settingsDialog(c *ui.Context, state settingsDialogViewState, actions settin
 							settingsSearchQuery, settingsSearchHits = query, 0
 							settingsFind.query, settingsFind.n, settingsFind.cur, settingsFind.reveal = fq, 0, f.find.cur, moved
 							body := ui.Column(c).Gap(px(t, sp4))
-							body.Children(func() { settingsSection(c, r, state, actions, local) })
+							body.Children(func() { settingsSection(c, r, state, actions, local, featureTryActions) })
+							f.tryHidden = query != "" && settingsSearchHits == 0
 							settingsSearchQuery, settingsFind.query = "", ""
 							if settingsFind.n != f.findN {
 								f.findN = settingsFind.n
 								c.AnimationFrame() // the count over the section shows it
 							}
-							if query != "" && settingsSearchHits == 0 { // its other parts (lists, cards) do not match either
+							if f.tryHidden { // its other parts (lists, cards) do not match either
 								body.Invisible().Height(0)
 								caption(c, i18n.T("Nothing in this section matches your search."))
 							}
@@ -231,7 +246,7 @@ func settingsDialogSize(t *ui.Theme, w, h float32) (dw, dh float32) {
 }
 
 // settingsSection builds the section of the settings dialog r shows.
-func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI) {
+func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, actions settingsDialogActions, local settingsDialogLocalUI, featureTryActions tryCardActions) {
 	// A section action changes the router before the next model rebuild.
 	if state.Path != r.Path() {
 		return
@@ -244,6 +259,8 @@ func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, 
 		switch s.ID {
 		case "general":
 			generalSettings(c, *state.General, actions, &local.Form.settingsGeneralLocalUI)
+		case "transcribe", "translate", "rewrite":
+			featureSettings(c, state.Feature, featurePackDownloads{actions}, local.Feature, featureTryActions)
 		case "models":
 			modelsSettingsSection(c, state.Models, actions, local.Models)
 		case "language-models":

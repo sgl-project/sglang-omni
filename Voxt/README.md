@@ -65,7 +65,7 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
-Every shortcut can be changed on its feature's page, and Settings → Shortcuts has presets: right ⌥, fn, ⌘ combinations, or the middle mouse button. ⌃⌥V pastes the last result again.
+Every shortcut can be changed in its feature's section in Settings, and Settings → Shortcuts has presets: right ⌥, fn, ⌘ combinations, or the middle mouse button. ⌃⌥V pastes the last result again.
 
 ## Install
 

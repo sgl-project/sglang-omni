@@ -127,18 +127,20 @@ func (a *app) featureEndWordModel() *featureEndWordViewState {
 	return buildFeatureEndWordViewState(i18n.CurrentTranslator(), input)
 }
 
-// featurePackDownloads is the feature pages' actions: downloading the
+// featurePackDownloads is the feature settings' actions: downloading the
 // recommended speech model beside a feature's picker fetches its
 // catalogue draft too, as the guide's pack does, so Faster transcription
 // is on from the first download (#4069). Another model's download stays
-// the model alone, as on the Speech models page.
-type featurePackDownloads struct{ *app }
+// the model alone, as in the Speech models section.
+type featurePackDownloads struct{ featureActions }
 
-func (actions featurePackDownloads) downloadModel(id string) {
-	actions.app.downloadModel(id)
-	if id == actions.obSpeech() {
+func (actions featurePackDownloads) downloadModel(id string) { actions.downloadModelPack(id) }
+
+func (a *app) downloadModelPack(id string) {
+	a.downloadModel(id)
+	if id == a.obSpeech() {
 		if mod, ok := models.Lookup(id); ok && mod.Draft != "" {
-			actions.app.downloadModel(mod.Draft)
+			a.downloadModel(mod.Draft)
 		}
 	}
 }

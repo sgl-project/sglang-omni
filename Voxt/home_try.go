@@ -39,7 +39,13 @@ func (a *app) tryPlace(kind store.Kind, target proto.App) tryPlace {
 		}
 		return placeIgnore
 	}
-	if a.settingsOpen || a.textFocused() {
+	if a.textFocused() {
+		return placeNone
+	}
+	if a.settingsOpen {
+		if a.setRouter.Path() == "/"+string(kind) && !a.settingsForm.tryHidden {
+			return placeFeature
+		}
 		return placeNone
 	}
 	// The card shows only on Home: off it, a card left open takes nothing.
