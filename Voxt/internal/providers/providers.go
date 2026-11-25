@@ -89,8 +89,16 @@ func Model(p settings.Provider) string {
 	return pr.DefaultModel
 }
 
+// localNames are the endings of names that are not on the internet: mDNS,
+// a router's, RFC 8375's and ICANN's private ones, and a tailnet's.
+var localNames = []string{".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".ts.net"}
+
+// sharedNet is the shared address range (RFC 6598), which tailnets use.
+var sharedNet = net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
+
 // overNetwork says a setup's server is on the internet, not this Mac or its
-// local network.
+// local network, by its address or its name's spelling: names are not
+// looked up.
 func overNetwork(p settings.Provider) bool {
 	pr, err := Config(p).Resolve()
 	if err != nil {
@@ -102,9 +110,10 @@ func overNetwork(p settings.Provider) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if ip := net.ParseIP(host); ip != nil {
-		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast()
+		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !sharedNet.Contains(ip)
 	}
-	return !core.IsLoopback(host) && !strings.HasSuffix(host, ".local")
+	return strings.Contains(host, ".") && !core.IsLoopback(host) &&
+		!slices.ContainsFunc(localNames, func(end string) bool { return strings.HasSuffix(host, end) })
 }
 
 // What a setup can lack (Missing).
