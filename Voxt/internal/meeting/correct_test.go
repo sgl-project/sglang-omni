@@ -295,9 +295,11 @@ func TestCorrectTranscriptWriteFailureIsWhole(t *testing.T) {
 	}
 }
 
-// A correction that fails part-way leaves every line as recognised:
-// nothing is corrected by halves, unmarked.
-func TestCorrectTranscriptFailureIsWhole(t *testing.T) {
+// A batch whose request fails keeps the recognised text, and the other
+// batches still land (the per-part fallback of dictation, 5.31a): a
+// flaky request no longer undoes the whole correction. The failure still
+// surfaces, so it is logged.
+func TestCorrectTranscriptBatchFailureKeepsOtherBatches(t *testing.T) {
 	var segs []store.MeetingSegment
 	for i := 0; i <= correctBatchLines; i++ {
 		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, StartMS: int64(i * 1000), EndMS: int64(i*1000 + 900), Text: "Box line"})
@@ -315,8 +317,12 @@ func TestCorrectTranscriptFailureIsWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, s := range got {
-		if s.Text != "Box line" {
-			t.Fatalf("line %d was corrected by halves: %q", s.Idx, s.Text)
+		want := "Voxt line"
+		if s.Idx == correctBatchLines {
+			want = "Box line" // the failed batch's line stays as recognised
+		}
+		if s.Text != want {
+			t.Fatalf("line %d: %q, want %q", s.Idx, s.Text, want)
 		}
 	}
 }
