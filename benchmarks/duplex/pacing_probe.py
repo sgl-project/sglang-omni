@@ -48,8 +48,6 @@ DEFAULT_REPLY_AUDIO_BYTES = 3528
 DEFAULT_REPLIES_PER_APPEND = 3
 # Late packets past this are saved with their time, to line up processes of one host.
 LATE_PACKET_RECORD_S = 0.02
-# ru_maxrss is in kilobytes on Linux.
-KILOBYTES_PER_MEGABYTE = 1024
 # Room for session setup and the close handshake after the last packet.
 SESSION_TIMEOUT_MARGIN_S = 30.0
 
@@ -108,6 +106,12 @@ class ProbeSamples(BaseModel):
     wall_s: float
     cpu_s: float
     peak_rss_megabytes: float
+
+
+def peak_resident_memory_mebibytes() -> float:
+    """Darwin reports ru_maxrss in bytes and Linux reports it in KiB."""
+    units_per_mebibyte = 1024**2 if platform.system() == "Darwin" else 1024
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / units_per_mebibyte
 
 
 def percentiles_ms(values_s: list[float], prefix: str) -> dict[str, JsonValue]:
@@ -378,8 +382,7 @@ async def run_probe(
         ],
         wall_s=wall_s,
         cpu_s=cpu_s,
-        peak_rss_megabytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        / KILOBYTES_PER_MEGABYTE,
+        peak_rss_megabytes=peak_resident_memory_mebibytes(),
     )
     (output / SAMPLES_FILE).write_text(samples.model_dump_json())
     # A 90 s session leaves about 10 MB of trace, mostly base64 audio.
@@ -910,8 +913,7 @@ async def record_probe(
         "recording_wall_s": load["recording_wall_s"],
         "wall_s": wall_s,
         "process_cpu_cores": cpu_s / wall_s,
-        "peak_rss_megabytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        / KILOBYTES_PER_MEGABYTE,
+        "peak_rss_megabytes": peak_resident_memory_mebibytes(),
         "python": platform.python_version(),
         "websockets": websockets.__version__,
     }
