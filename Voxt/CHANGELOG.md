@@ -34,6 +34,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Cleaned-up text is ready sooner after you stop** (#4618): when an internet language model cleans up Transcribe, Voxt asks it for the whole text while you pause and when you stop, and uses that answer when the final text is the same or differs only in punctuation or a word or two. It sends more requests than before, and the sentence-by-sentence cleaning of Clean up while you speak does not run with these models. With Clean up while you speak off, nothing is sent before you stop.
 - **Long English dictations are cleaned up in fewer pieces** (#4618): a piece is at most 300 words, not 300 characters.
 - **The recording waveform glides** (#4574): the bars used to stand still and then jump two places ten times a second, because a microphone hands its audio over a tenth of a second at a time. They now move with every screen refresh, each level passing from bar to bar in the time it took to record. The bars show the same levels as before, at most a tenth of a second later. Reduce motion keeps the old stepping bars.
+- **The first words appear sooner with MOSS-Transcribe-Diarize**: the first live preview now starts after 0.75 s of speech instead of 1.25 s, so the first text shows up about half a second earlier; the final transcript is unchanged.
 
 ### Fixed
 - **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording. A microphone lost while its speech-recognition connection hangs (after sleep, or a network loss) reconnects after five seconds instead of recording nothing more. With the final pass turned off, a last line that takes longer than five seconds to transcribe after Stop is not saved.
@@ -79,6 +80,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **整理好的文字出来得更快**（#4618）：互联网上的语言模型整理转录时，你一停顿、一停止，Voxt 就先请求整理全文；最终文字和当时一样，或只差标点、一两个词，就直接用那份回答。请求会比以前多；用这些模型时，“边说边整理”不再按句进行。关掉“边说边整理”，停止前就什么都不发。
 - **长英文听写整理时切得更少**（#4618）：每段最多 300 个单词，不再按 300 个字符算。
 - **录音波形变顺滑了**（#4574）：麦克风每 0.1 秒才交一次音频，以前波形会停一下，再一次跳两格，一秒跳十次。现在每次屏幕刷新都在动，每个音量按它录下来的时间从一根条滑到下一根。显示的还是原来的音量，最多晚 0.1 秒。开启“减弱动态效果”时仍是原来的逐格波形。
+- **MOSS-Transcribe-Diarize 出字更早**：第一条实时预览在说满 0.75 秒时就开始（原来是 1.25 秒），第一个字约早半秒出现；最终转录稿不变。
 
 #### 修复
 - **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。麦克风断开时如果语音识别连接卡住（睡眠唤醒后或断网），5 秒后照样重连，不会之后什么都录不到。关掉最终转写时，停止后超过 5 秒才转写出来的最后一句不会保存。
