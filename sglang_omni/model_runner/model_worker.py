@@ -182,6 +182,16 @@ class ModelWorker:
 
         from sglang.srt.configs.model_config import ModelConfig
 
+        # note (Nathan Roll): importing ModelConfig registers SGLang's own Qwen3ASRConfig; re-register ours afterwards so flat native HF checkpoints parse cleanly.
+        if self.model_arch_override == "Qwen3ASRForConditionalGeneration":
+            from sglang_omni.models.qwen3_asr.configuration_qwen3_asr import (
+                register_qwen3_asr_hf_config,
+            )
+
+            register_qwen3_asr_hf_config()
+        else:
+            pass
+
         self.model_config = ModelConfig.from_server_args(
             server_args=self.server_args,
             is_draft_model=False,
@@ -240,10 +250,18 @@ class ModelWorker:
         sub_config_attr, text_config_attr = entry
         sub_cfg = getattr(model_config.hf_config, sub_config_attr, None)
         if sub_cfg is None:
-            return
+            if text_config_attr is None:
+                return
+            else:
+                text_cfg = getattr(model_config.hf_config, text_config_attr, None)
+                if text_cfg is None:
+                    return
+                else:
+                    pass
         else:
-            pass
-        text_cfg = getattr(sub_cfg, text_config_attr) if text_config_attr else sub_cfg
+            text_cfg = (
+                getattr(sub_cfg, text_config_attr) if text_config_attr else sub_cfg
+            )
         model_config.hf_text_config = text_cfg
         model_config.num_attention_heads = text_cfg.num_attention_heads
         model_config.num_key_value_heads = text_cfg.num_key_value_heads

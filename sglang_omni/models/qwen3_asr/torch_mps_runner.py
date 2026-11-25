@@ -40,14 +40,25 @@ def resolve_model_path(model_path: str) -> Path:
 
 def text_config(model_path: Path) -> Qwen3Config:
     root_config = json.loads((model_path / "config.json").read_text())
-    text_config = dict(root_config["thinker_config"]["text_config"])
+    if "thinker_config" in root_config:
+        raw_text_config = dict(root_config["thinker_config"]["text_config"])
+    else:
+        raw_text_config = dict(root_config["text_config"])
+        for attribute in ("tie_word_embeddings", "eos_token_id", "pad_token_id"):
+            if (
+                raw_text_config.get(attribute) is None
+                and root_config.get(attribute) is not None
+            ):
+                raw_text_config[attribute] = root_config[attribute]
+            else:
+                pass
     for field in ("rope_parameters", "rope_scaling"):
-        rope_config = text_config.get(field)
+        rope_config = raw_text_config.get(field)
         if isinstance(rope_config, dict):
-            text_config[field] = drop_mrope_keys(rope_config)
+            raw_text_config[field] = drop_mrope_keys(rope_config)
         else:
             pass
-    return Qwen3Config(**text_config)
+    return Qwen3Config(**raw_text_config)
 
 
 def load_language_weights(
@@ -68,12 +79,28 @@ def load_language_weights(
                     "thinker.model."
                 ) or checkpoint_name.startswith("thinker.lm_head."):
                     model_name = checkpoint_name.removeprefix("thinker.")
-                    if model_name in expected:
-                        state_dict[model_name] = f.get_tensor(checkpoint_name)
-                    else:
-                        pass
+                elif checkpoint_name.startswith("model.language_model."):
+                    model_name = "model." + checkpoint_name.removeprefix(
+                        "model.language_model."
+                    )
+                elif checkpoint_name.startswith("lm_head."):
+                    model_name = checkpoint_name
+                else:
+                    continue
+                if model_name in expected:
+                    state_dict[model_name] = f.get_tensor(checkpoint_name)
                 else:
                     pass
+
+    if (
+        getattr(language_model.config, "tie_word_embeddings", False)
+        and "lm_head.weight" in expected
+        and "lm_head.weight" not in state_dict
+        and "model.embed_tokens.weight" in state_dict
+    ):
+        state_dict["lm_head.weight"] = state_dict["model.embed_tokens.weight"]
+    else:
+        pass
 
     missing = expected - set(state_dict)
     if missing:
