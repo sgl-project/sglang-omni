@@ -37,7 +37,7 @@ class MandarinRuntime(Runtime):
                 self.device,
             )
 
-    def _create_session(self) -> D2LiveSession:  # noqa: leading-underscore -- D2 session factory hook.
+    def _create_session(self) -> D2LiveSession:  # noqa: leading-underscore -- D2 hook
         session = super()._create_session()
         generated_text = session.macro_session.generated_text
         model = self.model
