@@ -187,24 +187,27 @@ func TestModelsDemoTooltips(t *testing.T) {
 			selectMeetingDemoFixture(t, host, locale+"/models-page-normal")
 			state := host.modelsViewState()
 			var single modelRowViewState
+			var family modelCardViewState
 			for _, card := range state.ASR {
-				if card.FamilyName == "" {
+				if card.FamilyName == "" && single.ID == "" {
 					single = card.Rows[0]
-					break
+				}
+				if card.FamilyName != "" && family.FamilyName == "" {
+					family = card
 				}
 			}
-			if single.ID == "" || state.Dictation == nil {
-				t.Fatal("the fixture needs a single-model card and System dictation")
+			if single.ID == "" || family.FamilyName == "" || state.Dictation == nil {
+				t.Fatal("the fixture needs a single-model card, a family card and System dictation")
 			}
 			for _, test := range []struct {
 				name   string
 				anchor string
 				want   string
 			}{
-				{name: "family languages", anchor: state.ASR[0].FamilyName, want: state.ASR[0].Languages},
+				{name: "family languages", anchor: family.FamilyName, want: family.Languages},
 				{name: "single-model languages", anchor: single.Name, want: uitext.ModelLanguages(single.ID)},
 				{name: "dictation languages", anchor: state.Dictation.Rows[0].Name, want: uitext.ModelLanguages(state.Dictation.Rows[0].ID)},
-				{name: "family status", anchor: state.ASR[0].Rows[0].SizeText, want: state.ASR[0].Rows[0].FamilyText},
+				{name: "family status", anchor: family.Rows[0].SizeText, want: family.Rows[0].FamilyText},
 			} {
 				t.Run(test.name, func(t *testing.T) {
 					if test.want == "" {

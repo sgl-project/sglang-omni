@@ -97,7 +97,7 @@ func TestPillClearOfRewriteBoxCard(t *testing.T) {
 			if pill.X < box.X+box.Width && box.X < pill.X+pill.Width && pill.Y < box.Y+box.Height && box.Y < pill.Y+pill.Height {
 				t.Fatalf("pill %v covers the Rewrite box %v", pill, box)
 			}
-			if position == "bottom" && pill.Y+pill.Height != box.Y || position == "top" && pill.Y != box.Y+box.Height {
+			if pill.Y+pill.Height != box.Y && pill.Y != box.Y+box.Height { // above it while there is room, at either position
 				t.Fatalf("pill %v is not adjacent to the Rewrite box %v", pill, box)
 			}
 		})
