@@ -20,6 +20,9 @@ func TestHeadMatch(t *testing.T) {
 		{"a correction", "我们周二开会。", "我们周二不对周三开会。", "我们周二开会。", ""},
 		{"a question", "你来。", "你来？", "你来。", ""},
 		{"many differences", "今天天气真好我们出去玩吧。", "昨天雨很大大家都没有出门啊。", "今天天气真好，我们出去玩。", ""},
+		{"many words more", "We ship on Friday.", "We ship the new build with the fixes for the two crash reports on Friday.", "We ship on Friday.", ""},
+		{"many words less", "We ship the new build with the fixes on Friday.", "We ship on Friday.", "We ship the new build with the fixes on Friday.", ""},
+		{"three words", "这个方案很好。", "这个方案真的很好。", "这个方案很好。", "这个方案真的很好。"},
 		{"not in the answer", "I like the read car.", "I like the red car.", "The auto is nice.", ""},
 		{"twice in the answer", "在广场在广场。", "在广场在河边。", "在广场在广场。", "在广场在河边。"},
 	} {

@@ -8,15 +8,18 @@ import (
 )
 
 // A clean-up asked about the live text serves the final text too when
-// the two say the same but for punctuation, or differ in a word or two
-// (headChanges): the words are put right in the answer (putRight).
-// Anything else is asked again.
+// the two say the same but for punctuation, or differ in one or two places
+// by a few words (headChanges): the words are put right in the answer
+// (putRight). Anything else is asked again.
 
 const (
-	// headSpans is how many stretches of words may differ, and headWords
-	// how long what differs, with the words between, may be.
-	headSpans = 2
-	headWords = 60
+	// headSpans is how many stretches of words may differ, headChangeWords
+	// the most words put right in one, which go into the answer as they
+	// were recognised, and headWords how long what differs, with the words
+	// between, may be.
+	headSpans       = 2
+	headChangeWords = 3
+	headWords       = 60
 	// headContext is the most words on each side that place a difference
 	// in an answer.
 	headContext = 5
@@ -58,6 +61,7 @@ var (
 	headNumber  = regexp.MustCompile(`\p{N}|[零〇一二两三四五六七八九十百千万亿点]{2}`)
 	headCue     = regexp.MustCompile(`不|没|错|改|等等|是说|就是|那个|\b(?:no|not|wait|sorry|actually|mean|rather|instead|oh|never|don't)\b`)
 	headLetters = regexp.MustCompile(`(?i)\b[a-z](?:[ .,-]+[a-z])+\b`)
+	headWord    = regexp.MustCompile(`[\p{L}\p{N}]`)
 	headDigits  = strings.NewReplacer("零", "0", "〇", "0", "一", "1", "二", "2", "两", "2", "三", "3", "四", "4", "五", "5", "六", "6", "七", "7", "八", "8", "九", "9", "点", ".", ",", "", "，", "", " ", "")
 )
 
@@ -83,7 +87,7 @@ func headChanges(old []spokenWord, oldText, text string) ([]headChange, bool) {
 		switch {
 		case !slices.ContainsFunc(old[s.i1:s.i2], not(filler)) && !slices.ContainsFunc(now[s.j1:s.j2], not(filler)):
 		case headDigits.Replace(strings.ToLower(was)) == headDigits.Replace(strings.ToLower(is)):
-		case headLetters.MatchString(is) || abbreviated(oldText, old, s.i1, s.i2) || abbreviated(text, now, s.j1, s.j2) ||
+		case s.i2-s.i1 > headChangeWords || s.j2-s.j1 > headChangeWords || headLetters.MatchString(is) || abbreviated(oldText, old, s.i1, s.i2) || abbreviated(text, now, s.j1, s.j2) ||
 			headNumber.MatchString(was) || headNumber.MatchString(is) || headCue.MatchString(strings.ToLower(was)) || headCue.MatchString(strings.ToLower(is)) ||
 			slices.ContainsFunc(old[s.i1:s.i2], markWord) || slices.ContainsFunc(now[s.j1:s.j2], markWord):
 			return nil, false
@@ -105,7 +109,7 @@ func not[T any](f func(T) bool) func(T) bool { return func(v T) bool { return !f
 // markWord says whether w is a mark, not a word: its place in the answer
 // may be gone.
 func markWord(w spokenWord) bool {
-	return !regexp.MustCompile(`[\p{L}\p{N}]`).MatchString(w.text)
+	return !headWord.MatchString(w.text)
 }
 
 // span is words i1:i2 of one text, j1:j2 of the other.

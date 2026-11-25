@@ -38,8 +38,8 @@ const (
 // pauses, and at Stop. The Final is often that text, and its requests then
 // are the ones asked already: they take the answers under way (askPart)
 // instead of asking, also when the Final says the same but for punctuation
-// or a word or two (headmatch.go). The requests the Final does not need
-// are given up.
+// or a few words (headmatch.go). The requests the Final does not need are
+// given up.
 //
 // What is asked is the whole text, as after Stop: a stretch cleaned alone
 // does not know what is said later, and cannot take back what it wrote.
@@ -240,7 +240,7 @@ func (h *headStart) drop() {
 	}
 }
 
-// near is a call for a part that says what text says but for a word or two
+// near is a call for a part that says what text says but for a few words
 // at most, and the words its answer must be put right for; nil for none.
 func (h *headStart) near(req llm.Request, text string) (*headCall, []spokenWord, []headChange) {
 	last := len(req.Messages) - 1
