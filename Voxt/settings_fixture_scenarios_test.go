@@ -115,6 +115,11 @@ func settingsFixtureScenarios() []meetingFixtureScenario {
 		}
 		scenarios = append(scenarios, scenario)
 	}
+	systemAudioAsked := newSettingsFixtureScenario("settings-permissions-system-audio-asked", "permissions")
+	systemAudioAsked.settings.permissions = permissionsStateInput{
+		Microphone: permission.Granted, Accessibility: true, SpeechRecognition: permission.Granted, SystemAudioAsked: true,
+	}
+	scenarios = append(scenarios, systemAudioAsked)
 
 	appearance := newSettingsFixtureScenario("settings-appearance-dark-icons-reduce-motion", "appearance")
 	appearance.settings.preferences.Appearance.Theme = "dark"

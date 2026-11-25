@@ -191,9 +191,6 @@
         "problems": null,
         "problem_codes": null,
         "used_by": null
-      },
-      "return_finish": {
-        "on": true
       }
     },
     "models": {
@@ -243,7 +240,8 @@
       "cleanup": {
         "enhance": true,
         "cleanup": true,
-        "structure": false
+        "structure": false,
+        "while_speaking": true
       }
     },
     "prompt": {

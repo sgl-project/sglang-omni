@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/historyapi"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 )
@@ -54,7 +55,7 @@ func (a *app) closeTranscribeSocket() {
 // fileRecognizer is Transcribe's speech model with the language hint of
 // dictation, or lang when the command gives one. It reads the settings
 // on the main thread.
-func (a *app) fileRecognizer(ctx context.Context, lang string) (fileasr.Recognize, error) {
+func (a *app) fileRecognizer(ctx context.Context, languageTag string) (fileasr.Recognize, error) {
 	type pick struct {
 		id, lang string
 		ok       bool
@@ -73,16 +74,16 @@ func (a *app) fileRecognizer(ctx context.Context, lang string) (fileasr.Recogniz
 	if !p.ok {
 		return nil, errors.New("no speech model is installed for Transcribe: set one up on Voxt's Speech models page")
 	}
-	if lang == "" {
-		lang = p.lang
+	if languageTag == "" {
+		languageTag = p.lang
 	}
 	prov, _, err := a.local.ASR(ctx, p.id)
 	if err != nil {
 		return nil, err
 	}
 	return func(ctx context.Context, pcm []byte) (string, error) {
-		res, err := asr.Recognize(ctx, prov, pcm, lang, nil, "", asr.Feed{})
-		return res.Text, err
+		res, err := asr.Recognize(ctx, prov, pcm, languageTag, nil, "", asr.Feed{})
+		return lang.RenderChineseScript(res.Text, languageTag), err
 	}, nil
 }
 

@@ -1,0 +1,77 @@
+{
+  "name": "permission-system-audio-asked",
+  "kind": "onboarding",
+  "onboarding": {
+    "open": true,
+    "step": 1,
+    "step_titles": [
+      "欢迎",
+      "权限",
+      "模型",
+      "转录",
+      "翻译",
+      "改写",
+      "更多"
+    ],
+    "passed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "title": "权限",
+    "subtitle": "Voxt 需要麦克风来听你说话，需要辅助功能把结果输入到光标处。在这里允许，或以后在“设置 → 权限”里允许。",
+    "recording": false,
+    "permissions": {
+      "ask_required": false,
+      "microphone": {
+        "code": "granted",
+        "text": "已允许",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "microphone",
+        "ask_tooltip": ""
+      },
+      "access": {
+        "code": "granted",
+        "text": "已允许",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "accessibility",
+        "ask_tooltip": "把 Voxt 加入系统设置中的列表"
+      },
+      "speech": {
+        "code": "granted",
+        "text": "已允许",
+        "ok": true,
+        "can_ask": false,
+        "can_open": false,
+        "ask_action": "speechRecognition",
+        "ask_tooltip": ""
+      },
+      "system_audio": {
+        "code": "asked",
+        "text": "已请求，请在系统设置里确认",
+        "ok": false,
+        "can_ask": false,
+        "can_open": true,
+        "ask_action": "systemAudio",
+        "ask_tooltip": "把 Voxt 加入系统设置中的列表",
+        "tip": "如果你在 macOS 弹窗里点了允许，就已经开启。没有弹窗说明 macOS 之前问过，请在系统设置里查看。"
+      }
+    },
+    "footer": {
+      "mode": "next",
+      "busy": false,
+      "back": true,
+      "continue_label": "继续",
+      "continue_tooltip": "",
+      "continue_disabled": false
+    }
+  }
+}

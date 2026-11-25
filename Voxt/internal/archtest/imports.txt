@@ -18,6 +18,7 @@ asr/mimo asr
 asr/openai asr
 asr/openai core
 compose lang
+compose snippet
 datadir store/sqlitestore
 deliver helper/proto
 dict store
@@ -44,6 +45,7 @@ meeting core
 meeting helper/proto
 meeting llm
 meeting local
+meeting lang
 meeting session
 meeting settings
 meeting store
@@ -69,8 +71,10 @@ session helper/proto
 session lang
 session llm
 session settings
+session snippet
 session store
 session vad
+snippet lang
 store/sqlitestore core
 store/sqlitestore store
 uitext appctx

@@ -93,6 +93,25 @@ func TestLLMWait(t *testing.T) {
 	}
 }
 
+// TestLLMSwitchRemoteConsent: a switch saved when it promised local-only
+// fallback goes back off until the user accepts the remote data path. The
+// choice survives once made with that promise.
+func TestLLMSwitchRemoteConsent(t *testing.T) {
+	s, err := Migrate([]byte(`{"version":5,"models":{"llmSwitch":true}}`))
+	if err != nil || s.Models.LLMSwitch || s.Version != Version {
+		t.Fatalf("an older opt-in: %+v %v", s.Models, err)
+	}
+	s.Models.LLMSwitch = true
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Migrate(data)
+	if err != nil || !back.Models.LLMSwitch {
+		t.Errorf("the new opt-in did not survive: %+v %v", back.Models, err)
+	}
+}
+
 // TestFasterOn (#3873): the Faster transcription switch decides whether a
 // speech model uses its draft, which must be installed; a model never
 // switched (older documents) uses an installed draft, as 2.0.2 did. The
@@ -108,12 +127,20 @@ func TestFasterOn(t *testing.T) {
 		{"on", true, true}, {"on", false, false},
 		{"off", true, false}, {"off", false, false},
 	} {
-		if got := m.FasterOn(c.id, c.installed); got != c.want {
+		if got := m.FasterOn(c.id, c.installed, false); got != c.want {
 			t.Errorf("%s, installed %v: %v", c.id, c.installed, got)
 		}
 	}
-	if !(Models{}).FasterOn("x", true) {
+	if !(Models{}).FasterOn("x", true, false) {
 		t.Error("no switches at all: an installed draft is off")
+	}
+	// An opt-in model's (a draft that came with another's download):
+	// never switched is off, the switch turns it on.
+	if (Models{}).FasterOn("x", true, true) {
+		t.Error("an opt-in model on without a switch")
+	}
+	if !(Models{Faster: map[string]bool{"x": true}}).FasterOn("x", true, true) {
+		t.Error("an opt-in model off with the switch on")
 	}
 	s := Defaults()
 	s.Models.Faster = map[string]bool{"asr.fast": false}

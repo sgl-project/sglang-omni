@@ -660,9 +660,6 @@
             "custom": true
           }
         ]
-      },
-      "return_finish": {
-        "on": true
       }
     },
     "models": {
@@ -706,7 +703,8 @@
       "cleanup": {
         "enhance": true,
         "cleanup": true,
-        "structure": false
+        "structure": false,
+        "while_speaking": true
       }
     },
     "prompt": {
