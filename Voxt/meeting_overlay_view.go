@@ -29,19 +29,64 @@ const (
 	meetingOvAskBtnH   = 36
 )
 
-// End's question ("End this meeting?") is a small translucent bubble out
-// of the overlay, next to End, not a card over it: the window grows by
-// meetingOvEndAskH for the bubble and its gap, above the face when the
-// overlay sits low on the screen (the window grows upwards there), else
-// below it.
+// End's question ("End this meeting?") is a small bubble out of the
+// overlay, its End in line with the overlay's End, not a card over it
+// (11-25, the user: End's question at End, and smaller): the window grows
+// by meetingOvEndAskH for the bubble and its gap, the face where it was.
+// The bubble opens below a face high on the screen and above a low one
+// (meetingOverlayEndFrame).
 const (
-	meetingOvEndBubbleH = 44
-	meetingOvEndBtnH    = 30
-	meetingOvEndRadius  = 12
-	meetingOvEndGap     = 6
-	meetingOvEndAskH    = meetingOvEndBubbleH + meetingOvEndGap
-	meetingOvEndBubbleW = 330
+	meetingOvEndBubbleH    = 34
+	meetingOvEndBtnH       = 24
+	meetingOvEndBtnW       = 2 * meetingOvEndBtnH // the bubble's End, as meetingAskingButton's least width
+	meetingOvEndBubblePadR = 5
+	meetingOvEndRadius     = 10
+	meetingOvEndGap        = 6
+	meetingOvEndAskH       = meetingOvEndBubbleH + meetingOvEndGap
+	meetingOvEndBubbleW    = 300
+	meetingOvActionGap     = 2 // between the overlay's buttons
 )
+
+// meetingEndBubbleRight is how far the bubble's right edge sits in from the
+// face's, its End in line with the overlay's End: right of that are
+// Collapse and, on the card, More.
+func meetingEndBubbleRight(expanded bool) float32 {
+	padX, after := float32(layout.PillPadX), float32(1)
+	if expanded {
+		padX, after = layout.CardPadX, 2
+	}
+	endMid := padX + after*(layout.CardBtn+meetingOvActionGap) + layout.CardBtn/2
+	return max(endMid-meetingOvEndBtnW/2-meetingOvEndBubblePadR, 0)
+}
+
+// meetingOverlayEndFrame places the window with End's bubble (open) or
+// without it, the face where it was: at is the window now, which had the
+// bubble (wasOpen) below the face (wasBelow) or above it. The bubble goes
+// below a face in the top half of the screen, and above one in the bottom
+// half (11-25, the user liked it so), or below when no room is above.
+func meetingOverlayEndFrame(at, area mygo.Rectangle, width, height int, open, wasOpen, wasBelow bool) (mygo.Rectangle, bool) {
+	face := at
+	if wasOpen && at.Width > 0 {
+		face.Height -= meetingOvEndAskH
+		if !wasBelow {
+			face.Y += meetingOvEndAskH
+		}
+	}
+	faceH := height
+	if open {
+		faceH -= meetingOvEndAskH
+	}
+	frame := meetingOverlayFrame(face, area, width, faceH)
+	if !open {
+		return frame, false
+	}
+	below := frame.Y+frame.Height/2 <= area.Y+area.Height/2 || frame.Y-meetingOvEndAskH < area.Y-layout.Pad
+	if !below {
+		frame.Y -= meetingOvEndAskH
+	}
+	frame.Height += meetingOvEndAskH
+	return frame, below
+}
 
 var meetingOvWidths = [3]int{520, 600, 760}
 
@@ -97,7 +142,7 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 	if menu == meetingMenuEnd && !asking && !finishing {
 		model.EndAsk = true
 		model.Layout.Height += meetingOvEndAskH
-		model.Layout.Width = max(model.Layout.Width, meetingOvEndBubbleW+2*layout.Pad)
+		model.Layout.Width = max(model.Layout.Width, meetingOvEndBubbleW+int(meetingEndBubbleRight(model.ShowExpanded))+2*layout.Pad)
 	}
 	return model
 }

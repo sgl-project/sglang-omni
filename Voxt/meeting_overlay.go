@@ -23,9 +23,9 @@ type meetingOverlayLocalUI struct {
 	// (11-25: the user asked for it). Meetings and the menu bar end at
 	// once, as the end card's End recording does: there it was chosen.
 	endAsk bool
-	// endAbove: End's bubble goes above the face (an overlay low on the
-	// screen grows upwards), else below it.
-	endAbove bool
+	// endBelow: End's bubble goes below the face (high on the screen),
+	// else above it.
+	endBelow bool
 }
 
 type meetingOverlayAnimation struct {
@@ -69,8 +69,8 @@ func meetingOverlayView(
 		c.After(layout.Tick)
 	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
-		if model.EndAsk && local.endAbove {
-			meetingEndBubble(c, actions, style, true)
+		if model.EndAsk && !local.endBelow {
+			meetingEndBubble(c, actions, style, model.ShowExpanded, true)
 		}
 		face := faceStyle(c, ui.Column(c.Key("mt-face")), style.radius, style.alpha).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
 		if model.EndAsk {
@@ -97,22 +97,22 @@ func meetingOverlayView(
 				}
 			}
 		})
-		if model.EndAsk && !local.endAbove {
-			meetingEndBubble(c, actions, style, false)
+		if model.EndAsk && local.endBelow {
+			meetingEndBubble(c, actions, style, model.ShowExpanded, false)
 		}
 	})
 	meetingAbandonDialog(c, actions, local)
 }
 
-// meetingEndBubble is End's question: a small box out of the overlay
-// beside End (above the face, or below it), in the overlay's own face,
+// meetingEndBubble is End's question: a small box out of the overlay, its
+// End in line with the overlay's End (above the face, or below it), in the overlay's own face,
 // line and shadow, with squared corners and the question's buttons
 // (meetingAskingButton): Keep recording and End. Not a dialog over the
 // overlay (11-25, the user: a card in the card looked odd; then: the same
 // colour and style, square corners).
-func meetingEndBubble(c *ui.Context, actions meetingOverlayActions, style meetingOverlayFaceStyle, above bool) {
+func meetingEndBubble(c *ui.Context, actions meetingOverlayActions, style meetingOverlayFaceStyle, expanded, above bool) {
 	k := tok(c.Theme())
-	row := ui.Row(c).Height(meetingOvEndAskH).Shrink(0).Justify(ui.End).Padding(0, layout.PillPadX-8, 0, 0)
+	row := ui.Row(c).Height(meetingOvEndAskH).Shrink(0).Justify(ui.End).Padding(0, meetingEndBubbleRight(expanded), 0, 0)
 	if above {
 		row.AlignItems(ui.Start)
 	} else {
@@ -123,11 +123,11 @@ func meetingEndBubble(c *ui.Context, actions meetingOverlayActions, style meetin
 		// opaque as the overlay looks over it.
 		face := k.OverlayFace.Alpha(max(style.alpha, 0.94))
 		bubble := ui.Row(c.Key("mt-end-ask")).Height(meetingOvEndBubbleH).Shrink(0).Gap(8).AlignItems(ui.Center).
-			Padding(0, 6, 0, 14).Radius(meetingOvEndRadius).Background(face).Border(1, k.OverlayLine).
+			Padding(0, meetingOvEndBubblePadR, 0, 12).Radius(meetingOvEndRadius).Background(face).Border(1, k.OverlayLine).
 			Shadow(0, layout.ShadowY, layout.ShadowBlur, 0, ui.RGBA(0, 0, 0, layout.ShadowA)).Label(i18n.T("End this meeting?"))
 		bubble.Children(func() {
-			ui.Text(c, i18n.T("End this meeting?")).FontSize(12.5).FontWeight(600).TextColor(ovText).SingleLine().Shrink(0)
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+			ui.Text(c, i18n.T("End this meeting?")).FontSize(12).FontWeight(500).TextColor(ovText).SingleLine().Shrink(0)
+			ui.Row(c).Gap(5).AlignItems(ui.Center).Shrink(0).Children(func() {
 				if meetingAskingButton(c.Key("mt-end-no"), i18n.T("Keep recording"), meetingOvEndBtnH, false) {
 					actions.keepMeetingRecording()
 				}
@@ -178,7 +178,7 @@ func meetingOverlayBar(c *ui.Context, state meetingOverlayViewState, model meeti
 		ui.Box(c).Grow(1).MinWidth(meetingTimeW).Height(rowHeight).Center().Children(func() {
 			ui.Text(c, state.ElapsedText).FontSize(12).FontFeatures("tnum").FixedLineHeight(layout.LineH).TextColor(ovText2).SingleLine().Shrink(0).Translate(0, -0.75)
 		})
-		ui.Row(c.Key("mt-actions")).Gap(2).AlignItems(ui.Center).Shrink(0).Children(func() {
+		ui.Row(c.Key("mt-actions")).Gap(meetingOvActionGap).AlignItems(ui.Center).Shrink(0).Children(func() {
 			if state.Live {
 				label, icon := i18n.T("Pause meeting"), icons.Pause.Bold
 				if state.Paused {
@@ -432,9 +432,14 @@ func meetingOverlayAsking(c *ui.Context, state meetingOverlayViewState, actions 
 }
 
 // meetingAskingButton is a button of the question, height high: the
-// answer that loses nothing (primary) is light, the other one quiet.
+// answer that loses nothing (primary) is light, the other one quiet. Under
+// 28 high (End's bubble) its padding and text are smaller.
 func meetingAskingButton(c *ui.Context, label string, height float32, primary bool) bool {
-	button := ui.ButtonBase(c).Height(height).MinWidth(2*height).Padding(0, 14-layout.Border).Radius(min(height/2, 9)).Center().Shrink(0).Label(label)
+	padX, size := float32(14), float32(12.5)
+	if height < 28 {
+		padX, size = 10, 12
+	}
+	button := ui.ButtonBase(c).Height(height).MinWidth(2*height).Padding(0, padX-layout.Border).Radius(min(height/2, 9)).Center().Shrink(0).Label(label)
 	fill, line, ink := ui.RGBA(255, 255, 255, 0.1), ui.RGBA(255, 255, 255, 0.12), ovText
 	if primary {
 		fill, line, ink = ui.RGB(245, 245, 247), ui.RGB(245, 245, 247), ui.RGB(22, 22, 26)
@@ -449,7 +454,7 @@ func meetingAskingButton(c *ui.Context, label string, height float32, primary bo
 	return button.Children(func() {
 		// Half a point up: the line box leaves more room above the
 		// strokes than below (measured on Chinese and English labels).
-		ui.Text(c, label).FontSize(12.5).FontWeight(600).FixedLineHeight(16).TextColor(ink).SingleLine().Translate(0, -0.5)
+		ui.Text(c, label).FontSize(size).FontWeight(600).FixedLineHeight(16).TextColor(ink).SingleLine().Translate(0, -0.5)
 	}).Clicked()
 }
 

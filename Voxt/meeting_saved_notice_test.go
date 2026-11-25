@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/egoist/mygo"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -94,6 +96,57 @@ func TestMeetingEndBubbleControls(t *testing.T) {
 		frames(tester)
 		if !slices.Contains(host.calls, want) {
 			t.Fatalf("%s: calls %q, want %s", label, host.calls, want)
+		}
+	}
+}
+
+// End's question opens at End: the bubble's End in line with the
+// overlay's, on the pill and on the card, above it on a low overlay (11-25,
+// the user: "end需要在end上方").
+func TestMeetingEndBubbleOverEnd(t *testing.T) {
+	for _, name := range []string{"en/state-collapsed", "en/state-recording-meeting"} {
+		host, err := loadMeetingDemoHost("testdata/meeting")
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectMeetingDemoFixture(t, host, name)
+		host.overlayUI.endAsk = true
+		tester := newMeetingDemoTester(t, host)
+		frames(tester)
+		end, ok := tester.Find("End meeting")
+		ask, ok2 := tester.Find("End")
+		if !ok || !ok2 {
+			t.Fatalf("%s: End %v, the bubble's End %v (%q)", name, ok, ok2, tester.Texts())
+		}
+		if d := (ask.X + ask.W/2) - (end.X + end.W/2); d < -1 || d > 1 || ask.Y+ask.H > end.Y {
+			t.Errorf("%s: the bubble's End %+v, the overlay's End %+v: want it right above", name, ask, end)
+		}
+	}
+}
+
+// The bubble opens above a face low on the screen and below a high one,
+// and closes again with the face where it was.
+func TestMeetingOverlayEndFrame(t *testing.T) {
+	area := mygo.Rectangle{X: 0, Y: 25, Width: 1280, Height: 775}
+	for _, tc := range []struct {
+		face  mygo.Rectangle
+		below bool
+	}{
+		{mygo.Rectangle{X: 440, Y: 687, Width: 400, Height: 60}, false},            // where it first shows
+		{mygo.Rectangle{X: 100, Y: 200, Width: 400, Height: 60}, true},             // dragged up
+		{mygo.Rectangle{X: 100, Y: 25 - layout.Pad, Width: 400, Height: 60}, true}, // against the top
+	} {
+		face := tc.face
+		open, below := meetingOverlayEndFrame(face, area, 400, 60+meetingOvEndAskH, true, false, false)
+		want := face.Y - meetingOvEndAskH
+		if tc.below {
+			want = face.Y
+		}
+		if below != tc.below || open.Y != want || open.Height != face.Height+meetingOvEndAskH || open.X != face.X {
+			t.Errorf("opened at %+v: %+v below=%v, want below=%v", face, open, below, tc.below)
+		}
+		if closed, _ := meetingOverlayEndFrame(open, area, 400, 60, false, true, below); closed != face {
+			t.Errorf("closed: %+v, want %+v", closed, face)
 		}
 	}
 }

@@ -20,6 +20,8 @@ type meetingOverlayState struct {
 	// ("": none): a pause waits for the tracks' last words, which took
 	// seconds on a busy Mac while the button seemed not to answer.
 	meetOvPending meeting.State
+	// meetOvEndOpen: the window has End's bubble in it (meetingOverlayEndFrame).
+	meetOvEndOpen bool
 }
 
 // meetingContentProtectionHook is set in tests to observe SetContentProtection.
@@ -95,18 +97,17 @@ func (a *app) syncMeetingOverlay() {
 	if at.Width > 0 {
 		area = mygo.Screen.DisplayMatching(at).WorkArea
 	}
-	// An overlay low on the screen grows upwards (meetingOverlayFrame): End's
-	// bubble goes above it there, so the face stays where it is.
-	a.meetOvUI.endAbove = at.Width > 0 && at.Y+at.Height/2 > area.Y+area.Height/2
-	frame := meetingOverlayFrame(at, area, width, height)
+	// End's bubble opens above the face, over End, the face where it was.
+	frame, below := meetingOverlayEndFrame(at, area, width, height, model.EndAsk, a.meetOvEndOpen, a.meetOvUI.endBelow)
+	a.meetOvUI.endBelow, a.meetOvEndOpen = below, model.EndAsk
 	x, y := frame.X, frame.Y
 	mode, faceHeight := meetingOverlayFace(model)
 	top, bottom := float64(layout.Pad), float64(layout.Pad)
 	if model.EndAsk { // the blur is the face's; the bubble draws its own
-		if a.meetOvUI.endAbove {
-			top += meetingOvEndAskH
-		} else {
+		if a.meetOvUI.endBelow {
 			bottom += meetingOvEndAskH
+		} else {
+			top += meetingOvEndAskH
 		}
 	}
 	blur := mygo.VibrancyStyle{Top: top, Right: layout.Pad, Bottom: bottom, Left: layout.Pad,
