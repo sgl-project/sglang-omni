@@ -139,7 +139,6 @@ async def run_profiled_pass(
     log_prefix: str,
     event_buffer_capacity: int | None = None,
     error_stream: TextIO | None = None,
-    event_buffer_capacity: int | None = None,
 ) -> dict[str, Any] | None:
     """Run one pass inside a scoped request-profiling lifecycle."""
     started: list[str] = []
