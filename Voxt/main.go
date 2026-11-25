@@ -53,6 +53,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "dictionary" {
 		os.Exit(runDictionaryCLI(os.Args[2:]))
 	}
+	// `Voxt toggle FEATURE` and `Voxt cancel` (trigger_cli.go) too: the
+	// running app acts as on a tap of the shortcut.
+	if len(os.Args) > 1 && (os.Args[1] == "toggle" || os.Args[1] == "cancel") {
+		os.Exit(runTriggerCLI(os.Args[1:]))
+	}
 	// The languages VoxtNew is written in, of which MyGo shows one
 	// (showLanguage, settings_locale.go).
 	mygo.App.SetLanguages(i18n.Supported()...)
