@@ -222,9 +222,9 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
     // start. A committed segment or a moved start can leave a different tail.
     if (guess_auto_language && !language_.has_value() &&
         final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
-        segment_.has_value() &&
-        segment_->start_sample == 0 && !segment_->ran_out_of_tokens &&
-        segment_->language.has_value() && !segment_->transcript.empty()) {
+        segment_.has_value() && segment_->start_sample == 0 &&
+        !segment_->ran_out_of_tokens && segment_->language.has_value() &&
+        !segment_->transcript.empty()) {
       reuse.auto_language_guess =
           FinalPreviewGuess{*segment_->language, segment_->transcript};
     }
