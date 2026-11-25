@@ -76,7 +76,7 @@ func TestMeetingDetectEndToEnd(t *testing.T) {
 	if err != nil || len(list) != 1 {
 		t.Fatalf("meetings kept: %+v %v", list, err)
 	}
-	if s.ask.view.Visible || s.notice != nil {
+	if s.ask.view.Visible || s.notice != nil && !s.notice.ok { // a done notice ("Meeting saved") may show
 		t.Fatalf("after the meeting, Zoom still recording: card %+v, notice %+v", s.ask.view, s.notice)
 	}
 }
