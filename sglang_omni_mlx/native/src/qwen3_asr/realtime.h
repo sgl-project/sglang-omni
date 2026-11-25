@@ -31,9 +31,6 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
                                       int first_decode_ms,
                                       double max_segment_seconds);
 
-// Join segment texts, with a space only between two spaced scripts.
-std::string JoinTranscriptParts(const std::vector<std::string> &parts);
-
 // What a session holds of a Final's audio: taken, and no longer extended by
 // the session, or shared with its refreshes.
 struct FinalReuse {
