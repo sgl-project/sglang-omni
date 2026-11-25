@@ -191,6 +191,8 @@ func (host *meetingDemoHost) cancelStorageDataMove()    { host.record("cancelSto
 func (host *meetingDemoHost) cancelStorageModelMove()   { host.record("cancelStorageModelMove") }
 func (host *meetingDemoHost) resetLook()                { host.record("resetLook") }
 func (host *meetingDemoHost) resetSettings()            { host.record("resetSettings") }
+func (host *meetingDemoHost) exportLibrary()            { host.record("exportLibrary") }
+func (host *meetingDemoHost) importLibrary()            { host.record("importLibrary") }
 func (host *meetingDemoHost) askErase() {
 	host.settingsStorageUI.resetAsk = "everything"
 	host.settingsStorageUI.resetText = ""

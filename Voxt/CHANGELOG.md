@@ -5,6 +5,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [2.1.4] - 2026-11-25
 
 ### Added
+- **Take your library to another Mac** (#PR): Settings → Storage → Another Mac exports your settings, history, meetings, dictionary and snippets as one `.voxtlibrary` file. Import library on the other Mac replaces its library with the file's and restarts; the library it replaces stays in the data folder. Recordings, models and API keys stay on each Mac.
 - **Three more recording sounds** (#4582): Settings → Audio → Sound → Built-in lists Kalimba, Wood and Vibraphone after Soft, two soft notes that rise as a recording starts and fall as it stops, the soft sounds friends liked most. They are Voxt's own, so every build has them. The default stays Soft.
 
 - **Home shows four usage numbers** (#3856): characters today and over the last 30 days, characters a minute, and average recognition time over the last 26 weeks. The speech model used by the newest spoken result appears beside the shortcut. Home's Try area and recent-results list are gone; outside the Share card, Home shortcuts start normal, visible, persisted sessions.
@@ -54,6 +55,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### 中文
 
 #### 新增
+- **把资料库带到另一台 Mac**（#PR）：设置 → 存储 → 换到另一台 Mac，把设置、历史、会议、词典和片段导出成一个 `.voxtlibrary` 文件。在另一台 Mac 上导入资料库，会用文件里的资料库替换它的，然后重启；被替换的资料库留在数据文件夹里。录音、模型和 API key 不随文件走。
 - **多了三组录音提示音**（#4582）：设置 → 音频 → 音效 → 自带里，“轻柔”后面多了卡林巴、木琴和颤音琴：两个轻柔的音，开始录音时上行，停止时下行，是朋友们试听时最喜欢的三组。这些声音是 Voxt 自己的，所有版本都有。默认仍是“轻柔”。
 
 - **首页显示四项用量**（#3856）：今天和最近 30 天的字数、每分钟说话字数，以及最近 26 周的平均识别耗时。最近一次语音结果使用的语音识别模型显示在快捷键旁边。首页不再显示“试一试”和最近结果；分享卡片未打开时，在首页按快捷键走正常会话，结果可见并写入历史。
