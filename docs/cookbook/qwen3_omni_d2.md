@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Qwen3-Omni D2
 
 Qwen3-Omni D2 listens and speaks on the same audio timeline. SGLang-Omni serves a single conversation over `/v1/realtime`. One stage process owns the causal audio encoders, Thinker, Talker, CodePredictor and Code2Wav, their fixed KV caches and the delayed self-audio feedback. [Paper](https://arxiv.org/abs/2610.17124) · [Official implementation](https://github.com/penguinfish1688/D2-dialogue-to-duplex/tree/13ac442f013665a2b9cfd882c5966ccdeda3594a/qwen3-omni-D2)
