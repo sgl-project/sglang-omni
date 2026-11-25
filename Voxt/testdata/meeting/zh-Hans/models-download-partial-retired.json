@@ -4,6 +4,35 @@
   "models": {
     "asr": [
       {
+        "key": "model-asr.moss",
+        "rows": [
+          {
+            "id": "asr.moss",
+            "kind": "asr",
+            "name": "MOSS-Transcribe-Diarize",
+            "default": true,
+            "installed": false,
+            "size_text": "需下载 1.8 GB",
+            "languages": "中文和英语",
+            "actions": [
+              {
+                "kind": "hide",
+                "model_id": "asr.moss",
+                "label": "隐藏",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "tooltip": "不在功能页的模型菜单里列出"
+              },
+              {
+                "kind": "download",
+                "model_id": "asr.moss",
+                "label": "下载",
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              }
+            ]
+          }
+        ]
+      },
+      {
         "key": "family-qwen3-asr",
         "family_name": "Qwen3-ASR",
         "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
@@ -12,7 +41,7 @@
             "id": "asr.accurate",
             "kind": "asr",
             "name": "Qwen3-ASR 1.7B (8bit)",
-            "default": true,
+            "default": false,
             "installed": true,
             "size_text": "占用 2.5 GB",
             "family_text": "与 AudioSmith 共用",
@@ -283,35 +312,6 @@
             ]
           }
         ]
-      },
-      {
-        "key": "model-asr.moss",
-        "rows": [
-          {
-            "id": "asr.moss",
-            "kind": "asr",
-            "name": "MOSS-Transcribe-Diarize",
-            "default": false,
-            "installed": false,
-            "size_text": "需下载 1.8 GB",
-            "languages": "中文和英语",
-            "actions": [
-              {
-                "kind": "hide",
-                "model_id": "asr.moss",
-                "label": "隐藏",
-                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
-                "tooltip": "不在功能页的模型菜单里列出"
-              },
-              {
-                "kind": "download",
-                "model_id": "asr.moss",
-                "label": "下载",
-                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
-              }
-            ]
-          }
-        ]
       }
     ],
     "dictation": {
@@ -448,6 +448,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

@@ -4,29 +4,29 @@
   "models": {
     "asr": [
       {
-        "key": "model-asr.accurate",
+        "key": "model-asr.moss",
         "rows": [
           {
-            "id": "asr.accurate",
+            "id": "asr.moss",
             "kind": "asr",
-            "name": "Qwen3-ASR 1.7B (8bit)",
+            "name": "MOSS-Transcribe-Diarize",
             "default": true,
             "installed": false,
-            "size_text": "需下载 2.5 GB",
-            "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
+            "size_text": "需下载 1.8 GB",
+            "languages": "中文和英语",
             "actions": [
               {
                 "kind": "hide",
-                "model_id": "asr.accurate",
+                "model_id": "asr.moss",
                 "label": "隐藏",
-                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
+                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
                 "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
-                "model_id": "asr.accurate",
+                "model_id": "asr.moss",
                 "label": "下载",
-                "accessibility_label": "下载 Qwen3-ASR 1.7B (8bit)"
+                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
               }
             ]
           }
@@ -91,6 +91,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }
