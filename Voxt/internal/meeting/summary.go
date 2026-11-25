@@ -305,12 +305,9 @@ func ParseSummary(raw string) (Summary, error) {
 	return Summary{Title: "Transcript Summary", Body: body, GeneratedAt: time.Now()}, nil
 }
 
-type summaryPayload struct {
-	TranscriptSummary *struct {
-		Title   string `json:"title"`
-		Body    string `json:"body"`
-		Content string `json:"content"`
-	} `json:"transcript_summary"`
+// summaryBlock is the summary a model nests under "transcript_summary";
+// some put the to-dos in there too.
+type summaryBlock struct {
 	Title     string   `json:"title"`
 	Body      string   `json:"body"`
 	Content   string   `json:"content"`
@@ -319,40 +316,25 @@ type summaryPayload struct {
 	Todos     []string `json:"todos"`
 }
 
+type summaryPayload struct {
+	TranscriptSummary *summaryBlock `json:"transcript_summary"`
+	summaryBlock
+}
+
 func summaryFromPayload(p summaryPayload) Summary {
 	block := p.TranscriptSummary
-	title := pickText(blockTitle(block), p.Title)
-	body := pickText(blockBody(block), p.Body, p.Content)
-	todos := p.TodoList
-	if len(todos) == 0 {
-		todos = p.TodoItems
+	if block == nil {
+		block = &summaryBlock{}
 	}
-	if len(todos) == 0 {
-		todos = p.Todos
+	title := pickText(block.Title, p.Title)
+	body := pickText(block.Content, block.Body, p.Body, p.Content)
+	var todos []string
+	for _, list := range [][]string{p.TodoList, p.TodoItems, p.Todos, block.TodoList, block.TodoItems, block.Todos} {
+		if todos = cleanTodos(list); len(todos) > 0 {
+			break
+		}
 	}
-	return Summary{Title: title, Body: body, Todos: cleanTodos(todos)}
-}
-
-func blockTitle(b *struct {
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	Content string `json:"content"`
-}) string {
-	if b == nil {
-		return ""
-	}
-	return strings.TrimSpace(b.Title)
-}
-
-func blockBody(b *struct {
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	Content string `json:"content"`
-}) string {
-	if b == nil {
-		return ""
-	}
-	return pickText(b.Content, b.Body)
+	return Summary{Title: title, Body: body, Todos: todos}
 }
 
 func pickText(parts ...string) string {
@@ -386,12 +368,16 @@ func normalizeSummaryPayload(text string) string {
 			t = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	}
-	if j := extractJSONObject(t); j != "" {
+	// Only JSON replaces the text: prose that mentions {braces} stays whole.
+	if j := extractJSONObject(t); j != "" && json.Valid([]byte(j)) {
 		return j
 	}
 	return t
 }
 
+// extractJSONObject returns the first {…} object in text. A model may
+// leave the last braces out ("flash" models do): an object still open at
+// the end of the text, outside a string, is closed.
 func extractJSONObject(text string) string {
 	start := strings.IndexByte(text, '{')
 	if start < 0 {
@@ -428,6 +414,9 @@ func extractJSONObject(text string) string {
 				return text[start : i+1]
 			}
 		}
+	}
+	if depth > 0 && !inString {
+		return strings.TrimRight(text[start:], " \t\r\n,") + strings.Repeat("}", depth)
 	}
 	return ""
 }

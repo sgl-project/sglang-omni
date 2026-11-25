@@ -214,7 +214,7 @@ func TestMeetingMistakeOverMadeUpWords(t *testing.T) {
 }
 
 // streamAndFile is a speech model that streams (live text) and takes the
-// recording whole (the final pass), slowly enough to see the pass run.
+// recording whole (the final pass).
 type streamAndFile struct {
 	fakeStreamer
 	file *fakeTranscriptions
@@ -222,7 +222,6 @@ type streamAndFile struct {
 
 func (streamAndFile) Caps() asr.Caps { return asr.Caps{Stream: true, File: true} }
 func (s streamAndFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, error) {
-	time.Sleep(100 * time.Millisecond)
 	return s.file.Transcribe(ctx, req)
 }
 

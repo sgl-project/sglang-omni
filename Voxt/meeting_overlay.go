@@ -23,6 +23,9 @@ type meetingOverlayLocalUI struct {
 	// (11-25: the user asked for it). Meetings and the menu bar end at
 	// once, as the end card's End recording does: there it was chosen.
 	endAsk bool
+	// endAbove: End's bubble goes above the face (an overlay low on the
+	// screen grows upwards), else below it.
+	endAbove bool
 }
 
 type meetingOverlayAnimation struct {
@@ -66,7 +69,14 @@ func meetingOverlayView(
 		c.After(layout.Tick)
 	}
 	ui.Column(c).Fill().Padding(layout.Pad).Children(func() {
+		if model.EndAsk && local.endAbove {
+			meetingEndBubble(c, model, actions, true)
+		}
 		face := faceStyle(c, ui.Column(c.Key("mt-face")), style.radius, style.alpha).Padding(layout.PillPadY-layout.Border, layout.PillPadX-layout.Border)
+		if model.EndAsk {
+			_, height := meetingOverlayFace(model)
+			face.Height(float32(height)).Shrink(0) // the bubble has the rest
+		}
 		if model.ShowExpanded {
 			face.Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border)
 		}
@@ -87,9 +97,57 @@ func meetingOverlayView(
 				}
 			}
 		})
+		if model.EndAsk && !local.endAbove {
+			meetingEndBubble(c, model, actions, false)
+		}
 	})
 	meetingAbandonDialog(c, actions, local)
-	meetingEndDialog(c, actions, local)
+}
+
+// meetingEndBubble is End's question: a small translucent bubble out of
+// the overlay beside End (above the face, or below it), with Keep
+// recording and End. Not a card in the card (11-25, the user: a
+// dialog stacked on the overlay looked odd).
+func meetingEndBubble(c *ui.Context, model meetingOverlayModel, actions meetingOverlayActions, above bool) {
+	row := ui.Row(c).Height(meetingOvEndAskH).Shrink(0).Justify(ui.End).Padding(0, layout.PillPadX-6, 0, 0)
+	if above {
+		row.AlignItems(ui.Start)
+	} else {
+		row.AlignItems(ui.End)
+	}
+	row.Children(func() {
+		bubble := ui.Row(c.Key("mt-end-ask")).Height(meetingOvEndBubbleH).Shrink(0).Gap(6).AlignItems(ui.Center).
+			Padding(0, 4, 0, 12).Radius(meetingOvEndBubbleH/2).Background(ui.RGBA(22, 22, 25, 0.62)).
+			Border(1, ui.RGBA(255, 255, 255, 0.14)).Shadow(0, 3, 10, 0, ui.RGBA(0, 0, 0, 0.22)).Label(i18n.T("End this meeting?"))
+		bubble.Children(func() {
+			ui.Text(c, i18n.T("End this meeting?")).FontSize(12).FontWeight(600).TextColor(ovText).SingleLine().Shrink(0)
+			if meetingEndBubbleButton(c.Key("mt-end-no"), i18n.T("Keep recording"), false) {
+				actions.keepMeetingRecording()
+			}
+			if meetingEndBubbleButton(c.Key("mt-end-yes"), i18n.T("End"), true) {
+				actions.meetingFinish()
+			}
+		})
+	})
+}
+
+// meetingEndBubbleButton is a capsule in End's bubble: End in red, Keep
+// recording quiet.
+func meetingEndBubbleButton(c *ui.Context, label string, end bool) bool {
+	b := ui.ButtonBase(c).Height(meetingOvEndBubbleH-8).Padding(0, 10).Radius((meetingOvEndBubbleH - 8) / 2).Center().Shrink(0).Label(label)
+	fill, ink := ui.RGBA(255, 255, 255, 0.1), ovText
+	if b.Hovered() {
+		fill = ui.RGBA(255, 255, 255, 0.18)
+	}
+	if end {
+		fill, ink = mtRecDot, ui.RGB(255, 255, 255)
+		if b.Hovered() {
+			fill = mtRecDot.Mix(ui.RGB(255, 255, 255), 0.12)
+		}
+	}
+	return b.Background(fill).Children(func() {
+		ui.Text(c, label).FontSize(11.5).FontWeight(600).TextColor(ink).SingleLine()
+	}).Clicked()
 }
 
 var (
@@ -410,23 +468,6 @@ func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {
 	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, message, look, 0)
 		ui.Text(c, message).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-	})
-}
-
-func meetingEndDialog(c *ui.Context, actions meetingOverlayActions, local *meetingOverlayLocalUI) {
-	t := c.Theme()
-	ui.Modal(c.Key("mt-end-ask"), &local.endAsk, func() {
-		ui.Text(c, i18n.T("End this meeting?")).Bold()
-		ui.Text(c, i18n.T("The recording stops, and Voxt finishes the transcript.")).Width(px(t, 380))
-		ui.Row(c).Gap(px(t, sp2)).Justify(ui.End).Children(func() {
-			if ui.Button(c.Key("mt-end-no"), i18n.T("Keep recording")).Clicked() {
-				local.endAsk = false
-			}
-			if primaryButton(c.Key("mt-end-yes"), i18n.T("End meeting")).AutoFocus().Clicked() {
-				local.endAsk = false
-				actions.meetingFinish()
-			}
-		})
 	})
 }
 

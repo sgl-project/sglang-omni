@@ -71,6 +71,13 @@ func TestMeetingDetectedAsksOnce(t *testing.T) {
 	if a.meetingActive() || len(a.toasts) != 0 {
 		t.Fatal("a meeting started without the user's click")
 	}
+	logged := false
+	for _, e := range a.logs.Tail(20, meetingLogSource) {
+		logged = logged || e.Message == "detected us.zoom.xos, on the microphone for 1s"
+	}
+	if !logged {
+		t.Fatalf("no line says when the card came: %+v", a.logs.Tail(20, meetingLogSource))
+	}
 
 	micUsers(t, a, "com.apple.CoreSpeech")
 	if a.ask.view.Visible {

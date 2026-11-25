@@ -29,6 +29,18 @@ const (
 	meetingOvAskBtnH   = 36
 )
 
+// End's question ("End this meeting?") is a small translucent bubble out
+// of the overlay, next to End, not a card over it: the window grows by
+// meetingOvEndAskH for the bubble and its gap, above the face when the
+// overlay sits low on the screen (the window grows upwards there), else
+// below it.
+const (
+	meetingOvEndBubbleH = 34
+	meetingOvEndGap     = 6
+	meetingOvEndAskH    = meetingOvEndBubbleH + meetingOvEndGap
+	meetingOvEndBubbleW = 300
+)
+
 var meetingOvWidths = [3]int{520, 600, 760}
 
 const meetingOvChrome = layout.CardPadTop + layout.CardHeadH + layout.CardRuleTop + 1 + layout.CardRuleGap + layout.CardPadY
@@ -46,6 +58,8 @@ type meetingOverlayModel struct {
 	ShowAsking    bool
 	AskingCard    bool
 	ShowFinishing bool
+	// EndAsk: End's bubble shows, meetingOvEndAskH of the window's height.
+	EndAsk bool
 }
 
 // meetingOverlayLayoutModel keeps all dimensions on the UI side.
@@ -65,7 +79,7 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 	if !pill {
 		width := meetingOvWidths[min(max(state.CardSize, 0), len(meetingOvWidths)-1)]
 		body := meetingOverlayBodyHeight(state.Rows, width-2*layout.CardPadX-layout.CardInset)
-		if menu != meetingMenuNone {
+		if menu != meetingMenuNone && menu != meetingMenuEnd {
 			body = max(body, menuHeight(menu, state))
 		}
 		height := meetingOvChrome + body
@@ -77,6 +91,11 @@ func meetingOverlayLayoutModel(state meetingOverlayViewState, menu meetingMenu) 
 		model.Layout.Height += meetingOvProblemH
 	} else if model.AskingCard {
 		model.Layout.Width, model.Layout.Height = meetingOvAskCardW, meetingOvAskCardH
+	}
+	if menu == meetingMenuEnd && !asking && !finishing {
+		model.EndAsk = true
+		model.Layout.Height += meetingOvEndAskH
+		model.Layout.Width = max(model.Layout.Width, meetingOvEndBubbleW+2*layout.Pad)
 	}
 	return model
 }
@@ -107,6 +126,9 @@ const (
 	meetingMenuNone meetingMenu = iota
 	meetingMenuMode
 	meetingMenuMore
+	// meetingMenuEnd is End's question: a bubble beside the face, not a
+	// menu in place of the transcript (meetingOverlayLocalUI.endAsk).
+	meetingMenuEnd
 )
 
 func menuHeight(menu meetingMenu, state meetingOverlayViewState) int {
@@ -143,5 +165,9 @@ func meetingOverlayFace(model meetingOverlayModel) (overlayMode, int) {
 		// A card's corners, not a pill's ends: the height that gives them.
 		return mode, 2 * meetingOvAskRadius
 	}
-	return mode, model.Layout.Height - 2*layout.Pad
+	height := model.Layout.Height - 2*layout.Pad
+	if model.EndAsk {
+		height -= meetingOvEndAskH // the bubble is not the face
+	}
+	return mode, height
 }

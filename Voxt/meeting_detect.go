@@ -226,6 +226,12 @@ func (a *app) meetingAfterDictation() {
 // it at once when the user chose so.
 func (a *app) askMeeting(key, app string) {
 	a.detect.Settle(key)
+	// Where a slow card's time went: the app's own start, or the wait here.
+	msg := "detected " + key
+	if since, ok := a.detect.Since(key); ok {
+		msg += ", on the microphone for " + a.now().Sub(since).Round(10*time.Millisecond).String()
+	}
+	a.logs.Append(core.LogEntry{Time: a.now(), Source: meetingLogSource, Level: core.SeverityInfo, Message: msg})
 	if a.prefs.Features.Meeting.AutoStart {
 		a.startMeetingFor(key)
 		return

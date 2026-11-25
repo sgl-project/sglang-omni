@@ -39,7 +39,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				state.Collapsed = host.overlayUI.collapsed
 				state.ShowExpanded = state.ShowExpanded && !state.Collapsed
 				if state.Visible {
-					model := meetingOverlayLayoutModel(state, host.overlayUI.menu)
+					model := meetingOverlayLayoutModel(state, host.overlayMenu())
 					meetingOverlayView(c, state, model, host, &host.overlayUI, meetingOverlayAnimation{}, host.faceStyle(model))
 				}
 			case "session-overlay":

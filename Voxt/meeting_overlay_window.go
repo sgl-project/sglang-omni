@@ -24,9 +24,6 @@ var meetingContentProtectionHook func(bool)
 const meetingCardSize = "meeting"
 
 func (a *app) meetingOverlayCollapsed() bool {
-	if a.meetOvUI.endAsk {
-		return false // its question needs the room; the setting stays
-	}
 	return a.meetOvUI.collapsed || a.prefs.Features.Meeting.Collapsed
 }
 
@@ -36,7 +33,11 @@ func (a *app) rebuildMeetingOverlay() {
 		a.meetOvLocale = i18n.Locale()
 	}
 	a.meetOvView = buildMeetingOverlayViewState(a.meetOvTranslator, a.meetSnap, a.meetingOverlayCollapsed(), a.prefs.Features.CardSize(meetingCardSize))
-	a.meetOvModel = meetingOverlayLayoutModel(a.meetOvView, a.meetOvUI.menu)
+	menu := a.meetOvUI.menu
+	if a.meetOvUI.endAsk {
+		menu = meetingMenuEnd // End's bubble: the window makes room for it
+	}
+	a.meetOvModel = meetingOverlayLayoutModel(a.meetOvView, menu)
 }
 
 func (a *app) meetingOverlayModel() meetingOverlayModel {
@@ -86,13 +87,24 @@ func (a *app) syncMeetingOverlay() {
 	if at.Width > 0 {
 		area = mygo.Screen.DisplayMatching(at).WorkArea
 	}
+	// An overlay low on the screen grows upwards (meetingOverlayFrame): End's
+	// bubble goes above it there, so the face stays where it is.
+	a.meetOvUI.endAbove = at.Width > 0 && at.Y+at.Height/2 > area.Y+area.Height/2
 	frame := meetingOverlayFrame(at, area, width, height)
 	x, y := frame.X, frame.Y
 	if frame != at {
 		a.meetOvWin.SetContentBounds(frame)
 	}
 	mode, faceHeight := meetingOverlayFace(model)
-	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: layout.Pad, Right: layout.Pad, Bottom: layout.Pad, Left: layout.Pad,
+	top, bottom := float64(layout.Pad), float64(layout.Pad)
+	if model.EndAsk { // the blur is the face's; the bubble draws its own
+		if a.meetOvUI.endAbove {
+			top += meetingOvEndAskH
+		} else {
+			bottom += meetingOvEndAskH
+		}
+	}
+	a.meetOvWin.SetVibrancyStyle(mygo.VibrancyStyle{Top: top, Right: layout.Pad, Bottom: bottom, Left: layout.Pad,
 		Radius: float64(faceRadius(a.prefs.Overlay, mode, faceHeight)), Dark: true})
 	a.meetOvWin.Invalidate()
 	a.applyMeetingOverlayProtection()
@@ -151,6 +163,12 @@ func (a *app) copyLiveMeetingTranscript() {
 func (a *app) requestMeetingFinish() {
 	a.meetOvUI.menu = meetingMenuNone
 	a.meetOvUI.endAsk = true
+	a.syncMeetingOverlay()
+}
+
+// keepMeetingRecording closes End's question: the meeting goes on.
+func (a *app) keepMeetingRecording() {
+	a.meetOvUI.endAsk = false
 	a.syncMeetingOverlay()
 }
 

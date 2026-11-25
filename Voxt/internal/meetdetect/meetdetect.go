@@ -75,9 +75,10 @@ const (
 const Quiet = 2 * time.Minute
 
 // Hold is how long an app must record before it is a candidate: a
-// microphone test or a voice clip of a moment is no meeting, and with
-// Start recording automatically it would start one.
-const Hold = 3 * time.Second
+// microphone probe of a moment is no meeting, and with Start recording
+// automatically it would start one. It was 3 s until 11-25, when the user
+// found the card slow: one second still passes over a probe.
+const Hold = time.Second
 
 // User is a process recording from an input (the helper's mic.watch).
 type User struct {
@@ -228,6 +229,13 @@ func (d *Detector) Settle(key string) {
 // Forget undoes Settle: an app that still records is a candidate again at
 // the next Update (the user asked to be asked later).
 func (d *Detector) Forget(key string) { delete(d.settled, key) }
+
+// Since reports when the app with key began recording, as of the last
+// Update (false: it does not record).
+func (d *Detector) Since(key string) (time.Time, bool) {
+	at, ok := d.since[key]
+	return at, ok
+}
 
 // Recording reports whether the app with key records now (as of the last
 // Update).

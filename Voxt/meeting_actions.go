@@ -42,4 +42,5 @@ type meetingOverlayActions interface {
 	setMeetingOverlayCardSize(size int)
 	requestMeetingDiscard()
 	requestMeetingFinish()
+	keepMeetingRecording()
 }

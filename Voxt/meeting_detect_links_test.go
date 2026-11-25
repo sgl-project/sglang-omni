@@ -135,11 +135,11 @@ func TestMeetingDetectHoldsBeforeAsking(t *testing.T) {
 	timers := detectClock(t, a)
 	a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.AutoStart = true })
 	micSays(t, a, "us.zoom.xos")
-	timers.advance(meetdetect.Hold - time.Second)
+	timers.advance(meetdetect.Hold / 2)
 	micSays(t, a) // Zoom's microphone test is over
 	timers.advance(time.Minute)
 	if a.ask.view.Visible || a.meetingActive() || len(a.toasts) != 0 {
-		t.Fatalf("two seconds of Zoom: card %+v, meeting %s, toasts %q", a.ask.view, a.meetSnap.State, a.toasts)
+		t.Fatalf("half of Hold of Zoom: card %+v, meeting %s, toasts %q", a.ask.view, a.meetSnap.State, a.toasts)
 	}
 	micSays(t, a, "us.zoom.xos")
 	timers.advance(meetdetect.Hold - time.Millisecond)
