@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -169,9 +170,8 @@ func TestRewriteCardClosesAfterInserting(t *testing.T) {
 }
 
 // TestRewriteCardDrags: the card moves where the user drags it (its face
-// drags the window), keeps that place through a change of size and a
-// follow-up, stays on the screen, and opens at its usual place again once
-// it was closed, as the answer card does (TestCardDragged).
+// drags the window), keeps that place through a change of size, a follow-up,
+// and close and reopen, and stays on the screen (TestCardDragged).
 func TestRewriteCardDrags(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	native := &fakeBoxDropWindow{}
@@ -199,16 +199,20 @@ func TestRewriteCardDrags(t *testing.T) {
 	if f := a.boxFrame(); f.Y != anchored.Y-200 {
 		t.Errorf("the follow-up moved the dragged card: %+v", f)
 	}
-	a.box.dragged.y = -5000
+	current := a.boxFrame()
+	native.bounds = mygo.Rectangle{X: current.X, Y: anchored.Y - 5000, Width: current.Width, Height: current.Height}
+	native.onMove()
 	if f := a.boxFrame(); f.Y != ovTestArea.Y-layout.Pad {
 		t.Errorf("dragged past the top: %+v", f)
 	}
 
-	a.closeBox()
 	a.setCardSize(string(store.KindRewrite), 0)
-	a.box.open, a.box.shown, a.box.area = true, true, ovTestArea
-	if f := a.boxFrame(); f != anchored {
-		t.Errorf("the next card: %+v, want %+v", f, anchored)
+	moved := a.boxFrame()
+	a.closeBox()
+	a.showBox(proto.App{}, "next")
+	a.box.area = ovTestArea
+	if f := a.boxFrame(); f != moved {
+		t.Errorf("the next card: %+v, want %+v", f, moved)
 	}
 }
 
@@ -263,5 +267,38 @@ func TestRewriteCardTakesTheFront(t *testing.T) {
 	a.boxSync()
 	if native.onTop || native.focused != 2 {
 		t.Errorf("the user went elsewhere: on top %v, focused %d", native.onTop, native.focused)
+	}
+}
+
+// TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,
+// Enter sends only with Settings → Shortcuts' Return switch on (it is
+// taken, no newline). Off, Enter is a newline there, as it reaches any app
+// then, and the card's foot does not say that Enter sends.
+func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Features.ReturnFinishes = false
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	a.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
+	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording})
+	frames(tt)
+	tt.Type("some text")
+	frames(tt)
+	if hasExact(tt, "send") {
+		t.Error("Return off: the card says Enter sends")
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if a.box.text != "some text\n" {
+		t.Fatalf("Return off: text %q after Enter, want a newline", a.box.text)
+	}
+	a.prefs.Features.ReturnFinishes = true
+	frames(tt)
+	if !hasExact(tt, "send") {
+		t.Error("Return on: the card does not say Enter sends")
+	}
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if a.box.text != "some text\n" {
+		t.Errorf("Return on: text %q after Enter, want Enter taken", a.box.text)
 	}
 }

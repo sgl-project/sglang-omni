@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -36,7 +39,7 @@ func (r *run) awaitServices() bool {
 
 // useServices keeps the resolved services.
 func (r *run) useServices(s svcResult) {
-	r.resolved, r.svc, r.terms = true, s.svc, s.terms
+	r.resolved, r.svc, r.terms, r.snippets = true, s.svc, s.terms, s.snippets
 	close(r.svcResolved)
 	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
 	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
@@ -244,10 +247,13 @@ func (r *run) listen() (string, bool) {
 		case <-endPause:
 			endPause = nil
 			r.logf("info", "the end word was said last: stopping the recording")
-			r.stopOnce.Do(func() { close(r.stop) })
+			r.stopRecording()
 		case <-stopCh:
 			stopCh, heard, endPause = nil, nil, nil
-			at := r.now()
+			at := r.stoppedAt()
+			if at.IsZero() {
+				at = r.recordStopAt(r.now())
+			}
 			r.m.update(r, func(s *Snapshot) { s.State, s.StoppedAt = Recognizing, at })
 			go func() {
 				ctx, cancel := context.WithTimeout(r.ctx, cfg.StopGrace)
@@ -262,6 +268,7 @@ func (r *run) listen() (string, bool) {
 			capCancel()
 		case c := <-capDone:
 			recordDone, captured = true, c
+			r.recordStopAt(r.now())
 			close(r.recorded)
 		}
 	}
@@ -409,7 +416,7 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "going on with the text the live session had: %v", err)
 		res = asr.Result{Text: salvaged}
 	}
-	raw, _ := withoutEndWord(strings.TrimSpace(res.Text), word)
+	raw, _ := withoutEndWord(strings.TrimSpace(r.inScript(res.Text, res.Lang)), word)
 	r.logf("info", "recognised %s in %v", r.logText(raw), asrTime.Round(time.Millisecond))
 	r.m.update(r, func(s *Snapshot) { s.Raw, s.Timings.ASR = raw, asrTime })
 	if raw == "" && r.typedOnly() {
@@ -456,7 +463,7 @@ func (r *run) warmLLM() {
 	var skill llm.Skill
 	switch r.req.Kind {
 	case store.KindTranscribe:
-		if !r.settings.Features.Transcribe.Enhance {
+		if !r.transcribeCleanup() {
 			return
 		}
 		in, skill = r.transcribeInput(""), llm.SkillTranscribeEnhance
@@ -480,12 +487,14 @@ func (r *run) warmLLM() {
 	}()
 }
 
-// transcribeInput is Transcribe's request to compose for raw.
+// transcribeInput is Transcribe's request to compose for raw, its
+// snippets' triggers marked for the model to keep (expandSnippets).
 func (r *run) transcribeInput(raw string) compose.Input {
 	f := r.settings.Features.Transcribe
+	text, marked := snippet.Mark(raw, r.snippets)
 	return compose.Input{
 		Task: compose.Transcribe, Cleanup: f.Cleanup, Structure: f.Structure, TaskPrompt: f.Prompt,
-		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: raw,
+		MainLanguage: MainLanguage(r.settings, r.m.cfg.Locale()), OtherLanguages: r.settings.General.OtherLanguages, Text: text, Snippets: len(marked) > 0,
 		Glossary: r.glossary(), Dictionary: PromptDictionary(r.settings),
 		Scene: r.composeScene(),
 	}
@@ -516,4 +525,23 @@ func (r *run) typedOnly() bool {
 	}
 	typed, _, err := cfg.BoxInput(r.ctx)
 	return err == nil && strings.TrimSpace(typed) != ""
+}
+
+// inScript writes recognised Chinese text in the script of dictation
+// (SpeechScript). Text in another language stays as it is, or its kanji
+// would be rewritten: said is the language the speech model reported (""
+// when it did not, as for a stream's partials and pieces), and kana marks
+// Japanese either way.
+func (r *run) inScript(text, said string) string {
+	if c := lang.Canonical(said); c != "" && c != "zh" && c != "yue" {
+		return text
+	}
+	if strings.ContainsFunc(text, func(c rune) bool { return unicode.In(c, unicode.Hiragana, unicode.Katakana) }) {
+		return text
+	}
+	var reads []string
+	if r.m.cfg.Languages != nil {
+		reads = r.m.cfg.Languages()
+	}
+	return lang.RenderChineseScript(text, SpeechScript(r.settings, r.m.cfg.Locale(), reads))
 }

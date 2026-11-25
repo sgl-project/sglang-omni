@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
@@ -188,6 +189,26 @@ class MossTranscribeDiarizeEngineBuilder(
             "dtype": dtype,
         }
 
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject runtime settings that deadlock the scheduler after the first batch."""
+        if current_platform.is_npu():
+            from sglang.srt.arg_groups.model_override_base import resolved_view
+
+            from sglang_omni.platforms.npu import validate_npu_graph_environment
+
+            cfg = resolved_view(server_args)
+            # torch_npu reads the Host queue mode once at process start. A shared
+            # queue lets a graph update overlap a replay and stalls the scheduler,
+            # and capture rejects TASK_QUEUE_ENABLE=2 whatever the bucket size, so
+            # validate the queue setup whenever decode graphs run.
+            if cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED:
+                validate_npu_graph_environment(self.model_name)
+            else:
+                pass
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
@@ -211,6 +232,15 @@ class MossTranscribeDiarizeEngineBuilder(
                     **prefill_config,
                 },
             }
+        else:
+            pass
+
+        if current_platform.is_npu():
+            # The fused QKV path queries the triton driver while dynamo traces,
+            # which aborts decode graph capture. This turns compile off for the
+            # whole decoder; decode graph replay and the fused NPU QKV path stay
+            # enabled.
+            overrides["enable_torch_compile"] = False
         else:
             pass
 
@@ -255,9 +285,14 @@ class MossTranscribeDiarizeEngineBuilder(
             self.speculative_worker_class = draft_worker_class(
                 self.draft_checkpoint.name
             )
-            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            # note (Zhenning Guo): async decode under a draft means speculative overlap, which is on by default; plain fallback needs the synchronous verify loop, so it keeps overlap off.
             if self.enable_async_decode is None:
-                self.enable_async_decode = False
+                self.enable_async_decode = not self.enable_plain_fallback
+            else:
+                pass
+            # note (Zhenning Guo): under overlap a prefill's first token otherwise waits for the verify round launched after it, so by default every prefill is drained, whatever the batch size.
+            if self.enable_async_decode and self.prefill_drain_below_batch_size is None:
+                self.prefill_drain_below_batch_size = sys.maxsize
             else:
                 pass
             overrides["disable_overlap_schedule"] = not self.enable_async_decode

@@ -238,8 +238,11 @@ type DictionaryProfile struct {
 	Active bool
 }
 
-// Dictionary stores the active profile's terms.
+// Dictionary stores the active profile's terms. Lock covers a whole
+// read-modify-write sequence; every writer uses it, not only imports.
 type Dictionary interface {
+	Lock()
+	Unlock()
 	// Put inserts or replaces a term (by ID); another term in this profile
 	// with the same spelling (ignoring case) is core.ErrExists.
 	Put(ctx context.Context, t Term) error

@@ -196,7 +196,7 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	}
 	defer l.release()
 	start := time.Now()
-	text, language, draft, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt))
+	text, language, draft, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt), prior{})
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -266,9 +266,10 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 
 // final transcribes quiet-cut chunks in order, with a shared token budget
 // for Qwen3-ASR and one budget per Whisper window. The first detected
-// language, when available, is passed to subsequent requests. It also
-// returns the accumulated draft counters.
-func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, *asr.DraftStats, error) {
+// language, when available, is passed to subsequent requests. known is of
+// the recording's start: the chunks after the first have no part of it.
+// It also returns the accumulated draft counters.
+func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias, known prior) (string, string, *asr.DraftStats, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
@@ -276,6 +277,9 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 	chunks := t.splitChunks(pcm)
 	if a.spec.Kind == kindWhisper {
 		chunks = trimWhisperSilenceTail(chunks)
+	}
+	if len(chunks) > 1 {
+		known.text = "" // the text is of all the chunks: none of them is all of it
 	}
 	var parts []string
 	var draft *asr.DraftStats
@@ -306,11 +310,13 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		c := chunks[0]
 		chunks = chunks[1:]
+		start := known
+		known = prior{}
 		pcm, ok := a.speechOnly(ctx, c.pcm)
 		if !ok {
 			continue
 		}
-		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
+		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout, known: start}
 		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
 		if err != nil {
 			return "", "", nil, err

@@ -50,6 +50,8 @@ func (a *app) pageShown(path string) {
 		a.aeShown() // appenhance_page.go
 	case "/dictionary":
 		a.dictShown() // dictionary_page.go
+	case "/snippets":
+		a.loadSnippets() // snippets_controller.go
 	case "/notes":
 		a.loadNotes() // notes_page.go
 	case "/meetings":
@@ -71,6 +73,8 @@ func (a *app) page(c *uiContext, p navPage) {
 			})
 		})
 		historyDeleteDialog(c, &a.histUI, a)
+		a.shareDialog(c)    // share_controller.go
+		a.insightsDialog(c) // insights_controller.go
 		return
 	case "/logs":
 		logsPage(c, a.logsModel(), a, a.logsLocal())
@@ -104,6 +108,10 @@ func (a *app) page(c *uiContext, p navPage) {
 		a.prepareDictionaryPage()
 		model := a.dictionaryPageModel()
 		dictionaryPage(c, &model, a, &a.dictUI)
+		return
+	case "/snippets":
+		model := a.snippetsPageModel()
+		snippetsPage(c, &model, a, &a.snipUI)
 		return
 	case "/meetings":
 		a.prepareMeetingsPage()
