@@ -11,3 +11,5 @@ func frontmost() App { return App{} }
 func systemProxies() Proxies { return Proxies{} }
 
 func windowNumber(uintptr) int { return 0 }
+
+func windowOnActiveSpace(uintptr) bool { return true }

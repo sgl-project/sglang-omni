@@ -516,6 +516,7 @@ type fakeBoxWindow struct {
 	bounds            mygo.Rectangle
 }
 
+func (f *fakeBoxWindow) NativeHandle() uintptr                 { return 0 }
 func (f *fakeBoxWindow) Invalidate()                           {}
 func (f *fakeBoxWindow) SetContentBounds(r mygo.Rectangle)     { f.bounds = r }
 func (f *fakeBoxWindow) Show()                                 {}

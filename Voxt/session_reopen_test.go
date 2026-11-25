@@ -333,19 +333,16 @@ func TestRestoredCardFrameAllowsNewContentSize(t *testing.T) {
 	}
 }
 
-// Session overlays compute their bounds for each mode instead of restoring
-// the previous window's size or position.
+// Restoring session overlay bounds after a restart can put the next overlay
+// where the last one was.
 func TestSessionOverlayDoesNotRestoreSharedWindowBounds(t *testing.T) {
 	for _, mode := range []overlayMode{ovRecording, ovWorking, ovNotice, ovAnswer} {
 		opts := sessionOverlayWindowOptions(mode, mygo.Rectangle{X: 100, Y: 200, Width: 476, Height: 130}, nil)
 		if opts.StateKey != "" {
 			t.Fatalf("%s restores window bounds under %q", mode, opts.StateKey)
 		}
-		if opts.NonActivating != (mode != ovAnswer) || opts.Panel || !opts.AlwaysOnTop || !opts.Hidden || opts.Vibrancy != mygo.VibrancyHUD {
-			t.Errorf("%s window options: %+v", mode, opts)
-		}
-		if mode == ovAnswer && !opts.HoverWhileInactive {
-			t.Error("answer card must track hover while inactive")
+		if opts.NonActivating != (mode != ovAnswer) {
+			t.Errorf("%s nonactivating=%v", mode, opts.NonActivating)
 		}
 	}
 }

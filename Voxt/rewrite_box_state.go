@@ -122,7 +122,14 @@ func (a *app) boxActions() rewriteBoxActions {
 			a.boxShare.store(a.boxTextContent(), a.box.images)
 		},
 		focused: func() { a.box.focusText = false },
-		moved:   func() { a.post(a.boxDragged) },
+		moved: func() {
+			win := a.box.win
+			a.post(func() {
+				if a.box.win == win {
+					a.boxDragged()
+				}
+			})
+		},
 	}
 }
 
@@ -152,8 +159,7 @@ func (a *app) boxSync() {
 		return // tests: the state is enough
 	}
 	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil))
-		a.box.win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on, over a full-screen app too
+		a.box.win = a.boxNewWindow(false)
 	}
 	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, ovAnswer, boxWinH))
 	if style != a.box.style {
@@ -172,9 +178,27 @@ func (a *app) boxSync() {
 		// The shortcut that opens the card or sends from it is a click on
 		// it: above every window at once (cardFront).
 		a.box.front.raise(a.box.win)
+		if !a.box.front.panel && !windowOnActiveSpace(a.box.win.NativeHandle()) {
+			a.box.win.Destroy()
+			a.box.ui = rewriteBoxLocalUI{}
+			a.box.win = a.boxNewWindow(true)
+			a.box.win.SetVibrancyStyle(a.box.style)
+			a.box.win.SetContentBounds(a.box.frame)
+			a.box.front = cardFront{panel: true}
+			a.box.focusText = true
+			a.box.front.raise(a.box.win)
+		}
 		a.box.winShown, a.box.raise = true, false
 	}
 	a.box.front.settle(a.box.win, func() cardMay { return a.cardMayTake(a.box.target.PID) })
+}
+
+func (a *app) boxNewWindow(panel bool) boxWindow {
+	options := cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil)
+	options.Panel = panel
+	win := newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, options)
+	win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on, over a full-screen app too
+	return win
 }
 
 // boxConversing says whether the card shows the answer card's content:

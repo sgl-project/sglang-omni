@@ -64,12 +64,12 @@ type boxDropWindow interface {
 
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
 
-// newBoxWindow creates the input box's window: an ordinary one, above
-// every window until it takes the front (cardFront).
+// newBoxWindow creates the input box's window: normally an ordinary one, above
+// every window until it takes the front (cardFront); fallback panels stay above.
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, options mygo.WindowOptions) boxWindow {
 	options.Content = hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) })
 	options.Vibrancy = mygo.VibrancyHUD
-	options.Panel, options.NonActivating = false, false // an ordinary window: it takes typing, and a click brings VoxtNew in front
+	options.NonActivating = false // both ordinary cards and fallback panels accept typing
 	options.DisableClose = true
 	window := newBoxNativeWindow(options)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })

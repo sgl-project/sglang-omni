@@ -268,6 +268,26 @@ func TestRewriteCardTakesTheFront(t *testing.T) {
 	if native.onTop || native.focused != 2 {
 		t.Errorf("the user went elsewhere: on top %v, focused %d", native.onTop, native.focused)
 	}
+
+	// An off-Space host must be replaced before the card takes keyboard focus.
+	panel := &fakeBoxDropWindow{onTop: true}
+	var options mygo.WindowOptions
+	newBoxNativeWindow = func(o mygo.WindowOptions) boxDropWindow { options = o; return panel }
+	active := windowOnActiveSpace
+	windowOnActiveSpace = func(uintptr) bool { return false }
+	t.Cleanup(func() { windowOnActiveSpace = active })
+	frontmostPID = func() int { return 42 }
+	a.box.text, a.box.raise = "draft", true
+	a.sess.ReadingSelection = true
+	a.boxSync()
+	if !native.destroyed || a.box.win != panel || !options.Panel || options.NonActivating || panel.focused != 0 || a.box.text != "draft" {
+		t.Fatalf("off-Space replacement: destroyed=%v options=%+v focus=%d text=%q", native.destroyed, options, panel.focused, a.box.text)
+	}
+	a.sess.ReadingSelection = false
+	a.boxSync()
+	if panel.focused != 1 || !panel.onTop {
+		t.Fatalf("panel after selection: focus=%d onTop=%v", panel.focused, panel.onTop)
+	}
 }
 
 // TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,

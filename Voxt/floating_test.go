@@ -6,8 +6,8 @@ import (
 )
 
 // TestFloatingWindowOptions: floating windows never activate VoxtNew
-// (mygo patch 0003), and start hidden above other windows. A card's or a
-// preview's is an ordinary window that hovers while another app is in
+// (mygo patch 0003), and start hidden above other windows. A card's
+// ordinary window hovers while another app is in
 // front (patch 0020): tracked only while VoxtNew was active, the
 // preview's Use transcript stayed hovered and its tooltip covered the
 // live text.
@@ -80,5 +80,24 @@ func TestCardFront(t *testing.T) {
 	front.sync(win, true, false, "t3", ask)
 	if win.onTop || win.raised != 2 || win.focused != 2 {
 		t.Errorf("a card for a user who went elsewhere: on top %v, raised %d, focused %d", win.onTop, win.raised, win.focused)
+	}
+
+	// A fallback panel stays visible without activating the app or stealing focus.
+	front = overlayFront{front: cardFront{panel: true}}
+	win = &frontRecorder{onTop: true}
+	may = cardWait
+	front.sync(win, true, true, "p1", ask)
+	if win.focused != 0 || !front.front.waiting {
+		t.Fatal("panel took focus before selection capture finished")
+	}
+	may = cardTake
+	front.sync(win, true, false, "p1", ask)
+	if win.focused != 1 || !win.onTop || front.front.waiting {
+		t.Fatalf("settled panel: %+v, front %+v", win, front)
+	}
+	may = cardLeave
+	front.sync(win, true, false, "p2", ask)
+	if win.focused != 1 || !win.onTop || front.front.waiting {
+		t.Fatalf("panel after app switch: %+v, front %+v", win, front)
 	}
 }

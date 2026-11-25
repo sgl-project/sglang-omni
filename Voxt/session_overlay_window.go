@@ -144,13 +144,14 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
-// Preview panels follow the current Space without activating Voxt. Answer
-// cards remain ordinary windows for keyboard input and window managers.
-// StateKey stays empty: each mode computes its own bounds.
+// sessionOverlayWindowOptions leaves StateKey empty because restored bounds
+// would move the next mode.
 func sessionOverlayWindowOptions(mode overlayMode, frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
-	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	var opts mygo.WindowOptions
 	if mode == ovAnswer {
 		opts = cardWindowOptions("Voxt", frame.Width, frame.Height, content)
+	} else {
+		opts = floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
 	}
 	opts.Vibrancy = mygo.VibrancyHUD
 	opts.X, opts.Y = frame.X, frame.Y
@@ -222,6 +223,11 @@ func (a *app) overlaySync() {
 		a.destroyOverlayWindow()
 		was = false // the replacement needs its own reveal and front ordering
 	}
+	panel := card && a.ov.front.front.panel
+	if card && a.ov.win != nil && !panel && !windowOnActiveSpace(a.ov.win.NativeHandle()) {
+		a.destroyOverlayWindow()
+		panel, was = true, false
+	}
 	if a.ov.win == nil {
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
@@ -238,7 +244,24 @@ func (a *app) overlaySync() {
 			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
 		)
 		opts := sessionOverlayWindowOptions(mode, frame, hudContent(content))
-		a.ov.win = mygo.NewWindow(opts)
+		create := func(panel bool) *mygo.Window {
+			opts.Panel = panel
+			win := mygo.NewWindow(opts)
+			win.SetVisibleOnAllWorkspaces(true)
+			if card {
+				win.SetOpacity(0)
+				win.ShowInactive()
+			}
+			return win
+		}
+		a.ov.win = create(panel)
+		if card && !panel && !windowOnActiveSpace(a.ov.win.NativeHandle()) {
+			a.destroyOverlayWindow()
+			was = false
+			a.ov.win = create(true)
+			panel = true
+		}
+		a.ov.front.front.panel = panel
 		a.ov.cardWindow = card
 		win := a.ov.win
 		win.OnMove(func() {
@@ -449,7 +472,7 @@ func (a *app) destroyOverlayWindow() {
 	}
 	a.ov.style = mygo.VibrancyStyle{}
 	a.ov.passThrough = false
-	a.ov.front = overlayFront{}
+	a.ov.front = overlayFront{} // a new window starts above the others
 	a.ov.reveal = false
 	a.ov.fade++
 	// A parse queued on the old window may never run after it closes.

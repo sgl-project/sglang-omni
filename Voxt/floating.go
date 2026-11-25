@@ -6,17 +6,17 @@ package main
 // elsewhere. MyGo patch 0003 (third_party/mygo-patches) makes such a
 // window a non-activating panel at creation; it never takes the keyboard,
 // so it holds no text input (the cancel shortcut comes from the helper's event tap
-// while a session is active). A window that needs typing is an ordinary
+// while a session is active). A window that needs typing normally is an ordinary
 // one, and before inserting, VoxtNew gives the front back to the target
 // with activateTarget (plan B of the M0 spike S3).
 //
 // A preview (the recording pill and its live text, the meeting's live
 // window) floats above other windows. A card (the answer card of
-// Transcribe, Translate and Rewrite, the Rewrite card) is an ordinary
+// Transcribe, Translate and Rewrite, the Rewrite card) normally is an ordinary
 // window: the user's action on it brings VoxtNew in front with it
 // (cardFront), so a window manager such as Rectangle moves it and the
-// user's next app covers it (cardWindowOptions). Recording previews use
-// non-activating panels so they can follow the current Space.
+// user's next app covers it. An off-Space card falls back to a keyboard-capable
+// panel so focusing it does not switch desktops.
 
 import (
 	"os"
@@ -109,6 +109,7 @@ const (
 type cardFront struct {
 	lowered bool // at the windows' level
 	waiting bool // raised, VoxtNew not in front yet
+	panel   bool // a background app's panel must stay above the foreground app
 }
 
 // float keeps win above every window: a preview's level.
@@ -136,7 +137,8 @@ func (c *cardFront) lower(win cardWindow) {
 
 // settle finishes a raise when may allows (asked only while it waits):
 // VoxtNew in front with win as its key window, then win at the windows'
-// level. Main thread.
+// level. Fallback panels take keyboard focus without activating VoxtNew
+// and stay above the foreground app. Main thread.
 func (c *cardFront) settle(win cardWindow, may func() cardMay) {
 	if !c.waiting {
 		return
@@ -145,10 +147,17 @@ func (c *cardFront) settle(win cardWindow, may func() cardMay) {
 	case cardWait:
 		return
 	case cardTake:
-		win.Focus() // an ordinary window: VoxtNew comes in front with it
+		win.Focus() // panels take keyboard focus without activating Voxt
+	}
+	if c.panel {
+		c.waiting = false
+		return
 	}
 	c.lower(win)
 }
+
+// windowOnActiveSpace is replaceable at the native boundary for card lifecycle tests.
+var windowOnActiveSpace = macx.WindowOnActiveSpace
 
 // overlayFront is the overlay window's: a preview floats; the answer
 // card takes the front (cardFront) when it opens and with each new answer.
@@ -170,7 +179,12 @@ func (o *overlayFront) sync(win cardWindow, card, opened bool, answer string, ma
 	if !o.card || opened || answer != o.answer {
 		o.answer = answer
 		if may() == cardLeave {
-			o.front.lower(win)
+			if o.front.panel {
+				o.front.raise(win)
+				o.front.waiting = false
+			} else {
+				o.front.lower(win)
+			}
 		} else {
 			o.front.raise(win)
 		}

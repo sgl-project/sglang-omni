@@ -36,3 +36,6 @@ func Frontmost() App { return frontmost() }
 // (mygo.Window.NativeHandle), as screencapture -l takes it; 0 off macOS.
 // Main thread.
 func WindowNumber(handle uintptr) int { return windowNumber(handle) }
+
+// WindowOnActiveSpace reports whether an NSWindow can appear on the current Space. Main thread.
+func WindowOnActiveSpace(handle uintptr) bool { return windowOnActiveSpace(handle) }

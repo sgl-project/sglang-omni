@@ -134,6 +134,14 @@ func activate(pid int, wait time.Duration, runOnMain func(func())) (bool, time.D
 }
 
 var selWindowNumber = objc.RegisterName("windowNumber")
+var selOnActiveSpace = objc.RegisterName("isOnActiveSpace")
+
+func windowOnActiveSpace(handle uintptr) bool {
+	if handle == 0 || load() != nil {
+		return true
+	}
+	return objc.Send[bool](objc.ID(handle), selOnActiveSpace)
+}
 
 func windowNumber(handle uintptr) int {
 	if handle == 0 || load() != nil {

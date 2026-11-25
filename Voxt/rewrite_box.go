@@ -13,11 +13,12 @@ package main
 // sending. Nothing selected, typed or pasted: the request is the speech
 // alone, as before.
 //
-// The card's window is an ordinary window (cardWindowOptions), as any
+// The card's window normally is an ordinary window (cardWindowOptions), as any
 // app's: each press of the Rewrite shortcut on it is a click on it, so it
 // shows above every window at once and VoxtNew comes in front with it
 // once the selection is read (cardFront); the user drags it by its
 // margins, a window manager moves it, and the user's next app covers it.
+// An off-Space host falls back to a focusable panel without activating VoxtNew.
 // Closing it gives the front back to the app the user was in
 // (giveFrontBack); an insert activates that app first (deliver).
 //
@@ -169,6 +170,7 @@ type rewriteBoxActions struct {
 // (*mygo.Window; a fake in tests, so a close's hide is observable).
 type boxWindow interface {
 	Invalidate()
+	NativeHandle() uintptr
 	SetContentBounds(mygo.Rectangle)
 	ContentBounds() mygo.Rectangle
 	SetAlwaysOnTop(bool)
