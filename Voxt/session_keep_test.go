@@ -204,14 +204,14 @@ func TestSessionPillMark(t *testing.T) {
 	}
 }
 
-// TestSessionHistoryHints: Shortcuts warns that sessions end at quit
+// TestSessionHistoryHints: Experimental warns that sessions end at quit
 // while history is off, with a way to Privacy, whose Keep a history
 // row then says what it covers.
 func TestSessionHistoryHints(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	const warn = "History is off, so sessions end when Voxt quits. Turn on Keep a history in Privacy to keep them."
 	const covers = "When off, the menu bar and Dock menus do not list cards to reopen, and sessions end when Voxt quits. Clear history ends the other sessions too."
-	a.navigate("/settings/shortcuts")
+	a.navigate("/settings/experimental")
 	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
 	if has(tt, warn) {
 		t.Fatal("warned with history on")

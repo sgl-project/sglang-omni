@@ -72,6 +72,11 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "About",
         "english": "Diagnostics about version bug report"

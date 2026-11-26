@@ -18,7 +18,7 @@ import (
 // keeps its own answer card and conversation. The first card is from
 // Slack (rewriteSelecting); the user goes on in TextEdit.
 
-// sessionsOn turns Settings → Shortcuts' Sessions switch on.
+// sessionsOn turns Settings → Experimental's Sessions switch on.
 func sessionsOn(a *sessionApp) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
 }
