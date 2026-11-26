@@ -357,7 +357,8 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
-	answerInputs := []string{in.Text + "\n" + in.Typed + "\n" + in.Instruction}
+	currentRequest := in.Typed + "\n" + in.Instruction
+	answerInputs := []string{in.Text + "\n" + currentRequest}
 	for _, turn := range in.Previous {
 		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Typed+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
 	}
@@ -371,9 +372,9 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String(), answerInputs...)
+			a = compose.PartialAnswerWithRequest(buf.String(), currentRequest, answerInputs...)
 		} else if in.Task == compose.Rewrite {
-			a.Content = compose.CleanRewrite(buf.String(), answerInputs, true, quoteSource)
+			a.Content = compose.CleanRewriteWithRequest(buf.String(), answerInputs, currentRequest, true, quoteSource)
 		} else {
 			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
 		}
@@ -403,14 +404,14 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text, answerInputs...); ok {
+		if a, ok := compose.ParseAnswerWithRequest(resp.Text, currentRequest, answerInputs...); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewriteWithRequest(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, currentRequest, false, quoteSource)}, out.Profile(), truncated, nil
 	}
 	if in.Task == compose.Rewrite {
-		return compose.Answer{Content: compose.CleanRewrite(resp.Text, answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewriteWithRequest(resp.Text, answerInputs, currentRequest, false, quoteSource)}, out.Profile(), truncated, nil
 	}
 	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
 }
