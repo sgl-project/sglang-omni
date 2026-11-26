@@ -23,6 +23,7 @@ Recording overlay and live text	L	TestOverlayDisplayPrefersFocusedWindow	none
 Shortcuts	L	TestStrictShortcuts	Real key events run only in the Mac script
 Shortcuts	L	TestTranscribeMouseButton	none
 Shortcuts	M	scripts/mac-hotkey-coexist.sh	none
+Shortcuts	L	TestMeetingShortcutStartsAndEndsMeeting	A real key press through the helper's event tap or Carbon is seen on a Mac only
 End word and long press	L	TestTranscribeEndWord	none
 End word and long press	L	TestSessionLongPress	none
 App enhancement	L	TestSessionAppEnhancement	Each real target app is exercised by hand only

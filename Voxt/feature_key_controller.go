@@ -102,11 +102,14 @@ func (a *app) setHotkeys(feature string, resync bool, change func([]settings.Hot
 	}
 }
 
+// newHotkey is a new shortcut's keys: the first preset that overlaps no
+// shortcut of a feature, a meeting (#4641), PasteLast or Note, else a
+// double tap of the first preset.
 func newHotkey(features settings.Features) settings.Hotkey {
 	for _, preset := range keyPresets {
 		presetChord, _ := hotkey.Parse(preset)
 		used := false
-		for _, feature := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note) {
+		for _, feature := range append(slices.Clone(hotkey.Features), hotkey.PasteLast, hotkey.Note, hotkey.Meeting) {
 			for _, binding := range hotkey.HotkeysOf(features, feature) {
 				if chord, err := hotkey.Parse(binding.Keys); err == nil && chord.Overlaps(presetChord) {
 					used = true

@@ -193,6 +193,18 @@ func (a *app) meetingFinish() {
 	})
 }
 
+// meetingShortcut acts on a press of a meeting shortcut as the menu bar's
+// Start meeting / End meeting does: it ends the meeting in progress, or
+// starts one, though not while a dictation runs (#4641).
+func (a *app) meetingShortcut() {
+	switch {
+	case a.meetingActive():
+		a.meetingFinish()
+	case !a.sess.State.Live():
+		a.startMeeting()
+	}
+}
+
 func (a *app) meetingSave() {
 	if a.meetMgr == nil || a.meetSnap.State != meeting.StateAsking {
 		return

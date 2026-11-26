@@ -45,8 +45,9 @@ import (
 // sessionSource is the logs' source of session lines.
 const sessionSource = "session"
 
-// liveFeatures are the features whose shortcuts are bound.
-var liveFeatures = []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite}
+// liveFeatures are the features whose shortcuts are bound, unless hidden
+// (featureHidden).
+var liveFeatures = []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite, hotkey.Meeting}
 
 // sessionState is the sessions' view state.
 type sessionState struct {

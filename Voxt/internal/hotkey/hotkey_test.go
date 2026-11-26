@@ -366,6 +366,9 @@ func TestCheck(t *testing.T) {
 		Rewrite: settings.Rewrite{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Control+Command+V", ""),
 		}}},
+		Meeting: settings.Meeting{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
+			hk("Fn", ""), hk("Option+Space", ""), hk("Option+Space", settings.TriggerDouble),
+		}}},
 		PasteLast:  hk("Command+Control+V", ""),
 		Note:       hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
 		Cancel:     hk("Fn", ""),
@@ -386,6 +389,8 @@ func TestCheck(t *testing.T) {
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
 		"note/0 conflict":        func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"session-1/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
+		"meeting/0 conflict":     func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
+		"meeting/2 duplicate":    func(p Problem) bool { return p.Other == Meeting && p.OtherIndex == 1 },
 		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
@@ -462,6 +467,11 @@ func TestRoute(t *testing.T) {
 		{"session slot waits while busy", ev(Session2, proto.PhaseTrigger), Busy, "", Decision{}},
 		{"session slot switches while composing", ev(Session2, proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Session2}},
 		{"session slot down does nothing", ev(Session2, proto.PhaseDown), Idle, "", Decision{}},
+		{"meeting tap toggles", ev("meeting/0", proto.PhaseTrigger), Idle, "", Decision{Action: ToggleMeeting}},
+		{"meeting long press toggles on down", ev("meeting/1", proto.PhaseDown), Idle, "", Decision{Action: ToggleMeeting}},
+		{"meeting up does nothing", ev("meeting/1", proto.PhaseUp), Idle, "", Decision{}},
+		{"meeting does not stop a dictation", ev("meeting/0", proto.PhaseTrigger), Recording, "", Decision{Action: ToggleMeeting}},
+		{"meeting acts while busy", ev("meeting/0", proto.PhaseTrigger), Busy, "", Decision{Action: ToggleMeeting}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
 		if got := Route(tc.e, tc.phase, tc.hold, "", false); got != tc.want {
