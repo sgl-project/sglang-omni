@@ -507,6 +507,15 @@ class OmniDecodeScheduler(PDKVLifecycle):
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        if self.abort_goes_through_inbox():
+            # note (Andreas Rath): the base abort only queues the request here, and
+            # the scheduler thread applies it through this method later. Deferring
+            # the release now would let get_next_batch_to_run free the KV of a
+            # request that is still in the waiting queue.
+            super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
+            return
+        else:
+            pass
         with self.pd_lifecycle_lock:
             for req in self.waiting_queue:
                 if req.rid == request_id:
