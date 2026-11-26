@@ -21,7 +21,7 @@ import (
 var slack = proto.App{PID: 812, BundleID: "com.tinyspeck.slackmacgap", Name: "Slack"}
 
 type harness struct {
-	t     *testing.T
+	t     testing.TB
 	m     *Manager
 	audio *fakeAudio
 	text  *fakeText
@@ -43,9 +43,15 @@ type harness struct {
 	remote bool
 }
 
-func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
+func newHarness(t testing.TB, prov asr.Provider, model LLM, cfgFn func(*Config, *settings.Settings)) *harness {
 	h := &harness{t: t, audio: newFakeAudio(), text: &fakeText{focus: proto.FocusResult{PID: 812, Role: "AXTextArea", Editable: true}},
 		hist: &memHistory{dir: t.TempDir()}, rec: newRecorder(), asr: prov, llm: model}
+	if streamer, ok := prov.(*fakeStreamer); ok {
+		streamer.ensureSignals()
+	}
+	if llm, ok := model.(*fakeLLM); ok {
+		llm.ensureSignals()
+	}
 	s := settings.Defaults()
 	s.Dictionary.Enabled = true
 	cfg := Config{

@@ -142,6 +142,14 @@ type Streamer interface {
 	Open(ctx context.Context, req StreamRequest) (Stream, error)
 }
 
+// EarlyPiecesEnabler lets a live stream switch to the model's earlier
+// incremental Final policy after Open, when the session's eligibility
+// decision was not yet available. A stream returns false when the policy
+// can no longer be changed safely or is unsupported.
+type EarlyPiecesEnabler interface {
+	EnableEarlyPieces() bool
+}
+
 // Stream is one recognition session.
 //
 // note (chenye): Send and Finish are called from one goroutine (the session's);

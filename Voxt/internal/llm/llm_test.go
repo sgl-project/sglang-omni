@@ -66,6 +66,35 @@ func noSleep(context.Context, time.Duration) error { return nil }
 
 func msgs(s string) []Message { return []Message{{Role: User, Content: s}} }
 
+type prefillingBackend struct {
+	*fakeBackend
+	calls int
+}
+
+func (b *prefillingBackend) Prefill(context.Context, Request) error {
+	b.calls++
+	return nil
+}
+
+func TestClientPrefillCapabilityReflectsBackend(t *testing.T) {
+	remote := &Client{Backend: &fakeBackend{steps: []step{text("unused")}}}
+	if remote.CanPrefill() {
+		t.Fatal("remote wrapper advertises a no-op Prefill as real capability")
+	}
+	if err := remote.Prefill(context.Background(), Request{}); err != nil {
+		t.Fatalf("no-op Prefill returned %v", err)
+	}
+
+	local := &prefillingBackend{fakeBackend: &fakeBackend{steps: []step{text("unused")}}}
+	client := &Client{Backend: local}
+	if !client.CanPrefill() {
+		t.Fatal("backend Prefiller capability was lost through the client")
+	}
+	if err := client.Prefill(context.Background(), Request{}); err != nil || local.calls != 1 {
+		t.Fatalf("Prefill error %v, calls %d", err, local.calls)
+	}
+}
+
 func TestRetries(t *testing.T) {
 	var slept []time.Duration
 	sleep := func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }

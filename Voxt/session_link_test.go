@@ -228,6 +228,104 @@ func TestResolverWithoutSpeech(t *testing.T) {
 	}
 }
 
+type splitResolverServices struct {
+	models       []local.Model
+	speechModels []local.Model
+	asrCalls     int
+	asrInstalled int
+	llmCalls     []string
+	installed    int
+}
+
+func (s *splitResolverServices) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		s.asrInstalled++
+		return s.speechModels
+	}
+	if kind == local.LLM {
+		s.installed++
+		return s.models
+	}
+	return nil
+}
+
+func (s *splitResolverServices) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	s.asrCalls++
+	return nil, local.Model{Kind: local.ASR, ID: id, Name: "Fake speech"}, nil
+}
+
+func (s *splitResolverServices) LLM(_ context.Context, id string) (local.Chat, local.Model, error) {
+	s.llmCalls = append(s.llmCalls, id)
+	m, _ := local.Choose(s.models, id)
+	return &llm.Client{Backend: &fakeChat{}}, m, nil
+}
+
+func TestSessionResolversSplitSpeechAndCleanupProviderWork(t *testing.T) {
+	shelf := &splitResolverServices{models: []local.Model{
+		{Kind: local.LLM, ID: "deepseek", Name: "DeepSeek"},
+		{Kind: local.LLM, ID: "ollama", Name: "Ollama"},
+	}}
+	_, resolveASR, resolveLLM := sessionResolvers(shelf)
+	s := settings.Defaults()
+	s.Features.Transcribe.ASR = "sensevoice"
+	s.Features.Transcribe.Enhance = true
+	s.Features.Transcribe.LLM = "deepseek"
+
+	voice := resolveASR(context.Background(), store.KindTranscribe, s)
+	if voice.Err != nil || voice.ASRInfo.ID != "sensevoice" || shelf.asrCalls != 1 || shelf.installed != 0 || len(shelf.llmCalls) != 0 {
+		t.Fatalf("ASR readiness %+v, shelf %+v", voice, shelf)
+	}
+
+	s.Features.Translate.Fallback = "ollama"
+	cleanup := resolveLLM(context.Background(), store.KindTranslate, s)
+	if cleanup.Outcome != session.LLMAvailable || cleanup.LLMInfo.ID != "deepseek" || cleanup.FallbackInfo.ID != "ollama" ||
+		shelf.asrCalls != 1 || shelf.installed != 1 || len(shelf.llmCalls) != 2 || shelf.llmCalls[0] != "deepseek" || shelf.llmCalls[1] != "ollama" {
+		t.Fatalf("LLM readiness %+v, shelf %+v", cleanup, shelf)
+	}
+
+	s.Features.Transcribe.Enhance = false
+	notRequested := resolveLLM(context.Background(), store.KindTranscribe, s)
+	if notRequested.Outcome != session.LLMNotRequested || shelf.installed != 1 || len(shelf.llmCalls) != 2 {
+		t.Fatalf("disabled Cleanup did provider work: %+v, shelf %+v", notRequested, shelf)
+	}
+}
+
+func TestSessionResolversAutomaticSpeechSelectionInBothPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		models []local.Model
+		want   string
+	}{
+		{"prefer installed local speech model", []local.Model{
+			{Kind: local.ASR, ID: "doubao"}, {Kind: local.ASR, ID: "asr.fast"},
+		}, "asr.fast"},
+		{"use remote when no local speech model exists", []local.Model{
+			{Kind: local.ASR, ID: "doubao"},
+		}, "doubao"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shelf := &splitResolverServices{speechModels: tc.models}
+			resolve, resolveASR, _ := sessionResolvers(shelf)
+			prefs := settings.Defaults()
+			prefs.General.MainLanguage = "en"
+			prefs.Features.Transcribe.ASR = ""
+			prefs.Features.Transcribe.Enhance = false
+
+			voice := resolveASR(context.Background(), store.KindTranscribe, prefs)
+			if voice.Err != nil || voice.ASRInfo.ID != tc.want {
+				t.Fatalf("split ASR readiness %+v, want %q", voice, tc.want)
+			}
+			combined, err := resolve(context.Background(), store.KindTranscribe, prefs, true)
+			if err != nil || combined.ASRInfo.ID != tc.want {
+				t.Fatalf("combined services %+v, error %v, want ASR %q", combined, err, tc.want)
+			}
+			if shelf.asrCalls != 2 || shelf.asrInstalled != 2 {
+				t.Fatalf("automatic speech resolution opened %d models after %d installed-list reads", shelf.asrCalls, shelf.asrInstalled)
+			}
+		})
+	}
+}
+
 // TestReturnFinishQueuedStateChange: a Return the helper still reports as
 // Finish from the old configuration (its new one is on its way) stops
 // nothing once the setting is off or the recording is a note's; another

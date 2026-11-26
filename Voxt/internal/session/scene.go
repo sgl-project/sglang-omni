@@ -124,7 +124,6 @@ func (r *run) setScene(m appctx.Match, publish bool) {
 		sc.mu.Lock()
 		sc.match = m
 		sc.mu.Unlock()
-		close(sc.done)
 		if m.Matched() {
 			r.logf("info", "app enhancement: %s by %s", m.GroupName(), m.Source)
 		}
@@ -132,6 +131,7 @@ func (r *run) setScene(m appctx.Match, publish bool) {
 			c := cloneMatch(m)
 			r.m.update(r, func(s *Snapshot) { s.Scene = &c })
 		}
+		close(sc.done)
 	})
 }
 
