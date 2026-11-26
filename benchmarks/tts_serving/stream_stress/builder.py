@@ -50,12 +50,12 @@ def write_generated_metadata(
             "is_success": record.is_success and record.wav_path is not None,
             "latency_s": round(record.latency_s, 4),
             "audio_duration_s": round(record.audio_duration_s, 4),
-            "error": record.error,
+            "error": record.error
+            or (None if record.wav_path is not None else "audio was not saved"),
         }
         for record in sorted(records, key=lambda record: record.sequence)
         if not record.warmup
     ]
-    config.save_audio_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = config.save_audio_dir / "generated.json"
     metadata_path.write_text(
         json.dumps(generated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import json
+import threading
 import wave
 from pathlib import Path
 
@@ -553,6 +554,40 @@ def write_reference_corpus(tmp_path: Path) -> Path:
     return corpus
 
 
+def run_against_local_server(
+    tmp_path: Path, speak, *args: str
+) -> tuple[StressConfig, Responder]:
+    """Run the real sender against a local speech endpoint and write the saved audio's metadata."""
+    sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
+    web = pytest.importorskip("aiohttp.web")
+
+    async def run() -> tuple[StressConfig, Responder]:
+        application = web.Application()
+        application.router.add_post("/v1/audio/speech", speak)
+        runner = web.AppRunner(application)
+        await runner.setup()
+        await web.TCPSite(runner, "127.0.0.1", 0).start()
+        config = make_config(
+            tmp_path,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(runner.addresses[0][1]),
+            "--arrival-mode",
+            "burst",
+            "--min-audio-duration-s",
+            "0",
+            *args,
+        )
+        responder = Responder(config)
+        await sender.run_load(config, responder)
+        await runner.cleanup()
+        write_generated_metadata(config, responder.records)
+        return config, responder
+
+    return asyncio.run(run())
+
+
 class TestCorpusLineOverrides:
     def test_a_line_sends_its_own_language_and_reference(self, tmp_path: Path) -> None:
         """Every row used to go out with the run's one language and reference, so a mixed corpus sent half its rows in the wrong language."""
@@ -574,6 +609,23 @@ class TestCorpusLineOverrides:
         assert plain["ref_audio"] == "/server/run.wav"
         assert (bare["language"], bare["ref_audio"]) == ("fr", "/server/run.wav")
         assert "ref_text" not in bare
+
+    def test_references_format_sends_a_line_reference_as_one_entry(
+        self, tmp_path: Path
+    ) -> None:
+        write_reference_corpus(tmp_path)
+        config = make_config(tmp_path, "--ref-format", "references")
+        cloned, plain, _ = (config.payload_for(entry) for entry in config.corpus)
+
+        assert cloned["references"] == [
+            {
+                "audio_path": "data:audio/wav;base64,"
+                + base64.b64encode(b"RIFFprompt").decode("ascii"),
+                "text": "prompt words",
+            }
+        ]
+        assert "ref_audio" not in cloned and "ref_text" not in cloned
+        assert "references" not in plain
 
     def test_a_reference_that_is_not_a_local_file_is_sent_unchanged(
         self, tmp_path: Path
@@ -617,8 +669,50 @@ class TestSavedAudio:
             recorder.add_raw_bytes(pcm(1.0), 0.1)
             assert recorder.audio_payloads == kept
 
-    def test_a_run_saves_each_stream_and_writes_the_metadata_score_wer_reads(
+    def test_a_save_directory_that_cannot_be_created_is_rejected(
         self, tmp_path: Path
+    ) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("a file where the directory should be", encoding="utf-8")
+        with pytest.raises(ValueError, match="cannot create --save-audio-dir"):
+            make_config(tmp_path, "--save-audio-dir", str(blocked))
+
+    def test_a_request_whose_audio_cannot_be_written_is_still_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed write used to end the request's task before its record was submitted, so the request vanished from the report."""
+        web = pytest.importorskip("aiohttp.web")
+
+        def full_disk(path: str, mode: str) -> None:
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(wave, "open", full_disk)
+
+        async def speak(request: web.Request) -> web.StreamResponse:
+            response = web.StreamResponse()
+            await response.prepare(request)
+            await response.write(pcm(1.0))
+            return response
+
+        config, responder = run_against_local_server(
+            tmp_path,
+            speak,
+            "--total-requests",
+            "1",
+            "--save-audio-dir",
+            str(tmp_path / "audio"),
+        )
+
+        (record,) = responder.records
+        assert record.is_success and record.wav_path is None
+        (entry,) = json.loads(
+            write_generated_metadata(config, responder.records).read_text("utf-8")
+        )
+        assert not entry["is_success"]
+        assert entry["error"] == "audio was not saved"
+
+    def test_a_run_saves_each_stream_and_writes_the_metadata_score_wer_reads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Drives the real sender against a local server: a WAV stream whose header is split, each row's own reference, and one failing request."""
         sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
@@ -627,6 +721,14 @@ class TestSavedAudio:
         audio_dir = tmp_path / "audio"
         speech = bytes(range(256)) * 188
         received: list[dict] = []
+        saving_threads: list[int] = []
+        save_audio = StreamRecorder.save_audio
+
+        def save_audio_recording_thread(recorder: StreamRecorder) -> None:
+            saving_threads.append(threading.get_ident())
+            save_audio(recorder)
+
+        monkeypatch.setattr(StreamRecorder, "save_audio", save_audio_recording_thread)
 
         async def speak(request: web.Request) -> web.StreamResponse:
             payload = await request.json()
@@ -635,7 +737,9 @@ class TestSavedAudio:
                 return web.Response(status=500, text="boom")
             else:
                 pass
-            response = web.StreamResponse(headers={"X-Sample-Rate": "16000"})
+            response = web.StreamResponse(
+                headers={"X-Sample-Rate": "16000", "X-Channels": "2"}
+            )
             await response.prepare(request)
             header = b"RIFF" + b"\x00" * 40
             for network_bytes in (
@@ -646,42 +750,20 @@ class TestSavedAudio:
                 await response.write(network_bytes)
             return response
 
-        async def run() -> Responder:
-            application = web.Application()
-            application.router.add_post("/v1/audio/speech", speak)
-            runner = web.AppRunner(application)
-            await runner.setup()
-            site = web.TCPSite(runner, "127.0.0.1", 0)
-            await site.start()
-            port = runner.addresses[0][1]
-            config = make_config(
-                tmp_path,
-                "--port",
-                str(port),
-                "--host",
-                "127.0.0.1",
-                "--response-format",
-                "wav",
-                "--arrival-mode",
-                "burst",
-                "--total-requests",
-                "3",
-                "--warmup",
-                "1",
-                "--min-audio-duration-s",
-                "0",
-                "--run-id",
-                "run",
-                "--save-audio-dir",
-                str(audio_dir),
-            )
-            responder = Responder(config)
-            await sender.run_load(config, responder)
-            await runner.cleanup()
-            write_generated_metadata(config, responder.records)
-            return responder
-
-        asyncio.run(run())
+        run_against_local_server(
+            tmp_path,
+            speak,
+            "--response-format",
+            "wav",
+            "--total-requests",
+            "3",
+            "--warmup",
+            "1",
+            "--run-id",
+            "team/run",
+            "--save-audio-dir",
+            str(audio_dir),
+        )
 
         by_input = {payload["input"]: payload for payload in received[1:]}
         assert by_input["hello"]["ref_text"] == "prompt words"
@@ -691,10 +773,12 @@ class TestSavedAudio:
 
         generated = json.loads((audio_dir / "generated.json").read_text("utf-8"))
         assert [entry["sample_id"] for entry in generated] == [
-            "run-req-000000",
-            "run-req-000001",
-            "run-req-000002",
+            "team/run-req-000000",
+            "team/run-req-000001",
+            "team/run-req-000002",
         ]
+        assert len(saving_threads) == 2
+        assert threading.get_ident() not in saving_threads
         cloned, plain, failed = generated
         assert (cloned["corpus_sample_id"], cloned["target_text"]) == (
             "cloned",
@@ -706,13 +790,43 @@ class TestSavedAudio:
         assert failed["wav_path"] is None
         assert "HTTP 500" in failed["error"]
         assert sorted(path.name for path in audio_dir.glob("*.wav")) == [
-            "run-req-000000.wav",
-            "run-req-000001.wav",
+            "team_run-req-000000.wav",
+            "team_run-req-000001.wav",
         ]
+        assert cloned["audio_duration_s"] == pytest.approx(len(speech) / 64000)
+        assert cloned["latency_s"] > 0
         with wave.open(cloned["wav_path"], "rb") as wav_file:
             assert wav_file.getframerate() == 16000
-            assert (wav_file.getnchannels(), wav_file.getsampwidth()) == (1, 2)
+            assert (wav_file.getnchannels(), wav_file.getsampwidth()) == (2, 2)
             assert wav_file.readframes(wav_file.getnframes()) == speech
+
+    def test_the_command_writes_the_metadata_beside_the_audio(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_stress = pytest.importorskip(
+            "benchmarks.tts_serving.stream_stress.run_stress"
+        )
+        corpus = tmp_path / "corpus.jsonl"
+        corpus.write_text(json.dumps({"text": "hello"}), encoding="utf-8")
+
+        async def no_load(config, responder, stop) -> dict[str, float]:
+            return {"wall_clock_s": 0.0}
+
+        monkeypatch.setattr(run_stress, "execute", no_load)
+        exit_code = run_stress.main(
+            [
+                "--text-jsonl",
+                str(corpus),
+                "--output",
+                str(tmp_path / "out.jsonl"),
+                "--save-audio-dir",
+                str(tmp_path / "audio"),
+                "--quiet",
+            ]
+        )
+
+        assert exit_code == 0
+        assert json.loads((tmp_path / "audio" / "generated.json").read_text()) == []
 
     def test_sse_audio_is_saved(self, tmp_path: Path) -> None:
         sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
@@ -720,6 +834,8 @@ class TestSavedAudio:
             tmp_path,
             "--stream-format",
             "sse",
+            "--response-format",
+            "wav",
             "--save-audio-dir",
             str(tmp_path / "audio"),
         )
@@ -727,15 +843,16 @@ class TestSavedAudio:
             config, sequence=0, request_id="r", sample_id="s", text="t", warmup=False
         )
         recorder.mark_sent(0.0)
-        for arrival_s in (0.1, 0.2):
+        for arrival_s, wav_header in ((0.1, b"RIFF" + b"\x00" * 40), (0.2, b"")):
             delta = json.dumps(
                 {
                     "type": "speech.audio.delta",
-                    "audio": base64.b64encode(pcm(0.5)).decode(),
+                    "audio": base64.b64encode(wav_header + pcm(0.5)).decode(),
                 }
             )
             sender.handle_sse_frame(recorder, f"data: {delta}".encode(), arrival_s)
         recorder.save_audio()
+        assert recorder.audio_payloads == []
 
         with wave.open(recorder.finalize(load_start=0.0).wav_path, "rb") as wav_file:
             assert wav_file.getnframes() == 24000
@@ -822,7 +939,19 @@ class TestScoreWer:
             "benchmarks.tts_serving.stream_stress.score_wer"
         )
         (tmp_path / "generated.json").write_text(
-            json.dumps([{"sample_id": "r", "language": "fr"}]), encoding="utf-8"
+            json.dumps([{"sample_id": "r", "language": "fr", "is_success": True}]),
+            encoding="utf-8",
         )
         with pytest.raises(ValueError, match="language 'fr'"):
             score_wer.split_by_language(tmp_path, "en")
+
+    def test_a_run_without_saved_audio_is_not_scored(self, tmp_path: Path) -> None:
+        score_wer = pytest.importorskip(
+            "benchmarks.tts_serving.stream_stress.score_wer"
+        )
+        (tmp_path / "generated.json").write_text(
+            json.dumps([{"sample_id": "r", "language": "en", "is_success": False}]),
+            encoding="utf-8",
+        )
+        assert score_wer.main(["--audio-dir", str(tmp_path)]) == 2
+        assert not (tmp_path / "wer_en").exists()

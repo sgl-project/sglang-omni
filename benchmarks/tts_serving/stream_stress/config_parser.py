@@ -47,6 +47,7 @@ class StressConfig:
     text_field: str
     text_id_field: str | None
     text_repeat: str
+    ref_format: str
 
     qpm: float
     total_requests: int
@@ -99,12 +100,24 @@ class StressConfig:
         """The request body for one prompt; its own language and reference override the run's."""
         payload = dict(self.payload_template)
         payload["input"] = entry.text
-        for field_name in ("language", "ref_audio", "ref_text"):
-            value = getattr(entry, field_name)
-            if value is not None:
-                payload[field_name] = value
+        if entry.language is not None:
+            payload["language"] = entry.language
+        else:
+            pass
+        if self.ref_format == "references" and entry.ref_audio is not None:
+            reference = {"audio_path": entry.ref_audio}
+            if entry.ref_text is not None:
+                reference["text"] = entry.ref_text
             else:
                 pass
+            payload["references"] = [reference]
+        else:
+            for field_name in ("ref_audio", "ref_text"):
+                value = getattr(entry, field_name)
+                if value is not None:
+                    payload[field_name] = value
+                else:
+                    pass
         return payload
 
     def snapshot(self) -> dict[str, Any]:
@@ -302,7 +315,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "jsonl corpus; every non-empty line must be an object with the text field. "
             "A line's language, ref_audio and ref_text override the request options "
-            "for that prompt; a ref_audio file next to the corpus is sent inline"
+            "for that prompt; a ref_audio that is a file on this host, relative to "
+            "the corpus, is sent inline"
         ),
     )
     corpus.add_argument(
@@ -313,6 +327,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FIELD",
         help="sample id field; defaults to the first of id/key/sample_id/sample_key/uid, else the line number",
+    )
+    corpus.add_argument(
+        "--ref-format",
+        choices=("flat", "references"),
+        default="flat",
+        help=(
+            "how a line's ref_audio and ref_text are sent: as the ref_audio and "
+            "ref_text fields, or as one references entry for the models that take those"
+        ),
     )
     corpus.add_argument(
         "--max-texts",
@@ -620,6 +643,18 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         )
     raise_if(errors)
 
+    save_audio_dir = (
+        Path(options.save_audio_dir).expanduser().resolve()
+        if options.save_audio_dir
+        else None
+    )
+    if save_audio_dir is not None and not options.dry_run:
+        try:
+            save_audio_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise_if([f"cannot create --save-audio-dir: {exc}"])
+    else:
+        pass
     output = Path(options.output).expanduser().resolve()
     summary_json = (
         Path(options.summary_json).expanduser().resolve()
@@ -640,6 +675,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         text_field=options.text_field,
         text_id_field=options.text_id_field,
         text_repeat=options.text_repeat,
+        ref_format=options.ref_format,
         qpm=qpm,
         total_requests=total_requests,
         duration_s=options.duration_s,
@@ -667,11 +703,7 @@ def resolve_options(options: argparse.Namespace) -> StressConfig:
         min_audio_duration_s=options.min_audio_duration_s,
         output=output,
         summary_json=summary_json,
-        save_audio_dir=(
-            Path(options.save_audio_dir).expanduser().resolve()
-            if options.save_audio_dir
-            else None
-        ),
+        save_audio_dir=save_audio_dir,
         omit_chunks=options.omit_chunks,
         run_id=run_id,
         labels=labels,
@@ -749,7 +781,7 @@ def load_corpus(
                         )
                     else:
                         overrides[field_name] = override.strip()
-                # Note (Jiaxin Deng): the server cannot read a client file, so a reference next to the corpus goes out as a data URI; any other value is a URL, data URI or server path and is sent unchanged.
+                # Note (Jiaxin Deng): the server cannot read a client file, so a reference that is a local file, relative to the corpus, goes out as a data URI; any other value is a URL, data URI or server path and is sent unchanged.
                 reference_path = path.parent / overrides.get("ref_audio", "")
                 if "ref_audio" in overrides and reference_path.is_file():
                     if reference_path not in inline_audio_by_path:

@@ -7,6 +7,7 @@ import asyncio
 import base64
 import logging
 import math
+import re
 import statistics
 import wave
 from dataclasses import dataclass
@@ -461,8 +462,9 @@ class StreamRecorder:
         """Write the received PCM as <request_id>.wav under the save directory."""
         save_audio_dir = self.config.save_audio_dir
         assert save_audio_dir is not None
-        save_audio_dir.mkdir(parents=True, exist_ok=True)
-        wav_path = save_audio_dir / f"{self.request_id}.wav"
+        # Note (Jiaxin Deng): the request id starts with the run id, which a user may set to something like team/model.
+        file_stem = re.sub(r"[^A-Za-z0-9_.-]", "_", self.request_id)
+        wav_path = save_audio_dir / f"{file_stem}.wav"
         with wave.open(str(wav_path), "wb") as wav_file:
             wav_file.setframerate(self.sample_rate)
             wav_file.setnchannels(self.channels)

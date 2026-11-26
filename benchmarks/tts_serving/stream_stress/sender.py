@@ -238,7 +238,10 @@ async def issue_request(
             recorder.set_outcome({"error": "outcome lookup cancelled"})
         if recorder.audio_payloads:
             # Note (Jiaxin Deng): written off the event loop, so a disk write never delays another request's chunk timestamps.
-            await asyncio.to_thread(recorder.save_audio)
+            try:
+                await asyncio.to_thread(recorder.save_audio)
+            except OSError as exc:
+                LOGGER.warning(f"cannot save audio of {recorder.request_id}: {exc}")
         else:
             pass
         await responder.submit(recorder.finalize(load_start=load_start))

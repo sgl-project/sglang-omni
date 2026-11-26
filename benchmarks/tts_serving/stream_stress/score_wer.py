@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -63,9 +64,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--asr-concurrency", type=int, default=DEFAULT_ASR_TRANSCRIBE_CONCURRENCY
     )
-    parser.add_argument("--host", default="localhost")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument(
+        "--port", type=int, default=8000, help="ASR server port on this host"
+    )
     parser.add_argument(
         "--server-timeout",
         type=int,
@@ -86,6 +87,10 @@ def split_by_language(audio_dir: Path, default_language: str) -> dict[str, Path]
         (audio_dir / "generated.json").read_text(encoding="utf-8")
     )
     entries_by_language: dict[str, list[dict[str, str | float | bool | None]]] = {}
+    if not any(entry["is_success"] for entry in generated):
+        raise ValueError(f"no request in {audio_dir} has saved audio to score")
+    else:
+        pass
     for entry in generated:
         language = str(entry.get("language") or default_language).lower()
         if language not in SCORED_LANGUAGES:
@@ -113,7 +118,7 @@ def score(options: argparse.Namespace, output_dirs: dict[str, Path]) -> None:
                 model=options.model,
                 output_dir=str(output_dir),
                 lang=language,
-                device=options.device,
+                device="cuda:0",
                 asr_model_path=options.asr_model_path,
                 asr_concurrency=options.asr_concurrency,
             ),
@@ -137,13 +142,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if (
+        not options.use_existing_server
+        and not os.environ.get("CUDA_VISIBLE_DEVICES")
+        and os.environ.get("GITHUB_ACTIONS") != "true"
+    ):
+        # Note (Jiaxin Deng): the managed server's shutdown waits for the GPUs named there to empty and raises without it, after the scores are written.
+        print(
+            "set CUDA_VISIBLE_DEVICES to the GPU the ASR server uses", file=sys.stderr
+        )
+        return 2
+    else:
+        pass
     if options.use_existing_server:
         score(options, output_dirs)
     else:
         with managed_omni_server(
             model_path=options.asr_model_path,
             port=options.port,
-            host=options.host,
+            host="127.0.0.1",
             log_file=audio_dir / "asr_server.log",
             timeout=options.server_timeout,
         ):
