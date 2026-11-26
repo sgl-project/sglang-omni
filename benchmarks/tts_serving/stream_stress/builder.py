@@ -31,6 +31,38 @@ def write_jsonl(
     return output_path
 
 
+def write_generated_metadata(
+    config: StressConfig, records: list[RequestRecord]
+) -> Path | None:
+    """Write generated.json beside the saved audio, one entry per measured request, for score_wer."""
+    if config.save_audio_dir is None:
+        return None
+    else:
+        pass
+    generated = [
+        {
+            # Note (Jiaxin Deng): a cycled corpus repeats sample ids and the transcriber keys its results by this field, so it is the request id.
+            "sample_id": record.request_id,
+            "corpus_sample_id": record.sample_id,
+            "target_text": record.text,
+            "language": record.language,
+            "wav_path": record.wav_path,
+            "is_success": record.is_success and record.wav_path is not None,
+            "latency_s": round(record.latency_s, 4),
+            "audio_duration_s": round(record.audio_duration_s, 4),
+            "error": record.error,
+        }
+        for record in sorted(records, key=lambda record: record.sequence)
+        if not record.warmup
+    ]
+    config.save_audio_dir.mkdir(parents=True, exist_ok=True)
+    metadata_path = config.save_audio_dir / "generated.json"
+    metadata_path.write_text(
+        json.dumps(generated, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return metadata_path
+
+
 def write_summary_json(config: StressConfig, report: AggregateReport) -> Path | None:
     if config.summary_json is None:
         return None

@@ -16,7 +16,7 @@ from typing import Any
 
 import aiohttp
 
-from benchmarks.tts_serving.stream_stress.config_parser import StressConfig
+from benchmarks.tts_serving.stream_stress.config_parser import CorpusEntry, StressConfig
 from benchmarks.tts_serving.stream_stress.responder import Responder, StreamRecorder
 
 LOGGER = logging.getLogger(__name__)
@@ -145,7 +145,7 @@ async def run_warmup(
     warmup_start = time.perf_counter()
     random_generator = random.Random(config.arrival_seed + 991)
     for index in range(config.warmup_requests):
-        recorder = new_recorder(
+        recorder, entry = new_recorder(
             config,
             sequence=-index - 1,
             planned_at_s=0.0,
@@ -154,7 +154,7 @@ async def run_warmup(
         )
         try:
             recorder.mark_sent(time.perf_counter())
-            await perform_request(config, session, recorder)
+            await perform_request(config, session, recorder, entry)
         except asyncio.TimeoutError as exc:
             recorder.fail_timeout(exc, observed_at=time.perf_counter())
         except asyncio.CancelledError:
@@ -180,7 +180,7 @@ async def issue_request(
     load_start: float,
     random_generator: random.Random,
 ) -> None:
-    recorder = new_recorder(
+    recorder, entry = new_recorder(
         config,
         sequence=sequence,
         planned_at_s=planned_at_s,
@@ -200,7 +200,7 @@ async def issue_request(
         state.peak_inflight = max(state.peak_inflight, state.inflight)
         recorder.mark_sent(time.perf_counter())
         try:
-            await perform_request(config, session, recorder)
+            await perform_request(config, session, recorder, entry)
         except asyncio.TimeoutError as exc:
             recorder.fail_timeout(exc, observed_at=time.perf_counter())
         except aiohttp.ClientError as exc:
@@ -236,6 +236,11 @@ async def issue_request(
                 await fetch_outcome(config, session, recorder)
         except asyncio.CancelledError:
             recorder.set_outcome({"error": "outcome lookup cancelled"})
+        if recorder.audio_payloads:
+            # Note (Jiaxin Deng): written off the event loop, so a disk write never delays another request's chunk timestamps.
+            await asyncio.to_thread(recorder.save_audio)
+        else:
+            pass
         await responder.submit(recorder.finalize(load_start=load_start))
 
 
@@ -246,14 +251,14 @@ def new_recorder(
     planned_at_s: float,
     warmup: bool,
     random_generator: random.Random,
-) -> StreamRecorder:
+) -> tuple[StreamRecorder, CorpusEntry]:
     entry = (
         random_generator.choice(config.corpus)
         if config.text_repeat == "random"
         else config.entry_for(sequence)
     )
     request_id = f"{config.run_id}-{'warmup' if warmup else 'req'}-{abs(sequence):06d}"
-    return StreamRecorder(
+    recorder = StreamRecorder(
         config,
         sequence=sequence,
         request_id=request_id,
@@ -261,15 +266,18 @@ def new_recorder(
         text=entry.text,
         warmup=warmup,
         planned_at_s=planned_at_s,
+        language=entry.language or config.payload_template.get("language"),
     )
+    return recorder, entry
 
 
 async def perform_request(
     config: StressConfig,
     session: aiohttp.ClientSession,
     recorder: StreamRecorder,
+    entry: CorpusEntry,
 ) -> None:
-    payload = config.payload_for(recorder.sequence, text=recorder.text)
+    payload = config.payload_for(entry)
     async with session.post(config.url, json=payload) as response:
         recorder.start_response(response.status, dict(response.headers.items()))
         if response.status != 200:

@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the streaming TTS stress test: config, health metrics, and timing."""
 
+import asyncio
 import base64
 import json
+import wave
 from pathlib import Path
 
 import pytest
 
+from benchmarks.benchmarker.data import RequestResult
+from benchmarks.tts_serving.stream_stress.builder import write_generated_metadata
 from benchmarks.tts_serving.stream_stress.config_parser import (
     StressConfig,
     arrival_offsets,
@@ -523,3 +527,302 @@ class TestSseParsing:
         done = new_recorder()
         sender.handle_sse_frame(done, b"data: [DONE]", 0.1)
         assert done.sse_done is not None
+
+
+def write_reference_corpus(tmp_path: Path) -> Path:
+    (tmp_path / "prompt.wav").write_bytes(b"RIFFprompt")
+    corpus = tmp_path / "corpus.jsonl"
+    corpus.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "id": "cloned",
+                        "text": "hello",
+                        "language": "en",
+                        "ref_audio": "prompt.wav",
+                        "ref_text": "prompt words",
+                    }
+                ),
+                json.dumps({"id": "plain", "text": "你好", "language": "zh"}),
+                json.dumps({"id": "bare", "text": "third"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return corpus
+
+
+class TestCorpusLineOverrides:
+    def test_a_line_sends_its_own_language_and_reference(self, tmp_path: Path) -> None:
+        """Every row used to go out with the run's one language and reference, so a mixed corpus sent half its rows in the wrong language."""
+        write_reference_corpus(tmp_path)
+        config = make_config(
+            tmp_path, "--language", "fr", "--ref-audio", "/server/run.wav"
+        )
+        cloned, plain, bare = (config.payload_for(entry) for entry in config.corpus)
+
+        inline_audio = "data:audio/wav;base64," + base64.b64encode(
+            b"RIFFprompt"
+        ).decode("ascii")
+        assert (cloned["language"], cloned["ref_audio"], cloned["ref_text"]) == (
+            "en",
+            inline_audio,
+            "prompt words",
+        )
+        assert (plain["input"], plain["language"]) == ("你好", "zh")
+        assert plain["ref_audio"] == "/server/run.wav"
+        assert (bare["language"], bare["ref_audio"]) == ("fr", "/server/run.wav")
+        assert "ref_text" not in bare
+
+    def test_a_reference_that_is_not_a_local_file_is_sent_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "corpus.jsonl").write_text(
+            json.dumps({"text": "hello", "ref_audio": "/server/voices/a.wav"}),
+            encoding="utf-8",
+        )
+        config = make_config(tmp_path)
+        assert config.payload_for(config.corpus[0])["ref_audio"] == (
+            "/server/voices/a.wav"
+        )
+
+    def test_an_override_that_is_not_a_string_is_rejected(self, tmp_path: Path) -> None:
+        (tmp_path / "corpus.jsonl").write_text(
+            json.dumps({"text": "hello", "language": 3}), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="'language' must be a non-empty string"):
+            make_config(tmp_path)
+
+
+class TestSavedAudio:
+    def test_audio_is_kept_only_for_measured_requests_of_a_saving_run(
+        self, tmp_path: Path
+    ) -> None:
+        saving = make_config(tmp_path, "--save-audio-dir", str(tmp_path / "audio"))
+        for config, warmup, kept in (
+            (saving, False, [pcm(1.0)]),
+            (saving, True, []),
+            (make_config(tmp_path), False, []),
+        ):
+            recorder = StreamRecorder(
+                config,
+                sequence=0,
+                request_id="r",
+                sample_id="s",
+                text="t",
+                warmup=warmup,
+            )
+            recorder.mark_sent(0.0)
+            recorder.add_raw_bytes(pcm(1.0), 0.1)
+            assert recorder.audio_payloads == kept
+
+    def test_a_run_saves_each_stream_and_writes_the_metadata_score_wer_reads(
+        self, tmp_path: Path
+    ) -> None:
+        """Drives the real sender against a local server: a WAV stream whose header is split, each row's own reference, and one failing request."""
+        sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
+        web = pytest.importorskip("aiohttp.web")
+        write_reference_corpus(tmp_path)
+        audio_dir = tmp_path / "audio"
+        speech = bytes(range(256)) * 188
+        received: list[dict] = []
+
+        async def speak(request: web.Request) -> web.StreamResponse:
+            payload = await request.json()
+            received.append(payload)
+            if payload["input"] == "third":
+                return web.Response(status=500, text="boom")
+            else:
+                pass
+            response = web.StreamResponse(headers={"X-Sample-Rate": "16000"})
+            await response.prepare(request)
+            header = b"RIFF" + b"\x00" * 40
+            for network_bytes in (
+                header[:20],
+                header[20:] + speech[:1000],
+                speech[1000:],
+            ):
+                await response.write(network_bytes)
+            return response
+
+        async def run() -> Responder:
+            application = web.Application()
+            application.router.add_post("/v1/audio/speech", speak)
+            runner = web.AppRunner(application)
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            port = runner.addresses[0][1]
+            config = make_config(
+                tmp_path,
+                "--port",
+                str(port),
+                "--host",
+                "127.0.0.1",
+                "--response-format",
+                "wav",
+                "--arrival-mode",
+                "burst",
+                "--total-requests",
+                "3",
+                "--warmup",
+                "1",
+                "--min-audio-duration-s",
+                "0",
+                "--run-id",
+                "run",
+                "--save-audio-dir",
+                str(audio_dir),
+            )
+            responder = Responder(config)
+            await sender.run_load(config, responder)
+            await runner.cleanup()
+            write_generated_metadata(config, responder.records)
+            return responder
+
+        asyncio.run(run())
+
+        by_input = {payload["input"]: payload for payload in received[1:]}
+        assert by_input["hello"]["ref_text"] == "prompt words"
+        assert by_input["hello"]["ref_audio"].startswith("data:audio/wav;base64,")
+        assert by_input["你好"]["language"] == "zh"
+        assert "ref_audio" not in by_input["你好"]
+
+        generated = json.loads((audio_dir / "generated.json").read_text("utf-8"))
+        assert [entry["sample_id"] for entry in generated] == [
+            "run-req-000000",
+            "run-req-000001",
+            "run-req-000002",
+        ]
+        cloned, plain, failed = generated
+        assert (cloned["corpus_sample_id"], cloned["target_text"]) == (
+            "cloned",
+            "hello",
+        )
+        assert (cloned["language"], plain["language"]) == ("en", "zh")
+        assert cloned["is_success"] and plain["is_success"]
+        assert not failed["is_success"]
+        assert failed["wav_path"] is None
+        assert "HTTP 500" in failed["error"]
+        assert sorted(path.name for path in audio_dir.glob("*.wav")) == [
+            "run-req-000000.wav",
+            "run-req-000001.wav",
+        ]
+        with wave.open(cloned["wav_path"], "rb") as wav_file:
+            assert wav_file.getframerate() == 16000
+            assert (wav_file.getnchannels(), wav_file.getsampwidth()) == (1, 2)
+            assert wav_file.readframes(wav_file.getnframes()) == speech
+
+    def test_sse_audio_is_saved(self, tmp_path: Path) -> None:
+        sender = pytest.importorskip("benchmarks.tts_serving.stream_stress.sender")
+        config = make_config(
+            tmp_path,
+            "--stream-format",
+            "sse",
+            "--save-audio-dir",
+            str(tmp_path / "audio"),
+        )
+        recorder = StreamRecorder(
+            config, sequence=0, request_id="r", sample_id="s", text="t", warmup=False
+        )
+        recorder.mark_sent(0.0)
+        for arrival_s in (0.1, 0.2):
+            delta = json.dumps(
+                {
+                    "type": "speech.audio.delta",
+                    "audio": base64.b64encode(pcm(0.5)).decode(),
+                }
+            )
+            sender.handle_sse_frame(recorder, f"data: {delta}".encode(), arrival_s)
+        recorder.save_audio()
+
+        with wave.open(recorder.finalize(load_start=0.0).wav_path, "rb") as wav_file:
+            assert wav_file.getnframes() == 24000
+
+
+class TestScoreWer:
+    def test_saved_requests_are_scored_per_language(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Feeds a stress run's generated.json through the shared transcribe pipeline, with only the ASR request faked."""
+        score_wer = pytest.importorskip(
+            "benchmarks.tts_serving.stream_stress.score_wer"
+        )
+        tts = pytest.importorskip("benchmarks.tasks.tts")
+        transcripts = {
+            "run-req-000000": "hello world",
+            "run-req-000001": "你好世界",
+            "run-req-000003": "wrong words entirely here",
+        }
+        entries = [
+            {
+                "sample_id": sample_id,
+                "corpus_sample_id": "s",
+                "target_text": target_text,
+                "language": language,
+                "wav_path": str(tmp_path / f"{sample_id}.wav"),
+                "is_success": is_success,
+                "latency_s": 1.0,
+                "audio_duration_s": 2.0,
+                "error": None if is_success else "HTTP 500: boom",
+            }
+            for sample_id, target_text, language, is_success in (
+                ("run-req-000000", "hello world", "en", True),
+                ("run-req-000001", "你好世界", "zh", True),
+                ("run-req-000002", "never spoken", None, False),
+                ("run-req-000003", "good morning", None, True),
+            )
+        ]
+        (tmp_path / "generated.json").write_text(
+            json.dumps(entries, ensure_ascii=False), encoding="utf-8"
+        )
+        seen_languages: list[str] = []
+
+        async def fake_transcription(samples, *, lang, **kwargs):
+            seen_languages.append(lang)
+            return (
+                [
+                    RequestResult(
+                        request_id=sample.sample_id,
+                        text=transcripts[sample.sample_id],
+                        is_success=True,
+                        latency_s=0.1,
+                    )
+                    for sample in samples
+                ],
+                1.0,
+            )
+
+        monkeypatch.setattr(tts, "run_asr_transcription", fake_transcription)
+
+        assert (
+            score_wer.main(["--audio-dir", str(tmp_path), "--use-existing-server"]) == 0
+        )
+
+        assert sorted(seen_languages) == ["en", "zh"]
+        english = json.loads((tmp_path / "wer_en" / "wer_results.json").read_text())
+        chinese = json.loads((tmp_path / "wer_zh" / "wer_results.json").read_text())
+        assert chinese["summary"]["wer_corpus"] == 0.0
+        assert [sample["id"] for sample in english["per_sample"]] == [
+            "run-req-000000",
+            "run-req-000002",
+            "run-req-000003",
+        ]
+        exact, failed, runaway = english["per_sample"]
+        assert exact["wer"] == 0.0
+        assert not failed["is_success"]
+        assert runaway["wer"] > 0.5
+        assert english["summary"]["n_above_50_pct_wer"] == 1
+
+    def test_a_language_the_scorer_does_not_cover_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        score_wer = pytest.importorskip(
+            "benchmarks.tts_serving.stream_stress.score_wer"
+        )
+        (tmp_path / "generated.json").write_text(
+            json.dumps([{"sample_id": "r", "language": "fr"}]), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="language 'fr'"):
+            score_wer.split_by_language(tmp_path, "en")

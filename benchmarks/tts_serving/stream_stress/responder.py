@@ -8,6 +8,7 @@ import base64
 import logging
 import math
 import statistics
+import wave
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,6 +134,8 @@ class RequestRecord:
     labels: dict[str, str]
     sample_id: str
     text: str
+    language: str | None
+    wav_path: str | None
 
     planned_at_s: float
     dispatch_lag_s: float
@@ -183,6 +186,8 @@ class RequestRecord:
             "labels": self.labels,
             "sample_id": self.sample_id,
             "text": self.text,
+            "language": self.language,
+            "wav_path": self.wav_path,
             "timing": {
                 "planned_at_s": round(self.planned_at_s, 6),
                 "sent_at_s": round(self.sent_at_s, 6),
@@ -255,12 +260,14 @@ class StreamRecorder:
         text: str,
         warmup: bool,
         planned_at_s: float = 0.0,
+        language: str | None = None,
     ) -> None:
         self.config = config
         self.sequence = sequence
         self.request_id = request_id
         self.sample_id = sample_id
         self.text = text
+        self.language = language
         self.warmup = warmup
         self.planned_at_s = planned_at_s
 
@@ -280,6 +287,9 @@ class StreamRecorder:
         self.first_chunk_s: float | None = None
         self.first_audio_s: float | None = None
         self.first_audio_payload_bytes = 0
+        self.keeps_audio = config.save_audio_dir is not None and not warmup
+        self.audio_payloads: list[bytes] = []
+        self.wav_path: str | None = None
 
         self.error: str | None = None
         self.error_kind: str | None = None
@@ -338,6 +348,10 @@ class StreamRecorder:
                 self.expect_wav_header = False
                 if bytes(self.wav_header_buffer[:4]) != b"RIFF":
                     self.health_failures.add("invalid_wav_header")
+        if self.keeps_audio and audio_payload:
+            self.audio_payloads.append(audio_payload)
+        else:
+            pass
         self.append_chunk(
             len(network_bytes), len(audio_payload), observed_at, kind=kind
         )
@@ -354,6 +368,10 @@ class StreamRecorder:
             self.expect_wav_header = False
         elif self.expect_wav_header and audio_payload:
             self.expect_wav_header = False
+        if self.keeps_audio and audio_payload:
+            self.audio_payloads.append(audio_payload)
+        else:
+            pass
         self.raw_bytes_total += frame_bytes
         self.append_chunk(
             frame_bytes, len(audio_payload), observed_at, kind="sse_delta"
@@ -439,6 +457,20 @@ class StreamRecorder:
     def set_outcome(self, outcome: dict[str, Any]) -> None:
         self.outcome = outcome
 
+    def save_audio(self) -> None:
+        """Write the received PCM as <request_id>.wav under the save directory."""
+        save_audio_dir = self.config.save_audio_dir
+        assert save_audio_dir is not None
+        save_audio_dir.mkdir(parents=True, exist_ok=True)
+        wav_path = save_audio_dir / f"{self.request_id}.wav"
+        with wave.open(str(wav_path), "wb") as wav_file:
+            wav_file.setframerate(self.sample_rate)
+            wav_file.setnchannels(self.channels)
+            wav_file.setsampwidth(self.bit_depth // 8)
+            wav_file.writeframes(b"".join(self.audio_payloads))
+        self.wav_path = str(wav_path)
+        self.audio_payloads = []
+
     def finalize(self, *, load_start: float) -> RequestRecord:
         config = self.config
         sent_at = self.sent_at or load_start
@@ -514,6 +546,8 @@ class StreamRecorder:
             labels=dict(config.labels),
             sample_id=self.sample_id,
             text=self.text,
+            language=self.language,
+            wav_path=self.wav_path,
             planned_at_s=self.planned_at_s,
             dispatch_lag_s=max(0.0, sent_at - load_start - self.planned_at_s),
             sent_at_s=max(0.0, sent_at - load_start),
