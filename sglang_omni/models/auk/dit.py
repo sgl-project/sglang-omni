@@ -16,10 +16,15 @@ from torch import nn
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 
+class MMDiTBlockModulation(NamedTuple):
+    text: torch.Tensor
+    audio: torch.Tensor
+
+
 class AuKModulation(NamedTuple):
-    double: tuple[tuple[torch.Tensor, torch.Tensor], ...]
-    single: tuple[torch.Tensor, ...]
-    final: torch.Tensor
+    transformer_blocks: tuple[MMDiTBlockModulation, ...]
+    single_transformer_blocks: tuple[torch.Tensor, ...]
+    norm_out: torch.Tensor
 
 
 class Rope(NamedTuple):
@@ -414,13 +419,13 @@ class MMDiTBlock(nn.Module):
         c_rope=None,
         c_mask: torch.Tensor | None = None,
         bias: torch.Tensor | None = None,
-        modulation: tuple[torch.Tensor, torch.Tensor] | None = None,
+        modulation: MMDiTBlockModulation | None = None,
     ):
         norm_c, c_gate_msa, c_shift_mlp, c_scale_mlp, c_gate_mlp = self.attn_norm_c(
-            c, emb=t, modulation=None if modulation is None else modulation[0]
+            c, emb=t, modulation=None if modulation is None else modulation.text
         )
         norm_x, x_gate_msa, x_shift_mlp, x_scale_mlp, x_gate_mlp = self.attn_norm_x(
-            x, emb=t, modulation=None if modulation is None else modulation[1]
+            x, emb=t, modulation=None if modulation is None else modulation.audio
         )
         x_attn, c_attn = self.attn(
             x=norm_x,
@@ -575,22 +580,30 @@ class AuKDit(nn.Module):
 
     def modulation_table(self, times: torch.Tensor) -> list[AuKModulation]:
         emb = F.silu(self.time_embed(times))
-        double = [
-            (block.attn_norm_c.linear(emb), block.attn_norm_x.linear(emb))
+        transformer_blocks = [
+            MMDiTBlockModulation(
+                text=block.attn_norm_c.linear(emb),
+                audio=block.attn_norm_x.linear(emb),
+            )
             for block in self.transformer_blocks
         ]
-        single = [
+        single_transformer_blocks = [
             block.attn_norm.linear(emb) for block in self.single_transformer_blocks
         ]
-        final = self.norm_out.linear(emb)
+        norm_out = self.norm_out.linear(emb)
         return [
             AuKModulation(
-                double=tuple(
-                    (text[step : step + 1], audio[step : step + 1])
-                    for text, audio in double
+                transformer_blocks=tuple(
+                    MMDiTBlockModulation(
+                        text=rows.text[step : step + 1],
+                        audio=rows.audio[step : step + 1],
+                    )
+                    for rows in transformer_blocks
                 ),
-                single=tuple(rows[step : step + 1] for rows in single),
-                final=final[step : step + 1],
+                single_transformer_blocks=tuple(
+                    rows[step : step + 1] for rows in single_transformer_blocks
+                ),
+                norm_out=norm_out[step : step + 1],
             )
             for step in range(times.shape[0])
         ]
@@ -788,7 +801,9 @@ class AuKDit(nn.Module):
                 c_rope=rope_text,
                 c_mask=c_mask,
                 bias=joint_bias,
-                modulation=None if modulation is None else modulation.double[index],
+                modulation=(
+                    None if modulation is None else modulation.transformer_blocks[index]
+                ),
             )
 
         x = torch.cat([c, x], dim=1)
@@ -800,12 +815,16 @@ class AuKDit(nn.Module):
                 mask=single_mask,
                 rope=rope,
                 bias=single_bias,
-                modulation=None if modulation is None else modulation.single[index],
+                modulation=(
+                    None
+                    if modulation is None
+                    else modulation.single_transformer_blocks[index]
+                ),
             )
 
         x = x[:, text_len + prompt_len :]
         return self.proj_out(
             self.norm_out(
-                x, t, modulation=None if modulation is None else modulation.final
+                x, t, modulation=None if modulation is None else modulation.norm_out
             )
         )
