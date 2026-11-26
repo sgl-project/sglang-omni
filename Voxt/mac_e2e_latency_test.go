@@ -30,6 +30,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -569,6 +570,28 @@ func TestLatencyResultWritesUnavailableEvidenceAsNull(t *testing.T) {
 	assertUnavailable("text_sha256", "text_unavailable_reason")
 }
 
+// requireGateRejects runs the real short-open gate and requires its
+// deliberate rejection: exit 1, an incomplete group, no kept attempt and
+// no median. Any other failure (a usage error, a missing file, a Python
+// traceback) is a test failure, not a rejection.
+func requireGateRejects(t *testing.T, python, rowsPath, preflight string) {
+	t.Helper()
+	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("the gate must reject the group with exit 1, got %v: %s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{`"complete": false`, `"kept": false`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the gate did not report %s: %s", want, out)
+		}
+	}
+	if strings.Contains(text, "median") {
+		t.Fatalf("the gate printed medians for a rejected group: %s", out)
+	}
+}
+
 func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -591,13 +614,7 @@ func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
-	if err == nil {
-		t.Fatalf("the gate kept rows with no Final, insert or text: %s", out)
-	}
-	if strings.Contains(string(out), "median") {
-		t.Fatalf("the gate printed medians for a rejected group: %s", out)
-	}
+	requireGateRejects(t, python, rowsPath, preflight)
 }
 
 // TestNoPartialSessionRejectsTheFabricatedPartial drives latencySession's
@@ -670,13 +687,7 @@ func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
 	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
-	if err == nil {
-		t.Fatalf("the gate kept no-partial sessions with a valid Final, paste and text: %s", out)
-	}
-	if strings.Contains(string(out), "median") {
-		t.Fatalf("the gate printed medians for a rejected group: %s", out)
-	}
+	requireGateRejects(t, python, rowsPath, preflight)
 }
 
 func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
