@@ -284,6 +284,8 @@ class AuKFlowMatching(nn.Module):
             fn = step_graph.bind(step, inputs, x=y0, time=t[0], baked=(cfg_strength,))
         elif (
             cfg_strength >= 1e-5
+            and weight_dtype == torch.bfloat16
+            and self.transformer.qk_fusion is not None
             and device.type == current_platform.device_type
             and current_platform.enable_auk_precomputed_modulation()
         ):

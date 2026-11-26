@@ -250,9 +250,24 @@ def test_a_batch_the_runner_declines_is_not_padded(monkeypatch):
     assert set(widths) == {19}
 
 
-@pytest.mark.parametrize("cfg_strength", [0.0, 2.0])
-def test_precomputed_modulation_matches_the_per_step_modulation(
-    monkeypatch, cfg_strength
+def native_qk_fusion(query, key, query_norm, key_norm, rope):
+    from sglang_omni.models.auk.dit import Attention
+
+    return Attention.apply_rope(query_norm(query), key_norm(key), rope)
+
+
+@pytest.mark.parametrize(
+    ("cfg_strength", "weight_dtype", "fuse_qk_norm_rope", "builds_table"),
+    [
+        (2.0, torch.bfloat16, True, True),
+        (0.0, torch.bfloat16, True, False),
+        (2.0, torch.float32, True, False),
+        (2.0, torch.bfloat16, False, False),
+    ],
+    ids=["guided_bf16_fused", "unguided", "fp32_weights", "native_qk"],
+)
+def test_precomputed_modulation_runs_only_where_it_matches_the_per_step_path(
+    monkeypatch, cfg_strength, weight_dtype, fuse_qk_norm_rope, builds_table
 ):
     from sglang_omni.models.auk import flow_matching
     from sglang_omni.models.auk.dit import AuKDit
@@ -273,6 +288,11 @@ def test_precomputed_modulation_matches_the_per_step_modulation(
     ).eval()
     for parameter in flow.parameters():
         torch.nn.init.uniform_(parameter, -0.2, 0.2)
+    flow.transformer.to(dtype=weight_dtype)
+    if fuse_qk_norm_rope:
+        flow.transformer.enable_fused_qk_norm_rope(native_qk_fusion)
+    else:
+        pass
     items = [
         AuKSampleItem(
             torch.randn(text, 16),
@@ -285,27 +305,31 @@ def test_precomputed_modulation_matches_the_per_step_modulation(
         for text, frames, ref, seed in [(5, 19, 4, 1), (3, 15, 0, 3)]
     ]
     sampling = dict(steps=4, cfg_strength=cfg_strength)
-    expected = flow.sample_batch(items, **sampling)
-
     tables = []
     build_table = flow.transformer.modulation_table
     monkeypatch.setattr(flow_matching.current_platform, "device_type", "cpu")
-    monkeypatch.setattr(
-        flow_matching.current_platform,
-        "enable_auk_precomputed_modulation",
-        lambda: True,
-        raising=False,
-    )
     monkeypatch.setattr(
         flow.transformer,
         "modulation_table",
         lambda times: tables.append(times) or build_table(times),
     )
+    monkeypatch.setattr(
+        flow_matching.current_platform,
+        "enable_auk_precomputed_modulation",
+        lambda: False,
+    )
+    expected = flow.sample_batch(items, **sampling)
+    assert tables == []
+    monkeypatch.setattr(
+        flow_matching.current_platform,
+        "enable_auk_precomputed_modulation",
+        lambda: True,
+    )
     actual = flow.sample_batch(items, **sampling)
 
-    assert [times.numel() for times in tables] == ([4] if cfg_strength else [])
-    for output, reference in zip(actual, expected):
-        torch.testing.assert_close(output, reference, rtol=1e-6, atol=1e-6)
+    assert [times.numel() for times in tables] == ([4] if builds_table else [])
+    for output, reference in zip(actual, expected, strict=True):
+        assert torch.equal(output, reference)
 
 
 def test_precomputed_modulation_step_hands_each_step_its_own_row():
@@ -326,7 +350,7 @@ def test_precomputed_modulation_step_hands_each_step_its_own_row():
 
 @pytest.mark.parametrize(
     ("compile_blocks", "fuse_qk_norm_rope"),
-    [(False, False), (True, True)],
+    [(False, True), (True, True)],
     ids=["eager", "served"],
 )
 def test_precomputed_modulation_is_bitwise_on_xpu_guided_bf16_sampling(
