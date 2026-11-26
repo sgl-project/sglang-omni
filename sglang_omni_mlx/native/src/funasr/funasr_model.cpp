@@ -80,6 +80,7 @@ WeightMap EncoderLayout(const WeightMap &weights, const nlohmann::json &audio) {
                           0));
     } else if (parameter.starts_with("self_attn.k_proj.") ||
                parameter.starts_with("self_attn.v_proj.")) {
+      // Fused into the query's entry above.
     } else if (parameter == "self_attn.fsmn.conv.weight") {
       loaded.insert_or_assign(prefix + ".self_attn.fsmn_block.weight",
                               mx::contiguous(mx::transpose(weight, {0, 2, 1})));
@@ -98,14 +99,16 @@ WeightMap EncoderLayout(const WeightMap &weights, const nlohmann::json &audio) {
   return loaded;
 }
 
-} // namespace
-
+// Audio tokens the prompt holds for a clip of frame_count stacked frames:
+// three halvings, each rounding up.
 int AudioTokenCount(int frame_count) {
   for (int halving = 0; halving < kLowFrameRateHalvings; ++halving) {
     frame_count = (frame_count + 1) / 2;
   }
   return frame_count;
 }
+
+} // namespace
 
 FunAsrNano::FunAsrNano(const std::filesystem::path &model_directory)
     : FunAsrNano(ReadJson(model_directory / "config.json"),

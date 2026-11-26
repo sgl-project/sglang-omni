@@ -15,10 +15,6 @@
 
 namespace funasr {
 
-// Audio tokens the prompt holds for a clip of frame_count stacked frames:
-// three halvings, each rounding up.
-int AudioTokenCount(int frame_count);
-
 class FunAsrNano {
 public:
   explicit FunAsrNano(const std::filesystem::path &model_directory);
@@ -26,7 +22,7 @@ public:
   // Stacked fbank frames [frames, input_size] of 16 kHz samples; none for
   // audio shorter than one window.
   mlx::core::array Features(const std::vector<float> &samples) const;
-  // Audio token embeddings [AudioTokenCount(frames), hidden] of features
+  // Audio token embeddings [ceil(frames / 8), hidden] of features
   // [frames, input_size].
   mlx::core::array EncodeAudio(const mlx::core::array &features) const;
   const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
