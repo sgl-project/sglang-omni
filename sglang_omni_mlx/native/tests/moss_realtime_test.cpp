@@ -521,12 +521,9 @@ void TestTimingLines() {
     lines = capture.Lines();
   }
   Require(lines.size() == 2, "one timing line per decode");
-  const char *const stamps[] = {"append_at_ms",
-                                "decision_at_ms",
-                                "submit_at_ms",
-                                "transcribe_started_at_ms",
-                                "transcribe_at_ms",
-                                "publish_at_ms"};
+  const char *const stamps[] = {"append_at_ms",     "decision_at_ms",
+                                "submit_at_ms",     "transcribe_started_at_ms",
+                                "transcribe_at_ms", "publish_at_ms"};
   for (size_t i = 0; i < lines.size(); ++i) {
     const nlohmann::json &line = lines[i];
     Require(line.at("event") == "moss_preview_timing", "the event name");

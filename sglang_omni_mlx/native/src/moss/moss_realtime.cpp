@@ -197,9 +197,8 @@ void MossRealtimeSession::SubmitDecode(
   timing->submit_at_ms = NowSteadyClockMilliseconds();
   worker_.Submit(
       std::move(job), std::move(flag),
-      [weak_self, decode = std::move(decode), flag = callback_flag,
-       timing](std::optional<TranscriptionResult> result,
-               std::exception_ptr error) {
+      [weak_self, decode = std::move(decode), flag = callback_flag, timing](
+          std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
