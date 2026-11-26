@@ -327,6 +327,10 @@ func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 	return fmt.Sprintf("%s (%s–%s)", ms(ds[len(ds)/2]), ms(ds[0]), ms(ds[len(ds)-1]))
 }
 
+// firstPartialWait is how long a session waits for its first live text
+// before the no-partial branch; the branch's regression shortens it.
+var firstPartialWait = 5 * time.Minute
+
 // latencySession presses Transcribe's shortcut, stops two seconds after
 // the first live text and returns the session's stages; from is when the
 // scenario began (the app opened, the model changed): a server ready
@@ -340,7 +344,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
-	if !a.pumpFor(5*time.Minute, func() bool {
+	if !a.pumpFor(firstPartialWait, func() bool {
 		if a.sess.ID == last {
 			return false
 		}
@@ -590,6 +594,85 @@ func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
 	if err == nil {
 		t.Fatalf("the gate kept rows with no Final, insert or text: %s", out)
+	}
+	if strings.Contains(string(out), "median") {
+		t.Fatalf("the gate printed medians for a rejected group: %s", out)
+	}
+}
+
+// TestNoPartialSessionRejectsTheFabricatedPartial drives latencySession's
+// real no-partial branch (VOXTNEW_LATENCY_ALLOW_NO_PARTIAL=1): a speech
+// model transcribes only the finished recording, so no live partial ever
+// arrives, yet the session still delivers a Final, a paste and text. The
+// row must carry a null first partial and the gate must reject the group.
+func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("the short-open gate is a Python script and python3 is not on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	rowsPath := filepath.Join(dir, "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", rowsPath)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	t.Setenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL", "1")
+	t.Setenv("VOXTNEW_LATENCY_SPEAK", "50ms")
+	oldWait := firstPartialWait
+	firstPartialWait = 200 * time.Millisecond
+	t.Cleanup(func() { firstPartialWait = oldWait })
+
+	// NoStream: the speech model gets the recording only once it stops, so
+	// the session never has a live partial but still has a Final and a paste.
+	tr := &fakeTranscriptions{text: "meeting notes"}
+	a := newSessionApp(t, helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+	}, &fakeLocal{ASRP: tr, NoStream: true})
+	lg := &latencyLog{}
+	for attempt := 1; attempt <= 3; attempt++ {
+		for _, name := range []string{"cold", "warm"} {
+			st := latencySession(t, a, lg, time.Now(), time.Time{}, name, fakeASRModel.ID, attempt)
+			if st.partial != 0 {
+				t.Fatalf("%s attempt %d: a no-partial session recorded %v as its first partial", name, attempt, st.partial)
+			}
+			if st.final == 0 || st.insert == 0 {
+				t.Fatalf("%s attempt %d: the session delivered no Final or paste: %+v", name, attempt, st)
+			}
+		}
+	}
+	data, err := os.ReadFile(rowsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("wrote %d latency rows, want 6", len(lines))
+	}
+	for _, line := range lines {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		value, present := row["first_partial_ms"]
+		if !present || value != nil {
+			t.Fatalf("a no-partial session must write null first_partial_ms, not the wait: %v", row)
+		}
+		if reason, _ := row["first_partial_unavailable_reason"].(string); reason == "" {
+			t.Fatalf("a null first_partial_ms needs its unavailable reason: %v", row)
+		}
+		final, _ := row["stop_to_final_ms"].(float64)
+		insert, _ := row["stop_to_insert_ms"].(float64)
+		text, _ := row["text"].(string)
+		if final <= 0 || insert <= 0 || strings.TrimSpace(text) == "" {
+			t.Fatalf("the no-partial row is missing its valid Final, paste or text: %v", row)
+		}
+	}
+	preflight := filepath.Join(dir, "preflight.json")
+	body := `{"returncode":0,"environment_reasons":[],"peak_pressure":"normal"}`
+	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
+	if err == nil {
+		t.Fatalf("the gate kept no-partial sessions with a valid Final, paste and text: %s", out)
 	}
 	if strings.Contains(string(out), "median") {
 		t.Fatalf("the gate printed medians for a rejected group: %s", out)
