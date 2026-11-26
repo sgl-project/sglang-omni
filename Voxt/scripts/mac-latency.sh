@@ -41,22 +41,7 @@ for round in $(seq 1 "$rounds"); do
   go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >>build/latency.log 2>&1 || rc=$((rc+1))
   after_others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
   after_pressure="$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 0)"
-  python3 - "$attempt" "$before_others" "$before_power" "$before_pressure" "$after_others" "$after_pressure" <<'PY'
-import json, sys
-def reasons(others, power, pressure):
-    out = []
-    if others: out.append("contender: " + others.splitlines()[0][:120])
-    if "AC Power" not in power: out.append("not on AC power")
-    return out
-before_o, before_p, before_pr, after_o, after_pr = sys.argv[1:6]
-env = {
-    "before": {"others": before_o, "pressure": before_pr},
-    "after": {"others": after_o, "pressure": after_pr},
-    "environment_reasons": reasons(before_o, before_p, before_pr) + reasons(after_o, "", after_pr),
-    "peak_pressure": "normal" if before_pr == "1" and after_pr == "1" else "warn",
-}
-json.dump(env, open(sys.argv[1], "w"))
-PY
+  python3 scripts/attempt_env.py "$attempt" "$before_others" "$before_power" "$before_pressure" "$after_others" "$after_pressure"
 done
 echo "$rc" > build/latency-returncode.txt
 python3 - <<'PY'

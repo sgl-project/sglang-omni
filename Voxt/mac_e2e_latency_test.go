@@ -570,13 +570,26 @@ func TestLatencyResultWritesUnavailableEvidenceAsNull(t *testing.T) {
 	assertUnavailable("text_sha256", "text_unavailable_reason")
 }
 
+// gateAttemptEnv writes one attempt's environment record the way the
+// runner does (attempt_env.py): clean AC, normal pressure, no contenders.
+func gateAttemptEnv(t *testing.T, dir string, attempt int) {
+	t.Helper()
+	body := fmt.Sprintf(`{"before":{"others":"","pressure":"1"},"after":{"others":"","pressure":"1"},"environment_reasons":[],"peak_pressure":"normal"}`)
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("latency-attempt-%d.json", attempt)), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // requireGateRejects runs the real short-open gate and requires its
 // deliberate rejection: exit 1, an incomplete group, no kept attempt and
 // no median. Any other failure (a usage error, a missing file, a Python
 // traceback) is a test failure, not a rejection.
-func requireGateRejects(t *testing.T, python, rowsPath, preflight string) {
+func requireGateRejects(t *testing.T, python, dir string) {
 	t.Helper()
-	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
+	if err := os.WriteFile(filepath.Join(dir, "latency-returncode.txt"), []byte("0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(python, "scripts/short_open_gate.py", dir, "3").CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
 		t.Fatalf("the gate must reject the group with exit 1, got %v: %s", err, out)
@@ -609,12 +622,43 @@ func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 		writeLatencyResult(t, "cold", "asr.test", attempt, st, 0, 0, "")
 		writeLatencyResult(t, "warm", "asr.test", attempt, st, 0, 0, "")
 	}
-	preflight := filepath.Join(dir, "preflight.json")
-	body := `{"returncode":0,"environment_reasons":[],"peak_pressure":"normal"}`
-	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
+	splitGateRows(t, rowsPath, dir)
+	for attempt := 1; attempt <= 3; attempt++ {
+		gateAttemptEnv(t, dir, attempt)
+	}
+	requireGateRejects(t, python, dir)
+}
+
+// splitGateRows splits the shared JSONL into the per-attempt files the
+// real runner writes (build/latency-round-N.jsonl).
+func splitGateRows(t *testing.T, rowsPath, dir string) {
+	t.Helper()
+	data, err := os.ReadFile(rowsPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	requireGateRejects(t, python, rowsPath, preflight)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Attempt int `json:"attempt"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("latency-round-%d.jsonl", row.Attempt))
+		fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fh.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := fh.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // TestNoPartialSessionRejectsTheFabricatedPartial drives latencySession's
@@ -682,12 +726,11 @@ func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
 			t.Fatalf("the no-partial row is missing its valid Final, paste or text: %v", row)
 		}
 	}
-	preflight := filepath.Join(dir, "preflight.json")
-	body := `{"returncode":0,"environment_reasons":[],"peak_pressure":"normal"}`
-	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+	splitGateRows(t, rowsPath, dir)
+	for attempt := 1; attempt <= 3; attempt++ {
+		gateAttemptEnv(t, dir, attempt)
 	}
-	requireGateRejects(t, python, rowsPath, preflight)
+	requireGateRejects(t, python, dir)
 }
 
 func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
