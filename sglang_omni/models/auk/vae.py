@@ -16,8 +16,10 @@ from torch.nn.utils import remove_weight_norm, weight_norm
 
 try:
     from sglang_omni.kernels.anti_aliased_snake_beta import anti_aliased_snake_beta
+    from sglang_omni.kernels.bias_snake_beta import SnakeBetaCoefficients
 except ImportError:
     anti_aliased_snake_beta = None
+    SnakeBetaCoefficients = None
 
 LRELU_SLOPE = 0.1
 
@@ -185,16 +187,13 @@ class Activation1d(nn.Module):
 
     def enable_fused_kernel(self) -> None:
         lowpass = self.downsample.lowpass
-        assert anti_aliased_snake_beta is not None
-        assert isinstance(self.act, SnakeBeta) and not self.upsample.causal
+        assert anti_aliased_snake_beta is not None and SnakeBetaCoefficients is not None
+        assert isinstance(self.act, SnakeBeta) and self.act.alpha_logscale
+        assert not self.upsample.causal
         assert lowpass.padding and lowpass.padding_mode == "replicate"
-        alpha, beta = self.act.alpha, self.act.beta
-        if self.act.alpha_logscale:
-            alpha, beta = torch.exp(alpha), torch.exp(beta)
-        else:
-            pass
-        self.alpha_scale = alpha.detach().clone()
-        self.inverse_beta = (1.0 / (beta + self.act.no_div_by_zero)).detach()
+        coefficients = SnakeBetaCoefficients.from_activation(self.act)
+        self.alpha_scale = coefficients.alpha_scale
+        self.inverse_beta = coefficients.inverse_beta
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.inverse_beta is not None and x.dtype == torch.float32:

@@ -360,7 +360,7 @@ class DiTBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         bias: torch.Tensor | None = None,
@@ -413,7 +413,7 @@ class MMDiTBlock(nn.Module):
         self,
         x: torch.Tensor,
         c: torch.Tensor,
-        t: torch.Tensor,
+        t: torch.Tensor | None,
         mask: torch.Tensor | None = None,
         rope=None,
         c_rope=None,
@@ -579,18 +579,19 @@ class AuKDit(nn.Module):
         self.text_cond, self.text_uncond = None, None
 
     def modulation_table(self, times: torch.Tensor) -> list[AuKModulation]:
-        emb = F.silu(self.time_embed(times))
+        timestep_embedding = F.silu(self.time_embed(times))
         transformer_blocks = [
             MMDiTBlockModulation(
-                text=block.attn_norm_c.linear(emb),
-                audio=block.attn_norm_x.linear(emb),
+                text=block.attn_norm_c.linear(timestep_embedding),
+                audio=block.attn_norm_x.linear(timestep_embedding),
             )
             for block in self.transformer_blocks
         ]
         single_transformer_blocks = [
-            block.attn_norm.linear(emb) for block in self.single_transformer_blocks
+            block.attn_norm.linear(timestep_embedding)
+            for block in self.single_transformer_blocks
         ]
-        norm_out = self.norm_out.linear(emb)
+        norm_out = self.norm_out.linear(timestep_embedding)
         return [
             AuKModulation(
                 transformer_blocks=tuple(

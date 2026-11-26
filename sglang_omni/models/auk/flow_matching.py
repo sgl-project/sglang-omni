@@ -20,7 +20,7 @@ from sglang_omni.models.auk.step_cuda_graph import AuKStepCudaGraphRunner, AuKSt
 from sglang_omni.platforms import current_platform
 
 
-class AuKModulatedStepFn(Protocol):
+class AuKModulatedStepFunction(Protocol):
     def __call__(
         self,
         time: torch.Tensor,
@@ -32,7 +32,7 @@ class AuKModulatedStepFn(Protocol):
 
 
 class PrecomputedModulationStep:
-    def __init__(self, step: AuKModulatedStepFn, table: list[AuKModulation]):
+    def __init__(self, step: AuKModulatedStepFunction, table: list[AuKModulation]):
         self.step = step
         self.table = table
         self.index = 0

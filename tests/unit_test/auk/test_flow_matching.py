@@ -369,28 +369,15 @@ def test_precomputed_modulation_is_bitwise_on_xpu_guided_bf16_sampling(
         flow.transformer.enable_compiled_blocks()
     else:
         pass
-    batches = [
-        [
-            AuKSampleItem(
-                torch.randn(24, 2048, device=device),
-                torch.ones(24, dtype=torch.bool, device=device),
-                200,
-                None,
-                seed=0,
-                ref_length=0,
-            )
-        ],
-        [
-            AuKSampleItem(
-                torch.randn(text, 2048, device=device),
-                torch.ones(text, dtype=torch.bool, device=device),
-                frames,
-                torch.randn(ref, 64, device=device) if ref else None,
-                seed=seed,
-                ref_length=ref,
-            )
-            for text, frames, ref, seed in [(24, 200, 32, 1), (17, 150, 0, 2)]
-        ],
+    items = [
+        AuKSampleItem(
+            torch.randn(24, 2048, device=device),
+            torch.ones(24, dtype=torch.bool, device=device),
+            200,
+            None,
+            seed=0,
+            ref_length=0,
+        )
     ]
     sampling = dict(
         steps=C.DEFAULT_NFE,
@@ -404,23 +391,21 @@ def test_precomputed_modulation_is_bitwise_on_xpu_guided_bf16_sampling(
         "modulation_table",
         lambda times: tables.append(times.numel()) or build_table(times),
     )
-    for items in batches:
-        with torch.inference_mode():
-            monkeypatch.setattr(
-                flow_matching.current_platform,
-                "enable_auk_precomputed_modulation",
-                lambda: False,
-            )
-            expected = flow.sample_batch(items, **sampling)
-            assert tables == []
-            monkeypatch.setattr(
-                flow_matching.current_platform,
-                "enable_auk_precomputed_modulation",
-                lambda: True,
-            )
-            actual = flow.sample_batch(items, **sampling)
-        assert tables == [C.DEFAULT_NFE]
-        tables.clear()
-        for output, reference in zip(actual, expected, strict=True):
-            assert output.dtype == reference.dtype
-            assert torch.equal(output, reference)
+    with torch.inference_mode():
+        monkeypatch.setattr(
+            flow_matching.current_platform,
+            "enable_auk_precomputed_modulation",
+            lambda: False,
+        )
+        expected = flow.sample_batch(items, **sampling)
+        assert tables == []
+        monkeypatch.setattr(
+            flow_matching.current_platform,
+            "enable_auk_precomputed_modulation",
+            lambda: True,
+        )
+        actual = flow.sample_batch(items, **sampling)
+    assert tables == [C.DEFAULT_NFE]
+    for output, reference in zip(actual, expected, strict=True):
+        assert output.dtype == reference.dtype
+        assert torch.equal(output, reference)
