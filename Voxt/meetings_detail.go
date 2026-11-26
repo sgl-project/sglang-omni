@@ -26,11 +26,13 @@ func meetingDetailSection(c *ui.Context, state meetingDetailViewState, actions m
 	if local.detail == nil {
 		local.detail = &meetingDetailLocalUI{}
 	}
+	// Close clears local.detail while this frame still draws.
+	detail := local.detail
 	if state.Loading || state.Error != "" {
 		ui.Column(c).Grow(1).MinWidth(0).Padding(px(t, sp4), px(t, sp6)).Gap(px(t, sp3)).Children(func() {
 			panelHeader(c, i18n.T("Meeting details"), actions.closeMeetingDetail)
 			if state.Loading {
-				if loadingShows(c, &local.detail.loadingSince) {
+				if loadingShows(c, &detail.loadingSince) {
 					caption(c, i18n.T("Loading…"))
 				}
 			} else {
@@ -40,7 +42,7 @@ func meetingDetailSection(c *ui.Context, state meetingDetailViewState, actions m
 		return
 	}
 	rows := 1 + max(len(state.Segments), 1)
-	ui.List(c.Key("mt-detail"), &local.detail.segList, rows).Grow(1).MinWidth(0).Label(i18n.T("Meeting details")).
+	ui.List(c.Key("mt-detail"), &detail.segList, rows).Grow(1).MinWidth(0).Label(i18n.T("Meeting details")).
 		ItemKey(func(index int) any {
 			if index == 0 || len(state.Segments) == 0 {
 				return index
