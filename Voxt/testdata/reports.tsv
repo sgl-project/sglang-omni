@@ -79,3 +79,5 @@ report	fix	symptom	level	check
 #4605	#4607	A kept answer card on another display pulls the recording pill away from the foreground app	L	TestPillAnchorKeepsFocusedDisplayBesideKeptCard
 #4605	#4607	Without Accessibility, the recording overlay still follows the pointer instead of the window server's front window	L	TestFocusedWindowFrameFallsBackToWindowServer
 #4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut
+#4550	#4550	Toggling Sessions leaves the current card's session row stale until a resize	L	TestSessionToggleRefreshesOpenCard
+#4550	#4689	Another session's streaming answer hides Continue without explaining when it returns	L	TestSessionSlotContinueWaitsForStreamingAnswer
