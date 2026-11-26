@@ -41,6 +41,7 @@ LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 STARTUP_TIMEOUT_SECONDS = 600
 SHUTDOWN_TIMEOUT_SECONDS = 10
 MODEL_TEST_TIMEOUT_SECONDS = 1800
+REALTIME_EVENT_TIMEOUT_SECONDS = 60
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
@@ -648,12 +649,14 @@ def test_realtime_manual_session(server: Server) -> None:
 
 
 def test_a_segment_final_reuses_its_live_session_cache(server: Server) -> None:
-    """A segment Final reuses its completed windows and leaves the first segment's HTTP Final cache valid."""
+    """A segment Final reuses cache, matches reference decoding, and preserves HTTP reuse."""
     clip_id = "0098_en_mid"
     pcm = pcm16(clip_id)
+    segment_pcm = pcm[: 17 * 32000]
     fields = {
         "stream": "true",
         "language": "en",
+        "stop_on_token_loop": "true",
         "include_generation_metadata": "true",
         "audio_layout": "voxt_swift",
     }
@@ -672,25 +675,30 @@ def test_a_segment_final_reuses_its_live_session_cache(server: Server) -> None:
                 }
             )
         )
-        session_id = json.loads(socket.recv())["session_id"]
+        session_id = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))[
+            "session_id"
+        ]
         # note (XXXXRT666): 17 s of audio in one append make one refresh, over two windows.
         socket.send(
             json.dumps(
                 {
                     "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(pcm[: 17 * 32000]).decode(),
+                    "audio": base64.b64encode(segment_pcm).decode(),
                 }
             )
         )
-        preview = json.loads(socket.recv())
+        preview = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
         assert preview["type"] == "transcription.segment"
+        assert preview["segment_id"] == 0
         assert preview["is_final"] is False
         socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        finalized = json.loads(socket.recv())
+        finalized = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
         assert finalized["type"] == "transcription.segment"
+        assert finalized["segment_id"] == 0
         assert finalized["is_final"] is True
         assert finalized["generation_metadata"]["reused_audio_token_count"] == 208
         assert finalized["generation_metadata"]["reused_prompt_token_count"] > 208
+        reference = final({"audio_layout": "reference"}, wav_bytes(segment_pcm))
         plain = final({})
         reused = final({"realtime_session": session_id})
         with_context = final({"realtime_session": session_id, "prompt": "GLOSSARY"})
@@ -699,6 +707,7 @@ def test_a_segment_final_reuses_its_live_session_cache(server: Server) -> None:
             wav_bytes(pcm16("0100_en_mid")[: len(pcm)]),
         )
         unknown = final({"realtime_session": "sess_0"})
+    assert finalized["text"] == reference["text"]
     assert reused["text"] == plain["text"] == unknown["text"]
     # note (XXXXRT666): two complete 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_audio_token_count"] == 208
