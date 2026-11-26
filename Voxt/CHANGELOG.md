@@ -9,6 +9,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
 
 ### Fixed
+- **Rewrite distinguishes description questions from template requests** (#4358): asking Voxt to describe or explain an instruction template no longer leaves `<instruction>` tags around a real answer. Requested templates still keep their tags, and an earlier turn cannot authorize one.
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
 
 ### 中文
@@ -18,6 +19,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
 
 #### 修复
+- **改写区分模板请求和描述类问题**（#4358）：让 Voxt 描述或解释 instruction 模板时，真实回答外不再保留 `<instruction>` 标签；明确请求的模板仍保留标签，先前轮次不会让本轮回答误留模板标签。
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
 
 ## [Unreleased]

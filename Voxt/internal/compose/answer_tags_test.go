@@ -68,7 +68,9 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>An instruction template is a reusable prompt.</instruction>", "An instruction template is a reusable prompt.", "", "What is an instruction template?")
 	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "Could you explain an instruction template?")
 	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "Could you tell me what an instruction template is?")
+	checkAnswer(t, "<instruction>A real answer</instruction>", "A real answer", "", "Could you describe an instruction template?")
 	checkAnswer(t, "<instruction>真实回答</instruction>", "真实回答", "", "你能解释一下 instruction 模板吗？")
+	checkAnswer(t, "<instruction>真实回答</instruction>", "真实回答", "", "你能描述一下 instruction 模板吗？")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "No need to use <instruction> tags")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "能不能不用 instruction 模板？")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "Use <instruction> tags, then do not use <instruction> tags")
@@ -137,6 +139,12 @@ func TestAnswerIgnoresEarlierTemplateRequest(t *testing.T) {
 	const want = "I look forward to seeing you tomorrow."
 	checkAnswerInputs(t, out, want, "make it formal", "write an instruction template")
 	checkAnswerInputs(t, out, want, "current source\nmake it formal", "make it formal", "<instruction>{task}</instruction>")
+	checkAnswerWithRequest(t, out, want, "make it formal", []string{"current source\nmake it formal", "write an instruction template"})
+}
+
+func TestAnswerUsesExplicitRequestLayout(t *testing.T) {
+	checkAnswerWithRequest(t, "OK: <selected_text>The quick brown fox</selected_text>", "OK: The quick brown fox", "\nmake it shorter", []string{"The quick brown fox\n\nmake it shorter"})
+	checkAnswerWithRequest(t, "<instruction>make it shorter</instruction> Done.", "make it shorter Done.", "\nmake it shorter", []string{"The quick brown fox\n\nmake it shorter"})
 }
 
 func TestAnswerKeepsControlMarkupWithCurrentRequest(t *testing.T) {
@@ -195,18 +203,23 @@ func checkAnswer(t *testing.T, out, want string, input ...string) {
 
 func checkAnswerInputs(t *testing.T, out, want string, input ...string) {
 	t.Helper()
-	if got := CleanRewrite(out, input, false); got != want {
-		t.Errorf("CleanRewrite(%q) = %q, want %q", out, got, want)
+	checkAnswerWithRequest(t, out, want, requestFromInput(input), input)
+}
+
+func checkAnswerWithRequest(t *testing.T, out, want, request string, input []string) {
+	t.Helper()
+	if got := CleanRewriteWithRequest(out, input, request, false); got != want {
+		t.Errorf("CleanRewriteWithRequest(%q) = %q, want %q", out, got, want)
 	}
 	b, _ := json.Marshal(Answer{Title: "T", Content: out})
-	if got, ok := ParseAnswer(string(b), input...); !ok || got.Content != want {
-		t.Errorf("ParseAnswer(%s) = %q, want %q", b, got.Content, want)
+	if got, ok := ParseAnswerWithRequest(string(b), request, input...); !ok || got.Content != want {
+		t.Errorf("ParseAnswerWithRequest(%s) = %q, want %q", b, got.Content, want)
 	}
-	if got := PartialAnswer(string(b), input...); got.Content != want {
-		t.Errorf("PartialAnswer(%s) = %q, want %q", b, got.Content, want)
+	if got := PartialAnswerWithRequest(string(b), request, input...); got.Content != want {
+		t.Errorf("PartialAnswerWithRequest(%s) = %q, want %q", b, got.Content, want)
 	}
-	if got := PartialAnswer(out, input...); got.Content != want {
-		t.Errorf("PartialAnswer(%q) = %q, want %q", out, got.Content, want)
+	if got := PartialAnswerWithRequest(out, request, input...); got.Content != want {
+		t.Errorf("PartialAnswerWithRequest(%q) = %q, want %q", out, got.Content, want)
 	}
 }
 

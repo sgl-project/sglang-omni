@@ -466,6 +466,12 @@ func partialTagSuffix(s, tag string) int {
 // without a title. An object whose content is empty is an empty answer.
 // Input is the user's source text and instruction, whose own markers stay.
 func ParseAnswer(text string, input ...string) (Answer, bool) {
+	return ParseAnswerWithRequest(text, requestFromInput(input), input...)
+}
+
+// ParseAnswerWithRequest is ParseAnswer with the current request kept
+// separate from the current input and earlier turns.
+func ParseAnswerWithRequest(text, request string, input ...string) (Answer, bool) {
 	raw := extractObject(text)
 	if raw == "" {
 		return Answer{}, false
@@ -478,8 +484,8 @@ func ParseAnswer(text string, input ...string) (Answer, bool) {
 	if _, ok := fields["content"]; !ok {
 		return Answer{}, false
 	}
-	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), false, input...)), `"“”#*`))
-	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), true, input...))
+	a.Title = strings.TrimSpace(strings.Trim(strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Title, input...), false, request, input...)), `"“”#*`))
+	a.Content = strings.TrimSpace(stripPartialInputTags(stripControlMarkup(a.Content, input...), true, request, input...))
 	return a, true
 }
 
@@ -537,6 +543,12 @@ func extractObject(text string) string {
 // writes plain text instead, the text itself as content. Input is the
 // user's source text and instruction, whose own markers stay.
 func PartialAnswer(text string, input ...string) Answer {
+	return PartialAnswerWithRequest(text, requestFromInput(input), input...)
+}
+
+// PartialAnswerWithRequest is PartialAnswer with the current request kept
+// separate from the current input and earlier turns.
+func PartialAnswerWithRequest(text, request string, input ...string) Answer {
 	t := strings.TrimSpace(text)
 	if t == "" {
 		return Answer{}
@@ -564,12 +576,12 @@ func PartialAnswer(text string, input ...string) Answer {
 		return false
 	}
 	if !answerObject(t) {
-		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), true, input...))
+		t = strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(t, input...), true, request, input...))
 		if !answerObject(t) {
 			return Answer{Content: strings.TrimSpace(strings.TrimSuffix(t, "```"))}
 		}
 	}
-	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), false, input...))
-	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), true, input...), " \n")
+	title := strings.TrimSpace(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "title"), input...), false, request, input...))
+	content := strings.TrimLeft(stripPartialInputTags(stripPartialControlMarkup(partialField(t, "content"), input...), true, request, input...), " \n")
 	return Answer{Title: title, Content: content}
 }
