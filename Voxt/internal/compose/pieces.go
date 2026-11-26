@@ -16,13 +16,46 @@ import (
 // piece's answer reaches the overlay sooner and, when it fails, only its
 // piece stays as recognised.
 const (
-	// LongChars: speech longer than this, in characters, is composed in
-	// pieces (as long as each other: 301 characters are two of about 150).
-	LongChars = 300
-	// PieceChars is a piece's most characters, unless one sentence is
+	// LongWords: speech longer than this, in words, is composed in
+	// pieces (as long as each other: 301 words are two of about 150).
+	LongWords = 300
+	// PieceWords is a piece's most words, unless one sentence is
 	// longer and has no clause or space to cut at.
+	PieceWords = 300
+	// PieceChars is the most characters of a block of the live clean-up
+	// (the session's livepolish.go): one piece by any count.
 	PieceChars = 300
 )
+
+// words is text's length as the pieces count it: each character of a
+// script written without spaces (Chinese, Japanese, Korean, Thai…) and
+// of full-width punctuation is a word, and so is a run of letters and
+// digits of any other script ("don't" is one).
+func words(text string) int {
+	n, inWord := 0, false
+	for _, r := range text {
+		switch {
+		case unspaced(r):
+			n, inWord = n+1, false
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r):
+			if !inWord {
+				n++
+			}
+			inWord = true
+		case inWord && (r == '\'' || r == '’'):
+		default:
+			inWord = false
+		}
+	}
+	return n
+}
+
+// unspaced reports a rune of a script written without spaces, or
+// full-width punctuation.
+func unspaced(r rune) bool {
+	return isCJK(r) || unicode.In(r, unicode.Thai, unicode.Lao, unicode.Khmer, unicode.Myanmar) ||
+		(r >= 0x3000 && r <= 0x303F) || (r >= 0xFF00 && r <= 0xFFEF)
+}
 
 // Piece is a part of a long input: its text and what followed it in the
 // input ("", a space, a line or a paragraph break).
@@ -38,7 +71,7 @@ type Part struct {
 
 // BuildParts composes in as one request or, for Transcribe, one per
 // piece of the speech (LanguagePieces: where the language changes, and
-// over LongChars characters). Translate and Rewrite are one request: a
+// over LongWords words). Translate and Rewrite are one request: a
 // translation has one target language, and in pieces it was no better
 // and slower (docs/eval.md).
 // Every part has the whole input's system prompt and its piece as the user
@@ -107,15 +140,15 @@ var boundaries = []*regexp.Regexp{
 	regexp.MustCompile(`\s+`),
 }
 
-// Pieces cuts text into pieces of at most PieceChars characters when it
-// is longer than LongChars (else one piece): at sentence ends, a piece
+// Pieces cuts text into pieces of at most PieceWords words when it
+// is longer than LongWords (else one piece): at sentence ends, a piece
 // ending at a paragraph once it is half as long as planned, a sentence
 // longer than a piece at its clauses, then its spaces, then anywhere.
 // The pieces are about as long as each other. Joined with their After,
 // they are text, trimmed.
 func Pieces(text string) []Piece {
 	text = strings.TrimSpace(text)
-	if utf8.RuneCountInString(text) <= LongChars {
+	if words(text) <= LongWords {
 		return []Piece{{Text: text}}
 	}
 	return pack(text, 0)
@@ -170,22 +203,22 @@ func isCJK(r rune) bool {
 
 // pack cuts text at the boundaries of level and below.
 func pack(text string, level int) []Piece {
-	total := utf8.RuneCountInString(text)
-	n := (total + PieceChars - 1) / PieceChars
+	total := words(text)
+	n := (total + PieceWords - 1) / PieceWords
 	target := total / n
 	var out []Piece
 	var cur strings.Builder
 	size, after := 0, ""
 	flush := func() {
-		if size > 0 {
+		if cur.Len() > 0 {
 			out = append(out, Piece{Text: cur.String(), After: after})
 		}
 		cur.Reset()
 		size, after = 0, ""
 	}
 	for _, u := range units(text, level) {
-		un := utf8.RuneCountInString(u.Text)
-		if un > PieceChars {
+		un := words(u.Text)
+		if un > PieceWords {
 			flush()
 			var sub []Piece
 			if level+1 < len(boundaries) {
@@ -197,12 +230,11 @@ func pack(text string, level int) []Piece {
 			out = append(out, sub...)
 			continue
 		}
-		if size > 0 && size+utf8.RuneCountInString(after)+un > PieceChars {
+		if size+un > PieceWords {
 			flush()
 		}
-		if size > 0 {
+		if cur.Len() > 0 {
 			cur.WriteString(after)
-			size += utf8.RuneCountInString(after)
 		}
 		cur.WriteString(u.Text)
 		size += un
@@ -253,7 +285,7 @@ func hardCut(text string) []Piece {
 	}
 	runes := len(at)
 	at = append(at, len(text))
-	n := (runes + PieceChars - 1) / PieceChars
+	n := (runes + PieceWords - 1) / PieceWords
 	size := (runes + n - 1) / n
 	var out []Piece
 	for i := 0; i < runes; {

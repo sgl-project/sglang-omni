@@ -103,9 +103,9 @@ func TestHiddenMeetingsLeaveStartMenus(t *testing.T) {
 	}
 }
 
-// TestGoMenuLeavesOutHiddenPages: the Go menu lists a feature's page only
-// while the feature is shown, as the sidebar and ⌘K do. The settings-change
-// path rebuilds it without a restart.
+// TestGoMenuLeavesOutHiddenPages: the Go menu lists a remaining feature page
+// only while the feature is shown, as the sidebar and ⌘K do. The three moved
+// features stay in Settings. The settings-change path rebuilds the menu.
 func TestGoMenuLeavesOutHiddenPages(t *testing.T) {
 	a := newMenuApp(t)
 	a.hotkeys.Installed = true // keep this test off MyGo's Carbon main loop
@@ -113,26 +113,31 @@ func TestGoMenuLeavesOutHiddenPages(t *testing.T) {
 		return findMenuItem(mygo.App.Menu().Items(), "Go").Submenu
 	}
 	a.buildMenu()
-	if findMenuItem(goMenu(), "Translate") == nil {
-		t.Fatal("Translate is shown and not in the Go menu")
+	for _, title := range []string{"Transcribe", "Translate", "Rewrite"} {
+		if findMenuItem(goMenu(), title) != nil {
+			t.Errorf("%s still has a Go-menu page instead of its Settings section", title)
+		}
+	}
+	if findMenuItem(goMenu(), "App enhancement") == nil {
+		t.Fatal("App enhancement is shown and not in the Go menu")
 	}
 	oldPreferences := a.prefs
 	newPreferences := oldPreferences
-	newPreferences.Features.Hidden = []string{settings.HideTranslate}
+	newPreferences.Features.Hidden = []string{settings.HideAppEnhancement}
 	a.settingsChanged(oldPreferences, newPreferences)
 	items := goMenu()
-	if findMenuItem(items, "Translate") != nil {
-		t.Error("the Go menu lists the hidden Translate")
+	if findMenuItem(items, "App enhancement") != nil {
+		t.Error("the Go menu lists hidden App enhancement")
 	}
-	if findMenuItem(items, "Transcribe") == nil {
-		t.Error("the Go menu lost Transcribe")
+	if findMenuItem(items, "Notes") == nil {
+		t.Error("the Go menu lost Notes")
 	}
 	oldPreferences = newPreferences
 	newPreferences = oldPreferences
 	newPreferences.Features.Hidden = nil
 	a.settingsChanged(oldPreferences, newPreferences)
-	if findMenuItem(goMenu(), "Translate") == nil {
-		t.Error("the Go menu did not restore Translate")
+	if findMenuItem(goMenu(), "App enhancement") == nil {
+		t.Error("the Go menu did not restore App enhancement")
 	}
 }
 

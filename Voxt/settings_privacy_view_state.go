@@ -6,20 +6,24 @@ import (
 )
 
 type settingsPrivacyViewState struct {
-	Online                     string                 `json:"online"`
-	SendWindow                 bool                   `json:"send_window"`
-	SendClipboard              bool                   `json:"send_clipboard"`
-	SendClipboardWithSelection bool                   `json:"send_clipboard_with_selection"`
-	KeepHistory                bool                   `json:"keep_history"`
-	KeepAudio                  bool                   `json:"keep_audio"`
-	KeepAudioEnabled           bool                   `json:"keep_audio_enabled"`
-	LogText                    bool                   `json:"log_text"`
-	ClearHistoryAsk            bool                   `json:"clear_history_ask"`
-	HistoryAccess              historyAccessViewState `json:"history_access"`
+	Online                     string `json:"online"`
+	SendWindow                 bool   `json:"send_window"`
+	SendClipboard              bool   `json:"send_clipboard"`
+	SendClipboardWithSelection bool   `json:"send_clipboard_with_selection"`
+	KeepHistory                bool   `json:"keep_history"`
+	// SessionsOn: Experimental's Sessions switch is on, which Keep a history
+	// then says it covers.
+	SessionsOn       bool                   `json:"sessions_on,omitempty"`
+	KeepAudio        bool                   `json:"keep_audio"`
+	KeepAudioEnabled bool                   `json:"keep_audio_enabled"`
+	LogText          bool                   `json:"log_text"`
+	ClearHistoryAsk  bool                   `json:"clear_history_ask"`
+	HistoryAccess    historyAccessViewState `json:"history_access"`
 }
 
 type settingsPrivacyStateInput struct {
 	Privacy         settings.Privacy
+	SessionsOn      bool
 	HasUpdateFeed   bool
 	ClearHistoryAsk bool
 	HistoryAccess   historyAccessViewState
@@ -34,6 +38,7 @@ func buildSettingsPrivacyViewState(translator *i18n.Translator, input settingsPr
 		Online: online, SendWindow: input.Privacy.SendWindow, SendClipboard: input.Privacy.SendClipboardImage,
 		SendClipboardWithSelection: input.Privacy.SendClipboardImageWithSelection,
 		KeepHistory:                input.Privacy.KeepHistory, KeepAudio: input.Privacy.KeepAudio, KeepAudioEnabled: input.Privacy.KeepHistory,
-		LogText: input.Privacy.LogText, ClearHistoryAsk: input.ClearHistoryAsk, HistoryAccess: input.HistoryAccess,
+		SessionsOn: input.SessionsOn,
+		LogText:    input.Privacy.LogText, ClearHistoryAsk: input.ClearHistoryAsk, HistoryAccess: input.HistoryAccess,
 	}
 }

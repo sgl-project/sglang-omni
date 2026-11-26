@@ -15,10 +15,10 @@ package main
 // disk image, else its release page), says the app is up to date, or why
 // the check failed. Once a day, and a minute after launch when the last
 // check is older than that, a check runs in the background: a newer
-// version becomes a card in the sidebar (Download, ×), never a window;
-// the card dismissed stays away for that version. A failed background
-// check shows nothing: the log says it. The preferences (automatic
-// checks, the last check, the version dismissed) are in settings.Updates.
+// version surfaces in the sidebar footer update button and the menu bar
+// tray, never a window. A failed background check shows nothing: the log
+// says it. The preferences (automatic checks, the last check, the last
+// available version, legacy dismissed version) are in settings.Updates.
 
 import (
 	"context"
@@ -210,6 +210,7 @@ type releaseUpdates struct {
 	url     string
 	version string // the running one
 	open    func() // CheckNow: the app's dialog (main thread)
+	bgCheck func() // CheckBackground: non-dialog check (main thread)
 
 	mu      sync.Mutex
 	pre     bool        // SetPrereleases
@@ -224,7 +225,16 @@ func newReleaseUpdates(store settings.Service, url, version string, open func())
 
 func (r *releaseUpdates) Prefs() updatePrefs {
 	u := r.store.Get().Updates
-	return updatePrefs{Enabled: true, CheckOnly: true, AutoCheck: !u.NoAutoCheck, LastCheck: u.LastCheck}
+	avail := u.Available
+	if avail != "" {
+		if v, ok := parseVersion(avail); !ok || !r.newer(v) || (v[3] == 0 && !u.BetaOn(r.version)) || u.Dismissed == avail {
+			avail = ""
+		}
+	}
+	return updatePrefs{
+		Enabled: true, CheckOnly: true, AutoCheck: !u.NoAutoCheck, LastCheck: u.LastCheck,
+		AvailableVersion: avail,
+	}
 }
 
 func (r *releaseUpdates) SetAutomaticChecks(on bool) {
@@ -241,6 +251,20 @@ func (r *releaseUpdates) SetPrereleases(on bool) {
 }
 
 func (r *releaseUpdates) CheckNow() { r.open() }
+
+func (r *releaseUpdates) CheckBackground() {
+	if r.bgCheck != nil {
+		r.bgCheck()
+	}
+}
+
+func (r *releaseUpdates) clearAvailable(version string) {
+	u := r.store.Get().Updates
+	if u.Available == "" || (version != "" && u.Available != version) {
+		return
+	}
+	r.save(func(u *settings.Updates) { u.Available = "" })
+}
 
 func (r *releaseUpdates) OnChange(fn func()) func() {
 	p := &fn
@@ -288,8 +312,16 @@ func (r *releaseUpdates) check(ctx context.Context, client *http.Client) (releas
 		r.mu.Unlock()
 	}
 	rel, v, ok := newestRelease(list, beta)
-	r.save(func(u *settings.Updates) { u.LastCheck = time.Now() })
-	return rel, ok && r.newer(v), nil
+	isNewer := ok && r.newer(v)
+	avail := ""
+	if isNewer {
+		avail = rel.Version
+	}
+	r.save(func(u *settings.Updates) {
+		u.LastCheck = time.Now()
+		u.Available = avail
+	})
+	return rel, isNewer, nil
 }
 
 // newer reports whether v is newer than the running version.
@@ -361,7 +393,7 @@ func (a *app) checkReleasesNow() {
 func (a *app) downloadRelease(address string) { openExternal(address) }
 
 // autoCheckReleases is the background check, when it is on and the last
-// one is a day old: a newer version becomes a card.
+// one is a day old: a newer version surfaces in the sidebar and tray.
 func (a *app) autoCheckReleases() {
 	r := a.releases()
 	if r == nil {
@@ -370,21 +402,23 @@ func (a *app) autoCheckReleases() {
 	if u := r.store.Get().Updates; u.NoAutoCheck || time.Since(u.LastCheck) < releaseEvery {
 		return
 	}
-	a.runReleaseCheck(func(rel release, newer bool, err error) {
+	a.checkReleasesBackground()
+}
+
+// checkReleasesBackground runs a non-dialog release check right away;
+// a newer version surfaces via the sidebar footer button and tray menu
+// (OnChange → loadUpdates), and any legacy sidebar card is cleared.
+func (a *app) checkReleasesBackground() {
+	r := a.releases()
+	if r == nil {
+		return
+	}
+	a.runReleaseCheck(func(_ release, _ bool, err error) {
 		if err != nil {
 			log.Printf("updates: %v", err)
 			return
 		}
-		if !newer {
-			a.setProblem(problemRelease, "", nil)
-			return
-		}
-		if r.store.Get().Updates.Dismissed == rel.Version {
-			return
-		}
-		a.setProblem(problemRelease, rel.Version, &core.Notification{Severity: core.SeverityInfo,
-			Title: i18n.T("Voxt %s is available", rel.Version), Body: i18n.T("Install it from its disk image, or with brew upgrade --cask voxt."),
-			Link: linkDownload + rel.Download, Version: rel.Version})
+		a.setProblem(problemRelease, "", nil)
 	})
 }
 
@@ -403,15 +437,20 @@ func (a *app) watchReleases() {
 	}()
 }
 
-// keepReleaseCard drops a card kept from before a restart whose version
-// is not newer than running (it was installed since); main calls it.
+// keepReleaseCard drops a legacy card and any persisted Available version
+// kept from before a restart that is not newer than running; main calls it.
 func (a *app) keepReleaseCard(running string) {
+	now, runningOK := parseVersion(running)
+	if avail := a.prefs.Updates.Available; avail != "" && runningOK {
+		if v, ok := parseVersion(avail); !ok || slices.Compare(v[:], now[:]) <= 0 {
+			a.updateSettings(func(s *settings.Settings) { s.Updates.Available = "" })
+		}
+	}
 	i := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemRelease })
 	if i < 0 {
 		return
 	}
 	v, ok := parseVersion(a.notices[i].Version)
-	now, _ := parseVersion(running)
 	if !ok || slices.Compare(v[:], now[:]) <= 0 {
 		a.setProblem(problemRelease, "", nil)
 	}
@@ -422,6 +461,9 @@ func (a *app) releaseCardGone(n core.Notification) {
 	if n.ID == problemRelease && n.Version != "" {
 		v := n.Version
 		a.updateSettings(func(s *settings.Settings) { s.Updates.Dismissed = v })
+		if r := a.releases(); r != nil {
+			r.clearAvailable(v)
+		}
 	}
 }
 

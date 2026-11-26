@@ -137,6 +137,9 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
+	if err := waitAtTestGate(r.Context(), o, "final", samples); err != nil || r.Context().Err() != nil {
+		return
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fl, _ := w.(http.Flusher)
@@ -161,7 +164,7 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, ":\n\n")
 		flush()
 	}
-	if o.Mode == ModeError || o.FailFrom > 0 && n >= o.FailFrom {
+	if o.Mode == ModeError || o.FailFrom > 0 && n >= o.FailFrom || o.FailAt == n {
 		_, _ = io.WriteString(w, `data: {"type":"error","error":{"type":"server_error","code":"transcription_failed","message":"Transcription failed."}}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		return
@@ -171,6 +174,9 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 		language = "Chinese"
 	}
 	text := strings.ReplaceAll(o.Text, "{n}", strconv.Itoa(n))
+	if fields["prompt"] == "" && o.NoPromptText != "" {
+		text = o.NoPromptText
+	}
 	if o.Echo && fields["prompt"] != "" {
 		text += strings.Join(strings.Split(fields["prompt"], "\n"), "，") + "。"
 	}
@@ -288,7 +294,11 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				segs++
-				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": fmt.Sprintf("partial %d", samples/1600), "is_final": false})
+				text := fmt.Sprintf("partial %d", samples/1600)
+				if o.LiveMarkup {
+					text = "[S01] " + text + "[2.62]"
+				}
+				send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": text, "is_final": false})
 			}
 		case "input_audio_buffer.final_start":
 			start := strconv.Itoa(ev.StartSample)
@@ -300,7 +310,11 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"type": "transcription.segment", "segment_id": 0, "text": "live final", "is_final": true})
 		case "transcription.done":
 			if !o.LiveDrop {
-				send(map[string]any{"type": "transcription.completed", "text": "live final"})
+				text := "live final"
+				if o.LiveMarkup {
+					text = o.Text
+				}
+				send(map[string]any{"type": "transcription.completed", "text": text})
 			}
 			return
 		}
@@ -344,6 +358,9 @@ func timestamps(o Opts, w http.ResponseWriter, r *http.Request) {
 		fields[k] = v[0]
 	}
 	record(o, Record{Event: "vad-timestamps", Host: r.Host, Fields: fields, Samples: len(pcm) / 2})
+	if err := waitAtTestGate(r.Context(), o, "vad", len(pcm)/2); err != nil || r.Context().Err() != nil {
+		return
+	}
 	type ts struct {
 		Start int `json:"start"`
 		End   int `json:"end"`
@@ -360,6 +377,27 @@ func timestamps(o Opts, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"sample_rate": 16000, "timestamps": out})
+}
+
+func waitAtTestGate(ctx context.Context, o Opts, event string, samples int) error {
+	if o.GateURL == "" {
+		return nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, o.GateURL, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-Omnitest-Event", event)
+	request.Header.Set("X-Omnitest-Samples", strconv.Itoa(samples))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("test gate answered %d", response.StatusCode)
+	}
+	return nil
 }
 
 // vadStream answers each binary message of float32 samples with a

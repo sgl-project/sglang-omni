@@ -164,6 +164,11 @@ React Bits Sound Lab (the recording's cues, in official builds only)
   (scripts/sync-sounds.sh) into Contents/Resources/sounds. A build from
   this source without them plays macOS's system sounds.
 
+Voxt's own cue sounds
+  The two-note cues in internal/cues (Kalimba, Wood, Vibraphone) are
+  original synthesized sounds made for Voxt and are part of this
+  repository, under the Apache License 2.0.
+
 Chinese character and phrase conversion data
   The Simplified/Traditional character and phrase dictionaries in internal/lang,
   distributed with github.com/liuzl/gocc, are OpenCC data licensed under

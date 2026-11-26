@@ -24,10 +24,8 @@ func modelCard(c *ui.Context, model modelCardViewState, actions modelsActions) {
 		if model.FamilyName != "" {
 			ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Wrap().Children(func() {
 				ui.Icon(c, icons.Soundwave.Linear).Size(px(t, 20), px(t, 20)).TextColor(colors.Text2).Shrink(0)
-				ui.Text(c, model.FamilyName).FontWeight(600)
-				caption(c, model.CountText)
+				ui.Text(c, model.FamilyName).FontWeight(600).Tooltip(model.Languages)
 			})
-			modelLanguages(c, model.Languages)
 		}
 		for _, row := range model.Rows {
 			if model.FamilyName != "" {
@@ -40,17 +38,6 @@ func modelCard(c *ui.Context, model modelCardViewState, actions modelsActions) {
 	})
 }
 
-// modelLanguages is the line saying which languages a model knows.
-func modelLanguages(c *ui.Context, languages string) {
-	t := c.Theme()
-	if languages != "" {
-		ui.Row(c).Gap(px(t, 4)).AlignItems(ui.Center).Children(func() {
-			ui.Icon(c, icons.Global.Linear).Size(px(t, 14), px(t, 14)).TextColor(tok(t).Text2).Shrink(0)
-			caption(c, languages).MinWidth(0)
-		})
-	}
-}
-
 func hiddenModelCards(c *ui.Context, cards []modelCardViewState, open *bool, actions modelsActions) {
 	if len(cards) == 0 {
 		return
@@ -60,8 +47,7 @@ func hiddenModelCards(c *ui.Context, cards []modelCardViewState, open *bool, act
 	})
 }
 
-// modelRow is one model: its name, size and uses, what it is good at, its
-// languages, labels, and available actions.
+// modelRow is one model: its name, size and available actions.
 func modelRow(c *ui.Context, row modelRowViewState, alone bool, actions modelsActions) {
 	t := c.Theme()
 	colors := tok(t)
@@ -69,49 +55,21 @@ func modelRow(c *ui.Context, row modelRowViewState, alone bool, actions modelsAc
 	if row.Kind == "llm" {
 		icon = icons.ChatRoundLine
 	}
-	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Start).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp2)).Children(func() {
-			ui.Column(c).Gap(px(t, 2)).Children(func() {
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-					if alone {
-						ui.Icon(c, icon.Linear).Size(px(t, 20), px(t, 20)).TextColor(colors.Text2).Shrink(0)
-					}
-					ui.Text(c, row.Name).FontWeight(600)
-					if row.Default {
-						tagChip(c, i18n.T("Default"))
-					}
-					if row.Installed {
-						statusMark(c, icons.CheckCircle, colors.Success, i18n.T("Installed"))
-					}
-				})
-				ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-					meta := row.SizeText
-					if row.UsedBy != "" {
-						meta += " · " + row.UsedBy
-					}
-					caption(c, meta)
-					if row.MemoryText != "" {
-						ui.Row(c.Key("loaded")).Gap(px(t, 6)).AlignItems(ui.Center).Children(func() {
-							statusDot(c, colors.Accent)
-							caption(c, row.MemoryText)
-						})
-					}
-				})
-				if row.FamilyText != "" {
-					caption(c.Key("family"), row.FamilyText)
+	ui.Row(c).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
+				if alone {
+					ui.Icon(c, icon.Linear).Size(px(t, 20), px(t, 20)).TextColor(colors.Text2).Shrink(0)
+				}
+				ui.Text(c, row.Name).FontWeight(600).Tooltip(row.Languages)
+				if row.Default {
+					tagChip(c, i18n.T("Default"))
+				}
+				if row.Installed {
+					statusMark(c, icons.CheckCircle, colors.Success, i18n.T("Installed"))
 				}
 			})
-			ui.Text(c, row.About)
-			if alone {
-				modelLanguages(c, row.Languages)
-			}
-			if len(row.Tags) > 0 {
-				ui.Row(c.Key("tags")).Gap(px(t, 6)).AlignItems(ui.Center).Wrap().Children(func() {
-					for _, tag := range row.Tags {
-						tagChip(c, tag)
-					}
-				})
-			}
+			caption(c, row.SizeText).Tooltip(row.FamilyText)
 		})
 		ui.Row(c.Key("actions")).Gap(px(t, sp2)).Shrink(0).Children(func() {
 			modelActions(c, row.Actions, actions)
@@ -174,10 +132,10 @@ func modelActions(c *ui.Context, actions []modelActionViewState, intents modelsA
 func draftRow(c *ui.Context, draft *modelDraftViewState, actions modelsActions) {
 	t := c.Theme()
 	colors := tok(t)
-	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Start).Margin(px(t, sp2), 0, 0, px(t, 32)).Children(func() {
-		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, sp1)).Children(func() {
+	ui.Row(c.Key("draft")).Gap(px(t, sp3)).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).MinWidth(0).Gap(px(t, 2)).Children(func() {
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-				ui.Text(c, i18n.T("Faster transcription")).FontWeight(600)
+				ui.Text(c, i18n.T("Speed-up model")).FontWeight(600)
 				infoTip(c.Key("how"), draft.Help)
 				if draft.Installed {
 					statusMark(c, icons.CheckCircle, colors.Success, i18n.T("Installed"))
@@ -197,7 +155,7 @@ func draftRow(c *ui.Context, draft *modelDraftViewState, actions modelsActions) 
 		})
 	})
 	if draft.Progress != nil || draft.Error != nil {
-		ui.Column(c.Key("draft-progress")).Margin(0, 0, 0, px(t, 32)).Children(func() {
+		ui.Column(c.Key("draft-progress")).Children(func() {
 			modelProgress(c, "draft-err", draft.ModelID, draft.Progress, draft.Error, actions)
 		})
 	}

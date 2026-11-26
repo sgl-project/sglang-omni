@@ -71,6 +71,8 @@ logger = logging.getLogger(__name__)
 MTP_DEFAULT_NUM_STEPS = 3
 # note (scatyf3): SGLang resolves NEXTN to EAGLE, so both names select the same chain drafter.
 MTP_ALGORITHMS = ("EAGLE", "NEXTN")
+# note (siju-samuel): One hour, the longest accepted upload, encodes to 234 MiB of bf16 embeddings on this checkpoint.
+MULTI_RANK_EMBEDDING_CACHE_BYTES = 512 * 1024**2
 
 
 def create_checkpoint_shim(checkpoint_directory: Path) -> Path:
@@ -98,7 +100,7 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         max_audio_seconds: float | None,
         mem_fraction_static: float | None,
         checkpoint_revision: str | None,
-        mm_embedding_cache_size_bytes: int,
+        mm_embedding_cache_size_bytes: int | None,
         chunked_prefill_size: int,
         encoder_max_batch_size: int,
         enable_pre_lm_encoder: bool,
@@ -112,6 +114,9 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         perception_cuda_graphs: bool,
         perception_compile_mode: EncoderCompileMode,
         perception_fp8: bool,
+        tp_rank: int,
+        tp_size: int,
+        nccl_port: int | None,
     ) -> None:
         if perception_cuda_graphs and not compile_perception:
             raise ValueError("perception_cuda_graphs requires compile_perception=true")
@@ -136,11 +141,18 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.perception_cuda_graphs = perception_cuda_graphs
         self.perception_compile_mode = perception_compile_mode
         self.perception_fp8 = bool(perception_fp8)
+        self.tp_rank = tp_rank
+        self.tp_size = tp_size
+        self.nccl_port = nccl_port
         self.tokenizer: PreTrainedTokenizerBase | None = None
         self.hf_config: NemotronTranscribeConfig | None = None
         self.audio_encoder_service: NemotronTranscribePreLMEncoderService | None = None
         self.should_wait_for_encode_fn: Callable[[], bool] | None = None
         self.enable_mtp_draft = False
+
+    def drops_pre_lm_encoder(self) -> bool:
+        # note (siju-samuel): Deferred admission is rank-local, so above one rank the ranks deadlock.
+        return self.enable_pre_lm_encoder and self.tp_size > 1
 
     def resolve_checkpoint(self, model_path: str) -> str:
         register_nemotron_transcribe_hf_config()
@@ -263,10 +275,15 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
         self.enable_mtp_draft = True
 
     def infra_kwargs(self) -> InfrastructureOptions:
+        options: InfrastructureOptions = {
+            "tp_rank": self.tp_rank,
+            "nccl_port": self.nccl_port,
+        }
         if self.enable_mtp_draft:
-            return {"supports_speculative_decoding": True}
+            options["supports_speculative_decoding"] = True
         else:
-            return {}
+            pass
+        return options
 
     def customize_server_args(self, server_args: ServerArgs) -> None:
         if server_args.enable_torch_compile:
@@ -288,7 +305,12 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
     ) -> None:
         """The builder interface invokes this after decoder graph capture."""
         model.encoder_max_batch_size = self.encoder_max_batch_size
-        init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+        if self.mm_embedding_cache_size_bytes is not None:
+            init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
+        elif self.drops_pre_lm_encoder():
+            init_mm_embedding_cache(MULTI_RANK_EMBEDDING_CACHE_BYTES)
+        else:
+            init_mm_embedding_cache(0)
         self.select_fp8_perception(model.perception)
         if self.compile_perception:
             device = next(model.perception.parameters()).device
@@ -339,7 +361,13 @@ class NemotronTranscribeEngineBuilder(AsrEngineBuilder[NemotronTranscribeRequest
     ) -> None:
         """Start perception encode after decoder graphs and encoder compile."""
         del server_args
-        if not self.enable_pre_lm_encoder:
+        if self.drops_pre_lm_encoder():
+            logger.info(
+                f"Nemotron Transcribe pre-LM encoder dropped for tp_size="
+                f"{self.tp_size}; audio encodes in the forward"
+            )
+            return
+        elif not self.enable_pre_lm_encoder:
             return
         else:
             pass

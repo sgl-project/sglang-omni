@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -55,6 +70,11 @@
         "id": "storage",
         "title": "存储",
         "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
       },
       {
         "id": "about",
@@ -102,7 +122,7 @@
       "auto_install": false,
       "beta": true,
       "check_description": "上次检查：2 小时前。",
-      "automatic_description": "每天一次。有新版本时侧边栏会出现提示卡片。",
+      "automatic_description": "每天一次。有新版本时侧边栏底部会出现更新按钮。",
       "beta_note": "接收 beta 版和正式版，哪个新用哪个。"
     }
   }

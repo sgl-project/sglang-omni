@@ -73,14 +73,31 @@ func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
 	return d, nil
 }
 
+// meetingLang is the language a meeting is spoken in: its own setting,
+// else the main language's hint (#3387).
+func (a *app) meetingLang() string {
+	return cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
+}
+
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
-	id := a.prefs.Features.Meeting.ASR
+	id := strings.TrimSpace(a.prefs.Features.Meeting.ASR)
+	if id == "" {
+		// Automatic follows the features' rule (session_link.go's
+		// resolver): a model the language gate keeps for the meeting's
+		// language, so a meeting in a language MTD does not know never
+		// lands on it (#4067).
+		m, ok := local.Choose(automaticSpeechFor(a.meetingLang(), a.local.Installed(local.ASR)), "")
+		if !ok {
+			return meeting.TrackASR{}, local.NotInstalledError(local.ASR, id)
+		}
+		id = m.ID
+	}
 	p, _, err := a.local.ASR(ctx, id)
 	if err != nil {
 		return meeting.TrackASR{}, err
 	}
 	caps := p.Caps()
-	l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
+	l := a.meetingLang()
 	// The dictionary terms and speech context dictation sends (#3988); a
 	// dictionary that will not read leaves the meeting without terms.
 	var hints []string

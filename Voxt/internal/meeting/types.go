@@ -127,6 +127,14 @@ type Config struct {
 	Context func(ctx context.Context) TranscriptContext
 	// LLM opens the language model for summary and live translation.
 	LLM func(ctx context.Context, id string) (SummaryChat, error)
+	// LLMIsLocal says whether the language model id is served on this Mac
+	// (a loopback address); nil means no model is local. A local model's
+	// correction does not overlap the final pass: it would share the GPU
+	// and memory with recognition (as live polish avoids, 5.31b).
+	LLMIsLocal func(id string) bool
+	// correctOverlap carries the first track's speculative correction
+	// from the final pass to CorrectTranscript; runFinalize arms it.
+	correctOverlap *correctionOverlap
 	// MainLanguage names the user's primary language for summary prompts;
 	// "" writes them in the transcript's language.
 	MainLanguage func() string

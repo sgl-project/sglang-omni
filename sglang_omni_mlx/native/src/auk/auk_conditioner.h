@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "common/tokenizer.h"
 
 namespace auk {
@@ -58,10 +59,11 @@ private:
   EncodeInputs(const std::vector<int> &token_ids,
                const std::optional<mlx::core::array> &features) const;
   mlx::core::array EncodeAudio(const mlx::core::array &features) const;
-  mlx::core::array TextLayer(const mlx::core::array &hidden, int layer) const;
 
   Config config_;
   omni_common::Checkpoint checkpoint_;
+  // Qwen2.5's text layers, run with a float32 residual stream.
+  omni_common::Qwen3Decoder text_decoder_;
   omni_common::Tokenizer tokenizer_;
 };
 
