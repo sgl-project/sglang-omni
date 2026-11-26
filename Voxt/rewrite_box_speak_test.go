@@ -89,6 +89,9 @@ func TestRewriteCardKeepsOneLayout(t *testing.T) {
 			}
 			*f.at = r
 		}
+		if size, ok := tt.Find("Make the card larger"); !ok || size.X < p.send.X+p.send.W {
+			t.Fatalf("Send %+v runs under the size button %+v", p.send, size)
+		}
 		for _, gone := range []string{"Enter", "Esc"} {
 			if hasExact(tt, gone) {
 				t.Fatalf("the foot still spells out %q: %q", gone, firstTexts(tt))
@@ -115,5 +118,19 @@ func TestRewriteCardKeepsOneLayout(t *testing.T) {
 			p.insert.X != listening.insert.X || p.copy.X != listening.copy.X || p.close.X != listening.close.X {
 			t.Errorf("%s the controls moved: %+v, first instruction %+v", name, p, listening)
 		}
+	}
+}
+
+// TestRewriteCardFirstAnswerIsAChat: the first answer in the Rewrite card
+// shows under the instruction that asked for it, as each later turn does.
+// It showed as bare text until a follow-up started, then turned into
+// bubbles.
+func TestRewriteCardFirstAnswerIsAChat(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	if !hasExact(tt, "summarize") || !hasExact(tt, "one") {
+		t.Fatalf("the first answer is not shown under its instruction: %q", firstTexts(tt))
 	}
 }

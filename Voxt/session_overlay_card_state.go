@@ -128,6 +128,8 @@ type sessionCardProjectionInput struct {
 	SizeStep          int
 	BoxSessionID      string
 	BoxThumbnailCount int
+	// Chat lays a single answer out as a chat turn: the Rewrite card.
+	Chat bool
 }
 
 func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
@@ -185,7 +187,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		Message:  card.msg, Why: card.why, TargetName: card.target.Name,
 		Language: lang, LanguageLabel: compose.LanguageName(lang, translator.Locale()),
 		Thinking: sessionThinkingValueOf(think), SizeStep: input.SizeStep,
-		Busy: input.Own, Conversation: card.conversation || follow, Failed: card.problem != nil,
+		Busy: input.Own, Conversation: card.conversation || follow || input.Chat, Failed: card.problem != nil,
 		Copied: card.copied, CanCopy: card.text != "",
 		CanInsert:   card.problem == nil && card.text != "" && !input.Own,
 		CanLanguage: card.kind == store.KindTranslate && card.problem == nil && !snapshot.State.Live(),
@@ -218,7 +220,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		state.ProblemCode = card.problem.Code
 	}
 	thinkingLevels := thinkLevels(input.ThinkingProvider)
-	state.ShowThinking = card.problem == nil && !state.Conversation && len(card.turns) <= 1 && len(thinkingLevels) > 1
+	state.ShowThinking = card.problem == nil && !card.conversation && !follow && len(card.turns) <= 1 && len(thinkingLevels) > 1
 	state.CanThink = state.ShowThinking && !snapshot.State.Live()
 	if state.ShowThinking {
 		state.ThinkingLabel = thinkButtonTextFor(translator, think, input.Generation)
@@ -513,6 +515,11 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 	}
 	if !a.answer.open {
 		return input
+	}
+	if a.box.open && a.box.shown && a.answer.kind == store.KindRewrite {
+		// The Rewrite card is a chat from its first answer on: the
+		// instruction above the answer, as every later turn shows.
+		input.Chat = true
 	}
 	input.FollowKeys = a.featureKeys(hotkey.Rewrite)
 	input.CanFollowUp = a.canFollowUp()
