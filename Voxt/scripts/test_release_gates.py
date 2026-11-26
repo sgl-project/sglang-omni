@@ -174,7 +174,12 @@ class ShortOpenGateTests(unittest.TestCase):
 
 class ShortOpenRunnerTests(unittest.TestCase):
     def run_latency_shell(
-        self, drift=False, rounds=None, pressure_after=False, fail_before_rows=False
+        self,
+        drift=False,
+        rounds=None,
+        pressure_after=False,
+        fail_before_rows=False,
+        contender_after=False,
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -193,7 +198,10 @@ class ShortOpenRunnerTests(unittest.TestCase):
 
             command("uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
             command("pmset", "#!/bin/sh\nprintf \"Now drawing from 'AC Power'\\n\"\n")
-            command("pgrep", "#!/bin/sh\nexit 1\n")
+            command(
+                "pgrep",
+                "#!/bin/sh\nif [ -f build/latency.log ] && [ \"${LATENCY_FAKE_CONTENDER_AFTER:-0}\" = 1 ]; then printf '123 /tmp/qwen3_asr_server --supervised\\n'; exit 0; fi\nexit 1\n",
+            )
             command(
                 "sysctl",
                 "#!/bin/sh\nif [ -f build/latency.log ] && [ \"${LATENCY_FAKE_PRESSURE_AFTER:-0}\" = 2 ]; then printf '2\\n'; else printf '1\\n'; fi\n",
@@ -243,6 +251,9 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
             environment["LATENCY_FAKE_PRESSURE_AFTER"] = "2" if pressure_after else "1"
             environment["LATENCY_FAKE_FAIL_BEFORE_ROWS"] = (
                 "1" if fail_before_rows else "0"
+            )
+            environment["LATENCY_FAKE_CONTENDER_AFTER"] = (
+                "1" if contender_after else "0"
             )
             arguments = [str(scripts / "mac-latency.sh"), "accurate", "fast"]
             if rounds is not None:
@@ -295,6 +306,16 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
         self.assertNotIn("MEASURE latency", result["process"].stdout)
         observations = json.loads(result["observations"])
         self.assertEqual(observations[0]["peak_memory_pressure"], "warn")
+
+    def test_shell_rejects_contender_that_appears_during_the_run(self):
+        result = self.run_latency_shell(contender_after=True)
+        self.assertEqual(result["process"].returncode, 1)
+        self.assertNotIn("MEASURE latency", result["process"].stdout)
+        observations = json.loads(result["observations"])
+        self.assertIn(
+            "contenders present after run",
+            observations[0]["environment_invalid_reason"],
+        )
 
     def test_shell_preserves_empty_evidence_and_log_when_go_fails(self):
         result = self.run_latency_shell(fail_before_rows=True)
