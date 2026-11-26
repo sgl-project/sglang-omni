@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
+from sglang.srt.utils.common import async_h2d
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -580,14 +581,15 @@ class Qwen3TTSModelRunner(ModelRunner):
             return self.penalty_rows
         else:
             pass
-        row_index = torch.tensor(rows, dtype=torch.int64).to(device)
-        penalties = torch.tensor(
+        row_index = async_h2d(rows, dtype=torch.int64, device=device)
+        penalties = async_h2d(
             [
                 float(requests[row_idx].data.req.sampling_params.repetition_penalty)
                 for row_idx in rows
             ],
             dtype=dtype,
-        ).to(device)
+            device=device,
+        )
         self.penalty_rows_key = key
         self.penalty_rows = (row_index, penalties)
         return self.penalty_rows
