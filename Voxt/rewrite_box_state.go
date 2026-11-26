@@ -95,7 +95,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 		state.Card, state.CardSessionID, state.CardWidth = a.boxCardView(), a.ov.projection.view.SessionID, a.boxFaceW()
 	}
 	if a.boxWriting() { // the sent turn shows them: the composer is empty again
-		state.Thumbnails, state.ImageInfo, state.Selection, state.SelectionBlock, state.Text, state.TextSegments = nil, nil, "", boxTextSegment{}, "", nil
+		state.Thumbnails, state.ImageInfo, state.Selection, state.SelectionBlock, state.Text, state.TextSegments, state.VoiceLine = nil, nil, "", boxTextSegment{}, "", nil, ""
 	}
 	if (a.boxAnswered() && box.instruction == "" || a.boxIdle()) && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
 		state.CanSend = true // a typed follow-up, or a new session's first instruction

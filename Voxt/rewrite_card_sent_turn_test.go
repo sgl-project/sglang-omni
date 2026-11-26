@@ -3,6 +3,7 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -52,4 +53,34 @@ func TestRewriteCardShowsTheSentTurnFirst(t *testing.T) {
 	sent.State, sent.Result = session.Done, "A small blue box."
 	snap(a, sent)
 	userTurn("answered")
+}
+
+// TestRewriteCardFirstTurnStaysWhileStreaming: a spoken first instruction,
+// sent, then streamed into. Every state the card passes through from the
+// send to the answer shows the turn and its answer: it used to go blank
+// while the answer streamed (the live update dropped the first turn), and
+// the sent instruction stayed under the input as if not sent.
+func TestRewriteCardFirstTurnStaysWhileStreaming(t *testing.T) {
+	chat := &fakeChat{text: "A long answer about the picture, streamed in pieces.", delay: 300 * time.Millisecond, chunkDelay: 30 * time.Millisecond}
+	a := newBoxApp(t, boxScript(t), chat)
+	streamed := 0
+	a.pump("the answer", func() bool {
+		if !a.boxWriting() {
+			return a.answer.open
+		}
+		v := a.boxViewState()
+		if !v.Conversation || v.Card == nil || sessionCardBlockCount(v.Card) != 2 || sessionCardBlockAt(v.Card, 0).Text != "make it shorter" {
+			t.Fatalf("draft %q: the card does not show the turn: %+v", a.sess.Draft, v.Card)
+		}
+		if v.VoiceLine != "" {
+			t.Fatalf("the sent instruction stays under the input: %q", v.VoiceLine)
+		}
+		if a.sess.Draft != "" {
+			streamed++
+		}
+		return a.answer.open
+	})
+	if streamed < 2 {
+		t.Fatalf("only %d streamed states seen", streamed)
+	}
 }

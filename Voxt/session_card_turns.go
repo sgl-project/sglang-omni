@@ -44,7 +44,7 @@ func buildSessionCardLiveTail(input sessionCardProjectionInput, follow bool) ([2
 		live[0] = sessionCardWritingBlock(input.ShownDraft, input.Answer.kind)
 		return live, 1
 	}
-	if !follow {
+	if !follow && input.Answer.open { // the first turn is the Rewrite card's own
 		return live, 0
 	}
 	snapshot := input.Snapshot
