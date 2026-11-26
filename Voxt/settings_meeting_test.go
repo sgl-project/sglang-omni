@@ -38,6 +38,10 @@ func TestMeetingSpeechSettings(t *testing.T) {
 	a.navigate("/meetings")
 	a.mvUI.setOpen = true
 	frames(tt)
+	const speakerGuidance = "The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here."
+	if !has(tt, speakerGuidance) {
+		t.Fatalf("spoken-language help does not explain speaker labels: %q", tt.Texts())
+	}
 	if !slices.Contains(tt.AccessLabels(), "Speech model for meetings") {
 		t.Fatalf("no speech model menu: %q", tt.AccessLabels())
 	}
@@ -137,5 +141,22 @@ func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 	}
 	if !has(tt, "Automatic") {
 		t.Fatalf("no Automatic label: %q", tt.Texts())
+	}
+}
+
+// TestMeetingSettingsAutomaticNamesGatedModel: the menu's
+// "Automatic (now: …)" names the model a meeting on Automatic opens —
+// the language gate's first for the meeting's language, not the first
+// installed (#4067).
+func TestMeetingSettingsAutomaticNamesGatedModel(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.local = &meetingGateLocal{}
+	a.prefs.General.MainLanguage = "ja"
+	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: Qwen3-ASR 1.7B (8bit))" {
+		t.Errorf("main ja: %q", got)
+	}
+	a.prefs.Features.Meeting.Lang = "zh"
+	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: MOSS-Transcribe-Diarize)" {
+		t.Errorf("meeting zh: %q", got)
 	}
 }

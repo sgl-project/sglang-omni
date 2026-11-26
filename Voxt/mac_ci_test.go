@@ -22,14 +22,13 @@ func TestMacCIVendorsMyGoOnMacOS(t *testing.T) {
 			selection = selection[:end]
 		}
 	}
-	for _, want := range []string{
-		`hasChangesUnder("Voxt/helper/")`,
-		`hasChangesUnder("Voxt/third_party/mygo-patches/")`,
-		`changedPaths.includes("Voxt/scripts/vendor-mygo.sh")`,
-	} {
-		if !strings.Contains(selection, want) {
-			t.Errorf("Mac CI does not select the Voxt job for %q", want)
-		}
+	// Every Voxt code change selects the job; the no-label bypass is for
+	// documentation only, never for app code.
+	if !strings.Contains(selection, `hasChangesUnder("Voxt/")`) {
+		t.Error("Mac CI does not select the Voxt job for every Voxt code change")
+	}
+	if !strings.Contains(workflow, "voxt_docs_only") || strings.Contains(workflow, "voxt_app_only") {
+		t.Error("Mac CI does not limit its no-label bypass to Voxt's documentation")
 	}
 	start := strings.Index(workflow, "  voxtnew-swift:\n")
 	if start < 0 {

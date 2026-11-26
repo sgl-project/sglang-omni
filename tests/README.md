@@ -373,12 +373,15 @@ Relevant model CI ownership:
   benchmarks retain concurrency 32.
 - CI env alignment on the H100 repro host: `source .github/scripts/ci_env.sh`
   then `source omni/bin/activate`.
-  Omni CI (`omni-ci.yaml`) runs PR Test (`test.yaml` unit tests) after one
-  shared setup. When PR Test finishes, ASR CI, TTS CI and Omni model CI start
-  together and their stages run in parallel; MPS CI runs after them. Any CI
-  stage label except `run-mac-ci` runs PR Test; each other suite runs only when its stage is
-  selected (see the CI section of the pull request template). A failed or
-  skipped suite does not skip any other; only a failed setup blocks them.
+  Omni CI (`omni-ci.yaml`) runs eight CPU unit-test partitions on GitHub-hosted
+  Ubuntu VMs directly after preflight, in parallel with shared H100 setup and PR Test
+  (`test.yaml` accelerator unit tests). When PR Test finishes, ASR CI, TTS CI,
+  MPS CI and Omni model CI start independently and run in parallel without
+  waiting for the hosted CPU partitions (MPS uses `github.sha`, the merge commit
+  on a regular `pull_request` run). Any CI stage
+  label except `run-mac-ci` runs both unit-test suites; each other suite runs
+  only when its stage is selected (see the CI section of the pull request template). A failed or
+  skipped suite does not skip any other; only a failed setup blocks the H100 stages.
   Full WER sweep: `.github/scripts/run_all_wer_ci_aligned.sh` (milestones on
   stdout; details in `/tmp/wer_ci_qwen3.log` and `/tmp/wer_ci_tts.log`).
 - GPU handoff between stages: `.github/scripts/delete_gpu_process.sh --kill-orphans` (kills orphan
@@ -440,9 +443,10 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--tts-ci-model {higgs,moss,qwen3-tts,cosyvoice3,qwen3-tts-custom-voice}`:
   select the TTS CI model preset for `test_tts_ci.py` without editing source.
   Defaults to the `TTS_CI_MODEL` environment variable, then `higgs`.
-- CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
+- CLI flag `--asr-ci-model {ark,fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
+  `ark` serves ARK-ASR's default DFlash configuration at a pinned target revision. Select it in GitHub CI with `run-ark-asr-3b`, which runs SeedTTS ASR alone, or add `run-asr-ci` to run MOSS-TD multi-speaker as well. Calibration uses two H100 workers behind the managed router, at the stage's concurrency of 96.
 - CLI flag `--omni-ci-model {qwen3-omni,minicpmo}` selects the offline Omni
   model tests. It defaults to `OMNI_CI_MODEL`, then `qwen3-omni`.
   GitHub CI runs the Omni stage with `run-omni-ci`, or with one of the

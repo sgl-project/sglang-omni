@@ -1165,6 +1165,12 @@ class Qwen3PreTrainedModel(PreTrainedModel):
 
 class Qwen3Model(Qwen3PreTrainedModel):
     _decoder_layer_cls = Qwen3DecoderLayer
+    generation_blocks: nn.Module | None = None
+
+    def set_generation_blocks(self, generation_blocks: nn.Module | None) -> None:
+        """Run denoising calls through a view of the decoder layers, or stop doing so."""
+        # note (Wes): the view shares self.layers, so registering it as a submodule would duplicate them in the state dict.
+        object.__setattr__(self, "generation_blocks", generation_blocks)
 
     def __init__(self, config: Qwen3Config):
         super().__init__(config)
@@ -1269,20 +1275,41 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         hidden_states = inputs_embeds
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
-            hidden_states = decoder_layer(
+        if (
+            self.generation_blocks is not None
+            and exist_image_gen_tokens
+            and not exist_non_image_gen_tokens
+            and not kwargs.get("update_cache", True)
+        ):
+            # note (Wes): only denoising steps reach the view, so prefix and think calls never count as Cache-DiT steps.
+            hidden_states = self.generation_blocks(
                 hidden_states,
                 image_gen_indicators=image_gen_indicators,
                 exist_non_image_gen_tokens=exist_non_image_gen_tokens,
                 exist_image_gen_tokens=exist_image_gen_tokens,
                 indexes=indexes,
-                attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                attention_mask=causal_mask_mapping[self.layers[0].attention_type],
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 **kwargs,
             )
+        else:
+            for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+                hidden_states = decoder_layer(
+                    hidden_states,
+                    image_gen_indicators=image_gen_indicators,
+                    exist_non_image_gen_tokens=exist_non_image_gen_tokens,
+                    exist_image_gen_tokens=exist_image_gen_tokens,
+                    indexes=indexes,
+                    attention_mask=causal_mask_mapping[decoder_layer.attention_type],
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    **kwargs,
+                )
         if not exist_image_gen_tokens:
             hidden_states = self.norm(hidden_states)
         elif not exist_non_image_gen_tokens:

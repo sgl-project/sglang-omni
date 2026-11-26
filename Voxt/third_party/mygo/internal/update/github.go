@@ -17,8 +17,15 @@ import (
 //
 //	https://github.com/<owner>/<repo>/releases/download/<prefix>{version}/update-<target>.json
 //
-// and ResolveFeed finds the newest release tagged <prefix> through the
-// GitHub API. Other feeds are the URL of the manifest.
+// and ResolveFeed finds the highest version tagged <prefix> through the
+// GitHub API. The beta channel of such a feed (updates.prereleases) names
+// the manifest under beta/,
+//
+//	https://github.com/<owner>/<repo>/releases/download/<prefix>{version}/beta/update-<target>.json
+//
+// which resolves to the manifest of the newest version of the releases and
+// prereleases alike, as a beta channel's server would keep it. Other feeds
+// are the URL of the manifest.
 
 // VersionPlaceholder stands for the version in the feed of tagged releases.
 const VersionPlaceholder = "{version}"
@@ -46,9 +53,10 @@ func TaggedFeed(repo, prefix, name string) string {
 }
 
 // ResolveFeed returns the URL of the manifest that feed names: feed itself,
-// or for a feed of tagged releases (TaggedFeed) the manifest of the newest
-// release with the tag's prefix that is neither a draft nor a prerelease,
-// as the GitHub API lists them, newest first.
+// or for a feed of tagged releases (TaggedFeed) the manifest of the highest
+// version with the tag's prefix that is neither a draft nor a prerelease;
+// for its beta channel, of the highest version tagged prefix, prerelease
+// or not.
 func ResolveFeed(ctx context.Context, feed string, get Getter) (string, error) {
 	if !strings.Contains(feed, VersionPlaceholder) {
 		return feed, nil
@@ -57,12 +65,20 @@ func ResolveFeed(ctx context.Context, feed string, get Getter) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tag, err := latestTagged(ctx, get, repo, prefix)
+	dir := "/" + url.PathEscape(prefix) + VersionPlaceholder + "/"
+	beta := strings.Contains(feed, dir+betaDir+"/")
+	tag, err := latestTagged(ctx, get, repo, prefix, beta)
 	if err != nil {
 		return "", err
 	}
-	return strings.Replace(feed, "/"+url.PathEscape(prefix)+VersionPlaceholder+"/", "/"+url.PathEscape(tag)+"/", 1), nil
+	if beta {
+		dir += betaDir + "/"
+	}
+	return strings.Replace(feed, dir, "/"+url.PathEscape(tag)+"/", 1), nil
 }
+
+// betaDir is the directory that names a tagged feed's beta channel.
+const betaDir = "beta"
 
 // parseTaggedFeed returns the repository and the tag prefix of a feed of
 // tagged releases.
@@ -79,9 +95,11 @@ func parseTaggedFeed(feed string) (repo, prefix string, err error) {
 	return parts[0] + "/" + parts[1], prefix, nil
 }
 
-// latestTagged returns the tag of the newest release of repo tagged
-// prefix that is neither a draft nor a prerelease.
-func latestTagged(ctx context.Context, get Getter, repo, prefix string) (string, error) {
+// latestTagged returns the tag of the highest version among the releases
+// of repo tagged prefix that are neither drafts nor prereleases, on the
+// first page of the list that has one; with pre, prereleases count too.
+func latestTagged(ctx context.Context, get Getter, repo, prefix string, pre bool) (string, error) {
+	best := ""
 	for page := 1; page <= maxReleasePages; page++ {
 		u := GitHubAPI + "/repos/" + repo + "/releases?per_page=" + strconv.Itoa(releasesPerPage) + "&page=" + strconv.Itoa(page)
 		releases, err := getReleases(ctx, get, u)
@@ -89,13 +107,21 @@ func latestTagged(ctx context.Context, get Getter, repo, prefix string) (string,
 			return "", err
 		}
 		for _, r := range releases {
-			if !r.Draft && !r.Prerelease && strings.HasPrefix(r.TagName, prefix) {
-				return r.TagName, nil
+			if r.Draft || !strings.HasPrefix(r.TagName, prefix) || (r.Prerelease && !pre) {
+				continue
+			}
+			if best == "" || Compare(strings.TrimPrefix(r.TagName, prefix), strings.TrimPrefix(best, prefix)) > 0 {
+				best = r.TagName
 			}
 		}
-		if len(releases) < releasesPerPage {
+		// The highest version of the page, not its first: a fix for an
+		// older line published after a newer release is listed above it.
+		if best != "" || len(releases) < releasesPerPage {
 			break
 		}
+	}
+	if best != "" {
+		return best, nil
 	}
 	return "", fmt.Errorf("%w in %s tagged %s", ErrNotPublished, repo, prefix)
 }

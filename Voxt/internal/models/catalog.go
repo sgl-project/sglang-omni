@@ -74,7 +74,7 @@ const (
 	// app installed them (Borrowed).
 	LLMQwen3  = "llm.qwen3"
 	LLMGemma4 = "llm.gemma4"
-	// The speech models' speculative drafts.
+	// The speech models' DFlash drafts (Draft), one per size: quants of a size share it.
 	ASRAccurateDraft     = "asr.accurate.draft"
 	ASRFastDraft         = "asr.fast.draft"
 	ASRMossDraft         = "asr.moss.draft"
@@ -132,6 +132,12 @@ type Model struct {
 	// speech model's card; the runtime passes it while it is installed.
 	// "" for none.
 	Draft string
+	// DraftOptIn: the draft came with another model's download (a shared
+	// draft), so a settings document that never saw this model's switch
+	// must not turn it on: Faster transcription waits for the user's own
+	// switch (settings.Models.Faster), as the download never said yes
+	// for this model.
+	DraftOptIn bool
 	// Alternatives are models that may stand in for it while it is not
 	// installed (the same kind, lighter or another app's), offered to the
 	// user, never chosen silently (family spec §7.2, §7.10.1).
@@ -183,7 +189,8 @@ func Lookup(id string) (Model, bool) {
 // The pins are the family pins table's where it has the repo
 // (TestFamilyPins); the omni models' are also sglang_omni_mlx/native/ci's
 // models.json or model_pins.json, the Whisper tokenizers that file's
-// (TestOmniPins). The speech models after the first two are Voxt 1.x's
+// (TestOmniPins). Qwen3-ASR 1.7B (8bit) is first, the recommended one;
+// MOSS-Transcribe-Diarize follows the two Qwen3-ASR ones, then Voxt 1.x's
 // other local models, with the files their native servers read.
 // The language models' files are those Voxt's loaders take (weights,
 // configs, tokenizer, chat template): Qwen3.5-4B-OptiQ without its
@@ -223,7 +230,21 @@ var catalog = []Model{
 		},
 	},
 	{
-		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
+		Family: "moss-transcribe-diarize", Quant: "bf16", Draft: ASRMossDraft,
+		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
+		Files: []File{
+			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
+			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
+			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
+			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
+			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
+			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
+			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
+		},
+	},
+	{
+		ID: ASRQwen6bit, Name: "Qwen3-ASR 1.7B (6bit)", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero}, Draft: ASRAccurateDraft, DraftOptIn: true,
 		Family: "qwen3-asr", Quant: "6bit",
 		Repo: "mlx-community/Qwen3-ASR-1.7B-6bit", Revision: "edd077a475c4da058e25b6e6ec1199115ca1be2b",
 		Files: []File{
@@ -303,20 +324,6 @@ var catalog = []Model{
 		Files: []File{
 			{"config.json", 159605, "f30c7bc469fc01fd5483172b4d7c75075030ddb60f347589c44e216b0a5ea9b6", false},
 			{"model.safetensors", 755598923, "a64a4da048e7d28dde4cd4ff61ce59308a63314bb5563e73e06c24aae50ea941", true},
-		},
-	},
-	{
-		ID: ASRMoss, Name: "MOSS-Transcribe-Diarize", Kind: ASR, Runtime: Omni, Needs: []string{VADSilero},
-		Family: "moss-transcribe-diarize", Quant: "bf16", Draft: ASRMossDraft,
-		Repo: "OpenMOSS-Team/MOSS-Transcribe-Diarize", Revision: "704aa4a9c304e8520be88901e0d1960158ef5b15",
-		Files: []File{
-			{"config.json", 2335, "2b2b7a6e61334152bdd7ecf8a4da3073b4940a097e193d1d2b22093e77535234", false},
-			{"merges.txt", 1671853, "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5", false},
-			{"model-00000-of-00001.safetensors", 1817113576, "9a0ceb4ab7330357db3ff583dba8d83625d5b733b00e1d55d6970e11b07026c4", true},
-			{"processor_config.json", 292, "a978c2dd54a65b576c3dae4b654fe9bcbac1184c6db2df0afb2c90fcdc872ae7", false},
-			{"tokenizer.json", 11423222, "bcf03774334462d6e34b5005cb11120a62275f146ee2953e68731ecdbce84fbb", true},
-			{"tokenizer_config.json", 503, "61d04c96104177240688396655ae3f7cf38ce2ea036db867a1d2b6883e27c3d5", false},
-			{"vocab.json", 2776833, "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", false},
 		},
 	},
 	{

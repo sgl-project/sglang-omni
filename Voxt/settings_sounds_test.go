@@ -7,6 +7,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/cues"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -25,6 +26,7 @@ func newSoundsRig(t *testing.T) *soundsRig {
 	a, _, tt := newTestApp(t)
 	r := &soundsRig{app: a, tt: tt}
 	r.ft = new(fakeTimers).install(a)
+	a.now = r.ft.clock
 	a.startSound = func(s sounds.Target) func() {
 		r.plays = append(r.plays, s.Name)
 		return func() { r.plays = append(r.plays, "-"+s.Name) }
@@ -46,13 +48,14 @@ func (r *soundsRig) takePlays() []string {
 }
 
 // TestSoundSource: Sound offers Built-in, macOS and None. Built-in lists
-// the pairs this build has, Soft (Pebble → Nib) chosen by default; macOS
-// has a line per cue with its sound and Try, Pop and Tink until the user
+// the pairs this build has, Soft (Pebble → Nib) chosen by default and
+// Voxt's own Kalimba, Wood and Vibraphone after it; macOS has a line per
+// cue with its sound and Try, Pop and Tink until the user
 // picks; None turns the sounds off and hides the rest; Built-in again gives
 // the default pair back.
 func TestSoundSource(t *testing.T) {
 	r := newSoundsRig(t)
-	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
+	for _, s := range []string{"Sound", "Built-in", "macOS", "None", "Kalimba", "Thumb piano, plucked metal tines", "Wood", "Vibraphone", "Soft", "Pebble → Nib", "Beep", "Tally → Wrap", "Volume"} {
 		if !has(r.tt, s) {
 			t.Fatalf("no %q: %q", s, firstTexts(r.tt))
 		}
@@ -102,17 +105,40 @@ func TestSoundPairs(t *testing.T) {
 	if s := r.settings.Get().Audio; s.StartSound != "tally" {
 		t.Fatalf("▶ chose %q", s.StartSound)
 	}
-	if ch, left := r.previewPlayingAt(time.Now()); ch != "pebble" || left <= 0 || !has(r.tt, "Stop Soft") {
+	// The preview runs on the rig's clock, so it has Pebble's 230 ms left
+	// no matter how long the wall clock took (CI's frames take longer).
+	if ch, left := r.previewPlayingAt(r.ft.clock()); ch != "pebble" || left != 230*time.Millisecond || !has(r.tt, "Stop Soft") {
 		t.Fatalf("playing %q %v", ch, left)
 	}
 	click(t, r.tt, "Stop Soft")
-	if ch, _ := r.previewPlayingAt(time.Now()); ch != "" || !has(r.tt, "Play Soft") {
+	if ch, _ := r.previewPlayingAt(r.ft.clock()); ch != "" || !has(r.tt, "Play Soft") {
 		t.Errorf("stopped %q", ch)
 	}
 	r.chooseSounds("chime", "tink")
 	frames(r.tt)
 	if !has(r.tt, "Your choice") || !has(r.tt, "Chime → Tink") {
 		t.Errorf("no Your choice: %q", firstTexts(r.tt))
+	}
+}
+
+// TestSoundSourceWithoutFamily: in a build without the family's sounds,
+// Built-in chooses the first pair the build has, Voxt's Kalimba, not the
+// default Soft it lacks (which would play macOS's Pop and Tink).
+func TestSoundSourceWithoutFamily(t *testing.T) {
+	r := newSoundsRig(t)
+	cat, err := cues.Load(nil, "sounds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.soundCat, r.cuePlayer = cat, sounds.NewPlayer(cat, sounds.Silent{})
+	r.setSoundSource(soundSystem)
+	r.setSoundSource(soundBuiltIn)
+	if s := r.settings.Get().Audio; s.StartSound != "soft-kalimba-start" || s.StopSound != "soft-kalimba-stop" {
+		t.Errorf("Built-in without the family's sounds: %q, %q", s.StartSound, s.StopSound)
+	}
+	r.setSoundSource(soundBuiltIn) // a choice the build has stays
+	if s := r.settings.Get().Audio; s.StartSound != "soft-kalimba-start" {
+		t.Errorf("Built-in again: %q", s.StartSound)
 	}
 }
 

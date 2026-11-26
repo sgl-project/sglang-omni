@@ -13,14 +13,7 @@
             "default": false,
             "installed": false,
             "size_text": "正在下载：178.2 MB / 712.8 MB（25%）",
-            "about": "更快、占用内存更少，适合在安静环境中清晰地说话。",
             "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
-            "tags": [
-              "本地",
-              "快速",
-              "实时",
-              "支持主要语言"
-            ],
             "actions": [
               {
                 "kind": "hide",
@@ -84,14 +77,13 @@
     "network": {
       "open": false,
       "proxy_mode": 0,
-      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
       "source": 0,
       "source_labels": [
         "自动",
         "只用 Hugging Face",
         "只用 hf-mirror.com"
       ],
-      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "source_caption": "",
       "proxy_family": {
         "key": "network.proxy",
         "kind": "",
@@ -103,6 +95,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

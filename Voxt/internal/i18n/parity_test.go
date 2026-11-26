@@ -210,19 +210,20 @@ func TestKeyParity(t *testing.T) {
 var catalogAreas = []string{
 	"appenhance", "dictionary", "feature", "history", "home", "legacy",
 	"meeting", "models", "notes", "onboarding", "overlay", "remote",
-	"session", "settings", "shell", "updates",
+	"session", "settings", "share", "shell", "snippets", "updates",
 }
 
 // catalogAliases name a root file's area when its name prefix does not:
 // meetings is the meeting area, update the updates one, try the feature
 // area's try cards, tray the shell's, llm the remote (language models)
-// area's debug page and wait dialog.
+// area's debug page and wait dialog, insights the share area's card of totals.
 var catalogAliases = map[string]string{
 	"meetings": "meeting",
 	"update":   "updates",
 	"try":      "feature",
 	"tray":     "shell",
 	"llm":      "remote",
+	"insights": "share",
 }
 
 // catalogFileOf names the zh-Hans catalog file (without .json) a key

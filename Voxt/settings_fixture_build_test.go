@@ -50,6 +50,7 @@ func settingsFixtureApplyInput(t *testing.T, a *app, input settingsFixtureInput)
 		a.perms.mic = input.permissions.Microphone
 		a.perms.access = input.permissions.Accessibility
 		a.perms.speech = input.permissions.SpeechRecognition
+		a.perms.systemAudioAsked = input.permissions.SystemAudioAsked
 	case "audio":
 		a.prefs.Audio = input.audio.Audio
 		a.prefs.Audio.Sounds = input.sounds.Prefs.On
@@ -149,7 +150,7 @@ func buildSettingsFixture(t *testing.T, input settingsFixtureInput) settingsDial
 	if input.section == "storage" && input.storage.CanOpen {
 		a.win = new(mygo.Window)
 	}
-	state := a.settingsDialogModel(meetingFixtureNow)
+	state, _ := a.settingsDialogModel(meetingFixtureNow)
 	a.win = previousWindow
 	return state
 }

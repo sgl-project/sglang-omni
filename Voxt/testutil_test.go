@@ -410,6 +410,12 @@ func (f *fakeTimers) install(a *app) *fakeTimers {
 	return f
 }
 
+// clock is f's now as a time.Time, for a.now: only advance moves it, so
+// wall-clock time a test takes changes nothing.
+func (f *fakeTimers) clock() time.Time { return fakeClockBase.Add(f.now) }
+
+var fakeClockBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // advance moves the clock on by d, running the timers due (and those
 // they set that are due too).
 func (f *fakeTimers) advance(d time.Duration) {
@@ -447,7 +453,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 	if name := uitext.SceneShort(snapshot); name != "" {
 		scene = float32(textWidth(name, float64(layout.SceneSize)))
 	}
-	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+	row, _ := recordingPillRow(&pill, false, showTime, scene, func(key ovSized) (float32, bool) {
 		return float32(textWidth(key.text, float64(key.size))), true
 	})
 	return row + 2*layout.PillPadX
@@ -519,7 +525,7 @@ func (a *app) overlayView(context *ui.Context) {
 // timed path matches the production content closure.
 func (a *app) overlayBenchmarkView(context *ui.Context) {
 	a.refreshSessionOverlay(time.Now())
-	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+	sessionOverlayView(context, a.ov.projection.drawn(), a.currentSessionOverlayLayout(), a,
 		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
 		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })

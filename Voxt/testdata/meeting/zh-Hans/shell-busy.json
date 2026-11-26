@@ -33,24 +33,6 @@
           "title": "功能",
           "pages": [
             {
-              "path": "/transcribe",
-              "title": "转录",
-              "keys": "⌘3",
-              "selected": false
-            },
-            {
-              "path": "/translate",
-              "title": "翻译",
-              "keys": "⌘4",
-              "selected": false
-            },
-            {
-              "path": "/rewrite",
-              "title": "改写",
-              "keys": "⌘5",
-              "selected": false
-            },
-            {
               "path": "/notes",
               "title": "笔记",
               "selected": false
@@ -76,6 +58,11 @@
               "path": "/dictionary",
               "title": "词典",
               "badge": "2",
+              "selected": false
+            },
+            {
+              "path": "/snippets",
+              "title": "片段",
               "selected": false
             }
           ]
@@ -145,24 +132,21 @@
         "severity": "error",
         "title": "Third card",
         "body": "Before both.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       },
       {
         "id": "fixture-2",
         "severity": "warning",
         "title": "Second card",
         "body": "Before that.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       },
       {
         "id": "fixture-1",
         "severity": "info",
         "title": "First card",
         "body": "The newest thing that happened.",
-        "action_label": "打开",
-        "time_hint": "1月2日 07:04"
+        "action_label": "打开"
       }
     ],
     "logs": {
@@ -216,6 +200,10 @@
         {
           "code": "helper",
           "label": "辅助进程"
+        },
+        {
+          "code": "dictionary",
+          "label": "词典"
         }
       ],
       "source": "全部来源",

@@ -30,6 +30,7 @@ class DummyManager:
                 )
             ],
         )
+        self.source_patches = ConfigManager(self.config).source_patches
 
     def parse_extra_args(self, args):
         return ConfigManager(self.config).parse_extra_args(args)

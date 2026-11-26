@@ -6,12 +6,14 @@ import logging
 import os
 
 import torch
+from sglang.multimodal_gen import envs
 from sglang.multimodal_gen.runtime.pipelines_core.composed_pipeline_base import (
     ComposedPipelineBase,
 )
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.sensenova_u1.native.cache_dit import check_compute_blocks
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.image_edit import SenseNovaU1InputStage
 from sglang_omni.models.sensenova_u1.native.loader import load_model_and_tokenizer
@@ -44,6 +46,11 @@ class SenseNovaU1Pipeline(ComposedPipelineBase):
 
         modules = load_model_and_tokenizer(self.model_path, server_args)
         logger.info(f"Loaded SenseNova-U1 model from {self.model_path}")
+        check_compute_blocks(
+            envs.SGLANG_CACHE_DIT_FN,
+            envs.SGLANG_CACHE_DIT_BN,
+            modules["model"].config.llm_config.num_hidden_layers,
+        )
         return modules
 
     def create_pipeline_stages(self, server_args: ServerArgs) -> None:

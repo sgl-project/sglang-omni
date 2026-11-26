@@ -69,14 +69,14 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%s: a draft is never the default and names no other model", m.ID)
 		}
 	}
-	owners := map[string]int{} // a draft belongs to one speech model
+	owners := map[string]int{} // a draft belongs to at least one speech model
 	for _, m := range Catalog() {
 		if m.Draft != "" {
 			owners[m.Draft]++
 		}
 	}
 	for _, m := range Catalog() {
-		if m.Kind == Draft && owners[m.ID] != 1 {
+		if m.Kind == Draft && owners[m.ID] < 1 {
 			t.Errorf("%s is the draft of %d speech models", m.ID, owners[m.ID])
 		}
 	}
@@ -92,8 +92,8 @@ func TestCatalog(t *testing.T) {
 			t.Errorf("%s missing", id)
 		}
 	}
-	if m, _ := Lookup(ASRAccurate); !m.Default || m.Repo != "mlx-community/Qwen3-ASR-1.7B-8bit" {
-		t.Errorf("accurate: %+v", m)
+	if m, _ := Lookup(ASRMoss); m.Default || m.Repo != "OpenMOSS-Team/MOSS-Transcribe-Diarize" {
+		t.Errorf("moss: %+v", m)
 	}
 	if _, ok := Lookup("nope"); ok {
 		t.Error("Lookup(nope)")

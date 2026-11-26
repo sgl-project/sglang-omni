@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strings"
@@ -23,6 +24,9 @@ func (r *run) streamer() (asr.Streamer, bool) {
 
 // hints are the dictionary's terms for the speech model (SpeechHints).
 func (r *run) hints() []string {
+	if r.init.split {
+		return r.speechHints
+	}
 	return SpeechHints(r.settings, r.terms)
 }
 
@@ -82,6 +86,7 @@ func (r *run) onAudio(ev AudioEvent) {
 		v := Level(ev.Level.RMS)
 		r.m.update(r, func(s *Snapshot) {
 			s.Levels = append(s.Levels, v)
+			s.LevelCount++
 			if len(s.Levels) > Bars {
 				s.Levels = s.Levels[len(s.Levels)-Bars:]
 			}
@@ -95,6 +100,12 @@ func (r *run) onAudio(ev AudioEvent) {
 	}
 }
 
+// Level is a dBFS level as a bar height, 0–1 (−60 dBFS and below is 0).
+func Level(db float64) float64 {
+	v := (db + 60) / 60
+	return min(max(v, 0), 1)
+}
+
 // feed sends the recording to st as it grows, then Finish; its partials
 // go to the snapshot. The returned channel gets the stream's end: the
 // final result or the error.
@@ -102,8 +113,14 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 	// Two may come (the sender's silent end, the reader's): the first
 	// counts, the other must not block.
 	end := make(chan streamEnd, 2)
+	readerDone := make(chan struct{})
+	r.streamReaderDone = readerDone
+	readerCtx, readerCancel := context.WithCancel(r.ctx)
+	r.streamReaderStop = readerCancel
 	sendErr := make(chan error, 1)
 	hp, lev := r.streamDSP()
+	pauses := r.watchPauses()
+	r.pauseWatch = pauses
 	go func() {
 		// The gate opens the model's detector, which may take a moment:
 		// here, not on the session's loop (the recording waits meanwhile).
@@ -119,6 +136,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				off += len(chunk)
 				// The recording is kept as it came; the stages make copies.
 				raw := chunk
+				pauses.hear(raw)
 				if hp != nil {
 					chunk = hp.Process(chunk)
 				}
@@ -179,45 +197,183 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 		}
 	}()
 	go func() {
+		defer close(readerDone)
 		events := st.Events()
+		cleanupReady := (<-chan struct{})(r.svcResolved)
+		stop := (<-chan struct{})(r.stop)
+		stopped := false
+		pendingLive := ""
+		pendingStable := ""
+		pendingPieces := make([]string, 0)
+		piecesBroken := false
+		noteStop := func() {
+			if stop == nil {
+				return
+			}
+			select {
+			case <-stop:
+				stop = nil
+				stopped = true
+				pendingLive = ""
+			default:
+			}
+		}
+		replayPieces := func() {
+			if len(pendingPieces) == 0 && !piecesBroken {
+				return
+			}
+			if r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.transcribeCleanup() {
+				if piecesBroken {
+					r.earlyCleanup().stop()
+				} else {
+					stable := ""
+					for _, delta := range pendingPieces {
+						stable += delta
+						r.hearPiece(stable)
+					}
+				}
+			}
+			pendingPieces = nil
+			pendingStable = ""
+			piecesBroken = false
+		}
+		handleCleanupReady := func() bool {
+			if r.streamReaderOff.Load() {
+				return true
+			}
+			cleanupReady = nil
+			noteStop()
+			replayPieces()
+			if pendingLive != "" && !stopped && !r.liveOff {
+				r.hearLive(pendingLive)
+			}
+			pendingLive = ""
+			return false
+		}
+		handleEvent := func(ev asr.Event, ok bool) bool {
+			if r.streamReaderOff.Load() {
+				return true
+			}
+			if !ok {
+				r.streamReaderOff.Store(true)
+				end <- streamEnd{err: &asr.Error{Kind: asr.KindProtocol, Detail: "the stream ended without a final result"}}
+				return true
+			}
+			switch ev.Kind {
+			case asr.EventPartial:
+				noteStop()
+				text := r.inScript(ev.Text, "")
+				r.hearPartial(text)
+				if cleanupReady == nil {
+					if !stopped && !r.liveOff {
+						r.hearLive(text)
+					}
+				} else if !stopped && !r.liveOff {
+					pendingLive = text
+				}
+				r.m.update(r, func(s *Snapshot) { s.Partial = text })
+			case asr.EventCandidate:
+				r.hearCandidate(r.inScript(ev.Text, ""))
+			case asr.EventPiece:
+				stable := r.inScript(ev.Text, "")
+				r.endLive()
+				pendingLive = ""
+				if cleanupReady == nil {
+					r.hearPiece(stable)
+				} else if !piecesBroken {
+					if !strings.HasPrefix(stable, pendingStable) {
+						piecesBroken = true
+						pendingPieces = nil
+						pendingStable = stable
+					} else {
+						pendingPieces = append(pendingPieces, strings.Clone(stable[len(pendingStable):]))
+						pendingStable = stable
+					}
+				}
+			case asr.EventFinal:
+				r.streamReaderOff.Store(true)
+				res := ev.Result
+				res.Text = ev.Text
+				pendingLive = ""
+				end <- streamEnd{res: res}
+				return true
+			case asr.EventError:
+				r.streamReaderOff.Store(true)
+				pendingLive = ""
+				end <- streamEnd{err: ev.Err}
+				return true
+			}
+			return false
+		}
 		for {
 			select {
 			case ev, ok := <-events:
-				if !ok {
-					end <- streamEnd{err: &asr.Error{Kind: asr.KindProtocol, Detail: "the stream ended without a final result"}}
+				if handleEvent(ev, ok) {
 					return
 				}
-				switch ev.Kind {
-				case asr.EventPartial:
-					text := ev.Text
-					r.m.update(r, func(s *Snapshot) { s.Partial = text })
-					r.hearPartial(text)
-				case asr.EventPiece:
-					r.hearPiece(ev.Text)
-				case asr.EventFinal:
-					res := ev.Result
-					res.Text = ev.Text
-					end <- streamEnd{res: res}
-					return
-				case asr.EventError:
-					end <- streamEnd{err: ev.Err}
+			case <-cleanupReady:
+				if handleCleanupReady() {
 					return
 				}
+			case <-stop:
+				stop = nil
+				stopped = true
+				pendingLive = ""
+			case <-readerCtx.Done():
+				return
 			case err := <-sendErr:
 				// The reader usually has the real reason; give it a moment.
+				timer := time.NewTimer(500 * time.Millisecond)
 				select {
 				case ev, ok := <-events:
 					if ok && ev.Kind == asr.EventError {
 						err = ev.Err
 					}
-				case <-time.After(500 * time.Millisecond):
+				case <-timer.C:
+				case <-readerCtx.Done():
+					timer.Stop()
+					return
 				}
+				timer.Stop()
+				if r.streamReaderOff.Load() {
+					return
+				}
+				r.streamReaderOff.Store(true)
 				end <- streamEnd{err: asr.NetError(r.ctx, "", err)}
 				return
 			}
 		}
 	}()
 	return end
+}
+
+// stopStreamReader stops callbacks, cancels the independent wait, and closes
+// the stream synchronously before bounding only the reader join to two seconds.
+// The Close contract itself is synchronous; this timeout does not bound Close.
+func (r *run) stopStreamReader(stream asr.Stream) bool {
+	if r.streamReaderDone == nil {
+		if stream != nil {
+			stream.Close()
+		}
+		return true
+	}
+	r.streamReaderOff.Store(true)
+	if r.streamReaderStop != nil {
+		r.streamReaderStop()
+	}
+	if stream != nil {
+		stream.Close()
+	}
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-r.streamReaderDone:
+		r.streamReaderDone, r.streamReaderStop, r.stream = nil, nil, nil
+		return true
+	case <-timer.C:
+		r.streamReaderDone, r.streamReaderStop, r.stream = nil, nil, nil
+		return false
+	}
 }
 
 // vadParams are the local voice activity detection's parameters, and

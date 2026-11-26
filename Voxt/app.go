@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"github.com/egoist/mygo"
 )
 
@@ -28,7 +30,7 @@ import (
 //	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
 //	dictionaryState   dictionary_controller.go  the Dictionary page
-//	homeState         home_controller.go Home: readiness, today, recent results
+//	homeState         home_controller.go Home: usage, the last speech model, the activity calendar
 //	onboardingState   onboarding.go   the setup guide
 //	scPromptState     settings_shortcuts_family_controller.go  a shortcut another ActNow app uses too: the prompt
 //	audioState        settings_audio.go   Settings → Audio, the recording's sounds
@@ -39,6 +41,7 @@ import (
 //	learnState        learn_link.go   the watch that learns from the user's corrections
 //	historyAccessState history_access_controller.go  other programs reading the history
 //	transcribeSocketState transcribe_socket.go  `Voxt transcribe`'s socket
+//	dictionarySocketState dictionary_socket.go  `Voxt dictionary import`'s socket
 //	meetingState        meeting_link.go meetings (dev builds)
 //	meetingOverlayState meeting_overlay_window.go the meeting floating window
 //	meetingsState       meetings_controller.go the Meetings page (dev builds)
@@ -52,7 +55,10 @@ type app struct {
 	// goroutines (the helper's supervisor): they pump it on the test's
 	// goroutine. nil: post runs fn at once (other tests).
 	postQueue func(func())
-	events    // events.go: the observers of sessions and the history
+	// now is the clock of the view build and the sound previews; tests
+	// replace it with a fake one (production keeps time.Now).
+	now    func() time.Time
+	events // events.go: the observers of sessions and the history
 
 	shellState
 	settingsState
@@ -72,7 +78,9 @@ type app struct {
 	appEnhanceState
 	appIconsState
 	dictionaryState
+	snippetsState
 	homeState
+	shareState // share_controller.go: the share card and its hat studio
 	onboardingState
 	scPromptState
 	audioState
@@ -85,13 +93,14 @@ type app struct {
 	historyAccessState
 	transcribeSocketState
 	mainTranscript transcriptPreview // transcript_preview_controller.go
+	dictionarySocketState
 	meetingState
 	meetingOverlayState
 	meetingsState
 }
 
 func newApp(lib *library, h *helperHost) *app {
-	a := &app{lib: lib, shellState: newShellState()}
+	a := &app{lib: lib, shellState: newShellState(), now: time.Now}
 	a.connectEvents() // events.go: who hears of sessions and the history
 	a.helperLink.host = h
 	a.openShell(lib)
@@ -138,6 +147,7 @@ func (a *app) toast(msg string) {
 func (a *app) quit() {
 	a.closeHistoryAccess() // history_access.go: the socket goes first
 	a.closeTranscribeSocket()
+	a.closeDictionarySocket()
 	if a.stopLearning != nil {
 		a.stopLearning() // learn_link.go: no read goes to a helper that stopped
 	}

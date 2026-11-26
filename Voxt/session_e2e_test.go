@@ -142,6 +142,10 @@ func (s *sessionApp) drain(d time.Duration) {
 	}
 }
 
+// speak lets the recording run past MinRecording, as a user saying the
+// instruction does (a shorter one is dropped as too short).
+func (s *sessionApp) speak() { s.drain(session.DefaultMinRecording + 100*time.Millisecond) }
+
 // pasted is what the fake helper pasted.
 func (s *sessionApp) pasted() []proto.PasteParams {
 	data, _ := os.ReadFile(s.pasteLog)
@@ -213,7 +217,7 @@ func TestSessionEndToEnd(t *testing.T) {
 		}
 	}
 	a.pump("the recording", func() bool { seen(); return a.sess.State == session.Recording })
-	if !strings.Contains(a.hotkeysSent, "Active:true") {
+	if !strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Errorf("not active while recording: %s", a.hotkeysSent)
 	}
 	a.pump("the end", func() bool { seen(); return a.sess.State.Ended() })
@@ -229,7 +233,7 @@ func TestSessionEndToEnd(t *testing.T) {
 	if p[0].Text != "Hello, VoxtNew." || p[0].TargetPID != 812 || p[1].Text != "Hello, VoxtNew." {
 		t.Errorf("pasted %+v", p)
 	}
-	if strings.Contains(a.hotkeysSent, "Active:true") {
+	if strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Errorf("still active: %s", a.hotkeysSent)
 	}
 	es := a.history()
@@ -266,7 +270,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
 			a := newSessionApp(t, ev, set, keys)
 			a.pump("the recording", func() bool { return a.sess.State == session.Recording })
-			if !strings.Contains(a.hotkeysSent, "ID:finish") {
+			if !strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Fatal("Return is not bound while Transcribe records")
 			}
 			a.hotkeyFired(proto.HotkeyEventParams{Binding: "finish", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
@@ -274,7 +278,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if a.sess.State != session.Recognizing {
 				t.Fatalf("state after stop: %s, want recognizing", a.sess.State)
 			}
-			if strings.Contains(a.hotkeysSent, "ID:finish") {
+			if strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Fatalf("helper still swallows Return while recognizing: %s", a.hotkeysSent)
 			}
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
@@ -284,7 +288,7 @@ func TestSessionReturnFinishes(t *testing.T) {
 			if p := a.pasted(); len(p) != 1 || p[0].Text != "Finished sentence." || len(p[0].Press) != 0 {
 				t.Errorf("pasted %+v", p)
 			}
-			if strings.Contains(a.hotkeysSent, "ID:finish") {
+			if strings.Contains(a.hotkeysSent, `"id":"finish"`) {
 				t.Errorf("Return is still bound after the session: %s", a.hotkeysSent)
 			}
 		})
@@ -364,6 +368,26 @@ func TestSessionStaleFinishEvent(t *testing.T) {
 	}
 }
 
+// TestStopShortcutAfterOverlaySync: redrawing the overlay while recording
+// sends no new hotkey configuration, so the stop tap the helper decided
+// under the current one is not dropped as stale. The configuration's key
+// held the cancel binding's address, which changed on every sync.
+func TestStopShortcutAfterOverlaySync(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello", &fakeChat{text: "Hello."})
+	a := newSessionApp(t, script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger)), set, keys)
+	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+	if a.hotkeyPlan().Cancel == nil {
+		t.Fatal("no cancel binding: the configuration has no pointer to compare")
+	}
+	generation := a.hotkeyGen
+	a.overlaySync()
+	if a.hotkeyGen != generation {
+		t.Fatalf("an unchanged configuration was sent again: generation %d, was %d", a.hotkeyGen, generation)
+	}
+	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Generation: generation})
+	a.pump("the end", func() bool { return a.sess.State.Ended() })
+}
+
 // TestSessionStreamingCard: a streaming model shows its partial while
 // recording; with the answer card on, the result waits in the card,
 // whose Insert pastes it.
@@ -387,7 +411,7 @@ func TestSessionStreamingCard(t *testing.T) {
 	if len(a.pasted()) != 0 {
 		t.Fatalf("pasted %+v", a.pasted())
 	}
-	if !strings.Contains(a.hotkeysSent, "Active:true") {
+	if !strings.Contains(a.hotkeysSent, `"active":true`) {
 		t.Error("Escape should close the card")
 	}
 	a.insertAnswer()
@@ -507,20 +531,18 @@ func TestSessionEscapeAndFailures(t *testing.T) {
 			frames(tt)
 			drain(a)
 			frames(tt)
-			if a.hm.today.count != 50 {
-				t.Fatalf("initial today count %d, want 50", a.hm.today.count)
+			if !a.hm.read {
+				t.Fatal("Home did not finish its initial history read")
 			}
 			genBefore := a.hm.gen
 			a.pump("the end", func() bool { return a.sess.State.Ended() })
-			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore && a.hm.today.count == 49 })
+			a.pump("Home post-prune refresh", func() bool { return a.hm.gen > genBefore })
 			drain(a)
 			frames(tt)
 			if a.hm.gen <= genBefore {
 				t.Fatalf("Home did not refresh after cancel: gen %d -> %d", genBefore, a.hm.gen)
 			}
-			if a.hm.today.count != 49 {
-				t.Errorf("Home today count after pruning cancel: %d, want 49", a.hm.today.count)
-			}
+
 			if !a.hist.stale {
 				t.Error("History was not marked stale while on Home")
 			}

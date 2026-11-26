@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,13 +101,60 @@ func TestLivePieces(t *testing.T) {
 			t.Errorf("piece %d ends %d samples into a stretch of speech", i+1, in)
 		}
 	}
+	// The rest starts after the recording: it gets the session for what its
+	// server prefilled, and not the preview's text.
+	if r := finals[4]; r.Fields["realtime_session"] != "fake-session" || r.Fields["guessed_text"] != "" {
+		t.Errorf("the rest: %+v", r.Fields)
+	}
+	for i, r := range finals[:4] {
+		if r.Fields["realtime_session"] != "" || r.Fields["guessed_text"] != "" {
+			t.Errorf("piece %d: %+v", i+1, r.Fields)
+		}
+	}
+	// Each piece's end is where the server starts the Final's prefill.
+	st.Close()
+	f.rt.Close() // the server records its live sessions before it exits
+	var ends []string
+	at = 0
+	for _, r := range finals[:4] {
+		at += r.Samples
+		ends = append(ends, strconv.Itoa(at))
+	}
+	if l := f.records("live"); len(l) != 1 || l[0].Fields["final_start"] != strings.Join(ends, ",") {
+		t.Errorf("live %+v, want the Final's starts %v", l, ends)
+	}
 	if !f.logged("4 pieces while it recorded") {
 		t.Error("the Final's line does not say what the pieces did")
 	}
 }
 
-// TestLivePiecesEvents: every piece recognised while recording reports
-// the final text so far (asr.EventPiece), growing, before the Final,
+// TestMossPiecesSkipHotwords: intermediate MOSS pieces keep the plain-text
+// instruction; only the post-stop tail adds the dictionary.
+func TestMossPiecesSkipHotwords(t *testing.T) {
+	f, a := mossWithVAD(t, omnitest.Opts{Text: "p{n}"})
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 2*time.Second, time.Second, 1500*time.Millisecond, 3*time.Second
+	a.spec.ASR.PauseMin = 150 * time.Millisecond
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, Lang: "en", Hints: []string{"Zephyria"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAll(t, st, speechAndPauses(2))
+	f.waitLogged(t, "piece 1 of the recording")
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if evs := drain(t, st); len(evs) == 0 || evs[len(evs)-1].Kind != asr.EventFinal {
+		t.Fatalf("events %+v", evs)
+	}
+	finals := f.records("final")
+	instruction := again(ASRMoss).ASR.Instruction
+	if len(finals) != 2 || finals[0].Fields["prompt"] != instruction || finals[1].Fields["prompt"] != instruction+" Hotwords: Zephyria" {
+		t.Errorf("finals %+v", finals)
+	}
+}
+
+// TestLivePiecesEvents: every piece recognised while recording reports the
+// final text so far (asr.EventPiece), growing, before the Final,
 // each a prefix of it, so the session can start its clean-up of the
 // finished stretches.
 func TestLivePiecesEvents(t *testing.T) {
@@ -140,6 +188,10 @@ func TestLivePiecesEvents(t *testing.T) {
 		if !strings.HasPrefix(final.Text, p) {
 			t.Errorf("%q is not a prefix of the final %q", p, final.Text)
 		}
+	}
+	// Without a dictionary the rest still has its windows to reuse.
+	if r := f.records("final"); r[len(r)-1].Fields["realtime_session"] != "fake-session" {
+		t.Errorf("the rest without a dictionary: %+v", r[len(r)-1].Fields)
 	}
 }
 
@@ -196,6 +248,71 @@ func TestLiveNoPiecesWhenShort(t *testing.T) {
 	}
 	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != len(pcm)/2 {
 		t.Fatalf("finals %+v", finals)
+	}
+}
+
+func TestEnableEarlyPiecesRechecksAudioAlreadySent(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 60*time.Second, 10*time.Second, 15*time.Second, 25*time.Second
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	pcm := speechAndPauses(12) // 20.4 s: below the original policy, above EarlyPieces' threshold.
+	sendAll(t, st, pcm)
+	if finals := f.records("final"); len(finals) != 0 {
+		t.Fatalf("the normal policy cut early: %+v", finals)
+	}
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok || !enabler.EnableEarlyPieces() {
+		t.Fatal("Qwen3 stream refused safe late EarlyPieces activation")
+	}
+	f.waitLogged(t, "piece 1 of the recording")
+	if a.spec.ASR.PiecesAfter != 60*time.Second {
+		t.Fatalf("late activation changed the shared ASR policy to %v", a.spec.ASR.PiecesAfter)
+	}
+}
+
+func TestEnableEarlyPiecesKeepsClaimedPieceBoundaries(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 25*time.Second, 10*time.Second, 15*time.Second, 25*time.Second
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, speechAndPauses(15)) // 25.5 s reaches the existing policy.
+	f.waitLogged(t, "piece 1 of the recording")
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok {
+		t.Fatal("Qwen3 stream does not expose EarlyPieces activation")
+	}
+	if enabler.EnableEarlyPieces() {
+		t.Fatal("late activation changed segmentation after a piece had been claimed")
+	}
+}
+
+func TestEnableEarlyPiecesIsUnavailableForLiveResult(t *testing.T) {
+	f := newFake(t, omnitest.Opts{}, nil)
+	a := f.asr(t, ASRAccurate)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok || enabler.EnableEarlyPieces() {
+		t.Fatal("LiveResult stream accepted an unsupported EarlyPieces policy")
+	}
+}
+
+func TestEnableEarlyPiecesRejectsOtherModelKinds(t *testing.T) {
+	stream := &live{a: &ASR{spec: Spec{Kind: kindWhisper}}, pc: &pieces{}}
+	if stream.EnableEarlyPieces() {
+		t.Fatal("Whisper accepted Qwen3's EarlyPieces policy")
 	}
 }
 

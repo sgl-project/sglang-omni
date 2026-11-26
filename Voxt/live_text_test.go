@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -41,6 +42,39 @@ func TestLiveTextSwitch(t *testing.T) {
 	}
 }
 
+// TestLiveTextCardPreview: a follow-up's words in the answer card are
+// drawn dim while they are the speech model's stream, and at full
+// strength once the recognised text replaces them.
+func TestLiveTextCardPreview(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	for _, st := range cardSteps()[:9] { // to "follow-up-writing"
+		st.apply(a)
+		want, check := false, false
+		switch st.name {
+		case "follow-up-recording":
+			want, check = true, true
+		case "follow-up-writing":
+			check = true
+		}
+		if !check {
+			continue
+		}
+		card := a.cachedCard()
+		found := false
+		for index := 0; index < sessionCardBlockCount(&card); index++ {
+			if block := sessionCardBlockAt(&card, index); block.User && block.Live && block.Text == "shorter" {
+				found = true
+				if block.Preview != want {
+					t.Errorf("%s: preview %v, want %v", st.name, block.Preview, want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: no live follow-up in %+v", st.name, cardBubblesForTest(card))
+		}
+	}
+}
+
 // TestLiveTextCard: with Show live text off, a follow-up in the answer
 // card shows neither the words being said nor the answer being written,
 // as the pill does not.
@@ -49,21 +83,31 @@ func TestLiveTextSwitch(t *testing.T) {
 // stream's words become the text the model got, and never the model's
 // draft (FB6). It went blank while the language model worked (#3644),
 // then kept the stream's last partial, which can differ from what the
-// model got. A file model's text never shows there (FB6).
+// model got. A file model's text never shows there (FB6). The stream's
+// words are a preview, drawn dim; the text the model got is not.
 func TestLiveTextNoLLMDraft(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	stream, spoken := "meet at three tomorrow", "Meet at three tomorrow with VoxtNew"
-	a.sess = session.Snapshot{State: session.Recording, Partial: stream}
-	if text, _ := pillLine(a.pillSession()); text != stream {
-		t.Fatalf("recording: %q", text)
+	preview := func() bool {
+		input := sessionOverlayProjectionInput{Snapshot: a.sess, Mode: ovRecording, PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text}
+		return buildSessionPillViewState(i18n.CurrentTranslator(), input, time.Now()).LivePreview
 	}
+	a.sess = session.Snapshot{ID: "s1", State: session.Recording, Partial: stream}
+	if text, _ := pillLine(a.pillSession()); text != stream || !preview() {
+		t.Fatalf("recording: %q, preview %v", text, preview())
+	}
+	a.pillNote.id, a.pillNote.text = "s1", "Switched the microphone to AirPods. Recording continues."
+	if preview() {
+		t.Error("a note is drawn as a preview")
+	}
+	a.pillNote.id, a.pillNote.text = "", ""
 	a.sess = session.Snapshot{State: session.Recognizing, Partial: stream}
-	if text, _ := pillLine(a.pillSession()); text != stream {
-		t.Fatalf("recognizing: %q", text)
+	if text, _ := pillLine(a.pillSession()); text != stream || !preview() {
+		t.Fatalf("recognizing: %q, preview %v", text, preview())
 	}
 	a.sess = session.Snapshot{State: session.Composing, Partial: stream, Spoken: spoken, Draft: "Meet at three."}
-	if text, _ := pillLine(a.pillSession()); text != spoken {
-		t.Fatalf("composing: %q", text)
+	if text, _ := pillLine(a.pillSession()); text != spoken || preview() {
+		t.Fatalf("composing: %q, preview %v", text, preview())
 	}
 	a.sess = session.Snapshot{State: session.Composing, Spoken: spoken, Draft: "Meet at three."}
 	if text, _ := pillLine(a.pillSession()); text != "" {
@@ -232,6 +276,65 @@ func TestLiveLinesFromStart(t *testing.T) {
 	a.overlaySync()
 	if a.ov.w >= layout.LinesW || a.ov.h != layout.PillH || !a.ov.passThrough {
 		t.Errorf("one line: %d×%d, pass %v", a.ov.w, a.ov.h, a.ov.passThrough)
+	}
+}
+
+// The first answer inherits the recording overlay's drag when no earlier
+// card has a position of its own.
+func TestFirstCardKeepsLiveDrag(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		notice bool
+	}{
+		{name: "direct hidden"},
+		{name: "notice then hidden", notice: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			a.showNotice(sessionNotice{text: "Nothing to paste yet."})
+			a.closeNotice()
+			a.sess = session.Snapshot{ID: "s1", State: session.Recording}
+			a.overlaySync()
+			a.ov.dragged.x, a.ov.dragged.y = -200, -100
+			if test.notice {
+				a.sess = session.Snapshot{}
+				a.showNotice(sessionNotice{text: "Recording finished."})
+				a.closeNotice()
+			} else {
+				a.sess = session.Snapshot{ID: "s1", State: session.Delivering}
+				a.overlaySync()
+				a.sess = session.Snapshot{}
+			}
+			a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+			a.overlaySync()
+			anchored := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
+			if frame := a.ov.frame; frame.X != anchored.X-200 || frame.Y != anchored.Y-100 {
+				t.Errorf("the first card lost the recording drag: %+v, anchored %+v", frame, anchored)
+			}
+		})
+	}
+}
+
+// A later recording has its own drag; it does not replace the position
+// already saved for the user's card.
+func TestLaterRecordingKeepsSavedCardDrag(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -300, -200
+	a.overlaySync()
+	moved := a.ov.frame
+	a.answer = answerCard{}
+	a.sess = session.Snapshot{ID: "recording", State: session.Recording}
+	a.overlaySync()
+	a.ov.dragged.x, a.ov.dragged.y = -50, -40
+	a.sess = session.Snapshot{ID: "recording", State: session.Delivering}
+	a.overlaySync()
+	a.sess = session.Snapshot{}
+	a.answer = answerCard{open: true, kind: store.KindRewrite, text: "Short."}
+	a.overlaySync()
+	if a.ov.frame != moved {
+		t.Errorf("the later recording replaced the card's drag: %+v, want %+v", a.ov.frame, moved)
 	}
 }
 

@@ -56,12 +56,7 @@ func TestRewriteBoxFooterAndPlaceholder(t *testing.T) {
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	for _, want := range []string{"Enter", "send", "Esc", "close"} {
-		if !hasExact(tt, want) {
-			t.Errorf("%q is missing from %q", want, firstTexts(tt))
-		}
-	}
-	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends", "paste or drop up to 4 images"} {
+	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends", "paste or drop up to 4 images", "Enter", "Esc"} {
 		if has(tt, unwanted) {
 			t.Errorf("old hint %q remains in %q", unwanted, firstTexts(tt))
 		}

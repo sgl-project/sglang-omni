@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -18,6 +19,9 @@ import (
 // Transcribe's clean-up and Translate's answer; off, in a try, or when
 // the picture fails, it gets the text alone and the session goes on;
 // Transcribe without its clean-up calls no model and takes no picture.
+// The clean-up choice is the matched group's when it overrides the
+// global setting: an On group gets the picture with the global setting
+// off, an Off group takes none with it on.
 func TestWindowPicture(t *testing.T) {
 	jpeg := []byte{0xff, 0xd8, 'w', 0xff, 0xd9}
 	for _, tc := range []struct {
@@ -27,25 +31,35 @@ func TestWindowPicture(t *testing.T) {
 		err     error
 		kind    store.Kind
 		want    [][]byte
-		noClean bool
+		global  bool
+		cleanup appctx.Cleanup
 	}{
-		{"transcribe", true, false, nil, store.KindTranscribe, [][]byte{jpeg}, false},
-		{"transcribe without clean-up", true, false, nil, store.KindTranscribe, nil, true},
-		{"translate", true, false, nil, store.KindTranslate, [][]byte{jpeg}, false},
-		{"off", false, false, nil, store.KindTranscribe, nil, false},
-		{"a try", true, true, nil, store.KindTranscribe, nil, false},
-		{"no permission", true, false, errors.New("permission_denied"), store.KindTranscribe, nil, false},
+		{"transcribe", true, false, nil, store.KindTranscribe, [][]byte{jpeg}, true, ""},
+		{"transcribe without clean-up", true, false, nil, store.KindTranscribe, nil, false, ""},
+		{"translate", true, false, nil, store.KindTranslate, [][]byte{jpeg}, true, ""},
+		{"off", false, false, nil, store.KindTranscribe, nil, true, ""},
+		{"a try", true, true, nil, store.KindTranscribe, nil, true, ""},
+		{"no permission", true, false, errors.New("permission_denied"), store.KindTranscribe, nil, true, ""},
+		{"per-app on with the global off", true, false, nil, store.KindTranscribe, [][]byte{jpeg}, false, appctx.CleanupOn},
+		{"per-app off with the global on", true, false, nil, store.KindTranscribe, nil, true, appctx.CleanupOff},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			answer := "Hello."
 			if tc.kind == store.KindTranslate {
 				answer = "你好"
 			}
+			noClean := tc.kind == store.KindTranscribe && !tc.global && tc.cleanup == "" ||
+				tc.cleanup != "" && !tc.cleanup.Enabled(tc.global)
 			model := &fakeLLM{text: answer}
 			var pids []int
 			h := newHarness(t, &fakeFile{text: "hello"}, model, func(c *Config, s *settings.Settings) {
-				s.Features.Transcribe.Enhance = !tc.noClean
+				s.Features.Transcribe.Enhance = tc.global
 				s.Privacy.SendWindow = tc.on
+				if tc.cleanup != "" {
+					rules := appctx.Rules{Groups: []appctx.Group{{ID: "g-chat", Enabled: true, TranscribeCleanup: tc.cleanup,
+						Apps: []appctx.App{{BundleID: slack.BundleID, Name: "Slack"}}, Features: appctx.Features{Transcribe: true}}}}
+					c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return rules, true }}
+				}
 				c.Window = func(_ context.Context, pid int) ([]byte, error) {
 					pids = append(pids, pid)
 					if tc.err != nil {
@@ -63,7 +77,7 @@ func TestWindowPicture(t *testing.T) {
 				t.Fatalf("end %s %+v", end.State, end.Problem)
 			}
 			reqs := model.requests()
-			if len(reqs) == 0 && !tc.noClean {
+			if len(reqs) == 0 && !noClean {
 				t.Fatal("no request to the language model")
 			}
 			for _, r := range reqs {
@@ -71,7 +85,7 @@ func TestWindowPicture(t *testing.T) {
 					t.Errorf("images %q, want %q", r.Images, tc.want)
 				}
 			}
-			if wantShots := tc.on && !tc.try && !tc.noClean; (len(pids) == 1 && pids[0] == slack.PID) != wantShots || len(pids) > 1 {
+			if wantShots := tc.on && !tc.try && !noClean; (len(pids) == 1 && pids[0] == slack.PID) != wantShots || len(pids) > 1 {
 				t.Errorf("pictures taken of %v", pids)
 			}
 		})

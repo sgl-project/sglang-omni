@@ -42,21 +42,45 @@ func capsuleText(text string) ovSized { return ovSized{text, 11, 600, 0, ""} }
 
 func durationText(text string) ovSized { return ovSized{text: text, size: 12, font: "monospace"} }
 
-func recordingPillRow(pill *sessionPillViewState, label, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
+// recordingPillRow is the width of the pill's row (working: the working
+// pill's): the icon, the feature's name, the waveform's or loader's slot,
+// the time with showTime, the group's name (scene DIPs wide), the
+// capsules. The name shows while it records (but while it starts) and
+// while it works on a recording; there a capsule takes its room with the
+// loader (layout.LoaderSlotW), so the row is as wide as the recording's
+// and the icon stays put (overlayPill's pillRowNamed).
+func recordingPillRow(pill *sessionPillViewState, working, showTime bool, scene float32, measure func(ovSized) (float32, bool)) (int, bool) {
 	row := layout.RowWidth(scene)
 	exact := true
+	named := !pill.Starting && (!working || pill.Heard)
+	title := float32(0)
+	if named {
+		width, ok := measure(kindTitleText(pill.Title))
+		title, exact = width, ok
+		row += layout.Gap + int(math.Ceil(float64(width)))
+	}
 	if showTime {
 		width, ok := measure(durationText(pill.ElapsedText))
 		row += layout.Gap + int(math.Ceil(float64(width)))
-		exact = ok
-	}
-	modeLabel := float32(0)
-	if label && !pill.Starting {
-		width, ok := measure(kindTitleText(pill.Title))
-		modeLabel = width + float32(layout.Gap)
 		exact = exact && ok
 	}
-	return row + int(math.Ceil(float64(modeLabel))), exact
+	capsules := float32(0)
+	if working {
+		capsules = pillCapsules(pill, func(key ovSized) float32 {
+			width, ok := measure(key)
+			exact = exact && ok
+			return width
+		})
+	}
+	switch {
+	case capsules > 0 && named:
+		// The name and the waveform's slot give way to the loader and
+		// the capsules: as wide, or wider when they do not fit.
+		row += int(math.Ceil(float64(layout.LoaderSlotW(title, capsules)+capsules))) - int(math.Ceil(float64(title))) - layout.WaveSlotW
+	case capsules > 0:
+		row += layout.Gap + int(math.Ceil(float64(capsules)))
+	}
+	return row, exact
 }
 
 func noticeText(text string) ovSized { return ovSized{text, layout.NoticeSize, 0, 0, ""} }
@@ -88,6 +112,13 @@ type sessionOverlayLayoutInput struct {
 
 const streamGrowStep = 4 * 19
 
+// streamHeadroom is the room a card keeps under a streaming answer's
+// text: a line of it (14 pt Markdown at 1.5 leading) and a little. The
+// view measures a new text in the frame that first draws it, and the card
+// grows to it a turn of the main loop later, so the frame between draws
+// the next line in this room instead of past the body (#3836 feedback).
+const streamHeadroom = 26
+
 // sessionOverlayLayoutFor computes the native face model without owning an app or a window.
 func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverlayLayoutInput) sessionOverlayLayout {
 	model := sessionOverlayLayout{
@@ -114,7 +145,8 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 		width := layout.CardSizes[card.SizeStep].Width(input.WorkArea, input.Overlay.Margin)
 		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
 		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight, width)
-		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardSessionsHeight(card)+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		model.CardScrolls = body >= bodyMax
 		if card.Message != "" {
 			model.Height += layout.CardMsgGap + layout.CardMsgH
 		}
@@ -130,18 +162,8 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 		if pill.SceneText != "" {
 			scene, model.Exact = measureWidth(sceneText(pill.SceneText))
 		}
-		row, rowExact := recordingPillRow(pill, state.Mode == ovRecording, state.Mode == ovRecording && input.Overlay.ShowTime, scene, measureWidth)
+		row, rowExact := recordingPillRow(pill, state.Mode != ovRecording, input.Overlay.ShowTime && (state.Mode == ovRecording || pill.Heard), scene, measureWidth)
 		model.Exact = model.Exact && rowExact
-		if pill.CanSkip {
-			width, exact := measureWidth(capsuleText(pill.SkipLabel))
-			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
-			model.Exact = model.Exact && exact
-		}
-		if pill.CanThink {
-			width, exact := measureWidth(capsuleText(pill.ThinkingLabel))
-			row += layout.Gap + 2*10 + int(math.Ceil(float64(width)))
-			model.Exact = model.Exact && exact
-		}
 		text, hint := pill.LiveText, pill.LiveHint
 		if input.Overlay.LiveLines {
 			model.Width = layout.LinesW
@@ -218,7 +240,7 @@ func sessionCardAttachmentHeight(card *sessionCardViewState) int {
 }
 
 func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, margin float64) int {
-	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardAttachmentHeight(card)
+	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardSessionsHeight(card) - sessionCardAttachmentHeight(card)
 	if card != nil && card.Message != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}
@@ -245,7 +267,7 @@ func sessionOverlayCardBodyHeight(sessionID string, card *sessionCardViewState, 
 		exact = exact && ok
 	}
 	if card.Writing || card.Conversation && card.Busy && !card.Recording {
-		height = float32(math.Ceil(float64(height/streamGrowStep))) * streamGrowStep
+		height = float32(math.Ceil(float64((height+streamHeadroom)/streamGrowStep))) * streamGrowStep
 		if exact {
 			streamHeight = height
 		} else if streamHeight > 0 {

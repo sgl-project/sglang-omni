@@ -9,9 +9,10 @@ import (
 )
 
 type rsUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens  int           `json:"input_tokens"`
+	OutputTokens int           `json:"output_tokens"`
+	TotalTokens  int           `json:"total_tokens"`
+	InputDetails *tokenDetails `json:"input_tokens_details"`
 }
 
 type rsError struct {
@@ -52,7 +53,7 @@ type rsEvent struct {
 func (r *rsResponse) result() Response {
 	out := Response{Model: r.Model, FinishReason: FinishStop}
 	if u := r.Usage; u != nil {
-		out.Usage = (&oaUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens, TotalTokens: u.TotalTokens}).usage()
+		out.Usage = (&oaUsage{PromptTokens: u.InputTokens, CompletionTokens: u.OutputTokens, TotalTokens: u.TotalTokens, PromptDetails: u.InputDetails}).usage()
 	}
 	var text strings.Builder
 	refused := false

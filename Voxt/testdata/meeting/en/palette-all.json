@@ -19,24 +19,6 @@
         "keys": "⌘2"
       },
       {
-        "id": "go/transcribe",
-        "group": "Go to",
-        "title": "Transcribe",
-        "keys": "⌘3"
-      },
-      {
-        "id": "go/translate",
-        "group": "Go to",
-        "title": "Translate",
-        "keys": "⌘4"
-      },
-      {
-        "id": "go/rewrite",
-        "group": "Go to",
-        "title": "Rewrite",
-        "keys": "⌘5"
-      },
-      {
         "id": "go/notes",
         "group": "Go to",
         "title": "Notes"
@@ -58,6 +40,11 @@
         "title": "Dictionary"
       },
       {
+        "id": "go/snippets",
+        "group": "Go to",
+        "title": "Snippets"
+      },
+      {
         "id": "go/logs",
         "group": "Go to",
         "title": "Logs"
@@ -72,6 +59,24 @@
         "id": "go/settings/general",
         "group": "Settings",
         "title": "General"
+      },
+      {
+        "id": "go/settings/transcribe",
+        "group": "Settings",
+        "title": "Transcribe",
+        "keys": "⌘3"
+      },
+      {
+        "id": "go/settings/translate",
+        "group": "Settings",
+        "title": "Translate",
+        "keys": "⌘4"
+      },
+      {
+        "id": "go/settings/rewrite",
+        "group": "Settings",
+        "title": "Rewrite",
+        "keys": "⌘5"
       },
       {
         "id": "go/models",
@@ -117,6 +122,11 @@
         "id": "go/settings/storage",
         "group": "Settings",
         "title": "Storage"
+      },
+      {
+        "id": "go/settings/experimental",
+        "group": "Settings",
+        "title": "Experimental"
       },
       {
         "id": "go/settings/about",
