@@ -2,9 +2,11 @@ package main
 
 import (
 	"slices"
+	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -15,9 +17,16 @@ func (a *app) meetingSettingsKey() string {
 
 func (a *app) meetingSettingsSync() {
 	if a.meetingUI == nil {
-		a.meetingUI = &meetingSettingsUI{}
+		a.meetingUI = &meetingSettingsUI{correction: speechContextState{text: meeting.DefaultCorrectionStyle}}
 	}
 	local := a.meetingUI
+	savedStyle := a.prefs.Features.Meeting.CorrectionStyle
+	if !local.correction.dirty && savedStyle != local.correction.seen {
+		local.correction.text, local.correction.seen = savedStyle, savedStyle
+		if savedStyle == "" {
+			local.correction.text = meeting.DefaultCorrectionStyle
+		}
+	}
 	seen := a.meetingSettingsKey()
 	if local.seen == seen {
 		return
@@ -35,7 +44,7 @@ func (a *app) meetingSettingsModel() settingsMeetingViewState {
 	readyASR := a.installed(local.ASR)
 	shownASR := slices.DeleteFunc(slices.Clone(readyASR), func(model local.Model) bool { return a.modelHidden(model.ID) })
 	return buildSettingsMeetingViewState(i18n.CurrentTranslator(), settingsMeetingStateInput{
-		Meeting: meeting, ReadyASR: readyASR, ShownASR: shownASR, ReadyLLM: a.installed(local.LLM),
+		Meeting: meeting, ReadyASR: readyASR, ShownASR: shownASR, ReadyLLM: a.installed(local.LLM), CorrectionText: a.meetingUI.correction.text,
 	})
 }
 
@@ -62,6 +71,31 @@ func (a *app) setMeetingLanguage(languageCode string) {
 
 func (a *app) setMeetingLLM(languageModelID string) {
 	a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.LLM = languageModelID })
+}
+
+func (a *app) autosaveMeetingCorrectionStyle(changed, focused bool) {
+	a.autosaveState(changed, focused, &a.meetingUI.correction, a.saveMeetingCorrectionStyle)
+}
+
+func (a *app) saveMeetingCorrectionStyle() {
+	local := &a.meetingUI.correction
+	local.dirty = false
+	value := strings.TrimSpace(local.text)
+	if value == strings.TrimSpace(meeting.DefaultCorrectionStyle) {
+		value = ""
+	}
+	local.seen = value
+	if value == "" {
+		local.text = meeting.DefaultCorrectionStyle
+	}
+	if value != a.prefs.Features.Meeting.CorrectionStyle {
+		a.updateSettings(func(current *settings.Settings) { current.Features.Meeting.CorrectionStyle = value })
+	}
+}
+
+func (a *app) resetMeetingCorrectionStyle() {
+	a.meetingUI.correction.text = meeting.DefaultCorrectionStyle
+	a.saveMeetingCorrectionStyle()
 }
 
 func b2s(value bool) string {

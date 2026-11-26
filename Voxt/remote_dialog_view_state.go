@@ -192,14 +192,14 @@ func buildRemoteDialogViewState(translator *i18n.Translator, input remoteDialogS
 		case d.key == "" && input.KeySpaced:
 			state.Key.Warning = translator.T("The saved key has a space or line break in it, so the service refuses it. Paste the key again.")
 		}
-		endpointInfo := translator.T("The API root, ending in /v1. Leave it empty for the service's own. Only https://, or http:// to this Mac.")
+		endpointInfo := translator.T("The API root, ending in /v1. Leave it empty for the service's own. HTTP sends the API key and text without encryption.")
 		switch {
 		case streams:
 			endpointInfo = translator.T("Leave it empty for the service's own. Only wss://, or ws:// to this Mac.")
 		case d.kind == local.ASR:
 			endpointInfo = translator.T("Leave it empty for the service's own. Only https://, or http:// to this Mac.")
 		case sv.endpoint == "":
-			endpointInfo = translator.T("The API root of any OpenAI-compatible server, ending in /v1. Only https://, or http:// to this Mac.")
+			endpointInfo = translator.T("The API root of any OpenAI-compatible server, ending in /v1. HTTP sends the API key and text without encryption.")
 		}
 		placeholder = sv.endpoint
 		if d.kind == local.ASR {

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -43,6 +45,44 @@ func TestSessionOverlayProjectionLocaleAndTime(t *testing.T) {
 	}
 	if again := buildSessionPillViewState(translator, input, now); again != chinese {
 		t.Errorf("same translator and time produced different states:\n%+v\n%+v", chinese, again)
+	}
+}
+
+func TestRecordingDurationFitsPastTenMinutes(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	for _, test := range []struct {
+		elapsed time.Duration
+		want    string
+	}{
+		{elapsed: 9*time.Minute + 59*time.Second, want: "9:59"},
+		{elapsed: 10 * time.Minute, want: "10:00"},
+		{elapsed: 10*time.Minute + 59*time.Second, want: "10:59"},
+		{elapsed: 61*time.Minute + 5*time.Second, want: "61:05"},
+		{elapsed: 100 * time.Minute, want: "100:00"},
+		{elapsed: 240 * time.Minute, want: "240:00"},
+	} {
+		t.Run(test.want, func(t *testing.T) {
+			input := sessionOverlayProjectionInput{
+				Snapshot: session.Snapshot{State: session.Recording, HeardAt: now.Add(-test.elapsed)},
+				Mode:     ovRecording, ShowTime: true,
+			}
+			pill := buildSessionPillViewState(i18n.NewTranslator("en"), input, now)
+			if pill.ElapsedText != test.want {
+				t.Fatalf("elapsed text = %q, want %q", pill.ElapsedText, test.want)
+			}
+			measured := float32(0)
+			row, exact := recordingPillRow(&pill, false, true, 0, func(key ovSized) (float32, bool) {
+				if key.text != test.want {
+					t.Errorf("measured text = %q, want %q", key.text, test.want)
+				}
+				measured = float32(len(key.text)) * 7.4
+				return measured, true
+			})
+			wantRow := layout.RowW + layout.Gap + int(math.Ceil(float64(measured)))
+			if row != wantRow || !exact {
+				t.Errorf("row = %d, exact %v; want %d for the measured time, exact true", row, exact, wantRow)
+			}
+		})
 	}
 }
 

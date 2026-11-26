@@ -52,7 +52,7 @@ func (s *live) previewBatch(ctx context.Context) {
 		}
 		s.mu.Lock()
 		if !s.finished {
-			if text, ok := s.asm.apply(0, 0, joinParts(append(texts, r.text)), false); ok {
+			if text, ok := s.asm.apply(0, 0, joinParts(append(texts, s.a.plainText(r.text))), false); ok {
 				s.previewed = shown
 				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
 			}

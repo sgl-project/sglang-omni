@@ -143,12 +143,17 @@ func onboardingPermissionRows(c *ui.Context, state onboardingPermissionsViewStat
 	row("perm-access", i18n.T("Accessibility"), i18n.T("Lets Voxt type results, read the selected text and the browser tab's address, and use single keys like Right ⌥ as shortcuts."), privacyAccessibility, state.Access)
 	sectionTitle(c, i18n.T("Optional"))
 	settingRow(c, "perm-system-audio", i18n.T("System audio recording"), i18n.T("Lets Voxt record sound from other apps during a meeting. macOS asks the first time a meeting records system audio."), func() {
-		statusMark(c, icons.InfoCircle, tok(t).Text2, i18n.T("Unknown")).Tooltip(i18n.T("macOS does not let apps read this permission. Check it in System Settings."))
-		if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(i18n.T("Adds Voxt to the list in System Settings")).Clicked() {
-			actions.askPermission("systemAudio", nil)
+		audio := state.SystemAudio
+		statusMark(c, icons.InfoCircle, tok(t).Text2, audio.Text).Tooltip(audio.Tip)
+		if audio.CanAsk {
+			if ghostButton(c.Key("perm-system-audio-ask"), i18n.T("Ask")).Tooltip(audio.AskTooltip).Clicked() {
+				actions.askPermission(audio.AskAction, nil)
+			}
 		}
-		if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
-			actions.onboardingOpenPrivacy(privacyAudioCapture)
+		if audio.CanOpen {
+			if ghostIconButton(c.Key("perm-system-audio-open"), icons.SquareArrowRightUp, i18n.T("Open System Settings")).Label(i18n.T("Open System Settings")).Clicked() {
+				actions.onboardingOpenPrivacy(privacyAudioCapture)
+			}
 		}
 	})
 	row("perm-speech", i18n.T("Speech Recognition"), i18n.T("Needed only for System dictation."), privacySpeech, state.Speech)
@@ -174,7 +179,7 @@ func obTryStep(c *ui.Context, state onboardingTryViewState, actions onboardingAc
 		ui.Text(c, state.Shortcut.Text).FontSize(px(t, fsCaption)).Font("monospace").Padding(px(t, 2), px(t, 8)).Radius(px(t, 4)).Background(k.Hover)
 		caption(c, state.Shortcut.How)
 		if state.Shortcut.AccessibilityWarning {
-			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access. Start works now."))
+			warnLine(c, i18n.T("This shortcut works once Voxt has Accessibility access."))
 		}
 	})
 	obKeyboard(c, state.Shortcut.Keyboard)
@@ -238,7 +243,7 @@ func obMoreStep(c *ui.Context, state onboardingMoreViewState, actions onboarding
 	feature("ob-dict", dictionaryIcon, i18n.T("Dictionary"),
 		i18n.T("Names and jargon the speech model should expect and the language model should keep as written."),
 		i18n.T("Open Dictionary"), "/dictionary")
-	sectionTitle(c, i18n.T("Your shortcuts"))
+	sectionTitle(c, i18n.T("Shortcuts"))
 	onboardingShortcutPresetPicker(c, state, actions)
 	ui.Column(c.Key("ob-keys")).Gap(px(t, sp1)).Children(func() {
 		for _, row := range state.Shortcuts {

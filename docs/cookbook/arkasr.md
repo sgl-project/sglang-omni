@@ -22,15 +22,13 @@ hf download AutoArk-AI/ARK-ASR-3B
 
 ## Server Configuration
 
-ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
-Async decode is enabled by default for decode batches of at least two requests,
-allowing the shared one-step-lookahead path to overlap host-side result
-processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable
-it, or tune the crossover with `--async-lookahead-min-batch-size`.
+ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default. On CUDA with TP=1, serving `AutoArk-AI/ARK-ASR-3B`, a pinned `AutoArk-AI/ARK-ASR-3B@<revision>` specification, or its Hugging Face cache snapshot enables synchronous DFlash with the registry-pinned draft. Other devices, TP sizes and unregistered checkpoints keep plain decoding unless a draft is explicitly configured.
+
+DFlash decodes synchronously by default. Without a draft, async decode overlaps host-side result processing with the next GPU decode forward for batches of at least two requests; disable it with `--asr.factory.enable_async_decode false` or tune the threshold with `--async-lookahead-min-batch-size`.
+
 Request concurrency and audio-encoder batching are controlled separately:
 
-- `max_running_requests` defaults to `32` and limits requests admitted by the
-  ASR scheduler.
+- `max_running_requests` defaults to `64` and limits requests admitted by the ASR scheduler. With a cap of 32, a full cap admitted queued requests one or two per prefill: on one H200 the server without a draft served 141 SeedTTS English clips/s at 64 concurrent requests, against 263 with a cap of 64, and the two caps match from 1 to 32 requests.
 - `encoder_max_batch_size` defaults to `8` and limits the number of uncached
   audio items processed by one encoder forward. Larger cache-miss batches are
   processed as sequential encoder microbatches, so request concurrency does
@@ -60,18 +58,18 @@ SGLang's default static memory fraction; use `0.75` when long clips or high
 concurrency still need additional encoder headroom and the reduced KV-cache
 capacity is acceptable.
 
-To force synchronous decode while comparing modes, use:
+### Speculative Decoding
+
+The default decoder verifies tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU. Its revision is pinned in the draft registry. Use the stage's disable switch to serve without a draft:
 
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
-  --asr.factory.enable_async_decode false \
+  --asr.engine.disable_speculative_decoding true \
   --port 8000
 ```
 
-### Speculative Decoding
-
-The decoder can verify tokens proposed by the 19-language DFlash draft [`wilsonzheng0327/ARK-ASR-3B-dflash`](https://huggingface.co/wilsonzheng0327/ARK-ASR-3B-dflash) on one CUDA GPU.
+The explicit form is below; use the same draft flags when serving a local checkpoint outside the Hugging Face cache:
 
 ```bash
 sgl-omni serve \
@@ -81,21 +79,17 @@ sgl-omni serve \
   --port 8000
 ```
 
-Scheduling is synchronous by default. Add `--asr.factory.enable_async_decode true` to overlap verification with host work. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. On one H200 with greedy decoding and the prefix cache off, the draft against the server without one:
+To overlap verification with host work, add `--asr.factory.enable_async_decode true`; this delays streamed first text. The draft turns torch.compile off for the stage: on SGLang 0.5.23 the compiled path makes each verify step several times slower, and a draft that accepted 6.8 tokens per round gained nothing at one request at a time. Results for the default are under [Prefill Coalescing](#prefill-coalescing), and the first-text comparison command is in [#4165](https://github.com/sgl-project/sglang-omni/pull/4165).
 
-| Concurrent requests | 1 | 2 | 4 | 8 | 16 | 32 | 64 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| SeedTTS English, synchronous | 2.02x | 1.92x | 1.62x | 1.45x | 1.15x | 1.13x | 1.86x |
-| SeedTTS English, overlapped | 2.08x | 2.05x | 1.75x | 1.51x | 1.20x | 1.17x | 1.83x |
-| SeedTTS Chinese, synchronous | 1.74x | 1.60x | 1.56x | 1.39x | 1.18x | 1.21x | 2.00x |
-| SeedTTS Chinese, overlapped | 1.84x | 1.65x | 1.65x | 1.44x | 1.21x | 1.20x | 1.74x |
-
-WER stays at 1.11-1.13% on English and CER at 0.86-0.89% on Chinese, and p95 latency drops at every load in both modes. The larger gain at 64 comes from the default cap of 32 running requests, under which the server without a draft slows from 32 to 64 concurrent requests; with `--asr.engine.max_running_requests 64 --asr.engine.cuda_graph_max_bs 64` on both sides, the gain at 16, 32 and 64 is 1.12x, 1.18x and 1.06x synchronous and 1.30x, 1.27x and 1.13x overlapped. Overlap delays streamed first text: first-output p95 against the server without a draft is -4%, +6% and +15% at 1, 4 and 16 concurrent requests synchronous, and +8%, +23% and +31% overlapped. The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
+The draft reserves 13% of the KV pool. The draft checkpoint sets the default block size; `--asr.engine.speculative_num_draft_tokens` overrides it. The default context budget includes speculative KV reserve; an explicit `--context-length` must leave room for that reserve as well as the prompt and output.
 
 ### Prefill Coalescing
 
-ARK-ASR holds newly built requests briefly by default so the scheduler can
-admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
+Without the draft, ARK-ASR holds newly built requests briefly so the scheduler can admit a larger prefill batch: two request-build workers, a 32 ms deadline and a threshold of 16 requests. Opt-in speculative overlap keeps these defaults. Synchronous DFlash instead uses four workers, starts each request's build when the request arrives, and does not hold prefills. These defaults are resolved after selecting the decoding mode; explicit `request_build_max_workers`, `prefill_coalesce_wait_ms` and `early_request_builds` settings take precedence, and an explicit `prefill_coalesce_wait_ms` brings the hold back under DFlash.
+
+With these defaults, the draft against no draft on two H100s run at the same time (SeedTTS, streamed, prefix cache off, EN c1–c16 and ZH c4–c16) gave 1.4–2.2x throughput, lower E2E p95 at every load, and first-text p95 at most 0.8 ms later. With the earlier 0.5 ms hold and builds started by the scheduler loop, the same runs put c8 first text 17–22 ms later.
+
+For example, to use the 32 ms no-draft deadline with DFlash:
 
 ```bash
 sgl-omni serve \
@@ -302,10 +296,7 @@ Raising `pre_lm_max_batch_size` above `encoder_max_batch_size` turns a group
 into several bounded forwards; it never widens a single forward, so it does
 not change peak encoder activation memory.
 
-`request_build_max_workers` defaults to **2** and
-`request_build_max_pending` to **16**. These workers only perform CPU request
-construction; encoder concurrency and backpressure are owned by the separate
-pre-LM queue.
+`request_build_max_workers` defaults to **4** for synchronous DFlash and **2** otherwise; `request_build_max_pending` defaults to **16**. These workers only perform CPU request construction; encoder concurrency and backpressure are owned by the separate pre-LM queue.
 
 ## Encoder CUDA Graph
 

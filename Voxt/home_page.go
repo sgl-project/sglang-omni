@@ -29,7 +29,10 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 	if state.TryRecording {
 		c.After(250 * time.Millisecond) // the Try area's clock
 	}
-	columnPageHeader(c, i18n.T("Home"), func() {
+	centeredPageHeaderBy(c, pageMaxW, i18n.T("Home"), func() { homeMascot(c, state.Outfit) }, func() {
+		if shareSparkleButton(c.Key("home-share"), i18n.T("Share a card of Voxt and you"), i18n.T("Share"), true) {
+			actions.openShare()
+		}
 		if ghostIconButton(c.Key("home-guide"), icons.Compass, i18n.T("Setup guide")).Label(i18n.T("Open setup guide")).Clicked() {
 			actions.openHomeGuide()
 		}
@@ -43,6 +46,8 @@ func homePage(c *ui.Context, state *homeViewState, actions homeActions, local *h
 				tryCard(c)
 			}
 			homeToday(c, state)
+			homeInsightsSection(c, state, actions) // insights_view.go
+			homeActivitySection(c, state, actions)
 			homeRecentList(c, state, actions, local)
 		})
 	})
@@ -156,7 +161,7 @@ func homeRecentList(c *ui.Context, state *homeViewState, actions homeActions, lo
 		for _, recent := range state.Recent {
 			rowState := recent.Row
 			row := ui.ButtonBase(c.Key("home-recent-"+rowState.ID)).Padding(px(t, sp2), px(t, sp3)).Radius(px(t, radiusControl)).
-				Gap(px(t, sp3)).AlignItems(ui.Center).Label(rowState.Title).Tooltip(i18n.T("Open in History"))
+				Gap(px(t, sp3)).AlignItems(ui.Center).Label(rowState.Title)
 			if row.Hovered() {
 				row.Background(k.Hover)
 			}

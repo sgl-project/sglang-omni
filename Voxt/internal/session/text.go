@@ -1,6 +1,7 @@
 package session
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
@@ -68,6 +69,16 @@ func SpeechLang(s settings.Settings, locale string) string {
 		return ""
 	}
 	return l
+}
+
+// SpeechScript is the Chinese script dictation is written in, "zh-Hans"
+// or "zh-Hant" (lang.ChineseScript), "" to keep the speech model's: the
+// main language's, else that of the first Chinese language the system
+// lists (reads), else the app's. Whisper mixes the scripts in one
+// sentence, and a dictionary term or snippet trigger in the other script
+// would not match.
+func SpeechScript(s settings.Settings, locale string, reads []string) string {
+	return lang.ChineseScript(MainLanguage(s, locale), append(slices.Clip(reads), locale))
 }
 
 // AllowCopy says whether VoxtNew may press ⌘C in an app to read its

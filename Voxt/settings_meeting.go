@@ -12,9 +12,10 @@ import (
 // meetingSettingsUI is the Meetings page settings controls (not persisted
 // in app; mode is read from settings each frame).
 type meetingSettingsUI struct {
-	mode string
-	hide bool
-	seen string
+	mode       string
+	hide       bool
+	seen       string
+	correction speechContextState
 }
 
 func meetingCaptureSettings(c *ui.Context, state settingsMeetingViewState, actions settingsMeetingActions, local *meetingSettingsUI) {
@@ -44,7 +45,7 @@ func meetingASRSettings(c *ui.Context, state settingsMeetingViewState, actions s
 		}
 	})
 	spokenLanguage := state.SpokenLanguageSelected
-	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it."), func() {
+	settingRow(c, "mt-lang", i18n.T("Spoken language"), i18n.T("The language the speech model listens for. Choose one when the whole meeting is in it. For Speaker 1–4 labels, install MOSS-Transcribe-Diarize and choose Chinese or English here."), func() {
 		if ui.Select(c.Key("mt-lang-sel"), &spokenLanguage, settingsLanguageLabels(state.SpokenLanguageOptions)).Label(i18n.T("Spoken language in meetings")).Width(px(t, 260)).Shrink(1).MinWidth(px(t, 160)).Changed() {
 			actions.setMeetingLanguage(settingsLanguageCode(spokenLanguage, state.SpokenLanguageOptions))
 		}
@@ -64,6 +65,18 @@ func meetingLLMSettings(c *ui.Context, state settingsMeetingViewState, actions s
 					FontSize(px(t, fsCaption)).TextColor(t.TextMuted)
 			}
 		})
+}
+
+func meetingCorrectionStyleSettings(c *ui.Context, state settingsMeetingViewState, actions settingsMeetingActions, local *meetingSettingsUI) {
+	t := c.Theme()
+	sectionTitle(c, i18n.T("Transcript correction"))
+	caption(c, i18n.T("Choose how the language model corrects the transcript. It still keeps every line and uses your dictionary and Speech context."))
+	input := ui.TextArea(c.Key("mt-correction-style"), &local.correction.text).Label(i18n.T("Correction style for meeting transcripts")).
+		Placeholder(i18n.T("For example: keep the conversation's original tone; use concise sentences; keep English product names in English.")).MinHeight(px(t, 96))
+	actions.autosaveMeetingCorrectionStyle(input.Changed(), input.Focused())
+	if ghostButton(c.Key("mt-correction-reset"), i18n.T("Reset to default prompt")).Disabled(state.CorrectionStyleResetDisabled).Clicked() {
+		actions.resetMeetingCorrectionStyle()
+	}
 }
 
 func meetingConsent(c *ui.Context) {

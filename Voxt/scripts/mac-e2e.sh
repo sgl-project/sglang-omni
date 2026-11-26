@@ -35,7 +35,7 @@ nice -n 10 scripts/build-helper.sh --out build/mac-e2e/helper
 export VOXTNEW_HELPER="$ROOT/build/mac-e2e/helper/voxtnew-helper" VOXTNEW_MAC_E2E=1
 
 step "swift test"
-(cd helper && nice -n 10 swift test -j 2 2>&1 | grep -E "error:|failed|Executed .* tests" | tail -5)
+(cd helper && nice -n 10 swift test $("$ROOT/scripts/swift-sandbox-flag.sh") -j 2 2>&1 | grep -E "error:|failed|Executed .* tests" | tail -5)
 
 step "the helper, read-only and the file input"
 nice -n 10 go test -count=1 -run 'TestMacHelperReadOnly|TestMacHelperIcons|TestMacHelperCaptureFile' -v . | grep -vE '^\s*$'

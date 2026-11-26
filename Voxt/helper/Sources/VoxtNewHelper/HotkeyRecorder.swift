@@ -46,7 +46,6 @@ private final class RecordTap: KeyRecordTap, @unchecked Sendable {
         let mask: CGEventMask = [CGEventType.keyDown, .flagsChanged, .otherMouseDown]
             .reduce(0) { $0 | (1 << $1.rawValue) }
         let ready = DispatchSemaphore(value: 0)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
         let callback: CGEventTapCallBack = { _, type, event, user in
             guard let user else { return Unmanaged.passUnretained(event) }
             return Unmanaged<RecordTap>.fromOpaque(user).takeUnretainedValue().handle(type, event)
@@ -54,7 +53,7 @@ private final class RecordTap: KeyRecordTap, @unchecked Sendable {
         // The thread keeps the tap (refcon) alive until its run loop stops.
         let thread = Thread { [self] in
             guard let p = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
-                                            eventsOfInterest: mask, callback: callback, userInfo: refcon) else {
+                                            eventsOfInterest: mask, callback: callback, userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
                 ready.signal()
                 return
             }

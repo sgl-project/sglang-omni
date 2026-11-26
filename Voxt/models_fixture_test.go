@@ -55,16 +55,42 @@ func TestModelsFixtureCoverage(t *testing.T) {
 			"models-page-empty", "models-page-loading", "models-page-normal", "models-page-error",
 			"models-error-path", "models-error-generic", "models-network-custom-validation", "models-network-password-validation",
 			"models-delete-plain", "models-delete-shared", "models-delete-all", "models-hidden-retired-legacy",
+			"models-assign-asr", "models-assign-llm", "models-assign-remote", "models-assign-unavailable", "models-assign-cleanup-off",
 		} {
 			if _, ok := fixtures[name]; !ok {
 				t.Errorf("%s: missing required models fixture %s", locale, name)
 			}
 		}
 		actions, familyKinds := map[string]bool{}, map[string]bool{}
+		assignments := map[string]bool{}
 		for name, fixture := range fixtures {
 			state := fixture.Models
 			if state == nil {
 				continue
+			}
+			if assignment := state.Assignment; assignment != nil {
+				switch {
+				case !assignment.Open:
+					t.Errorf("%s/%s: a present assignment dialog is closed", locale, name)
+				case assignment.CanApply:
+					assignments["can apply"] = true
+				default:
+					assignments["cannot apply"] = true
+				}
+				if len(assignment.Notices) > 0 {
+					assignments["notice"] = true
+				}
+				if len(assignment.Rows) != 4 {
+					t.Errorf("%s/%s: assignment has %d rows, want 4", locale, name, len(assignment.Rows))
+				}
+				for _, row := range assignment.Rows {
+					if row.Disabled {
+						assignments["disabled row"] = true
+					}
+					if row.Current == "" {
+						t.Errorf("%s/%s: assignment row %s has no current model", locale, name, row.Key)
+					}
+				}
 			}
 			if name == "models-hidden-retired-legacy" {
 				if len(state.LLM) != 0 {
@@ -97,8 +123,10 @@ func TestModelsFixtureCoverage(t *testing.T) {
 		assertMeetingFixtureSet(t, locale+" models actions", map[string]bool{
 			string(modelActionHide): true, string(modelActionShow): true, string(modelActionCancel): true,
 			string(modelActionDelete): true, string(modelActionDiscard): true, string(modelActionUse): true, string(modelActionDownload): true,
+			string(modelActionAssign): true,
 		}, actions)
 		assertMeetingFixtureSet(t, locale+" models network family states", map[string]bool{"": true, "conflict": true, "readonly": true, "follows": true, "own": true}, familyKinds)
+		assertMeetingFixtureSet(t, locale+" models assignment states", map[string]bool{"can apply": true, "cannot apply": true, "notice": true, "disabled row": true}, assignments)
 	}
 }
 

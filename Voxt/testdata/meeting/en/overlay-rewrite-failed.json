@@ -39,10 +39,18 @@
     "card": {
       "id": "shot42",
       "kind": "rewrite",
-      "title": "AI answer",
+      "title": "Rewrite",
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "Follow up by voice (⌃ Right ⌥). Text you select first goes with it.",
+      "inputs": [
+        {
+          "label": "Selected text",
+          "text": "hey, the release slips to thursday, sorry!",
+          "chars": 42,
+          "lines": 1
+        }
+      ],
       "problem_code": "llm",
       "size_step": 0,
       "levels": [

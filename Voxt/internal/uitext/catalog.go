@@ -154,12 +154,8 @@ func ModelLanguagesFor(translator *i18n.Translator, id string) string {
 	return ""
 }
 
-// DownloadErrorText says why a model's download failed, and its detail
+// DownloadErrorTextFor says why a model's download failed, and its detail
 // (the error itself, for the ⓘ).
-func DownloadErrorText(err error) (msg, more string) {
-	return DownloadErrorTextFor(i18n.CurrentTranslator(), err)
-}
-
 func DownloadErrorTextFor(translator *i18n.Translator, err error) (msg, more string) {
 	if err == nil {
 		return "", ""

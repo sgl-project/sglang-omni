@@ -2,6 +2,7 @@ package omni
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"time"
 
@@ -60,12 +61,17 @@ func (s *live) recognisePieces(language string, b bias) {
 			continue
 		}
 		piece := audio[start : start+cut*2]
+		s.startFinalAt((start + cut*2) / 2)
 		begin := time.Now()
-		req := finalRequest{pcm: padPiece(piece, t), language: language, context: b.context,
-			maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout}
-		r, err := transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
-		if err == nil {
-			r.text = s.a.trimEcho(s.ctx, s.l, req, r.text, r.length, b.terms)
+		var r finalResult
+		var err error
+		if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
+			req := finalRequest{pcm: padPiece(sent, t), language: language, context: b.context,
+				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout}
+			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
+			if err == nil {
+				r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)
+			}
 		}
 		took := time.Since(begin)
 		if err != nil {
@@ -83,6 +89,9 @@ func (s *live) recognisePieces(language string, b bias) {
 		pc.language = language
 		pc.busy += took
 		n := len(pc.texts)
+		// The text so far is final: the session can start its clean-up of
+		// it instead of waiting for Stop (the Final repeats it as its prefix).
+		s.emit(asr.Event{Kind: asr.EventPiece, Text: joinParts(pc.texts)})
 		s.mu.Unlock()
 		looked = 0
 		select { // the rest may hold another piece already
@@ -91,6 +100,22 @@ func (s *live) recognisePieces(language string, b bias) {
 		}
 		s.a.rt.logf("info", "%s: piece %d of the recording, %v of audio from %v, in %v", s.a.spec.ID, n,
 			asr.Duration(piece, sampleRate).Round(10*time.Millisecond), asr.Duration(audio[:start], sampleRate).Round(10*time.Millisecond), took.Round(time.Millisecond))
+	}
+}
+
+// startFinalAt tells the server the sample the Final starts from once the
+// piece before it is recognised: it prefills the audio from there on while
+// the recording goes on.
+func (s *live) startFinalAt(sample int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.a.spec.Kind != kindQwen3ASR || s.session == "" || !s.preview || s.finished || s.ended {
+		return
+	}
+	msg, _ := json.Marshal(map[string]any{"type": "input_audio_buffer.final_start", "start_sample": sample})
+	select {
+	case s.out <- msg:
+	default:
 	}
 }
 

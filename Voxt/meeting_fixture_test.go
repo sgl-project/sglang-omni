@@ -193,6 +193,8 @@ func buildMeetingFixture(t *testing.T, scenario meetingFixtureScenario, locale s
 	case "notes":
 		state := buildNotesViewState(translator, scenario.notes)
 		fixture.Notes = &state
+	case "snippets":
+		fixture.Snippets, fixture.SnippetsUI = buildSnippetsFixture(translator, scenario.snippets)
 	case "remote":
 		scenario.remote.Wait.Locale = locale
 		localizeRemotePageInput(&scenario.remote, translator)

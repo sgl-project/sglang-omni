@@ -24,7 +24,7 @@
         "meta": "5 分钟前 · Notes · 0:08",
         "selected": true,
         "copy_text": "A formal answer",
-        "raw_copy_text": "make this formal",
+        "raw_copy_text": "Rewrite formally",
         "can_reveal": true,
         "retry": {
           "available": true,
@@ -77,9 +77,9 @@
           "text": "Rewrite formally"
         },
         {
-          "key": "hist-raw",
-          "title": "识别原文",
-          "copy_label": "复制识别原文",
+          "key": "hist-typed",
+          "title": "输入的文字",
+          "copy_label": "复制输入的文字",
           "text": "make this formal"
         }
       ],

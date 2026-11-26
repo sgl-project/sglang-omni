@@ -130,13 +130,9 @@ func KindTitleFor(translator *i18n.Translator, k store.Kind) string {
 	return translator.T("Transcribe")
 }
 
-// TimingsText is a try's stage times and models: "Recording 3.2 s ·
+// TimingsTextFor is a try's stage times and models: "Recording 3.2 s ·
 // Recognition 0.8 s · Clean-up 1.1 s · Accurate speech recognition,
 // Balanced language model".
-func TimingsText(s session.Snapshot) string {
-	return TimingsTextFor(i18n.CurrentTranslator(), s)
-}
-
 func TimingsTextFor(translator *i18n.Translator, s session.Snapshot) string {
 	secs := func(d time.Duration) string { return translator.T("%.1f s", d.Seconds()) }
 	var parts []string
@@ -170,21 +166,6 @@ func TimingsTextFor(translator *i18n.Translator, s session.Snapshot) string {
 		parts = append(parts, strings.Join(svc, ", "))
 	}
 	return strings.Join(parts, " · ")
-}
-
-// CardTitle is the card's heading: a Rewrite answer's own title, else
-// what the card holds.
-func CardTitle(kind store.Kind, title string) string {
-	if t := strings.TrimSpace(title); t != "" {
-		return t
-	}
-	switch kind {
-	case store.KindTranslate:
-		return i18n.T("Translation")
-	case store.KindRewrite:
-		return i18n.T("AI answer") // Voxt's, a rewritten selection's too
-	}
-	return i18n.T("Transcription")
 }
 
 // TargetLanguageLabel names a target language in the UI's language.

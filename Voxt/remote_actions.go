@@ -4,10 +4,12 @@ package main
 type remoteCardsActions interface {
 	openRemoteProvider(kind, id string)
 	testRemoteProvider(kind, id string)
+	openModelAssignment(kind, id string)
 }
 
 type remoteWaitActions interface {
 	chooseLLMWait(value string)
+	setLLMSwitch(on bool)
 }
 
 type remoteDialogActions interface {

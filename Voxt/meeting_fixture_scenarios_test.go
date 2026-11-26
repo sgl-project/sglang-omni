@@ -39,6 +39,7 @@ type meetingFixtureScenario struct {
 	appEnhancementLibrary      bool
 	dictionary                 dictionaryViewStateInput
 	notes                      notesViewStateInput
+	snippets                   snippetsFixtureInput
 	remote                     remotePageStateInput
 	remoteCards                remoteCardsStateInput
 	remoteDialog               *remoteDialogStateInput
@@ -199,6 +200,7 @@ func meetingFixtureScenarios() []meetingFixtureScenario {
 	scenarios = append(scenarios, appEnhancementFixtureScenarios()...)
 
 	scenarios = append(scenarios, dictionaryFixtureScenarios()...)
+	scenarios = append(scenarios, snippetsFixtureScenarios()...)
 	scenarios = append(scenarios, remoteFixtureScenarios()...)
 	scenarios = append(scenarios, modelsFixtureScenarios()...)
 	scenarios = append(scenarios, featureFixtureScenarios()...)

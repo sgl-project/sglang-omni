@@ -17,7 +17,7 @@
       "has_saved": true
     },
     "endpoint": {
-      "info": "任意 OpenAI 兼容服务的 API 根地址，以 /v1 结尾。只能用 https://，或指向本机的 http://。",
+      "info": "任意 OpenAI 兼容服务的 API 根地址，以 /v1 结尾。HTTP 会明文发送 API Key 和文本。",
       "placeholder": "https://…/v1"
     },
     "model_options": [

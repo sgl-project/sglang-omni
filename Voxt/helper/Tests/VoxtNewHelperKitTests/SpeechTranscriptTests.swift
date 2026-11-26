@@ -24,6 +24,16 @@ final class SpeechTranscriptTests: XCTestCase {
         XCTAssertEqual(run(["How are you?", "Fine", "How are you? Fine."]), "How are you? Fine.")
     }
 
+    func testEmptyResultsKeepThePreviousTranscript() {
+        var t = SpeechTranscript()
+        XCTAssertEqual(t.update(""), "")
+        XCTAssertEqual(t.update("我想去北京"), "我想去北京")
+        XCTAssertEqual(t.update(""), "我想去北京")
+        XCTAssertEqual(t.text, "我想去北京")
+        XCTAssertEqual(t.update("我想"), "我想")
+        XCTAssertEqual(run(["How are you?", "Fine", ""]), "How are you? Fine")
+    }
+
     func testTextIsTheWholeTextSoFar() {
         var t = SpeechTranscript()
         XCTAssertEqual(t.text, "")

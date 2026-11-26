@@ -130,7 +130,9 @@ type Streamer interface {
 //
 // Send and Finish are called from one goroutine (the session's); Close
 // from any. Events delivers EventPartial while audio comes in, then
-// exactly one EventFinal or EventError, then closes. ctx of Open bounds the whole
+// exactly one EventFinal or EventError, then closes. A stream that
+// finalises stretches of the recording while it continues may deliver
+// EventPiece before them. ctx of Open bounds the whole
 // stream: cancelling it ends the stream with a KindCancelled Error.
 type Stream interface {
 	// Send sends PCM16LE mono audio at the request's sample rate, any
@@ -164,6 +166,11 @@ const (
 	EventFinal
 	// EventError: the stream failed (Err is an *Error). The last event.
 	EventError
+	// EventPiece: a stretch of the recording is final while the recording
+	// continues. Text is the final text so far (the stretches joined, a
+	// prefix of the EventFinal's text), as EventPartial's is the whole
+	// hypothesis. Never the last event.
+	EventPiece
 )
 
 func (k EventKind) String() string {
@@ -174,6 +181,8 @@ func (k EventKind) String() string {
 		return "final"
 	case EventError:
 		return "error"
+	case EventPiece:
+		return "piece"
 	}
 	return "unknown"
 }
@@ -181,7 +190,7 @@ func (k EventKind) String() string {
 // Event is one event of a Stream.
 type Event struct {
 	Kind EventKind
-	Text string // EventPartial and EventFinal
+	Text string // EventPartial, EventFinal and EventPiece
 	// Result is the final event's details (Text repeats there).
 	Result Result
 	Err    error // EventError

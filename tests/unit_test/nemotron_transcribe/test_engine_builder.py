@@ -1,12 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine option handling without model weights or CUDA initialization."""
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
+from sglang.srt.model_executor.model_runner_components.weight_updater import (
+    _unsupported_derived_weight_cache_error,
+)
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
+import sglang_omni.models.nemotron_transcribe.stages as stages
+import sglang_omni.models.weight_loader as weight_loader
 from sglang_omni.models.nemotron_transcribe.config import (
     EncoderCompileMode,
     NemotronTranscribePipelineConfig,
@@ -14,6 +22,12 @@ from sglang_omni.models.nemotron_transcribe.config import (
 from sglang_omni.models.nemotron_transcribe.engine_builder import (
     NemotronTranscribeEngineBuilder,
 )
+from sglang_omni.models.nemotron_transcribe.fp8_linear import (
+    FP8_DTYPE,
+    Fp8Linear,
+    attach_fp8_linears,
+)
+from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeMTPDraft
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
@@ -32,6 +46,7 @@ def make_builder(
         compile_perception=compile_perception,
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
+        checkpoint_revision=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -53,6 +68,204 @@ def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["disable_radix_cache"] is True
+
+
+def test_engine_revision_selects_the_checkpoint_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An engine revision used to be dropped, so a pinned MTP launch loaded the latest snapshot."""
+    revision = "c17667641642c4265ff2b7037dd101b7d4567634"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "llm_config": {},
+                "eos_token_id": [11],
+                "perception": {},
+                "pe_encoder_config": {},
+            }
+        )
+    )
+    downloads: list[tuple[str, str | None]] = []
+
+    def download_snapshot(
+        repo_id: str, *, local_files_only: bool, revision: str | None
+    ) -> str:
+        downloads.append((repo_id, revision))
+        return str(tmp_path)
+
+    monkeypatch.setattr(weight_loader, "snapshot_download", download_snapshot)
+    monkeypatch.setattr(
+        stages.NemotronTranscribeEngineBuilder,
+        "build",
+        lambda builder, model_path, **options: builder.resolve_checkpoint(model_path),
+    )
+    factory_options = (
+        NemotronTranscribePipelineConfig(model_path="unused")
+        .stages[0]
+        .factory.model_dump(exclude_none=True)
+    )
+    stages.create_nemotron_transcribe_executor(
+        "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        server_args_overrides={"revision": revision},
+        **factory_options,
+    )
+    assert downloads == [("nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B", revision)]
+
+
+def test_mtp_draft_stays_unregistered_without_speculative_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides: dict[str, object] = {"enable_mixed_chunk": True}
+    builder.adjust_overrides(overrides)
+    assert overrides == {"enable_mixed_chunk": True}
+    assert builder.infra_kwargs() == {}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "num_steps", "num_draft_tokens"),
+    [
+        ({"speculative_algorithm": "NEXTN"}, 3, 4),
+        ({"speculative_algorithm": "EAGLE", "speculative_num_steps": 7}, 7, 8),
+        (
+            {
+                "speculative_algorithm": "nextn",
+                "revision": "c17667641642c4265ff2b7037dd101b7d4567634",
+                "speculative_draft_model_revision": (
+                    "c17667641642c4265ff2b7037dd101b7d4567634"
+                ),
+                "speculative_eagle_topk": 1,
+                "speculative_num_steps": 2,
+                "speculative_num_draft_tokens": 3,
+                "enable_mixed_chunk": False,
+            },
+            2,
+            3,
+        ),
+    ],
+    ids=["defaults", "eagle-alias-with-steps", "explicit-chain"],
+)
+def test_supported_mtp_configurations_serve_the_bundled_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: dict[str, object],
+    num_steps: int,
+    num_draft_tokens: int,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides = dict(requested)
+    builder.adjust_overrides(overrides)
+    assert overrides["speculative_draft_model_path"] == "/checkpoints/nemotron"
+    assert overrides["speculative_draft_model_revision"] is None
+    assert overrides["speculative_eagle_topk"] == 1
+    assert overrides["speculative_num_steps"] == num_steps
+    assert overrides["speculative_num_draft_tokens"] == num_draft_tokens
+    assert overrides["enable_mixed_chunk"] is False
+    assert builder.infra_kwargs() == {"supports_speculative_decoding": True}
+    assert (
+        engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
+        is NemotronTranscribeMTPDraft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, "set speculative_algorithm NEXTN"),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_draft_model_path": "org/external-draft",
+            },
+            "leave speculative_draft_model_path unset",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "revision": "target-revision",
+                "speculative_draft_model_revision": "draft-revision",
+            },
+            "set revision instead",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_eagle_topk": 4},
+            "speculative_eagle_topk must be 1, got 4",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_steps": 0},
+            "positive integer, got 0",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_num_steps": 3,
+                "speculative_num_draft_tokens": 8,
+            },
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_draft_tokens": 8},
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_multi_layer_eagle": True},
+            "enable_multi_layer_eagle is unsupported",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_mixed_chunk": True},
+            "enable_mixed_chunk off",
+        ),
+    ],
+    ids=[
+        "separate-draft-algorithm",
+        "external-draft",
+        "draft-revision",
+        "topk",
+        "steps",
+        "draft-tokens",
+        "draft-tokens-against-default-steps",
+        "multi-layer",
+        "mixed-chunk",
+    ],
+)
+def test_unsupported_mtp_configurations_name_the_setting_to_change(
+    monkeypatch: pytest.MonkeyPatch, requested: dict[str, object], message: str
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(dict(requested))
+    assert builder.infra_kwargs() == {}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
 
 
 def test_decoder_compilation_has_an_actionable_error() -> None:
@@ -81,6 +294,74 @@ def test_encoder_compilation_uses_resolved_decoder_concurrency(
     )
     assert encoder.dynamic_batches is expected_dynamic
     assert model.encoder_max_batch_size == 8
+    assert _unsupported_derived_weight_cache_error(model.perception) is None
+
+
+@pytest.mark.parametrize(
+    "perception_fp8,compile_perception,gemm_supported,keeps_fp8",
+    [
+        (True, False, True, True),
+        (True, True, True, True),
+        (True, False, False, False),
+        (False, False, True, False),
+    ],
+)
+def test_fp8_encoder_linears_need_the_option_and_fp8_gemms(
+    monkeypatch: pytest.MonkeyPatch,
+    perception_fp8: bool,
+    compile_perception: bool,
+    gemm_supported: bool,
+    keeps_fp8: bool,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder, "init_mm_embedding_cache", lambda size_bytes: None
+    )
+    monkeypatch.setattr(
+        engine_builder, "fp8_gemm_supported", lambda device: gemm_supported
+    )
+    linear = Fp8Linear.replacing(nn.Linear(16, 16, dtype=torch.bfloat16))
+    model = SimpleNamespace(perception=nn.Sequential(linear), encoder_max_batch_size=0)
+    builder = make_builder(compile_perception=compile_perception)
+    builder.perception_fp8 = perception_fp8
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    assert isinstance(model.perception[0], Fp8Linear) is keeps_fp8
+    assert isinstance(model.perception[0], nn.Linear) is not keeps_fp8
+    rejects_updates = _unsupported_derived_weight_cache_error(model.perception)
+    assert (rejects_updates is not None) is keeps_fp8
+
+
+@pytest.mark.parametrize("checkpoint_fp8", [False, True])
+def test_fp8_weights_loaded_after_encoder_setup_stay_dense(
+    monkeypatch: pytest.MonkeyPatch, checkpoint_fp8: bool
+) -> None:
+    monkeypatch.setattr(
+        engine_builder, "init_mm_embedding_cache", lambda size_bytes: None
+    )
+    dense = nn.Linear(16, 16, dtype=torch.bfloat16)
+    linear = Fp8Linear.replacing(dense) if checkpoint_fp8 else dense
+    model = SimpleNamespace(perception=nn.Sequential(linear), encoder_max_batch_size=0)
+    builder = make_builder()
+    builder.perception_fp8 = False
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    dense = model.perception[0]
+    weight = torch.randn(16, 16).to(FP8_DTYPE)
+    scale = torch.tensor(0.5)
+    loadable = attach_fp8_linears(
+        model.perception,
+        {"0.weight": weight, "0.weight_scale": scale, "0.input_scale": scale},
+    )
+
+    assert model.perception[0] is dense
+    assert loadable.keys() == {"0.weight"}
+    assert torch.equal(loadable["0.weight"], weight.float() * scale)
 
 
 def test_pre_lm_encoder_starts_after_model_setup(

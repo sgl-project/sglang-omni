@@ -13,10 +13,14 @@ from __future__ import annotations
 import dataclasses
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import torch
 
+from sglang_omni.models.minicpm_o.audio_encoder_batching import (
+    batch_audio_encoder_payloads,
+)
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMOAudioEncoder,
     MultiModalProjector,
@@ -30,6 +34,12 @@ from sglang_omni.models.minicpm_o.components.whisper_encoder import (
     AudioEncoderState,
     MiniCPMWhisperEncoder,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.stages import create_encoder_executor
+from sglang_omni.proto.request import StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
+from sglang_omni.scheduling.stage_cache import StageOutputCache
+from tests.unit_test.fixtures.pipeline_fakes import make_stage_payload
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -306,3 +316,126 @@ def test_batched_streaming_matches_each_session_alone(
             state.key_value_states.untyped_storage().nbytes()
             == state.key_value_states.nbytes
         )
+
+
+def audio_payload(
+    request_id: str,
+    audio_features: torch.Tensor,
+    audio_feature_lengths: torch.Tensor,
+    *,
+    cache_key: str | None,
+) -> StagePayload:
+    state = MiniCPMOPipelineState(
+        encoder_inputs={
+            "audio_encoder": {
+                "audio_features": audio_features,
+                "audio_feature_lens": audio_feature_lengths,
+                "cache_key": cache_key,
+            }
+        }
+    )
+    return make_stage_payload(state.to_dict(), request_id=request_id, inputs={})
+
+
+def test_cross_request_batch_routes_results_and_errors() -> None:
+    """Duplicate requests share an encoding, while a too-short neighbor fails independently."""
+    encoder = Mock()
+    encoder.audio_pool_step = 5
+    encoder.return_value = {
+        "audio_embeds": torch.tensor([[1.0, 2.0], [3.0, 4.0], [7.0, 8.0]])
+    }
+    cache = StageOutputCache(cache_device="cpu")
+    short_features = torch.ones(1, 80, 8)
+    long_features = torch.ones(2, 80, 19)
+    other_features = torch.full((1, 80, 11), 2.0)
+    payloads = [
+        audio_payload(
+            "leader", long_features, torch.tensor([19, 5]), cache_key="shared"
+        ),
+        audio_payload(
+            "follower", long_features, torch.tensor([19, 5]), cache_key="shared"
+        ),
+        audio_payload("short", short_features, torch.tensor([8]), cache_key="short"),
+        audio_payload("other", other_features, torch.tensor([11]), cache_key="other"),
+    ]
+
+    leader, follower, short, other = batch_audio_encoder_payloads(
+        payloads, encoder=encoder, cache=cache
+    )
+
+    assert isinstance(short, ValueError)
+    assert cache.get("short") is None
+    assert [leader.request_id, follower.request_id, other.request_id] == [
+        "leader",
+        "follower",
+        "other",
+    ]
+    encoder_call_kwargs = encoder.call_args.kwargs
+    assert encoder_call_kwargs["audio_features"].shape == (3, 80, 19)
+    assert torch.equal(
+        encoder_call_kwargs["audio_features"][2, :, :11], other_features[0]
+    )
+    # note (wirybeaver): the leader's second chunk has 5 valid frames but shares the first chunk's 19-frame tensor width.
+    assert torch.equal(
+        encoder_call_kwargs["audio_feature_lens"], torch.tensor([19, 5, 11])
+    )
+    assert torch.equal(
+        encoder_call_kwargs["original_mel_frame_counts"], torch.tensor([19, 19, 11])
+    )
+
+    leader_embeddings, follower_embeddings, other_embeddings = (
+        payload.data["encoder_outs"]["audio_encoder"]["audio_embeds"]
+        for payload in (leader, follower, other)
+    )
+    assert torch.equal(leader_embeddings, torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    assert torch.equal(follower_embeddings, leader_embeddings)
+    assert torch.equal(other_embeddings, torch.tensor([[7.0, 8.0]]))
+
+    cached = batch_audio_encoder_payloads(
+        [
+            audio_payload(
+                "cached-again", long_features, torch.tensor([19, 5]), cache_key="shared"
+            )
+        ],
+        encoder=encoder,
+        cache=cache,
+    )
+    encoder.assert_called_once()
+    assert torch.equal(
+        cached[0].data["encoder_outs"]["audio_encoder"]["audio_embeds"],
+        leader_embeddings,
+    )
+
+
+def test_audio_batch_budget_accounts_for_padding() -> None:
+    """The third request would bring nine chunks from 11,200 input frames to 27,000 after padding."""
+    scheduler = create_encoder_executor(
+        tiny_audio_encoder(),
+        stage_name="audio_encoder",
+        max_batch_size=8,
+        max_batch_wait_ms=0,
+        max_batch_mel_frames=24000,
+    )
+    messages = [
+        IncomingMessage(
+            request_id=request_id,
+            type="new_request",
+            data=audio_payload(
+                request_id,
+                torch.empty(chunk_count, 80, mel_frames),
+                torch.full((chunk_count,), mel_frames),
+                cache_key=None,
+            ),
+        )
+        for request_id, chunk_count, mel_frames in (
+            ("long", 3, 3000),
+            ("short", 4, 300),
+            ("deferred", 2, 500),
+        )
+    ]
+    for message in messages[1:]:
+        scheduler.enqueue(message)
+
+    batch = scheduler.collect_batch(messages[0])
+
+    assert [message.request_id for message in batch] == ["long", "short"]

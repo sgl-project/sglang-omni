@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
 // ollamaServer is Ollama with qwen3:8b and llama3.2:3b pulled: its
@@ -115,5 +116,35 @@ func TestProviderDialogOffer(t *testing.T) {
 	}
 	if got := a.provDlg.modelOptions(nil); !slices.Equal(got, []string{"qwen3:8b", "llama3.2:3b", "qwen3", otherModel()}) {
 		t.Errorf("menu %q", got)
+	}
+}
+
+// TestSavedOllamaSetupMenuIsTheServersModels (#3950): opening a saved
+// Ollama setup asks the server for its models, and the Model menu is
+// exactly the pulled ones and Other: no preset name that is not pulled.
+// Test connection passes with the saved model.
+func TestSavedOllamaSetupMenuIsTheServersModels(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	srv := ollamaServer(t)
+	a, _, tt := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: "ollama", Endpoint: srv.URL, Model: "llama3.2:3b"}}
+	})
+	runListModels = providers.Models
+	t.Cleanup(func() { runListModels = failListModels })
+	a.navigate(remotePath)
+	frames(tt)
+	a.openProviderDialog(local.LLM, "ollama")
+	frames(tt)
+	d := &a.provDlg
+	if got := d.modelOptions(lookupService(local.LLM, "ollama").models); !slices.Equal(got, []string{"qwen3:8b", "llama3.2:3b", otherModel()}) {
+		t.Fatalf("menu %q, served %q", got, d.served)
+	}
+	if d.model != "llama3.2:3b" {
+		t.Errorf("model %q", d.model)
+	}
+	click(t, tt, "Test connection")
+	if d.test.res.Err != nil || !hasPrefix(tt, "Connection OK") {
+		t.Errorf("test connection: %v %q", d.test.res.Err, firstTexts(tt))
 	}
 }

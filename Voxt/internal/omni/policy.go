@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -253,6 +254,30 @@ func joinParts(parts []string) string {
 		b.WriteString(p)
 	}
 	return b.String()
+}
+
+// mossTag is a timestamp ([12.34]) or speaker label ([S01]): MOSS writes
+// them even when its instruction asks for plain text. A bare integer
+// ([1]) stays: a reference, not a timestamp.
+var mossTag = regexp.MustCompile(`\[(?:\d+[.,]\d+|S\d+)\]`)
+
+// mossTail is a tag's end at the text's start (0.00], S01]): MOSS also
+// writes it bare, and a piece's text can begin with it. Mid-text it
+// stays: a real 3.5] is the user's.
+var mossTail = regexp.MustCompile(`^\s*(?:\d+[.,]\d+|S\d+)\]`)
+
+// plainText is MOSS's text without those tags when it was asked for
+// plain text; other models', and MOSS's other tasks', as it is.
+func (a *ASR) plainText(text string) string {
+	if a.spec.Kind != kindMoss || a.spec.ASR.Instruction != mossPlain {
+		return text
+	}
+	return stripTags(text)
+}
+
+// stripTags is text without MOSS's tags.
+func stripTags(text string) string {
+	return joinParts(mossTag.Split(mossTail.ReplaceAllString(text, ""), -1))
 }
 
 func itoa(v int) string { return strconv.Itoa(v) }

@@ -45,7 +45,8 @@
       },
       "thinking_label": "思考强度：已关闭",
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
-      "insert_tooltip": "插入到 Slack",
+      "insert_tooltip": "插入到 Slack（R）",
+      "copy_tooltip": "复制（C）",
       "size_step": 0,
       "levels": [
         0,
