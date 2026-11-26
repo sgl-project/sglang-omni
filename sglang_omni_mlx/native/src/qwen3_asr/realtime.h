@@ -97,8 +97,7 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
-                                     long end_sample);
+  TranscriptionOptions DecodeOptions(Segment &segment, long end_sample);
   // note (chenye): Finals snapshot shared reuse on the worker; refreshes update
   // it.
   omni_server::Transcription Decode(std::vector<float> samples,

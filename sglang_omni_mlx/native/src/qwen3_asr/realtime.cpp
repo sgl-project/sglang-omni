@@ -315,7 +315,6 @@ std::vector<float> RealtimeSession::SegmentSamples(const Segment &segment,
 }
 
 TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
-                                                    bool is_refresh,
                                                     long end_sample) {
   TranscriptionOptions options;
   options.language = segment.language;
@@ -339,26 +338,21 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
             static_cast<double>(end_sample - segment.transcript_end_sample) /
             omni_common::kSampleRate * kPrefixedTokensPerNewSecond)) +
         kPrefixedTokenSlack;
-    // Note (XXXXRT666): a refresh checks the rolled-back tokens as guesses;
-    // the final decode decodes them as before.
-    if (is_refresh) {
-      options.guessed_token_ids = std::move(retained.rest_ids);
-    } else {
-    }
+    // note (chenye): XXXXRT666's refresh path verifies rolled-back tokens on
+    // refreshes and finals.
+    options.guessed_token_ids = std::move(retained.rest_ids);
   } else {
   }
   segment.decode_count += 1;
   return options;
 }
 
-Transcription
-RealtimeSession::Decode(std::vector<float> samples,
-                        TranscriptionOptions options,
-                        std::shared_ptr<RefreshReuse> reuse,
-                        bool snapshot_reuse) const {
+Transcription RealtimeSession::Decode(std::vector<float> samples,
+                                      TranscriptionOptions options,
+                                      std::shared_ptr<RefreshReuse> reuse,
+                                      bool snapshot_reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
-          options = std::move(options),
-          reuse = std::move(reuse),
+          options = std::move(options), reuse = std::move(reuse),
           snapshot_reuse](const std::atomic<bool> &cancel) {
     if (reuse == nullptr || !snapshot_reuse) {
       return transcriber.Transcribe(samples, options, cancel, reuse.get());
@@ -415,7 +409,7 @@ void RealtimeSession::MaybeStartRefresh() {
       return;
     } else {
     }
-    options = DecodeOptions(segment, true, end_sample);
+    options = DecodeOptions(segment, end_sample);
     reuse = segment.reuse;
     segment_id = segment.segment_id;
     refreshing_ = true;
@@ -502,26 +496,33 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       TranscriptionOptions options;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        options = DecodeOptions(segment, false, cut_sample);
+        options = DecodeOptions(segment, cut_sample);
       }
       try {
         result = worker_.Transcribe(
             Decode(samples, options, segment.reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
+        bool retried_without_prefix = false;
         if (result->finish_reason == FinishReason::kLength &&
             !options.prefix_token_ids.empty()) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
+          options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
-          result = worker_.Transcribe(
-              Decode(std::move(samples), std::move(options), segment.reuse,
-                     true),
-              cancel_);
+          retried_without_prefix = true;
+          result =
+              worker_.Transcribe(Decode(std::move(samples), std::move(options),
+                                        segment.reuse, true),
+                                 cancel_);
         } else {
         }
         ApplyResult(segment, *result, cut_sample);
         text = result->text;
+        if (retried_without_prefix) {
+          result->retried_without_prefix = true;
+        } else {
+        }
       } catch (...) {
         ReportDecodeFailure(std::current_exception());
       }
@@ -540,7 +541,13 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       if (result.has_value()) {
         event["generation_metadata"] = {
             {"reused_audio_token_count", result->reused_audio_token_count},
-            {"reused_prompt_token_count", result->reused_prompt_token_count}};
+            {"reused_prompt_token_count", result->reused_prompt_token_count},
+            {"verified_guess_token_count", result->verified_guess_token_count},
+            {"accepted_guess_token_count", result->accepted_guess_token_count}};
+        if (result->retried_without_prefix) {
+          event["generation_metadata"]["retried_without_prefix"] = true;
+        } else {
+        }
       } else {
       }
       Send(std::move(event));

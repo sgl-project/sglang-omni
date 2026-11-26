@@ -409,6 +409,32 @@ def long_wav(seconds: int) -> bytes:
     return wav_bytes(repeated[: seconds * 32000])
 
 
+def repeated_pcm(clip_id: str, seconds: int) -> bytes:
+    pcm = pcm16(clip_id)
+    return (pcm * (seconds * 32000 // len(pcm) + 1))[: seconds * 32000]
+
+
+def append_realtime_audio(server: Server, socket, pcm: bytes) -> None:
+    socket.send(
+        json.dumps(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm).decode(),
+            }
+        )
+    )
+    wait_for(
+        lambda: bool(request_states(server)),
+        MODEL_TEST_TIMEOUT_SECONDS,
+        "the realtime refresh did not start",
+    )
+    wait_for(
+        lambda: not request_states(server),
+        MODEL_TEST_TIMEOUT_SECONDS,
+        "the realtime refresh did not finish",
+    )
+
+
 def test_repetition_penalty_ends_a_token_loop(server: Server) -> None:
     """Greedy decoding repeats one phrase on this audio until the token budget runs out, and repetition_penalty was ignored."""
     # Note (Minyi Tang): 30.0 s to 31.1 s of this clip is the public loop trigger from issue 3044.
@@ -713,6 +739,104 @@ def test_a_short_segment_final_encodes_audio_without_a_complete_cache(
     finalized = events[-1]
     assert finalized["type"] == "transcription.segment"
     assert finalized["generation_metadata"]["reused_audio_token_count"] == 0
+
+
+@pytest.mark.parametrize("use_draft", [False, True], ids=["greedy", "dflash"])
+def test_a_segment_final_verifies_and_rejects_rollback_guesses(
+    server: Server, use_draft: bool
+) -> None:
+    """A changed audio continuation makes the final verify and reject stale preview tokens."""
+    running = (
+        Server(flags=("--draft-model-path", str(model_directory(DRAFT_REPO))))
+        if use_draft
+        else server
+    )
+    try:
+        chunks = [
+            repeated_pcm("0098_en_mid", 10),
+            repeated_pcm("0100_en_mid", 10),
+            repeated_pcm("0117_en_mid", 11),
+        ]
+        with connect(f"ws://127.0.0.1:{running.port}/v1/realtime") as socket:
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {"turn_detection": None, "language": "en"},
+                    }
+                )
+            )
+            json.loads(socket.recv())
+            for chunk in chunks[:2]:
+                append_realtime_audio(running, socket, chunk)
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunks[2]).decode(),
+                    }
+                )
+            )
+            while True:
+                finalized = json.loads(socket.recv(timeout=MODEL_TEST_TIMEOUT_SECONDS))
+                if (
+                    finalized.get("type") == "transcription.segment"
+                    and finalized.get("segment_id") == 0
+                    and finalized.get("is_final") is True
+                ):
+                    break
+        metadata = finalized["generation_metadata"]
+        assert metadata["verified_guess_token_count"] > 0
+        assert (
+            metadata["accepted_guess_token_count"]
+            < metadata["verified_guess_token_count"]
+        )
+    finally:
+        if use_draft:
+            running.stop()
+
+
+def test_a_prefixed_segment_final_retries_without_its_guesses() -> None:
+    """The known Mandarin loop trigger exhausts the prefixed budget and retries from audio."""
+    running = Server(flags=("--decode-interval-ms", "20000"))
+    pcm = pcm16("0366_zh_long")
+    prefix = pcm[: int(28.8 * 32000)]
+    loop_trigger = pcm[int(30.0 * 32000) : int(31.1 * 32000)]
+    try:
+        with connect(f"ws://127.0.0.1:{running.port}/v1/realtime") as socket:
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "session.update",
+                        "session": {"turn_detection": None, "language": "zh"},
+                    }
+                )
+            )
+            json.loads(socket.recv())
+            append_realtime_audio(running, socket, prefix[: 8 * 32000])
+            append_realtime_audio(running, socket, prefix[8 * 32000 :])
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(loop_trigger).decode(),
+                    }
+                )
+            )
+            socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+            while True:
+                finalized = json.loads(socket.recv(timeout=MODEL_TEST_TIMEOUT_SECONDS))
+                if (
+                    finalized.get("type") == "transcription.segment"
+                    and finalized.get("is_final") is True
+                ):
+                    break
+        metadata = finalized["generation_metadata"]
+        assert metadata["retried_without_prefix"] is True
+        assert metadata["verified_guess_token_count"] == 0
+        assert metadata["accepted_guess_token_count"] == 0
+    finally:
+        running.stop()
 
 
 def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> None:

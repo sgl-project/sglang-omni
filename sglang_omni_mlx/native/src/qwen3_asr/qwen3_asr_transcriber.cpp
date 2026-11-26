@@ -566,6 +566,7 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
   DraftStatistics draft_statistics;
   int reused_audio_token_count = 0;
   int reused_prompt_token_count = 0;
+  int verified_guess_token_count = 0;
   // note (wilsonzheng0327): a penalty would have to be applied per block
   // position with the block's own earlier tokens; a request that asks for one
   // decodes without the draft.
@@ -574,6 +575,7 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
   if (reuse == nullptr && uses_draft) {
     std::vector<KVCache> caches = model_.NewCaches();
     std::vector<KVCache> draft_caches = draft_->NewCaches();
+    verified_guess_token_count = static_cast<int>(guessed_ids.size());
     draft_statistics = draft_->Decode(
         model_.decoder(), BuildPrompt(samples, options).embeddings, guessed_ids,
         max_new_tokens, 0, commit, cancel, draft_policy_, caches, draft_caches);
@@ -594,6 +596,7 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
                                      ? refresh->embeddings
                                      : BuildPrompt(samples, options).embeddings;
     if (uses_draft) {
+      verified_guess_token_count = static_cast<int>(guessed_ids.size());
       draft_statistics = draft_->Decode(
           model_.decoder(), embeddings, guessed_ids, max_new_tokens, 0, commit,
           cancel, draft_policy_, caches, held.draft_caches);
@@ -602,6 +605,7 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
       const int guessed_count = options.repetition_penalty == 1.0f
                                     ? static_cast<int>(guessed_ids.size())
                                     : 0;
+      verified_guess_token_count = guessed_count;
       std::optional<mx::array> next_token;
       bool finished = false;
       if (guessed_count == 0) {
@@ -659,6 +663,12 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
                      draft_statistics);
   result.reused_audio_token_count = reused_audio_token_count;
   result.reused_prompt_token_count = reused_prompt_token_count;
+  result.verified_guess_token_count = verified_guess_token_count;
+  for (size_t i = 0; i < static_cast<size_t>(verified_guess_token_count) &&
+                     i < output_ids.size() && guessed_ids[i] == output_ids[i];
+       ++i) {
+    ++result.accepted_guess_token_count;
+  }
   return result;
 }
 
