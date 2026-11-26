@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **Hiding Rewrite clears its shortcut from an open answer card**: turning Show Rewrite off while an answered Rewrite card was on screen left the card's follow-up tooltip and the microphone showing the Rewrite shortcut until the next click. They drop the shortcut at once now.
 
 ### 中文
 
@@ -19,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **隐藏改写时，打开着的答案卡片随即不再显示它的快捷键**：改写答案卡片开着时关掉「显示改写」，卡片的追问提示和麦克风仍显示改写快捷键，直到下次点击才消失。现在关掉后马上不再显示。
 
 ## [Unreleased]
 

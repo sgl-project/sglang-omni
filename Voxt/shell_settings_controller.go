@@ -96,7 +96,8 @@ func (a *app) settingsChanged(old, new settings.Settings) {
 		a.applyLocale()
 	}
 	if !slices.Equal(old.Features.Hidden, new.Features.Hidden) {
-		a.buildMenu() // the menus follow the hidden features
+		a.buildMenu()   // the menus follow the hidden features
+		a.overlaySync() // the open card and box drop a now-hidden feature's shortcut
 	}
 	if old.General.MenuBar != new.General.MenuBar {
 		a.applyTray() // tray.go

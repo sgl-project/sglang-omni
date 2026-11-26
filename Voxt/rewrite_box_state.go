@@ -103,7 +103,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	// The microphone asks for the next instruction by voice as the first
 	// one was asked; the Rewrite shortcut does the same.
 	state.CanSpeak = (a.boxAnswered() || a.boxIdle()) && !a.sess.State.Live()
-	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
+	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 && !a.prefs.Features.IsHidden(string(store.KindRewrite)) {
 		state.SpeakKeys = chordLabel(keys[0].Keys)
 	}
 	if state.Subtitle == "" && a.boxAnswered() {
