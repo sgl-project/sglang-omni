@@ -6,7 +6,6 @@
 #include <stdexcept>
 
 #include "common/audio.h"
-#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -26,23 +25,7 @@ constexpr const char *kPromptPrefix = "<|user|><|begin_of_audio|>";
 constexpr const char *kPromptSuffix =
     "<|end_of_audio|>Please transcribe this audio.<|assistant|>";
 constexpr const char *kEndOfTurn = "<|im_end|>";
-// Note (AzizbekMuminoff): the processor truncates at Whisper's 30 s window,
-// so longer audio is decoded one window at a time.
-constexpr size_t kWindowSampleCount = omni_common::kWhisperWindowSampleCount;
-constexpr size_t kCutSearchSampleCount = 5 * omni_common::kSampleRate;
-constexpr size_t kCutEnergySampleCount = omni_common::kSampleRate / 10;
-// Note (XXXXRT666): the search stops a second before the audio ends, so the
-// last window never becomes a sliver of padding the model transcribes as
-// rubbish.
-constexpr size_t kMinTailSampleCount = omni_common::kSampleRate;
 constexpr int kDefaultMaxNewTokens = 256;
-
-bool WindowIsAllZero(const std::vector<float> &samples,
-                     const std::pair<size_t, size_t> &window) {
-  return std::all_of(samples.begin() + window.first,
-                     samples.begin() + window.second,
-                     [](float sample) { return sample == 0.0f; });
-}
 
 } // namespace
 
@@ -148,61 +131,40 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
     throw std::invalid_argument("audio must contain at least one sample");
   } else {
   }
+  // Note (AzizbekMuminoff): the processor truncates at Whisper's 30 s window,
+  // so longer audio is decoded one window at a time.
   const std::vector<std::pair<size_t, size_t>> windows =
-      omni_common::BoundedEnergyCutChunks(
-          samples, kWindowSampleCount, kCutSearchSampleCount,
-          kCutEnergySampleCount, kMinTailSampleCount);
+      omni_common::ThirtySecondWindows(samples);
   // Note (AzizbekMuminoff): one budget for the whole request, as on the
   // other ASR servers; the default is the per-window one scaled to the
   // request, as the checkpoint's processor sees at most one window.
-  const int request_budget = options.max_new_tokens.value_or(0);
-  int remaining_tokens =
-      request_budget != 0
-          ? request_budget
+  const int request_budget =
+      options.max_new_tokens.value_or(0) != 0
+          ? *options.max_new_tokens
           : kDefaultMaxNewTokens * static_cast<int>(windows.size());
-  TranscriptionResult combined;
-  combined.finish_reason = FinishReason::kStop;
-  std::vector<std::string> parts;
-  for (const auto &[start, end] : windows) {
-    if (remaining_tokens <= 0) {
-      combined.finish_reason = FinishReason::kLength;
-      break;
-    } else {
-    }
-    // Note (AzizbekMuminoff): a split can leave a window that is only the
-    // request's own zero padding; the checkpoint reads it as silence and
-    // hallucinates ("Okay." on the frozen silence controls), and that text
-    // must not join the real speech. Only exact zeros are skipped, so quiet
-    // speech still decodes; a single-window request always decodes, as the
-    // frozen corpus pins its silence output.
-    if (windows.size() > 1 && WindowIsAllZero(samples, {start, end})) {
-      continue;
-    } else {
-    }
-    const TranscriptionResult window =
-        TranscribeWindow({samples.begin() + start, samples.begin() + end},
-                         remaining_tokens, cancel);
-    if (window.text.empty()) {
-    } else {
-      parts.push_back(window.text);
-    }
-    combined.generated_token_count += window.generated_token_count;
-    combined.verify_round_count += window.verify_round_count;
-    combined.proposed_draft_token_count += window.proposed_draft_token_count;
-    combined.accepted_draft_token_count += window.accepted_draft_token_count;
-    remaining_tokens -= window.generated_token_count;
-    if (window.finish_reason == FinishReason::kLength) {
-      combined.finish_reason = FinishReason::kLength;
-    } else {
-    }
-    mx::clear_cache();
-  }
-  combined.text = omni_common::JoinTranscriptParts(parts);
+  TranscriptionResult combined = omni_common::TranscribeEachWindow(
+      samples, windows,
+      [&](const std::pair<size_t, size_t> &, int generated_token_count) {
+        return request_budget - generated_token_count;
+      },
+      [&](const std::vector<float> &window_samples, int max_new_tokens) {
+        // Note (AzizbekMuminoff): a split can leave a window that is only the
+        // request's own zero padding; the checkpoint reads it as silence and
+        // hallucinates ("Okay." on the frozen silence controls), and that
+        // text must not join the real speech. Only exact zeros are skipped,
+        // so quiet speech still decodes; a single-window request always
+        // decodes, as the frozen corpus pins its silence output.
+        if (windows.size() > 1 &&
+            std::all_of(window_samples.begin(), window_samples.end(),
+                        [](float sample) { return sample == 0.0f; })) {
+          TranscriptionResult skipped;
+          skipped.finish_reason = FinishReason::kStop;
+          return skipped;
+        } else {
+          return TranscribeWindow(window_samples, max_new_tokens, cancel);
+        }
+      });
   combined.language = options.language;
-  if (windows.size() > 1) {
-    combined.window_texts = parts;
-  } else {
-  }
   return combined;
 }
 

@@ -8,7 +8,6 @@
 #include <string_view>
 
 #include "common/audio.h"
-#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -28,14 +27,9 @@ constexpr const char *kPromptPrefix =
     "<|im_start|>user\n";
 constexpr const char *kPromptSuffix = "<|im_end|>\n<|im_start|>assistant\n";
 constexpr const char *kEndOfTurn = "<|im_end|>";
-// Note (wilsonzheng0327): the reference accepts at most 30 s, its VAD's
-// segment limit, so longer audio is decoded one window at a time.
-constexpr size_t kWindowSampleCount = 30 * omni_common::kSampleRate;
-constexpr size_t kCutSearchSampleCount = 5 * omni_common::kSampleRate;
-constexpr size_t kCutEnergySampleCount = omni_common::kSampleRate / 10;
-constexpr size_t kMinTailSampleCount = omni_common::kSampleRate;
 // The reference's default budget: 200 tokens for 30 s, in proportion to the
 // audio, and at least 16.
+constexpr size_t kDefaultBudgetSampleCount = 30 * omni_common::kSampleRate;
 constexpr double kDefaultTokensPerWindow = 200.0;
 constexpr int kMinDefaultTokens = 16;
 // Note (wilsonzheng0327): the checkpoint writes this marker where the audio
@@ -90,7 +84,7 @@ std::string PromptText(const FunAsrOptions &options) {
 int DefaultMaxNewTokens(size_t sample_count) {
   return std::max(kMinDefaultTokens,
                   static_cast<int>(std::ceil(static_cast<double>(sample_count) /
-                                             kWindowSampleCount *
+                                             kDefaultBudgetSampleCount *
                                              kDefaultTokensPerWindow)));
 }
 
@@ -180,45 +174,26 @@ FunAsrTranscriber::Transcribe(const std::vector<float> &samples,
     throw std::invalid_argument("audio must contain at least one sample");
   } else {
   }
-  const std::vector<std::pair<size_t, size_t>> windows =
-      omni_common::BoundedEnergyCutChunks(
-          samples, kWindowSampleCount, kCutSearchSampleCount,
-          kCutEnergySampleCount, kMinTailSampleCount);
-  // Note (wilsonzheng0327): an explicit budget is one for the whole request,
-  // as on the other ASR servers; the default is the reference's per window.
-  const bool has_request_budget = options.max_new_tokens.value_or(0) != 0;
   const mx::array prompt_embeddings =
       PromptEmbeddings(kPromptPrefix + PromptText(options));
-  int remaining_tokens = options.max_new_tokens.value_or(0);
-  std::vector<std::string> parts;
-  TranscriptionResult combined;
+  // Note (wilsonzheng0327): an explicit budget is one for the whole request,
+  // as on the other ASR servers; the default is the reference's per window.
+  const int request_budget = options.max_new_tokens.value_or(0);
+  // Note (wilsonzheng0327): the reference accepts at most 30 s, its VAD's
+  // segment limit, so longer audio is decoded one window at a time.
+  TranscriptionResult combined = omni_common::TranscribeEachWindow(
+      samples, omni_common::ThirtySecondWindows(samples),
+      [&](const std::pair<size_t, size_t> &window, int generated_token_count) {
+        return request_budget != 0
+                   ? request_budget - generated_token_count
+                   : DefaultMaxNewTokens(window.second - window.first);
+      },
+      [&](const std::vector<float> &window_samples, int max_new_tokens) {
+        return TranscribeWindow(window_samples, prompt_embeddings,
+                                max_new_tokens, options.repetition_penalty,
+                                cancel);
+      });
   combined.language = options.language;
-  combined.finish_reason = FinishReason::kStop;
-  for (const auto &[start, end] : windows) {
-    if (has_request_budget && remaining_tokens <= 0) {
-      combined.finish_reason = FinishReason::kLength;
-      break;
-    } else {
-    }
-    const TranscriptionResult window = TranscribeWindow(
-        {samples.begin() + start, samples.begin() + end}, prompt_embeddings,
-        has_request_budget ? remaining_tokens
-                           : DefaultMaxNewTokens(end - start),
-        options.repetition_penalty, cancel);
-    parts.push_back(window.text);
-    combined.generated_token_count += window.generated_token_count;
-    remaining_tokens -= window.generated_token_count;
-    if (window.finish_reason == FinishReason::kLength) {
-      combined.finish_reason = FinishReason::kLength;
-    } else {
-    }
-    mx::clear_cache();
-  }
-  combined.text = omni_common::JoinTranscriptParts(parts);
-  if (windows.size() > 1) {
-    combined.window_texts = parts;
-  } else {
-  }
   return combined;
 }
 
