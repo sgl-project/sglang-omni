@@ -14,7 +14,7 @@ from sglang.srt.configs.bailing_hybrid import BailingHybridConfig
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTensors
-from sglang.srt.models.bailing_moe_v3 import BailingMoeV3ForCausalLM
+from sglang.srt.models.bailing_moe_v3 import BailingMoE, BailingMoeV3ForCausalLM
 from sglang.srt.models.qwen2 import Qwen2ForCausalLM
 from sglang.srt.runtime_context import get_exec, get_schedule
 from torch import nn
@@ -395,6 +395,34 @@ class SpeechHeadModel:
         return loaded_names | loaded_head_names
 
 
+def enable_ascend_moe_routing_scale(model: nn.Module) -> None:
+    """Fold routed_scaling_factor into the routing weights on Ascend.
+
+    Ascend MoE runners do not apply routed_scaling_factor, and sglang's model
+    layer only applies it for A2A paths, so the factor is otherwise dropped and
+    the MoE output stays too small. Scaling the top-k weights is numerically
+    equivalent (the factor distributes over the weighted expert sum) and only
+    touches this model instance.
+    """
+    if not current_platform.is_npu():
+        return
+    else:
+        pass
+
+    for moe in model.modules():
+        if not isinstance(moe, BailingMoE):
+            continue
+        else:
+            pass
+        if moe.routed_scaling_factor in (None, 1.0):
+            continue
+        else:
+            pass
+        moe.topk.topk_config.apply_routed_scaling_factor_on_output = True
+        # Top-k already carries the factor; the epilogue must not repeat it.
+        moe._apply_routed_scaling_factor_on_output = False  # noqa: leading-underscore
+
+
 class Ming3TTSModel(SpeechHeadModel, BailingMoeV3ForCausalLM):
     def __init__(
         self,
@@ -405,6 +433,7 @@ class Ming3TTSModel(SpeechHeadModel, BailingMoeV3ForCausalLM):
     ) -> None:
         super().__init__(config=config, quant_config=quant_config, prefix=prefix)
         install_speech_heads(self, config)
+        enable_ascend_moe_routing_scale(self)
 
     def forward(
         self,
