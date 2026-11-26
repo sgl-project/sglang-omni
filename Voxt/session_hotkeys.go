@@ -64,9 +64,10 @@ func (a *app) strictFeature() string {
 // event acts only on the card that was visible when the helper read its id.
 func (a *app) cardHotkeyGeneration() uint64 {
 	identity := ""
-	// A title being typed takes c and r, and a session's empty card has
-	// nothing for them to act on.
-	if a.overlayModeNow() == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) {
+	// A title being typed takes c and r, a session's empty card has
+	// nothing for them to act on, and the Rewrite card's input takes them.
+	mode := a.overlayModeNow()
+	if mode == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) && !a.boxHoldsCard(mode) {
 		identity = a.sess.ID + "/draft"
 		if a.answer.open {
 			identity = a.answer.id + "/open"

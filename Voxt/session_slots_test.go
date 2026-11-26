@@ -486,4 +486,9 @@ func TestSessionSlotSwitchBackKeepsRewriteCard(t *testing.T) {
 	if !a.boxHoldsCard(ovAnswer) {
 		t.Fatalf("back in session 1, the answer card stands in for the Rewrite card: box open %v, shown %v", a.box.open, a.box.shown)
 	}
+	// The Rewrite card has an input and its own Insert and Copy: c and r
+	// are letters typed there or in the app in front.
+	if a.cardHotkeyGeneration() != 0 {
+		t.Fatal("the Rewrite card binds the answer card's letter keys")
+	}
 }
