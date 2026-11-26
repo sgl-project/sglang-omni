@@ -100,6 +100,7 @@ type OverlapReport struct {
 	FirstLLMText                OptionalFloat64           `json:"first_llm_text"`
 	Timing                      OverlapTiming             `json:"timing"`
 	BacklogAtStop               OverlapBacklog            `json:"backlog_at_stop"`
+	Resources                   ResourceReport            `json:"resources"`
 	Config                      OverlapConfig             `json:"config"`
 	Stages                      []OverlapStage            `json:"stages"`
 	ASRTranscript               *TextArtifact             `json:"asr_transcript"`

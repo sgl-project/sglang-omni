@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -33,6 +35,12 @@ type overlapLLMFunc func(context.Context, simulatedLLMRequest) (string, error)
 
 func (f overlapLLMFunc) Call(ctx context.Context, request simulatedLLMRequest) (string, error) {
 	return f(ctx, request)
+}
+
+type overlapMonitorFunc func(context.Context) ResourceReport
+
+func (f overlapMonitorFunc) Stop(ctx context.Context) ResourceReport {
+	return f(ctx)
 }
 
 func fakeOverlapConfig(mode string) OverlapConfig {
@@ -144,6 +152,52 @@ func TestMeetingOverlapFakeDictationCleanupOnlyAndJSON(t *testing.T) {
 	}
 	if decoded["simulated_llm"] != true || decoded["summary"] != nil || decoded["transcript"] == nil {
 		t.Errorf("JSON does not expose the simulated boundary and artifacts: %s", content)
+	}
+}
+
+func TestMeetingOverlapReportsSummarize(t *testing.T) {
+	root := t.TempDir()
+	runs := make([]string, 0, 3)
+	stopped := 0
+	for index := 1; index <= 3; index++ {
+		config := fakeOverlapConfig("dictation")
+		options := fakeOverlapOptions(config)
+		options.newMonitor = func(context.Context) overlapResourceMonitor {
+			return overlapMonitorFunc(func(context.Context) ResourceReport {
+				stopped++
+				return ResourceReport{PeakMemoryPressure: Available("normal")}
+			})
+		}
+		reports := runOverlapWithOptions(context.Background(), config, fakeOverlapPCM(), fakeOrderedASR(), nil, options)
+		run := filepath.Join(root, fmt.Sprintf("run-%d", index))
+		if err := WriteOverlapReports(run, reports); err != nil {
+			t.Fatal(err)
+		}
+		runs = append(runs, run)
+	}
+	if stopped != 9 {
+		t.Fatalf("stopped %d method monitors, want 9", stopped)
+	}
+	output := filepath.Join(root, "median")
+	arguments := append([]string{"-m", "scripts.overlap_summary"}, runs...)
+	arguments = append(arguments, output)
+	command := exec.Command("python3", arguments...)
+	command.Dir = filepath.Join("..", "..")
+	if combined, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("summarize actual producer output: %v\n%s", err, combined)
+	}
+	for _, method := range []string{"one_shot", "serial", "overlap"} {
+		content, err := os.ReadFile(filepath.Join(output, method, "summary.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var summary map[string]any
+		if err := json.Unmarshal(content, &summary); err != nil {
+			t.Fatal(err)
+		}
+		if summary["status"] != "success" || summary["valid_runs"] != float64(3) {
+			t.Errorf("%s summary is not a three-run success: %s", method, content)
+		}
 	}
 }
 

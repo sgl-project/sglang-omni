@@ -13,11 +13,16 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
+type overlapResourceMonitor interface {
+	Stop(context.Context) ResourceReport
+}
+
 type overlapOptions struct {
-	now       func() time.Time
-	waitUntil func(context.Context, time.Time) error
-	afterFeed func(context.Context, int) error
-	newLLM    func() overlapLLM
+	now        func() time.Time
+	waitUntil  func(context.Context, time.Time) error
+	afterFeed  func(context.Context, int) error
+	newLLM     func() overlapLLM
+	newMonitor func(context.Context) overlapResourceMonitor
 }
 
 type overlapRun struct {
@@ -28,6 +33,7 @@ type overlapRun struct {
 	chunks           []meeting.Chunk
 	llm              overlapLLM
 	options          overlapOptions
+	monitor          overlapResourceMonitor
 	started          time.Time
 	recordingStarted time.Time
 	stopped          time.Time
@@ -72,8 +78,12 @@ func defaultOverlapOptions(config OverlapConfig) overlapOptions {
 
 // RunOverlap runs comparable one_shot, serial, and overlap experiments over
 // the same PCM and one shared speech-model client.
-func RunOverlap(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model) []OverlapReport {
-	return runOverlapWithOptions(ctx, config, pcm, speech, detector, defaultOverlapOptions(config))
+func RunOverlap(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, nativePIDs func() []int) []OverlapReport {
+	options := defaultOverlapOptions(config)
+	options.newMonitor = func(ctx context.Context) overlapResourceMonitor {
+		return StartResourceMonitor(ctx, SelfAndNative(nativePIDs))
+	}
+	return runOverlapWithOptions(ctx, config, pcm, speech, detector, options)
 }
 
 func runOverlapWithOptions(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, options overlapOptions) []OverlapReport {
@@ -95,9 +105,12 @@ func newOverlapRun(config OverlapConfig, pcm []byte, speech asr.FileTranscriber,
 
 func runOverlapMethod(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, method string, options overlapOptions) OverlapReport {
 	run := newOverlapRun(config, pcm, speech, method, options)
+	if options.newMonitor != nil {
+		run.monitor = options.newMonitor(ctx)
+	}
 	if err := run.plan(ctx, detector); err != nil {
 		run.fail(err)
-		return run.finish()
+		return run.finish(ctx)
 	}
 	run.recordingStarted = run.options.now()
 	switch method {
@@ -121,7 +134,7 @@ func runOverlapMethod(ctx context.Context, config OverlapConfig, pcm []byte, spe
 	if !run.hasFailed() && config.Mode == "meeting" {
 		run.reduceSummary(ctx)
 	}
-	return run.finish()
+	return run.finish(ctx)
 }
 
 func (r *overlapRun) plan(ctx context.Context, detector vad.Model) error {

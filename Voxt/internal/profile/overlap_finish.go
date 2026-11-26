@@ -8,7 +8,11 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 )
 
-func (r *overlapRun) finish() OverlapReport {
+func (r *overlapRun) finish(ctx context.Context) OverlapReport {
+	resources := ResourceReport{PeakMemoryPressure: Unavailable[string]("overlap resource monitor was not configured")}
+	if r.monitor != nil {
+		resources = r.monitor.Stop(context.WithoutCancel(ctx))
+	}
 	finished := r.options.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -23,7 +27,7 @@ func (r *overlapRun) finish() OverlapReport {
 			LLMTotalMS: Available(milliseconds(r.llmTotal)), LLMAfterStopMS: Unavailable[float64]("recording did not stop"),
 			ASRCalls: r.asrCalls, LLMCalls: r.llmCalls, LLMSegmentsTotal: r.segmentCount,
 		},
-		BacklogAtStop: r.backlog, Config: r.config, Stages: append([]OverlapStage(nil), r.stages...),
+		BacklogAtStop: r.backlog, Resources: resources, Config: r.config, Stages: append([]OverlapStage(nil), r.stages...),
 		SummaryUnavailableReason: "the run did not produce a final meeting summary",
 		Structure:                OverlapStructureArtifact{UnavailableReason: "the run did not produce a complete ordered structure"},
 		Warnings:                 []string{}, Errors: append([]string(nil), r.errors...),
