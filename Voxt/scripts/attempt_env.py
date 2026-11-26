@@ -23,7 +23,10 @@ def reasons(others, power):
 
 def main(argv):
     if len(argv) != 7:
-        print("usage: attempt_env.py OUT BEFORE_OTHERS BEFORE_POWER BEFORE_PRESSURE AFTER_OTHERS AFTER_PRESSURE", file=sys.stderr)
+        print(
+            "usage: attempt_env.py OUT BEFORE_OTHERS BEFORE_POWER BEFORE_PRESSURE AFTER_OTHERS AFTER_PRESSURE",
+            file=sys.stderr,
+        )
         return 2
     out_path, before_o, before_p, before_pr, after_o, after_pr = argv[1:7]
     env = {
