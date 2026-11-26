@@ -211,7 +211,6 @@ class UpstreamAbortSender(Generic[RequestDataT]):
         self.scheduler = scheduler
 
     def send_output(self, msg: object, req: Req | None = None) -> None:
-        del req
         if not isinstance(msg, AbortReq):
             raise RuntimeError(
                 f"Unexpected upstream scheduler IPC output: {type(msg).__name__}"
@@ -232,6 +231,10 @@ class UpstreamAbortSender(Generic[RequestDataT]):
             pass
 
         scheduler = self.scheduler
+        if req is not None and req.rid == request_id:
+            request_id = scheduler.request_id_for_row(req.rid)
+        else:
+            pass
         scheduler.emit_request_error(request_id, RuntimeError(message))
         scheduler.abort(request_id, defer_running_cleanup=False)
 
@@ -1051,7 +1054,9 @@ class OmniScheduler(Generic[RequestDataT]):
             ),
             output_streamer=self.output_streamer,
             beam_coordinator=self.beam_coordinator,
-            abort_request=lambda request: self.abort(request.rid),
+            abort_request=lambda request: self.abort(
+                self.request_id_for_row(request.rid)
+            ),
         )
 
     def self_check_during_idle(self) -> None:
@@ -1127,6 +1132,10 @@ class OmniScheduler(Generic[RequestDataT]):
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
+    def request_id_for_row(self, row_id: str) -> str:
+        """Resolve a scheduler row id to its externally visible request id."""
+        return row_id
+
     def poll_request_timeout_aborts(self) -> tuple[RequestTimeoutAbort, ...]:
         now = time.perf_counter()
         timeout_aborts: list[RequestTimeoutAbort] = []
@@ -1138,7 +1147,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 if 0 < entry_time < waiting_deadline:
                     timeout_aborts.append(
                         RequestTimeoutAbort(
-                            rid=queued_request.rid,
+                            rid=self.request_id_for_row(queued_request.rid),
                             abort_message="Request waiting timeout reached.",
                         )
                     )
@@ -1159,7 +1168,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     ):
                         timeout_aborts.append(
                             RequestTimeoutAbort(
-                                rid=running_request.rid,
+                                rid=self.request_id_for_row(running_request.rid),
                                 abort_message="Request running timeout reached.",
                             )
                         )
@@ -1911,14 +1920,25 @@ class OmniScheduler(Generic[RequestDataT]):
                 return
             else:
                 pass
-            if self._abort_on_queued_limit(req):  # noqa: leading-underscore
-                logger.warning(
-                    "Rejecting request %s: waiting queue is full "
-                    "(max_queued_requests=%s, waiting=%s)",
-                    req_id,
-                    self.max_queued_requests,
-                    len(self.waiting_queue),
-                )
+            request_rows = self.built_request_rows(req_data)
+            if len(request_rows) == 1:
+                if self._abort_on_queued_limit(req):  # noqa: leading-underscore
+                    logger.warning(
+                        "Rejecting request %s: waiting queue is full "
+                        "(max_queued_requests=%s, waiting=%s)",
+                        req_id,
+                        self.max_queued_requests,
+                        len(self.waiting_queue),
+                    )
+                    return
+                else:
+                    pass
+            elif (
+                self.max_queued_requests is not None
+                and len(self.waiting_queue) + len(request_rows)
+                > self.max_queued_requests
+            ):
+                self.reject_queue_full(payload)
                 return
             else:
                 pass
@@ -1928,12 +1948,28 @@ class OmniScheduler(Generic[RequestDataT]):
                 stage=None,
                 event_name="scheduler_queue_enter",
             )
-            req._coalesce_enqueue_t = (
-                time.perf_counter()
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req.omni_data = req_data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self.waiting_queue.append(req)
+            enqueue_seconds = time.perf_counter()
+            for row_data in request_rows:
+                row = row_data.req
+                if row is not req:
+                    self.normalize_req_token_arrays(row)
+                    row.priority = req.priority
+                else:
+                    pass
+                if len(request_rows) > 1:
+                    row.time_stats.set_wait_queue_entry_time(enqueue_seconds)
+                else:
+                    pass
+                row._coalesce_enqueue_t = (
+                    enqueue_seconds  # noqa: leading-underscore  # upstream spelling
+                )
+                row._omni_terminal_claimed = (
+                    False  # noqa: leading-underscore  # upstream spelling
+                )
+                row.omni_data = (
+                    row_data  # noqa: leading-underscore  # upstream spelling
+                )
+            self.waiting_queue.extend(row_data.req for row_data in request_rows)
             enqueued_unit = self.active_session_unit(req_id)
             if enqueued_unit is not None:
                 enqueued_unit.is_enqueued = True
@@ -1945,6 +1981,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             with self.request_admission_lock:
                 enqueue_if_live()
+
+    def built_request_rows(
+        self, request_data: RequestDataT | SGLangARRequestData
+    ) -> tuple[RequestDataT | SGLangARRequestData, ...]:
+        """Return the rows that must enter the waiting queue together."""
+        return (request_data,)
 
     def apply_prompt_cache_epoch(self, req: Req) -> None:
         cache_key = getattr(
@@ -3503,7 +3545,13 @@ class OmniScheduler(Generic[RequestDataT]):
         executor.shutdown(wait=False, cancel_futures=True)
         self.request_build_executor = None
 
-    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+    def abort(
+        self,
+        request_id: str,
+        *,
+        defer_running_cleanup: bool = True,
+        batch_to_abort: ScheduleBatch | None = None,
+    ) -> None:
         bridge = self.session_bridge
         if self.scheduler_thread_id != threading.get_ident() and (
             self.enable_overlap
@@ -3559,7 +3607,7 @@ class OmniScheduler(Generic[RequestDataT]):
             immediate_reqs = (
                 []
                 if running_abort or should_keep_session_rows
-                else self.mark_request_finished_immediately(request_id)
+                else self.mark_request_finished_immediately(request_id, batch_to_abort)
             )
             pending = self.pending_request_builds.pop(request_id, None)
             if pending is not None:
@@ -4071,7 +4119,7 @@ class OmniScheduler(Generic[RequestDataT]):
             for req in self.waiting_queue:
                 rid = req.rid
                 if rid is not None:
-                    request_ids.add(rid)
+                    request_ids.add(self.request_id_for_row(rid))
                 else:
                     pass
         # note (Richard Wang): a request whose build waits for upstream chunks
@@ -4089,7 +4137,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             for req in batch.reqs:
                 if req.rid is not None and not req.finished():
-                    request_ids.add(req.rid)
+                    request_ids.add(self.request_id_for_row(req.rid))
                 else:
                     pass
         return sorted(request_ids)
@@ -4215,8 +4263,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 marked = True
         return marked
 
-    def mark_request_finished_immediately(self, request_id: str) -> list[Req]:
-        """Make immediate cleanup visible without rewriting prepared batches."""
+    def mark_request_finished_immediately(
+        self, request_id: str, batch_to_abort: ScheduleBatch | None = None
+    ) -> list[Req]:
+        """Include a failed batch even when it has not been published to the loop."""
         matches = []
         seen: set[int] = set()
         for batch in (
@@ -4224,6 +4274,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.cur_batch,
             self.last_batch,
             *self.pending_batches(),
+            batch_to_abort,
         ):
             if batch is None:
                 continue

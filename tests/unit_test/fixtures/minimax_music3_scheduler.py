@@ -85,6 +85,7 @@ def scheduler(
         model_scheduler.session_bridge = None
         model_scheduler.scheduler_thread_id = get_ident()
         model_scheduler.enable_overlap = False
+        model_scheduler.enable_skip_finishing_decode = False
         model_scheduler.tp_size = 1
         model_scheduler.is_entry_rank = True
         model_scheduler.inbox = Queue()

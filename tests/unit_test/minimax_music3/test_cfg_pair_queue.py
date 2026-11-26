@@ -6,8 +6,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+from sglang.srt.managers.io_struct import AbortReq
 from sglang.srt.managers.schedule_batch import NextBatchPlan, Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import CacheAgnosticPolicy
 from sglang.srt.runtime_context import get_context
@@ -16,9 +18,10 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang_omni.models.minimax_music3.scheduler import MiniMaxMusic3Scheduler
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
     MiniMaxMusic3SGLangRequestData,
+    build_sglang_minimax_request,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler, UpstreamAbortSender
 from tests.unit_test.fixtures.minimax_music3_scheduler import (
     admit_prefill,
     paired_requests,
@@ -48,6 +51,7 @@ def test_finished_unconditioned_row_ends_its_model_path(
         rid="a-cfg",
         omni_data=SimpleNamespace(is_cfg_uncond=True),
         finished=lambda: True,
+        finished_reason=None,
     )
     scheduler = MiniMaxMusic3Scheduler.__new__(MiniMaxMusic3Scheduler)
     scheduler.prefill_start_done = {"a-cfg"}
@@ -251,6 +255,54 @@ def test_real_enqueue_stamps_both_rows_for_fcfs_and_waiting_timeout(
     monkeypatch.setattr(
         "sglang_omni.scheduling.omni_scheduler.time.perf_counter", lambda: 112.0
     )
-    assert [abort.rid for abort in scheduler.poll_request_timeout_aborts()] == [
-        request.rid for request in requests[:2]
-    ]
+    assert scheduler.recv_requests() == []
+    assert scheduler.waiting_queue == requests[2:]
+    assert scheduler.aborted_request_ids == {request.rid for request in requests[:2]}
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == requests[0].rid
+    assert "waiting timeout" in str(error.data)
+    assert scheduler.outbox.empty()
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_rejected_external_cfg_id_cannot_cancel_a_live_song(
+    scheduler: MiniMaxMusic3Scheduler,
+) -> None:
+    """An invalid caller id must neither abort its prefix nor lose the rejection."""
+    primary, twin = paired_requests([128], 10)
+    scheduler.waiting_queue = [primary, twin]
+    scheduler.request_build_executor = None
+    tokenizer = Mock()
+    scheduler.request_builder = lambda payload: build_sglang_minimax_request(
+        payload, tokenizer
+    )
+    invalid = StagePayload(twin.rid, OmniRequest(inputs="A verse"), None)
+
+    scheduler.process_input_requests([invalid])
+    scheduler.abort(invalid.request_id)
+
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == invalid.request_id
+    assert "suffix is reserved" in str(error.data)
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == [primary, twin]
+    assert scheduler.aborted_request_ids == set()
+    tokenizer.assert_not_called()
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_upstream_abort_for_internal_row_ends_song_once(
+    scheduler: MiniMaxMusic3Scheduler,
+) -> None:
+    """An upstream failure for a known twin retires its main request visibly."""
+    primary, twin = paired_requests([128], 10)
+    scheduler.waiting_queue = [primary, twin]
+    sender = UpstreamAbortSender(scheduler)
+    sender.send_output(AbortReq(rid=twin.rid, abort_message="admission failed"), twin)
+
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == primary.rid
+    assert str(error.data) == "admission failed"
+    assert scheduler.outbox.empty()
+    assert scheduler.waiting_queue == []
+    assert scheduler.aborted_request_ids == {primary.rid, twin.rid}

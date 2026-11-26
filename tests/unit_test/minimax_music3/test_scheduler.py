@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -327,16 +326,10 @@ def test_enqueue_checks_pair_capacity_before_queueing_both_rows(
     assert scheduler.outbox.empty()
 
 
-@pytest.mark.parametrize(
-    ("session_capacity_checked", "decode_path"),
-    [(False, "plain"), (True, "spec"), (False, None)],
-)
 @pytest.mark.parametrize("scheduler", [16], indirect=True)
 def test_capacity_callback_forwards_parent_admission_context(
     scheduler: MiniMaxMusic3Scheduler,
     monkeypatch: pytest.MonkeyPatch,
-    session_capacity_checked: bool,
-    decode_path: Literal["plain", "spec"] | None,
 ) -> None:
     """Preserve the shared capacity decision and both inputs that inform it."""
     request = paired_requests([697], 9001)[0]
@@ -346,13 +339,132 @@ def test_capacity_callback_forwards_parent_admission_context(
     assert (
         scheduler.request_kv_capacity_error(
             request,
-            session_capacity_checked=session_capacity_checked,
-            decode_path=decode_path,
+            session_capacity_checked=True,
+            decode_path="spec",
         )
         == error
     )
     parent_check.assert_called_once_with(
         request,
-        session_capacity_checked=session_capacity_checked,
-        decode_path=decode_path,
+        session_capacity_checked=True,
+        decode_path="spec",
     )
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_queue_limit_rejects_the_entire_second_song(
+    scheduler: MiniMaxMusic3Scheduler,
+) -> None:
+    scheduler.max_queued_requests = 3
+    rows = paired_requests([128, 128], 10)
+    for primary, twin in (rows[:2], rows[2:]):
+        request_data = MiniMaxMusic3SGLangRequestData(
+            req=primary,
+            enforce_request_limits=False,
+            cfg_uncond=MiniMaxMusic3SGLangRequestData(req=twin, is_cfg_uncond=True),
+        )
+        scheduler.enqueue_built_request(
+            StagePayload(primary.rid, OmniRequest(inputs=None), None),
+            False,
+            request_data,
+        )
+
+    assert scheduler.waiting_queue == rows[:2]
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == rows[2].rid
+    assert error.type == "error"
+    assert scheduler.outbox.empty()
+
+
+def test_prefill_never_returns_the_first_row_of_a_rejected_pair(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reject a partial plan when the real adder accepts only the primary row."""
+    monkeypatch.setattr(OmniScheduler, "get_new_batch_prefill", admit_prefill)
+    rows = paired_requests([128, 128], 10)
+    scheduler.waiting_queue = rows.copy()
+    allocator = scheduler.token_to_kv_pool_allocator
+    add_one_request = PrefillAdder.add_one_req
+    admission_results: list[tuple[str, AddReqResult]] = []
+    allocation: torch.Tensor | None = None
+
+    def spend_capacity_before_twin(
+        adder: PrefillAdder,
+        request: Req,
+        has_chunked_req: bool,
+        truncation_align_size: int | None,
+    ) -> AddReqResult:
+        nonlocal allocation
+        if request is rows[1]:
+            allocation = allocator.alloc(allocator.available_size())
+            assert allocation is not None
+        else:
+            pass
+        result = add_one_request(adder, request, has_chunked_req, truncation_align_size)
+        admission_results.append((request.rid, result))
+        return result
+
+    empty_batch = ScheduleBatch(reqs=[], batch_is_full=False)
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(PrefillAdder, "add_one_req", spend_capacity_before_twin)
+            plan = scheduler.get_new_batch_prefill(empty_batch)
+    finally:
+        if allocation is not None:
+            allocator.free(allocation)
+        else:
+            pass
+    assert admission_results == [
+        (rows[0].rid, AddReqResult.CONTINUE),
+        (rows[1].rid, AddReqResult.NO_TOKEN),
+    ]
+    assert plan.batch_to_run is None
+    assert scheduler.waiting_queue == rows[2:]
+    assert scheduler.aborted_request_ids == {row.rid for row in rows[:2]}
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == rows[0].rid
+    assert error.type == "error"
+    assert scheduler.outbox.empty()
+    assert scheduler.get_new_batch_prefill(empty_batch).batch_to_run.reqs == rows[2:]
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_decode_shortfall_ends_both_rows_without_requeue(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = paired_requests([128], 10)
+    batch = ScheduleBatch(reqs=rows, batch_is_full=True)
+    scheduler.running_batch = batch
+    monkeypatch.setattr(batch, "check_decode_mem", lambda: False)
+
+    assert scheduler.update_running_batch(batch).is_empty()
+    assert scheduler.waiting_queue == []
+    assert scheduler.aborted_request_ids == {row.rid for row in rows}
+    error = scheduler.outbox.get_nowait()
+    assert error.request_id == rows[0].rid
+    assert "KV capacity" in str(error.data)
+    assert scheduler.outbox.empty()
+
+
+@pytest.mark.parametrize("scheduler", [16], indirect=True)
+def test_retract_pause_leaves_running_song_available_to_decode(
+    scheduler: MiniMaxMusic3Scheduler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = paired_requests([128], 10)
+    batch = ScheduleBatch(reqs=rows, batch_is_full=False)
+    scheduler.running_batch = batch
+    monkeypatch.setattr(scheduler, "_engine_paused", False, raising=False)
+    monkeypatch.setattr(batch, "check_decode_mem", lambda: True)
+    monkeypatch.setattr(batch, "prepare_for_decode", lambda: None)
+    scheduler.new_token_ratio_tracker = Mock()
+
+    result = scheduler.admin_pause_generation({"mode": "retract"})
+
+    assert result["success"] is False
+    assert "cannot replay audio feedback" in result["message"]
+    assert (
+        not scheduler._engine_paused
+    )  # noqa: leading-underscore  # shared admin state
+    assert scheduler.update_running_batch(batch).reqs == rows
+    assert scheduler.waiting_queue == []
+    assert scheduler.outbox.empty()

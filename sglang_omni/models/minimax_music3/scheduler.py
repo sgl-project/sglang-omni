@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""OmniScheduler specialization that keeps MiniMax Music 3 CFG rows paired."""
+"""Schedule both CFG rows of each Music3 request as one song."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from threading import get_ident
 from typing import Literal
 
@@ -16,25 +18,62 @@ from typing_extensions import Unpack
 from sglang_omni.models.minimax_music3.serial_offload import get_coordinator
 from sglang_omni.models.minimax_music3.sglang_request_builder import (
     MiniMaxMusic3SGLangRequestData,
+    cfg_primary_rid,
     cfg_uncond_rid,
     is_cfg_uncond_rid,
 )
-from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler, OmniSchedulerArguments
+from sglang_omni.scheduling.omni_scheduler import (
+    AdminActionResult,
+    OmniScheduler,
+    OmniSchedulerArguments,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def has_complete_cfg_pairs(rows: list[Req]) -> bool:
+    return len(rows) % 2 == 0 and all(
+        not is_cfg_uncond_rid(rows[index].rid)
+        and rows[index + 1].rid == cfg_uncond_rid(rows[index].rid)
+        for index in range(0, len(rows), 2)
+    )
+
+
+def order_cfg_rows(waiting_queue: list[Req]) -> list[Req]:
+    # note (ruiling): row-based policies can separate CFG twins.
+    rows_by_id = {row.rid: row for row in waiting_queue}
+    ordered_rows: list[Req] = []
+    for row in waiting_queue:
+        if is_cfg_uncond_rid(row.rid) and cfg_primary_rid(row.rid) in rows_by_id:
+            continue
+        else:
+            ordered_rows.append(row)
+        twin = rows_by_id.get(cfg_uncond_rid(row.rid))
+        if twin is not None:
+            ordered_rows.append(twin)
+        else:
+            pass
+    return ordered_rows
+
+
+@dataclass(kw_only=True)
+class PrefillSelection:
+    deferred_rows: list[Req] = field(default_factory=list)
+    new_owner_request_id: str | None = None
 
 
 class MiniMaxMusic3SchedulePolicy(SchedulePolicy):
-    """Keep CFG rows adjacent after the configured queue ordering."""
+    """Keep the order of primary rows chosen by the configured policy."""
 
     def __init__(self, scheduler: MiniMaxMusic3Scheduler) -> None:
-        policy = scheduler.policy
+        original_policy = scheduler.policy
         super().__init__(
             scheduler.schedule_policy,
-            policy.tree_cache,
-            policy.enable_hierarchical_cache,
-            policy.enable_priority_scheduling,
-            policy.schedule_low_priority_values_first,
+            original_policy.tree_cache,
+            original_policy.enable_hierarchical_cache,
+            original_policy.enable_priority_scheduling,
+            original_policy.schedule_low_priority_values_first,
         )
         self.scheduler: MiniMaxMusic3Scheduler = scheduler
 
@@ -45,159 +84,144 @@ class MiniMaxMusic3SchedulePolicy(SchedulePolicy):
         processed_tokens: int = 0,
     ) -> None:
         super().calc_priority(waiting_queue, running_batch, processed_tokens)
-        if self.policy != CacheAgnosticPolicy.FCFS or self.enable_priority_scheduling:
-            # note (ruiling): a policy such as random places each row alone, and the runner needs the two rows of a request next to each other.
-            twins = {
-                req.rid: req for req in waiting_queue if is_cfg_uncond_rid(req.rid)
-            }
-            paired = {cfg_uncond_rid(req.rid) for req in waiting_queue} & twins.keys()
-            ordered: list[Req] = []
-            for req in waiting_queue:
-                if req.rid in paired:
-                    continue
-                else:
-                    ordered.append(req)
-                twin_rid = cfg_uncond_rid(req.rid)
-                if twin_rid in paired:
-                    ordered.append(twins[twin_rid])
-                else:
-                    pass
-            waiting_queue[:] = ordered
+        policy_can_reorder = (
+            self.policy != CacheAgnosticPolicy.FCFS or self.enable_priority_scheduling
+        )
+        if policy_can_reorder:
+            waiting_queue[:] = order_cfg_rows(waiting_queue)
         else:
             pass
-        if running_batch is None:
-            return
+        if running_batch is not None and self.scheduler.prefill_selection is not None:
+            self.scheduler.select_prefill_rows(waiting_queue, running_batch)
         else:
             pass
-        self.scheduler.prepare_cfg_prefill(waiting_queue, running_batch)
 
 
-class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
-    """Admit, decode and retire every request as a CFG row pair."""
-
+class MiniMaxMusic3Scheduler(OmniScheduler[MiniMaxMusic3SGLangRequestData]):
     def __init__(
-        self,
-        **kwargs: Unpack[OmniSchedulerArguments[MiniMaxMusic3SGLangRequestData]],
+        self, **kwargs: Unpack[OmniSchedulerArguments[MiniMaxMusic3SGLangRequestData]]
     ) -> None:
         super().__init__(**kwargs)
         self.policy = MiniMaxMusic3SchedulePolicy(self)
+        self.prefill_selection: PrefillSelection | None = None
+        self.enable_priority_preemption = False
 
-    def enqueue_built_request(
-        self,
-        payload: StagePayload,
-        pending_stream_done: bool,
-        req_data: MiniMaxMusic3SGLangRequestData,
-        *,
-        request_admission_lock_held: bool = False,
-    ) -> None:
-        super().enqueue_built_request(
-            payload,
-            pending_stream_done,
-            req_data,
-            request_admission_lock_held=request_admission_lock_held,
-        )
-        uncond = req_data.cfg_uncond
-        if uncond is None:
-            return
+    def built_request_rows(
+        self, request_data: MiniMaxMusic3SGLangRequestData
+    ) -> tuple[MiniMaxMusic3SGLangRequestData, ...]:
+        twin = request_data.cfg_uncond
+        if twin is None:
+            raise ValueError(
+                "MiniMax Music 3 needs both CFG rows before queue admission."
+            )
         else:
-            pass
-        if request_admission_lock_held:
-            self.enqueue_cfg_uncond(req_data, uncond)
-            return
-        else:
-            pass
-        with self.request_admission_lock:
-            self.enqueue_cfg_uncond(req_data, uncond)
-
-    def enqueue_cfg_uncond(
-        self,
-        req_data: MiniMaxMusic3SGLangRequestData,
-        uncond: MiniMaxMusic3SGLangRequestData,
-    ) -> None:
-        cond_req = req_data.req
-        if not self.waiting_queue or self.waiting_queue[-1] is not cond_req:
-            return
-        else:
-            pass
-        req = uncond.req
-        self.normalize_req_token_arrays(req)
-        # note (ruiling): priority scheduling sorts the queue by these two, and SGLang sets them on each row alone.
-        req.priority = cond_req.priority
-        enqueue_seconds = (
-            cond_req._coalesce_enqueue_t
-        )  # noqa: leading-underscore  # upstream spelling
-        cond_req.time_stats.set_wait_queue_entry_time(enqueue_seconds)
-        req.time_stats.set_wait_queue_entry_time(enqueue_seconds)
-        req._coalesce_enqueue_t = (
-            cond_req._coalesce_enqueue_t
-        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        req.omni_data = uncond  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-        self.waiting_queue.append(req)
+            return request_data, twin
 
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
-        input_budget = self.max_prefill_tokens
-        self.deferred_prefill_requests: list[Req] = []
-        self.prefill_claim_request_id: str | None = None
-        plan: NextBatchPlan | None = None
-        try:
-            plan = super().get_new_batch_prefill(running_batch)
-            return plan
-        finally:
-            self.max_prefill_tokens = input_budget
-            self.waiting_queue.extend(self.deferred_prefill_requests)
-            self.deferred_prefill_requests.clear()
-            if self.prefill_claim_request_id is not None:
-                admitted_ids = (
-                    {request.rid for request in plan.batch_to_run.reqs}
-                    if plan is not None and plan.batch_to_run is not None
-                    else set()
-                )
+        if not has_complete_cfg_pairs(self.waiting_queue):
+            row_ids = {row.rid for row in self.waiting_queue}
+            request_ids = dict.fromkeys(
+                cfg_primary_rid(row.rid) for row in self.waiting_queue
+            )
+            for request_id in request_ids:
                 if (
-                    not {
-                        self.prefill_claim_request_id,
-                        cfg_uncond_rid(self.prefill_claim_request_id),
-                    }
-                    <= admitted_ids
+                    request_id not in row_ids
+                    or cfg_uncond_rid(request_id) not in row_ids
                 ):
-                    get_coordinator().cancel_ar(self.prefill_claim_request_id)
+                    self.emit_request_error(
+                        request_id,
+                        RuntimeError(
+                            "MiniMax Music 3 found an incomplete CFG pair in the waiting queue."
+                        ),
+                    )
+                    self.abort(request_id)
                 else:
                     pass
-                self.prefill_claim_request_id = None
+            self.waiting_queue[:] = order_cfg_rows(self.waiting_queue)
+        else:
+            pass
+
+        input_budget_tokens = self.max_prefill_tokens
+        selection = PrefillSelection()
+        self.prefill_selection = selection
+        plan: NextBatchPlan | None = None
+        invalid_batch: ScheduleBatch | None = None
+        try:
+            # A failed native allocation can leave slots or KV partially written.
+            plan = super().get_new_batch_prefill(running_batch)
+            if plan.batch_to_run is not None and not has_complete_cfg_pairs(
+                plan.batch_to_run.reqs
+            ):
+                invalid_batch = plan.batch_to_run
+                plan.running_batch.batch_is_full = False
+                plan = NextBatchPlan(
+                    batch_to_run=None, running_batch=plan.running_batch
+                )
+            else:
+                pass
+        finally:
+            self.prefill_selection = None
+            self.max_prefill_tokens = input_budget_tokens
+            if selection.deferred_rows:
+                self.waiting_queue.extend(selection.deferred_rows)
+            else:
+                pass
+            owner = selection.new_owner_request_id
+            batch = plan.batch_to_run if plan is not None else None
+            if owner is not None and (
+                batch is None or not batch.reqs or batch.reqs[0].rid != owner
+            ):
+                get_coordinator().cancel_ar(owner)
             else:
                 pass
 
-    def prepare_cfg_prefill(
+        if invalid_batch is not None:
+            self.handle_batch_failure(
+                invalid_batch,
+                RuntimeError(
+                    "MiniMax Music 3 prefill admitted an incomplete CFG pair."
+                ),
+            )
+        else:
+            pass
+        return plan
+
+    def select_prefill_rows(
         self, waiting_queue: list[Req], running_batch: ScheduleBatch
     ) -> None:
-        """Reserve a sorted CFG prefix before the prefill adder runs."""
-        limit = self.pair_admission_limit(waiting_queue, running_batch)
+        selection = self.prefill_selection
+        assert selection is not None
+        admitted_rows = self.pair_admission_limit(waiting_queue, running_batch)
         coordinator = get_coordinator()
-        if coordinator.enabled and limit >= 2:
+        if coordinator.enabled and admitted_rows:
             request_id = waiting_queue[0].rid
             previous_owner = coordinator.owner_request_id
             if coordinator.try_acquire_ar(request_id):
-                limit = 2
+                admitted_rows = 2
                 if previous_owner != request_id:
-                    self.prefill_claim_request_id = request_id
+                    selection.new_owner_request_id = request_id
                 else:
                     pass
             else:
-                limit = 0
+                admitted_rows = 0
         else:
             pass
-        if limit:
+        if admitted_rows:
             first_pair_tokens = sum(
-                -(-len(request.origin_input_ids) // self.page_size) * self.page_size
-                for request in waiting_queue[:2]
+                -(-len(row.origin_input_ids) // self.page_size) * self.page_size
+                for row in waiting_queue[:2]
             )
+            # The adder allows the first row to exceed the input budget.
             self.max_prefill_tokens = max(
                 self.max_prefill_tokens, first_pair_tokens + 1
             )
         else:
             pass
-        self.deferred_prefill_requests.extend(waiting_queue[limit:])
-        waiting_queue[:] = waiting_queue[:limit]
+        if admitted_rows < len(waiting_queue):
+            selection.deferred_rows = waiting_queue[admitted_rows:]
+            del waiting_queue[admitted_rows:]
+        else:
+            pass
 
     def request_kv_capacity_error(
         self,
@@ -304,6 +328,66 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
             tokens += pair_tokens
         return limit
 
+    def update_running_batch(self, batch: ScheduleBatch) -> ScheduleBatch | None:
+        previous_row_count = batch.batch_size()
+        finishing_rows = self._reqs_finishing_inflight(
+            batch
+        )  # noqa: leading-underscore  # scheduler hook
+        batch.filter_batch(reqs_to_exclude=finishing_rows)
+        if batch.batch_size() < previous_row_count:
+            batch.batch_is_full = False
+        else:
+            pass
+        if batch.is_empty():
+            batch.batch_is_full = False
+            return batch
+        elif not has_complete_cfg_pairs(batch.reqs):
+            error = RuntimeError(
+                "MiniMax Music 3 found an incomplete CFG pair in the decode batch."
+            )
+        elif batch.check_decode_mem():
+            self.new_token_ratio_tracker.decay_step()
+            batch.prepare_for_decode()
+            return batch
+        elif finishing_rows:
+            batch.batch_is_full = False
+            return None
+        else:
+            error = RuntimeError(
+                "MiniMax Music 3 ran out of KV capacity during decode."
+            )
+        self.handle_batch_failure(batch, error)
+        batch.filter_batch()
+        batch.batch_is_full = False
+        return batch
+
+    def admin_pause_generation(self, payload: dict[str, object]) -> AdminActionResult:
+        if payload.get("mode") == "retract":
+            message = (
+                "MiniMax Music 3 cannot replay audio feedback. Use in_place or abort."
+            )
+            return {"success": False, "message": message, "error": message}
+        else:
+            return super().admin_pause_generation(payload)
+
+    def handle_batch_failure(self, batch: ScheduleBatch, error: Exception) -> None:
+        request_ids = dict.fromkeys(cfg_primary_rid(row.rid) for row in batch.reqs)
+        logger.error(
+            f"MiniMax Music 3 batch failed for {list(request_ids)}: {error}",
+            exc_info=error if error.__traceback__ is not None else None,
+        )
+        for row in batch.reqs:
+            row.skip_radix_cache_insert = True
+            self.emit_model_path_end_once(row.rid, status="error")
+        for request_id in request_ids:
+            self.abort_cfg_pair(
+                request_id, defer_running_cleanup=False, batch_to_abort=batch
+            )
+            self.emit_request_error(request_id, error)
+
+    def request_id_for_row(self, row_id: str) -> str:
+        return cfg_primary_rid(row_id)
+
     def stream_output(
         self,
         reqs: Iterable[Req],
@@ -326,6 +410,11 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
         super().stream_output(conditioned, return_logprob, skip_req)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+        if is_cfg_uncond_rid(request_id):
+            # Public cancellations can carry a rejected id with the reserved suffix.
+            return
+        else:
+            pass
         if self.scheduler_thread_id != get_ident() and (
             self.scheduler_thread_id is not None or self.enable_overlap
         ):
@@ -336,14 +425,22 @@ class MiniMaxMusic3Scheduler(OmniScheduler["MiniMaxMusic3SGLangRequestData"]):
             return
         else:
             pass
-        super().abort(request_id, defer_running_cleanup=defer_running_cleanup)
-        if is_cfg_uncond_rid(request_id):
-            return
-        else:
-            pass
-        super().abort(
-            cfg_uncond_rid(request_id), defer_running_cleanup=defer_running_cleanup
-        )
+
+        self.abort_cfg_pair(request_id, defer_running_cleanup=defer_running_cleanup)
+
+    def abort_cfg_pair(
+        self,
+        request_id: str,
+        *,
+        defer_running_cleanup: bool,
+        batch_to_abort: ScheduleBatch | None = None,
+    ) -> None:
+        for row_id in (request_id, cfg_uncond_rid(request_id)):
+            super().abort(
+                row_id,
+                defer_running_cleanup=defer_running_cleanup,
+                batch_to_abort=batch_to_abort,
+            )
 
 
 __all__ = ["MiniMaxMusic3Scheduler"]
