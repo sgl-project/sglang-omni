@@ -47,9 +47,9 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
    **点“发布”就是推送给所有 Voxt 2 用户**：更新源是 GitHub Release 本身，没有另一步。发布以后，每个装着带这个更新源的版本的用户，下次检查更新就会收到它。发布前先在一台装着上一版的 Mac 上验证更新（见下面“验证应用内更新”）。
    发布会触发 [Voxt Update Feed Check](../../.github/workflows/voxt-update-feed-check.yaml)：它按 app 的规则解析更新源，确认解析到的就是刚发布的版本，清单是这个版本的签名清单，tar.gz 能下载且大小和清单一致。它失败说明已安装的 app 看不到这个版本，要马上处理。
    **撤回**：把 Release 改回草稿（`gh release edit voxt-vX.Y.Z --draft`）或删除它，更新源立刻退回上一个正式版。已经装上新版的用户不会降级，要再发一个版本号更高的版本修复。
-   发布后更新 [Voxt Quickstart](../../docs/get_started/voxt.md) 中 **Download Voxt for Mac** 按钮的 DMG 直链，确认它直接下载本版的 `Voxt-X.Y.Z-arm64.dmg`。
+   发布后按第 6 步更新所有文档的 DMG 直链，确认它们直接下载本版的 `Voxt-X.Y.Z-arm64.dmg`。
 5. 推给 Voxt 1.x 的用户和 Homebrew：发布后手动运行 Voxt Appcast 工作流，先放进 1.x 的 beta 通道，在真机上测通后再发到 stable，只给 Apple 芯片上的 1.x，见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)。
-6. 下载链接：README.md、Voxt/README.md、Voxt/README.zh-CN.md、docs/get_started/voxt.md 和两份教程的安装页（docs/get_started/voxt-tutorials/start.md、en/start.md，它们另外可以链到本版的 Release 页，给下载没开始的人）的下载链接都直接下载 dmg（`https://github.com/sgl-project/sglang-omni/releases/download/voxt-vX.Y.Z/Voxt-X.Y.Z-arm64.dmg`），不指向 Release 页，也不指向 Release 搜索（GitHub 的搜索列不出最新的几个版本）。mygo.json 改成 X.Y.Z 的提交里同时改这些链接，Release 发布后链接才能下载；`TestDownloadLinks` 检查它们都是 mygo.json 的版本。
+6. 下载链接：README.md、Voxt/README.md、Voxt/README.zh-CN.md、docs/get_started/voxt.md 和两份教程的安装页（docs/get_started/voxt-tutorials/start.md、en/start.md，它们另外可以链到本版的 Release 页，给下载没开始的人）的下载链接都直接下载 dmg（`https://github.com/sgl-project/sglang-omni/releases/download/voxt-vX.Y.Z/Voxt-X.Y.Z-arm64.dmg`），不指向 Release 搜索（GitHub 的搜索列不出最新的几个版本）。准备 X.Y.Z 时只改 mygo.json，文档继续链接上一个已发布的正式版，避免公开按钮在构建和发布期间返回 404。Release 发布并确认 `Voxt-X.Y.Z-arm64.dmg` 已上传后，再在同一提交里更新这六个页面和 `download_links_test.go` 的 `publishedStableVersion`；`TestDownloadLinks` 检查它们都指向这个已发布版本，发布前的 `scripts/release-preflight.sh` 检查六个页面保持一致、链接版本已有 `voxt-vX.Y.Z` 正式 tag，且不是即将发布的 `$version`，防止文档和测试常量一起提前 bump。
 
 `voxt-release` 环境是 Swift 版 Voxt 1.x 发版时建的，部署规则放行 `main` 和 `voxt-v*` tag，没有审批。这个工作流（tag 发布，main 上或手动运行的 nightly 和 beta）用到它的这些 secret。从别的分支手动运行 nightly 或 beta 也签名，要先在仓库 Settings → Environments → voxt-release 的部署规则里放行那个分支，否则 job 一开始就失败：
 
@@ -264,7 +264,7 @@ MAC_DIR=code/VoxtNew-rel scripts/mac.sh 'export VOXTNEW_SIGN_IDENTITY="$(scripts
    app 的 `CFBundleShortVersionString` 是完整版本号（更新比较用它）；`CFBundleVersion` 由 MyGo 写成数字部分（`2.0.1-beta.1` 写成 `2.0.1`，补丁 0007），`release.sh` 的构建再改成 Voxt 1.x 的构建号（见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)）。
 2. **写 CHANGELOG.md**：把最上面的 `## [Unreleased]` 改成 `## [2.0.1] - 2026-11-20`（版本号和 mygo.json 完全一样），英文在前（`### Added`、`### Fixed`…），然后是 `### 中文`，下面用 `####` 小标题（`#### 新增`、`#### 修复`…）。更新窗口显示整节；官网用同一节：发布脚本从第一个含汉字的 `###` 标题（`### 中文`，这个标题本身去掉）分成 `notes`（英文）和 `notesZh`，后台还要求清单里的 notes（整节）包含英文部分。`--publish` 时没有这一节就失败。
 3. 提交、推到 main，等 CI（[voxtnew-ci.yaml](../../.github/workflows/voxtnew-ci.yaml)）通过。正式版打 tag 之前做三件事，beta 不用：
-   - 跑 `scripts/release-preflight.sh 2.0.1`（只读，不构建、不签名、不上传、不打 tag）：检查两处版本号、CHANGELOG 里这个版本的一节有英文和中文、六个页面的下载链接是这个版本，列出上一个正式版以来 CHANGELOG 没提到的 `[Voxt]` PR，并报 Developer ID 证书的到期日。有 `FAIL` 的行就先改掉。
+   - 跑 `scripts/release-preflight.sh 2.0.1`（只读，不构建、不签名、不上传、不打 tag）：检查两处版本号、CHANGELOG 里这个版本的一节有英文和中文、六个页面的下载链接一致、有正式 tag 且不指向即将发布的版本，列出上一个正式版以来 CHANGELOG 没提到的 `[Voxt]` PR，并报 Developer ID 证书的到期日。有 `FAIL` 的行就先改掉。
    - 在 Mac 上跑一遍回归 `scripts/mac-regress.sh`（[manual-test.md](manual-test.md) §10）和 `scripts/mac-e2e.sh`。
    - 列出不在每个 PR 上自动检查的行为：`awk -F'\t' 'NR>1 && ($2!="L" || $4!="none")' testdata/behaviours.tsv`。按每行的 check（脚本、测试或 manual-test.md 的步骤）在 Mac 上过一遍，gap 一列写的是还要用手看的部分。
    - 把 preflight 的输出、两个脚本结尾的结果表和上面这张表的结果贴进发版 PR。
