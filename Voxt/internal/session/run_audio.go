@@ -174,7 +174,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				}
 				if gate != nil {
 					r.noteGate(gate)
-					if !gate.Open() {
+					// A gate opened by MaxHoldMS alone is silent too: silence can echo the speech context.
+					if !gate.Open() || !gate.Heard() {
 						end <- streamEnd{silent: true}
 						return
 					}
