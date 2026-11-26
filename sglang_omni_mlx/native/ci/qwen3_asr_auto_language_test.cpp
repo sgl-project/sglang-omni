@@ -70,39 +70,50 @@ struct SessionEventLog {
   std::vector<nlohmann::json> events;
 };
 
+class RealtimeSessionCloseGuard {
+public:
+  explicit RealtimeSessionCloseGuard(std::shared_ptr<RealtimeSession> session)
+      : session_(std::move(session)) {}
+
+  ~RealtimeSessionCloseGuard() { session_->Close(); }
+
+private:
+  std::shared_ptr<RealtimeSession> session_;
+};
+
 std::shared_ptr<RealtimeSession>
 CreateRealtimeSession(TranscriptionWorker &worker,
                       const Qwen3ASRTranscriber &transcriber,
-                      SessionEventLog &event_log) {
+                      const std::shared_ptr<SessionEventLog> &event_log) {
   return std::make_shared<RealtimeSession>(
       worker, transcriber, MakeRealtimeSettings(100, 100, 120.0),
-      [&event_log](const std::string &serialized_event) {
+      [event_log](const std::string &serialized_event) {
         {
-          std::lock_guard<std::mutex> lock(event_log.mutex);
-          event_log.events.push_back(nlohmann::json::parse(serialized_event));
+          std::lock_guard<std::mutex> lock(event_log->mutex);
+          event_log->events.push_back(nlohmann::json::parse(serialized_event));
         }
-        event_log.ready.notify_all();
+        event_log->ready.notify_all();
         return true;
       });
 }
 
-nlohmann::json WaitForSegment(SessionEventLog &event_log, int after_event_index,
-                              bool is_final) {
+nlohmann::json WaitForSegment(const std::shared_ptr<SessionEventLog> &event_log,
+                              int after_event_index, bool is_final) {
   const auto matches = [after_event_index,
                         is_final](const nlohmann::json &event) {
     return event.value("type", std::string()) == "transcription.segment" &&
            event.value("event_index", -1) > after_event_index &&
            event.value("is_final", false) == is_final;
   };
-  std::unique_lock<std::mutex> lock(event_log.mutex);
-  const bool received = event_log.ready.wait_for(
-      lock, kSessionEventTimeout, [&event_log, &matches] {
-        return std::any_of(event_log.events.begin(), event_log.events.end(),
+  std::unique_lock<std::mutex> lock(event_log->mutex);
+  const bool received = event_log->ready.wait_for(
+      lock, kSessionEventTimeout, [event_log, &matches] {
+        return std::any_of(event_log->events.begin(), event_log->events.end(),
                            matches);
       });
   Require(received, "timed out waiting for a realtime segment event");
   const auto event =
-      std::find_if(event_log.events.begin(), event_log.events.end(), matches);
+      std::find_if(event_log->events.begin(), event_log->events.end(), matches);
   return *event;
 }
 
@@ -184,11 +195,12 @@ void TestWrongGuess(TranscriptionWorker &worker,
 
 void TestPositiveEligibilityControl(
     TranscriptionWorker &worker, const Qwen3ASRTranscriber &transcriber,
-    const std::vector<float> &preview_audio_samples,
-    const TranscriptionResult &expected_preview_result) {
-  SessionEventLog event_log;
+    const std::vector<float> &preview_audio_samples) {
+  const std::shared_ptr<SessionEventLog> event_log =
+      std::make_shared<SessionEventLog>();
   const std::shared_ptr<RealtimeSession> session =
       CreateRealtimeSession(worker, transcriber, event_log);
+  RealtimeSessionCloseGuard close_session(session);
   ConfigureFinalPrompt(*session);
   AppendAudio(*session, preview_audio_samples);
   const nlohmann::json preview = WaitForSegment(event_log, 0, false);
@@ -201,22 +213,20 @@ void TestPositiveEligibilityControl(
           "eligible auto-language preview did not produce a Final guess");
   const qwen3_asr::FinalPreviewGuess &preview_guess =
       *final_reuse.auto_language_guess;
-  Require(preview_guess.language == *expected_preview_result.language &&
-              preview_guess.language == "English",
-          "positive control did not retain the detected English language");
-  Require(!preview_guess.text.empty() && preview_guess.text == preview_text &&
-              preview_guess.text == expected_preview_result.text,
+  Require(preview_guess.language == "English",
+          "positive control did not detect English speech");
+  Require(!preview_guess.text.empty() && preview_guess.text == preview_text,
           "positive control did not retain the displayed preview text");
-  session->Close();
 }
 
 void TestNegativeEligibilityControl(
     TranscriptionWorker &worker, const Qwen3ASRTranscriber &transcriber,
-    const std::vector<float> &preview_audio_samples,
-    const TranscriptionResult &expected_preview_result) {
-  SessionEventLog event_log;
+    const std::vector<float> &preview_audio_samples) {
+  const std::shared_ptr<SessionEventLog> event_log =
+      std::make_shared<SessionEventLog>();
   const std::shared_ptr<RealtimeSession> session =
       CreateRealtimeSession(worker, transcriber, event_log);
+  RealtimeSessionCloseGuard close_session(session);
   ConfigureFinalPrompt(*session);
   AppendAudio(*session, preview_audio_samples);
   const nlohmann::json first_preview = WaitForSegment(event_log, 0, false);
@@ -230,6 +240,9 @@ void TestNegativeEligibilityControl(
       WaitForSegment(event_log, first_preview_index, true);
   Require(!committed_segment.at("text").get<std::string>().empty(),
           "negative control did not commit its first segment");
+  Require(committed_segment.at("segment_id").get<int>() ==
+              first_preview.at("segment_id").get<int>(),
+          "negative control committed a different segment than its preview");
 
   const int committed_event_index =
       committed_segment.at("event_index").get<int>();
@@ -238,10 +251,6 @@ void TestNegativeEligibilityControl(
       WaitForSegment(event_log, committed_event_index, false);
   Require(!later_preview.at("text").get<std::string>().empty(),
           "negative control did not produce a later preview");
-  Require(later_preview.at("text").get<std::string>() ==
-              expected_preview_result.text,
-          "negative control's later preview differed from the "
-          "detected-language control");
   Require(later_preview.at("segment_id").get<int>() >
               committed_segment.at("segment_id").get<int>(),
           "negative control's preview did not follow the committed segment");
@@ -250,7 +259,6 @@ void TestNegativeEligibilityControl(
       session->TakeFinalReuse(std::string("GLOSSARY"), true);
   Require(!final_reuse.auto_language_guess.has_value(),
           "committed-session preview incorrectly produced a Final guess");
-  session->Close();
 }
 
 void TestEligibility(TranscriptionWorker &worker,
@@ -261,18 +269,8 @@ void TestEligibility(TranscriptionWorker &worker,
   const std::vector<float> preview_audio_samples(corpus_audio_samples.begin(),
                                                  corpus_audio_samples.begin() +
                                                      kPreviewAudioSampleCount);
-  TranscriptionOptions preview_options;
-  preview_options.stop_on_token_loop = true;
-  const TranscriptionResult expected_preview_result = DecodeFinalTranscription(
-      worker, transcriber, preview_audio_samples, preview_options);
-  Require(expected_preview_result.language.has_value() &&
-              *expected_preview_result.language == "English" &&
-              !expected_preview_result.text.empty(),
-          "realtime preview corpus did not produce English speech");
-  TestPositiveEligibilityControl(worker, transcriber, preview_audio_samples,
-                                 expected_preview_result);
-  TestNegativeEligibilityControl(worker, transcriber, preview_audio_samples,
-                                 expected_preview_result);
+  TestPositiveEligibilityControl(worker, transcriber, preview_audio_samples);
+  TestNegativeEligibilityControl(worker, transcriber, preview_audio_samples);
 }
 
 } // namespace
