@@ -21,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
+- **Short notices leave sooner**: Nothing was heard now fades out after 1.5 seconds and a green check (Added to the dictionary, Already in the dictionary, Saved to Notes) after 2, instead of 5; other notices still stay 5 seconds.
 - **Dictionary controls also share the overflow menu**: Use the dictionary, Speech hints, Glossary for the language model, Learn from my corrections, and Scan history are available beside Import and Export as well as in Dictionary settings. Add term stays in the header, and dictionary learning behaves as before. Adjacent help keeps the Speech hints, Glossary, and correction-learning explanations, including the privacy promise.
 - **Faster meeting proofreading on reasoning models**: each proofreading batch now asks the language model to bound its reasoning (low effort), which keeps the same prompt and output format but avoids long hidden-reasoning waits and empty answers on services that reason at length; a service without that field sees no change, and one that rejects it gets the request again without it.
 - **Simpler Speech model rows** (#3856): each row keeps the model's name, size and actions; descriptions, tags, feature-use and memory lines are gone, language and sharing details remain in tooltips, and the draft row is called Speed-up model. Redundant Speech context and Network captions are removed too.
@@ -72,6 +73,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 变更
 
+- **简短的提示更快消失**：“没有听到说话”1.5 秒后淡出，绿色对勾的提示（已加入词典、词典里已经有、已保存到笔记）2 秒后淡出，不再停 5 秒；其他提示仍是 5 秒。
 - **词典控件也能从更多操作菜单使用**：“使用词典”“语音识别提示”“语言模型术语表”“从我的改正中学习”和“扫描历史”除了“词典设置”，也能在与导入、导出同一个菜单里使用。“添加词条”仍在页头，词典学习行为不变。菜单旁边的 ⓘ 保留这三项设置的说明，包括读取内容的隐私承诺。
 - **实时文字先淡后实**（#4574）：说话时，浮窗和答案卡片里语音识别模型的实时文字用淡色显示；识别结果出来替换后，换成正常颜色。
 - **停止后浮窗不再跳**（#4574）：圆点接替波形的位置，“用识别原文”出现时和圆点一起接替功能名的位置，整行宽度不变、仍然居中，麦克风图标不再跳动。
