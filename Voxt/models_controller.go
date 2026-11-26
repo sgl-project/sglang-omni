@@ -342,21 +342,28 @@ func (a *app) modelsViewStateInput() modelsViewStateInput {
 	}
 }
 
-// speechContextUnused says that Transcribe, Translate and Rewrite all use
-// a local speech model that takes no context (MOSS-Transcribe-Diarize,
-// Whisper…), so a speech context would reach none of them (#4067).
+// speechContextUnused says that Transcribe, Translate, Rewrite and
+// Meetings all use a local speech model that takes no context
+// (MOSS-Transcribe-Diarize, Whisper…), so a speech context would reach
+// none of them (#4067).
 func (a *app) speechContextUnused() bool {
 	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		m, ok := a.featureModel(local.ASR, f)
-		if !ok {
-			return false
-		}
-		spec, curated := omni.Lookup(m.ID)
-		if !curated || spec.ASR == nil || spec.ASR.ContextTerms > 0 {
+		if !ok || !speechModelTakesNoContext(m) {
 			return false
 		}
 	}
+	if m, ok := a.meetingASRModel(); ok && !speechModelTakesNoContext(m) {
+		return false
+	}
 	return true
+}
+
+// speechModelTakesNoContext says m is a curated local speech model that
+// takes no recognition context.
+func speechModelTakesNoContext(m local.Model) bool {
+	spec, curated := omni.Lookup(m.ID)
+	return curated && spec.ASR != nil && spec.ASR.ContextTerms == 0
 }
 
 // assignmentStateInput is the Apply to dialog's state, nil while it is

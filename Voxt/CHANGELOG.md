@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **The Speech context note said no speech model takes it while a meeting's speech model did**: with Transcribe, Translate and Rewrite on a local model that takes no context, the note ignored the meeting's speech model, so it showed while a meeting used Qwen3-ASR. The note now stays hidden while any of the four speech models takes the context.
 
 ### 中文
 
@@ -19,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **会议用的语音识别模型会读识别上下文时，“识别上下文”下的说明仍然出现**：转录、翻译、改写都换成不吃上下文的本地模型后，说明没有算上会议用的模型，会议用 Qwen3-ASR 时也照常显示。现在四个语音识别模型里有一个会读识别上下文，说明就不出现。
 
 ## [Unreleased]
 

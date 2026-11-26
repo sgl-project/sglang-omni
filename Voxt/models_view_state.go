@@ -138,8 +138,8 @@ type modelsViewState struct {
 	Delete        modelsDeleteViewState   `json:"delete"`
 	Network       modelsNetworkViewState  `json:"network"`
 	SpeechContext string                  `json:"speech_context"`
-	// SpeechContextUnused: every feature's speech model takes no context
-	// (#4067), so the editor says so.
+	// SpeechContextUnused: every feature's and a meeting's speech model
+	// takes no context (#4067), so the editor says so.
 	SpeechContextUnused bool                      `json:"speech_context_unused"`
 	Assignment          *modelAssignmentViewState `json:"assignment,omitempty"`
 }
@@ -162,8 +162,8 @@ type modelsViewStateInput struct {
 	AdvancedOpen   bool
 	HiddenOpen     bool
 	Assignment     *modelAssignmentStateInput
-	// SpeechContextUnused: Transcribe, Translate and Rewrite all use a
-	// local speech model that takes no context.
+	// SpeechContextUnused: Transcribe, Translate, Rewrite and Meetings
+	// all use a local speech model that takes no context.
 	SpeechContextUnused bool
 }
 

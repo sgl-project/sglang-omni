@@ -79,6 +79,16 @@ func (a *app) meetingLang() string {
 	return cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale()))
 }
 
+// meetingASRModel is the speech model a meeting uses: its own choice,
+// else Automatic's language-gated pick for the meeting's language
+// (meetingTrackASR's rule), without opening it.
+func (a *app) meetingASRModel() (local.Model, bool) {
+	if id := strings.TrimSpace(a.prefs.Features.Meeting.ASR); id != "" {
+		return local.Model{Kind: local.ASR, ID: id}, true
+	}
+	return local.Choose(automaticSpeechFor(a.meetingLang(), a.installed(local.ASR)), "")
+}
+
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 	id := strings.TrimSpace(a.prefs.Features.Meeting.ASR)
 	if id == "" {
