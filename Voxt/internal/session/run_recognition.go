@@ -6,9 +6,6 @@ import "context"
 // waits for the authoritative ASR result.
 func (r *run) waitFinal(ctx context.Context, finals <-chan streamEnd, heard <-chan heardText) (streamEnd, error) {
 	for {
-		if end, err, ready := r.recognitionReady(ctx, finals); ready {
-			return end, err
-		}
 		select {
 		case end := <-finals:
 			return end, nil
@@ -34,7 +31,7 @@ func (r *run) waitFinal(ctx context.Context, finals <-chan streamEnd, heard <-ch
 
 // note (chenye): dispatchLate returns an observable terminal result before it
 // starts prepared speculative requests.
-func (r *run) dispatchLate(ctx context.Context, finals <-chan streamEnd, plan headGeneration) (streamEnd, error, bool) {
+func (r *run) dispatchLate(ctx context.Context, finals <-chan streamEnd, plan headPlan) (streamEnd, error, bool) {
 	if end, err, ready := r.recognitionReady(ctx, finals); ready {
 		return end, err, true
 	}

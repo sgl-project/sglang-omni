@@ -344,7 +344,6 @@ func (r *run) listen() (string, bool) {
 			return "", false
 		}
 		openDone = open()
-		r.head.ask(said)
 	}
 
 	// Recognition.

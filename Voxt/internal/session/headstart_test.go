@@ -106,14 +106,14 @@ func watchExactAdoption(r *run) <-chan struct{} {
 	return selected
 }
 
-func prepareLateHeadCall(t *testing.T, r *run, model *controlledLiveLLM, text string) (headGeneration, *headCall, *controlledLiveCall) {
+func prepareLateHeadCall(t *testing.T, r *run, model *controlledLiveLLM, text string) (headPlan, *headCall, *controlledLiveCall) {
 	t.Helper()
-	generation, ok := r.head.prepareLate(text)
-	if !ok || !r.head.submitLate(generation) {
+	plan, ok := r.head.prepareLate(text)
+	if !ok || !r.head.submitLate(plan) {
 		t.Fatal("the late candidate was not submitted")
 	}
 	call := waitLiveCall(t, model, "the late candidate")
-	return generation, r.head.all()[0], call
+	return plan, r.head.all()[0], call
 }
 
 // TestHeadStart: a pause asks about the live text while the recording goes
@@ -546,7 +546,7 @@ func TestHeadStartLateCandidateDoesNotDisplaceCompleted(t *testing.T) {
 				default:
 				}
 			}
-			final, ok, _ := r.head.prepare(headText{cleaned: "We ship on Friday."})
+			final, ok, _ := r.head.prepare("We ship on Friday.")
 			if !ok || len(final.parts) != 1 {
 				t.Fatalf("final cleanup plan %+v, %v", final, ok)
 			}
@@ -594,9 +594,9 @@ func TestHeadStartLateExactFailureRecovery(t *testing.T) {
 		t.Cleanup(model.close)
 		r := newHeadRun(t, model)
 		selected := watchExactAdoption(r)
-		generation, lateHead, late := prepareLateHeadCall(t, r, model, transcript)
+		plan, lateHead, late := prepareLateHeadCall(t, r, model, transcript)
 		late.sendDelta(t, "failed speculative fragment")
-		parts, err := compose.BuildParts(r.transcribeInput(generation.plan.rest))
+		parts, err := compose.BuildParts(r.transcribeInput(plan.rest))
 		if err != nil || len(parts) != 1 {
 			t.Fatalf("cleanup parts: %v, %v", parts, err)
 		}
@@ -649,10 +649,10 @@ func TestHeadStartLateExactFailureRecovery(t *testing.T) {
 		t.Cleanup(model.close)
 		r := newHeadRun(t, model)
 		selected := watchExactAdoption(r)
-		generation, lateHead, late := prepareLateHeadCall(t, r, model, transcript)
+		plan, lateHead, late := prepareLateHeadCall(t, r, model, transcript)
 		late.sendDelta(t, "private speculative fragment")
 		var streamed strings.Builder
-		request := generation.plan.parts[0].req
+		request := plan.parts[0].req
 		request.OnDelta = func(delta string) { streamed.WriteString(delta) }
 		type partResult struct {
 			resp llm.Response
@@ -660,7 +660,7 @@ func TestHeadStartLateExactFailureRecovery(t *testing.T) {
 		}
 		finished := make(chan partResult, 1)
 		go func() {
-			resp, err := r.askPart(r.ctx, request, generation.plan.parts[0].text)
+			resp, err := r.askPart(r.ctx, request, plan.parts[0].text)
 			finished <- partResult{resp: resp, err: err}
 		}()
 		select {

@@ -66,14 +66,10 @@ type headStart struct {
 	gens  [][]*headCall // the requests of the texts asked about last, headKeep at most, the newest last
 }
 
-type headText struct {
-	heard   string
-	cleaned string
-}
-
 type headPart struct {
-	req  llm.Request
-	text string
+	req   llm.Request
+	text  string
+	reuse *headCall
 }
 
 type headPlan struct {
@@ -82,10 +78,13 @@ type headPlan struct {
 	parts []headPart
 }
 
-type headGeneration struct {
-	plan  headPlan
-	calls []*headCall
-	fresh []int
+func (p headPlan) hasFresh() bool {
+	for _, part := range p.parts {
+		if part.reuse == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // headCall is a request asked early. resp and err are there once done is
@@ -155,39 +154,39 @@ func (h *headStart) ask(live string) bool {
 	if !h.enabled {
 		return false
 	}
-	text, ok := h.normalize(live)
+	heard, cleaned, ok := h.normalize(live)
 	if !ok {
 		return false
 	}
-	if text.heard == h.text {
+	if heard == h.text {
 		return false
 	}
-	h.text = text.heard
-	return h.send(text.cleaned)
+	h.text = heard
+	return h.send(cleaned)
 }
 
-func (h *headStart) normalize(live string) (headText, bool) {
+func (h *headStart) normalize(live string) (heard, cleaned string, ok bool) {
 	r := h.r
-	text, ok := h.guess(live)
+	heard, ok = h.guess(live)
 	if !ok {
-		return headText{}, false
+		return "", "", false
 	}
-	text, _ = withoutEndWord(text, r.endWord())
-	if text == "" {
-		return headText{}, false
+	heard, _ = withoutEndWord(heard, r.endWord())
+	if heard == "" {
+		return "", "", false
 	}
-	cleaned := text
+	cleaned = heard
 	if r.settings.Dictionary.Enabled {
-		cleaned = dict.Replace(text, r.terms)
+		cleaned = dict.Replace(heard, r.terms)
 	}
-	return headText{heard: text, cleaned: cleaned}, true
+	return heard, cleaned, true
 }
 
-func (h *headStart) prepare(text headText) (headPlan, bool, bool) {
+func (h *headStart) prepare(cleaned string) (headPlan, bool, bool) {
 	r := h.r
-	plan := headPlan{heard: text.heard}
-	rest, ok := r.earlyCleanup().rest(text.cleaned)
-	if _, whole := snippet.Whole(text.cleaned, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
+	plan := headPlan{}
+	rest, ok := r.earlyCleanup().rest(cleaned)
+	if _, whole := snippet.Whole(cleaned, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
 		return plan, false, true
 	}
 	parts, err := compose.BuildParts(r.transcribeInput(rest))
@@ -196,28 +195,29 @@ func (h *headStart) prepare(text headText) (headPlan, bool, bool) {
 	}
 	plan.rest = rest
 	for _, part := range parts[:min(len(parts), partsTogether)] {
-		plan.parts = append(plan.parts, headPart{req: r.partRequest(text.cleaned, part, nil, nil), text: part.Text})
+		req := r.partRequest(cleaned, part, nil, nil)
+		plan.parts = append(plan.parts, headPart{req: req, text: part.Text, reuse: h.find(req)})
 	}
 	return plan, true, false
 }
 
-func (h *headStart) prepareLate(live string) (headGeneration, bool) {
+func (h *headStart) prepareLate(live string) (headPlan, bool) {
 	if !h.lateAllowed() {
-		return headGeneration{}, false
+		return headPlan{}, false
 	}
-	text, ok := h.normalize(live)
-	if !ok || text.heard == h.text {
-		return headGeneration{}, false
+	heard, cleaned, ok := h.normalize(live)
+	if !ok || heard == h.text {
+		return headPlan{}, false
 	}
-	plan, ok, _ := h.prepare(text)
+	plan, ok, _ := h.prepare(cleaned)
 	if !ok {
-		return headGeneration{}, false
+		return headPlan{}, false
 	}
-	gen := h.generation(plan)
-	if len(gen.fresh) == 0 || !h.lateAllowed() {
-		return headGeneration{}, false
+	plan.heard = heard
+	if !plan.hasFresh() || !h.lateAllowed() {
+		return headPlan{}, false
 	}
-	return gen, true
+	return plan, true
 }
 
 func (h *headStart) lateAllowed() bool {
@@ -233,50 +233,42 @@ func (h *headStart) lateAllowed() bool {
 	return len(h.gens) < headKeep
 }
 
-func (h *headStart) generation(plan headPlan) headGeneration {
-	gen := headGeneration{plan: plan, calls: make([]*headCall, len(plan.parts))}
-	for i, part := range plan.parts {
-		gen.calls[i] = h.find(part.req)
-		if gen.calls[i] == nil {
-			gen.fresh = append(gen.fresh, i)
-		}
-	}
-	return gen
-}
-
-func (h *headStart) submitLate(gen headGeneration) bool {
-	if len(gen.fresh) == 0 || !h.lateAllowed() {
+func (h *headStart) submitLate(plan headPlan) bool {
+	if !plan.hasFresh() || !h.lateAllowed() {
 		return false
 	}
-	h.startGeneration(&gen, true)
-	h.text = gen.plan.heard
-	h.lateAsked = true
-	h.push(gen.calls)
-	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(gen.plan.rest))
+	h.submit(plan, true)
 	return true
 }
 
-func (h *headStart) startGeneration(gen *headGeneration, late bool) {
-	for _, i := range gen.fresh {
-		part := gen.plan.parts[i]
-		gen.calls[i] = h.start(part.req, part.text, late)
+func (h *headStart) submit(plan headPlan, late bool) {
+	calls := make([]*headCall, 0, len(plan.parts))
+	for _, part := range plan.parts {
+		call := part.reuse
+		if call == nil {
+			call = h.start(part.req, part.text, late)
+		}
+		calls = append(calls, call)
 	}
+	if late {
+		h.text = plan.heard
+		h.lateAsked = true
+	}
+	h.push(calls)
+	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(plan.rest))
 }
 
 // send sends the requests of text, its dictionary's aliases replaced, and
 // gives up those of texts before the last headKeep.
 func (h *headStart) send(text string) bool {
-	plan, ok, discard := h.prepare(headText{cleaned: text})
+	plan, ok, discard := h.prepare(text)
 	if !ok {
 		if discard {
 			h.drop()
 		}
 		return false
 	}
-	gen := h.generation(plan)
-	h.startGeneration(&gen, false)
-	h.push(gen.calls)
-	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(plan.rest))
+	h.submit(plan, false)
 	return true
 }
 
