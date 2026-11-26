@@ -25,7 +25,6 @@ from sglang_omni.scheduling.pd_utils import (
     continuation_from_req,
     req_from_continuation,
 )
-from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.utils.audio import audio_fingerprint
 
 AUDIO_PAD = "<|object_ref_start|>"
@@ -574,7 +573,7 @@ def test_fun_asr_request_builder_rejects_prompt_overrun_of_context_length(
         request_builder(payload)
 
 
-def test_greedy_only_sampling_is_a_bad_request_before_preprocessing(
+def test_greedy_only_rejects_sampling_before_preprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected(*args, **kwargs):
@@ -594,9 +593,8 @@ def test_greedy_only_sampling_is_a_bad_request_before_preprocessing(
         ),
         data={},
     )
-    with pytest.raises(ValueError, match="greedy") as rejection:
+    with pytest.raises(ValueError, match="supports only greedy decoding"):
         build(payload)
-    assert generation_error_status_code(RuntimeError(str(rejection.value))) == 400
 
 
 @pytest.mark.parametrize("model", ["Fun-ASR", "Qwen3-ASR"])

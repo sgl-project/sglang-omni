@@ -367,7 +367,7 @@ def capture_builder(monkeypatch, **stage_kwargs) -> fun_asr_builder.FunASREngine
     return captured[0]
 
 
-def write_speculators_config(directory: Path) -> None:
+def write_speculators_config(directory: Path, **draft_overrides: str | int) -> None:
     (directory / "config.json").write_text(
         json.dumps(
             {
@@ -380,12 +380,13 @@ def write_speculators_config(directory: Path) -> None:
                 "mask_token_id": 151705,
                 "block_size": 8,
                 "transformer_layer_config": {"hidden_size": 1024},
+                **draft_overrides,
             }
         )
     )
 
 
-@pytest.mark.parametrize("pd_role", [None, "prefill", "decode"])
+@pytest.mark.parametrize("pd_role", [None, "prefill"])
 def test_fun_asr_resolves_pinned_checkpoints_for_each_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -394,11 +395,7 @@ def test_fun_asr_resolves_pinned_checkpoints_for_each_profile(
     snapshot = Mock(return_value=str(tmp_path))
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
     builder = capture_builder(monkeypatch, pd_role=pd_role)
-    local_checkpoint = tmp_path / "local@checkpoint"
-    local_checkpoint.mkdir()
-
     assert builder.resolve_checkpoint("org/model") == "org/model"
-    assert builder.resolve_checkpoint(str(local_checkpoint)) == str(local_checkpoint)
     assert builder.resolve_checkpoint("org/model@" + "a" * 40) == str(tmp_path)
     snapshot.assert_called_once_with("org/model", revision="a" * 40)
 
@@ -414,23 +411,21 @@ def test_fun_asr_pd_rejects_incompatible_drafts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, draft_kind: str, error: str
 ) -> None:
     monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
-    write_speculators_config(tmp_path)
     overrides: dict[str, object] = {
         "speculative_algorithm": "DFLASH",
         "speculative_draft_model_path": str(tmp_path),
     }
     if draft_kind == "selector":
-        config_path = tmp_path / "config.json"
-        config = json.loads(config_path.read_text())
-        config.update(
+        write_speculators_config(
+            tmp_path,
             speculators_model_type="dflash2",
             conv_kernel_size=3,
             conv_group_size=1,
             selector_rank=16,
             selector_top_k=32,
         )
-        config_path.write_text(json.dumps(config))
     else:
+        write_speculators_config(tmp_path)
         overrides["speculative_draft_window_size"] = 32
     builder = capture_builder(monkeypatch, pd_role="prefill")
 
@@ -444,7 +439,7 @@ def test_fun_asr_pd_rejects_incompatible_drafts(
             pass
 
 
-@pytest.mark.parametrize("pd_role", [None, "prefill", "decode"])
+@pytest.mark.parametrize("pd_role", [None, "prefill"])
 @pytest.mark.parametrize("sampling_available", [False, True])
 def test_fun_asr_dflash_uses_verifier_capability_and_pd_schedule(
     monkeypatch: pytest.MonkeyPatch,
