@@ -50,7 +50,7 @@ func buildSessionCardLiveTail(input sessionCardProjectionInput, follow bool) ([2
 	snapshot := input.Snapshot
 	shownDraft := input.ShownDraft
 	if input.HideLiveText {
-		snapshot.Partial, snapshot.Draft, shownDraft = "", "", ""
+		snapshot.Partial, shownDraft = "", ""
 	}
 	count := 0
 	said := cmpOr(strings.TrimSpace(snapshot.Raw), strings.TrimSpace(snapshot.Partial))
