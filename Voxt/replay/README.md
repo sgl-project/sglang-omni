@@ -52,7 +52,7 @@ A driver fault ends the run with exit code 2 after writing the segment's row. Ru
 
 A cell is one system (an app in one configuration) and one language block: `en` holds the English segments, `zh` the Chinese and mixed ones. For each cell, `run_cells.py` quits every app in the plan, sets what the cell changes, launches the app and a fresh sink, plays three warm-up segments that are not scored, then runs the block. Each cell records the app's version, executable hash and the settings in effect (`cells.jsonl`). A cell interrupted by a driver fault resumes; finished cells are skipped, so the plan can be started again after any interruption.
 
-Before the first cell, `run_cells.py` copies the settings it is about to change into `RUN_DIR/settings-backup/`: each Voxt 2.x settings database through SQLite's backup API, and Voxt 1.x's defaults with `defaults export`. After the last cell, or when the run stops on an error or Ctrl-C, it quits the apps, puts the copies back and deletes them. A copy left by a killed run is kept, and the next start restores it. Relative `wav` paths in the plan's manifest are read against the manifest's directory.
+Before the first cell, `run_cells.py` copies the settings it is about to change into `RUN_DIR/settings-backup/`: the settings document (`settings:app`) of each Voxt 2.x database, and Voxt 1.x's defaults with `defaults export`. After the last cell, or when the run stops on an error or Ctrl-C, it quits the apps, puts the copies back and deletes them; the history the apps recorded during the run stays. A copy left by a killed run is kept, and the next start restores it. Relative `wav` paths in the plan's manifest are read against the manifest's directory.
 
 ```bash
 python3 run_cells.py --plan plan.json --check

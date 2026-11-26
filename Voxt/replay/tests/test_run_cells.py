@@ -75,8 +75,20 @@ class ConfigureTest(unittest.TestCase):
         )
         # note (luojiaxuan): A second start, as after a killed run, keeps the first copy.
         run_cells.save_settings(plan, root)
+        con = sqlite3.connect(self.db)
+        with con:
+            con.execute("insert into documents values ('history:1', '{}')")
+        con.close()
         run_cells.restore_settings(saved)
         self.assertEqual(run_cells.settings_doc(str(self.db)), SETTINGS)
+        con = sqlite3.connect(self.db)
+        self.assertEqual(
+            con.execute(
+                "select count(*) from documents where key='history:1'"
+            ).fetchone(),
+            (1,),
+        )
+        con.close()
         self.assertEqual(list((root / "settings-backup").iterdir()), [])
 
 

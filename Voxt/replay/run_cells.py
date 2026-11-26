@@ -41,9 +41,9 @@ Blocks: "en" holds the English segments, "zh" the Chinese and mixed ones; Voxt's
 main language follows the block.
 
 Before the first cell, the settings of every 2x and 1x system are copied into
-RUN_DIR/settings-backup (SQLite's backup API for the database, `defaults export`
-for 1.x); after the last cell, or when the run stops on an error or Ctrl-C, they
-are put back and the copies deleted. A copy left by a killed run is kept, and the
+RUN_DIR/settings-backup (the settings document of Voxt 2.x's database, `defaults
+export` for 1.x); after the last cell, or when the run stops on an error or
+Ctrl-C, they are put back and the copies deleted. Voxt's history is left alone. A copy left by a killed run is kept, and the
 next start restores it.
 
 Relative "wav" paths in the manifest are read against the manifest's directory.
@@ -116,7 +116,7 @@ def quit_all(plan: dict) -> None:
     time.sleep(2)
 
 
-def settings_doc(db: str) -> dict:
+def settings_text(db: str) -> str:
     con = sqlite3.connect(db)
     try:
         (doc,) = con.execute(
@@ -124,7 +124,11 @@ def settings_doc(db: str) -> dict:
         ).fetchone()
     finally:
         con.close()
-    return json.loads(doc)
+    return doc
+
+
+def settings_doc(db: str) -> dict:
+    return json.loads(settings_text(db))
 
 
 def llm_providers(db: str) -> list[str]:
@@ -132,18 +136,10 @@ def llm_providers(db: str) -> list[str]:
     return [p["id"] for p in settings_doc(db).get("providers", {}).get("llm", [])]
 
 
-def sqlite_copy(src: str | Path, dst: str | Path) -> None:
-    source, target = sqlite3.connect(src), sqlite3.connect(dst)
-    try:
-        source.backup(target)
-    finally:
-        source.close()
-        target.close()
-
-
 def save_settings(plan: dict, root: Path) -> list[tuple[str, str, Path]]:
-    """Copies the settings each 2x and 1x system changes into root/settings-backup,
-    keeping a copy that a killed run left there; returns (family, target, copy)."""
+    """Copies the settings each 2x and 1x system changes into root/settings-backup
+    (the settings document of each Voxt 2.x database, Voxt 1.x's defaults), keeping
+    a copy that a killed run left there; returns (family, target, copy)."""
     backup = root / "settings-backup"
     backup.mkdir(exist_ok=True)
     targets = {}
@@ -153,14 +149,15 @@ def save_settings(plan: dict, root: Path) -> list[tuple[str, str, Path]]:
         elif system["family"] == "1x":
             targets.setdefault(("1x", BUNDLE_1X), None)
     saved = []
-    for n, (family, target) in enumerate(targets):
-        copy = backup / (
-            f"{n}-{Path(target).name}" if family == "2x" else f"{n}-{target}.plist"
-        )
-        if not copy.exists():
-            if family == "2x":
-                sqlite_copy(target, copy)
-            else:
+    for family, target in targets:
+        tag = hashlib.sha256(target.encode()).hexdigest()[:8]
+        if family == "2x":
+            copy = backup / f"{tag}-settings-app.json"
+            if not copy.exists():
+                copy.write_text(settings_text(target))
+        else:
+            copy = backup / f"{tag}-{target}.plist"
+            if not copy.exists():
                 run(["defaults", "export", target, str(copy)], check=True)
         saved.append((family, target, copy))
     return saved
@@ -169,7 +166,16 @@ def save_settings(plan: dict, root: Path) -> list[tuple[str, str, Path]]:
 def restore_settings(saved: list[tuple[str, str, Path]]) -> None:
     for family, target, copy in saved:
         if family == "2x":
-            sqlite_copy(copy, target)
+            # note (luojiaxuan): Only the settings row goes back; the history the run wrote stays.
+            con = sqlite3.connect(target)
+            try:
+                with con:
+                    con.execute(
+                        "update documents set doc=? where key='settings:app'",
+                        [copy.read_text()],
+                    )
+            finally:
+                con.close()
         else:
             run(["defaults", "import", target, str(copy)], check=True)
         copy.unlink()
