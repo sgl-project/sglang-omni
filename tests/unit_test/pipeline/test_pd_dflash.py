@@ -21,6 +21,7 @@ from sglang.srt.speculative.dflash_info_v2 import DFlashDraftInputV2
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import PretrainedConfig
 
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_scheduler import OmniDecodeScheduler, validate_pd_runtime
 from sglang_omni.scheduling.pd_utils import (
@@ -367,24 +368,28 @@ def test_off_thread_decode_abort_blocks_admission_and_defers_row_release(
     scheduler.enable_overlap = enable_overlap
     scheduler.scheduler_thread_id = threading.get_ident()
     scheduler.is_entry_rank = True
+    scheduler.tp_size = 1
+    scheduler.idle_wait_message = None
     scheduler.inbox = queue.SimpleQueue()
     scheduler.aborted_request_id_order = deque()
-    parent_abort = OmniScheduler.abort
+    handled_aborts: list[tuple[str, bool]] = []
 
     def abort(
         self: OmniScheduler, request_id: str, *, defer_running_cleanup: bool = True
     ) -> None:
-        if threading.get_ident() != self.scheduler_thread_id:
-            parent_abort(self, request_id, defer_running_cleanup=defer_running_cleanup)
-        else:
-            self.waiting_queue = [
-                request for request in self.waiting_queue if request.rid != request_id
-            ]
+        assert threading.get_ident() == self.scheduler_thread_id
+        handled_aborts.append((request_id, defer_running_cleanup))
+        self.waiting_queue = [
+            request for request in self.waiting_queue if request.rid != request_id
+        ]
 
     monkeypatch.setattr(OmniScheduler, "abort", abort)
     with ThreadPoolExecutor(1) as worker:
         worker.submit(scheduler.abort, prepare.request_id).result(timeout=5)
-        worker.submit(scheduler.abort, pending.request_id).result(timeout=5)
+        worker.submit(
+            scheduler.abort, pending.request_id, defer_running_cleanup=False
+        ).result(timeout=5)
+    assert not handled_aborts
     assert scheduler.pd_due_releases.empty()
     [request] = scheduler.waiting_queue
     scheduler.drain_decode_admissions()
@@ -393,13 +398,14 @@ def test_off_thread_decode_abort_blocks_admission_and_defers_row_release(
         list(allocation.page_indices)
     ]
 
-    events = [scheduler.inbox.get_nowait(), scheduler.inbox.get_nowait()]
-    assert [(event.type, event.request_id) for event in events] == [
-        ("abort", prepare.request_id),
-        ("abort", pending.request_id),
+    scheduler.inbox.put(IncomingMessage(request_id=prepare.request_id, type="abort"))
+    assert scheduler.recv_requests() == []
+    assert scheduler.inbox.empty()
+    assert handled_aborts == [
+        (prepare.request_id, True),
+        (pending.request_id, False),
+        (prepare.request_id, True),
     ]
-    for event in events:
-        scheduler.abort(event.request_id)
-        scheduler.abort(event.request_id)
+    assert not scheduler.waiting_queue
     assert scheduler.pd_due_releases.get_nowait() is request
     assert scheduler.pd_due_releases.empty()

@@ -1373,10 +1373,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.running = False
                 continue
             elif msg.type == "abort":
-                if msg.data is False:
-                    self.abort(msg.request_id, defer_running_cleanup=False)
-                else:
-                    self.abort(msg.request_id)
+                self.abort(msg.request_id, defer_running_cleanup=msg.data is not False)
                 continue
             elif msg.type == "admin":
                 self.tp_admin_results.append(self.run_admin_action_safely(*msg.data))
