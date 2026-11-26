@@ -95,6 +95,31 @@ def test_first_sample_streams_once_before_terminal(
         pass
 
 
+@pytest.mark.parametrize("finish", ["verify", "max_tokens", "eos"])
+def test_dflash_prebuilt_emits_first_commit_once(
+    stream_scheduler: OmniDecodeScheduler, finish: str
+) -> None:
+    request = rebuilt_req(
+        prefill_req(max_new_tokens=1 if finish == "max_tokens" else 16)
+    )
+    if finish == "eos":
+        request.sampling_params.stop_token_ids = {42}
+    request.update_finish_state()
+    stream_scheduler.draft_worker = Mock()
+    stream_scheduler.model_runner = Mock()
+    stream_scheduler.stream_output([request])
+    if finish == "verify":
+        request.output_ids.extend([43, 44, 2, 45])
+        request.update_finish_state(new_accepted_len=4)
+    stream_scheduler.stream_output([request])
+
+    messages = list(stream_scheduler.outbox.queue)
+    streamed = [message.data.item() for message in messages if message.type == "stream"]
+    assert streamed == ([42, 43, 44, 2] if finish == "verify" else [42])
+    assert [message.type for message in messages].count("result") == 1
+    assert messages[-1].type == "result"
+
+
 @pytest.mark.parametrize("partial_output", [False, True])
 def test_first_sample_failure_preserves_other_requests(
     stream_scheduler: OmniDecodeScheduler, partial_output: bool

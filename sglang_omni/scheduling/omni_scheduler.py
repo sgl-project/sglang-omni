@@ -1373,7 +1373,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 self.running = False
                 continue
             elif msg.type == "abort":
-                self.abort(msg.request_id)
+                self.abort(msg.request_id, defer_running_cleanup=msg.data is not False)
                 continue
             elif msg.type == "admin":
                 self.tp_admin_results.append(self.run_admin_action_safely(*msg.data))
@@ -3837,6 +3837,21 @@ class OmniScheduler(Generic[RequestDataT]):
         executor.shutdown(wait=False, cancel_futures=True)
         self.request_build_executor = None
 
+    def remember_aborted_request(self, request_id: str) -> None:
+        if request_id in self.aborted_request_ids:
+            return
+        else:
+            pass
+        if len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
+            while len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_RETAINED:
+                self.aborted_request_ids.discard(
+                    self.aborted_request_id_order.popleft()
+                )
+        else:
+            pass
+        self.aborted_request_ids.add(request_id)
+        self.aborted_request_id_order.append(request_id)
+
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
         bridge = self.session_bridge
         if self.scheduler_thread_id != threading.get_ident() and (
@@ -3867,20 +3882,7 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         with self.request_admission_lock:
-            if request_id not in self.aborted_request_ids:
-                if len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_LIMIT:
-                    # note (Gaokai): evict oldest-first so a still-quiescing
-                    # abort survives.
-                    while len(self.aborted_request_ids) >= _ABORTED_REQUEST_ID_RETAINED:
-                        self.aborted_request_ids.discard(
-                            self.aborted_request_id_order.popleft()
-                        )
-                else:
-                    pass
-                self.aborted_request_ids.add(request_id)
-                self.aborted_request_id_order.append(request_id)
-            else:
-                pass
+            self.remember_aborted_request(request_id)
             running_abort = (
                 self.mark_running_request_aborted(request_id)
                 if defer_running_cleanup
