@@ -200,10 +200,21 @@ func TestAnswerTitleDropsWholeInstructionPair(t *testing.T) {
 
 func checkAnswer(t *testing.T, out, want string, input ...string) {
 	t.Helper()
+	request := input[0]
+	currentInput := "\n\n" + input[0]
 	if len(input) > 1 {
-		input = append([]string{input[0] + "\n" + input[1]}, input[1:]...)
+		request = "\n" + input[1]
+		if len(input) > 2 {
+			request = input[2] + "\n" + input[1]
+		}
+		currentInput = input[0] + "\n" + request
 	}
-	checkAnswerInputs(t, out, want, input...)
+	// Match write.go: full current input first, request separate, earlier turns after.
+	current := []string{currentInput}
+	if len(input) > 3 {
+		current = append(current, input[3:]...)
+	}
+	checkAnswerWithRequest(t, out, want, request, current)
 }
 
 func checkAnswerInputs(t *testing.T, out, want string, input ...string) {
