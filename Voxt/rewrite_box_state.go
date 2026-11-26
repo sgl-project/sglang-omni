@@ -20,8 +20,8 @@ func (a *app) boxVoiceLine() string {
 	b := &a.box
 	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
 		switch {
-		case a.sess.State == session.Recording:
-			return a.sess.Partial
+		case a.sess.State == session.Recording, a.sess.State == session.Recognizing && a.sess.Partial != "":
+			return a.sess.Partial // the live text stays while the last of it is recognised (VX-141)
 		case a.sess.State == session.Recognizing:
 			return i18n.T("Recognising…")
 		case a.sess.Spoken != "":
@@ -85,6 +85,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	resendReview := box.sending != "" && box.shown && a.sess.ID == box.sending && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
 	recording := box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording
 	state := rewriteBoxViewState{
+		Sessions:  a.sessionChips(),
 		Selection: selection, Conversation: a.boxConversing(), SizeStep: a.prefs.Features.CardSize(string(store.KindRewrite)), SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), EditorPlaceholder: i18n.T("Or type here"), Subtitle: a.boxSubtitle(selection), SubtitleError: box.err != "",
 		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
@@ -152,8 +153,7 @@ func (a *app) boxSync() {
 		return // tests: the state is enough
 	}
 	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil))
-		a.box.win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on, over a full-screen app too
+		a.box.win, a.box.panel = a.newBoxWin(false), false
 	}
 	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, ovAnswer, boxWinH))
 	if style != a.box.style {
@@ -170,11 +170,42 @@ func (a *app) boxSync() {
 	}
 	if !a.box.winShown || a.box.raise {
 		// The shortcut that opens the card or sends from it is a click on
-		// it: above every window at once (cardFront).
+		// it: above every window at once (cardFront), on the user's Space.
+		a.boxPanel()
 		a.box.front.raise(a.box.win)
 		a.box.winShown, a.box.raise = true, false
 	}
 	a.box.front.settle(a.box.win, func() cardMay { return a.cardMayTake(a.box.target.PID) })
+}
+
+// newBoxWin creates the card's window: an ordinary one, or a panel.
+func (a *app) newBoxWin(panel bool) boxWindow {
+	options := cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil)
+	options.Panel = panel
+	win := newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, options)
+	win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on
+	return win
+}
+
+// boxPanel makes the card a panel when its ordinary window is not on the
+// user's Space: the user is in another app's full screen, where macOS
+// shows no ordinary window of an app with a Dock icon, and VoxtNew taking
+// the front with it (cardFront) would switch the user to a desktop. A
+// panel shows over the full-screen app and takes the keyboard without
+// activating VoxtNew, as the card did before it took the front (#4417).
+// It floats: VoxtNew never comes in front with it, and at the windows'
+// level the app in front would cover it. It stays a panel until the card
+// closes. Main thread.
+func (a *app) boxPanel() {
+	if a.box.panel || a.box.win.IsOnActiveSpace() {
+		return
+	}
+	a.box.win.Destroy()
+	a.box.win, a.box.panel = a.newBoxWin(true), true
+	a.box.front = cardFront{floats: true} // a new window starts above every window
+	a.box.focusText = true                // its text box takes the typing
+	a.box.win.SetVibrancyStyle(a.box.style)
+	a.box.win.SetContentBounds(a.box.frame)
 }
 
 // boxConversing says whether the card shows the answer card's content:

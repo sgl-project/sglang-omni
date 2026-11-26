@@ -230,6 +230,12 @@ func normalize(s Settings) Settings {
 		f.Note = normalizeHotkey(f.Note)
 		f.Note.Trigger = TriggerTap
 	}
+	for i := range f.Sessions {
+		if f.Sessions[i].Keys != "" {
+			f.Sessions[i] = normalizeHotkey(f.Sessions[i])
+			f.Sessions[i].Trigger = TriggerTap // a slot switch is always a tap
+		}
+	}
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)
 	}

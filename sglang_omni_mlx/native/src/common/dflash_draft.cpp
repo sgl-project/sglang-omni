@@ -125,10 +125,32 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
 
 } // namespace
 
-DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
-                         int quantization_bits,
+std::map<std::string, std::function<void(const std::string &)>>
+DraftOptions::Flags() {
+  return {
+      {"--draft-model-path",
+       [this](const std::string &value) { directory = value; }},
+      {"--draft-bits",
+       [this](const std::string &value) {
+         quantization_bits = std::stoi(value);
+       }},
+  };
+}
+
+void DraftOptions::Check() const {
+  if (quantization_bits != 0 && quantization_bits != 4 &&
+      quantization_bits != 6 && quantization_bits != 8) {
+    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+  } else if (quantization_bits != 0 && directory.empty()) {
+    throw std::invalid_argument("--draft-bits needs --draft-model-path");
+  } else {
+  }
+}
+
+DFlashDraft::DFlashDraft(const DraftOptions &options,
                          const Qwen3DecoderConfig &target)
-    : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
+    : DFlashDraft(CheckedDraft(options.directory, target),
+                  options.quantization_bits) {}
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
     : checkpoint_(omni_common::QuantizedCheckpoint(

@@ -16,7 +16,17 @@ func TestSnippetsDemoActionControls(t *testing.T) {
 		check   func(*testing.T, *meetingDemoHost)
 	}{
 		{name: "retry", fixture: "en/snippets-error", steps: historySteps("Try again"), want: []string{"loadSnippets"}},
-		{name: "import", fixture: "en/snippets-normal", steps: historySteps("Import snippets"), want: []string{"importSnippets"}},
+		{name: "import", fixture: "en/snippets-normal", steps: historySteps("Import snippets", "Choose a .json file"), want: []string{"importSnippets"}},
+		{name: "import format", fixture: "en/snippets-import", steps: historySteps("File format"), check: func(t *testing.T, host *meetingDemoHost) {
+			if !host.snipUI.importExample {
+				t.Fatalf("format folded %+v", host.snipUI)
+			}
+		}},
+		{name: "import cancel", fixture: "en/snippets-import-error", steps: historySteps("Cancel"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.snipUI.importOpen {
+				t.Fatalf("dialog %+v", host.snipUI)
+			}
+		}},
 		{name: "add", fixture: "en/snippets-normal", steps: historySteps("Add snippet"), check: func(t *testing.T, host *meetingDemoHost) {
 			if !host.snipUI.editOpen || host.snipUI.edit.id != "" {
 				t.Fatalf("dialog %+v", host.snipUI)
@@ -93,6 +103,10 @@ func snippetsDemoSentinel(state meetingFixtureState) string {
 		return ""
 	case local.Error != "":
 		return local.Error
+	case local.ImportError != "":
+		return local.ImportError
+	case local.ImportOpen:
+		return i18n.T("Choose a .json file")
 	case local.EditOpen && local.ID != "":
 		return i18n.T("Edit snippet")
 	case local.EditOpen:

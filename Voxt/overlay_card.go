@@ -18,6 +18,8 @@ var (
 // answerCardUI is the card's view-local menu, quote and thumbnail state.
 type answerCardUI struct {
 	langOpen, thinkMenu, pillMenu bool
+	sessionName                   string // the title being typed on the session row
+	sessionShown                  int    // the session the row last scrolled into view
 	quotesOpen                    map[int]bool
 	thumbs                        []*ui.Bitmap
 	preview                       int

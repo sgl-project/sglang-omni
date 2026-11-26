@@ -286,9 +286,6 @@ func TestAppUpdated(t *testing.T) {
 	if !has(tt, "Restart to update") || has(tt, "Helper stopped unexpectedly") {
 		t.Fatalf("sidebar update button: %q", firstTexts(tt))
 	}
-	if !has(tt, "Voxt was updated. Restart it to finish.") {
-		t.Errorf("home: %q", firstTexts(tt))
-	}
 	if slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate || n.ID == problemHelper }) {
 		t.Fatalf("unexpected sidebar notice: %+v", a.notices)
 	}

@@ -98,9 +98,13 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_HUB` | Model library that `scripts/mac-latency.sh` reads. | `~/Library/Application Support/SGLang Omni/models` |
 | `VOXTNEW_INK` | Directory where the overlay tests write the rendered cards as PNG. | Unset: no pictures |
 | `VOXTNEW_LATENCY` | `1` runs `TestMacE2EFirstLatency` on a Mac. | Unset: the test skips |
+| `VOXTNEW_LATENCY_ATTEMPT` | Attempt number written to each latency JSON object; also overrides the round number for A/B runs. | `0`: use the round counter |
+| `VOXTNEW_LATENCY_ARM` | Arm label written to each latency JSON object for A/B comparisons. | Unset: empty arm |
+| `VOXTNEW_LATENCY_OUT` | File where each latency session appends one JSON object with stage times, text and its hash. | Unset: no JSONL output |
 | `VOXTNEW_LATENCY_PCM` | Recording that the latency test plays. | Unset: the bundled speech sample |
 | `VOXTNEW_LATENCY_ROUNDS` | Number of rounds of the latency test. | `3` |
 | `VOXTNEW_LATENCY_SETTLE` | Wait after the app is ready, before the first session of the latency test. | `3s` |
+| `VOXTNEW_LATENCY_SKIP_SWITCH` | `1` measures only cold and warm, without loading the second speech model on memory-constrained machines. | Unset: cold, warm and switch |
 | `VOXTNEW_LATENCY_SPEAK` | How long a latency test session records after its first speech. | `2s` |
 | `VOXTNEW_LEGACY_HOME` | Home directory where the import of Voxt 1.x data looks, for tests that run the app with a fake home. | Unset: the real home |
 | `VOXTNEW_LIVE_RELEASES` | Any value runs `TestReleaseLive`, which asks api.github.com, read-only, for the newest release as the GitHub update check does. Run it by hand after changing that check (`updates_github.go`). | Unset: the test skips |
@@ -108,6 +112,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MAC_E2E` | `1` runs the headless end-to-end tests on a real Mac. | Unset: the tests skip |
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
 | `VOXTNEW_MAC_SYSTEM_IDLE` | `1` lets the Mac end-to-end test capture real system audio while the output is idle. Run by hand on a Mac with nothing playing, before a release or when the meeting waveform or silence reminder changes; the built helper needs system audio permission. | Unset: the test skips |
+| `VOXTNEW_MAIN_SHA` | Source revision written to latency JSON objects, for binaries built without VCS stamps. | Unset: read `vcs.revision` from the binary, or `unknown` |
 | `VOXTNEW_MAC_OUTPUT` | UID of an output device that the output device test can switch to. | Unset: the test skips |
 | `VOXTNEW_MAC_OUTPUT_DEFAULT` | `1` lets the output device test change the default output device. | Unset: not allowed |
 | `VOXTNEW_MIN_FREE` | `scripts/mac-beta-e2e.sh` and `scripts/mac-regress.sh` stop when less than this percentage of memory is free. | `40` in `mac-beta-e2e.sh`, `30` in `mac-regress.sh` |
@@ -123,12 +128,14 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_REAL_CUSTOM` | Custom language model for `TestRealServices`, as `<address>\|<model>`. | Unset: the custom case skips |
 | `VOXTNEW_REAL_SERVICES` | `1` runs `TestRealServices` against the remote services whose keys are in the login Keychain (macOS). | Unset: the test skips |
 | `VOXTNEW_RUNTIME_DIR` | Directory with the runtimes that `scripts/mac-regress.sh` uses. | `~/voxtnew-runtime` |
-| `VOXTNEW_SHOTS` | Directory where the Transcribe page layout test writes its PNGs. | Unset: no pictures |
+| `VOXTNEW_SHOTS` | Directory where the feature-section layout test writes its PNGs. | Unset: no pictures |
 | `VOXTNEW_SHOTS_DRY` | `1` makes `scripts/mac-logs-shots.sh` only open the window, without moving the pointer. | Unset: the full run |
 | `VOXTNEW_SHOTS_IDLE` | Seconds without user input before `scripts/mac-logs-shots.sh` moves the pointer. | `300` |
 | `VOXTNEW_SHOTS_ORDER` | `1` makes `scripts/mac-logs-shots.sh` capture the log order instead. | Unset: the normal captures |
 | `VOXTNEW_SIGN_IDENTITY` | Code signing identity for the helper and the release build. | Unset: ad hoc signing |
 | `VOXTNEW_SMOKE_LEGACY` | `1` runs the import check of the upgrade test in the app. | Unset: no check |
+| `VOXTNEW_SMOKE_LIBRARY` | `export`, `import` or `check`: one Mac's side of the library transfer test in `--smoke` (`scripts/library-e2e.sh`). | Unset: no transfer |
+| `VOXTNEW_SMOKE_LIBRARY_FILE` | The library file that `VOXTNEW_SMOKE_LIBRARY` exports to or imports from. | Unset: none |
 | `VOXTNEW_SMOKE_MODELS` | Speech model id that the app smoke test opens. | Unset: the first installed speech model |
 | `VOXTNEW_SNAPSHOTS` | Directory where `TestSnapshots` and the page snapshot tests write PNGs. | Unset: the tests skip |
 | `VOXTNEW_SNAPSHOTS_OUT` | File where `TestRealSnapshots` in `internal/models` writes its list. | Unset: the test skips |

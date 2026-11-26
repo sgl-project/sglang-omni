@@ -89,8 +89,8 @@ func NeedsTap(h settings.Hotkey) bool {
 }
 
 // Check lists the problems of the shortcuts in f, in the settings' order
-// (Transcribe, Translate, Rewrite, PasteLast, Note, Cancel). A clash is
-// reported on the later binding.
+// (Transcribe, Translate, Rewrite, PasteLast, Note, Sessions, Cancel).
+// A clash is reported on the later binding.
 func Check(f settings.Features) []Problem {
 	type entry struct {
 		feature string
@@ -100,7 +100,8 @@ func Check(f settings.Features) []Problem {
 	}
 	var out []Problem
 	var seen []entry
-	all := append(append([]string{}, Features...), PasteLast, Note, CancelID)
+	all := append(append([]string{}, Features...), PasteLast, Note)
+	all = append(append(all, Sessions...), CancelID)
 	for _, feat := range all {
 		for i, h := range HotkeysOf(f, feat) {
 			c, err := Parse(h.Keys)
@@ -109,7 +110,8 @@ func Check(f settings.Features) []Problem {
 				continue
 			}
 			trigger := h.Trigger
-			if trigger == "" || feat == PasteLast || feat == Note || feat == CancelID {
+			_, isSession := SessionSlot(feat)
+			if trigger == "" || feat == PasteLast || feat == Note || feat == CancelID || isSession {
 				trigger = settings.TriggerTap
 			}
 			clash := false

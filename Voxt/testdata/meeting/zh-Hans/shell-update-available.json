@@ -30,24 +30,6 @@
           "title": "功能",
           "pages": [
             {
-              "path": "/transcribe",
-              "title": "转录",
-              "keys": "⌘3",
-              "selected": false
-            },
-            {
-              "path": "/translate",
-              "title": "翻译",
-              "keys": "⌘4",
-              "selected": false
-            },
-            {
-              "path": "/rewrite",
-              "title": "改写",
-              "keys": "⌘5",
-              "selected": false
-            },
-            {
               "path": "/notes",
               "title": "笔记",
               "selected": false

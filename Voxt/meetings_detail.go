@@ -72,6 +72,8 @@ func meetingDetailSection(c *ui.Context, state meetingDetailViewState, actions m
 func meetingDetailTop(c *ui.Context, state meetingDetailViewState, actions meetingsActions, local *meetingsLocalUI) {
 	t := c.Theme()
 	colors := tok(t)
+	// Close in the header clears local.detail; the rest of this frame still draws.
+	detail := local.detail
 	meetingDetailHeader(c, state, actions, local)
 	section := func(key, heading string, actionsView, body func()) {
 		ui.Column(c.Key(key)).Gap(px(t, sp1)).Children(func() {
@@ -131,8 +133,8 @@ func meetingDetailTop(c *ui.Context, state meetingDetailViewState, actions meeti
 				caption(c, i18n.T("Answering…"))
 			}
 			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
-				ui.TextInput(c.Key("mt-followup"), &local.detail.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
-				question := strings.TrimSpace(local.detail.question)
+				ui.TextInput(c.Key("mt-followup"), &detail.question).Placeholder(i18n.T("Follow-up question")).Grow(1).MinWidth(0)
+				question := strings.TrimSpace(detail.question)
 				if ui.Button(c.Key("mt-ask"), i18n.T("Send question")).Disabled(state.Answering || question == "").Clicked() {
 					actions.askMeetingFollowUp(state.ID, question)
 				}

@@ -34,7 +34,7 @@ func (a *app) featureModelStatusKey(feature string) string {
 	key := fmt.Sprintf("%p/%d|%s", a.glossaryTerms, len(a.glossaryTerms), a.modelDeciding)
 	for _, input := range []featureModelStatusInput{a.featureModelStatus(local.ASR, feature, f.ASR), a.featureModelStatus(local.LLM, feature, f.LLM)} {
 		if input.Model != nil {
-			key += fmt.Sprintf("|%s %+v", input.Model.ID, input.Status)
+			key += fmt.Sprintf("|%s %+v%s", input.Model.ID, input.Status, input.PackLeft)
 		}
 		if input.Service != nil {
 			key += fmt.Sprintf("|%+v", *input.Service)
@@ -44,14 +44,15 @@ func (a *app) featureModelStatusKey(feature string) string {
 }
 
 // featureModelStatus is the model feature's picker of kind stands for:
-// the one chosen (id), else the one Automatic uses, else the recommended
-// speech model.
+// the one chosen (id), else the one Automatic uses, else the guide's
+// recommended speech model (obSpeech, gated on the main language).
 func (a *app) featureModelStatus(kind local.Kind, feature, id string) featureModelStatusInput {
 	if id == "" {
 		if model, ok := a.featureModel(kind, feature); ok {
 			id = model.ID
 		}
 	}
+	var packLeft string
 	if kind == local.ASR {
 		if _, ok := models.Lookup(id); !ok {
 			_, configured := a.setupOf(kind, id)
@@ -60,12 +61,13 @@ func (a *app) featureModelStatus(kind local.Kind, feature, id string) featureMod
 				return ok
 			})
 			if !configured && !hasInstalledCatalogModel {
-				id = models.ASRAccurate
+				id = a.obSpeech()
+				packLeft = a.obDownloadLeft()
 			}
 		}
 	}
 	if model, ok := models.Lookup(id); ok && local.Kind(model.Kind) == kind && !model.Retired {
-		return featureModelStatusInput{Model: &model, Status: a.modelStatus[model.ID]}
+		return featureModelStatusInput{Model: &model, Status: a.modelStatus[model.ID], PackLeft: packLeft}
 	}
 	setup, configured := a.setupOf(kind, id)
 	if !configured {
@@ -123,6 +125,24 @@ func (a *app) featureEndWordModel() *featureEndWordViewState {
 	model, ok := a.featureModel(local.ASR, hotkey.Transcribe)
 	input := featureEndWordStateInput{Current: a.prefs.Features.EndWord, Streaming: ok && model.Stream, Local: &a.fui(hotkey.Transcribe).endWord}
 	return buildFeatureEndWordViewState(i18n.CurrentTranslator(), input)
+}
+
+// featurePackDownloads is the feature settings' actions: downloading the
+// recommended speech model beside a feature's picker fetches its
+// catalogue draft too, as the guide's pack does, so Faster transcription
+// is on from the first download (#4069). Another model's download stays
+// the model alone, as in the Speech models section.
+type featurePackDownloads struct{ featureActions }
+
+func (actions featurePackDownloads) downloadModel(id string) { actions.downloadModelPack(id) }
+
+func (a *app) downloadModelPack(id string) {
+	a.downloadModel(id)
+	if id == a.obSpeech() {
+		if mod, ok := models.Lookup(id); ok && mod.Draft != "" {
+			a.downloadModel(mod.Draft)
+		}
+	}
 }
 
 func (a *app) openFeatureSpeechModels() {

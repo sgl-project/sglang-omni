@@ -476,6 +476,10 @@ type Window struct {
 	OnEval func(js string)
 
 	surface *Surface
+
+	// OffActiveSpace makes IsOnActiveSpace report false, as macOS does for
+	// a regular app's window on another app's full-screen Space.
+	OffActiveSpace bool
 }
 
 // Surface returns the window's surface, nil unless it was created with
@@ -609,6 +613,7 @@ func (w *Window) Show() {
 func (w *Window) ShowInactive()                      { w.mu.Lock(); w.visible = true; w.mu.Unlock() }
 func (w *Window) Hide()                              { w.mu.Lock(); w.visible = false; w.mu.Unlock() }
 func (w *Window) IsVisible() bool                    { w.mu.Lock(); defer w.mu.Unlock(); return w.visible }
+func (w *Window) IsOnActiveSpace() bool              { w.mu.Lock(); defer w.mu.Unlock(); return !w.OffActiveSpace }
 func (w *Window) Focus()                             { w.H.Focused() }
 func (w *Window) Blur()                              { w.H.Blurred() }
 func (w *Window) IsFocused() bool                    { w.mu.Lock(); defer w.mu.Unlock(); return w.focused }

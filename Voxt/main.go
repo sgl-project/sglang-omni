@@ -150,6 +150,7 @@ func main() {
 		a.loadUpdates()          // updates.go: restore persisted update state for sidebar and tray
 		a.startHelper()          // helperlink.go
 		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
+		a.loadSessions()         // session_keep.go: the sessions of the last run
 		a.applyDock()            // tray.go: in the Dock or not
 		a.connectWindowLife()    // tray.go
 		a.watchBundle()          // updates.go: an update installed while it runs

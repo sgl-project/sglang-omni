@@ -415,7 +415,7 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, 
 		if err != nil {
 			return job, err
 		}
-		answer := compose.CleanOutput(resp.Text, p.Text)
+		answer := compose.CleanOutput(resp.Text, p.Text, p.Custom())
 		job.answers = append(job.answers, answer)
 		job.usage = job.usage.Add(resp.Usage)
 		lp.mu.Lock()

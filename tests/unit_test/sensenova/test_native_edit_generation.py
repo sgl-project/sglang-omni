@@ -13,9 +13,6 @@ import torch
 from PIL import Image
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.pre_tokenizers import WhitespaceSplit
 from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerFast
 from transformers.cache_utils import DynamicCache
@@ -24,7 +21,6 @@ from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1Generat
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
 from sglang_omni.native_generation import cancellation
 from sglang_omni.vendor.sensenova_u1 import image_edit
-from sglang_omni.vendor.sensenova_u1.configuration_neo_chat import NEOChatConfig
 from sglang_omni.vendor.sensenova_u1.image_edit import build_it2i_queries, it2i_generate
 from sglang_omni.vendor.sensenova_u1.image_edit_memory import (
     estimate_it2i_prefix_memory_bytes,
@@ -33,51 +29,15 @@ from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import (
     NEOChatModel,
     prepare_flash_kv_cache,
 )
+from tests.unit_test.fixtures.sensenova import (
+    tiny_sensenova_model,
+    tiny_sensenova_tokenizer,
+)
 
 
 @pytest.fixture
 def edit_model_and_tokenizer() -> tuple[NEOChatModel, PreTrainedTokenizerFast]:
-    torch.manual_seed(0)
-    config = NEOChatConfig(
-        vision_config={
-            "hidden_size": 32,
-            "llm_hidden_size": 32,
-            "patch_size": 16,
-            "max_position_embeddings_vision": 64,
-        },
-        llm_config={
-            "architectures": ["Qwen3ForCausalLM"],
-            "vocab_size": 16,
-            "hidden_size": 32,
-            "intermediate_size": 64,
-            "num_hidden_layers": 1,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 2,
-            "head_dim": 8,
-            "max_position_embeddings": 2048,
-            "max_position_embeddings_hw": 64,
-        },
-        template="neo1_0",
-        use_pixel_head=False,
-        fm_head_layers=2,
-        concat_time_token_num=0,
-        noise_scale=1.0,
-        noise_scale_mode="constant",
-        noise_scale_base_image_seq_len=1,
-        add_noise_scale_embedding=True,
-        noise_scale_max_value=10.0,
-    )
-    model = NEOChatModel(config).eval()
-    vocabulary = {"[PAD]": 0, "[UNK]": 1, "<img>": 2, "</img>": 3, "<IMG_CONTEXT>": 4}
-    tokenizer_backend = Tokenizer(WordLevel(vocabulary, unk_token="[UNK]"))
-    tokenizer_backend.pre_tokenizer = WhitespaceSplit()
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=tokenizer_backend,
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        additional_special_tokens=["<img>", "</img>", "<IMG_CONTEXT>"],
-    )
-    return model, tokenizer
+    return tiny_sensenova_model(), tiny_sensenova_tokenizer()
 
 
 @pytest.mark.parametrize(

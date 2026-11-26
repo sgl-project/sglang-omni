@@ -10,3 +10,7 @@ func (host *meetingDemoHost) deleteSnippet(id string) { host.record("deleteSnipp
 func (host *meetingDemoHost) importSnippets() { host.record("importSnippets") }
 
 func (host *meetingDemoHost) loadSnippets() { host.record("loadSnippets") }
+
+func (host *meetingDemoHost) importSnippetsFile(path string) {
+	host.record("importSnippetsFile %s", path)
+}
