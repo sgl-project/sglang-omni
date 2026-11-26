@@ -32,14 +32,12 @@ func experimentalSettings(c *ui.Context, state settingsExperimentalViewState, ac
 				}
 			}, nil)
 	}
-	if state.SessionUse != "" {
-		caption(c, state.SessionUse)
-	}
-	for i := range state.Sessions {
+	for n := range state.Sessions {
 		if !state.SessionsOn {
 			break
 		}
-		slot := &state.Sessions[i]
+		slot := &state.Sessions[n]
+		i := slot.Slot
 		settingRowUnder(c, "ex-session-"+strconv.Itoa(i+1), slot.Title, "", func() {
 			if local.sessionEditing[i] {
 				keysField(c, &local.sessions[i], slot.Title, func(keys string) {

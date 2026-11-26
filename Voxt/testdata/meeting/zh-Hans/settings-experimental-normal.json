@@ -85,69 +85,7 @@
     "experimental": {
       "sessions": [
         {
-          "title": "切换到会话 1",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "请输入按键，例如 Control+Option+Space。"
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "切换到会话 2",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "请输入按键，例如 Control+Option+Space。"
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "切换到会话 3",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "请输入按键，例如 Control+Option+Space。"
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
+          "slot": 3,
           "title": "下一个会话",
           "recorder": {
             "helper_records_keys": false,

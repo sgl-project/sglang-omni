@@ -85,69 +85,7 @@
     "experimental": {
       "sessions": [
         {
-          "title": "Go to session 1",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "Go to session 2",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "Go to session 3",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
+          "slot": 3,
           "title": "Next session",
           "recorder": {
             "helper_records_keys": false,

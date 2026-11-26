@@ -9,7 +9,6 @@ import (
 func (a *app) experimentalSettingsModel() settingsExperimentalViewState {
 	return buildSettingsExperimentalViewState(i18n.CurrentTranslator(), settingsExperimentalStateInput{
 		Features: a.prefs.Features, HelperRecordsKeys: a.helperRecordsKeys(), KeepHistory: a.prefs.Privacy.KeepHistory,
-		SessionSwitches: a.prefs.Setup.SessionSwitchTotal, SessionReturns: a.prefs.Setup.SessionReturns,
 	})
 }
 

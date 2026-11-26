@@ -294,15 +294,10 @@ func checkSettingsExperimentalFixtures(t *testing.T, locale string, fixtures map
 	t.Helper()
 	translator := i18n.NewTranslator(locale)
 	experimental := requireSettingsDialogFixture(t, locale, fixtures, "settings-experimental-normal").Experimental
-	if len(experimental.Sessions) != 4 {
-		t.Fatalf("%s: experimental fixture has %d session rows, want 4", locale, len(experimental.Sessions))
+	if len(experimental.Sessions) != 1 {
+		t.Fatalf("%s: experimental fixture has %d session rows, want Next session only", locale, len(experimental.Sessions))
 	}
-	for i := 0; i < 3; i++ {
-		if want := translator.T("Go to session %d", i+1); experimental.Sessions[i].Title != want {
-			t.Errorf("%s: session row %d is %q, want %q", locale, i+1, experimental.Sessions[i].Title, want)
-		}
-	}
-	if next := experimental.Sessions[3]; next.Title != translator.T("Next session") || next.Recorder.DisplayedKeys != "⌥Tab" {
+	if next := experimental.Sessions[0]; next.Slot != 3 || next.Title != translator.T("Next session") || next.Recorder.DisplayedKeys != "⌥Tab" {
 		t.Errorf("%s: next-session row is %+v", locale, next)
 	}
 }

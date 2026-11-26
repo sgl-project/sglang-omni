@@ -453,17 +453,16 @@ func TestExperimentalSessionsSettings(t *testing.T) {
 	if !a.settings.Get().Features.SessionsOn {
 		t.Fatal("the switch did not turn sessions on")
 	}
-	for _, s := range []string{"Go to session 1", "Go to session 2", "Go to session 3", "Next session", "⌥Tab"} {
-		scrollToText(tt, s)
-		if !has(tt, s) {
-			t.Errorf("no %q: %q", s, firstTexts(tt))
-		}
+	// Only Next session: the card's row and the menu bar go to a given
+	// session, and its number shifts as sessions come and go. No use counts.
+	scrollToText(tt, "Next session")
+	if !has(tt, "Next session") || !has(tt, "⌥Tab") || has(tt, "Go to session 1") || has(tt, "Switched sessions") {
+		t.Errorf("the session rows: %q", firstTexts(tt))
 	}
-	scrollToText(tt, "Go to session 1")
-	click(t, tt, "Change…") // Go to session 1's, the first
+	click(t, tt, "Change…")
 	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
 	frames(tt)
-	if got := a.settings.Get().Features.Sessions[0].Keys; got != "Control+Option+4" {
+	if got := a.settings.Get().Features.Sessions[3].Keys; got != "Control+Option+4" {
 		t.Fatalf("the recorder saved %q", got)
 	}
 	if !hasExact(tt, "⌃⌥4") {
@@ -471,7 +470,7 @@ func TestExperimentalSessionsSettings(t *testing.T) {
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	frames(tt)
-	if !has(tt, "切换到会话 1") {
+	if !has(tt, "下一个会话") {
 		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }

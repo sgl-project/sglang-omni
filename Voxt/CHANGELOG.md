@@ -6,13 +6,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Changed
 
-- **Experimental settings**: Sessions (experimental), its history notice and usage counts, and the session shortcuts move from Settings → Shortcuts to Settings → Experimental. The session rows are now Go to session 1/2/3, and the switch explains where to find and start sessions. Existing session settings keep their values.
+- **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
 
 ### 中文
 
 #### 变更
 
-- **实验功能设置**：“会话（实验功能）”开关、历史提示、使用统计和会话快捷键从“设置 → 快捷键”移到“设置 → 实验功能”。会话 1/2/3 的快捷键改叫“切换到会话 1/2/3”，开关说明也写清在哪里查看和新建会话。已有会话设置保持不变。
+- **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
 
 ## [2.1.4] - 2026-11-25
 

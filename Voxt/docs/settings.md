@@ -206,7 +206,7 @@ Settings → Shortcuts → presets set the four main shortcuts at once; no field
 | Path | Type | Default | On the page |
 |---|---|---|---|
 | `features.sessionsOn` | boolean | `false`: no session row on the cards, no session list in the menu bar menu, and the session shortcuts do nothing (sessions are an experiment). While on with `privacy.keepHistory` on, the session list is kept over a restart in the database's `sessions` document; with history off it is not saved | Settings → Experimental → Sessions (experimental) |
-| `features.sessions` | array of 4 shortcuts: Go to session 1, 2, 3 (go to that session when it exists), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Experimental → Sessions |
+| `features.sessions` | array of 4 shortcuts: Go to session 1, 2, 3 (go to that session when it exists; set only in the settings file, the page lists Next session alone), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Experimental → Sessions |
 
 ### Transcribe, Translate and Rewrite (Settings → Transcribe, Translate or Rewrite)
 
