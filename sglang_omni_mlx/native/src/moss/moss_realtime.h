@@ -21,6 +21,9 @@
 
 namespace moss {
 
+// One decode's steady-clock stamps, logged as a moss_preview_timing event.
+struct DecodeTiming;
+
 class MossRealtimeSession : public omni_server::RealtimeConnection {
 public:
   // One window's decode, as MossTranscriber::Transcribe runs it; a seam so
@@ -56,23 +59,32 @@ private:
   // Note (Dayuxiaoshui): takes its samples off the pending buffer, so the next
   // window starts where this one ended.
   Decode TakeFinalWindow(int sample_count);
-  // Queues decode on the worker with its kind's flag; the completion publishes,
-  // logs its timing from append_started, and runs OnDecodeDone.
+  // Queues decode on the worker with its kind's flag; the completion publishes
+  // and runs OnDecodeDone. due_at is the event that made the decode due.
   void SubmitDecode(Decode decode, MossOptions options,
                     omni_server::CancelFlag flag,
-                    std::chrono::steady_clock::time_point append_started);
+                    std::chrono::steady_clock::time_point due_at,
+                    std::chrono::steady_clock::time_point decided_at);
   // Clears the in-flight flags and starts the final of a window that filled
   // while the decode ran; runs on the worker thread.
   void OnDecodeDone(DecodeKind kind);
   MossOptions DecodeOptions(const Decode &decode) const;
-  // The worker's job for decode.
-  omni_server::Transcription DecodeJob(
-      const Decode &decode, MossOptions options,
-      std::shared_ptr<omni_common::MossPreviewTiming> timing = nullptr) const;
+  static std::shared_ptr<DecodeTiming>
+  StartDecodeTiming(const Decode &decode,
+                    std::chrono::steady_clock::time_point due_at,
+                    std::chrono::steady_clock::time_point decided_at);
+  // The worker's job for decode; stamps when the transcription starts.
+  omni_server::Transcription
+  DecodeJob(const Decode &decode, MossOptions options,
+            std::shared_ptr<DecodeTiming> timing) const;
   // Note (Dayuxiaoshui): a final window is committed before its event is sent,
   // so a client that has seen every window has seen everything committed.
   void Publish(const Decode &decode,
                const omni_common::TranscriptionResult &result);
+  // Publish, then logs the decode's timing line.
+  void PublishWithTiming(const Decode &decode,
+                         const omni_common::TranscriptionResult &result,
+                         DecodeTiming &timing);
   // Note (Dayuxiaoshui): waits out a decode in flight first, since it reads
   // the pending audio this finalizes.
   void Flush();

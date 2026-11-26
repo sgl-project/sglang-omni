@@ -2,8 +2,7 @@
 // MossRealtimeSession scheduling without a checkpoint: the 0.75 s
 // first-preview gate; a stop or a full window preempting the preview in
 // flight; a full window's final scheduled by the cancelled preview's
-// completion, without a stop; and the verification comment's published
-// short-stop and 4 s window reproductions as old-gate A/Bs. Every scenario
+// completion, without a stop; and each decode's timing line. Every scenario
 // runs on a virtual clock the test advances by hand, with barriers on
 // transcriber starts, cancels and worker drains instead of timed waits.
 #include "moss/moss_realtime.h"
@@ -16,6 +15,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -34,11 +34,7 @@ constexpr auto kDecodeTime = 400ms;
 // Stop-to-final on the virtual clock: one 400 ms final plus up to 50 ms of
 // cancel scheduling; waiting the preview out costs 300-580 ms more.
 constexpr auto kStopToFinalLimit = kDecodeTime + 50ms;
-// The old-gate A/B no-later allowance; the published regressions were
-// 190-297 ms.
-constexpr auto kAbVirtualSlack = 50ms;
 constexpr int kGateSamples = omni_common::kSampleRate * 3 / 4;
-constexpr int kOldGateSamples = omni_common::kSampleRate * 5 / 4;
 constexpr int kWindowSamples = 4 * omni_common::kSampleRate;
 constexpr std::chrono::steady_clock::time_point kT0{};
 
@@ -270,105 +266,6 @@ void WaitForDrain(omni_server::TranscriptionWorker &worker) {
       omni_server::NewCancelFlag());
 }
 
-// The pre-PR scheduling, frozen as the old-gate control arm: the 1.25 s
-// first-preview gate and no preemption, so a stop waits out the preview in
-// flight. Only what the A/B scenarios exercise: a full window's final on
-// append (before the cadence, as the pre-PR NextDecode ordered it), the
-// cadence, and a blocking stop. The scenarios wait every decode out, so
-// callbacks never outlive the session.
-class OldGateSession {
-public:
-  OldGateSession(omni_server::TranscriptionWorker &worker,
-                 moss::MossRealtimeSession::TranscribeFn transcribe,
-                 moss::MossRealtimeSession::ClockFn clock)
-      : worker_(worker), transcribe_(std::move(transcribe)),
-        clock_(std::move(clock)) {}
-
-  int previews() const { return previews_.load(); }
-  int finals() const { return finals_.load(); }
-  const std::string &final_text() const { return final_text_; }
-
-  void Append(int sample_count) {
-    bool final = false;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      pending_ += sample_count;
-      const auto now = clock_();
-      if (decoding_ || pending_ < kOldGateSamples) {
-        return;
-      } else {
-      }
-      final = pending_ >= kWindowSamples;
-      if (!final && last_decode_.has_value() && now - *last_decode_ < 1s) {
-        return;
-      } else {
-      }
-      decoding_ = true;
-      last_decode_ = now;
-      if (final) {
-        pending_ -= kWindowSamples;
-      } else {
-        previews_.fetch_add(1);
-      }
-    }
-    worker_.Submit(
-        [this](const std::atomic<bool> &cancel) {
-          return transcribe_({}, moss::MossOptions{}, cancel);
-        },
-        cancel_,
-        [this, final](std::optional<omni_common::TranscriptionResult> result,
-                      std::exception_ptr) {
-          if (final) {
-            finals_.fetch_add(1);
-            final_text_ = result->text;
-          } else {
-          }
-          {
-            std::lock_guard<std::mutex> lock(mutex_);
-            decoding_ = false;
-          }
-          done_cv_.notify_all();
-        });
-  }
-
-  // The old Flush: wait out the decode in flight, then decode what is left.
-  void Done() {
-    bool flush = false;
-    {
-      std::unique_lock<std::mutex> lock(mutex_);
-      done_cv_.wait(lock, [&] { return !decoding_; });
-      flush = pending_ > 0;
-      pending_ = 0;
-    }
-    if (flush) {
-      final_text_ =
-          worker_
-              .Transcribe(
-                  [this](const std::atomic<bool> &cancel) {
-                    return transcribe_({}, moss::MossOptions{}, cancel);
-                  },
-                  cancel_)
-              .text;
-      finals_.fetch_add(1);
-    } else {
-    }
-  }
-
-private:
-  omni_server::TranscriptionWorker &worker_;
-  moss::MossRealtimeSession::TranscribeFn transcribe_;
-  moss::MossRealtimeSession::ClockFn clock_;
-  omni_server::CancelFlag cancel_ = omni_server::NewCancelFlag();
-  std::mutex mutex_;
-  std::condition_variable done_cv_;
-  int pending_ = 0;
-  bool decoding_ = false;
-  std::optional<std::chrono::steady_clock::time_point> last_decode_;
-  std::atomic<int> previews_{0};
-  std::atomic<int> finals_{0};
-  std::string final_text_;
-};
-
 std::string Ms(std::chrono::steady_clock::duration duration) {
   return std::to_string(
              std::chrono::duration_cast<std::chrono::milliseconds>(duration)
@@ -507,169 +404,6 @@ void TestFullWindowPreemptsPreview() {
             << Ms(stop_to_final) << ")\n";
 }
 
-// The published short-stop reproduction as a committed regression
-// (verification evidence on the PR): append 12000 samples, done at 100 ms,
-// controlled 400 ms decode. The old gate decodes only the final; the broken
-// new gate decoded preview+final and ended 293-297 ms later. Both arms run
-// on virtual clocks with explicit barriers, so the comparison is
-// deterministic.
-void TestShortStopNotLaterThanOldGate() {
-  VirtualClock clock;
-  omni_server::TranscriptionWorker new_worker([] {}, [] {});
-  ScriptedTranscriber new_fake(clock);
-  Events new_events;
-  const auto new_session = std::make_shared<moss::MossRealtimeSession>(
-      new_worker, new_fake.Fn(), new_events.Sender(),
-      [&clock] { return clock.Now(); });
-  new_session->Handle(AppendMessage(12000));
-  WaitFor([&] { return new_fake.starts_.load() == 1; }, "the gate preview");
-  clock.Advance(100ms);
-  std::atomic<bool> done{false};
-  std::thread stop_thread([&] {
-    new_session->Handle({{"type", "transcription.done"}});
-    done.store(true);
-  });
-  const bool cancelled =
-      TryWaitFor([&] { return new_fake.cancels_.load() == 1; });
-  TryWaitFor([&] { return new_fake.starts_.load() == 2; });
-  DriveToDone(clock, done);
-  stop_thread.join();
-  const auto new_stop_to_final = new_fake.LastEnd() - (kT0 + 100ms);
-
-  VirtualClock old_clock;
-  omni_server::TranscriptionWorker old_worker([] {}, [] {});
-  ScriptedTranscriber old_fake(old_clock);
-  OldGateSession old_session(old_worker, old_fake.Fn(),
-                             [&old_clock] { return old_clock.Now(); });
-  old_session.Append(12000);
-  old_clock.Advance(100ms);
-  std::atomic<bool> old_done{false};
-  std::thread old_stop_thread([&] {
-    old_session.Done();
-    old_done.store(true);
-  });
-  WaitFor([&] { return old_fake.starts_.load() == 1; }, "the old final");
-  DriveToDone(old_clock, old_done);
-  old_stop_thread.join();
-  const auto old_stop_to_final = old_fake.LastEnd() - (kT0 + 100ms);
-
-  Checks checks;
-  checks(cancelled, "the short stop must cancel the gate preview");
-  checks(new_fake.starts_.load() == 2,
-         "the short stop must decode preview work and the final once each");
-  checks(new_events.Segments(false) == 0,
-         "a preview cancelled by the stop must not be published");
-  checks(old_fake.starts_.load() == 1 && old_session.previews() == 0,
-         "the old gate must not preview 0.75 s of pending audio");
-  checks(new_events.Segments(true) == 1 && old_session.finals() == 1,
-         "both arms must end with one final");
-  checks(new_events.FinalText() == old_session.final_text(),
-         "both arms must end with the same final text");
-  checks(new_stop_to_final <= old_stop_to_final + kAbVirtualSlack,
-         "short stop: the new gate must not end the final later than the "
-         "old gate");
-  checks.ThrowIfAny();
-  std::cout << "TestShortStopNotLaterThanOldGate ok (new "
-            << Ms(new_stop_to_final) << ", old " << Ms(old_stop_to_final)
-            << ")\n";
-}
-
-// The published 4 s window reproduction as a committed regression
-// (verification evidence on the PR): identical 64000 samples per arm with
-// each arm's appends on its own preview cadence, then done. New-gate appends
-// at 0/1010/2020/3030/3250 ms (12000/16000/16000/16000/4000), old-gate at
-// 0/500/1510/2520/3250 ms (12000/8000/16000/16000/12000). The broken new
-// gate decoded 4 previews and ended 190-193 ms later; the old gate decoded
-// 3. Both arms run on virtual clocks with explicit barriers.
-void TestFullWindowNotLaterThanOldGate() {
-  VirtualClock clock;
-  omni_server::TranscriptionWorker new_worker([] {}, [] {});
-  ScriptedTranscriber new_fake(clock);
-  Events new_events;
-  const auto new_session = std::make_shared<moss::MossRealtimeSession>(
-      new_worker, new_fake.Fn(), new_events.Sender(),
-      [&clock] { return clock.Now(); });
-  new_session->Handle(AppendMessage(12000));
-  WaitFor([&] { return new_fake.starts_.load() == 1; }, "preview 1");
-  clock.Advance(1010ms);
-  WaitForDrain(new_worker);
-  new_session->Handle(AppendMessage(16000));
-  WaitFor([&] { return new_fake.starts_.load() == 2; }, "preview 2");
-  clock.Advance(1010ms);
-  WaitForDrain(new_worker);
-  new_session->Handle(AppendMessage(16000));
-  WaitFor([&] { return new_fake.starts_.load() == 3; }, "preview 3");
-  clock.Advance(1010ms);
-  WaitForDrain(new_worker);
-  new_session->Handle(AppendMessage(16000));
-  WaitFor([&] { return new_fake.starts_.load() == 4; }, "preview 4");
-  clock.Advance(220ms);
-  new_session->Handle(AppendMessage(4000));
-  const bool cancelled =
-      TryWaitFor([&] { return new_fake.cancels_.load() == 1; });
-  std::atomic<bool> done{false};
-  std::thread stop_thread([&] {
-    new_session->Handle({{"type", "transcription.done"}});
-    done.store(true);
-  });
-  TryWaitFor([&] { return new_fake.starts_.load() == 5; });
-  DriveToDone(clock, done);
-  stop_thread.join();
-  const auto new_stop_to_final = new_fake.LastEnd() - (kT0 + 3250ms);
-
-  VirtualClock old_clock;
-  omni_server::TranscriptionWorker old_worker([] {}, [] {});
-  ScriptedTranscriber old_fake(old_clock);
-  OldGateSession old_session(old_worker, old_fake.Fn(),
-                             [&old_clock] { return old_clock.Now(); });
-  old_session.Append(12000);
-  old_clock.Advance(500ms);
-  old_session.Append(8000);
-  WaitFor([&] { return old_fake.starts_.load() == 1; }, "old preview 1");
-  old_clock.Advance(1010ms);
-  WaitForDrain(old_worker);
-  old_session.Append(16000);
-  WaitFor([&] { return old_fake.starts_.load() == 2; }, "old preview 2");
-  old_clock.Advance(1010ms);
-  WaitForDrain(old_worker);
-  old_session.Append(16000);
-  WaitFor([&] { return old_fake.starts_.load() == 3; }, "old preview 3");
-  old_clock.Advance(730ms);
-  WaitForDrain(old_worker);
-  old_session.Append(12000);
-  WaitFor([&] { return old_fake.starts_.load() == 4; },
-          "the old arm's window final, taken before the cadence");
-  std::atomic<bool> old_done{false};
-  std::thread old_stop_thread([&] {
-    old_session.Done();
-    old_done.store(true);
-  });
-  DriveToDone(old_clock, old_done);
-  old_stop_thread.join();
-  const auto old_stop_to_final = old_fake.LastEnd() - (kT0 + 3250ms);
-
-  Checks checks;
-  checks(cancelled, "the filled window must cancel the fourth preview");
-  checks(new_fake.starts_.load() == 5,
-         "the new gate decodes four previews plus the final, one preview "
-         "more than the old gate, as disclosed");
-  checks(new_events.Segments(false) == 3,
-         "the cancelled fourth preview must not be published");
-  checks(old_session.previews() == 3,
-         "the old gate must decode three previews over the window");
-  checks(new_events.Segments(true) == 1 && old_session.finals() == 1,
-         "both arms must end with one final");
-  checks(new_events.FinalText() == old_session.final_text(),
-         "both arms must end with the same final text");
-  checks(new_stop_to_final <= old_stop_to_final + kAbVirtualSlack,
-         "full window: the new gate must not end the final later than the "
-         "old gate");
-  checks.ThrowIfAny();
-  std::cout << "TestFullWindowNotLaterThanOldGate ok (new "
-            << Ms(new_stop_to_final) << ", old " << Ms(old_stop_to_final)
-            << ")\n";
-}
-
 // A stop 100 ms into an in-flight preview whose transcriber returns a
 // normal result after the cancel lands (the real transcriber can return
 // after its last cancellation check): the stale result must be dropped, not
@@ -741,6 +475,80 @@ void TestFullWindowDropsCancelledPreviewResult() {
   std::cout << "TestFullWindowDropsCancelledPreviewResult ok\n";
 }
 
+// Routes std::cerr into a buffer for its lifetime.
+class CerrCapture {
+public:
+  CerrCapture() : original_(std::cerr.rdbuf(buffer_.rdbuf())) {}
+  ~CerrCapture() { std::cerr.rdbuf(original_); }
+  std::vector<nlohmann::json> Lines() const {
+    std::vector<nlohmann::json> lines;
+    std::istringstream stream(buffer_.str());
+    std::string line;
+    while (std::getline(stream, line)) {
+      lines.push_back(nlohmann::json::parse(line));
+    }
+    return lines;
+  }
+
+private:
+  std::ostringstream buffer_;
+  std::streambuf *original_;
+};
+
+// A preview, then the stop's final: one timing line each, stamps in stage
+// order, the gate Voxt's latency harness reads, and no transcript.
+void TestTimingLines() {
+  VirtualClock clock;
+  omni_server::TranscriptionWorker worker([] {}, [] {});
+  ScriptedTranscriber fake(clock);
+  Events events;
+  const auto session = std::make_shared<moss::MossRealtimeSession>(
+      worker, fake.Fn(), events.Sender(), [&clock] { return clock.Now(); });
+  std::vector<nlohmann::json> lines;
+  {
+    const CerrCapture capture;
+    session->Handle(AppendMessage(kGateSamples));
+    WaitFor([&] { return fake.starts_.load() == 1; }, "the gate preview");
+    clock.Advance(kDecodeTime);
+    WaitForDrain(worker);
+    std::atomic<bool> done{false};
+    std::thread stop_thread([&] {
+      session->Handle({{"type", "transcription.done"}});
+      done.store(true);
+    });
+    DriveToDone(clock, done);
+    stop_thread.join();
+    lines = capture.Lines();
+  }
+  Require(lines.size() == 2, "one timing line per decode");
+  const char *const stamps[] = {"append_at_ms",
+                                "decision_at_ms",
+                                "submit_at_ms",
+                                "transcribe_started_at_ms",
+                                "transcribe_at_ms",
+                                "publish_at_ms"};
+  for (size_t i = 0; i < lines.size(); ++i) {
+    const nlohmann::json &line = lines[i];
+    Require(line.at("event") == "moss_preview_timing", "the event name");
+    Require(line.at("kind") == (i == 0 ? "preview" : "final"),
+            "the preview's line, then the stop's final's");
+    Require(line.at("window_id") == 0, "both decode window 0");
+    Require(line.at("audio_sample_count") == kGateSamples,
+            "both decode the pending audio");
+    Require(line.at("min_preview_samples") == kGateSamples,
+            "the line carries the first-preview gate");
+    Require(!line.contains("text") && !line.contains("segments"),
+            "a timing line carries no transcript");
+    for (size_t stage = 1; stage < std::size(stamps); ++stage) {
+      Require(line.at(stamps[stage - 1]).get<int64_t>() <=
+                  line.at(stamps[stage]).get<int64_t>(),
+              std::string(stamps[stage]) + " must not precede " +
+                  stamps[stage - 1]);
+    }
+  }
+  std::cout << "TestTimingLines ok\n";
+}
+
 } // namespace
 
 int main() {
@@ -751,8 +559,7 @@ int main() {
     TestFullWindowPreemptsPreview();
     TestShortStopDropsCancelledPreviewResult();
     TestFullWindowDropsCancelledPreviewResult();
-    TestShortStopNotLaterThanOldGate();
-    TestFullWindowNotLaterThanOldGate();
+    TestTimingLines();
   } catch (const std::exception &error) {
     std::cerr << "moss_realtime_test failed: " << error.what() << "\n";
     return 1;

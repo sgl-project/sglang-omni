@@ -2,7 +2,6 @@
 // Model-independent transcription results and their JSON form.
 #pragma once
 
-#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,28 +43,6 @@ struct TranscriptionResult {
   // Prompt tokens a live session had already computed.
   int reused_prompt_token_count = 0;
 };
-
-// Realtime preview timing without prompt, transcript or speaker content.
-// The *_at_ms fields are absolute steady_clock milliseconds, not stage
-// durations: a stage's cost is the difference of two consecutive fields
-// (e.g. publish_at_ms - transcribe_at_ms is the publish cost).
-struct MossPreviewTiming {
-  int window_id = 0;
-  std::string kind = "preview";
-  int audio_sample_count = 0;
-  int64_t append_at_ms = 0;
-  int64_t decision_at_ms = 0;
-  int64_t submit_at_ms = 0;
-  int64_t transcribe_started_at_ms = 0;
-  int64_t transcribe_at_ms = 0;
-  int64_t publish_at_ms = 0;
-  int min_preview_samples = 0;
-  int verify_round_count = 0;
-  int proposed_draft_token_count = 0;
-  int accepted_draft_token_count = 0;
-};
-
-nlohmann::ordered_json MossPreviewTimingJson(const MossPreviewTiming &timing);
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
 // and language, emotion and event when set.

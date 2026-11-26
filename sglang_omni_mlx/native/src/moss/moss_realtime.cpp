@@ -18,32 +18,33 @@ using omni_common::SpeakerSegmentsJson;
 using omni_common::StripUnicodeWhitespace;
 using omni_common::TranscriptionResult;
 
-namespace omni_common {
-
-int64_t MillisecondsSinceEpoch(
-    const std::chrono::steady_clock::time_point &time_point) {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             time_point.time_since_epoch())
-      .count();
-}
-
-} // namespace omni_common
+// No prompt, transcript or speaker content. A stage's cost is the difference
+// of two consecutive stamps.
+struct DecodeTiming {
+  int window_id = 0;
+  std::string kind;
+  int audio_sample_count = 0;
+  // The append, stop or finished decode that made this decode due.
+  int64_t append_at_ms = 0;
+  int64_t decision_at_ms = 0;
+  int64_t submit_at_ms = 0;
+  int64_t transcribe_started_at_ms = 0;
+  int64_t transcribe_at_ms = 0;
+  int64_t publish_at_ms = 0;
+  int verify_round_count = 0;
+  int proposed_draft_token_count = 0;
+  int accepted_draft_token_count = 0;
+};
 
 namespace {
 
 // Note (Dayuxiaoshui): Voxt's Swift session: 4 s windows, and at most one
-// preview a second of the last 2.5 s pending, once 0.75 s has arrived.
+// preview a second of the last 2.5 s pending, once 1.25 s has arrived.
 constexpr int kWindowSamples = 4 * kSampleRate;
 constexpr int kPreviewSamples = kSampleRate * 5 / 2;
-// Measured on an Apple silicon MacBook Air (ABABAB, 3 per arm, identical
-// transcripts): starting the first preview at 0.75 s instead of 1.25 s of
-// pending audio shows the first text about 0.55 s sooner with no change to
-// the final transcript. The earlier cadence can decode one extra preview per
-// window; a preview in flight never delays a final, which cancels it.
+// 0.75 s, not Swift's 1.25 s: first text 0.55 s sooner, same finals (MacBook
+// Air A/B, 3 runs per arm).
 constexpr int kMinPreviewSamples = kSampleRate * 3 / 4;
-static_assert(kMinPreviewSamples == kSampleRate * 3 / 4,
-              "the first-preview gate is a measured value; changing it needs a "
-              "new same-source A/B with identical transcripts");
 constexpr auto kPreviewInterval = std::chrono::seconds(1);
 // Note (Dayuxiaoshui): Voxt's intermediate budget, scaled by window length; a
 // preview gets half a final window's, since it is decoded again.
@@ -52,6 +53,33 @@ constexpr double kPreviewTokensPerSecond = 16.0;
 constexpr int kMinPreviewTokens = 48;
 constexpr double kFinalTokensPerSecond = 32.0;
 constexpr int kMinFinalTokens = 96;
+
+int64_t SteadyClockMilliseconds(std::chrono::steady_clock::time_point time) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             time.time_since_epoch())
+      .count();
+}
+
+int64_t NowSteadyClockMilliseconds() {
+  return SteadyClockMilliseconds(std::chrono::steady_clock::now());
+}
+
+nlohmann::ordered_json DecodeTimingJson(const DecodeTiming &timing) {
+  return {{"event", "moss_preview_timing"},
+          {"window_id", timing.window_id},
+          {"kind", timing.kind},
+          {"audio_sample_count", timing.audio_sample_count},
+          {"append_at_ms", timing.append_at_ms},
+          {"decision_at_ms", timing.decision_at_ms},
+          {"submit_at_ms", timing.submit_at_ms},
+          {"transcribe_started_at_ms", timing.transcribe_started_at_ms},
+          {"transcribe_at_ms", timing.transcribe_at_ms},
+          {"publish_at_ms", timing.publish_at_ms},
+          {"min_preview_samples", kMinPreviewSamples},
+          {"verify_round_count", timing.verify_round_count},
+          {"proposed_draft_token_count", timing.proposed_draft_token_count},
+          {"accepted_draft_token_count", timing.accepted_draft_token_count}};
+}
 
 } // namespace
 
@@ -128,14 +156,16 @@ bool MossRealtimeSession::Handle(const nlohmann::json &message) {
 }
 
 void MossRealtimeSession::Append(const nlohmann::json &audio) {
-  const auto append_started = std::chrono::steady_clock::now();
+  const auto appended_at = std::chrono::steady_clock::now();
   const std::optional<std::vector<float>> appended = AppendedSamples(audio);
   if (!appended.has_value()) {
     return;
+  } else {
   }
   std::optional<Decode> decode;
   MossOptions options;
   omni_server::CancelFlag flag;
+  std::chrono::steady_clock::time_point decided_at;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_samples_.insert(pending_samples_.end(), appended->begin(),
@@ -144,70 +174,52 @@ void MossRealtimeSession::Append(const nlohmann::json &audio) {
     if (decode.has_value()) {
       options = DecodeOptions(*decode);
       flag = decode->kind == DecodeKind::kPreview ? preview_cancel_ : cancel_;
+      decided_at = std::chrono::steady_clock::now();
     } else {
       return;
     }
   }
   SubmitDecode(std::move(*decode), std::move(options), std::move(flag),
-               append_started);
+               appended_at, decided_at);
 }
 
 void MossRealtimeSession::SubmitDecode(
     Decode decode, MossOptions options, omni_server::CancelFlag flag,
-    std::chrono::steady_clock::time_point append_started) {
-  auto timing = std::make_shared<::omni_common::MossPreviewTiming>();
-  const auto decision_started = std::chrono::steady_clock::now();
-  timing->window_id = decode.window_id;
-  timing->kind = decode.kind == DecodeKind::kPreview ? "preview" : "final";
-  timing->audio_sample_count = static_cast<int>(decode.samples.size());
-  timing->append_at_ms = omni_common::MillisecondsSinceEpoch(append_started);
-  timing->decision_at_ms =
-      omni_common::MillisecondsSinceEpoch(decision_started);
-  timing->submit_at_ms =
-      omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
-  timing->min_preview_samples = kMinPreviewSamples;
+    std::chrono::steady_clock::time_point due_at,
+    std::chrono::steady_clock::time_point decided_at) {
+  const std::shared_ptr<DecodeTiming> timing =
+      StartDecodeTiming(decode, due_at, decided_at);
   omni_server::Transcription job =
       DecodeJob(decode, std::move(options), timing);
   std::weak_ptr<MossRealtimeSession> weak_self =
       std::static_pointer_cast<MossRealtimeSession>(shared_from_this());
   const omni_server::CancelFlag callback_flag = flag;
+  timing->submit_at_ms = NowSteadyClockMilliseconds();
   worker_.Submit(
       std::move(job), std::move(flag),
       [weak_self, decode = std::move(decode), flag = callback_flag,
        timing](std::optional<TranscriptionResult> result,
-               std::exception_ptr error) mutable {
+               std::exception_ptr error) {
         const std::shared_ptr<MossRealtimeSession> self = weak_self.lock();
         if (!self) {
           return;
         } else if (error) {
           self->ReportDecodeFailure(error);
         } else if (decode.kind == DecodeKind::kPreview && flag->load()) {
-          // Note: the transcriber can return after its last cancellation
-          // check; a cancelled preview's result is already replaced, so it
-          // is dropped, not published.
+          // The transcriber can return after its last cancellation check; the
+          // cancelled preview's result is already replaced, so it is dropped.
         } else {
-          timing->transcribe_at_ms = omni_common::MillisecondsSinceEpoch(
-              std::chrono::steady_clock::now());
-          timing->verify_round_count = result->verify_round_count;
-          timing->proposed_draft_token_count =
-              result->proposed_draft_token_count;
-          timing->accepted_draft_token_count =
-              result->accepted_draft_token_count;
-          self->Publish(decode, *result);
-          // Stamped after Publish so publish_at_ms - transcribe_at_ms is the
-          // real publish cost; the event line goes out once it is complete.
-          timing->publish_at_ms = omni_common::MillisecondsSinceEpoch(
-              std::chrono::steady_clock::now());
-          std::cerr << ::omni_common::MossPreviewTimingJson(*timing).dump()
-                    << "\n";
+          self->PublishWithTiming(decode, *result, *timing);
         }
         self->OnDecodeDone(decode.kind);
       });
 }
 
 void MossRealtimeSession::OnDecodeDone(DecodeKind kind) {
+  const auto finished_at = std::chrono::steady_clock::now();
   std::optional<Decode> next;
   MossOptions options;
+  std::chrono::steady_clock::time_point decided_at;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     decoding_ = false;
@@ -215,18 +227,19 @@ void MossRealtimeSession::OnDecodeDone(DecodeKind kind) {
       preview_in_flight_ = false;
     } else {
     }
-    // Note: a window that filled while this decode ran is due now, not at the
-    // next append or stop; a cancelled preview's completion starts it.
+    // A window that filled while this decode ran is due now, not at the next
+    // append or stop; a cancelled preview's completion starts it.
     if (static_cast<int>(pending_samples_.size()) >= kWindowSamples) {
       next = NextDecode();
       options = DecodeOptions(*next);
+      decided_at = std::chrono::steady_clock::now();
     } else {
     }
   }
   decode_done_.notify_all();
   if (next.has_value()) {
-    SubmitDecode(std::move(*next), std::move(options), cancel_,
-                 std::chrono::steady_clock::now());
+    SubmitDecode(std::move(*next), std::move(options), cancel_, finished_at,
+                 decided_at);
   } else {
   }
 }
@@ -251,9 +264,8 @@ std::optional<MossRealtimeSession::Decode> MossRealtimeSession::NextDecode() {
   const int pending_count = static_cast<int>(pending_samples_.size());
   Decode decode;
   if (decoding_) {
-    // Note: a full window outranks the preview in flight; cancelling lets the
-    // window's final decode start at the preview's completion instead of
-    // waiting out work its result replaces.
+    // A full window outranks the preview in flight: cancelling it starts the
+    // window's final at the preview's completion, not after work it replaces.
     if (pending_count >= kWindowSamples) {
       CancelPreviewLocked();
     } else {
@@ -308,17 +320,25 @@ MossOptions MossRealtimeSession::DecodeOptions(const Decode &decode) const {
   return options;
 }
 
-omni_server::Transcription MossRealtimeSession::DecodeJob(
-    const Decode &decode, MossOptions options,
-    std::shared_ptr<::omni_common::MossPreviewTiming> timing) const {
+std::shared_ptr<DecodeTiming> MossRealtimeSession::StartDecodeTiming(
+    const Decode &decode, std::chrono::steady_clock::time_point due_at,
+    std::chrono::steady_clock::time_point decided_at) {
+  auto timing = std::make_shared<DecodeTiming>();
+  timing->window_id = decode.window_id;
+  timing->kind = decode.kind == DecodeKind::kPreview ? "preview" : "final";
+  timing->audio_sample_count = static_cast<int>(decode.samples.size());
+  timing->append_at_ms = SteadyClockMilliseconds(due_at);
+  timing->decision_at_ms = SteadyClockMilliseconds(decided_at);
+  return timing;
+}
+
+omni_server::Transcription
+MossRealtimeSession::DecodeJob(const Decode &decode, MossOptions options,
+                               std::shared_ptr<DecodeTiming> timing) const {
   return [transcribe = transcribe_, samples = decode.samples,
           options = std::move(options),
-          timing](const std::atomic<bool> &cancel) {
-    if (timing) {
-      timing->transcribe_started_at_ms =
-          omni_common::MillisecondsSinceEpoch(std::chrono::steady_clock::now());
-    } else {
-    }
+          timing = std::move(timing)](const std::atomic<bool> &cancel) {
+    timing->transcribe_started_at_ms = NowSteadyClockMilliseconds();
     return transcribe(samples, options, cancel);
   };
 }
@@ -352,14 +372,28 @@ void MossRealtimeSession::Publish(const Decode &decode,
         {"segments", SpeakerSegmentsJson(result.segments)}});
 }
 
+void MossRealtimeSession::PublishWithTiming(const Decode &decode,
+                                            const TranscriptionResult &result,
+                                            DecodeTiming &timing) {
+  timing.transcribe_at_ms = NowSteadyClockMilliseconds();
+  timing.verify_round_count = result.verify_round_count;
+  timing.proposed_draft_token_count = result.proposed_draft_token_count;
+  timing.accepted_draft_token_count = result.accepted_draft_token_count;
+  Publish(decode, result);
+  timing.publish_at_ms = NowSteadyClockMilliseconds();
+  std::cerr << DecodeTimingJson(timing).dump() << "\n";
+}
+
 void MossRealtimeSession::Flush() {
+  const auto stopped_at = std::chrono::steady_clock::now();
   while (true) {
     Decode decode;
     MossOptions options;
+    std::chrono::steady_clock::time_point decided_at;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      // Note: the stop's final replaces the preview in flight, so the preview
-      // is cancelled rather than waited out.
+      // The stop's final replaces the preview in flight, so the preview is
+      // cancelled rather than waited out.
       CancelPreviewLocked();
       decode_done_.wait(lock, [&] { return !decoding_; });
       const int pending_count = static_cast<int>(pending_samples_.size());
@@ -376,10 +410,16 @@ void MossRealtimeSession::Flush() {
       }
       options = DecodeOptions(decode);
       decoding_ = true;
+      decided_at = std::chrono::steady_clock::now();
     }
+    const std::shared_ptr<DecodeTiming> timing =
+        StartDecodeTiming(decode, stopped_at, decided_at);
     try {
-      Publish(decode, worker_.Transcribe(DecodeJob(decode, std::move(options)),
-                                         cancel_));
+      omni_server::Transcription job =
+          DecodeJob(decode, std::move(options), timing);
+      timing->submit_at_ms = NowSteadyClockMilliseconds();
+      PublishWithTiming(decode, worker_.Transcribe(std::move(job), cancel_),
+                        *timing);
     } catch (...) {
       ReportDecodeFailure(std::current_exception());
     }

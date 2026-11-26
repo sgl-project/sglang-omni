@@ -518,15 +518,6 @@ target_compile_options(silero_vad_batched_test PRIVATE -Wall -Wextra)
 set_target_properties(silero_vad_batched_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
-# The realtime session is compiled here against tests/doubles, whose
-# moss_transcriber.h loads no checkpoint; libmoss_asr's own objects are unused.
-add_executable(moss_preview_timing_test EXCLUDE_FROM_ALL tests/moss_preview_timing_test.cpp src/moss/moss_realtime.cpp)
-target_include_directories(moss_preview_timing_test PRIVATE tests/doubles)
-target_link_libraries(moss_preview_timing_test PRIVATE common)
-target_compile_options(moss_preview_timing_test PRIVATE -Wall -Wextra)
-set_target_properties(moss_preview_timing_test PROPERTIES
-  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
-
 # The startup warmup must not leak state into later streams.
 add_executable(silero_vad_warmup_test EXCLUDE_FROM_ALL tests/silero_vad_warmup_test.cpp)
 target_link_libraries(silero_vad_warmup_test PRIVATE silero_vad)
@@ -534,8 +525,8 @@ target_compile_options(silero_vad_warmup_test PRIVATE -Wall -Wextra)
 set_target_properties(silero_vad_warmup_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
-# MOSS realtime scheduling (first-preview gate, preview preemption); no
-# checkpoint, run by mac-ci's native job.
+# MOSS realtime scheduling (first-preview gate, preview preemption) and its
+# timing lines; no checkpoint, run by mac-ci's native job.
 add_executable(moss_realtime_test EXCLUDE_FROM_ALL tests/moss_realtime_test.cpp)
 target_link_libraries(moss_realtime_test PRIVATE moss_asr)
 target_compile_options(moss_realtime_test PRIVATE -Wall -Wextra)
