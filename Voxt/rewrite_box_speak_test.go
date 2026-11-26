@@ -136,3 +136,47 @@ func TestRewriteCardFirstAnswerIsAChat(t *testing.T) {
 		t.Fatalf("the first answer is not shown under its instruction: %q", firstTexts(tt))
 	}
 }
+
+// TestRewriteCardWaitsForTheBackgroundAnswer: while another session's
+// answer still streams in the background, the Rewrite card's Speak and
+// Send are off, as the follow-up they start would be refused. Speak
+// stayed on and did nothing when pressed.
+func TestRewriteCardWaitsForTheBackgroundAnswer(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	a.box.text = "shorter"
+	a.bgID, a.bgSess = "bg", session.Snapshot{State: session.Composing}
+	if v := a.boxViewState(); v.CanSpeak || v.CanSend {
+		t.Fatalf("an answer streams in the background: speak %v, send %v", v.CanSpeak, v.CanSend)
+	}
+	a.bgSess.State = session.Done
+	if v := a.boxViewState(); !v.CanSpeak || !v.CanSend {
+		t.Fatalf("the background answer is done: speak %v, send %v", v.CanSpeak, v.CanSend)
+	}
+}
+
+// TestRewriteCardTypedFollowUpSendsOnce: a follow-up typed into the
+// Rewrite card leaves the input empty once sent. The input's own copy of
+// the text was written back at the end of the frame, so the words stayed,
+// Send stayed on, and a second press sent the same turn again.
+func TestRewriteCardTypedFollowUpSendsOnce(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one", "two", "three"}}
+	a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	tt := hudTester(a.boxView, boxWinW, boxWinH)
+	frames(tt)
+	tt.Type("shorter")
+	frames(tt)
+	tt.Key(0, ui.KeyEnter)
+	frames(tt)
+	if a.box.text != "" || a.box.ui.text != "" {
+		t.Fatalf("after Send the input holds %q (box) %q (editor)", a.box.text, a.box.ui.text)
+	}
+	a.pump("the answer", func() bool { return a.sess.State.Ended() && a.answer.text == "two" })
+	frames(tt)
+	if v := a.boxViewState(); v.CanSend || a.box.text != "" {
+		t.Fatalf("after the answer: send %v, text %q", v.CanSend, a.box.text)
+	}
+	if n := len(chat.requests()); n != 2 {
+		t.Fatalf("%d requests, want 2", n)
+	}
+}
