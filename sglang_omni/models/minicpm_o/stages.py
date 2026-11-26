@@ -265,11 +265,7 @@ def create_sglang_talker_executor_from_config(
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
     register_minicpm_o_hf_config()
-    if (
-        current_platform.is_cuda()
-        and current_platform.enable_talker_graph()
-        and not session_mode
-    ):
+    if current_platform.is_cuda() and current_platform.enable_talker_graph():
         prefill_graph_backend = CudaGraphBackend.BREAKABLE
     else:
         prefill_graph_backend = CudaGraphBackend.DISABLED

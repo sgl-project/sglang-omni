@@ -76,17 +76,26 @@ def test_prefill_graphs_resolve_the_talker_decoder():
 
 
 @pytest.mark.parametrize(
-    ("server_args_overrides", "is_cuda", "backend", "operator_selected"),
+    (
+        "server_args_overrides",
+        "is_cuda",
+        "session_mode",
+        "backend",
+        "operator_selected",
+    ),
     [
-        ({}, True, "breakable", False),
-        ({"cuda_graph_backend_prefill": "disabled"}, True, "disabled", True),
-        ({}, False, "disabled", False),
+        ({}, True, False, "breakable", False),
+        ({}, True, True, "breakable", False),
+        ({"cuda_graph_backend_prefill": "disabled"}, True, False, "disabled", True),
+        ({"cuda_graph_backend_prefill": "disabled"}, True, True, "disabled", True),
+        ({}, False, False, "disabled", False),
     ],
 )
 def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
     monkeypatch: pytest.MonkeyPatch,
     server_args_overrides: dict[str, object],
     is_cuda: bool,
+    session_mode: bool,
     backend: str,
     operator_selected: bool,
 ) -> None:
@@ -118,7 +127,7 @@ def test_talker_stage_defaults_breakable_prefill_graphs_on_nvidia(
     )
 
     stages.create_sglang_talker_executor_from_config(
-        "model", server_args_overrides=server_args_overrides
+        "model", server_args_overrides=server_args_overrides, session_mode=session_mode
     )
 
     assert built["cuda_graph_backend_prefill"] == backend

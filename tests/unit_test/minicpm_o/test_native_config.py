@@ -27,7 +27,10 @@ from sglang_omni.config.runtime import (
 from sglang_omni.models.minicpm_o import native_stages, stages
 from sglang_omni.models.minicpm_o.components import audio_encoder, image_encoder
 from sglang_omni.models.minicpm_o.config import MiniCPMOSpeechPipelineConfig
-from sglang_omni.models.minicpm_o.engine_builder import MiniCPMOThinkerEngineBuilder
+from sglang_omni.models.minicpm_o.engine_builder import (
+    THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS,
+    MiniCPMOThinkerEngineBuilder,
+)
 from sglang_omni.models.minicpm_o.hf_config import MiniCPMOConfig
 from sglang_omni.models.minicpm_o.native_config import (
     TALKER_CONTEXT_LENGTH,
@@ -37,6 +40,10 @@ from sglang_omni.models.minicpm_o.native_config import (
 )
 from sglang_omni.models.minicpm_o.native_stages import SpeechHooks
 from sglang_omni.models.minicpm_o.session_adapters import build_realtime_deployment
+from sglang_omni.platforms import current_platform
+from sglang_omni.scheduling.generation_batch_policy import (
+    build_generation_batch_overrides,
+)
 from sglang_omni.scheduling.session import BatchedSessionHooks
 from sglang_omni.scheduling.stage_kv_budget import consume_stage_kv_cache_bytes
 from sglang_omni.utils.gpu_memory import GpuDeviceInfo
@@ -405,6 +412,37 @@ def test_duplex_settings_select_decode_graphs_without_compile(
         "disable_cuda_graph"
         not in MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16")
     )
+
+
+@pytest.mark.parametrize(
+    ("server_args_overrides", "is_cuda", "backend"),
+    [
+        ({}, True, "breakable"),
+        ({"cuda_graph_backend_prefill": "disabled"}, True, "disabled"),
+        ({"disable_cuda_graph": True}, True, "disabled"),
+        ({}, False, "disabled"),
+    ],
+)
+def test_thinker_defaults_breakable_prefill_graphs_on_nvidia(
+    monkeypatch: pytest.MonkeyPatch,
+    server_args_overrides: dict[str, JsonValue],
+    is_cuda: bool,
+    backend: str,
+) -> None:
+    monkeypatch.setattr(current_platform, "is_cuda", lambda: is_cuda)
+    overrides = build_generation_batch_overrides(
+        server_args_overrides=server_args_overrides,
+        **MiniCPMOThinkerEngineBuilder().generation_defaults(dtype="bfloat16"),
+    )
+    assert MiniCPMOThinkerEngineBuilder.supports_breakable_prefill_cuda_graph
+    assert overrides["cuda_graph_backend_prefill"] == backend
+    if backend == "breakable":
+        assert (
+            overrides["cuda_graph_max_bs_prefill"]
+            == THINKER_PREFILL_CUDA_GRAPH_MAX_TOKENS
+        )
+    else:
+        pass
 
 
 def test_minicpmo_configs_load_without_sglang(tmp_path: Path) -> None:
