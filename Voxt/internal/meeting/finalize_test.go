@@ -361,7 +361,7 @@ func TestFinalizeFailureKeepsLiveAndRetry(t *testing.T) {
 	if err := os.MkdirAll(meetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	long := tonePCM(rateSamples(30 * time.Second))
+	long := tonePCM(rateSamples(70 * time.Second)) // two requests per track
 	writeWAV(t, meetDir, "mic.wav", long)
 	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
 		ID: "m2", CreatedAt: time.Now(), Status: store.MeetingInterrupted,
@@ -549,7 +549,7 @@ func TestFinalizeDropsMicEcho(t *testing.T) {
 	if err := os.MkdirAll(meetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	long := tonePCM(rateSamples(30 * time.Second)) // two chunks per track
+	long := tonePCM(rateSamples(70 * time.Second)) // two chunks per track
 	writeWAV(t, meetDir, "mic.wav", long)
 	writeWAV(t, meetDir, "system.wav", long)
 	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{

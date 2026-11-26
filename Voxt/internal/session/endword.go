@@ -5,6 +5,11 @@ import (
 	"unicode"
 )
 
+type heardText struct {
+	text      string
+	candidate bool
+}
+
 // endWord is the word that ends the recording (settings.Features.EndWord)
 // when the speech model streams, "" otherwise: only a stream's live text
 // can hear it.
@@ -18,6 +23,14 @@ func (r *run) endWord() string {
 // hearPartial passes a live text to the recording loop while it listens
 // for the end word (r.heard); the newest wins.
 func (r *run) hearPartial(text string) {
+	r.hear(text, false)
+}
+
+func (r *run) hearCandidate(text string) {
+	r.hear(text, true)
+}
+
+func (r *run) hear(text string, candidate bool) {
 	if r.heard == nil {
 		return
 	}
@@ -25,7 +38,7 @@ func (r *run) hearPartial(text string) {
 	case <-r.heard:
 	default:
 	}
-	r.heard <- text
+	r.heard <- heardText{text: text, candidate: candidate}
 }
 
 // withoutEndWord is text without word at its end, and whether word was

@@ -35,6 +35,11 @@ type sessionOverlayActions interface {
 	insertAnswer()
 	copyAnswer()
 	closeAnswer()
+	switchSession(id int)
+	newSession()
+	deleteSession(id int)
+	renameSession(id int)
+	nameSession(id int, name string)
 	noticeAction(action string)
 	toggleLangMenu()
 	chooseLanguage(code string)
@@ -70,6 +75,7 @@ type sessionPillViewState struct {
 	WaitingLabel  string                `json:"waiting_label,omitempty"`
 	SceneText     string                `json:"scene_text,omitempty"`
 	SceneLabel    string                `json:"scene_label,omitempty"`
+	Session       int                   `json:"session,omitempty"` // its number, in SceneText too
 	LiveText      string                `json:"live_text,omitempty"`
 	ElapsedText   string                `json:"elapsed_text"`
 	ThinkingLabel string                `json:"thinking_label,omitempty"`
@@ -101,12 +107,15 @@ type sessionNoticeViewState struct {
 // sessionOverlayProjectionInput contains the controller values the projection
 // reads. None of these domain values cross into the view state.
 type sessionOverlayProjectionInput struct {
-	Snapshot      session.Snapshot
-	Mode          overlayMode
-	HideLiveText  bool
-	ShowTime      bool
-	PillNoteID    string
-	PillNoteText  string
+	Snapshot     session.Snapshot
+	Mode         overlayMode
+	HideLiveText bool
+	ShowTime     bool
+	PillNoteID   string
+	PillNoteText string
+	// SessionNumber is the current session's number while there are
+	// several (#4005), else 0: the pill shows it before the scene.
+	SessionNumber int
 	CanThink      bool
 	ThinkingLabel string
 	Notice        *sessionNotice
@@ -151,8 +160,9 @@ func buildSessionPillViewState(translator *i18n.Translator, input sessionOverlay
 		Title:         uitext.KindTitleFor(translator, snapshot.Kind),
 		WorkingLabel:  uitext.WorkingTextFor(translator, snapshot),
 		WaitingLabel:  uitext.WaitTextFor(translator, snapshot),
-		SceneText:     uitext.SceneShort(snapshot),
+		SceneText:     sessionMarked(input.SessionNumber, uitext.SceneShort(snapshot)),
 		SceneLabel:    uitext.SceneLabel(snapshot),
+		Session:       input.SessionNumber,
 		ElapsedText:   clock(snapshot.Elapsed(now)),
 		ThinkingLabel: input.ThinkingLabel,
 		Waiting:       string(snapshot.Waiting),
@@ -353,6 +363,30 @@ type sessionOverlayProjection struct {
 	menuReady   bool
 	stillReady  bool
 	stillKey    sessionOverlayStillKey
+	held        sessionOverlayViewState
+	holding     bool
+}
+
+// holdWhileFading keeps the frame the window showed last while it fades
+// out. The ended session's pill has no live text, and the face keeps its
+// size, so drawing the projection would flash the microphone row alone in
+// the empty face. The projection itself still follows the session.
+func (p *sessionOverlayProjection) holdWhileFading(fading bool) {
+	switch {
+	case !fading:
+		p.holding = false
+	case !p.holding && p.view.Mode != ovHidden:
+		p.held, p.holding = cloneSessionOverlayViewState(p.view), true
+	}
+}
+
+// drawn is the view the window draws: the held frame while it fades out,
+// the projection otherwise.
+func (p *sessionOverlayProjection) drawn() *sessionOverlayViewState {
+	if p.holding {
+		return &p.held
+	}
+	return &p.view
 }
 
 // sessionOverlayStillKey is everything a still notice frame reads: when
@@ -374,7 +408,7 @@ func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now t
 	key := sessionPillProjectionKey{
 		sessionID: snapshot.ID, kind: string(snapshot.Kind), state: string(snapshot.State),
 		partial: snapshot.Partial, spoken: snapshot.Spoken, selection: snapshot.Selection, waiting: string(snapshot.Waiting),
-		sceneText: uitext.SceneShort(snapshot), sceneLabel: uitext.SceneLabel(snapshot),
+		sceneText: sessionMarked(input.SessionNumber, uitext.SceneShort(snapshot)), sceneLabel: uitext.SceneLabel(snapshot),
 		pillNoteID: input.PillNoteID, pillNoteText: input.PillNoteText,
 		thinkingLabel: input.ThinkingLabel, locale: locale, mode: input.Mode,
 		hideLiveText: input.HideLiveText, showTime: input.ShowTime,
@@ -401,6 +435,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	projection := &a.ov.projection
 	locale := i18n.Locale()
 	mode := a.overlayModeNow()
+	projection.holdWhileFading(mode == ovHidden && a.ov.visible)
 	if mode == ovNotice && a.notice != nil && !a.answer.ui.langOpen {
 		key := sessionOverlayStillKey{
 			sessionID: a.sess.ID, state: string(a.sess.State), revision: a.sess.Rev,
@@ -425,7 +460,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	input := sessionOverlayProjectionInput{
 		Snapshot: a.sess, Mode: mode,
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShowTime: a.prefs.Overlay.ShowTime,
-		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice,
+		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice, SessionNumber: a.sessionNumber(),
 	}
 	if input.Mode == ovRecording || input.Mode == ovWorking {
 		input.CanThink = a.pillThinks(input.Mode)

@@ -9,6 +9,7 @@ package main
 // the menus and the answer's stream pacing.
 
 import (
+	"log"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -27,12 +28,15 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		a.pill.live.id, a.pill.live.w = "", 0
 		a.pill.dragged.x, a.pill.dragged.y = 0, 0
 		if was {
+			log.Printf("pill: hide display=%v", a.pill.area)
 			a.pillFadeOut()
 		}
 		return
 	}
 	if !was {
-		a.pill.area = a.overlayArea()
+		area, display := a.overlayDisplay()
+		a.pill.area = area
+		log.Printf("pill: show %s", display)
 	}
 	width, height := a.pillFace(mode)
 	frame := a.pillFrame(width, height)
@@ -52,7 +56,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
 				a.refreshPillOverlay(time.Now(), a.pill.mode)
-				return &a.pill.projection.view
+				return a.pill.projection.drawn()
 			},
 			func() sessionOverlayLayout { return a.currentPillOverlayLayout() },
 			a,
@@ -63,9 +67,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 			a.postPillOverlayMeasurements,
 			func() { a.pill.reveal = false; a.post(a.revealPillOverlay) },
 		)
-		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
-		a.pill.win = mygo.NewWindow(opts)
+		a.pill.win = mygo.NewWindow(pillWindowOptions(frame, hudContent(content)))
 		a.pill.win.OnMove(func() { a.post(a.pillDragged) })
 		a.pill.passThrough = false
 	}
@@ -90,10 +92,20 @@ func (a *app) pillOverlaySync(main overlayMode) {
 	}
 }
 
+// pillWindowOptions are the pill window's: a floating window that never
+// takes the front, so it also shows over another app's full screen, where
+// macOS shows no ordinary window of an app with a Dock icon.
+func pillWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := floatingWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	return opts
+}
+
 // refreshPillOverlay updates the pill window's projection: the session
 // pill or the notice, never the card or its menus.
 func (a *app) refreshPillOverlay(now time.Time, mode overlayMode) {
 	projection := &a.pill.projection
+	projection.holdWhileFading(mode == ovHidden && a.pill.visible)
 	locale := i18n.Locale()
 	if projection.translator == nil || projection.locale != locale {
 		projection.locale = locale
@@ -103,7 +115,7 @@ func (a *app) refreshPillOverlay(now time.Time, mode overlayMode) {
 	input := sessionOverlayProjectionInput{
 		Snapshot: a.sess, Mode: mode,
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShowTime: a.prefs.Overlay.ShowTime,
-		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice,
+		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice, SessionNumber: a.sessionNumber(),
 	}
 	// shortcut: no thinking menu here — langMenuWanted anchors it to the
 	// overlay window's working pill, which this window is not; upgrade by
@@ -180,19 +192,33 @@ func (a *app) pillOverlaySize(mode overlayMode) (width, height int, exact bool) 
 }
 
 // pillAnchor is the pill window's frame before clamping and the user's
-// drag: beside the card's current frame — above a bottom-anchored card,
-// below a top-anchored one (adjacent never intersects it). The default
-// anchor when the card is not showing.
+// drag: beside a same-display card — above a bottom-anchored card, below a
+// top-anchored one (adjacent never intersects it). The default anchor when
+// the card is not showing or is on another display.
 func (a *app) pillAnchor(width, height int) mygo.Rectangle {
 	frame := layout.Frame(a.pill.area, a.prefs.Overlay, width, height)
-	if a.ov.shown && a.ov.mode == ovAnswer {
+	if card, area, ok := a.pillCard(); ok && area == a.pill.area {
 		if a.prefs.Overlay.Position == "top" {
-			frame.Y = a.ov.frame.Y + a.ov.frame.Height
+			frame.Y = card.Y + card.Height
 		} else {
-			frame.Y = a.ov.frame.Y - frame.Height
+			frame.Y = card.Y - frame.Height
 		}
 	}
 	return frame
+}
+
+// pillCard is the frame and the screen of the card the pill stays clear
+// of: the answer card in the overlay window, or the Rewrite box's window,
+// which holds the card of a Rewrite answer (the overlay window is then
+// not shown).
+func (a *app) pillCard() (frame, area mygo.Rectangle, ok bool) {
+	if a.ov.shown && a.ov.mode == ovAnswer {
+		return a.ov.frame, a.ov.area, true
+	}
+	if a.box.winShown {
+		return a.box.frame, a.box.area, true
+	}
+	return mygo.Rectangle{}, mygo.Rectangle{}, false
 }
 
 func (a *app) pillFrame(width, height int) mygo.Rectangle {
@@ -215,7 +241,7 @@ func (a *app) pillFrameY(frame mygo.Rectangle, y int) int {
 	if cy := clamp(y); !a.pillCoversCard(frame.X, cy, frame.Width, frame.Height) {
 		return cy
 	}
-	card := a.ov.frame
+	card, _, _ := a.pillCard()
 	other := card.Y + card.Height
 	if a.prefs.Overlay.Position == "top" {
 		other = card.Y - frame.Height
@@ -230,12 +256,12 @@ func (a *app) pillFrameY(frame mygo.Rectangle, y int) int {
 }
 
 // pillCoversCard reports whether a pill frame at (x, y) intersects the
-// answer card's frame.
+// card's frame (pillCard).
 func (a *app) pillCoversCard(x, y, w, h int) bool {
-	if !a.ov.shown || a.ov.mode != ovAnswer {
+	c, _, ok := a.pillCard()
+	if !ok {
 		return false
 	}
-	c := a.ov.frame
 	return x < c.X+c.Width && c.X < x+w && y < c.Y+c.Height && c.Y < y+h
 }
 

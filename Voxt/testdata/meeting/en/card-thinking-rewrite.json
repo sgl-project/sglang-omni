@@ -118,7 +118,7 @@
       "radius": 24,
       "margin": 96,
       "show_time": false,
-      "live_lines": true
+      "live_lines": false
     },
     "card_thinking_menu": {
       "kind": "card-thinking",

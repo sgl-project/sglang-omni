@@ -493,3 +493,24 @@ func TestTryWaitsForTheStreamingFollowUp(t *testing.T) {
 		t.Fatalf("the conversation lost a turn: %+v", a.answer)
 	}
 }
+
+// TestRewriteCardStaysBesideTranscribe: the Transcribe shortcut while the
+// Rewrite card's first answer still streams. The answer goes to the
+// background and the transcription records, as with an answered card; the
+// Rewrite card stays, with its sent turn, and the plain answer card does
+// not take its place.
+func TestRewriteCardStaysBesideTranscribe(t *testing.T) {
+	// stall: the answer streams until the request ends.
+	set, keys, tr := fileSetup(t, "make it shorter", &fakeChat{text: "The release moves to Thursday.", stall: true})
+	a := newSessionApp(t, boxScript(t), set, keys)
+	a.pump("the answer streaming in the Rewrite card", func() bool { return a.sess.CanStop() && a.boxWriting() })
+
+	tr.setText("dictated words")
+	tap(a, "transcribe/0", textEditApp)
+	a.pump("recording beside the card", func() bool {
+		return a.sess.Kind == store.KindTranscribe && a.sess.State == session.Recording
+	})
+	if a.bgID == "" || !a.box.open || a.answer.open {
+		t.Fatalf("beside the streaming answer: bg=%q, Rewrite card open %v, answer card open %v", a.bgID, a.box.open, a.answer.open)
+	}
+}

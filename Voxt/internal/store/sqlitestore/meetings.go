@@ -126,7 +126,8 @@ func (r *meetingsRepo) UpdateSegmentTranslation(ctx context.Context, seq int64, 
 }
 
 // UpdateSegmentTexts rewrites several segments' text atomically (a
-// correction lands whole or not at all: internal/meeting's CorrectTranscript).
+// correction's batches land in one save: internal/meeting's
+// CorrectTranscript).
 func (r *meetingsRepo) UpdateSegmentTexts(ctx context.Context, seq int64, texts map[int]string) error {
 	if seq <= 0 {
 		return fmt.Errorf("meeting seq: %w", core.ErrInvalid)

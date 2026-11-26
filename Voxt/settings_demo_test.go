@@ -113,9 +113,9 @@ func settingsDemoSelect(label string, keys ...ui.Key) []historyDemoStep {
 
 func settingsDemoGeneralCases() []settingsDemoCase {
 	return []settingsDemoCase{
-		{name: "sections", fixture: "en/settings-normal", steps: historySteps("General", "Permissions", "Audio", "Overlay style", "Shortcuts", "Appearance", "Privacy", "Storage", "About"), want: []string{
+		{name: "sections", fixture: "en/settings-normal", steps: historySteps("General", "Permissions", "Audio", "Overlay style", "Shortcuts", "Appearance", "Privacy", "Storage", "Experimental", "About"), want: []string{
 			"navigate /settings/general", "navigate /settings/permissions", "navigate /settings/audio", "navigate /settings/overlay",
-			"navigate /settings/shortcuts", "navigate /settings/appearance", "navigate /settings/privacy", "navigate /settings/storage", "navigate /settings/about",
+			"navigate /settings/shortcuts", "navigate /settings/appearance", "navigate /settings/privacy", "navigate /settings/storage", "navigate /settings/experimental", "navigate /settings/about",
 		}},
 		{name: "close", fixture: "en/settings-normal", steps: historySteps("Close"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.settingsOpen {
@@ -155,6 +155,8 @@ func settingsDemoGeneralCases() []settingsDemoCase {
 
 func settingsDemoExpectedText(dialog *settingsDialogViewState) string {
 	switch {
+	case dialog.Feature != nil:
+		return dialog.Feature.Caption
 	case dialog.Audio != nil:
 		audio := dialog.Audio
 		if audio.DevicesError != "" {
@@ -208,6 +210,8 @@ func settingsDemoExpectedText(dialog *settingsDialogViewState) string {
 			}
 		}
 		return dialog.Shortcuts.Rows[0].KeyText
+	case dialog.Experimental != nil:
+		return i18n.T("Sessions (experimental)")
 	case dialog.Privacy != nil:
 		privacy := dialog.Privacy
 		if privacy.ClearHistoryAsk {

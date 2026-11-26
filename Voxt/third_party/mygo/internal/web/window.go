@@ -167,6 +167,9 @@ func (w *window) Focus()          { w.s.focus() }
 func (w *window) Blur()           { w.s.input.Call("blur") }
 func (w *window) IsFocused() bool { return w.focused }
 
+// IsOnActiveSpace is true: a page has no workspaces.
+func (w *window) IsOnActiveSpace() bool { return true }
+
 // SetFullScreen asks the browser to show the window's element on the whole
 // screen, which it allows while the user acts.
 func (w *window) SetFullScreen(v bool) {

@@ -12,11 +12,7 @@ const (
 )
 
 type homeActions interface {
-	historyActions
 	openHomeGuide()
-	openHomeHistory()
-	openHomeRecent(id string)
-	copyHomeRecent(id string)
 	addHomeShortcut()
 	fixHomeReadiness(fix string)
 	activityBack()

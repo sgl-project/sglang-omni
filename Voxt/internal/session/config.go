@@ -15,6 +15,10 @@ type Config struct {
 	Audio   Audio
 	Text    deliver.TextIO
 	Resolve Resolver
+	// ResolveASR and ResolveLLM are the independent readiness lanes for
+	// ordinary voice Transcribe; Resolve keeps the other feature paths compatible.
+	ResolveASR ASRResolver
+	ResolveLLM LLMResolver
 	// Select reads the selection (nil: Translate and Rewrite never see
 	// one).
 	Select Selector

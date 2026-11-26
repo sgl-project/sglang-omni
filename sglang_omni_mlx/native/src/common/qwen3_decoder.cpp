@@ -120,6 +120,15 @@ std::string Qwen3Decoder::Name(const std::string &suffix) const {
   return prefix_.empty() ? suffix : prefix_ + "." + suffix;
 }
 
+mx::array Qwen3Decoder::ProjectionInput(const mx::array &x,
+                                        const std::string &norm_prefix) const {
+  const mx::array normed =
+      checkpoint_.RmsNorm(x, norm_prefix, config_.rms_norm_eps);
+  return config_.projection_dtype
+             ? mx::astype(normed, *config_.projection_dtype)
+             : normed;
+}
+
 mx::array Qwen3Decoder::Project(const mx::array &x,
                                 const std::string &prefix) const {
   return checkpoint_.Linear(x, prefix);
@@ -144,8 +153,7 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
   const int length = x.shape(1);
   const int head_count = config_.num_attention_heads;
   const int head_dim = config_.head_dim;
-  const mx::array normed =
-      checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
+  const mx::array normed = ProjectionInput(x, prefix + ".input_layernorm");
   mx::array queries = mx::reshape(Project(normed, prefix + ".self_attn.q_proj"),
                                   {batch, length, head_count, head_dim});
   if (config_.has_query_key_norm) {
@@ -164,7 +172,7 @@ mx::array Qwen3Decoder::Layer(const mx::array &x, int layer,
                                      {batch, length, -1}),
                          prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
-      checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
+      ProjectionInput(hidden, prefix + ".post_attention_layernorm");
   return mx::add(
       hidden,
       Project(omni_common::Swiglu(Project(mlp_input, prefix + ".mlp.gate_proj"),
@@ -259,8 +267,7 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
   const int head_count = config_.num_attention_heads;
   const int kv_head_count = config_.num_key_value_heads;
   const int head_dim = config_.head_dim;
-  const mx::array normed =
-      checkpoint_.RmsNorm(x, prefix + ".input_layernorm", eps);
+  const mx::array normed = ProjectionInput(x, prefix + ".input_layernorm");
   mx::array queries =
       mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn.q_proj"),
                   {batch, 1, head_count, head_dim});
@@ -292,7 +299,7 @@ mx::array Qwen3Decoder::BatchLayer(const mx::array &x, int layer,
              mx::reshape(mx::transpose(attended, {0, 2, 1, 3}), {batch, 1, -1}),
              prefix + ".self_attn.o_proj"));
   const mx::array mlp_input =
-      checkpoint_.RmsNorm(hidden, prefix + ".post_attention_layernorm", eps);
+      ProjectionInput(hidden, prefix + ".post_attention_layernorm");
   return mx::add(
       hidden, checkpoint_.Linear(
                   omni_common::Swiglu(

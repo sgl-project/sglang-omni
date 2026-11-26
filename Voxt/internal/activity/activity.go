@@ -54,16 +54,23 @@ func (l *Log) Add(t time.Time, r Result) {
 
 // Stats are the numbers beside the calendar.
 type Stats struct {
-	// Chars is every result's characters; PerMinute the characters of
-	// speech a minute of it held, 0 before any; Streak the run of days
-	// with a result that ends today, or yesterday while today has none
-	// yet.
+	// TodayChars and MonthChars are the characters written today and in
+	// the 30-day window ending today. Chars is every result's characters;
+	// PerMinute the characters of speech a minute of it held, 0 before any;
+	// Streak the run of days with a result that ends today, or yesterday
+	// while today has none yet.
+	TodayChars, MonthChars   int
 	Chars, PerMinute, Streak int
 }
 
 // Stats counts the log's days as of today.
 func (l Log) Stats(today time.Time) Stats {
 	var s Stats
+	day := midnight(today)
+	s.TodayChars = l.Get(day).Chars
+	for ago := range 30 {
+		s.MonthChars += l.Get(day.AddDate(0, 0, -ago)).Chars
+	}
 	var spoken, ms int64
 	for _, day := range l.Days {
 		s.Chars += day.Chars
@@ -73,7 +80,6 @@ func (l Log) Stats(today time.Time) Stats {
 	if ms > 0 {
 		s.PerMinute = int(float64(spoken) * 60000 / float64(ms))
 	}
-	day := midnight(today)
 	if l.Get(day).Count == 0 {
 		day = day.AddDate(0, 0, -1) // today is not over: the run goes on
 	}

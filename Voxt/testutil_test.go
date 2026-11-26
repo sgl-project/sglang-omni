@@ -342,6 +342,21 @@ func hoverTitle(t *testing.T, tt *ui.Tester, title string) {
 	frames(tt)
 }
 
+func focusTitle(t *testing.T, tt *ui.Tester, title string) {
+	t.Helper()
+	for range 100 {
+		if tt.Focused(title) {
+			break
+		}
+		tt.Key(0, ui.KeyTab)
+	}
+	if !tt.Focused(title) {
+		t.Fatalf("title %q is not keyboard-focusable", title)
+	}
+	tt.Advance(time.Second)
+	frames(tt)
+}
+
 // click clicks a label and runs the frames after it.
 func click(t *testing.T, tt *ui.Tester, label string) {
 	t.Helper()
@@ -537,7 +552,7 @@ func (a *app) overlayView(context *ui.Context) {
 // timed path matches the production content closure.
 func (a *app) overlayBenchmarkView(context *ui.Context) {
 	a.refreshSessionOverlay(time.Now())
-	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+	sessionOverlayView(context, a.ov.projection.drawn(), a.currentSessionOverlayLayout(), a,
 		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
 		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })

@@ -35,6 +35,7 @@
   "Ready": "就绪",
   "Recognised and selected text is sent to %s.": "识别出的文字和选中的文字会发送给 %s。",
   "Recognised and selected text is sent to the server at the address below.": "识别出的文字和选中的文字会发送到下面地址的服务。",
+  "Realtime": "实时",
   "Remote": "远程",
   "Remote language model · OpenAI-compatible API": "远程语言模型 · OpenAI 兼容 API",
   "Remote speech recognition · realtime, while you speak": "远程语音识别 · 实时，边说边识别",

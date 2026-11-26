@@ -51,13 +51,6 @@ std::string PromptTextField(const Json &request, const char *name,
   }
 }
 
-std::string Trim(const std::string &text) {
-  const size_t start = text.find_first_not_of(" \t\r\n");
-  return start == std::string::npos
-             ? ""
-             : text.substr(start, text.find_last_not_of(" \t\r\n") - start + 1);
-}
-
 } // namespace
 
 SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
@@ -83,7 +76,7 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
   }
   const std::string text =
       PromptTextField(request, raw_instruction ? "prompt" : "input");
-  if (text.find_first_not_of(" \t\r\n") == std::string::npos ||
+  if (omni_common::StripUnicodeWhitespace(text).empty() ||
       text.size() > kMaximumTextBytes) {
     throw std::invalid_argument(
         "input or prompt must contain 1 to 8192 bytes of text");
@@ -161,7 +154,7 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
           "generate supports audio output without logprobs");
     } else {
     }
-    synthesis.instruction = Trim(text);
+    synthesis.instruction = omni_common::StripUnicodeWhitespace(text);
   } else {
     const Json speed = FieldOr(request, "speed", Json(1.0));
     if (TextField(request, "voice", "default") != "default" ||
@@ -170,7 +163,7 @@ SynthesisRequest ParseRequest(const Json &request, bool raw_instruction,
           "only voice=default and speed=1 are supported");
     } else {
     }
-    const std::string description = Trim(
+    const std::string description = omni_common::StripUnicodeWhitespace(
         PromptTextField(request, "instructions", "A clear, natural voice."));
     if (description.size() > kMaximumTextBytes) {
       throw std::invalid_argument(

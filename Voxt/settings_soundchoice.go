@@ -1,13 +1,14 @@
 package main
 
 // Settings → Audio → Sound (11-10): where the cues come from, as three
-// segments: Built-in (the family's sounds, settings_sounds.go), macOS (its
-// system sounds) and None. Built-in lists pairs of a start and a stop
+// segments: Built-in (Voxt's own cues and the family's sounds,
+// settings_sounds.go), macOS (its system sounds) and None. Built-in lists pairs of a start and a stop
 // sound, each with ▶ to hear both and a click to choose them; a choice
 // that is no pair (made in the picker of 10-20 to 11-09) shows as its own
 // line. macOS has a line per cue with its sound and Try. Volume follows,
-// unless the sounds are off. A build without the family's sounds plays
-// macOS's for them, so it offers macOS and None only.
+// unless the sounds are off. A build without the family's sounds lists
+// Voxt's own pairs only, and plays macOS's for a family sound chosen
+// elsewhere.
 //
 // The settings stay as they were: None is Sounds off, and the source is
 // read from what the cues play (soundSource).
