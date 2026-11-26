@@ -127,11 +127,13 @@ func TestStageImportRefusesForeignSQLite(t *testing.T) {
 		}},
 		{"Voxt tables, a composite documents key", func(t *testing.T, foreign string) {
 			// A complete Voxt library, except documents is keyed by (key, doc).
-			out, err := exec.Command(sqlite3, filepath.Join(dir, sqlitestore.FileName), ".backup '"+foreign+"'").CombinedOutput()
-			if err != nil {
-				t.Fatalf("%v: %s", err, out)
-			}
+			backupLibrary(t, dir, foreign)
 			runSQL(t, foreign, "ALTER TABLE documents RENAME TO documents_key_old; CREATE TABLE documents (key TEXT, doc TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, doc)); DROP TABLE documents_key_old;")
+		}},
+		{"Voxt tables, a partial history id key", func(t *testing.T, foreign string) {
+			// A complete Voxt library, except history.id is only unique for done rows.
+			backupLibrary(t, dir, foreign)
+			runSQL(t, foreign, partialHistoryKey)
 		}},
 	}
 	for _, f := range foreigns {
@@ -163,3 +165,45 @@ func runSQL(t *testing.T, path, sql string) {
 		t.Fatalf("%v: %s", err, out)
 	}
 }
+
+// backupLibrary copies the current library to path as one consistent file.
+func backupLibrary(t *testing.T, dir, path string) {
+	t.Helper()
+	out, err := exec.Command(sqlite3, filepath.Join(dir, sqlitestore.FileName), ".backup '"+path+"'").CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+}
+
+// partialHistoryKey rebuilds history with the first migration's columns but
+// no unique id over every row.
+const partialHistoryKey = `DROP TABLE history;
+CREATE TABLE history (
+  seq INTEGER PRIMARY KEY,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'done',
+  error TEXT NOT NULL DEFAULT '',
+  app_bundle TEXT NOT NULL DEFAULT '',
+  app_name TEXT NOT NULL DEFAULT '',
+  url_host TEXT NOT NULL DEFAULT '',
+  rule_id TEXT NOT NULL DEFAULT '',
+  rule_name TEXT NOT NULL DEFAULT '',
+  raw_text TEXT NOT NULL DEFAULT '',
+  source_text TEXT NOT NULL DEFAULT '',
+  prompt_text TEXT NOT NULL DEFAULT '',
+  result TEXT NOT NULL DEFAULT '',
+  target_lang TEXT NOT NULL DEFAULT '',
+  delivery TEXT NOT NULL DEFAULT '',
+  asr_provider TEXT NOT NULL DEFAULT '',
+  asr_model TEXT NOT NULL DEFAULT '',
+  llm_provider TEXT NOT NULL DEFAULT '',
+  llm_model TEXT NOT NULL DEFAULT '',
+  audio_ms INTEGER NOT NULL DEFAULT 0,
+  asr_ms INTEGER NOT NULL DEFAULT 0,
+  llm_ms INTEGER NOT NULL DEFAULT 0,
+  total_ms INTEGER NOT NULL DEFAULT 0,
+  audio TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX history_id_partial ON history(id) WHERE status = 'done';`
