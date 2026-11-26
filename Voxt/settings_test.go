@@ -438,7 +438,7 @@ func TestShortcutsOmitSessions(t *testing.T) {
 func TestExperimentalSessionsSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/experimental")
-	const description = "With one session, start another from the menu bar's New session or a card's +. Two or more appear as a row on Rewrite and Translate answer cards. Transcribe has no card and uses the current session. Privacy's history keeps sessions and their titles after a restart."
+	const description = "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart."
 	if !has(tt, description) {
 		t.Errorf("no feature description: %q", firstTexts(tt))
 	}

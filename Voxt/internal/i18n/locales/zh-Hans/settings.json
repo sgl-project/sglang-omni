@@ -226,7 +226,7 @@
   "While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops.": "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。",
   "Return finishes a recording": "按回车结束录音",
   "While Transcribe, Translate or Rewrite records, Return stops recording, and the key goes nowhere else. Off: Return reaches the app as usual.": "转录、翻译、改写录音时，按回车结束录音，这个回车不会再交给别的 App。关闭时，回车照常交给前台 App。",
-  "With one session, start another from the menu bar's New session or a card's +. Two or more appear as a row on Rewrite and Translate answer cards. Transcribe has no card and uses the current session. Privacy's history keeps sessions and their titles after a restart.": "只有一个会话时，可以从菜单栏的「新会话」或卡片上的 + 再建一个。有两个以上会话时，改写和翻译的答案卡片会显示会话行。转录没有卡片，只在当前会话中进行。隐私里开着「保存历史」时，重启后会话和标题都还在。",
+  "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart.": "每个会话有自己的卡片和对话。卡片（包括改写卡片）上的会话行可以切换会话，用 + 新建，用 × 删除当前会话，双击改名；菜单栏也列出全部会话。隐私里开着「保存历史」时，重启后会话和标题都还在。",
   "History is off, so sessions end when Voxt quits. Turn on Keep a history in Privacy to keep them.": "历史已关闭，退出 Voxt 后会话不保留。要保留会话，请在隐私里打开「保存历史」。",
   "Open Privacy": "打开隐私页",
   "Results": "结果",
