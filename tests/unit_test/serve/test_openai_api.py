@@ -4601,6 +4601,28 @@ def test_speech_to_text_returns_spec_tokens_details_only_when_requested(
         assert "sglext" not in body
 
 
+@pytest.mark.parametrize("stream", [False, True])
+def test_transcription_fails_before_headers_for_unsupported_sampling(
+    stream: bool,
+) -> None:
+    error = "This Fun-ASR configuration supports only greedy decoding (temperature=0)"
+    model = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
+    client = TestClient(
+        create_app(
+            FailingTranscriptionClient(error, exc_type=RuntimeError), model_name=model
+        )
+    )
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        data={"model": model, "stream": str(stream).lower(), "temperature": "0.7"},
+        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == error
+
+
 def test_transcription_stream_maps_input_length_error_to_400() -> None:
     transcription_client = FailingTranscriptionClient(
         "Input length (140000 tokens) exceeds the maximum allowed length "

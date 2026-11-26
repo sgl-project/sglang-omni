@@ -138,13 +138,13 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.torch_mps_model_runner: FunASRTorchMpsModelRunner | None = None
         self.speculative_worker_class: type[BaseSpecWorker] | None = None
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
-        self.pd_dflash_greedy_only = False
+        self.dflash_greedy_only = False
         self.speculative_reserve_tokens = 0
         self.engine_context_padding = 0
         self.context_length = 0
 
     def resolve_checkpoint(self, model_path: str) -> str:
-        if self.pd_role is not None and "@" in model_path:
+        if "@" in model_path:
             return resolve_checkpoint(model_path)
         else:
             return super().resolve_checkpoint(model_path)
@@ -199,6 +199,10 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             raise ValueError(f"{self.model_name} DFLASH needs a CUDA GPU")
         else:
             # note (wilsonzheng0327): hosts without a draft never load its kernels.
+            from sglang.srt.speculative.dflash_utils import (
+                is_dflash_sampling_verify_available,
+            )
+
             from sglang_omni.speculative.dflash_draft import (
                 ReducedVocabularyDFlashWorker,
                 draft_worker_class,
@@ -213,10 +217,6 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
             if self.pd_role is not None:
-                from sglang.srt.speculative.dflash_utils import (
-                    is_dflash_sampling_verify_available,
-                )
-
                 if (
                     draft_worker_class(self.draft_checkpoint.name)
                     is not ReducedVocabularyDFlashWorker
@@ -228,11 +228,11 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
                     raise ValueError("Fun-ASR PD requires a shared draft request table")
                 else:
                     pass
-                self.pd_dflash_greedy_only = not is_dflash_sampling_verify_available()
                 overrides["disable_overlap_schedule"] = True
                 overrides["enable_mixed_chunk"] = False
             else:
                 pass
+            self.dflash_greedy_only = not is_dflash_sampling_verify_available()
             self.speculative_worker_class = ReducedVocabularyDFlashWorker
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
@@ -510,7 +510,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # draft; only the engine holds the reserve.
             context_length=self.context_length - self.engine_context_padding,
             audio_encoder_service=self.audio_encoder_service,
-            greedy_only=self.uses_torch_mps() or self.pd_dflash_greedy_only,
+            greedy_only=self.uses_torch_mps() or self.dflash_greedy_only,
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None] | None]:

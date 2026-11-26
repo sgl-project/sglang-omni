@@ -38,7 +38,6 @@ _BAD_REQUEST_MARKERS = (
     "video_url requires a media URL",
     "chat content part",
     "max_new_tokens must be",
-    "Fun-ASR Apple currently requires temperature=0",
     "supports only greedy decoding",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",
