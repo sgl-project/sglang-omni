@@ -947,6 +947,18 @@ class SGLModelRunner(ModelRunner):
         data = session.restore_base()
         return True, "ok", data
 
+    def load_lora_adapter(
+        self, payload: Mapping[str, object]
+    ) -> tuple[bool, str, dict[str, object]]:
+        reason = self.weight_update_blocked_reason()
+        if reason is not None:
+            return False, reason, {}
+        else:
+            pass
+        session = self.get_or_create_merged_lora_session()
+        data = session.load_from_disk(payload)
+        return True, "ok", data
+
     def register_omni_model(self):
         # Register sglang_omni model classes directly in SGLang's model registry.
         import importlib

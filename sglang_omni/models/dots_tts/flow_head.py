@@ -123,6 +123,21 @@ class DotsTTSFlowHead(nn.Module):
         self.batched_eos_host: list[bool] | None = None
         self.batched_eos_pending: int = 0
 
+    def merged_lora_spec(self):
+        """Return the engine-side merged LoRA specification for the DotsTTS DiT flow head."""
+        from sglang_omni.lora.capability import MergedLoRASpec
+
+        return MergedLoRASpec(
+            target_module_root="velocity_field_predictor",
+            strip_prefixes=(
+                "flow_head.",
+                "velocity_field_predictor.",
+                "dit.",
+                "model.",
+            ),
+            allow_plain_linear=True,
+        )
+
     def bucket(self, requested: int) -> int:
         if requested <= 0:
             raise ValueError("dots.tts max audio patch count must be positive")

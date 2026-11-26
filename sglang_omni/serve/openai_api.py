@@ -105,6 +105,7 @@ from sglang_omni.serve.protocol import (
     GenerateResponse,
     ImageGenerationParams,
     InitWeightsUpdateGroupRequest,
+    LoadLoRAAdapterRequest,
     ModelCard,
     ModelList,
     PauseGenerationRequest,
@@ -147,9 +148,7 @@ from sglang_omni.serve.speech_streaming import (
 from sglang_omni.serve.speech_to_text import complete_unless_disconnected
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
 from sglang_omni.serve.speech_ws import SpeechWebSocketSession
-from sglang_omni.serve.streaming import (
-    STREAM_DONE_SENTINEL,
-)
+from sglang_omni.serve.streaming import STREAM_DONE_SENTINEL
 from sglang_omni.serve.streaming import (
     ClosableStreamingResponse as _ClosableStreamingResponse,
 )
@@ -981,6 +980,18 @@ def register_admin(app: FastAPI, admin_api_key: str | None = None) -> None:
                 payload,
                 stages=req.stages,
                 timeout_s=timeout_or_default(req.timeout_s, 120.0),
+            )
+        )
+
+    @app.post("/load_lora_adapter", dependencies=[Depends(_auth)])
+    async def load_lora_adapter(req: LoadLoRAAdapterRequest) -> JSONResponse:
+        client: Client = app.state.client
+        payload = request_payload(req)
+        return admin_response(
+            await client.load_lora_adapter(
+                payload,
+                stages=req.stages,
+                timeout_s=timeout_or_default(req.timeout_s, 300.0),
             )
         )
 

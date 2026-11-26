@@ -159,7 +159,7 @@ NON_MERGE_STAGE_ONLY = "Pipeline contains non-LLM encoder/codec or MLX-only stag
 MERGED_LORA_ARCHITECTURE_REGISTRY: dict[str, MergedLoRARegistryEntry] = {
     "ArkasrForConditionalGeneration": not_capable_entry(PENDING_AR_MAPPING),
     "AuKForConditionalGeneration": supported_entry(
-        "AuKDit implements SupportsMergedLoRA for packed QKV, SwiGLU, and output projections"
+        "AuKDit implements SupportsMergedLoRA with ODE solver override support on the sampling stage"
     ),
     "AudarTTSForConditionalGeneration": not_capable_entry(PENDING_AR_MAPPING),
     "BailingMM2NativeForConditionalGeneration": not_capable_entry(
@@ -172,7 +172,9 @@ MERGED_LORA_ARCHITECTURE_REGISTRY: dict[str, MergedLoRARegistryEntry] = {
         PENDING_PIPELINE_MAPPING
     ),
     "Cosmos3ForConditionalGeneration": not_capable_entry(PENDING_PIPELINE_MAPPING),
-    "DotsTTSForConditionalGeneration": not_capable_entry(PENDING_PIPELINE_MAPPING),
+    "DotsTTSForConditionalGeneration": supported_entry(
+        "DotsTTSFlowHead implements SupportsMergedLoRA for the per-step DiT flow predictor"
+    ),
     "FireRedTTS3ForConditionalGeneration": not_capable_entry(PENDING_AR_MAPPING),
     "FishOmniModel": not_capable_entry(PENDING_PIPELINE_MAPPING),
     "FishQwen3OmniForCausalLM": not_capable_entry(PENDING_AR_MAPPING),
@@ -186,8 +188,8 @@ MERGED_LORA_ARCHITECTURE_REGISTRY: dict[str, MergedLoRARegistryEntry] = {
     "LingV3TTSForConditionalGeneration": not_capable_entry(PENDING_PIPELINE_MAPPING),
     "MingV3ASRForConditionalGeneration": not_capable_entry(PENDING_AR_MAPPING),
     "MiniCPMO": not_capable_entry(PENDING_PIPELINE_MAPPING),
-    "MiniMaxMusic3ForConditionalGeneration": not_capable_entry(
-        PENDING_PIPELINE_MAPPING
+    "MiniMaxMusic3ForConditionalGeneration": supported_entry(
+        "MiniMaxMusic3DIT implements SupportsMergedLoRA with ODE solver override support on MiniMaxMusic3AcousticScheduler"
     ),
     "MossTTSDelayModel": runtime_only_entry(
         "MossTTSDelaySGLangModel declares packed_modules_mapping on the AR stage"

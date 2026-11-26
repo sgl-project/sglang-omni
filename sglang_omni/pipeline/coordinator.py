@@ -552,6 +552,20 @@ class Coordinator(SessionGraphRunner):
             timeout_s=timeout_s,
         )
 
+    async def load_lora_adapter(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: Sequence[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> AdminResponse:
+        return await self.admin(
+            "load_lora_adapter",
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     async def submit(self, request_id: str, request: object) -> object:
         """Submit a request to the pipeline and wait for completion."""
         self.reject_session_metadata(request)

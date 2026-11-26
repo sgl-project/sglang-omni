@@ -744,6 +744,19 @@ class Client:
             timeout_s=timeout_s,
         )
 
+    async def load_lora_adapter(
+        self,
+        payload: dict[str, object],
+        *,
+        stages: list[str] | None = None,
+        timeout_s: float = 300.0,
+    ) -> AdminResponse:
+        return await self.coordinator.load_lora_adapter(
+            payload,
+            stages=stages,
+            timeout_s=timeout_s,
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

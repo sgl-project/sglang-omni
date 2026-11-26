@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, MutableMapping, Sequence
 from contextlib import nullcontext
 from importlib.metadata import version
 from pathlib import Path
@@ -13,6 +13,14 @@ from typing import Literal
 
 import torch
 
+from sglang_omni.lora import (
+    MergedLoRAManager,
+    MergedLoRAWorkerSession,
+    ODESolverFieldMap,
+    SupportsMergedLoRA,
+    build_dict_solver_controller,
+    build_merged_lora_admin_handler,
+)
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.batch_compute import (
     BatchCompute,
@@ -48,12 +56,44 @@ from sglang_omni.scheduling.weight_cache import checkpoint_identity
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.device import resolve_concrete_device
 
+AUK_SOLVER_FIELD_MAP = ODESolverFieldMap(
+    num_steps="steps",
+    cfg_scale="cfg_strength",
+    sway_sampling_coef="sway_sampling_coef",
+    t_grid="t_grid",
+)
+
+
+def build_auk_lora_admin_handler(
+    transformer: torch.nn.Module,
+    sampling: MutableMapping[str, object],
+) -> Callable[[str, dict[str, object]], dict[str, object]]:
+    """Build a merged-LoRA admin handler that also manages AuK's ODE solver sampling config."""
+    manager = MergedLoRAManager(
+        transformer,
+        architecture="AuKForConditionalGeneration",
+    )
+    solver_controller = build_dict_solver_controller(sampling, AUK_SOLVER_FIELD_MAP)
+    session = MergedLoRAWorkerSession(
+        manager,
+        solver_controller=solver_controller,
+    )
+    return build_merged_lora_admin_handler(session)
+
 
 def scheduler(
     compute_batch: BatchCompute,
     device: torch.device,
     max_batch_size: int,
     max_batch_wait_ms: int,
+    *,
+    admin_handler: (
+        Callable[
+            [str, dict[str, object]],
+            Mapping[str, object] | Awaitable[Mapping[str, object]],
+        ]
+        | None
+    ) = None,
 ) -> SimpleScheduler[StagePayload, StagePayload]:
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
@@ -68,6 +108,7 @@ def scheduler(
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         batch_wait_when_idle=False,
+        admin_handler=admin_handler,
     )
 
 
@@ -279,10 +320,25 @@ def create_auk_engine_executor(
         sampling,
         offload,
     )
-    if offload is not None:
-        return AuKOffloadScheduler(compute, offload, "auk_engine")
+    transformer = getattr(flow, "transformer", None)
+    if isinstance(transformer, torch.nn.Module) and isinstance(
+        transformer, SupportsMergedLoRA
+    ):
+        lora_admin_handler = build_auk_lora_admin_handler(transformer, sampling)
     else:
-        return scheduler(compute, device, max_batch_size, max_batch_wait_ms)
+        lora_admin_handler = None
+    if offload is not None:
+        return AuKOffloadScheduler(
+            compute, offload, "auk_engine", admin_handler=lora_admin_handler
+        )
+    else:
+        return scheduler(
+            compute,
+            device,
+            max_batch_size,
+            max_batch_wait_ms,
+            admin_handler=lora_admin_handler,
+        )
 
 
 def create_decode_executor(

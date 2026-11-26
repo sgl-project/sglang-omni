@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import nullcontext
 
 import torch
@@ -22,6 +23,14 @@ class AuKOffloadScheduler(SimpleScheduler[StagePayload, StagePayload]):
         compute_batch: BatchCompute,
         coordinator: AuKOffloadCoordinator,
         stage: StageName,
+        *,
+        admin_handler: (
+            Callable[
+                [str, dict[str, object]],
+                Mapping[str, object] | Awaitable[Mapping[str, object]],
+            ]
+            | None
+        ) = None,
     ) -> None:
         self.compute_batch: BatchCompute = compute_batch
         self.coordinator: AuKOffloadCoordinator = coordinator
@@ -31,7 +40,11 @@ class AuKOffloadScheduler(SimpleScheduler[StagePayload, StagePayload]):
             if coordinator.device.type == "cuda"
             else None
         )
-        super().__init__(self.execute, abort_callback=coordinator.cancel)
+        super().__init__(
+            self.execute,
+            abort_callback=coordinator.cancel,
+            admin_handler=admin_handler,
+        )
         coordinator.inboxes.append(self.inbox)
 
     @torch.inference_mode()

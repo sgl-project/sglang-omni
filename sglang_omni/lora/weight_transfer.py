@@ -26,9 +26,11 @@ from sglang_omni.lora.merged_manager import (
     MergedLoRAManager,
     normalize_target_modules,
 )
+from sglang_omni.lora.solver_override import ODESolverOverrideController
 from sglang_omni.proto.admin import (
     ADMIN_ABORT_LORA_UPDATE,
     ADMIN_FINISH_LORA_UPDATE,
+    ADMIN_LOAD_LORA_ADAPTER,
     ADMIN_RESTORE_BASE_WEIGHTS,
     ADMIN_START_LORA_UPDATE,
     ADMIN_UPDATE_LORA_WEIGHTS,
@@ -182,11 +184,13 @@ class MergedLoRAWorkerSession:
         self,
         manager: MergedLoRAManager,
         *,
+        solver_controller: ODESolverOverrideController | None = None,
         on_cleanup: Callable[[], None] | None = None,
         is_cuda: bool | None = None,
         rebuild_cuda_fn: Callable[..., torch.Tensor] | None = None,
     ) -> None:
         self.manager = manager
+        self.solver_controller = solver_controller
         self.on_cleanup = on_cleanup
         self.is_cuda = is_cuda
         self.rebuild_cuda_fn = rebuild_cuda_fn
@@ -295,22 +299,52 @@ class MergedLoRAWorkerSession:
         # Drop any prior uncommitted staging before preparing the replacement batch.
         if self.staged_adapter_id is not None:
             self.manager.rollback_adapter()
+            if self.solver_controller is not None:
+                self.solver_controller.rollback_override()
+            else:
+                pass
             self.staged_adapter_id = None
+        else:
+            pass
+
+        raw_solver_override = payload.get("solver_override")
+        if raw_solver_override is not None and self.solver_controller is None:
+            raise ValueError(
+                "solver_override was provided, but this stage does not support "
+                "ODE solver configuration overrides"
+            )
         else:
             pass
 
         park_location, matched = self.manager.prepare_adapter(
             request, restore_omitted=restore_omitted
         )
+        staged_solver: dict[str, object] | None = None
+        if self.solver_controller is not None:
+            try:
+                staged_solver = self.solver_controller.stage_override(
+                    raw_solver_override
+                )
+            except Exception:
+                self.manager.rollback_adapter()
+                raise
+        else:
+            pass
+
         self.staged_adapter_id = request.adapter_id
         self.staged_park_location = park_location
         self.staged_match_count = matched
-        return {
+        result: dict[str, Any] = {
             "update_id": update_id,
             "adapter_id": request.adapter_id,
             "matched_modules": matched,
             "park_location": park_location,
         }
+        if staged_solver is not None:
+            result["staged_solver_config"] = staged_solver
+        else:
+            pass
+        return result
 
     def finish_update(self, update_id: str) -> dict[str, Any]:
         """Atomically commit staged weights in-place and close the session."""
@@ -330,6 +364,11 @@ class MergedLoRAWorkerSession:
         self.finish_attempted = True
         adapter_id = self.staged_adapter_id
         updated = self.manager.commit_adapter(adapter_id)
+        active_solver: dict[str, object] | None = None
+        if self.solver_controller is not None:
+            active_solver = self.solver_controller.commit_override()
+        else:
+            pass
         # Mark finished only after commit succeeds so interrupted finishes abort cleanly.
         self.session_finished = True
         self.active_update_id = None
@@ -337,11 +376,16 @@ class MergedLoRAWorkerSession:
         self.staged_park_location = None
         self.staged_match_count = 0
         self.run_cleanup_safely("finish_update")
-        return {
+        result: dict[str, Any] = {
             "update_id": update_id,
             "adapter_id": adapter_id,
             "updated_params": updated,
         }
+        if active_solver is not None:
+            result["active_solver_config"] = active_solver
+        else:
+            pass
+        return result
 
     def abort_update(self, update_id: str | None = None) -> dict[str, Any]:
         """Abort the active session without committing any staged weights."""
@@ -359,6 +403,10 @@ class MergedLoRAWorkerSession:
         aborted_id = self.active_update_id
         try:
             self.manager.rollback_adapter()
+            if self.solver_controller is not None:
+                self.solver_controller.rollback_override()
+            else:
+                pass
         finally:
             self.active_update_id = None
             self.staged_adapter_id = None
@@ -373,7 +421,7 @@ class MergedLoRAWorkerSession:
         }
 
     def restore_base(self) -> dict[str, Any]:
-        """Restore pristine host base weights when no update session is active."""
+        """Restore pristine host base weights and ODE solver config when idle."""
         if self.active_update_id is not None:
             raise RuntimeError(
                 f"cannot restore_base while session {self.active_update_id!r} is active"
@@ -381,7 +429,87 @@ class MergedLoRAWorkerSession:
         else:
             pass
         restored = self.manager.restore_base()
-        return {"restored_params": restored}
+        result: dict[str, Any] = {"restored_params": restored}
+        if self.solver_controller is not None:
+            result["restored_solver_config"] = self.solver_controller.restore_base()
+        else:
+            pass
+        return result
+
+    def load_from_disk(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Atomically load a PEFT LoRA checkpoint from disk and apply any ODE solver override."""
+        if self.active_update_id is not None:
+            raise RuntimeError(
+                f"cannot load_from_disk while session {self.active_update_id!r} is active"
+            )
+        else:
+            pass
+        lora_path = payload.get("lora_path")
+        if not isinstance(lora_path, str) or not lora_path.strip():
+            raise ValueError("payload['lora_path'] must be a non-empty path string")
+        else:
+            pass
+
+        from sglang_omni.lora.checkpoint import load_lora_checkpoint
+
+        raw_adapter_id = payload.get("adapter_id")
+        adapter_id = None if raw_adapter_id is None else str(raw_adapter_id)
+        raw_scale = payload.get("scale")
+        scale = None if raw_scale is None else float(raw_scale)
+        raw_alpha = payload.get("alpha")
+        alpha = None if raw_alpha is None else float(raw_alpha)
+        target_modules = payload.get("target_modules")
+        raw_solver_override = payload.get("solver_override")
+        restore_omitted = bool(payload.get("restore_omitted", True))
+
+        loaded = load_lora_checkpoint(
+            lora_path.strip(),
+            adapter_id=adapter_id,
+            scale=scale,
+            alpha=alpha,
+            target_modules=target_modules,
+            solver_override=raw_solver_override,
+            device="cpu",
+        )
+        if loaded.solver_override is not None and self.solver_controller is None:
+            raise ValueError(
+                "checkpoint defines an ODE solver override, but this stage does not "
+                "support ODE solver configuration overrides"
+            )
+        else:
+            pass
+
+        update_id = f"disk-{uuid.uuid4().hex[:12]}"
+        self.start_update(update_id)
+        try:
+            request = LoRARequestPayload(
+                adapter_id=loaded.source.adapter_id,
+                target_modules=loaded.source.target_modules,
+                tensors=loaded.source.build_adapter_tensors(),
+                scale=loaded.source.scale,
+            )
+            park_location, matched = self.manager.prepare_adapter(
+                request, restore_omitted=restore_omitted
+            )
+            if self.solver_controller is not None:
+                self.solver_controller.stage_override(loaded.solver_override)
+            else:
+                pass
+            self.staged_adapter_id = request.adapter_id
+            self.staged_park_location = park_location
+            self.staged_match_count = matched
+            finished = self.finish_update(update_id)
+            finished["lora_path"] = loaded.checkpoint_path
+            finished["matched_modules"] = matched
+            finished["park_location"] = park_location
+            if loaded.solver_override is not None:
+                finished["solver_override"] = loaded.solver_override.to_dict()
+            else:
+                pass
+            return finished
+        except Exception:
+            self.abort_update(update_id)
+            raise
 
 
 @dataclass(frozen=True)
@@ -612,6 +740,9 @@ def build_merged_lora_admin_handler(
                     return {"success": True, "message": "ok", "data": data}
                 elif action == ADMIN_RESTORE_BASE_WEIGHTS:
                     data = session.restore_base()
+                    return {"success": True, "message": "ok", "data": data}
+                elif action == ADMIN_LOAD_LORA_ADAPTER:
+                    data = session.load_from_disk(payload)
                     return {"success": True, "message": "ok", "data": data}
                 else:
                     return {

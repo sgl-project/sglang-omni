@@ -16,6 +16,7 @@ from sglang_omni.lora.capability import (
     resolve_merged_lora_spec,
 )
 from sglang_omni.models.auk.dit import AuKDit
+from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 from sglang_omni.models.qwen3_omni.components.sglang_thinker import (
     Qwen3OmniThinkerForCausalLM,
 )
@@ -190,10 +191,71 @@ def test_capability_rejections_and_fallback() -> None:
         resolve_merged_lora_spec(fallback, architecture="MossTTSDelayModel")
 
 
+def test_dots_tts_flow_head_spec() -> None:
+    class TinyDotsFlowHead(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.velocity_field_predictor = nn.Module()
+            self.velocity_field_predictor.q_proj = nn.Linear(8, 8, bias=False)
+            self.velocity_field_predictor.k_proj = nn.Linear(8, 8, bias=False)
+            self.velocity_field_predictor.v_proj = nn.Linear(8, 8, bias=False)
+
+        def merged_lora_spec(self) -> MergedLoRASpec:
+            return DotsTTSFlowHead.merged_lora_spec(self)
+
+    flow_head = TinyDotsFlowHead()
+    assert isinstance(flow_head, SupportsMergedLoRA)
+    dots_spec = resolve_merged_lora_spec(
+        flow_head, architecture="DotsTTSForConditionalGeneration"
+    )
+    assert dots_spec.target_module_root == "velocity_field_predictor"
+    assert dots_spec.allow_plain_linear is True
+
+
+def test_minimax_music3_dit_spec() -> None:
+    try:
+        from sglang_omni.models.minimax_music3.dit import MiniMaxMusic3DIT
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"optional minimax_music3 dependency missing: {exc}")
+
+    class TinyMusic3DIT(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.diffusion_transformer = nn.Module()
+            self.diffusion_transformer.transformer = nn.Module()
+            layer = nn.Module()
+            layer.attn = nn.Module()
+            layer.attn.to_qkv = nn.Linear(8, 24, bias=False)
+            layer.attn.to_out = nn.Linear(8, 8, bias=False)
+            self.diffusion_transformer.transformer.layers = nn.ModuleList([layer])
+
+        def merged_lora_spec(self) -> MergedLoRASpec:
+            return MiniMaxMusic3DIT.merged_lora_spec(self)
+
+    music_dit = TinyMusic3DIT()
+    assert isinstance(music_dit, SupportsMergedLoRA)
+    music_spec = resolve_merged_lora_spec(
+        music_dit, architecture="MiniMaxMusic3ForConditionalGeneration"
+    )
+    assert music_spec.target_module_root == "diffusion_transformer"
+    assert music_spec.packed_modules_mapping == {"to_qkv": ("to_q", "to_k", "to_v")}
+    assert music_spec.allow_plain_linear is True
+
+
 def test_architecture_registry_audit_passes_and_reports_undeclared() -> None:
     assert audit_merged_lora_registry() == []
     assert "AuKForConditionalGeneration" in MERGED_LORA_ARCHITECTURE_REGISTRY
     assert "Qwen3OmniMoeForConditionalGeneration" in MERGED_LORA_ARCHITECTURE_REGISTRY
+    assert (
+        MERGED_LORA_ARCHITECTURE_REGISTRY[
+            "MiniMaxMusic3ForConditionalGeneration"
+        ].status
+        == "supported"
+    )
+    assert (
+        MERGED_LORA_ARCHITECTURE_REGISTRY["DotsTTSForConditionalGeneration"].status
+        == "supported"
+    )
 
     synthetic = dict(MERGED_LORA_ARCHITECTURE_REGISTRY)
     synthetic["BrandNewOmniModel"] = object()

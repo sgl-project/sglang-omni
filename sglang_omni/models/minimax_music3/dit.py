@@ -13,7 +13,6 @@ from collections.abc import Callable
 from types import MethodType
 
 import torch
-from cache_dit import BlockAdapter, DBCacheConfig, ForwardPattern, enable_cache
 from sglang.multimodal_gen.runtime.breakable_cuda_graph.runner import (
     DiffusionBreakableCudaGraphRunner,
 )
@@ -371,6 +370,8 @@ class MiniMaxMusic3DIT(nn.Module):
         residual_diff_threshold: float,
         max_continuous_cached_steps: int,
     ) -> None:
+        from cache_dit import BlockAdapter, DBCacheConfig, ForwardPattern, enable_cache
+
         adapter = BlockAdapter(
             transformer=self.diffusion_transformer.transformer,
             blocks=self.diffusion_transformer.transformer.layers,
@@ -543,6 +544,24 @@ class MiniMaxMusic3DIT(nn.Module):
         else:
             pass
         return x
+
+    def merged_lora_spec(self):
+        """Return the engine-side merged LoRA specification for MiniMax Music 3 DiT."""
+        from sglang_omni.lora.capability import MergedLoRASpec
+
+        return MergedLoRASpec(
+            target_module_root="diffusion_transformer",
+            packed_modules_mapping={
+                "to_qkv": ("to_q", "to_k", "to_v"),
+            },
+            strip_prefixes=(
+                "dit.diffusion_transformer.",
+                "diffusion_transformer.",
+                "dit.",
+                "model.",
+            ),
+            allow_plain_linear=True,
+        )
 
 
 __all__ = ["MiniMaxMusic3DIT", "resolve_attention_backend"]

@@ -100,6 +100,7 @@ from sglang_omni.proto.admin import (
     ADMIN_DESTROY_WEIGHTS_UPDATE_GROUP,
     ADMIN_FINISH_LORA_UPDATE,
     ADMIN_INIT_WEIGHTS_UPDATE_GROUP,
+    ADMIN_LOAD_LORA_ADAPTER,
     ADMIN_MODEL_INFO,
     ADMIN_PAUSE_GENERATION,
     ADMIN_RESTORE_BASE_WEIGHTS,
@@ -4104,6 +4105,10 @@ class OmniScheduler(Generic[RequestDataT]):
             return self.admin_restore_base_weights(payload)
         else:
             pass
+        if action == ADMIN_LOAD_LORA_ADAPTER:
+            return self.admin_load_lora_adapter(payload)
+        else:
+            pass
         return {
             "success": True,
             "message": f"unsupported admin action: {action}",
@@ -4443,6 +4448,14 @@ class OmniScheduler(Generic[RequestDataT]):
             payload,
             self.model_worker.restore_base_weights,
             {},
+            keep_pause_on_failure=True,
+        )
+
+    def admin_load_lora_adapter(self, payload: dict[str, object]) -> AdminActionResult:
+        return self.run_weight_update_with_lifecycle(
+            payload,
+            self.model_worker.load_lora_adapter,
+            {"lora_path": payload.get("lora_path")},
             keep_pause_on_failure=True,
         )
 

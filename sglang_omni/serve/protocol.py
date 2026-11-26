@@ -873,6 +873,7 @@ class UpdateLoRAWeightsRequest(AdminRequestBase):
     alpha: float | None = None
     scale: float = 1.0
     restore_omitted: bool = True
+    solver_override: dict[str, object] | None = None
 
 
 class FinishLoRAUpdateRequest(AdminRequestBase):
@@ -889,6 +890,21 @@ class AbortLoRAUpdateRequest(AdminRequestBase):
 
 
 class RestoreBaseWeightsRequest(AdminRequestBase):
+    flush_cache: bool = True
+    abort_all_requests: bool = False
+    keep_pause: bool = False
+    weight_version: str | None = None
+    torch_empty_cache: bool = False
+
+
+class LoadLoRAAdapterRequest(AdminRequestBase):
+    lora_path: str
+    adapter_id: str | None = None
+    target_modules: list[str] | str | None = None
+    alpha: float | None = None
+    scale: float | None = None
+    restore_omitted: bool = True
+    solver_override: dict[str, object] | None = None
     flush_cache: bool = True
     abort_all_requests: bool = False
     keep_pause: bool = False

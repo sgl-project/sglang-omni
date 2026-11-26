@@ -12,6 +12,15 @@ from sglang_omni.lora.capability import (
     audit_merged_lora_registry,
     resolve_merged_lora_spec,
 )
+from sglang_omni.lora.checkpoint import (
+    ADAPTER_CONFIG_FILENAME,
+    EMBEDDED_SOLVER_KEYS,
+    SOLVER_CONFIG_FILENAMES,
+    LoadedLoRACheckpoint,
+    discover_solver_override,
+    infer_target_modules_from_tensors,
+    load_lora_checkpoint,
+)
 from sglang_omni.lora.ipc_wire import (
     decode_wire_tensor,
     encode_cuda_ipc_handle,
@@ -31,6 +40,16 @@ from sglang_omni.lora.merged_weights import (
     MergedLinearWeights,
     ParkingPolicy,
 )
+from sglang_omni.lora.solver_override import (
+    AttrSolverTarget,
+    DictSolverTarget,
+    ODESolverFieldMap,
+    ODESolverOverride,
+    ODESolverOverrideController,
+    SupportsODESolverOverride,
+    build_attr_solver_controller,
+    build_dict_solver_controller,
+)
 from sglang_omni.lora.weight_transfer import (
     LoRAAdapterWeightSource,
     MergedLoRATrainerSync,
@@ -39,11 +58,17 @@ from sglang_omni.lora.weight_transfer import (
 )
 
 __all__ = [
+    "ADAPTER_CONFIG_FILENAME",
     "DEFAULT_DEVICE_PARK_HEADROOM_BYTES",
+    "EMBEDDED_SOLVER_KEYS",
     "MERGED_LORA_ARCHITECTURE_REGISTRY",
+    "SOLVER_CONFIG_FILENAMES",
+    "AttrSolverTarget",
+    "DictSolverTarget",
     "LoRAAdapterTensor",
     "LoRAAdapterWeightSource",
     "LoRARequestPayload",
+    "LoadedLoRACheckpoint",
     "MergedLinearWeights",
     "MergedLoRACapabilityError",
     "MergedLoRAManager",
@@ -51,15 +76,24 @@ __all__ = [
     "MergedLoRASpec",
     "MergedLoRATrainerSync",
     "MergedLoRAWorkerSession",
+    "ODESolverFieldMap",
+    "ODESolverOverride",
+    "ODESolverOverrideController",
     "ParkingPolicy",
     "SupportsMergedLoRA",
+    "SupportsODESolverOverride",
     "TargetModuleMatcher",
     "audit_merged_lora_registry",
+    "build_attr_solver_controller",
+    "build_dict_solver_controller",
     "build_merged_lora_admin_handler",
     "build_target_module_matcher",
     "decode_wire_tensor",
+    "discover_solver_override",
     "encode_cuda_ipc_handle",
     "encode_inline_tensor",
+    "infer_target_modules_from_tensors",
+    "load_lora_checkpoint",
     "normalize_target_modules",
     "release_unpublished_ipc_handle",
     "resolve_merged_lora_spec",

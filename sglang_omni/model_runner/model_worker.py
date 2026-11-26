@@ -682,6 +682,22 @@ class ModelWorker:
             pass
         return bool(success), str(message)
 
+    def load_lora_adapter(self, payload: Mapping[str, object]) -> tuple[bool, str]:
+        success, message, _data = self.model_runner.load_lora_adapter(payload)
+        if success:
+            weight_version = payload.get("weight_version")
+            if weight_version is not None:
+                override_server_args(
+                    self.server_args,
+                    "sglang-omni-lora-load",
+                    weight_version=weight_version,
+                )
+            else:
+                pass
+        else:
+            pass
+        return bool(success), str(message)
+
 
 def resolve_nccl_port() -> int:
     master_port = os.environ.get("MASTER_PORT")

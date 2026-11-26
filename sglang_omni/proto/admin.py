@@ -21,6 +21,7 @@ ADMIN_UPDATE_LORA_WEIGHTS = "update_lora_weights"
 ADMIN_FINISH_LORA_UPDATE = "finish_lora_update"
 ADMIN_ABORT_LORA_UPDATE = "abort_lora_update"
 ADMIN_RESTORE_BASE_WEIGHTS = "restore_base_weights"
+ADMIN_LOAD_LORA_ADAPTER = "load_lora_adapter"
 
 
 class SerializedAdminResult(TypedDict):
@@ -128,4 +129,5 @@ def is_update_action(action: str) -> bool:
         ADMIN_FINISH_LORA_UPDATE,
         ADMIN_ABORT_LORA_UPDATE,
         ADMIN_RESTORE_BASE_WEIGHTS,
+        ADMIN_LOAD_LORA_ADAPTER,
     }
