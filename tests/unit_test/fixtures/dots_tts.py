@@ -5,12 +5,22 @@ from pathlib import Path
 
 import torch
 
+from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
+from sglang_omni.models.dots_tts.patch_cache import RESIDENT_CACHE_BYTES
+from sglang_omni.models.dots_tts.patch_graph import GraphedDiTSolver
+from sglang_omni.platforms.device_graph import DeviceGraphBackend
+
+import_dots_tts()
+
+from dots_tts.modules.backbone.dit_inference import DiTInferenceContext  # noqa: E402
 
 LLM_HIDDEN = 48
 FM_HIDDEN = 32
 LATENT_DIM = 6
 PATCH_SIZE = 2
+UNIT_TOKENS = 1 + PATCH_SIZE
+ODE_STEPS = 2
 
 
 def tiny_flow_head(
@@ -56,4 +66,28 @@ def tiny_flow_head(
     return flow.eval()
 
 
-__all__ = ["FM_HIDDEN", "LATENT_DIM", "LLM_HIDDEN", "PATCH_SIZE", "tiny_flow_head"]
+def graphed_solver(
+    flow: DotsTTSFlowHead,
+    graph_backend: DeviceGraphBackend,
+    resident_cache_bytes: int = RESIDENT_CACHE_BYTES,
+) -> GraphedDiTSolver:
+    return GraphedDiTSolver(
+        DiTInferenceContext.from_core(flow),
+        optimize=True,
+        bucket_resolver=flow.bucket,
+        meanflow=flow.mode == "meanflow",
+        graph_backend=graph_backend,
+        resident_cache_bytes=resident_cache_bytes,
+    )
+
+
+__all__ = [
+    "FM_HIDDEN",
+    "LATENT_DIM",
+    "LLM_HIDDEN",
+    "ODE_STEPS",
+    "PATCH_SIZE",
+    "UNIT_TOKENS",
+    "graphed_solver",
+    "tiny_flow_head",
+]
