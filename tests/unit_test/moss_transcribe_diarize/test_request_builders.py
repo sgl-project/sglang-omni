@@ -12,7 +12,6 @@ from sglang.srt.mem_cache.memory_pool import ReqToTokenPool
 
 import sglang_omni.models.moss_transcribe_diarize.request_builders as request_builders
 import sglang_omni.preprocessing.transcription as transcription
-from sglang_omni.models.moss_transcribe_diarize import request_builders
 from sglang_omni.models.moss_transcribe_diarize.pd import (
     build_prefill_state,
     restore_decode_state,
@@ -229,22 +228,22 @@ def make_request_builder(
     return request_builder
 
 
-@pytest.mark.parametrize("audio_metadata_key", ["audios", "audio_data", "audio"])
-def test_pd_continuation_preserves_moss_transcription_state(
-    audio_metadata_key: str,
-) -> None:
+def test_pd_continuation_preserves_moss_transcription_state() -> None:
     processor = FakeProcessor()
     audio = wav_bytes()
-    audio_source = [audio] if audio_metadata_key == "audios" else audio
     prefill_data = make_request_builder(processor)(
-        payload(
+        payload_with_inputs(
+            "Diarize the recording",
             params={"language": "en", "max_new_tokens": 9},
             metadata={
-                audio_metadata_key: audio_source,
+                "audios": [audio],
+                "audio_data": audio,
+                "audio": audio,
                 "model": "moss-transcribe-diarize",
             },
         )
     )
+    prefill_data.engine_start_s = 1.25
     request = prefill_data.req
     request.omni_data = prefill_data
     request.output_ids.append(10)
@@ -272,6 +271,7 @@ def test_pd_continuation_preserves_moss_transcription_state(
     assert result.data["duration_s"] == prefill_data.audio_duration_s
     assert result.data["language"] == "en"
     assert result.data["prompt_tokens"] == prompt_tokens
+    assert resumed.omni_data.engine_start_s == 1.25
     assert resumed.sampling_params.max_new_tokens == 9
 
 

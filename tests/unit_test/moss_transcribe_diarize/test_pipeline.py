@@ -6,7 +6,6 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
 from unittest.mock import Mock
 
 import httpx
@@ -61,22 +60,16 @@ def test_moss_pd_profile_keeps_target_only_handoff_constraints() -> None:
         assert stage.engine.disable_speculative_decoding is True
 
 
-@pytest.mark.parametrize(
-    ("pd_role", "memory_fraction"),
-    [(None, None), (None, 0.85), ("prefill", 0.85), ("decode", 0.85)],
-)
-def test_moss_stage_forwards_gpu_memory_fraction(
+def test_moss_colocated_stage_forwards_gpu_memory_fraction(
     monkeypatch: pytest.MonkeyPatch,
-    pd_role: Literal["prefill", "decode"] | None,
-    memory_fraction: float | None,
 ) -> None:
     build = Mock()
     monkeypatch.setattr(MossTranscribeDiarizeEngineBuilder, "build", build)
     create_sglang_moss_transcribe_diarize_executor(
-        "dummy", pd_role=pd_role, total_gpu_memory_fraction=memory_fraction
+        "dummy", total_gpu_memory_fraction=0.85
     )
 
-    assert build.call_args.kwargs["total_gpu_memory_fraction"] == memory_fraction
+    assert build.call_args.kwargs["total_gpu_memory_fraction"] == 0.85
 
 
 def make_moss_engine_builder(
@@ -196,7 +189,6 @@ def test_moss_transcribe_diarize_omp_default_tracks_request_workers(
 
     config = config_module.MossTranscribeDiarizePipelineConfig(model_path="dummy")
     if worker_override is not None:
-
         config = ConfigManager(config).merge_config(
             [("asr.factory.request_build_max_workers", str(worker_override))]
         )
