@@ -12,25 +12,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 )
 
-// selectionSettleMS, selectionPollMS and selectionModifierWaitMS: the
-// helper's waits around a selection read. A caret-only reading waits out
-// a settle for a selection made with ⌘A in the shortcut's motion (#4467);
-// the helper's ⌘C waits for the shortcut's held modifiers to lift, so the
-// app reads ⌘C and not a key that copies nothing (#3835).
-const (
-	selectionSettleMS       = 600
-	selectionPollMS         = 60
-	selectionModifierWaitMS = 800
-	selectionOverheadMS     = 300
-	// selectionCopyMS is the selection read's ⌘C budget, sent explicitly
-	// so the deadline arithmetic does not depend on the helper's default.
-	selectionCopyMS = 300
-)
-
-// intp is v's address: the selection params carry their budgets as
-// pointers, so an explicit 0 reaches the helper (nil is its default).
-func intp(v int) *int { return &v }
-
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).
 func (r *run) listen() (string, bool) {
@@ -91,6 +72,9 @@ func (r *run) listen() (string, bool) {
 		}
 	}
 	maybeWarm := func() {
+		if !r.cleanupMayContinue() {
+			return
+		}
 		cleanupReady := !r.init.split || r.init.cleanupReady
 		if r.head.enabled.Load() && (cleanupReady || !r.init.split) {
 			refreshHead()
@@ -485,7 +469,7 @@ func (r *run) listen() (string, bool) {
 		if early != nil {
 			res, silent = early.res, early.silent
 		} else {
-			end, waitErr := r.waitFinal(actx, finals, heard)
+			end, waitErr := r.waitFinal(actx, finals, heard, &sceneDone, maybeWarm)
 			res, err, silent = end.res, end.err, end.silent
 			if waitErr != nil {
 				err = waitErr

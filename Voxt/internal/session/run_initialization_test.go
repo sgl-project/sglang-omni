@@ -619,6 +619,9 @@ func TestEarlyPieceBeforeCleanupReadinessDoesNotBlockASREvents(t *testing.T) {
 	}
 	h.speak(id, 5)
 	waitInitializationSignal(t, signals.asrFinal, "ASR Final")
+	h.rec.waitFor(t, "ASR Final consumed before LLM readiness", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.Raw == "the complete final transcript"
+	})
 	openRelease()
 	end := h.rec.wait(t)
 	if end.Result != "cleaned transcript" || len(model.requests()) != 1 {
