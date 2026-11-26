@@ -105,7 +105,7 @@ func TestStageImportRefusesOtherFiles(t *testing.T) {
 
 // A sound SQLite file of another app, at a schema version Voxt reads, is
 // refused too: the library stays as it was after the restart. Reusing
-// Voxt's table names is not enough, since the columns differ.
+// Voxt's table names is not enough, since the columns and keys differ.
 func TestStageImportRefusesForeignSQLite(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -115,17 +115,30 @@ func TestStageImportRefusesForeignSQLite(t *testing.T) {
 	}
 	putDoc(t, st, "settings:app", `{"from":"mine"}`)
 	st.Close()
-	foreigns := map[string]string{
-		"another app's table":                     "CREATE TABLE notes (x);",
-		"Voxt table names, another app's columns": "CREATE TABLE documents (x); CREATE TABLE history (x); CREATE TABLE dictionary_terms (x);",
-	}
-	for name, schema := range foreigns {
-		t.Run(name, func(t *testing.T) {
-			foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
-			out, err := exec.Command(sqlite3, foreign, fmt.Sprintf("%s PRAGMA user_version = %d;", schema, sqlitestore.Version())).CombinedOutput()
+	foreigns := []struct {
+		name string
+		make func(t *testing.T, foreign string)
+	}{
+		{"another app's table", func(t *testing.T, foreign string) {
+			runSQL(t, foreign, "CREATE TABLE notes (x);")
+		}},
+		{"Voxt table names, another app's columns", func(t *testing.T, foreign string) {
+			runSQL(t, foreign, "CREATE TABLE documents (x); CREATE TABLE history (x); CREATE TABLE dictionary_terms (x);")
+		}},
+		{"Voxt tables, a composite documents key", func(t *testing.T, foreign string) {
+			// A complete Voxt library, except documents is keyed by (key, doc).
+			out, err := exec.Command(sqlite3, filepath.Join(dir, sqlitestore.FileName), ".backup '"+foreign+"'").CombinedOutput()
 			if err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
+			runSQL(t, foreign, "ALTER TABLE documents RENAME TO documents_key_old; CREATE TABLE documents (key TEXT, doc TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (key, doc)); DROP TABLE documents_key_old;")
+		}},
+	}
+	for _, f := range foreigns {
+		t.Run(f.name, func(t *testing.T) {
+			foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
+			f.make(t, foreign)
+			runSQL(t, foreign, fmt.Sprintf("PRAGMA user_version = %d;", sqlitestore.Version()))
 			if err := StageImport(ctx, dir, foreign); err == nil {
 				t.Fatal("StageImport accepted another app's SQLite file")
 			}
@@ -141,5 +154,12 @@ func TestStageImportRefusesForeignSQLite(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func runSQL(t *testing.T, path, sql string) {
+	t.Helper()
+	if out, err := exec.Command(sqlite3, path, sql).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
 	}
 }
