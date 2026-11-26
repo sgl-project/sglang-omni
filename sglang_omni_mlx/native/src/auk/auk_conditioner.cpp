@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 
 #include "common/audio.h"
+#include "common/whisper_encoder.h"
 
 namespace auk {
 
@@ -37,19 +39,13 @@ LoadConditionerWeights(const std::filesystem::path &directory,
           "AuK conditioner weights must be floating point");
     } else {
     }
-    mx::array value = mx::astype(weight, dtype);
-    if (normalized == "audio_tower.conv1.weight" ||
-        normalized == "audio_tower.conv2.weight") {
-      value = mx::transpose(value, {0, 2, 1});
-    } else {
-    }
-    if (!weights.emplace(normalized, std::move(value)).second) {
+    if (!weights.emplace(normalized, mx::astype(weight, dtype)).second) {
       throw std::invalid_argument("duplicate AuK conditioner weight: " +
                                   normalized);
     } else {
     }
   }
-  return weights;
+  return omni_common::WhisperConvMlxLayout(std::move(weights), "audio_tower");
 }
 
 } // namespace
@@ -127,6 +123,17 @@ Conditioner::Conditioner(const std::filesystem::path &directory,
     : config_(Config::Read(directory)),
       checkpoint_(LoadConditionerWeights(directory, dtype),
                   nlohmann::json::object()),
+      text_decoder_(checkpoint_, "model",
+                    {.num_hidden_layers = config_.text_layer_count,
+                     .num_attention_heads = config_.text_head_count,
+                     .num_key_value_heads = config_.text_kv_head_count,
+                     .head_dim = config_.hidden_size / config_.text_head_count,
+                     .rms_norm_eps = config_.rms_norm_epsilon,
+                     .rope_theta = config_.rope_theta,
+                     .has_query_key_norm = false,
+                     .hidden_size = config_.hidden_size,
+                     .vocab_size = config_.vocabulary_size,
+                     .projection_dtype = dtype}),
       tokenizer_(directory) {
   const int hidden = config_.hidden_size;
   const int head_size = hidden / config_.text_head_count;
@@ -256,51 +263,6 @@ mx::array Conditioner::Encode(
   return EncodeInputs(token_ids, features);
 }
 
-mx::array Conditioner::TextLayer(const mx::array &hidden, int layer) const {
-  const std::string prefix = "model.layers." + std::to_string(layer);
-  const int length = hidden.shape(1);
-  const int head_size = config_.hidden_size / config_.text_head_count;
-  const auto dtype =
-      checkpoint_.Weight(prefix + ".self_attn.q_proj.weight").dtype();
-  const mx::array normed =
-      mx::astype(checkpoint_.RmsNorm(hidden, prefix + ".input_layernorm",
-                                     config_.rms_norm_epsilon),
-                 dtype);
-  const auto project = [&](const std::string &name, int head_count) {
-    return mx::transpose(
-        mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn." + name),
-                    {1, length, head_count, head_size}),
-        {0, 2, 1, 3});
-  };
-  const mx::array queries =
-      mx::fast::rope(project("q_proj", config_.text_head_count), head_size,
-                     false, config_.rope_theta, 1.0f, 0);
-  const mx::array keys =
-      mx::fast::rope(project("k_proj", config_.text_kv_head_count), head_size,
-                     false, config_.rope_theta, 1.0f, 0);
-  const mx::array values = project("v_proj", config_.text_kv_head_count);
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      queries, keys, values,
-      static_cast<float>(std::pow(static_cast<double>(head_size), -0.5)),
-      /*window_size=*/-1, "causal");
-  const mx::array residual = mx::add(
-      hidden,
-      checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                     {1, length, config_.hidden_size}),
-                         prefix + ".self_attn.o_proj"));
-  const mx::array mlp_input = mx::astype(
-      checkpoint_.RmsNorm(residual, prefix + ".post_attention_layernorm",
-                          config_.rms_norm_epsilon),
-      dtype);
-  return mx::add(
-      residual,
-      checkpoint_.Linear(
-          omni_common::Swiglu(
-              checkpoint_.Linear(mlp_input, prefix + ".mlp.gate_proj"),
-              checkpoint_.Linear(mlp_input, prefix + ".mlp.up_proj")),
-          prefix + ".mlp.down_proj"));
-}
-
 mx::array
 Conditioner::EncodeInputs(const std::vector<int> &token_ids,
                           const std::optional<mx::array> &features) const {
@@ -342,15 +304,16 @@ Conditioner::EncodeInputs(const std::vector<int> &token_ids,
         "AuK audio placeholder tokens require reference features");
   } else {
   }
-  mx::array hidden = mx::reshape(mx::astype(embeddings, mx::float32),
-                                 {1, length, config_.hidden_size});
+  std::vector<int> every_layer(config_.text_layer_count);
+  std::iota(every_layer.begin(), every_layer.end(), 0);
+  std::vector<omni_common::KVCache> caches = text_decoder_.NewCaches();
   std::vector<mx::array> states;
-  for (int layer = 0; layer < config_.text_layer_count; ++layer) {
-    states.push_back(hidden);
-    hidden = TextLayer(hidden, layer);
-  }
+  const mx::array last_hidden =
+      text_decoder_.Forward(mx::reshape(mx::astype(embeddings, mx::float32),
+                                        {1, length, config_.hidden_size}),
+                            caches, every_layer, &states);
   states.push_back(
-      checkpoint_.RmsNorm(hidden, "model.norm", config_.rms_norm_epsilon));
+      checkpoint_.RmsNorm(last_hidden, "model.norm", config_.rms_norm_epsilon));
   return mx::squeeze(mx::stack(states, 1), 0);
 }
 
