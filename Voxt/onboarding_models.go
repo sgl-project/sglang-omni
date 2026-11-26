@@ -110,15 +110,14 @@ func obModelRow(c *ui.Context, state onboardingSpeechViewState, actions onboardi
 				tagChip(c, state.SizeLabel)
 			}
 		})
-		if state.Ready || state.OnDisk {
-			return
-		}
-		caption(c, state.About)
-		if state.Alternative != nil {
-			obAlternativeLine(c, *state.Alternative, actions)
-		}
-		if state.Downloading {
-			ui.Progress(c, state.DownloadFraction).Label(i18n.T("Downloading %s", state.Name))
+		if !state.Ready && !state.OnDisk {
+			caption(c, state.About)
+			if state.Alternative != nil {
+				obAlternativeLine(c, *state.Alternative, actions)
+			}
+			if state.Downloading {
+				ui.Progress(c, state.DownloadFraction).Label(i18n.T("Downloading %s", state.Name))
+			}
 		}
 		if state.Error != nil && !state.Downloading {
 			notice(c, "ob-model-err", noticeError, state.Error.Text, state.Error.More, nil, nil)

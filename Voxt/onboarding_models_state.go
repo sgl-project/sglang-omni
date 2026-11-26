@@ -98,6 +98,7 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 			state.DownloadLeft = draftLeft
 			state.Speech.ShowDownload = true
 			state.Speech.DownloadLabel = translator.T("Download (%s)", draftLeft)
+			state.Speech.Error = onboardingNotice(translator, input.SpeechError)
 		}
 	} else {
 		state.Speech.Downloading = speechStatus.Downloading
