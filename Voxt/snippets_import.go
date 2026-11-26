@@ -20,15 +20,19 @@ func snippetsImportDialog(c *ui.Context, actions snippetsActions, local *snippet
 	t := c.Theme()
 	k := tok(t)
 	dialogFrame(c, "snippet-import-dlg", &local.importOpen, i18n.T("Import snippets"), "", 560, func() {
+		// A card's fill, one step darker under the pointer and pressed, the
+		// accent's tint while a file is dragged over it.
 		zone := ui.ButtonBase(c.Key("snippet-import-zone")).Padding(px(t, sp8), px(t, sp4)).Radius(px(t, radiusCard)).
-			Border(1, k.G[5]).BorderStyle(ui.BorderDashed).Justify(ui.Center).Label(i18n.T("Choose a .json file"))
+			Background(k.Subtle).Justify(ui.Center).Label(i18n.T("Choose a .json file"))
 		if files := zone.DroppedFiles(); len(files) > 0 {
 			local.importErr = ""
 			actions.importSnippetsFile(files[0])
 		}
 		switch {
 		case zone.FileDragOver():
-			zone.BorderColor(k.Accent).Background(k.AccentSoft)
+			zone.Background(k.AccentSoft)
+		case zone.Pressed():
+			zone.Background(k.Pressed)
 		case zone.Hovered():
 			zone.Background(k.Hover)
 		}
