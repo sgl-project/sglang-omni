@@ -388,7 +388,7 @@ DraftStatistics DFlashDraft::Decode(
     committed_ids.push_back(anchor_id);
   } else {
   }
-  DraftBackoff backoff;
+  DraftBackoff backoff(plain_seconds_per_token_);
   DraftStatistics statistics;
   while (!finished) {
     if (cancel.load()) {
@@ -539,6 +539,7 @@ DraftStatistics DFlashDraft::Decode(
       break;
     } else {
     }
+    plain_seconds_per_token_ = plain_seconds_per_token;
     if (backoff.ObservePlain(plain_seconds_per_token)) {
       std::cerr << "DFlash backoff after " << statistics.verify_round_count
                 << " rounds: plain " << plain_seconds_per_token * 1000.0

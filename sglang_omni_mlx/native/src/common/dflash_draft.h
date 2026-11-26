@@ -119,6 +119,11 @@ private:
   // Tokens per block: the anchor and block_size - 1 proposals.
   int block_size_;
   int mask_token_id_;
+  // Note (XXXXRT666): the plain decoding speed the last probe measured, kept
+  // for the next requests so that each does not pay for a probe of its own
+  // (5 plain tokens, about 100 ms more on an M4 Air with the 1.7B); decodes
+  // run on one worker thread.
+  mutable double plain_seconds_per_token_ = 0.0;
 };
 
 } // namespace omni_common
