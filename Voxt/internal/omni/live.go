@@ -161,7 +161,7 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	}
 	// With LiveResult the socket's text is the result: no Final to shorten.
 	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
-		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{})}
+		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{}), tuning: *a.spec.ASR}
 		go s.recognisePieces(s.language, s.bias)
 	}
 	go func() {

@@ -17,8 +17,11 @@ import (
 // language) and context bias; at Finish only the rest is left. Its
 // fields are guarded by the live session's mu.
 type pieces struct {
-	wake   chan struct{} // new audio (cap 1)
-	exited chan struct{} // closed when the loop has stopped
+	wake    chan struct{} // new audio (cap 1)
+	exited  chan struct{} // closed when the loop has stopped
+	tuning  ASRTuning     // policy for this stream; guarded by live.mu
+	policy  uint64        // bumped when a safe late policy change takes effect
+	claimed bool          // a piece has started; its boundaries can no longer change
 	// done is the bytes of audio recognised, texts their text in order,
 	// language the language they carry ("" until known when no hint).
 	done     int
@@ -36,8 +39,8 @@ func samplesOf(d time.Duration) int { return int(d.Seconds() * sampleRate) }
 func (s *live) recognisePieces(language string, b bias) {
 	pc := s.pc
 	defer close(pc.exited)
-	t := s.a.spec.ASR
 	looked := 0 // the audio's length at the last look for a pause
+	var lookedPolicy uint64
 	for {
 		select {
 		case <-pc.wake:
@@ -45,8 +48,11 @@ func (s *live) recognisePieces(language string, b bias) {
 			return
 		}
 		s.mu.Lock()
-		finished, audio, start := s.finished, s.audio, pc.done
+		finished, audio, start, t, policy := s.finished, s.audio, pc.done, pc.tuning, pc.policy
 		s.mu.Unlock()
+		if policy != lookedPolicy {
+			looked, lookedPolicy = 0, policy
+		}
 		total := len(audio) / 2
 		from := start / 2
 		if finished {
@@ -56,17 +62,24 @@ func (s *live) recognisePieces(language string, b bias) {
 			continue
 		}
 		looked = total
-		cut, ok := s.findCut(audio[start:])
+		cut, ok := s.findCut(audio[start:], t)
 		if !ok {
 			continue
 		}
+		s.mu.Lock()
+		if s.finished || pc.policy != policy || pc.done != start {
+			s.mu.Unlock()
+			continue
+		}
+		pc.claimed = true
+		s.mu.Unlock()
 		piece := audio[start : start+cut*2]
 		s.startFinalAt((start + cut*2) / 2)
 		begin := time.Now()
 		var r finalResult
 		var err error
 		if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
-			req := finalRequest{pcm: padPiece(sent, t), language: language, context: b.context,
+			req := finalRequest{pcm: padPiece(sent, &t), language: language, context: b.context,
 				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout}
 			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
 			if err == nil {
@@ -138,8 +151,7 @@ func padPiece(pcm []byte, t *ASRTuning) []byte {
 // without it, or when it fails, none is found), else, once pending
 // reaches PieceMax, the quietest CutWindow there. False: wait for more
 // audio.
-func (s *live) findCut(pending []byte) (int, bool) {
-	t := s.a.spec.ASR
+func (s *live) findCut(pending []byte, t ASRTuning) (int, bool) {
 	total := len(pending) / 2
 	from, to := samplesOf(t.PieceMin), min(total, samplesOf(t.PieceMax))
 	if to <= from {
@@ -161,6 +173,35 @@ func (s *live) findCut(pending []byte) (int, bool) {
 		return 0, false
 	}
 	return quietest(pending, from, to, max(samplesOf(t.CutWindow), 1)), true
+}
+
+// EnableEarlyPieces changes only this stream's policy. It can shorten the
+// schedule only before a piece has been claimed; later readiness keeps the
+// established segmentation, including when the user has stopped sending audio.
+func (s *live) EnableEarlyPieces() bool {
+	if s.a.spec.Kind != kindQwen3ASR || s.req.LiveResult && s.conn != nil || s.pc == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished || s.ended {
+		return false
+	}
+	if s.pc.tuning.PiecesAfter <= earlyPieces.After {
+		return true
+	}
+	if s.pc.claimed || s.pc.done != 0 || len(s.pc.texts) != 0 {
+		return false
+	}
+	t := s.pc.tuning
+	t.PiecesAfter, t.PieceMin, t.PieceSeconds, t.PieceMax = earlyPieces.After, earlyPieces.Min, earlyPieces.Target, earlyPieces.Max
+	s.pc.tuning = t
+	s.pc.policy++
+	select {
+	case s.pc.wake <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 // longestPause is the middle of the longest pause of at least minPause
