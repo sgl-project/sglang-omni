@@ -26,6 +26,7 @@ func buildSettingsSections(translator *i18n.Translator) []settingsSectionCatalog
 		{"appearance", translator.T("Appearance"), "Appearance theme color palette transparency size sidebar"},
 		{"privacy", translator.T("Privacy"), "Privacy history audio logs"},
 		{"storage", translator.T("Storage"), "Storage disk data folder reset"},
+		{"experimental", translator.T("Experimental"), "Experimental sessions session shortcuts history"},
 		// "About" in English: "Diagnostics and about" does not fit the
 		// column in bold; Chinese keeps 诊断与关于, which does.
 		{"about", translator.X("settings section", "About"), "Diagnostics about version bug report"},
@@ -55,6 +56,7 @@ type settingsDialogViewState struct {
 	Appearance    *settingsAppearanceViewState     `json:"appearance,omitempty"`
 	Privacy       *settingsPrivacyViewState        `json:"privacy,omitempty"`
 	Storage       *settingsStorageViewState        `json:"storage,omitempty"`
+	Experimental  *settingsExperimentalViewState   `json:"experimental,omitempty"`
 	About         *settingsAboutViewState          `json:"about,omitempty"`
 	Updates       *updatesViewState                `json:"updates,omitempty"`
 }

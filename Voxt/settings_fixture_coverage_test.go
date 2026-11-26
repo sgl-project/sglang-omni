@@ -74,7 +74,8 @@ func checkSettingsDialogFixture(t *testing.T, locale, name string, state *settin
 		"models": state.Models != nil, "language-models": state.Remote != nil,
 		"audio": state.Audio != nil, "overlay": state.Overlay != nil,
 		"shortcuts": state.Shortcuts != nil, "appearance": state.Appearance != nil,
-		"privacy": state.Privacy != nil, "storage": state.Storage != nil, "about": state.About != nil,
+		"privacy": state.Privacy != nil, "storage": state.Storage != nil,
+		"experimental": state.Experimental != nil, "about": state.About != nil,
 	}
 	for id, present := range sectionStates {
 		if want := id == sectionID; present != want {
@@ -145,6 +146,7 @@ func checkSettingsFixtureValues(t *testing.T, locale string, fixtures map[string
 	checkSettingsAudioFixtures(t, locale, fixtures)
 	checkSettingsAppearanceFixtures(t, locale, fixtures)
 	checkSettingsShortcutFixtures(t, locale, fixtures)
+	checkSettingsExperimentalFixtures(t, locale, fixtures)
 	checkSettingsPrivacyFixtures(t, locale, fixtures)
 	checkSettingsStorageFixtures(t, locale, fixtures)
 	checkSettingsAboutFixtures(t, locale, fixtures)
@@ -285,6 +287,23 @@ func checkSettingsShortcutFixtures(t *testing.T, locale string, fixtures map[str
 		return row.Feature == hotkey.Transcribe && slices.Contains(row.Problems, expectedLine)
 	}) {
 		t.Errorf("%s: family-conflict fixture lacks %q", locale, expectedLine)
+	}
+}
+
+func checkSettingsExperimentalFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
+	t.Helper()
+	translator := i18n.NewTranslator(locale)
+	experimental := requireSettingsDialogFixture(t, locale, fixtures, "settings-experimental-normal").Experimental
+	if len(experimental.Sessions) != 4 {
+		t.Fatalf("%s: experimental fixture has %d session rows, want 4", locale, len(experimental.Sessions))
+	}
+	for i := 0; i < 3; i++ {
+		if want := translator.T("Go to session %d", i+1); experimental.Sessions[i].Title != want {
+			t.Errorf("%s: session row %d is %q, want %q", locale, i+1, experimental.Sessions[i].Title, want)
+		}
+	}
+	if next := experimental.Sessions[3]; next.Title != translator.T("Next session") || next.Recorder.DisplayedKeys != "⌥Tab" {
+		t.Errorf("%s: next-session row is %+v", locale, next)
 	}
 }
 

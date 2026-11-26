@@ -8,7 +8,7 @@ package main
 // conversation; switching back restores them, so a covered Rewrite
 // result is never lost. An answer still streaming when the user switches
 // finishes in the background in its own session (wall 116): its card
-// waits there until the session comes back. With Settings → Shortcuts'
+// waits there until the session comes back. With Settings → Experimental's
 // Sessions switch off there is one session and everything behaves as
 // before.
 

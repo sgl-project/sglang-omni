@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Changed
+
+- **Experimental settings**: Sessions (experimental), its history notice and usage counts, and the session shortcuts move from Settings → Shortcuts to Settings → Experimental. The session rows are now Go to session 1/2/3, and the switch explains where to find and start sessions. Existing session settings keep their values.
+
+### 中文
+
+#### 变更
+
+- **实验功能设置**：“会话（实验功能）”开关、历史提示、使用统计和会话快捷键从“设置 → 快捷键”移到“设置 → 实验功能”。会话 1/2/3 的快捷键改叫“切换到会话 1/2/3”，开关说明也写清在哪里查看和新建会话。已有会话设置保持不变。
+
 ## [2.1.4] - 2026-11-25
 
 ### Added
