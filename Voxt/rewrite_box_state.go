@@ -94,6 +94,14 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if a.boxAnswered() && box.instruction == "" && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
 		state.CanSend = true // a typed follow-up
 	}
+	if a.boxAnswered() && !a.sess.State.Live() {
+		// The card asks for the next instruction by voice as the first
+		// one was asked: a button, and the shortcut that does the same.
+		state.CanSpeak = true
+		if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
+			state.SpeakKeys = chordLabel(keys[0].Keys)
+		}
+	}
 	if state.Subtitle == "" && a.boxAnswered() {
 		state.Subtitle = a.answer.msg // "Copied", why Insert did not work
 	}
@@ -106,7 +114,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSend, speak: func() { a.followUpAnswer("") }, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
 		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		dismissTip: a.dismissBoxTip,

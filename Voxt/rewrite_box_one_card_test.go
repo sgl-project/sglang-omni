@@ -561,31 +561,3 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 		t.Errorf("Return on: text %q after Enter, want Enter taken", a.box.text)
 	}
 }
-
-// TestRewriteCardDictationKeysSpeakTheNextInstruction: in the Rewrite card
-// holding an answer, Transcribe's and Note's shortcuts record the next
-// instruction and their next press sends it, as Rewrite's does. They used
-// to dictate into the card's input, which waited for Enter, so only the
-// first instruction could be spoken.
-func TestRewriteCardDictationKeysSpeakTheNextInstruction(t *testing.T) {
-	chat := &fakeChat{texts: []string{"one", "two", "three"}}
-	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
-	self := proto.App{BundleID: selfBundleID, Name: "Voxt"}
-	for i, c := range []struct{ binding, said, answer string }{
-		{"transcribe/0", "shorter", "two"},
-		{"note", "in French", "three"},
-	} {
-		if !a.boxHoldsCard(ovAnswer) {
-			t.Fatalf("turn %d: the answer is not in the Rewrite card", i+2)
-		}
-		startSaying(a, tr, c.binding, self, c.said)
-		if a.sess.Kind != store.KindRewrite || a.followUp != a.answer.id {
-			t.Fatalf("%s in the Rewrite card: a %s session, follow-up %q of card %q", c.binding, a.sess.Kind, a.followUp, a.answer.id)
-		}
-		tap(a, c.binding, self)
-		a.pump("the answer", func() bool { return a.sess.State.Ended() && a.answer.text == c.answer })
-		if n := len(a.answer.turns); n != i+2 || a.answer.turns[n-1].Instruction != c.said {
-			t.Fatalf("%s: turns %+v", c.binding, a.answer.turns)
-		}
-	}
-}

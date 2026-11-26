@@ -247,6 +247,14 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						}
 					})
 				})
+				if state.CanSpeak {
+					if dropButton(context.Key("box-speak"), icons.VoxtTranscribe, i18n.T("Speak")).Clicked() {
+						actions.speak()
+					}
+					if state.SpeakKeys != "" {
+						keycap(context, state.SpeakKeys)
+					}
+				}
 				if state.EnterSends {
 					keycap(context, "Enter")
 					ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()

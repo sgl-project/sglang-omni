@@ -133,7 +133,9 @@ type rewriteBoxViewState struct {
 	Subtitle          string
 	SubtitleError     bool
 	CanSend           bool
-	EnterSends        bool // Enter sends: not while it records with Settings → Shortcuts' Return switch off
+	EnterSends        bool   // Enter sends: not while it records with Settings → Shortcuts' Return switch off
+	CanSpeak          bool   // Speak records the next instruction: an answer, nothing running
+	SpeakKeys         string // the Rewrite shortcut, which does the same
 	Limit             bool
 	FocusText         bool
 	ShowTip           bool
@@ -158,6 +160,7 @@ type rewriteBoxActions struct {
 	cardMeasured    func([]sessionOverlayMeasurement)
 	cycleSize       func()
 	send            func()
+	speak           func()
 	drop            func([]string)
 	chooseImages    func()
 	chooseFile      func()
