@@ -503,14 +503,12 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
             Decode(samples, options, segment.reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
-        bool retried_without_prefix = false;
         if (result->finish_reason == FinishReason::kLength &&
             !options.prefix_token_ids.empty()) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
           options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
-          retried_without_prefix = true;
           result =
               worker_.Transcribe(Decode(std::move(samples), std::move(options),
                                         segment.reuse, true),
@@ -519,10 +517,6 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         }
         ApplyResult(segment, *result, cut_sample);
         text = result->text;
-        if (retried_without_prefix) {
-          result->retried_without_prefix = true;
-        } else {
-        }
       } catch (...) {
         ReportDecodeFailure(std::current_exception());
       }
@@ -544,10 +538,6 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
             {"reused_prompt_token_count", result->reused_prompt_token_count},
             {"verified_guess_token_count", result->verified_guess_token_count},
             {"accepted_guess_token_count", result->accepted_guess_token_count}};
-        if (result->retried_without_prefix) {
-          event["generation_metadata"]["retried_without_prefix"] = true;
-        } else {
-        }
       } else {
       }
       Send(std::move(event));

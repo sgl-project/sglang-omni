@@ -183,6 +183,12 @@ void TestWrongGuess(TranscriptionWorker &worker,
       candidate_result.generated_token_count ==
           baseline_result.generated_token_count,
       "incorrect guessed language or transcript changed generated token count");
+  Require(candidate_result.verified_guess_token_count ==
+              static_cast<int>(candidate_options.guessed_token_ids.size()),
+          "the target did not verify every token in the wrong guess");
+  Require(candidate_result.accepted_guess_token_count <
+              candidate_result.verified_guess_token_count,
+          "the target accepted the deliberately incorrect guess in full");
   Require(candidate_result.finish_reason == baseline_result.finish_reason,
           "incorrect guessed language or transcript changed finish reason");
   if (uses_draft) {

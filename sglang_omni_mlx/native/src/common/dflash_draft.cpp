@@ -253,7 +253,11 @@ DraftStatistics DFlashDraft::Decode(
     const std::vector<int> &guessed_ids, int max_new_tokens,
     int prefill_step_tokens, const std::function<bool(int)> &commit,
     const std::atomic<bool> &cancel, DraftPolicy policy,
-    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches) const {
+    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches,
+    int *accepted_guess_count) const {
+  if (accepted_guess_count != nullptr) {
+    *accepted_guess_count = 0;
+  }
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -312,6 +316,9 @@ DraftStatistics DFlashDraft::Decode(
                guessed_ids[accepted_count]) {
       finished = commit(guessed_ids[accepted_count]);
       ++accepted_count;
+    }
+    if (accepted_guess_count != nullptr) {
+      *accepted_guess_count = accepted_count;
     }
     for (KVCache &cache : caches) {
       cache.Trim(guessed_count - accepted_count);

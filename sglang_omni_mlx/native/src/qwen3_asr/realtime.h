@@ -97,6 +97,8 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
+  // note (chenye): Builds refresh or final options through end_sample and
+  // increments the segment decode count.
   TranscriptionOptions DecodeOptions(Segment &segment, long end_sample);
   // note (chenye): Finals snapshot shared reuse on the worker; refreshes update
   // it.

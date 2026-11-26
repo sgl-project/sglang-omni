@@ -46,10 +46,13 @@ struct TranscriptionResult {
   int reused_audio_token_count = 0;
   // Prompt tokens a live session had already computed.
   int reused_prompt_token_count = 0;
-  // note (chenye): Guesses target-verified and accepted from a retained prefix.
+  // note (chenye): Supplied guess tokens included in initial target
+  // verification.
   int verified_guess_token_count = 0;
+  // note (chenye): Prefix of those guesses accepted during initial
+  // verification, including a token that ends decoding by EOS, budget, or loop
+  // detection.
   int accepted_guess_token_count = 0;
-  bool retried_without_prefix = false;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
