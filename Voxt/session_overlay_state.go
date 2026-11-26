@@ -363,6 +363,30 @@ type sessionOverlayProjection struct {
 	menuReady   bool
 	stillReady  bool
 	stillKey    sessionOverlayStillKey
+	held        sessionOverlayViewState
+	holding     bool
+}
+
+// holdWhileFading keeps the frame the window showed last while it fades
+// out. The ended session's pill has no live text, and the face keeps its
+// size, so drawing the projection would flash the microphone row alone in
+// the empty face. The projection itself still follows the session.
+func (p *sessionOverlayProjection) holdWhileFading(fading bool) {
+	switch {
+	case !fading:
+		p.holding = false
+	case !p.holding && p.view.Mode != ovHidden:
+		p.held, p.holding = cloneSessionOverlayViewState(p.view), true
+	}
+}
+
+// drawn is the view the window draws: the held frame while it fades out,
+// the projection otherwise.
+func (p *sessionOverlayProjection) drawn() *sessionOverlayViewState {
+	if p.holding {
+		return &p.held
+	}
+	return &p.view
 }
 
 // sessionOverlayStillKey is everything a still notice frame reads: when
@@ -411,6 +435,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	projection := &a.ov.projection
 	locale := i18n.Locale()
 	mode := a.overlayModeNow()
+	projection.holdWhileFading(mode == ovHidden && a.ov.visible)
 	if mode == ovNotice && a.notice != nil && !a.answer.ui.langOpen {
 		key := sessionOverlayStillKey{
 			sessionID: a.sess.ID, state: string(a.sess.State), revision: a.sess.Rev,

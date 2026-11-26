@@ -20,6 +20,16 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
 
+## [Unreleased]
+
+### Changed
+- **Cleaner text from the clean-up** (#4674): the clean-up rules now name the words of thinking aloud to drop ("let me think", "so", "well", 我想想, 就是), say a repeated word or phrase once, drop a correction cue ("no, sorry", 不对) together with what it cancels, put a spelled-out character together from its parts, and write counts, money, dates and times in digits. On 150 AASR-Bench dictations that were not used to write them, Claude Haiku 5.5 scored 80.6 out of 100 instead of 74.7, Chinese and English alike, with no longer wait.
+
+### 中文
+
+#### 变更
+- **整理后的文字更干净**（#4674）：整理规则里写明了要删的边想边说的话（“我想想”“就是”、"so"、"well"），重复说的词只留一次，改口时把“不对”“no, sorry”这类话和被否定的部分一起删掉，按说出的偏旁部件拼出对应的字，数量、金额、日期和时间都用阿拉伯数字。在没有用来写规则的 150 条 AASR-Bench 口述上，Claude Haiku 5.5 的得分从 74.7 提到 80.6（满分 100），中英文都一样，等待时间没有变长。
+
 ## [2.1.4] - 2026-11-25
 
 ### Added
@@ -35,7 +45,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A mascot by Home's title** (#4533): the Voxt microphone with its two stars sways, blinks or twinkles when clicked, and dresses for holidays by itself: a Santa hat for Christmas, a party hat for New Year and a red cap for the Spring Festival week. When it puts on a hat, it sways or blinks.
 - **Choose whether and how fast the opening plays** (#4533): in Settings → Appearance, Play the opening at start turns the opening off, and Opening speed, shown while it is on, runs from a turtle (3 seconds) to a rabbit (1 second); click either animal to go to its end. The opening now plays in 2 seconds unless you choose; Reduce motion still skips it.
 - **Clean up while you speak** (#4592): when a language model cleans up Transcribe, Voxt sends it the sentences the speech model has written while you are still speaking, and after you stop it cleans only what is left, with the cleaned text before it as context; the two sentences just before are cleaned again with it, so that a correction said last still reaches them. When the final text is the one already cleaned, nothing is left to wait for. The Transcribe page's Clean up while you speak turns it off.
-- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Spaces at a snippet's ends are dropped, and a space separates it from Chinese next to it, as in "发到 a@b.com，谢谢" (#4638); the snippet's own words stay as saved. Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too) from a dialog that shows what the file looks like, takes a click or a drop, and says there why a file did not import. A list that cannot be read is never overwritten. Transcribe only for now.
+- **Snippets** (#4456): save text you would otherwise type again and again (an email address, a link, a reply, a prompt) under a trigger, in Resources → Snippets. Say the trigger alone and Voxt types the snippet as saved, not the language model's text; say it inside a dictation and it is replaced after the clean-up, so the model never changes it (the model gets the trigger marked, to keep it). Triggers match ignoring case, spaces and punctuation, and only one you said is replaced, not one the language model wrote; a Chinese trigger takes at least 3 characters, since it also matches inside longer words. A snippet's closing punctuation gives way to the sentence's own ("Best," before "." is "Best."). Spaces at a snippet's ends are dropped, and a space separates it from Chinese next to it, as in "发到 a@b.com，谢谢" (#4638); the snippet's own words stay as saved. Retrying a dictation from History applies the snippets too. The page searches and sorts the snippets, and imports a JSON file (Wispr Flow's and Raycast's exports too) from a dialog that shows what the file looks like, takes a click or a drop, and says there why a file did not import; what an import did shows in the middle of the list for 2 s (3 s when it skipped some). A list that cannot be read is never overwritten. Transcribe only for now.
 
 ### Changed
 
@@ -59,6 +69,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording. A microphone lost while its speech-recognition connection hangs (after sleep, or a network loss) reconnects after five seconds instead of recording nothing more. With the final pass turned off, a last line that takes longer than five seconds to transcribe after Stop is not saved.
+- **No flash as the overlay fades out**: when a dictation ends, the overlay, or the dictation pill beside an open answer card, fades with its last words still in it; it no longer flashes the microphone row alone in the empty card first.
 
 - **Select all with ⌘A right before the shortcut is read as the selection** (#3835): pressing ⌘A and the Rewrite or Translate shortcut in one motion often sent no selected text, because Voxt read the selection before the app showed it to accessibility and concluded nothing was selected; it now keeps reading for a moment before giving up. And when the shortcut has Control, Option or Shift in it (such as Control+C), the helper's copy keystroke now waits for those keys to lift — and is not sent at all while they stay held — instead of reaching the app as a different key that copies nothing.
 - **Recording overlays open on the display you are working on**: with several displays, the recording pill and answer card now prefer the foreground app's focused-window display instead of following the pointer. Without Accessibility, Voxt reads the front window through the window server instead. If neither source has a focused window, they still use the pointer's display. A kept answer card on another display no longer pulls the recording pill away from the app you are dictating into. Pill show, hide and display choices are logged. A recording started while a Rewrite answer is kept now puts the pill beside that card instead of over it.
@@ -87,7 +98,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **首页标题旁的吉祥物**（#4533）：Voxt 的小麦克风带着两颗星星，点一下会晃一晃、眨眨眼或让星星闪一下；到了节日会自己换装：圣诞戴圣诞帽，元旦戴派对帽，春节那一周戴红色瓜皮帽。戴上帽子时会晃一晃或眨眨眼。
 - **开场动画可以关掉，也可以调快慢**（#4533）：设置 → 外观里可以关掉“启动时播放开场动画”；开着时下面会出现“开场动画速度”滑杆，从乌龟（3 秒）到兔子（1 秒），点一下乌龟或兔子就跳到那一头。开场默认改为 2 秒播完；开启“减弱动态效果”时仍不播放。
 - **边说边整理**（#4592）：转录用语言模型整理时，你还在说话，Voxt 就把语音识别模型已经写出的句子发给语言模型；停止后只整理剩下的部分，并带上整理好的前文；紧挨着的前两句会跟它一起重新整理，最后说的改口也能改到前面。最终文字就是已经整理过的那段时，停止后不用再等语言模型。可以在转录页关闭“边说边整理”。
-- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。片段两头多余的空格会去掉，和中文挨着的地方补一个空格，比如“发到 a@b.com，谢谢”（#4638）；片段本身的文字不变。页面可以搜索、排序，也能导入 JSON 文件：导入框里有文件格式示例，可以点击选择或把文件拖进去，文件不对时直接在框里说明原因。目前只用于转录。
+- **片段**（#4456）：把反复要打的文字（邮箱、链接、常用回复、提示词）存成片段，在“资源 → 片段”里给它一个触发词。单独说出触发词，Voxt 原样打出片段，不经过语言模型；在一段话里说到触发词，会在整理之后替换，语言模型不会改动片段。触发词不分大小写，忽略空格和标点；只替换你说出的触发词，语言模型自己写出来的不算。中文触发词在词中间也会匹配，所以至少要 3 个字。片段两头多余的空格会去掉，和中文挨着的地方补一个空格，比如“发到 a@b.com，谢谢”（#4638）；片段本身的文字不变。页面可以搜索、排序，也能导入 JSON 文件：导入框里有文件格式示例，可以点击选择或把文件拖进去，文件不对时直接在框里说明原因；导入结果在列表中间显示 2 秒（有跳过时 3 秒）。目前只用于转录。
 
 #### 变更
 
@@ -108,6 +119,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。麦克风断开时如果语音识别连接卡住（睡眠唤醒后或断网），5 秒后照样重连，不会之后什么都录不到。关掉最终转写时，停止后超过 5 秒才转写出来的最后一句不会保存。
+- **浮窗淡出时不再闪一下**：听写结束时，浮窗（包括答案卡片旁边的听写小窗）带着最后的文字淡出，不会先闪回只剩麦克风那一行的空卡片。
 
 - **按快捷键前用 ⌘A 全选，选中内容能被读到了**（#3835）：⌘A 和改写、翻译快捷键连着按时，常常读不到任何选中内容，因为 Voxt 在 App 把选区交给辅助功能之前就读了选区，得出没有选中的结论；现在会多读一会儿再下结论。另外，快捷键里带 Control、Option 或 Shift 时（比如 Control+C），辅助进程的复制按键会等这些键松开再发，键一直不松就不发，不会再变成 App 里复制不了内容的另一个按键。
 - **录音浮窗显示在前台窗口所在屏**：使用多块显示器时，录音胶囊和答案卡片优先显示在前台 App 焦点窗口所在的屏幕，不再跟着鼠标跑到另一块屏；没有辅助功能权限时改从窗口服务器读取前台窗口，两种途径都读不到时才退回鼠标所在屏。保留的答案卡片在另一块屏时，也不会把录音胶囊带离正在输入的 App。胶囊显示、隐藏和选屏依据都会写入日志。保留着改写答案卡片时开始录音，录音胶囊贴在卡片旁边，不再盖住它。
