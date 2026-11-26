@@ -153,7 +153,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         del schedule_batch
         self.model.prepare_decode_buffers(requests)
         if is_lookahead:
-            self.launch_input_rows = self.write_lookahead_feedback_buffers(
+            self.launch_input_rows = self.stage_feedback_buffers(
                 forward_batch, requests
             )
             self.add_inflight_repetition_penalty(forward_batch, requests)
@@ -503,63 +503,12 @@ class Qwen3TTSModelRunner(ModelRunner):
     def write_feedback_buffers(
         self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
     ) -> None:
-        batch_size = len(requests)
-        if batch_size == 0:
-            return
-        else:
-            pass
-        decode_feedback_embedding = self.model.decode_feedback_embedding
-        input_ids = forward_batch.input_ids
-        if input_ids.numel() < batch_size:
-            raise RuntimeError(
-                "Qwen3-TTS decode input_ids must contain one row id per request"
-            )
-        else:
-            pass
-        if batch_size > decode_feedback_embedding.num_embeddings:
-            raise RuntimeError(
-                "Qwen3-TTS decode batch exceeds staged feedback embedding rows"
-            )
-        else:
-            pass
-        row_ids = self.decode_row_ids(batch_size, input_ids)
-        weight = decode_feedback_embedding.weight
-        device = weight.device
-        dtype = weight.dtype
-        feedback_rows: list[torch.Tensor] = []
-        text_rows: list[torch.Tensor] = []
-        for sched_req in requests:
-            data: Qwen3TTSSGLangRequestData = sched_req.data
-            inputs = QwenTalkerModelRunner.peek_next_decode_inputs(data)
-            if inputs is None:
-                raise RuntimeError(
-                    f"Qwen3-TTS decode for {sched_req.request_id} has no queued "
-                    "feedback embedding"
-                )
-            else:
-                pass
-            feedback, text = inputs
-            feedback_rows.append(
-                QwenTalkerModelRunner.decode_row(feedback, device=device, dtype=dtype)
-            )
-            text_rows.append(
-                QwenTalkerModelRunner.decode_row(text, device=device, dtype=dtype)
-            )
-            QwenTalkerModelRunner.pop_next_decode_inputs(data)
-
-        with torch.no_grad():
-            target = weight[:batch_size]
-            torch.stack(feedback_rows, dim=0, out=target)
-            target.add_(torch.stack(text_rows, dim=0))
-            # note(ratish): the history outlives the buffer, a retracted request
-            # replays it in its re-prefill.
-            history = target.detach().clone()
-        for row_idx, sched_req in enumerate(requests):
+        history_rows = self.stage_feedback_buffers(forward_batch, requests)
+        for sched_req, history_row in zip(requests, history_rows, strict=True):
+            QwenTalkerModelRunner.pop_next_decode_inputs(sched_req.data)
             QwenTalkerModelRunner.append_decode_input_history(
-                sched_req.data, history[row_idx]
+                sched_req.data, history_row
             )
-        # During graph decode, input_ids carries staged embedding row ids.
-        input_ids[:batch_size].copy_(row_ids)
 
     def add_inflight_repetition_penalty(
         self, forward_batch: ForwardBatch, requests: list[SchedulerRequest]
@@ -634,7 +583,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         self.penalty_rows = (row_index, penalties)
         return self.penalty_rows
 
-    def write_lookahead_feedback_buffers(
+    def stage_feedback_buffers(
         self, forward_batch: ForwardBatch | None, requests: list[SchedulerRequest]
     ) -> list[torch.Tensor]:
         batch_size = len(requests)
@@ -674,7 +623,10 @@ class Qwen3TTSModelRunner(ModelRunner):
             target = weight[:batch_size]
             torch.stack(feedback_rows, dim=0, out=target)
             target.add_(torch.stack(text_rows, dim=0))
+            # note(ratish): the history outlives the buffer, a retracted request
+            # replays it in its re-prefill.
             history = target.detach().clone()
+        # During graph decode, input_ids carries staged embedding row ids.
         input_ids[:batch_size].copy_(row_ids)
         return [history[row_idx] for row_idx in range(batch_size)]
 

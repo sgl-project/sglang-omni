@@ -9725,6 +9725,7 @@ def test_qwen3_tts_steady_decode_reports_cuda_graph_ready(
         generation_steps=0,
         speech_output_tokens=0,
         extra_model_outputs={},
+        inflight_feedback=None,
     )
     request = SimpleNamespace(request_id="req", data=data)
     schedule_batch = SimpleNamespace(
