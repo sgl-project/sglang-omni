@@ -327,6 +327,74 @@ async def test_eos_marks_only_the_last_unit_when_end_arrives_mid_backlog() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tail_samples", [0, 4_800])
+async def test_native_frames_dispatch_before_receipt_and_pad_only_at_eos(
+    tail_samples: int,
+) -> None:
+    sample_rate_hz = 24_000
+    frame_samples = 3_200
+    native_unit_samples = 9_600
+    capabilities = Capabilities(
+        input_sample_rate_hz=sample_rate_hz,
+        native_unit_ms=400,
+        native_input_frame_samples=frame_samples,
+        tail_policy="pad",
+    )
+    adapter = GatedAdapter([])
+    async with open_runtime(adapter, capabilities=capabilities) as runtime:
+        await runtime.append(b"\1\0" * frame_samples, 0, None, "first_frame")
+        await asyncio.wait_for(adapter.has_started.wait(), TEST_WAIT_TIMEOUT_SECONDS)
+        assert adapter.units[0].pcm == b"\1\0" * frame_samples
+
+        await runtime.append(b"\2\0" * (2 * frame_samples), 1, None, "next_frames")
+        adapter.release.set()
+        receipt = (await receive_until(runtime, UnitCompleted))[-1]
+        assert receipt.event == UnitCompleted("unit_0")
+        assert (
+            receipt.unit is not None
+            and receipt.unit.real_samples == native_unit_samples
+        )
+        assert [unit.unit_id for unit in adapter.units] == ["unit_0"] * 3
+        assert [unit.pipeline_sequence for unit in adapter.units] == [0, 1, 2]
+        assert all(not unit.eos for unit in adapter.units)
+
+        if tail_samples:
+            await runtime.append(b"\3\0" * tail_samples, 2, None, "tail_audio")
+        else:
+            pass
+        await runtime.end("client_end")
+        envelopes = await receive_until(runtime, Drained)
+        receipts = [
+            envelope
+            for envelope in envelopes
+            if isinstance(envelope.event, UnitCompleted)
+        ]
+        if tail_samples:
+            assert len(receipts) == 1 and receipts[0].unit is not None
+            assert receipts[0].event == UnitCompleted("unit_1")
+            assert receipts[0].unit.real_samples == tail_samples
+            assert [unit.pcm for unit in adapter.units[3:]] == [
+                b"\3\0" * frame_samples,
+                b"\3\0" * 1_600 + bytes(3_200),
+                bytes(6_400),
+            ]
+        else:
+            assert receipts == []
+            assert [unit.pcm for unit in adapter.units[3:]] == [b""]
+        assert [unit.eos for unit in adapter.units[3:]] == (
+            [False, False, True] if tail_samples else [True]
+        )
+        drained = envelopes[-1].event
+        assert isinstance(drained, Drained)
+        assert (
+            drained.accepted_end_ms
+            == drained.consumed_ms
+            == (600.0 if tail_samples else 400.0)
+        )
+        assert drained.padding_ms == (200.0 if tail_samples else 0.0)
+
+
+@pytest.mark.asyncio
 async def test_ready_before_profiler_start_is_not_retrofitted(tmp_path: Path) -> None:
     recorder = get_recorder()
     if recorder.is_active():

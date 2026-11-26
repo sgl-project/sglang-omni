@@ -101,6 +101,10 @@ class SamplingConfig(TypedDict, total=False):
     audio_top_k: Annotated[int, Field(ge=-1)]
     max_new_tokens: Annotated[int, Field(ge=1)]
     seed: Annotated[int, Field(ge=0)]
+    guidance_scale: Annotated[float, Field(ge=1, le=2)]
+    speak_first: bool
+    eop_bias: float
+    dry: bool
 
 
 class AudioReference(BaseModel):
