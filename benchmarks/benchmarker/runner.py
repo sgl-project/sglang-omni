@@ -79,6 +79,7 @@ class BenchmarkRunner:
         after_send: AfterSendFn | None = None,
         session: aiohttp.ClientSession | None = None,
     ) -> list[RequestResult]:
+        """Run warmup and a timed dispatch pass; a caller-provided session owns its timeout and trust_env settings."""
         async with contextlib.AsyncExitStack() as stack:
             if session is None:
                 timeout = aiohttp.ClientTimeout(total=self.config.timeout_s)
@@ -189,9 +190,11 @@ class BenchmarkRunner:
                 await asyncio.gather(*(run_slot_worker() for _ in range(worker_count)))
             finally:
                 pbar.close()
-            return [
-                result for result in slot_results if result is not None
-            ], follow_up_tasks
+            completed_results: list[RequestResult] = []
+            for result in slot_results:
+                assert result is not None
+                completed_results.append(result)
+            return completed_results, follow_up_tasks
         else:
             pass
 
