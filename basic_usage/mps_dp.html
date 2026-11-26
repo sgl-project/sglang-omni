@@ -609,6 +609,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploy">Deploy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-a-b200">Default replica counts on a B200</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-an-rtx-4090-d">Default replica counts on an RTX 4090 D</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-an-h200">Default replica counts on an H200</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shared-weights-across-replicas-opt-in-default-off">Shared weights across replicas (opt-in, default off)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-we-found-this">How We Found This</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-questions">Common questions</a></li>
@@ -647,7 +648,7 @@ replicas), pass <code class="docutils literal notranslate"><span class="pre">--m
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>&lt;model&gt;<span class="w"> </span>--mps<span class="w"> </span>auto
 </pre></div>
 </div>
-<p>Modes (<code class="docutils literal notranslate"><span class="pre">--mps</span></code> on the CLI or <code class="docutils literal notranslate"><span class="pre">mps:</span></code> in the pipeline config; default <code class="docutils literal notranslate"><span class="pre">off</span></code>, except where a measured replica profile applies, as described under <a class="reference internal" href="#default-replica-counts-on-a-b200"><span class="std std-ref">Default replica counts on a B200</span></a> and <a class="reference internal" href="#default-replica-counts-on-an-rtx-4090-d"><span class="std std-ref">on an RTX 4090 D</span></a>):</p>
+<p>Modes (<code class="docutils literal notranslate"><span class="pre">--mps</span></code> on the CLI or <code class="docutils literal notranslate"><span class="pre">mps:</span></code> in the pipeline config; default <code class="docutils literal notranslate"><span class="pre">off</span></code>, except where a measured replica profile applies, as described under <a class="reference internal" href="#default-replica-counts-on-a-b200"><span class="std std-ref">Default replica counts on a B200</span></a>, <a class="reference internal" href="#default-replica-counts-on-an-rtx-4090-d"><span class="std std-ref">on an RTX 4090 D</span></a> and <a class="reference internal" href="#default-replica-counts-on-an-h200"><span class="std std-ref">on an H200</span></a>):</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">off</span></code>: MPS is never touched.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">auto</span></code>: MPS is enabled on every GPU that hosts two or more single-GPU,
@@ -911,7 +912,7 @@ numactl<span class="w"> </span>-H<span class="w"> </span><span class="p">|</span
 </section>
 <section id="default-replica-counts-on-an-rtx-4090-d">
 <h2>Default replica counts on an RTX 4090 D<a class="headerlink" href="#default-replica-counts-on-an-rtx-4090-d" title="Link to this heading">#</a></h2>
-<p>On a 24 GB NVIDIA GeForce RTX 4090 D, NVML reporting 24,564 MiB, <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span> <span class="pre">--model-path</span> <span class="pre">OpenMOSS-Team/MOSS-Transcribe-Diarize</span></code> serves 2 replicas under native MPS, under the same conditions as on a B200. Qwen3-ASR 1.7B keeps its own config there, one replica with the engine’s default concurrency, because no replica count beat it, and so does CosyVoice3, where two replicas did not beat one. <code class="docutils literal notranslate"><span class="pre">examples/mps_dp/rtx4090d/moss_td_rtx4090d_dp2.yaml</span></code> is the measured config.</p>
+<p>On a 24 GB NVIDIA GeForce RTX 4090 D, NVML reporting 24,564 MiB, <code class="docutils literal notranslate"><span class="pre">sgl-omni</span> <span class="pre">serve</span> <span class="pre">--model-path</span> <span class="pre">OpenMOSS-Team/MOSS-Transcribe-Diarize</span></code> serves 2 replicas under native MPS, under the same conditions as on a B200, and so does <code class="docutils literal notranslate"><span class="pre">nvidia/nemotron-3.5-asr-streaming-0.6b</span></code>. Qwen3-ASR 1.7B keeps its own config there, one replica with the engine’s default concurrency, because no replica count beat it, and so does CosyVoice3, where two replicas did not beat one. <code class="docutils literal notranslate"><span class="pre">examples/mps_dp/rtx4090d/</span></code> has the measured configs.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Model</p></th>
@@ -931,11 +932,44 @@ numactl<span class="w"> </span>-H<span class="w"> </span><span class="p">|</span
 <td class="text-right"><p>2</p></td>
 <td class="text-right"><p>906 / 1150 / 1146</p></td>
 </tr>
+<tr class="row-even"><td><p>Nemotron 3.5 ASR Streaming 0.6B</p></td>
+<td class="text-right"><p>100 / 103 / 0</p></td>
+<td class="text-right"><p>2</p></td>
+<td class="text-right"><p>293 / 303 / 289</p></td>
+</tr>
 </tbody>
 </table>
 </div>
-<p>Goodput is audio seconds per second of transcribed input audio at a p99 request latency from arrival of at most 0.5 s, one value per arrival seed, counted with the rules of the B200 table. Unlike the B200 measurements, the comparison here includes the model’s own config. Each MOSS-Transcribe-Diarize replica keeps the engine’s 64 running requests and no queue cap, with a 32,768 token KV pool; with the B200 caps of 16 and 16, 3 replicas rejected requests from 100 requests/s and served less than one replica of the model’s own config. Qwen3-ASR runs its default DFlash draft, so two replicas fit only at 32 running requests each. For CosyVoice3, at the same per replica caps, two replicas served 17.7 and 26.8 audio s/s of generated audio at a p99 stall-free start of 1 and 3 s, against 17.8 and 26.9 for one.</p>
-<p>The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host’s other GPUs ran other measurements at the same time, and replicas were not pinned to cores.</p>
+<p>Goodput is audio seconds per second of transcribed input audio at a p99 request latency from arrival of at most 0.5 s, one value per arrival seed, counted with the rules of the B200 table. Unlike the B200 measurements, the comparison here includes the model’s own config. Each MOSS-Transcribe-Diarize replica keeps the engine’s 64 running requests and no queue cap, with a 32,768 token KV pool; with the B200 caps of 16 and 16, 3 replicas rejected requests from 100 requests/s and served less than one replica of the model’s own config. Qwen3-ASR runs its default DFlash draft, so two replicas fit only at 32 running requests each. For CosyVoice3, at the same per replica caps, two replicas served 17.7 and 26.8 audio s/s of generated audio at a p99 stall-free start of 1 and 3 s, against 17.8 and 26.9 for one. Nemotron 3.5 ASR’s 2 replicas run without the B200 thread caps and also beat its own config on every seed at 1 and 3 s (362 against 123 at both).</p>
+<p>The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.58.03. The host’s other GPUs ran other measurements at the same time. Each Nemotron cell ran on 16 CPU threads of its GPU’s NUMA node; the other models’ replicas were not pinned to cores.</p>
+</section>
+<section id="default-replica-counts-on-an-h200">
+<h2>Default replica counts on an H200<a class="headerlink" href="#default-replica-counts-on-an-h200" title="Link to this heading">#</a></h2>
+<p>On a 141 GB NVIDIA H200, NVML reporting 143,771 MiB, the models below serve several replicas under native MPS, under the same conditions as on a B200. <code class="docutils literal notranslate"><span class="pre">examples/mps_dp/h200/</span></code> has the measured configs.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Model</p></th>
+<th class="head text-right"><p>Model’s own config</p></th>
+<th class="head text-right"><p>Default replicas</p></th>
+<th class="head text-right"><p>Goodput of that count</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Qwen3-TTS 1.7B Base</p></td>
+<td class="text-right"><p>152 / 154 / 183</p></td>
+<td class="text-right"><p>6</p></td>
+<td class="text-right"><p>318 / 331 / 317</p></td>
+</tr>
+<tr class="row-odd"><td><p>MOSS-Transcribe-Diarize</p></td>
+<td class="text-right"><p>1095 / 1139 / 1078</p></td>
+<td class="text-right"><p>2</p></td>
+<td class="text-right"><p>1925 / 1995 / 1929</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Goodput is one value per arrival seed at 0.5 s, counted as in the RTX 4090 D table: p99 request latency for MOSS-Transcribe-Diarize, p99 stall-free start of generated audio for Qwen3-TTS. Each entry beats the model’s own config (<code class="docutils literal notranslate"><span class="pre">--mps</span> <span class="pre">off</span></code>) on every seed at 0.5, 1 and 3 s. Each Qwen3-TTS stage keeps its B200 budget in GB. Each MOSS-Transcribe-Diarize replica keeps the engine’s 64 running requests and no queue cap, with the GPU’s memory split evenly; with the B200 caps of 16, 16 and a 16,384 token pool, 4 replicas served 846 at 0.5 s, below the model’s own config. 3 replicas on the engine’s own settings served 1897, and 4 lost to the model’s own config on two seeds. Other models keep their own config on an H200 until they have been measured there.</p>
+<p>The measurements used sglang-omni a385eac6, sglang 0.5.23, torch 2.14.1 with CUDA 13.0 and NVIDIA driver 595.71.05, with other tenants on the host’s other GPUs. Each cell ran on 16 CPU threads of its GPU’s NUMA node.</p>
 </section>
 <section id="shared-weights-across-replicas-opt-in-default-off">
 <h2>Shared weights across replicas (opt-in, default off)<a class="headerlink" href="#shared-weights-across-replicas-opt-in-default-off" title="Link to this heading">#</a></h2>
@@ -1300,6 +1334,7 @@ nsys<span class="w"> </span>profile<span class="w"> </span>--gpu-metrics-devices
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#deploy">Deploy</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-a-b200">Default replica counts on a B200</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-an-rtx-4090-d">Default replica counts on an RTX 4090 D</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#default-replica-counts-on-an-h200">Default replica counts on an H200</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shared-weights-across-replicas-opt-in-default-off">Shared weights across replicas (opt-in, default off)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-we-found-this">How We Found This</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-questions">Common questions</a></li>
