@@ -57,6 +57,10 @@ def build_spanning_device_map(
     """
     if first_device.index is None:
         return None
+    elif current_platform.device_shares_host_memory():
+        # Free device memory there omits page cache the kernel can reclaim, so a
+        # warm cache would refuse a placement the single-device load still fits.
+        return None
     else:
         pass
 

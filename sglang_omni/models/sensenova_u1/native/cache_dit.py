@@ -281,7 +281,7 @@ def resolve_cache_dit_switch(
     branch_count: int,
     cfg_interval: tuple[float, float],
     decoder: Qwen3Model | None = None,
-    set_by_request: bool | None = None,
+    enabled_by_request: bool | None = None,
 ) -> bool:
     """Return whether a request runs with Cache-DiT.
 
@@ -304,7 +304,9 @@ def resolve_cache_dit_switch(
     else:
         pass
     explicit = (
-        (request_switch is not None) if set_by_request is None else set_by_request
+        (request_switch is not None)
+        if enabled_by_request is None
+        else enabled_by_request
     )
     if problem is None:
         return enabled
@@ -338,8 +340,9 @@ class SenseNovaCacheDit:
             branch_count=branch_count,
             cfg_interval=cfg_interval,
             decoder=decoder,
-            set_by_request=batch.extra.get(SENSENOVA_U1_REQUEST_EXTRA_KEY, {}).get(
-                "cache_dit_set_by_request", sampling_params.enable_cache_dit is not None
+            enabled_by_request=batch.extra.get(SENSENOVA_U1_REQUEST_EXTRA_KEY, {}).get(
+                "cache_dit_enabled_by_request",
+                sampling_params.enable_cache_dit is not None,
             ),
         )
         if requested:

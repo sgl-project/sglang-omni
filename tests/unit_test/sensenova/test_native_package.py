@@ -714,16 +714,16 @@ def test_checkpoint_dtype_falls_back_to_the_shard_header(
 
 
 @pytest.mark.parametrize(
-    ("request_switch", "expected_enabled", "expected_set_by_request"),
-    [(None, True, False), (True, True, True), (False, False, True)],
+    ("request_switch", "expected_enabled", "expected_enabled_by_request"),
+    [(None, True, False), (True, True, True), (False, False, False)],
 )
 def test_server_switch_records_whether_the_request_asked_for_cache_dit(
     monkeypatch: pytest.MonkeyPatch,
     request_switch: bool | None,
     expected_enabled: bool,
-    expected_set_by_request: bool,
+    expected_enabled_by_request: bool,
 ) -> None:
-    monkeypatch.setattr(sensenova_cache_dit.envs, "SGLANG_CACHE_DIT_ENABLED", True)
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
     sampling = SenseNovaU1SamplingParams(
         prompt="a red apple",
         width=64,
@@ -741,19 +741,19 @@ def test_server_switch_records_whether_the_request_asked_for_cache_dit(
     sampling.resolve_cache_dit("checkpoint", None)
 
     assert sampling.enable_cache_dit is expected_enabled
-    assert sampling.cache_dit_set_by_request is expected_set_by_request
+    assert sampling.cache_dit_enabled_by_request is expected_enabled_by_request
     extra = sampling.build_request_extra()[
         loader_options.SENSENOVA_U1_REQUEST_EXTRA_KEY
     ]
-    assert extra["cache_dit_set_by_request"] is expected_set_by_request
+    assert extra["cache_dit_enabled_by_request"] is expected_enabled_by_request
 
 
 @pytest.mark.parametrize(
-    ("set_by_request", "expected"),
+    ("enabled_by_request", "expected"),
     [(False, False), (True, "rejected")],
 )
 def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
-    set_by_request: bool, expected: bool | str
+    enabled_by_request: bool, expected: bool | str
 ) -> None:
     decoder = SimpleNamespace(
         layers=[
@@ -770,7 +770,7 @@ def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
                 branch_count=2,
                 cfg_interval=(0.0, 1.0),
                 decoder=decoder,
-                set_by_request=set_by_request,
+                enabled_by_request=enabled_by_request,
             )
     else:
         assert (
@@ -779,7 +779,38 @@ def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
                 branch_count=2,
                 cfg_interval=(0.0, 1.0),
                 decoder=decoder,
-                set_by_request=set_by_request,
+                enabled_by_request=enabled_by_request,
             )
             is expected
         )
+
+
+def test_devices_drawing_on_host_memory_keep_single_device_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / loader.CHECKPOINT_INDEX_FILE_NAME).write_text(
+        json.dumps({"metadata": {"total_size": 33 * 2**30}, "weight_map": {}})
+    )
+    monkeypatch.setattr(current_platform, "device_shares_host_memory", lambda: True)
+    monkeypatch.setattr(
+        loader.torch,
+        "get_device_module",
+        lambda device: SimpleNamespace(
+            device_count=lambda: 4,
+            mem_get_info=lambda device_index: (1 * 2**30, 0),
+        ),
+    )
+
+    assert (
+        loader.build_spanning_device_map(
+            str(checkpoint),
+            SimpleNamespace(num_hidden_layers=42, vocab_size=151936, hidden_size=4096),
+            torch.bfloat16,
+            torch.bfloat16,
+            torch.device("xpu", 0),
+            None,
+        )
+        is None
+    )
