@@ -360,3 +360,52 @@ func TestMeetingImportTimeoutKeepsInterruptedMeeting(t *testing.T) {
 		t.Fatalf("status %s, audio %q", meetings[0].Status, meetings[0].Audio)
 	}
 }
+
+// Continue processing an interrupted import refreshes the open detail when
+// it reaches done: the final status write left the Continue button showing
+// until the app restarted, and clicking it again repeated the model pass.
+func TestMeetingImportContinueRefreshesOpenDetail(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.prefs.General.MainLanguage = "en"
+	a.prefs.Features.Meeting.NoAutoSummary = true
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+	saved := decodeRecording
+	t.Cleanup(func() { decodeRecording = saved })
+	pcm := make([]byte, 2*asr.SampleRate)
+	for i := 0; i < len(pcm); i += 2 {
+		pcm[i], pcm[i+1] = 0x10, 0x7f
+	}
+	decodeRecording = func(_ context.Context, _, wavPath string) ([]byte, error) {
+		if err := os.WriteFile(wavPath, asr.WAV(pcm, asr.SampleRate), 0o644); err != nil {
+			return nil, err
+		}
+		return nil, context.Canceled // an interrupted import keeps its decoded audio
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.importRecording("interrupted.m4a")
+	list, err := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("meetings %+v, err %v", list, err)
+	}
+	id := list[0].ID
+	if list[0].Status != store.MeetingInterrupted {
+		t.Fatalf("status %s, want interrupted", list[0].Status)
+	}
+	a.openMeetingDetail(id)
+	frames(tt)
+	if a.mv.detailView == nil || !a.mv.detailView.CanContinue {
+		t.Fatalf("the interrupted import's detail has no Continue (%+v)", a.mv.detailView)
+	}
+	a.meetingReprocess(id)
+	frames(tt)
+	if a.mv.detailView == nil {
+		t.Fatal("the detail closed during Continue processing")
+	}
+	if a.mv.detailView.CanContinue {
+		t.Fatal("Continue processing is still shown after the import reached done")
+	}
+	if tt.HasText("Continue processing") {
+		t.Fatal("the page still shows the Continue processing button after done")
+	}
+}

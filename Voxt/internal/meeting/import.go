@@ -164,6 +164,11 @@ func (m *Manager) finishImport(ctx context.Context, mt store.Meeting, summarize 
 	if err := m.cfg.Store.UpdateMeeting(context.WithoutCancel(ctx), current); err != nil {
 		return err
 	}
+	// The correction/summary refresh saw this meeting as finishing; tell the
+	// open detail about the final status so its Continue button goes away.
+	if m.cfg.Updated != nil {
+		m.cfg.Updated(current.ID)
+	}
 	return first
 }
 

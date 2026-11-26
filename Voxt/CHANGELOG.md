@@ -16,6 +16,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Closing a meeting's details no longer crashes**: with a language model set up, opening a completed meeting and clicking Close could panic while the page still drew the follow-up question field.
 - **Long meeting imports use bounded memory and time**: a one-hour import sends MTD and voice-activity requests in bounded batches without making a whole-track WAV copy or reading the new WAV back, and import processing stops after 30 minutes. Cancelling decoding or processing keeps an interrupted meeting and its decoded audio for Continue processing. An import and a live meeting cannot run at the same time, and preview databases with dictionary profiles migrate and reopen correctly.
 - **Continue processing refuses an import without usable decoded audio**: a missing, truncated, unreadable, or zero-sample WAV no longer lets Continue processing finish an empty meeting; it stays interrupted and reports the recording error.
+- **Continue processing refreshes an open meeting's details when it finishes**: after Continue processing an interrupted import, the details kept showing Continue processing until Voxt restarted, so clicking it again repeated the model pass. The open details now reload when the import reaches done.
 
 ### 中文
 
@@ -31,6 +32,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **关闭会议详情不再崩溃**：设置语言模型后，打开已完成的会议并点击「关闭」时，页面绘制追问输入框可能崩溃。
 - **长会议导入限制内存和等待时间**：导入一小时录音时，MTD 和人声检测请求都分批处理，不再复制整段 WAV 或重新读回新 WAV；导入处理最多等待 30 分钟。解码或处理中途取消会保留已中断的会议和已解码音频，可以继续整理。导入和现场会议不能同时进行；带词典配置的旧预览数据库也能正确迁移和重新打开。
 - **没有可用解码音频的导入不会完成**：WAV 缺失、截断、不可读或没有任何音频样本时，「继续整理」会报告录音错误并保持已中断，不再把空会议标为完成。
+- **继续整理完成后刷新打开的会议详情**：中断的导入点「继续整理」完成后，详情一直显示「继续整理」直到重启 Voxt，再点一次会重复跑模型。现在导入完成后，打开的详情会自动刷新。
 
 ## [Unreleased]
 
