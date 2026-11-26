@@ -1,0 +1,28 @@
+{
+ "driver": "/Users/YOU/sglang-omni/Voxt/replay/build/replay-driver",
+ "sink_app": "/Users/YOU/sglang-omni/Voxt/replay/build/ReplaySink.app",
+ "manifest": "/Users/YOU/replay-work/manifest.jsonl",
+ "settle_s": 3,
+ "systems": {
+  "voxt-asr": {
+   "app": "/Applications/Voxt.app", "family": "2x", "db": "/Users/YOU/Library/Application Support/VoxtNew/voxtnew.db",
+   "asr": "asr.accurate", "enhance": false, "key": "right_option", "trigger": "toggle", "presses": 1
+  },
+  "voxt-ollama": {
+   "app": "/Applications/Voxt.app", "family": "2x", "db": "/Users/YOU/Library/Application Support/VoxtNew/voxtnew.db",
+   "asr": "asr.accurate", "enhance": true, "llm": "ollama", "llm_model": "qwen3:4b-instruct-2507-q4_K_M",
+   "key": "right_option", "trigger": "toggle", "presses": 1
+  },
+  "other-app": {
+   "app": "/Applications/Other.app", "family": "other", "key": "right_option", "trigger": "hold"
+  }
+ },
+ "cells": [
+  ["voxt-asr", "en"],
+  ["voxt-ollama", "en"],
+  ["other-app", "en"],
+  ["voxt-asr", "zh"],
+  ["voxt-ollama", "zh"],
+  ["other-app", "zh"]
+ ]
+}
