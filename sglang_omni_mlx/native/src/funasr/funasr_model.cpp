@@ -20,7 +20,7 @@ namespace {
 constexpr const char *kEncoderPrefix = "model.audio_tower.layers.";
 constexpr const char *kAdaptorPrefix = "model.multi_modal_projector";
 constexpr const char *kDecoderPrefix = "model.language_model";
-// The fbank KaldiMelBanks fits: 16 kHz, 25 ms windows, 80 mel bins.
+// The reference's fbank: 16 kHz, 25 ms windows, 80 mel bins.
 constexpr int kSampleRate = 16000;
 constexpr int kWindowMilliseconds = 25;
 constexpr int kMelBinCount = 80;
@@ -166,8 +166,11 @@ FunAsrNano::FunAsrNano(const nlohmann::json &config,
   }
   window_ = omni_common::SymmetricHammingWindow(kSampleRate *
                                                 kWindowMilliseconds / 1000);
-  const std::vector<double> banks = omni_common::KaldiMelBanks();
-  const int frequency_count = static_cast<int>(banks.size()) / kMelBinCount;
+  const int fft_size =
+      omni_common::PaddedFftSize(static_cast<int>(window_.size()));
+  const int frequency_count = fft_size / 2 + 1;
+  const std::vector<double> banks =
+      omni_common::KaldiMelBanks(fft_size, kMelBinCount);
   std::vector<float> filters(banks.size());
   for (int bin = 0; bin < frequency_count; ++bin) {
     for (int mel = 0; mel < kMelBinCount; ++mel) {

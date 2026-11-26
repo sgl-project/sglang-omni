@@ -119,7 +119,8 @@ std::vector<std::complex<double>> RealFft(const std::vector<double> &samples) {
 // frame when the audio is shorter than a frame.
 std::vector<float> FbankFeatures(const std::vector<float> &samples,
                                  int &frame_count) {
-  static const std::vector<double> banks = KaldiMelBanks();
+  static const std::vector<double> banks =
+      KaldiMelBanks(kFbankFftSize, kFbankBinCount);
   static const std::vector<double> window = [] {
     std::vector<double> values(kFbankFrameSamples);
     for (int i = 0; i < kFbankFrameSamples; ++i) {

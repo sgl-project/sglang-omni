@@ -9,10 +9,10 @@
 
 namespace omni_common {
 
-// Kaldi's 80 triangular mel filters on its 1127 ln(1 + f / 700) scale from
-// 20 Hz, for 16 kHz audio and a 512-point FFT: [mel_bins, 257] with the
-// Nyquist bin zero.
-std::vector<double> KaldiMelBanks();
+// Kaldi's mel_bin_count triangular mel filters on its 1127 ln(1 + f / 700)
+// scale from 20 Hz, for 16 kHz audio and an fft_size-point FFT:
+// [mel_bin_count, fft_size / 2 + 1] with the Nyquist bin zero.
+std::vector<double> KaldiMelBanks(int fft_size, int mel_bin_count);
 
 // The FFT size KaldiFbank pads a window of window_length samples to.
 int PaddedFftSize(int window_length);

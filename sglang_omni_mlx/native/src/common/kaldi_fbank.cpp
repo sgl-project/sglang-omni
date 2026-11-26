@@ -10,29 +10,26 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr int kKaldiSampleRate = 16000;
-constexpr int kKaldiFftSize = 512;
-constexpr int kKaldiMelBinCount = 80;
 constexpr double kKaldiLowHz = 20.0;
 constexpr float kInt16Scale = 32768.0f;
 constexpr float kPreemphasis = 0.97f;
 
 } // namespace
 
-std::vector<double> KaldiMelBanks() {
-  constexpr int frequency_bin_count = kKaldiFftSize / 2 + 1;
+std::vector<double> KaldiMelBanks(int fft_size, int mel_bin_count) {
+  const int frequency_bin_count = fft_size / 2 + 1;
   const double nyquist_hz = 0.5 * kKaldiSampleRate;
-  const double bin_width_hz =
-      static_cast<double>(kKaldiSampleRate) / kKaldiFftSize;
+  const double bin_width_hz = static_cast<double>(kKaldiSampleRate) / fft_size;
   const double low_mel = 1127.0 * std::log(1.0 + kKaldiLowHz / 700.0);
   const double high_mel = 1127.0 * std::log(1.0 + nyquist_hz / 700.0);
-  const double mel_step = (high_mel - low_mel) / (kKaldiMelBinCount + 1);
+  const double mel_step = (high_mel - low_mel) / (mel_bin_count + 1);
   std::vector<double> banks(
-      static_cast<size_t>(kKaldiMelBinCount) * frequency_bin_count, 0.0);
-  for (int mel_bin = 0; mel_bin < kKaldiMelBinCount; ++mel_bin) {
+      static_cast<size_t>(mel_bin_count) * frequency_bin_count, 0.0);
+  for (int mel_bin = 0; mel_bin < mel_bin_count; ++mel_bin) {
     const double left_mel = low_mel + mel_bin * mel_step;
     const double center_mel = low_mel + (mel_bin + 1) * mel_step;
     const double right_mel = low_mel + (mel_bin + 2) * mel_step;
-    for (int bin = 0; bin < kKaldiFftSize / 2; ++bin) {
+    for (int bin = 0; bin < fft_size / 2; ++bin) {
       const double mel = 1127.0 * std::log(1.0 + bin_width_hz * bin / 700.0);
       double weight = 0.0;
       if (mel > left_mel && mel <= center_mel) {
