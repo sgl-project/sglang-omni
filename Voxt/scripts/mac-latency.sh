@@ -28,8 +28,28 @@ models="asr.accurate=$1;asr.fast=$2"
 others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
 [[ -z "$others" ]] || { echo "note: other model processes are running; the times are skewed:"; echo "$others" | cut -c1-160; }
 mkdir -p build
+latency_rows=build/latency.jsonl
+: >"$latency_rows"
 export VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS="${3:-3}" VOXTNEW_LATENCY_SETTLE="${4:-3s}" VOXTNEW_OMNI_MODELS="$models"
 export VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?VOXTNEW_MAIN_SHA must name the source commit}"
 export VOXTNEW_OMNI_RUNTIME="${VOXTNEW_OMNI_RUNTIME:-$APP/Contents/Resources/omni}"
-go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || { tail -30 build/latency.log; exit 1; }
+export VOXTNEW_LATENCY_OUT="$latency_rows"
+rc=0
+go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || rc=$?
+python3 - "$latency_rows" build/text-consistency.json <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "scripts")
+import profile_loop as loop
+
+rows_path = Path(sys.argv[1])
+rows = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()] if rows_path.exists() else []
+loop.write_text_consistency([{"rows": rows}], Path(sys.argv[2]))
+PY
+if [[ "$rc" -ne 0 ]]; then
+  tail -30 build/latency.log
+  exit "$rc"
+fi
 grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //'

@@ -280,17 +280,45 @@ def short_open_attempt_kept(
         and [str(row.get("scenario")) for row in rows]
         == (scenarios or SHORT_OPEN_SCENARIOS)
         and latency_rows_valid(rows)
+        and len(distinct_text_hashes(rows)) == 1
+    )
+
+
+def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]:
+    """The transcript hashes by scenario and whether the group shares one."""
+    per_scenario: dict[str, list[str]] = {}
+    for obs in observations:
+        for row in obs.get("rows", []):
+            scenario = str(row.get("scenario", ""))
+            hashes = [
+                hash_value for hash_value in distinct_text_hashes([row]) if hash_value
+            ]
+            per_scenario.setdefault(scenario, []).extend(hashes)
+    shared = (
+        len({hash_value for hashes in per_scenario.values() for hash_value in hashes})
+        == 1
+    )
+    return {"scenarios": per_scenario, "shared_text_hash": shared}
+
+
+def write_text_consistency(
+    observations: list[dict[str, object]], output_path: Path
+) -> None:
+    output_path.write_text(
+        json.dumps(text_consistency(observations), indent=2) + "\n", encoding="utf-8"
     )
 
 
 def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
-    """A group is complete only with three kept attempts; observations
-    carry {kept, rows} and the caller writes text-consistency.json with
-    distinct_text_hashes before calling this."""
+    """A group is complete only with three kept attempts sharing one text."""
     if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
     rows = [row for obs in observations for row in obs.get("rows", [])]
-    return bool(rows) and "" not in distinct_text_hashes(rows)
+    return (
+        bool(rows)
+        and "" not in distinct_text_hashes(rows)
+        and len(distinct_text_hashes(rows)) == 1
+    )
 
 
 def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:

@@ -8,7 +8,9 @@ text hashes the kept decision was written against.
 """
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -100,6 +102,12 @@ class ShortOpenGateTests(unittest.TestCase):
             )
         )
 
+    def test_attempt_rejects_cold_warm_hash_change(self):
+        rows = self.observation()["rows"]
+        rows[1]["text_sha256"] = "c" * 64
+        self.assertEqual(len(loop.distinct_text_hashes(rows)), 2)
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows))
+
     def test_group_complete_requires_three_kept_observations(self):
         self.assertFalse(loop.short_open_group_complete([self.observation()]))
         self.assertFalse(
@@ -118,6 +126,23 @@ class ShortOpenGateTests(unittest.TestCase):
                 observations[:1] + observations[2:] + [self.observation()]
             )
         )
+
+    def test_group_complete_rejects_cross_attempt_drift_and_writes_consistency(self):
+        observations = []
+        for letter in "abc":
+            obs = self.observation(scenario_hashes=[letter * 64, letter * 64])
+            self.assertTrue(loop.short_open_attempt_kept(0, [], "normal", obs["rows"]))
+            observations.append(obs)
+        self.assertFalse(loop.short_open_group_complete(observations))
+        consistency = loop.text_consistency(observations)
+        self.assertFalse(consistency["shared_text_hash"])
+        self.assertEqual(
+            consistency["scenarios"]["cold"], ["a" * 64, "b" * 64, "c" * 64]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "text-consistency.json"
+            loop.write_text_consistency(observations, path)
+            self.assertEqual(json.loads(path.read_text()), consistency)
 
     def test_group_complete_rejects_empty_hash(self):
         bad = self.observation()
