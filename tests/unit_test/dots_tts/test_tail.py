@@ -561,14 +561,21 @@ def test_batched_tail_cuda_graph_matches_eager_for_dynamic_slot_order() -> None:
 
 
 def test_only_xpu_captures_the_small_batched_tail_buckets() -> None:
-    assert XPUOmniPlatform().dots_tts_tail_graph_batch_buckets() == (1, 2, 4, 8, 16)
+    assert XPUOmniPlatform().dots_tts_tail_graph_batch_buckets() == (
+        1,
+        2,
+        3,
+        4,
+        8,
+        16,
+    )
     assert CUDAOmniPlatform().dots_tts_tail_graph_batch_buckets() == ()
     assert OmniPlatform().dots_tts_tail_graph_batch_buckets() == ()
 
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not current_platform.is_xpu(), reason="requires XPU")
-@pytest.mark.parametrize("active", [[2], [3, 0, 2, 1]])
+@pytest.mark.parametrize("active", [[2], [1, 3, 0], [3, 0, 2, 1]])
 def test_batched_tail_xpu_graph_matches_eager(active: list[int]) -> None:
     device = torch.device(current_platform.device_type)
     dtype = torch.bfloat16
