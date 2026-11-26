@@ -165,7 +165,7 @@ func toolPayload(rest string) bool {
 		index += searchFrom
 		if rest[index] == '{' {
 			after := strings.TrimLeft(rest[index+1:], " \t\r\n")
-			if strings.HasPrefix(after, "\"") || strings.HasPrefix(after, "'") {
+			if strings.HasPrefix(after, "}") || strings.HasPrefix(after, "\"") || strings.HasPrefix(after, "'") {
 				return true
 			}
 			searchFrom = index + 1

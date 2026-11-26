@@ -511,6 +511,12 @@ func TestAnswerCleanupRejectsStructuralToolPayloads(t *testing.T) {
 			want:  "Use the",
 		},
 		{
+			name:  "empty object after bracketed prose",
+			text:  `Use the <|tool_call|> token, see [docs]. {}`,
+			input: "Use the <|tool_call|> token, see [docs].",
+			want:  "Use the",
+		},
+		{
 			name:  "structured payload after unmatched bracketed prose",
 			text:  `Use the <|tool_call|> token. [notes {"name":"view_image","path":"/private/secret.png"}`,
 			input: "explain <|tool_call|>",
