@@ -26,7 +26,6 @@ from scripts.xpu.baseline.environment import (
 from scripts.xpu.baseline.gate import (
     card_pool,
     compare,
-    merged_serve_extra,
     resolve_tolerances,
     warmups_for,
     with_recorded_judge_flags,
@@ -39,13 +38,13 @@ from scripts.xpu.baseline.hub import (
 from scripts.xpu.baseline.models import (
     MODEL_BY_KEY,
     MODELS,
-    BaselineFile,
     BaselineModel,
     Environment,
     Record,
     Tolerances,
 )
 from scripts.xpu.baseline.serving import RunSettings, measure_launches
+from scripts.xpu.baseline.store import load_baseline, write_entry
 
 
 @dataclass
@@ -61,13 +60,6 @@ class Tally:
             f"  running tally: {len(self.results)} ok, {len(self.failures)} failed, "
             f"{len(self.skipped)} skipped"
         )
-
-
-def load_baseline(path: Path) -> BaselineFile:
-    if path.exists():
-        return json.loads(path.read_text())
-    else:
-        return {"environments": {}}
 
 
 def list_models(path: Path) -> int:
@@ -99,29 +91,6 @@ def parse_serve_extra(
         else:
             extras[key] = tuple(shlex.split(argument_text))
     return extras
-
-
-def write_entry(
-    path: Path,
-    env_key: str,
-    fingerprint: dict[str, str],
-    tolerances: Tolerances,
-    extras: dict[str, tuple[str, ...]],
-    measured: dict[str, Record],
-) -> None:
-    """Persist what is measured so far, re-reading the file so a concurrent recording is not dropped."""
-    on_disk = load_baseline(path)
-    previous: Environment = on_disk["environments"].get(env_key, {})
-    on_disk["environments"][env_key] = {
-        "fingerprint": fingerprint,
-        "recorded_from_commit": recorded_from_commit(),
-        "tolerances": tolerances,
-        "serve_extra": merged_serve_extra(
-            previous.get("serve_extra", {}), extras, set(measured)
-        ),
-        "models": {**previous.get("models", {}), **measured},
-    }
-    path.write_text(json.dumps(on_disk, indent=2, sort_keys=True) + "\n")
 
 
 def skip_reason(model: BaselineModel, done: set[str], pool_size: int) -> str:
@@ -291,9 +260,13 @@ def main() -> int:
         reason = skip_reason(model, done, len(pool))
         if not reason and args.prune_hf_cache:
             print(f"  {prune_hub_cache(model)}", flush=True)
-            reason = download_blocked(model.model_path, args.max_checkpoint_gib)
+            reason = download_blocked(
+                model.model_path, args.max_checkpoint_gib, args.prefetch
+            )
         elif not reason:
-            reason = download_blocked(model.model_path, args.max_checkpoint_gib)
+            reason = download_blocked(
+                model.model_path, args.max_checkpoint_gib, args.prefetch
+            )
         else:
             pass
         if reason:
@@ -334,7 +307,15 @@ def main() -> int:
         print(f"  spread  {json.dumps(observed['spread'])}")
         if args.record:
             write_entry(
-                args.baseline, env_key, fingerprint, tolerances, extras, tally.results
+                args.baseline,
+                env_key,
+                {
+                    "fingerprint": fingerprint,
+                    "recorded_from_commit": recorded_from_commit(),
+                    "tolerances": tolerances,
+                },
+                extras,
+                tally.results,
             )
         elif args.calibrate:
             pass

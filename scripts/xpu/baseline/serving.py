@@ -16,6 +16,7 @@ from scripts.xpu.baseline.cards import (
     idle_after_run,
     idle_before_launch,
 )
+from scripts.xpu.baseline.flags import merged_flags
 from scripts.xpu.baseline.gate import fold_launches, fold_samples
 from scripts.xpu.baseline.models import MODEL_BY_KEY, BaselineModel, Record
 from scripts.xpu.baseline.probes import take_sample
@@ -79,8 +80,14 @@ def free_port() -> int:
 def serve_command(
     model: BaselineModel, port: int, family: str, extra: tuple[str, ...] = ()
 ) -> list[str]:
-    """The row's recipe for this card family, then this host's extra flags, then the determinism args."""
-    command = [
+    """The row's recipe for this card family, then the determinism args, then this host's flags; the later wins."""
+    determinism = [
+        token
+        for stage in engine_stages(model.model_path, model.config_variant)
+        for option, value in DETERMINISM_ENGINE_ARGS.items()
+        for token in (f"--{stage}.engine.{option}", value)
+    ]
+    return [
         sys.executable,
         "-m",
         "sglang_omni.cli",
@@ -91,13 +98,8 @@ def serve_command(
         str(port),
         "--model-path",
         model.model_path,
-        *model.serve_args_on(family),
-        *extra,
+        *merged_flags(model.serve_args_on(family), determinism, extra),
     ]
-    for stage in engine_stages(model.model_path, model.config_variant):
-        for option, value in DETERMINISM_ENGINE_ARGS.items():
-            command += [f"--{stage}.engine.{option}", value]
-    return command
 
 
 def launch(

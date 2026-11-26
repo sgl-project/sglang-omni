@@ -174,6 +174,9 @@ def wait_healthy(
         if isinstance(exc, RuntimeError):
             raise RuntimeError(message) from exc
         raise
+    except BaseException:
+        stop_server(proc)
+        raise
 
 
 def start_server_from_cmd(

@@ -15,6 +15,7 @@ REFERENCE_AUDIO = DATA_DIR / "query_to_cars.wav"
 REFERENCE_TEXT = "How many cars are there in the picture?"
 SPOKEN_TEXT = "The quick brown fox jumps over the lazy dog."
 ARITHMETIC_PROMPT = "Answer with the number only: 17 plus 25?"
+ARITHMETIC_ANSWER = "42"
 MUSIC_PROMPT = "A short calm piano melody."
 
 DEFAULT_BASELINE = REPO_ROOT / "scripts" / "xpu" / "xpu_model_baseline.json"

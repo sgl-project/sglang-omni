@@ -92,7 +92,7 @@ def cached_blobs(repo: str) -> tuple[float, bool]:
     return local_gib, interrupted
 
 
-def download_blocked(model_path: str, max_checkpoint_gib: float) -> str:
+def download_blocked(model_path: str, max_checkpoint_gib: float, fetching: bool) -> str:
     """Why this checkpoint will not be fetched here, or an empty string if it will."""
     repo, _, revision = model_path.partition("@")
     local_gib, interrupted = cached_blobs(repo)
@@ -102,8 +102,11 @@ def download_blocked(model_path: str, max_checkpoint_gib: float) -> str:
         )
         repo_gib = sum(item.size or 0 for item in repo_info.siblings) / 2**30
     except Exception as exc:
-        print(f"  could not size {repo} before fetching it ({exc})")
-        return ""
+        if fetching:
+            return f"could not size {repo} before fetching it ({exc}), so it is not fetched"
+        else:
+            print(f"  could not size {repo} ({exc}); serving it from the cache")
+            return ""
     usage = os.statvfs(existing_ancestor(HF_HUB_CACHE))
     free_gib = usage.f_bavail * usage.f_frsize / 2**30
     # The repo total is an upper bound (Whisper publishes its weights three ways), so it only decides the cold case.

@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-"""How the XPU baseline folds samples and judges a run; pure functions, so no card and no server."""
+"""The XPU baseline's logic that needs no card and no server: folding, judging, flags, the file and the probes' checks."""
 
 from __future__ import annotations
 
+import json
+import types
+from pathlib import Path
+
 import pytest
 
+from scripts.xpu.baseline import probes
+from scripts.xpu.baseline.flags import merged_flags
 from scripts.xpu.baseline.gate import (
     BUILTIN_TOLERANCES,
     DEFAULT_WARMUPS,
@@ -19,6 +25,8 @@ from scripts.xpu.baseline.gate import (
     with_recorded_judge_flags,
 )
 from scripts.xpu.baseline.models import MODEL_BY_KEY, BaselineModel, Record
+from scripts.xpu.baseline.store import load_baseline, write_entry
+from tests.unit_test.fixtures.xpu_audio import loud_wav
 
 LATENCIES = [1.0, 1.1, 1.2, 1.3, 2.0]
 
@@ -118,6 +126,11 @@ def test_a_multi_launch_gate_charges_the_within_run_spread_and_not_the_launch_sp
 def test_a_spread_too_wide_to_see_a_doubling_is_capped_at_the_ceiling() -> None:
     record: Record = {"launches": 3, "within_run_spread": {"speed.latency_s": 0.6425}}
     assert speed_tolerance_for(record, "latency_s", BUILTIN_TOLERANCES) == 0.5
+
+
+def test_the_ceiling_also_bounds_a_field_with_no_recorded_spread() -> None:
+    tight = {**BUILTIN_TOLERANCES, "speed_ceiling": 0.05}
+    assert speed_tolerance_for({}, "latency_s", tight) == 0.05
 
 
 def test_a_field_with_no_recorded_spread_gets_the_floor() -> None:
@@ -268,3 +281,64 @@ def test_a_re_record_replaces_the_flags_of_what_it_measured_and_keeps_the_rest()
         {"qwen3-tts"},
     )
     assert merged == {"auk": ["--kept"]}
+
+
+def test_a_later_source_replaces_a_flag_in_place_and_keeps_the_rest() -> None:
+    merged = merged_flags(
+        ("--thinker.engine.mem_fraction_static", "0.85", "--skip-server-warmup"),
+        ["--thinker.engine.random_seed", "0"],
+        ("--thinker.engine.mem_fraction_static", "0.80"),
+    )
+    assert merged == [
+        "--thinker.engine.mem_fraction_static",
+        "0.80",
+        "--skip-server-warmup",
+        "--thinker.engine.random_seed",
+        "0",
+    ]
+
+
+def test_a_value_before_any_flag_is_refused() -> None:
+    with pytest.raises(ValueError, match="before any --flag"):
+        merged_flags(("0.80", "--text-only"))
+
+
+def test_two_recordings_into_one_file_keep_both_and_leave_no_staging_file(
+    tmp_path: Path,
+) -> None:
+    baseline = tmp_path / "baseline.json"
+    environment = {"fingerprint": {"host": "h"}, "tolerances": BUILTIN_TOLERANCES}
+    write_entry(baseline, "env", environment, {"a": ("--x",)}, {"a": {"launches": 1}})
+    write_entry(baseline, "env", environment, {}, {"b": {"launches": 3}})
+    stored = load_baseline(baseline)["environments"]["env"]
+    assert sorted(stored["models"]) == ["a", "b"]
+    assert stored["serve_extra"] == {"a": ["--x"]}
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "baseline.json",
+        "baseline.json.lock",
+    ]
+    json.loads(baseline.read_text())
+
+
+def test_a_wav_body_shorter_than_its_header_is_truncated_audio() -> None:
+    whole = loud_wav(16000)
+    assert probes.audio_shape(whole)["audio_seconds"] == 1.0
+    with pytest.raises(AssertionError, match="truncated"):
+        probes.audio_shape(whole[:-20000])
+
+
+@pytest.mark.parametrize("content", ["41", "42!!!!", ""])
+def test_the_chat_probe_records_only_an_exact_answer(
+    content: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrong answer recorded as the reference would turn every later check of a correct model into a failure."""
+    reply = {"choices": [{"message": {"content": content}}], "usage": {}}
+    monkeypatch.setattr(
+        probes.requests,
+        "post",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            raise_for_status=lambda: None, json=lambda: reply
+        ),
+    )
+    with pytest.raises(AssertionError, match="expected exactly '42'"):
+        probes.probe_chat("http://unused", MODEL_BY_KEY["minicpm-o"])

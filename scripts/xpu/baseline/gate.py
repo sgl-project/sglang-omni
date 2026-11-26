@@ -155,7 +155,7 @@ def speed_tolerance_for(baseline: Record, name: str, tolerances: Tolerances) -> 
         pass
     ceiling = tolerances.get("speed_ceiling", BUILTIN_TOLERANCES["speed_ceiling"])
     if spread is None:
-        return tolerances["speed"]
+        return min(ceiling, tolerances["speed"])
     else:
         return min(
             ceiling, max(tolerances["speed"], spread * tolerances["speed_headroom"])

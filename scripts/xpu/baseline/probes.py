@@ -13,6 +13,7 @@ from typing import Protocol
 import requests
 
 from scripts.xpu.baseline.models import (
+    ARITHMETIC_ANSWER,
     ARITHMETIC_PROMPT,
     MODEL_BY_KEY,
     MUSIC_PROMPT,
@@ -61,10 +62,16 @@ def audio_shape(raw: bytes) -> dict[str, float]:
         frames = handle.getnframes()
         rate = handle.getframerate()
         width = handle.getsampwidth()
+        channels = handle.getnchannels()
         pcm = handle.readframes(frames)
 
     if frames == 0 or rate == 0:
         raise AssertionError("audio holds no frames")
+    elif len(pcm) != frames * width * channels:
+        raise AssertionError(
+            f"the WAV header declares {frames} frames ({frames * width * channels} bytes) "
+            f"but the body holds {len(pcm)} bytes of PCM, so it was truncated"
+        )
     else:
         scale = float(1 << (8 * width - 1))
     samples = memoryview(pcm).cast({1: "b", 2: "h", 4: "i"}[width])
@@ -195,9 +202,11 @@ def probe_chat(base_url: str, model: BaselineModel) -> Sample:
     elapsed = time.perf_counter() - started
     response.raise_for_status()
     completion = response.json()
-    content = completion["choices"][0]["message"]["content"]
-    if not content:
-        raise AssertionError("no assistant content")
+    answer = (completion["choices"][0]["message"]["content"] or "").strip()
+    if answer != ARITHMETIC_ANSWER:
+        raise AssertionError(
+            f"expected exactly {ARITHMETIC_ANSWER!r} to {ARITHMETIC_PROMPT!r}, got {answer[:80]!r}"
+        )
     else:
         completion_tokens = completion.get("usage", {}).get("completion_tokens", 0)
     speed = {"latency_s": elapsed}
@@ -205,7 +214,7 @@ def probe_chat(base_url: str, model: BaselineModel) -> Sample:
         speed["decode_tokens_per_second"] = completion_tokens / elapsed
     else:
         pass
-    return {"exact": {"content": content.strip()}, "speed": speed}
+    return {"exact": {"content": answer}, "speed": speed}
 
 
 PROBES: dict[ProbeKind, Probe] = {

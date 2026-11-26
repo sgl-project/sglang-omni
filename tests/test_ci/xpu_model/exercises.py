@@ -98,11 +98,16 @@ def assert_audible_speech(raw: bytes, label: str) -> float:
             frames = handle.getnframes()
             rate = handle.getframerate()
             width = handle.getsampwidth()
+            channels = handle.getnchannels()
             pcm = handle.readframes(frames)
     except wave.Error as exc:
         pytest.fail(f"{label}: response is not a decodable WAV ({exc}); {raw[:64]!r}")
 
     assert frames > 0, f"{label}: WAV header declares no frames"
+    assert len(pcm) == frames * width * channels, (
+        f"{label}: WAV header declares {frames} frames ({frames * width * channels} bytes) "
+        f"but the body holds {len(pcm)} bytes of PCM, so it was truncated"
+    )
     assert rate > 0, f"{label}: WAV declares no sample rate"
     seconds = frames / rate
     assert seconds >= MIN_SPEECH_SECONDS, (

@@ -22,7 +22,7 @@ from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.platforms import current_platform
 from sglang_omni.utils.imports import import_string
 from tests.test_ci.xpu_model.conftest import holds_a_checkpoint
-from tests.test_ci.xpu_model.exercises import EXERCISES
+from tests.test_ci.xpu_model.exercises import EXERCISES, assert_audible_speech
 from tests.test_ci.xpu_model.model_table import (
     KNOWN_FAMILIES,
     XPU_MODELS,
@@ -31,6 +31,7 @@ from tests.test_ci.xpu_model.model_table import (
     model_named,
     xpu_pipelines,
 )
+from tests.unit_test.fixtures.xpu_audio import loud_wav
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 INSTALL_GUIDE = REPO_ROOT / "docs" / "other_platforms" / "installation_xpu.md"
@@ -355,3 +356,9 @@ def test_only_a_complete_checkpoint_is_handed_to_the_server(tmp_path: Path) -> N
     assert holds_a_checkpoint(
         checkpoint("yaml_config", {"config.yaml": "", "auk_base.safetensors": ""})
     )
+
+
+def test_a_wav_body_shorter_than_its_header_fails_the_speech_check() -> None:
+    """A truncated body can keep a header declaring a whole utterance and still hold a few loud samples."""
+    with pytest.raises(AssertionError, match="truncated"):
+        assert_audible_speech(loud_wav(32000)[:-40000], "row")
