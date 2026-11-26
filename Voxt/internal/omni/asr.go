@@ -241,6 +241,7 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 	}
 	if len(chunks) > 1 {
 		known.text = "" // the text is of all the chunks: none of them is all of it
+		known.guessAutoLanguage = false
 	}
 	var parts []string
 	for len(chunks) > 0 {
