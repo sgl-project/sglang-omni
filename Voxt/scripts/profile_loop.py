@@ -447,8 +447,7 @@ def first_partial_valid(row: dict[str, object]) -> bool:
 def latency_rows_valid(rows: list[dict[str, object]]) -> bool:
     """Every latency row in a kept group passes the evidence gates."""
     return bool(rows) and all(
-        min_preview_samples_valid(row) and text_hash(row) != ""
-        for row in rows
+        min_preview_samples_valid(row) and text_hash(row) != "" for row in rows
     )
 
 

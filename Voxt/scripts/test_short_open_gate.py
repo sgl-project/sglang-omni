@@ -11,10 +11,14 @@ SCRIPT = Path(__file__).resolve().parent / "short_open_gate.py"
 
 def row(attempt, scenario, **overrides):
     base = {
-        "scenario": scenario, "attempt": attempt,
-        "text_sha256": "a" * 64, "min_preview_samples": 20000,
-        "first_partial_ms": 1200.0, "stop_to_final_ms": 900.0,
-        "stop_to_insert_ms": 1000.0, "stop_to_done_ms": 1100.0,
+        "scenario": scenario,
+        "attempt": attempt,
+        "text_sha256": "a" * 64,
+        "min_preview_samples": 20000,
+        "first_partial_ms": 1200.0,
+        "stop_to_final_ms": 900.0,
+        "stop_to_insert_ms": 1000.0,
+        "stop_to_done_ms": 1100.0,
     }
     base.update(overrides)
     return base
@@ -26,17 +30,29 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
             rows_path = Path(tmp) / "latency.jsonl"
             rows_path.write_text("\n".join(json.dumps(r) for r in rows))
             pre = Path(tmp) / "preflight.json"
-            pre.write_text(json.dumps(preflight or {"returncode": 0, "environment_reasons": [], "peak_pressure": "normal"}))
+            pre.write_text(
+                json.dumps(
+                    preflight
+                    or {
+                        "returncode": 0,
+                        "environment_reasons": [],
+                        "peak_pressure": "normal",
+                    }
+                )
+            )
             return subprocess.run(
                 [sys.executable, str(SCRIPT), str(rows_path), str(pre), str(rounds)],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
 
     def full_rows(self, bad_attempt=None, **bad):
         rows = []
         for attempt in (1, 2, 3):
             for scenario in ("cold", "warm"):
-                rows.append(row(attempt, scenario, **(bad if attempt == bad_attempt else {})))
+                rows.append(
+                    row(attempt, scenario, **(bad if attempt == bad_attempt else {}))
+                )
         return rows
 
     def test_complete_group_prints_medians(self):
@@ -57,15 +73,28 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
 
     def test_environment_reason_rejected(self):
-        proc = self.run_gate(self.full_rows(), {"returncode": 0, "environment_reasons": ["contender: qwen3"], "peak_pressure": "normal"})
+        proc = self.run_gate(
+            self.full_rows(),
+            {
+                "returncode": 0,
+                "environment_reasons": ["contender: qwen3"],
+                "peak_pressure": "normal",
+            },
+        )
         self.assertEqual(proc.returncode, 1)
 
     def test_pressure_rejected(self):
-        proc = self.run_gate(self.full_rows(), {"returncode": 0, "environment_reasons": [], "peak_pressure": "warn"})
+        proc = self.run_gate(
+            self.full_rows(),
+            {"returncode": 0, "environment_reasons": [], "peak_pressure": "warn"},
+        )
         self.assertEqual(proc.returncode, 1)
 
     def test_failed_process_rejected(self):
-        proc = self.run_gate(self.full_rows(), {"returncode": 1, "environment_reasons": [], "peak_pressure": "normal"})
+        proc = self.run_gate(
+            self.full_rows(),
+            {"returncode": 1, "environment_reasons": [], "peak_pressure": "normal"},
+        )
         self.assertEqual(proc.returncode, 1)
 
 

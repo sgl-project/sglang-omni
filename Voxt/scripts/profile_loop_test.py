@@ -138,17 +138,25 @@ class SummaryTests(unittest.TestCase):
             loop.summarize_reports(reports)
 
     def test_overlap_report_with_resources_summarizes(self):
-        from scripts import overlap_summary
         import tempfile
+
+        from scripts import overlap_summary
 
         def report(wall):
             base = raw_report(wall)
             base.update(
                 {
-                    "schema_version": 1, "method": "overlap", "simulated_llm": True,
-                    "started_at": "2026-11-26T00:00:00Z", "ended_at": "2026-11-26T00:01:00Z",
-                    "audio_duration_ms": 600000, "timing": {}, "backlog_at_stop": {},
-                    "config": {}, "stages": [], "structure": {},
+                    "schema_version": 1,
+                    "method": "overlap",
+                    "simulated_llm": True,
+                    "started_at": "2026-11-26T00:00:00Z",
+                    "ended_at": "2026-11-26T00:01:00Z",
+                    "audio_duration_ms": 600000,
+                    "timing": {},
+                    "backlog_at_stop": {},
+                    "config": {},
+                    "stages": [],
+                    "structure": {},
                 }
             )
             return base
