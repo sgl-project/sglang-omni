@@ -25,6 +25,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 
+- **Closing a meeting's details no longer crashes**: with a language model set up, opening a completed meeting and clicking Close could panic while the page still drew the follow-up question field.
 - **Long meeting imports use bounded memory and time**: a one-hour import sends MTD and voice-activity requests in bounded batches without making a whole-track WAV copy or reading the new WAV back, and import processing stops after 30 minutes. Cancelling decoding or processing keeps an interrupted meeting and its decoded audio for Continue processing. An import and a live meeting cannot run at the same time, and preview databases with dictionary profiles migrate and reopen correctly.
 - **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
 - **Chinese dictation comes out in one script** (#4534): Whisper sometimes wrote a Simplified sentence with Traditional characters mixed in (這個…我已经…). Dictation now writes Chinese in the script you read: Simplified on a Simplified Chinese Mac, Traditional on a Taiwan or Hong Kong one, as meetings and file transcription already do. Cantonese follows the same rule. When neither the main language nor the system says which script, the text stays as the speech model wrote it. Japanese dictation keeps its kanji.
@@ -55,6 +56,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 
+- **关闭会议详情不再崩溃**：设置语言模型后，打开已完成的会议并点击「关闭」时，页面绘制追问输入框可能崩溃。
 - **长会议导入限制内存和等待时间**：导入一小时录音时，MTD 和人声检测请求都分批处理，不再复制整段 WAV 或重新读回新 WAV；导入处理最多等待 30 分钟。解码或处理中途取消会保留已中断的会议和已解码音频，可以继续整理。导入和现场会议不能同时进行；带词典配置的旧预览数据库也能正确迁移和重新打开。
 - **回顾里的数字不再被截断**（#4570）：窗口较窄时，英文界面的速度会显示成“2… characters a min…”。现在数字、单位和标题都不会被截断：放得下就一行四张，放不下就两两一行。
 - **中文听写不再简繁混杂**（#4534）：Whisper 有时会在简体句子里夹几个繁体字（這個…我已经…）。现在听写按你使用的字形输出：简体中文的 Mac 上输出简体，台湾、香港的 Mac 上输出繁体，和会议、文件转录一致。粤语同样处理。主语言和系统语言都看不出字形时，保持语音模型的原样。日语听写的汉字不变。
