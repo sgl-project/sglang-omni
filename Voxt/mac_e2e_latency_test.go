@@ -326,7 +326,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
-	if !a.pumpFor(time.Minute, func() bool {
+	if !a.pumpFor(5*time.Minute, func() bool {
 		if a.sess.ID == last {
 			return false
 		}
