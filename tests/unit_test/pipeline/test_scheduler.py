@@ -49,7 +49,11 @@ from sglang.srt.runtime_context import get_context
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
-from sglang_omni.admission import ContextExhaustedError, QueueFullError
+from sglang_omni.admission import (
+    ContextExhaustedError,
+    QueueFullError,
+    SessionCapacityExhaustedError,
+)
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import (
@@ -1129,6 +1133,51 @@ def test_enqueue_built_request_admits_an_empty_session_append_with_history(
     assert capacity_checks == [
         (session_request, {"session_capacity_checked": True, "decode_path": "plain"})
     ]
+
+
+@pytest.mark.parametrize(
+    "capacity_message",
+    [
+        "session KV capacity exhausted",
+        "session request-to-token slots exhausted "
+        "(one slot kept for a session that already holds KV)",
+    ],
+)
+def test_enqueue_built_request_reports_a_full_session_capacity_as_overload(
+    monkeypatch, capacity_message: str
+) -> None:
+    scheduler, _, aborts = enqueue_limit_scheduler(monkeypatch)
+    released: list[str] = []
+    session_request = admission_req("req-append", [1, 2, 3])
+
+    def create_session_request(payload, request_data) -> None:
+        request_data.req = session_request
+
+    scheduler.session_bridge = SimpleNamespace(
+        units_by_request_id={"req-append": SimpleNamespace(is_enqueued=False)},
+        create_session_request=create_session_request,
+        check_session_capacity=lambda request_id: capacity_message,
+        release_append_unit=released.append,
+    )
+
+    OmniScheduler.enqueue_built_request(
+        scheduler,
+        SimpleNamespace(request_id="req-append"),
+        False,
+        SimpleNamespace(
+            req=admission_req("req-append", []), enforce_request_limits=False
+        ),
+    )
+
+    reject = scheduler.outbox.get_nowait()
+    assert reject.type == "error"
+    assert isinstance(reject.data, SessionCapacityExhaustedError)
+    assert str(reject.data) == f"session_capacity_exhausted: {capacity_message}"
+    assert SessionCapacityExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert not ContextExhaustedError.matches(RuntimeError(str(reject.data)))
+    assert released == ["req-append"]
+    assert aborts == ["req-append"]
+    assert scheduler.waiting_queue == []
 
 
 def test_process_input_requests_rejects_before_build_when_waiting_queue_is_full() -> (
@@ -2395,6 +2444,71 @@ def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
     assert "kv_capacity=3404" in speculative_error
 
 
+VERIFY_GRAPH_MAX_BATCH_SIZE = 8
+DRAFT_TOKENS_PER_VERIFY = 4
+
+
+class FoldedAcceptDraftWorker:
+    """Publishes next sequence lengths as a view of its static verify buffer."""
+
+    speculative_num_draft_tokens = DRAFT_TOKENS_PER_VERIFY
+
+    def __init__(self, accepted_token_counts: list[int]) -> None:
+        self.accepted_token_counts = torch.tensor(accepted_token_counts)
+        self.sequence_lengths_buffer = torch.zeros(
+            VERIFY_GRAPH_MAX_BATCH_SIZE, dtype=torch.int64
+        )
+
+    def forward_batch_generation(self, batch: ScheduleBatch) -> GenerationBatchResult:
+        batch_size = len(batch.seq_lens)
+        self.sequence_lengths_buffer[:batch_size] = (
+            batch.seq_lens + self.accepted_token_counts
+        )
+        return GenerationBatchResult(
+            next_token_ids=torch.zeros(batch_size, dtype=torch.int64),
+            new_seq_lens=self.sequence_lengths_buffer[:batch_size],
+        )
+
+
+@pytest.mark.usefixtures("published_config")
+def test_speculative_step_lengths_survive_the_next_verify_replay() -> None:
+    """A batch that adopted a view of the worker's verify buffer saw its lengths move when the next verify replayed."""
+    sequence_lengths = [5, 9, 3]
+    accepted_token_counts = [3, 1, 2]
+    committed_sequence_lengths = [8, 10, 5]
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.device = "cpu"
+    scheduler.enable_overlap = False
+    scheduler.future_map = SimpleNamespace(spec_algo=SpeculativeAlgorithm.DSPARK)
+    draft_worker = FoldedAcceptDraftWorker(accepted_token_counts)
+    scheduler.draft_worker = draft_worker
+    scheduler.tp_worker = SimpleNamespace(
+        speculative_target_worker=SimpleNamespace(verify_requests=[])
+    )
+    scheduler.model_runner = SimpleNamespace(
+        speculative_verify_takes_logits_hooks=False,
+        after_speculative_step=lambda *args, **kwargs: None,
+        record_speculative_output=lambda *args, **kwargs: None,
+        speculative_penalized_rows=lambda requests: [],
+        speculative_repetition_penalty_owner=None,
+    )
+    batch = ScheduleBatch(
+        reqs=[],
+        device="cpu",
+        forward_mode=ForwardMode.DECODE,
+        spec_algorithm=SpeculativeAlgorithm.DSPARK,
+        seq_lens=torch.tensor(sequence_lengths),
+        seq_lens_cpu=torch.tensor(sequence_lengths),
+        seq_lens_sum=sum(sequence_lengths),
+    )
+
+    scheduler.run_speculative_batch(batch)
+    draft_worker.forward_batch_generation(batch)
+
+    assert batch.seq_lens.tolist() == committed_sequence_lengths, "seq_lens moved"
+    assert batch.seq_lens_cpu.tolist() == committed_sequence_lengths, "host copy moved"
+
+
 @pytest.mark.parametrize(
     (
         "sampling_overrides",
@@ -2408,6 +2522,7 @@ def test_streaming_pure_swa_uses_context_instead_of_physical_kv_limit(
         ({}, True, False, None, "logprobs"),
         ({}, False, True, None, "return_hidden_states"),
         ({"min_p": 0.05}, False, False, None, "min_p"),
+        ({"min_p": 0.05, "top_k": 1}, False, False, None, None),
         ({"frequency_penalty": 0.5}, False, False, None, "frequency_penalty"),
         ({"presence_penalty": 0.5}, False, False, None, "presence_penalty"),
         ({"repetition_penalty": 1.2}, False, False, None, "repetition_penalty"),
@@ -2449,19 +2564,70 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     )
     request_data = SimpleNamespace(return_logprob=return_logprob)
 
-    error = scheduler.speculative_request_error(request, request_data)
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        error = scheduler.speculative_request_error(request, request_data)
 
-    if refused_option is None:
-        assert error is None
-    else:
-        assert refused_option in error
+        if refused_option is None:
+            assert error is None
+        else:
+            assert refused_option in error
+            assert_refusal_is_a_caller_error(error)
+        scheduler.model_runner.speculative_ignores_request_seed = False
+        assert (scheduler.speculative_request_error(request, request_data) is None) == (
+            refused_option in (None, "seed")
+        ), "only a runner whose verify ignores the seed refuses it"
+        scheduler.draft_worker = None
+        assert scheduler.speculative_request_error(request, request_data) is None
+
+
+@pytest.mark.parametrize(
+    ("verify_mode", "repetition_penalty", "takes_logits_hooks", "is_refused"),
+    [
+        ("static", 1.2, True, False),
+        ("compact", 1.0, False, False),
+        ("compact", 1.2, False, True),
+        ("compact", 1.0, True, True),
+    ],
+)
+def test_a_compact_verify_refuses_requests_whose_verify_hooks_would_change_rows(
+    verify_mode: str,
+    repetition_penalty: float,
+    takes_logits_hooks: bool,
+    is_refused: bool,
+) -> None:
+    """Its graph epilogue copies the logits before the shared verify hooks scale them."""
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.spec_algorithm = SpeculativeAlgorithm.DSPARK
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
+    scheduler.model_runner = SimpleNamespace(
+        speculative_repetition_penalty_owner="verify_logits",
+        speculative_ignores_request_seed=True,
+        verify_rows_take_logits_hooks=lambda requests: takes_logits_hooks,
+    )
+    request = SimpleNamespace(
+        rid="request",
+        sampling_params=SimpleNamespace(
+            min_p=0.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+            repetition_penalty=repetition_penalty,
+            sampling_seed=None,
+            top_k=-1,
+            max_new_tokens=2,
+        ),
+        return_hidden_states=False,
+    )
+    request_data = SimpleNamespace(return_logprob=False)
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override(verify_mode):
+        error = scheduler.speculative_request_error(request, request_data)
+
+    if is_refused:
+        assert "under a compact verify" in error
         assert_refusal_is_a_caller_error(error)
-    scheduler.model_runner.speculative_ignores_request_seed = False
-    assert (scheduler.speculative_request_error(request, request_data) is None) == (
-        refused_option in (None, "seed")
-    ), "only a runner whose verify ignores the seed refuses it"
-    scheduler.draft_worker = None
-    assert scheduler.speculative_request_error(request, request_data) is None
+    else:
+        assert error is None
 
 
 @pytest.mark.parametrize(
@@ -5231,10 +5397,15 @@ def test_run_speculative_batch_overlap_runs_hooks_and_step_callback_in_forward_s
         return draft_result
 
     def after_speculative_step(
-        step_batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+        step_batch: ScheduleBatch,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: SimpleNamespace | None,
     ) -> None:
         assert torch.equal(step_batch.input_ids, torch.tensor([5]))
         assert (is_prefill, num_draft_tokens) == (batch.forward_mode.is_extend(), 3)
+        assert verify_layout is None, "a static verify has no ragged layout"
         events.append(("after_step", tuple(active_streams)))
 
     def record_speculative_output(

@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Engine option handling without model weights or CUDA initialization."""
 
+import json
+from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +14,8 @@ from sglang.srt.model_executor.model_runner_components.weight_updater import (
 from torch import nn
 
 import sglang_omni.models.nemotron_transcribe.engine_builder as engine_builder
+import sglang_omni.models.nemotron_transcribe.stages as stages
+import sglang_omni.models.weight_loader as weight_loader
 from sglang_omni.models.nemotron_transcribe.config import (
     EncoderCompileMode,
     NemotronTranscribePipelineConfig,
@@ -23,16 +28,21 @@ from sglang_omni.models.nemotron_transcribe.fp8_linear import (
     Fp8Linear,
     attach_fp8_linears,
 )
+from sglang_omni.models.nemotron_transcribe.mtp_draft import NemotronTranscribeMTPDraft
 from sglang_omni.models.nemotron_transcribe.speech_transformer import (
     SpeechTransformerEncoder,
 )
+from sglang_omni.models.nemotron_transcribe.stages import (
+    create_nemotron_transcribe_executor,
+)
+from sglang_omni.scheduling.bootstrap import InfrastructureOptions
 from sglang_omni.scheduling.generation_batch_policy import (
     build_generation_batch_overrides,
 )
 
 
 def make_builder(
-    compile_perception: bool = False, cuda_graphs: bool = False
+    compile_perception: bool = False, cuda_graphs: bool = False, tp_size: int = 1
 ) -> NemotronTranscribeEngineBuilder:
     configuration = NemotronTranscribePipelineConfig(model_path="unused")
     parameters = configuration.stages[0].factory.model_dump(exclude_none=True)
@@ -41,6 +51,11 @@ def make_builder(
         compile_perception=compile_perception,
         perception_cuda_graphs=cuda_graphs,
         mem_fraction_static=None,
+        checkpoint_revision=None,
+        tp_rank=0,
+        tp_size=tp_size,
+        nccl_port=None,
+        mm_embedding_cache_size_bytes=None,
     )
     return NemotronTranscribeEngineBuilder(**parameters)
 
@@ -62,6 +77,208 @@ def test_decoder_defaults_keep_cuda_graphs_and_disable_compilation() -> None:
     defaults = make_builder().generation_defaults(dtype="bfloat16")
     assert defaults["enable_torch_compile"] is False
     assert defaults["disable_radix_cache"] is True
+
+
+def test_engine_revision_selects_the_checkpoint_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An engine revision used to be dropped, so a pinned MTP launch loaded the latest snapshot."""
+    revision = "c17667641642c4265ff2b7037dd101b7d4567634"
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "llm_config": {},
+                "eos_token_id": [11],
+                "perception": {},
+                "pe_encoder_config": {},
+            }
+        )
+    )
+    downloads: list[tuple[str, str | None]] = []
+
+    def download_snapshot(
+        repo_id: str, *, local_files_only: bool, revision: str | None
+    ) -> str:
+        downloads.append((repo_id, revision))
+        return str(tmp_path)
+
+    monkeypatch.setattr(weight_loader, "snapshot_download", download_snapshot)
+    monkeypatch.setattr(
+        stages.NemotronTranscribeEngineBuilder,
+        "build",
+        lambda builder, model_path, **options: builder.resolve_checkpoint(model_path),
+    )
+    factory_options = (
+        NemotronTranscribePipelineConfig(model_path="unused")
+        .stages[0]
+        .factory.model_dump(exclude_none=True)
+    )
+    stages.create_nemotron_transcribe_executor(
+        "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B",
+        server_args_overrides={"revision": revision},
+        **factory_options,
+    )
+    assert downloads == [("nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B", revision)]
+
+
+def test_mtp_draft_stays_unregistered_without_speculative_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides: dict[str, object] = {"enable_mixed_chunk": True}
+    builder.adjust_overrides(overrides)
+    assert overrides == {"enable_mixed_chunk": True}
+    assert builder.infra_kwargs() == {"tp_rank": 0, "nccl_port": None}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "num_steps", "num_draft_tokens"),
+    [
+        ({"speculative_algorithm": "NEXTN"}, 3, 4),
+        ({"speculative_algorithm": "EAGLE", "speculative_num_steps": 7}, 7, 8),
+        (
+            {
+                "speculative_algorithm": "nextn",
+                "revision": "c17667641642c4265ff2b7037dd101b7d4567634",
+                "speculative_draft_model_revision": (
+                    "c17667641642c4265ff2b7037dd101b7d4567634"
+                ),
+                "speculative_eagle_topk": 1,
+                "speculative_num_steps": 2,
+                "speculative_num_draft_tokens": 3,
+                "enable_mixed_chunk": False,
+            },
+            2,
+            3,
+        ),
+    ],
+    ids=["defaults", "eagle-alias-with-steps", "explicit-chain"],
+)
+def test_supported_mtp_configurations_serve_the_bundled_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: dict[str, object],
+    num_steps: int,
+    num_draft_tokens: int,
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    overrides = dict(requested)
+    builder.adjust_overrides(overrides)
+    assert overrides["speculative_draft_model_path"] == "/checkpoints/nemotron"
+    assert overrides["speculative_draft_model_revision"] is None
+    assert overrides["speculative_eagle_topk"] == 1
+    assert overrides["speculative_num_steps"] == num_steps
+    assert overrides["speculative_num_draft_tokens"] == num_draft_tokens
+    assert overrides["enable_mixed_chunk"] is False
+    assert builder.infra_kwargs() == {
+        "tp_rank": 0,
+        "nccl_port": None,
+        "supports_speculative_decoding": True,
+    }
+    assert (
+        engine_builder.ModelRegistry.models["NemotronHForCausalLMMTP"]
+        is NemotronTranscribeMTPDraft
+    )
+
+
+@pytest.mark.parametrize(
+    ("requested", "message"),
+    [
+        ({"speculative_algorithm": "EAGLE3"}, "set speculative_algorithm NEXTN"),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_draft_model_path": "org/external-draft",
+            },
+            "leave speculative_draft_model_path unset",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "revision": "target-revision",
+                "speculative_draft_model_revision": "draft-revision",
+            },
+            "set revision instead",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_eagle_topk": 4},
+            "speculative_eagle_topk must be 1, got 4",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_steps": 0},
+            "positive integer, got 0",
+        ),
+        (
+            {
+                "speculative_algorithm": "NEXTN",
+                "speculative_num_steps": 3,
+                "speculative_num_draft_tokens": 8,
+            },
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "speculative_num_draft_tokens": 8},
+            "must be 4 for speculative_num_steps 3, got 8",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_multi_layer_eagle": True},
+            "enable_multi_layer_eagle is unsupported",
+        ),
+        (
+            {"speculative_algorithm": "NEXTN", "enable_mixed_chunk": True},
+            "enable_mixed_chunk off",
+        ),
+    ],
+    ids=[
+        "separate-draft-algorithm",
+        "external-draft",
+        "draft-revision",
+        "topk",
+        "steps",
+        "draft-tokens",
+        "draft-tokens-against-default-steps",
+        "multi-layer",
+        "mixed-chunk",
+    ],
+)
+def test_unsupported_mtp_configurations_name_the_setting_to_change(
+    monkeypatch: pytest.MonkeyPatch, requested: dict[str, object], message: str
+) -> None:
+    monkeypatch.setattr(
+        engine_builder.ModelRegistry,
+        "models",
+        dict(engine_builder.ModelRegistry.models),
+    )
+    registered_draft = engine_builder.ModelRegistry.models.get(
+        "NemotronHForCausalLMMTP"
+    )
+    builder = make_builder()
+    builder.checkpoint_dir = "/checkpoints/nemotron"
+    with pytest.raises(ValueError, match=message):
+        builder.adjust_overrides(dict(requested))
+    assert builder.infra_kwargs() == {"tp_rank": 0, "nccl_port": None}
+    assert (
+        engine_builder.ModelRegistry.models.get("NemotronHForCausalLMMTP")
+        is registered_draft
+    )
 
 
 def test_decoder_compilation_has_an_actionable_error() -> None:
@@ -209,6 +426,111 @@ def test_disabled_pre_lm_encoder_does_not_start_a_service(
     builder.enable_pre_lm_encoder = False
     builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
     assert builder.audio_encoder_service is None
+
+
+def test_multi_rank_pre_lm_encoder_does_not_start_a_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("encoder service must stay stopped")
+
+    monkeypatch.setattr(engine_builder, "NemotronTranscribePreLMEncoderService", fail)
+    monkeypatch.setattr(
+        engine_builder,
+        "build_cache_namespace",
+        lambda model, *, model_path: f"{model_path}:ns",
+    )
+    builder = make_builder(tp_size=4)
+    builder.checkpoint_dir = "checkpoint"
+    assert builder.enable_pre_lm_encoder
+    builder.setup_runtime_resources(SimpleNamespace(), SimpleNamespace())
+    assert builder.audio_encoder_service is None
+
+
+@pytest.mark.parametrize(
+    ("tp_size", "configured_bytes", "expected_bytes"),
+    [
+        (1, None, 0),
+        (4, None, engine_builder.MULTI_RANK_EMBEDDING_CACHE_BYTES),
+        (4, 0, 0),
+        (4, 7, 7),
+    ],
+)
+def test_dropped_pre_lm_encoder_keeps_an_embedding_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tp_size: int,
+    configured_bytes: int | None,
+    expected_bytes: int,
+) -> None:
+    cache_sizes_bytes: list[int] = []
+    monkeypatch.setattr(
+        engine_builder,
+        "init_mm_embedding_cache",
+        lambda size_bytes: cache_sizes_bytes.append(size_bytes),
+    )
+    builder = make_builder(tp_size=tp_size)
+    builder.mm_embedding_cache_size_bytes = configured_bytes
+    model = SimpleNamespace(perception=nn.Sequential(), encoder_max_batch_size=0)
+    builder.setup_model_resources(
+        model,
+        SimpleNamespace(max_running_requests=1),
+        generation_cuda_graph_enabled=True,
+    )
+    assert cache_sizes_bytes == [expected_bytes]
+
+
+@dataclass(kw_only=True)
+class CapturedBuildCall:
+    server_args_overrides: dict[str, int]
+    infra_kwargs: InfrastructureOptions
+
+
+@pytest.mark.parametrize(
+    ("tp_rank", "tp_size", "nccl_port"),
+    [(2, 4, 29501), (0, 1, None)],
+)
+def test_tensor_parallel_arguments_reach_server_args_and_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+    tp_rank: int,
+    tp_size: int,
+    nccl_port: int | None,
+) -> None:
+    captured: list[CapturedBuildCall] = []
+
+    def fake_build(
+        self: NemotronTranscribeEngineBuilder,
+        model_path: str,
+        *,
+        device: str | None,
+        gpu_id: int | None,
+        dtype: str,
+        server_args_overrides: dict[str, int],
+    ) -> str:
+        captured.append(
+            CapturedBuildCall(
+                server_args_overrides=dict(server_args_overrides),
+                infra_kwargs=self.infra_kwargs(),
+            )
+        )
+        return "scheduler"
+
+    monkeypatch.setattr(NemotronTranscribeEngineBuilder, "build", fake_build)
+    configuration = NemotronTranscribePipelineConfig(model_path="unused")
+    create_nemotron_transcribe_executor(
+        "dummy",
+        **configuration.stages[0].factory.model_dump(exclude_none=True),
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
+        server_args_overrides={"max_running_requests": 8},
+    )
+
+    (call,) = captured
+    assert call.server_args_overrides == {
+        "max_running_requests": 8,
+        "tp_size": tp_size,
+    }
+    assert call.infra_kwargs == {"tp_rank": tp_rank, "nccl_port": nccl_port}
 
 
 @pytest.mark.parametrize("decoder_slots", [None, 1, 16])

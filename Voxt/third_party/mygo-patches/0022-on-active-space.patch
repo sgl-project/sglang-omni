@@ -1,0 +1,166 @@
+MyGo patch 0022 (VoxtNew): Window.IsOnActiveSpace.
+
+VoxtNew's Rewrite card is an ordinary window that takes the front when
+the user acts on it (cardFront): VoxtNew is activated with the card as
+its key window. On another app's full-screen Space, macOS shows no
+ordinary window of a regular app (one with a Dock icon), even one that
+is visible on all workspaces and an auxiliary of full-screen Spaces; and
+activating the app from there switches to a desktop with its windows,
+taking the user out of their full-screen app.
+
+IsOnActiveSpace reports NSWindow.isOnActiveSpace, which for a hidden
+window tells whether ordering it in would put it on the active Space: an
+app can tell before showing a window that it cannot show there, and use
+a panel (WindowOptions.Panel), which shows over full-screen apps and
+takes the keyboard without activating the app. Other platforms report
+true. The fake reports false while OffActiveSpace is set.
+
+diff --git a/internal/darwin/window.go b/internal/darwin/window.go
+index c2f2996..0fa79ef 100644
+--- a/internal/darwin/window.go
++++ b/internal/darwin/window.go
+@@ -753,6 +753,15 @@ func (w *window) IsVisible() bool {
+ 	return sendBool(w.win, "isVisible")
+ }
+ 
++// IsOnActiveSpace asks AppKit, which answers for a hidden window whether
++// ordering it in would put it on the active Space.
++func (w *window) IsOnActiveSpace() bool {
++	if w.popover != 0 {
++		return true // it shows over its parent
++	}
++	return sendBool(w.win, "isOnActiveSpace")
++}
++
+ func (w *window) Focus() {
+ 	if w.host != nil {
+ 		if !w.closed {
+diff --git a/internal/fake/fake.go b/internal/fake/fake.go
+index be967f7..93cede6 100644
+--- a/internal/fake/fake.go
++++ b/internal/fake/fake.go
+@@ -476,6 +476,10 @@ type Window struct {
+ 	OnEval func(js string)
+ 
+ 	surface *Surface
++
++	// OffActiveSpace makes IsOnActiveSpace report false, as macOS does for
++	// a regular app's window on another app's full-screen Space.
++	OffActiveSpace bool
+ }
+ 
+ // Surface returns the window's surface, nil unless it was created with
+@@ -609,6 +613,7 @@ func (w *Window) Show() {
+ func (w *Window) ShowInactive()                      { w.mu.Lock(); w.visible = true; w.mu.Unlock() }
+ func (w *Window) Hide()                              { w.mu.Lock(); w.visible = false; w.mu.Unlock() }
+ func (w *Window) IsVisible() bool                    { w.mu.Lock(); defer w.mu.Unlock(); return w.visible }
++func (w *Window) IsOnActiveSpace() bool              { w.mu.Lock(); defer w.mu.Unlock(); return !w.OffActiveSpace }
+ func (w *Window) Focus()                             { w.H.Focused() }
+ func (w *Window) Blur()                              { w.H.Blurred() }
+ func (w *Window) IsFocused() bool                    { w.mu.Lock(); defer w.mu.Unlock(); return w.focused }
+diff --git a/internal/linux/window.go b/internal/linux/window.go
+index c1b6ac3..ce946ee 100644
+--- a/internal/linux/window.go
++++ b/internal/linux/window.go
+@@ -668,6 +668,10 @@ func (w *window) Hide() {
+ 
+ func (w *window) IsVisible() bool { return gtkWidgetGetVisible(w.win) }
+ 
++// IsOnActiveSpace is true: GTK gives no portable way to tell a window's
++// workspace.
++func (w *window) IsOnActiveSpace() bool { return true }
++
+ func (w *window) Focus() {
+ 	if w.host != nil {
+ 		if !w.closed {
+diff --git a/internal/platform/platform.go b/internal/platform/platform.go
+index ea5e51a..a2b33d5 100644
+--- a/internal/platform/platform.go
++++ b/internal/platform/platform.go
+@@ -428,6 +428,9 @@ type Window interface {
+ 	ShowInactive()
+ 	Hide()
+ 	IsVisible() bool
++	// IsOnActiveSpace reports whether the window is, or would be once
++	// shown, on the workspace the user is on (macOS Spaces).
++	IsOnActiveSpace() bool
+ 	Focus()
+ 	Blur()
+ 	IsFocused() bool
+diff --git a/internal/web/window.go b/internal/web/window.go
+index 24a2387..2ba0e53 100644
+--- a/internal/web/window.go
++++ b/internal/web/window.go
+@@ -167,6 +167,9 @@ func (w *window) Focus()          { w.s.focus() }
+ func (w *window) Blur()           { w.s.input.Call("blur") }
+ func (w *window) IsFocused() bool { return w.focused }
+ 
++// IsOnActiveSpace is true: a page has no workspaces.
++func (w *window) IsOnActiveSpace() bool { return true }
++
+ // SetFullScreen asks the browser to show the window's element on the whole
+ // screen, which it allows while the user acts.
+ func (w *window) SetFullScreen(v bool) {
+diff --git a/internal/windows/window.go b/internal/windows/window.go
+index de2cea2..707b450 100644
+--- a/internal/windows/window.go
++++ b/internal/windows/window.go
+@@ -757,6 +757,10 @@ func (w *window) IsVisible() bool {
+ 	return r != 0
+ }
+ 
++// IsOnActiveSpace is true: a window shows on the virtual desktop the user
++// is on when shown.
++func (w *window) IsOnActiveSpace() bool { return true }
++
+ func (w *window) Focus() {
+ 	if w.host != nil {
+ 		w.focusWebView()
+diff --git a/window.go b/window.go
+index 74cd1f3..cb51941 100644
+--- a/window.go
++++ b/window.go
+@@ -714,6 +714,15 @@ func (w *Window) IsPanel() bool { return w.panel }
+ // IsVisible reports whether the window is shown.
+ func (w *Window) IsVisible() bool { return get(w, platform.Window.IsVisible) }
+ 
++// IsOnActiveSpace reports whether the window is on the workspace the user
++// is on or, hidden, whether showing it would put it there (macOS:
++// NSWindow.isOnActiveSpace). On macOS a regular app's ordinary window is
++// never on another app's full-screen Space, even with
++// SetVisibleOnAllWorkspaces, and activating the app from there switches
++// to a Space with its windows; a panel (WindowOptions.Panel) shows there.
++// Other platforms report true.
++func (w *Window) IsOnActiveSpace() bool { return get(w, platform.Window.IsOnActiveSpace) }
++
+ // Focus focuses the window.
+ func (w *Window) Focus() { w.do(platform.Window.Focus) }
+ 
+diff --git a/window_state_test.go b/window_state_test.go
+index c293ee2..06cb68e 100644
+--- a/window_state_test.go
++++ b/window_state_test.go
+@@ -286,6 +286,23 @@ func TestWindowExtras(t *testing.T) {
+ 	}
+ }
+ 
++// IsOnActiveSpace reports what the platform says: off another app's
++// full-screen Space (macOS), a regular app's ordinary window is not there.
++func TestIsOnActiveSpace(t *testing.T) {
++	w, fw := testWindow(t, WindowOptions{})
++	if !w.IsOnActiveSpace() {
++		t.Error("IsOnActiveSpace = false on the active workspace")
++	}
++	onMain(func() { fw.OffActiveSpace = true })
++	if w.IsOnActiveSpace() {
++		t.Error("IsOnActiveSpace = true off the active workspace")
++	}
++	w.Destroy()
++	if w.IsOnActiveSpace() {
++		t.Error("IsOnActiveSpace = true for a destroyed window")
++	}
++}
++
+ func TestPrintToPDFOptions(t *testing.T) {
+ 	w, fw := testWindow(t, WindowOptions{})
+ 	pdf, err := w.Page().PrintToPDF(PDFOptions{})

@@ -35,6 +35,11 @@ type sessionOverlayActions interface {
 	insertAnswer()
 	copyAnswer()
 	closeAnswer()
+	switchSession(id int)
+	newSession()
+	deleteSession(id int)
+	renameSession(id int)
+	nameSession(id int, name string)
 	noticeAction(action string)
 	toggleLangMenu()
 	chooseLanguage(code string)
@@ -70,6 +75,7 @@ type sessionPillViewState struct {
 	WaitingLabel  string                `json:"waiting_label,omitempty"`
 	SceneText     string                `json:"scene_text,omitempty"`
 	SceneLabel    string                `json:"scene_label,omitempty"`
+	Session       int                   `json:"session,omitempty"` // its number, in SceneText too
 	LiveText      string                `json:"live_text,omitempty"`
 	ElapsedText   string                `json:"elapsed_text"`
 	ThinkingLabel string                `json:"thinking_label,omitempty"`
@@ -77,6 +83,7 @@ type sessionPillViewState struct {
 	SkipTooltip   string                `json:"skip_tooltip,omitempty"`
 	Levels        [session.Bars]float64 `json:"levels"`
 	LiveHint      bool                  `json:"live_hint,omitempty"`
+	LivePreview   bool                  `json:"live_preview,omitempty"` // LiveText is livePreview's: drawn dim
 	Heard         bool                  `json:"heard"`
 	Starting      bool                  `json:"starting"`
 	Waiting       string                `json:"waiting"`
@@ -100,12 +107,15 @@ type sessionNoticeViewState struct {
 // sessionOverlayProjectionInput contains the controller values the projection
 // reads. None of these domain values cross into the view state.
 type sessionOverlayProjectionInput struct {
-	Snapshot      session.Snapshot
-	Mode          overlayMode
-	HideLiveText  bool
-	ShowTime      bool
-	PillNoteID    string
-	PillNoteText  string
+	Snapshot     session.Snapshot
+	Mode         overlayMode
+	HideLiveText bool
+	ShowTime     bool
+	PillNoteID   string
+	PillNoteText string
+	// SessionNumber is the current session's number while there are
+	// several (#4005), else 0: the pill shows it before the scene.
+	SessionNumber int
 	CanThink      bool
 	ThinkingLabel string
 	Notice        *sessionNotice
@@ -150,8 +160,9 @@ func buildSessionPillViewState(translator *i18n.Translator, input sessionOverlay
 		Title:         uitext.KindTitleFor(translator, snapshot.Kind),
 		WorkingLabel:  uitext.WorkingTextFor(translator, snapshot),
 		WaitingLabel:  uitext.WaitTextFor(translator, snapshot),
-		SceneText:     uitext.SceneShort(snapshot),
+		SceneText:     sessionMarked(input.SessionNumber, uitext.SceneShort(snapshot)),
 		SceneLabel:    uitext.SceneLabel(snapshot),
+		Session:       input.SessionNumber,
 		ElapsedText:   clock(snapshot.Elapsed(now)),
 		ThinkingLabel: input.ThinkingLabel,
 		Waiting:       string(snapshot.Waiting),
@@ -161,6 +172,8 @@ func buildSessionPillViewState(translator *i18n.Translator, input sessionOverlay
 		CanThink:      input.CanThink,
 	}
 	state.LiveText, state.LiveHint = pillLineFor(translator, snapshot, now)
+	noted := input.PillNoteText != "" && input.PillNoteID == snapshot.ID && snapshot.State == session.Recording
+	state.LivePreview = !state.LiveHint && !noted && livePreview(snapshot)
 	if state.CanSkip {
 		state.SkipLabel = translator.T("Use transcript")
 		state.SkipTooltip = translator.T("Insert the recognised text without waiting for the language model")
@@ -278,6 +291,22 @@ func liveText(snapshot session.Snapshot) string {
 	return ""
 }
 
+// livePreview says whether liveText is the streaming speech model's
+// Partial: a preview the recognised text may still change, not the
+// Spoken text the language model gets.
+func livePreview(snapshot session.Snapshot) bool {
+	if strings.TrimSpace(snapshot.Partial) == "" {
+		return false
+	}
+	switch snapshot.State {
+	case session.Recording, session.Recognizing:
+		return true
+	case session.Composing, session.Delivering:
+		return strings.TrimSpace(snapshot.Spoken) == ""
+	}
+	return false
+}
+
 // clock shows a duration as m:ss.
 func clock(duration time.Duration) string {
 	seconds := int(duration.Seconds())
@@ -355,7 +384,7 @@ func sessionPillKeyFor(input sessionOverlayProjectionInput, locale string, now t
 	key := sessionPillProjectionKey{
 		sessionID: snapshot.ID, kind: string(snapshot.Kind), state: string(snapshot.State),
 		partial: snapshot.Partial, spoken: snapshot.Spoken, selection: snapshot.Selection, waiting: string(snapshot.Waiting),
-		sceneText: uitext.SceneShort(snapshot), sceneLabel: uitext.SceneLabel(snapshot),
+		sceneText: sessionMarked(input.SessionNumber, uitext.SceneShort(snapshot)), sceneLabel: uitext.SceneLabel(snapshot),
 		pillNoteID: input.PillNoteID, pillNoteText: input.PillNoteText,
 		thinkingLabel: input.ThinkingLabel, locale: locale, mode: input.Mode,
 		hideLiveText: input.HideLiveText, showTime: input.ShowTime,
@@ -406,7 +435,7 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	input := sessionOverlayProjectionInput{
 		Snapshot: a.sess, Mode: mode,
 		HideLiveText: a.prefs.Overlay.HideLiveText, ShowTime: a.prefs.Overlay.ShowTime,
-		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice,
+		PillNoteID: a.pillNote.id, PillNoteText: a.pillNote.text, Notice: a.notice, SessionNumber: a.sessionNumber(),
 	}
 	if input.Mode == ovRecording || input.Mode == ovWorking {
 		input.CanThink = a.pillThinks(input.Mode)

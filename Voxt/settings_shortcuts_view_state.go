@@ -37,23 +37,44 @@ type shortcutPresetPickerViewState struct {
 	Warnings []string                        `json:"warnings"`
 }
 
+type sessionSlotViewState struct {
+	Title    string               `json:"title"`
+	Recorder keyRecorderViewState `json:"recorder"`
+	Problems []string             `json:"problems"`
+}
+
 type settingsShortcutsViewState struct {
 	AccessibilityInstalled bool                           `json:"accessibility_installed"`
 	StrictShortcuts        bool                           `json:"strict_shortcuts"`
+	ReturnFinishes         bool                           `json:"return_finishes"`
 	Preset                 shortcutPresetPickerViewState  `json:"preset"`
 	Rows                   []settingsShortcutRowViewState `json:"rows"`
+	Sessions               []sessionSlotViewState         `json:"sessions"`
+	SessionsOn             bool                           `json:"sessions_on,omitempty"`
+	// SessionsUnsaved: sessions are on with Privacy's history off, so
+	// they end when Voxt quits.
+	SessionsUnsaved bool `json:"sessions_unsaved,omitempty"`
+	// SessionUse says how often the user switched sessions, once they did.
+	SessionUse string `json:"session_use,omitempty"`
 }
 
 type settingsShortcutsStateInput struct {
 	Features               settings.Features
 	FamilyConflicts        []shortcuts.Conflict
 	AccessibilityInstalled bool
+	HelperRecordsKeys      bool
+	KeepHistory            bool
+	SessionSwitches        int
+	SessionReturns         int
 }
 
 func buildSettingsShortcutsViewState(translator *i18n.Translator, input settingsShortcutsStateInput) settingsShortcutsViewState {
 	state := settingsShortcutsViewState{
 		AccessibilityInstalled: input.AccessibilityInstalled,
 		StrictShortcuts:        input.Features.StrictShortcuts,
+		ReturnFinishes:         input.Features.ReturnFinishes,
+		SessionsOn:             input.Features.SessionsOn,
+		SessionsUnsaved:        input.Features.SessionsOn && !input.KeepHistory,
 		Preset:                 buildShortcutPresetPickerViewState(translator, input.Features, input.AccessibilityInstalled, false),
 	}
 	for _, feature := range append(append([]string{}, hotkey.Features...), hotkey.PasteLast, hotkey.CancelID, hotkey.Note) {
@@ -70,6 +91,24 @@ func buildSettingsShortcutsViewState(translator *i18n.Translator, input settings
 			lines := append(slices.Clone(problems[index]), conflictLinesFor(translator, input.FamilyConflicts, feature, index)...)
 			state.Rows = append(state.Rows, buildSettingsShortcutRow(translator, feature, index, &bindings[index], lines))
 		}
+	}
+	sessions := hotkey.Sessions
+	if !input.Features.SessionsOn {
+		sessions = sessions[:len(sessions)-1] // shortcut: the fixtures of before the switch list three; drop this when they are next regenerated
+	}
+	for i, id := range sessions {
+		recorder := buildKeyRecorderViewState(translator, input.HelperRecordsKeys, input.Features.Sessions[i].Keys)
+		if input.Features.Sessions[i].Keys == "" {
+			recorder.DisplayedKeys = uitext.HotkeyGlyphs("") // "—": the slot is off
+		}
+		state.Sessions = append(state.Sessions, sessionSlotViewState{
+			Title:    uitext.FeatureTitleFor(translator, id),
+			Recorder: recorder,
+			Problems: uitext.HotkeyProblemsFor(translator, input.Features, id)[0],
+		})
+	}
+	if input.SessionSwitches > 0 {
+		state.SessionUse = translator.T("Switched sessions %d times, %d of them back to a session with a card. Counted on this Mac only.", input.SessionSwitches, input.SessionReturns)
 	}
 	return state
 }

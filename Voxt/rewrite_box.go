@@ -20,6 +20,10 @@ package main
 // margins, a window manager moves it, and the user's next app covers it.
 // Closing it gives the front back to the app the user was in
 // (giveFrontBack); an insert activates that app first (deliver).
+// Over another app's full screen, where macOS shows no ordinary window of
+// an app with a Dock icon and VoxtNew taking the front would switch the
+// user to a desktop, the card is a panel instead (boxPanel): it shows
+// there and takes the keyboard without activating VoxtNew.
 //
 // A send that fails (a model that takes no images refuses them) brings
 // the card back with the error and everything kept: Enter sends again
@@ -36,6 +40,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/imgconv"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -53,7 +58,7 @@ type rewriteBox struct {
 	frame  mygo.Rectangle
 	target proto.App // the app in front when the box opened
 	// dragged is how far the user moved the card from where it opens
-	// (boxDraggedTo): it keeps that place until it closes.
+	// (boxDraggedTo): showBox restores the shared card position after a close.
 	dragged struct{ x, y int }
 	// raise brings the window in front at the next boxSync: each press of
 	// the Rewrite shortcut on the card (it opens it, sends, asks in it)
@@ -63,6 +68,9 @@ type rewriteBox struct {
 	// session is the recording session's id ("" when it ended); sending
 	// a resend's after a failure.
 	session, sending string
+	// typedFollowUp marks a session that cleared the editor when its
+	// typed follow-up started, so boxKeep keeps only edits after that.
+	typedFollowUp bool
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
 	selection         string
@@ -99,6 +107,7 @@ type rewriteBox struct {
 	showTip   bool
 	win       boxWindow
 	winShown  bool
+	panel     bool // win is a panel, over another app's full screen (boxPanel)
 	style     mygo.VibrancyStyle
 	ui        rewriteBoxLocalUI
 }
@@ -110,6 +119,7 @@ type rewriteBoxViewState struct {
 	// the answer card's content shows above the text box (wall 122).
 	Conversation      bool
 	Card              *sessionCardViewState
+	Sessions          []sessionChipViewState // the session row (#4005)
 	CardSessionID     string
 	CardWidth         int
 	SizeStep          int
@@ -124,6 +134,7 @@ type rewriteBoxViewState struct {
 	Subtitle          string
 	SubtitleError     bool
 	CanSend           bool
+	EnterSends        bool // Enter sends: not while it records with Settings → Shortcuts' Return switch off
 	Limit             bool
 	FocusText         bool
 	ShowTip           bool
@@ -132,6 +143,7 @@ type rewriteBoxViewState struct {
 	Levels            [session.Bars]float64
 	Motion            bool
 	Phase             float64
+	Wave              func(time.Time) layout.Wave // the gliding bars at a time (overlayWave)
 	Radius            float32
 	Alpha             float32
 	Palette           string
@@ -177,6 +189,7 @@ type boxWindow interface {
 	Hide()
 	Destroy()
 	SetVibrancyStyle(mygo.VibrancyStyle)
+	IsOnActiveSpace() bool
 }
 
 // openBox opens the input box and starts the microphone with it (the
@@ -198,7 +211,7 @@ func (a *app) openBox(target proto.App, req session.StartRequest) {
 // showBox shows the box for its session id.
 func (a *app) showBox(target proto.App, id string) {
 	if !a.box.open {
-		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3}
+		a.box = rewriteBox{showTip: !a.prefs.Setup.RewriteBoxTipDismissed && a.prefs.Setup.RewriteBoxOpens < 3, dragged: a.ov.cardDragged}
 		if a.prefs.Setup.RewriteBoxOpens < 3 {
 			a.updateSettings(func(s *settings.Settings) {
 				if s.Setup.RewriteBoxOpens < 3 {
@@ -211,6 +224,7 @@ func (a *app) showBox(target proto.App, id string) {
 	a.box.target, a.box.session = target, id
 	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
 	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
+	a.box.typedFollowUp = false
 	a.box.focusText = true
 	a.boxSync()
 }
@@ -256,11 +270,19 @@ func (a *app) boxAnswered() bool {
 }
 
 // boxKeep keeps the card open for its answer once a session of its ends:
-// the input is emptied for the next follow-up.
+// the sent input is emptied, but text changed during that send stays for
+// the next follow-up.
 func (a *app) boxKeep() {
-	win, winShown, style, area, frame, ui := a.box.win, a.box.winShown, a.box.style, a.box.area, a.box.frame, a.box.ui
+	keepText := a.box.typedFollowUp
+	text, textSegments, nextTextID := a.box.text, a.box.textSegments, a.box.nextTextID
+	win, winShown, panel, style, area, frame, ui := a.box.win, a.box.winShown, a.box.panel, a.box.style, a.box.area, a.box.frame, a.box.ui
 	target, dragged, front := a.box.target, a.box.dragged, a.box.front
-	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
+	ui.segmentText = nil // Segment IDs restart with the emptied input.
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, win: win, winShown: winShown, panel: panel, style: style, area: area, frame: frame, dragged: dragged, front: front, ui: ui}
+	if keepText {
+		a.box.text, a.box.textSegments, a.box.nextTextID = text, textSegments, nextTextID
+		a.box.textSegmentsDirty = true
+	}
 	a.boxShare.reset()
 	a.boxShare.suppressAutomatic(false, false)
 	a.boxGen++
@@ -290,8 +312,9 @@ func (a *app) boxShortcutSend() {
 }
 
 // boxSend is Enter or the shortcut's stop in the box: while it records,
-// it finishes the recording and the session sends; a newly captured window
-// preview waits for one more confirmation. After a send failed, it sends
+// it finishes the recording and the session sends, the window picture
+// with it; a resend's new window picture waits for one more
+// confirmation. After a send failed, it sends
 // the kept instruction, text and pictures again.
 func (a *app) boxSend() {
 	if !a.box.open {
@@ -306,7 +329,11 @@ func (a *app) boxSend() {
 	a.boxShare.clearError() // a failed conversion is confirmed by this send
 	if a.box.session != "" && a.sess.ID == a.box.session {
 		if a.sess.State == session.Recording {
+			// The stop is the send (VX-141): the window picture taken
+			// next goes without waiting for another Enter.
+			a.boxShare.approveReview()
 			a.stopSession()
+			return
 		}
 		if a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0 {
 			a.boxShare.approveReview()
@@ -336,6 +363,7 @@ func (a *app) boxSend() {
 	if a.followUp != "" && a.followUp == a.answer.id {
 		req.Previous, req.Conversation, req.Images = a.answer.turns, a.answer.conv, a.answer.images // still the card's follow-up
 	}
+	a.box.typedFollowUp = false // a resend keeps its original clear-on-end behavior
 	id, n := a.startSessionID(req)
 	if n == nil && id != "" {
 		a.box.sending, a.box.err = id, ""
@@ -369,6 +397,8 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		if s.Spoken != "" {
 			a.box.instruction = s.Spoken
+		} else if s.Raw != "" {
+			a.box.instruction = s.Raw
 		}
 		if s.Selection != "" {
 			a.box.selection = s.Selection
@@ -493,8 +523,10 @@ func (a *app) boxPaste(svc uiServices) bool {
 			switch {
 			case err != nil:
 				res.JPEG, errText = nil, i18n.T("This image could not be read.")
-			case len(res.JPEG) > imgconv.MaxFileBytes:
+			case res.TooLarge || len(res.JPEG) > imgconv.MaxFileBytes:
 				res.JPEG, errText = nil, i18n.T("This image is too large.")
+			case len(res.JPEG) == 0:
+				errText = i18n.T("This image could not be read.")
 			}
 			a.boxConverted(gen, seq, res.JPEG, errText, i18n.T("Clipboard"))
 		})

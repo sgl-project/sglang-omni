@@ -4,13 +4,8 @@
 from collections.abc import Mapping
 from typing import ClassVar
 
-from sglang_omni.config import (
-    EngineStageConfig,
-    FactoryArgs,
-    PipelineConfig,
-    StageConfig,
-)
-from sglang_omni.native_generation import ROUTE_PREFIXES
+from sglang_omni.config import EngineStageConfig, FactoryArgs, StageConfig
+from sglang_omni.native_generation.config import NativeGenerationPipelineConfig
 from sglang_omni.platforms import current_platform
 
 # Measured on an Arc Pro B60: the understanding tower loads 16.33 GiB on a
@@ -20,23 +15,8 @@ from sglang_omni.platforms import current_platform
 XPU_REASONER_GPU_MEMORY_FRACTION = 0.80
 
 
-class Cosmos3PipelineConfig(PipelineConfig):
+class Cosmos3PipelineConfig(NativeGenerationPipelineConfig):
     architecture: ClassVar[str] = "Cosmos3ForConditionalGeneration"
-
-    model_path: str
-    stages: list[StageConfig] = [
-        StageConfig(
-            name="generation",
-            process="generation",
-            factory_path="sglang_omni.native_generation.stage.create_generation_scheduler",
-            allow_child_processes=True,
-            factory=FactoryArgs(),
-            gpu=0,
-            terminal=True,
-            # The stage serves native SGLang's media routes from its own process.
-            http_routes=list(ROUTE_PREFIXES),
-        )
-    ]
 
     def model_post_init(self, __context: object = None) -> None:
         reasoner = next(

@@ -12,6 +12,14 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
+func (r *run) cleanUpFirst(text string) cleanupOutput {
+	request, ok := r.currentCleanupRequest()
+	if !ok {
+		return cleanupOutput{text: text, completedAt: r.now()}
+	}
+	return r.cleanUpFirstContext(text, request)
+}
+
 // TestAliases: with the dictionary on, its aliases become their terms
 // before the clean-up, also without a language model or with the
 // glossary and the hints off; the history keeps the text as recognised.
@@ -161,9 +169,38 @@ func TestOnlyTheCleanedText(t *testing.T) {
 	}
 }
 
-// TestCleanupHasNoExampleTurn (#4228): Transcribe does not send a built-in
-// example that a model can mistake for the text to clean. A model that copies
-// an earlier assistant answer has no example to copy in either prompt path.
+// TestCleanedTextWithoutCommentary (#4086): a model that ignores the
+// <output> contract thinks out loud without any tags — its deliberation
+// about recognition ambiguities and stutters, then the cleaned sentence.
+// Only the cleaned text is streamed into the card, shown and inserted.
+func TestCleanedTextWithoutCommentary(t *testing.T) {
+	text := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不不需要再等一个 sprint。"
+	cleaned := "我们周五要交方案初稿。就是虽然说时间有点紧，但我觉得不需要再等一个 sprint。"
+	// The reply has the reported shape: deliberation in English with
+	// quoted input fragments, blank lines, then the cleaned text.
+	deliberation := "Let me look at this again. \"初稿\" might be a mishearing - I want to double-check. The speaker could mean \"初稿\" as in a first draft, or it might be something else entirely. I will keep it as written since I cannot decide.\n\nAlso \"不不需要\" reads like a repeated word - \"不，不需要\" should become \"不需要\".\n\n"
+	model := &fakeLLM{text: deliberation + cleaned, chunk: 3, pause: 5 * time.Millisecond}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	h.speak(h.start(), 5)
+	end := h.rec.wait(t)
+	if end.Result != cleaned {
+		t.Errorf("result %q", end.Result)
+	}
+	for _, s := range h.rec.all() {
+		// The first sentence may show while it is typed; once it
+		// completes and shows itself foreign, nothing of the
+		// deliberation streams.
+		if strings.Contains(s.Draft, "again.") || strings.Contains(s.Draft, "mishearing") ||
+			strings.Contains(s.Draft, "repeated word") || strings.Contains(s.Draft, "double-check") {
+			t.Errorf("a draft with the deliberation: %q", s.Draft)
+		}
+	}
+}
+
+// note (luojiaxuan): TestCleanupHasNoExampleTurn (#4228): Transcribe's example
+// is the last part of the system prompt, never an earlier conversation turn
+// that a short dictation could take as the text to rewrite. A model that
+// copies an earlier assistant answer has none to copy in either prompt path.
 func TestCleanupHasNoExampleTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name, main, text, prompt, example, cleanup string
@@ -185,13 +222,12 @@ func TestCleanupHasNoExampleTurn(t *testing.T) {
 			if len(reqs) != 1 || len(reqs[0].Messages) != 2 {
 				t.Fatalf("requests %+v", reqs)
 			}
-			for _, message := range reqs[0].Messages {
-				if strings.Contains(message.Content, tc.example) || message.Role == "assistant" {
-					t.Errorf("an example remains in the request: %+v", message)
-				}
+			system, user := reqs[0].Messages[0], reqs[0].Messages[1]
+			if system.Role != "system" || user.Role != "user" || strings.Contains(user.Content, tc.example) {
+				t.Errorf("an example turn in the request: %+v", reqs[0].Messages)
 			}
-			if !strings.Contains(reqs[0].Messages[0].Content, tc.cleanup) {
-				t.Error("removing the example also removed the cleanup rules")
+			if !strings.Contains(system.Content, tc.cleanup) || !strings.Contains(system.Content, tc.example) {
+				t.Error("the system prompt lacks the cleanup rules or the example")
 			}
 		})
 	}

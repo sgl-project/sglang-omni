@@ -295,7 +295,28 @@ const (
 	Note = "note"
 	// Meeting is Features.Meeting's binding id (dev builds).
 	Meeting = "meeting"
+	// Session1 … Session3 are the binding ids of Features.Sessions: a
+	// tap switches to session 1, 2 or 3 of the list, when it exists
+	// (#4005).
+	Session1 = "session-1"
+	Session2 = "session-2"
+	Session3 = "session-3"
+	// SessionNext is the binding id of Features.Sessions' last entry: a
+	// tap switches to the session after the current one, around.
+	SessionNext = "session-next"
 )
+
+// Sessions lists the session bindings' ids as Features.Sessions holds
+// their shortcuts: the slots in slot order, then SessionNext.
+var Sessions = []string{Session1, Session2, Session3, SessionNext}
+
+// SessionSlot is the index of a session binding id in Sessions (the slot
+// it switches to, 0-based; SessionNext comes after the slots), false for
+// any other id.
+func SessionSlot(feature string) (int, bool) {
+	i := slices.Index(Sessions, feature)
+	return i, i >= 0
+}
 
 // Features lists the three features in the settings' order.
 var Features = []string{Transcribe, Translate, Rewrite}
@@ -303,10 +324,13 @@ var Features = []string{Transcribe, Translate, Rewrite}
 // ID is a feature binding's id: "transcribe/0".
 func ID(feature string, i int) string { return feature + "/" + strconv.Itoa(i) }
 
-// ParseID splits a binding id: ("transcribe", 0, true); PasteLast and
-// Note are (id, 0, true); "cancel" and others are false.
+// ParseID splits a binding id: ("transcribe", 0, true); PasteLast, Note
+// and the session slots are (id, 0, true); "cancel" and others are false.
 func ParseID(id string) (feature string, index int, ok bool) {
 	if id == PasteLast || id == Note || id == Meeting {
+		return id, 0, true
+	}
+	if _, ok := SessionSlot(id); ok {
 		return id, 0, true
 	}
 	f, n, found := strings.Cut(id, "/")
@@ -355,6 +379,12 @@ func HotkeysOf(f settings.Features, feature string) []settings.Hotkey {
 	case Meeting:
 		return f.Meeting.Hotkeys
 	}
+	if slot, ok := SessionSlot(feature); ok {
+		if !f.SessionsOn || f.Sessions[slot].Keys == "" {
+			return nil
+		}
+		return []settings.Hotkey{f.Sessions[slot]}
+	}
 	return f.Transcribe.Hotkeys
 }
 
@@ -373,8 +403,9 @@ type Plan struct {
 	// while nothing records. Nil when it is off or clashes with an
 	// earlier binding.
 	Cancel *proto.HotkeyBinding
-	// Finish is the fixed Return binding that stops a Transcribe
-	// recording. Configure includes it only while active.
+	// Finish is the fixed Return binding that stops a Transcribe,
+	// Translate or Rewrite recording (features.returnFinishes). Configure
+	// includes it only while active.
 	Finish *proto.HotkeyBinding
 	// Carbon are the bindings that work without Accessibility, through
 	// MyGo's Carbon shortcuts: keys with ⌃⌥⇧⌘ (no fn, no sides). They
@@ -382,9 +413,10 @@ type Plan struct {
 	Carbon []Carbon
 }
 
-// Build turns the shortcuts of the features in enabled (and PasteLast
-// and Note) into bindings, in the settings' order (Transcribe, Translate,
-// Rewrite, PasteLast, Note), and Features.Cancel into the plan's cancel shortcut (a
+// Build turns the shortcuts of the features in enabled (and PasteLast,
+// Note and the session slots) into bindings, in the settings' order
+// (Transcribe, Translate, Rewrite, PasteLast, Note, Sessions), and
+// Features.Cancel into the plan's cancel shortcut (a
 // tap, judged only while active). Hotkeys that do not parse are left out
 // (Check reports them); so is a later duplicate of the same keys and
 // behaviour.
@@ -427,6 +459,11 @@ func Build(f settings.Features, enabled []string) Plan {
 	}
 	if f.Note.Keys != "" && !f.IsHidden(settings.HideNotes) {
 		add(Note, f.Note, proto.BehaviorTap)
+	}
+	for i, id := range Sessions {
+		if f.SessionsOn && f.Sessions[i].Keys != "" {
+			add(id, f.Sessions[i], proto.BehaviorTap)
+		}
 	}
 	if slices.Contains(enabled, Meeting) {
 		for i, h := range f.Meeting.Hotkeys {

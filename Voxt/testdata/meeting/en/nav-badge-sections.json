@@ -25,24 +25,6 @@
         "title": "Features",
         "pages": [
           {
-            "path": "/transcribe",
-            "title": "Transcribe",
-            "keys": "⌘3",
-            "selected": false
-          },
-          {
-            "path": "/translate",
-            "title": "Translate",
-            "keys": "⌘4",
-            "selected": false
-          },
-          {
-            "path": "/rewrite",
-            "title": "Rewrite",
-            "keys": "⌘5",
-            "selected": false
-          },
-          {
             "path": "/meetings",
             "title": "Meetings",
             "selected": false
@@ -63,6 +45,11 @@
             "path": "/dictionary",
             "title": "Dictionary",
             "badge": "2",
+            "selected": false
+          },
+          {
+            "path": "/snippets",
+            "title": "Snippets",
             "selected": false
           }
         ]

@@ -16,6 +16,8 @@ type settingsAppearanceLocalUI struct {
 	scale        int
 	sidebar      int
 	reduceMotion bool
+	opening      bool
+	openingSpeed float64 // the speed slider's stop, OpeningLength
 
 	colorPalette         ui.Color // the picker's colour
 	colorPaletteOf       string   // the saved palette colorPalette was last set from
@@ -45,6 +47,43 @@ func appearanceSettings(c *ui.Context, state settingsAppearanceViewState, action
 			actions.setReduceMotion(local.reduceMotion)
 		}
 	})
+	// Reduce motion skips the opening, so its switch rests, off, while it
+	// is on (state.Opening).
+	settingRow(c, "opening", i18n.T("Play the opening at start"), "", func() {
+		sw := ui.Switch(c.Key("opening-switch"), &local.opening).Label(i18n.T("Play the opening at start")).Disabled(state.ReduceMotion)
+		if sw.Changed() {
+			actions.setOpening(local.opening)
+		}
+	})
+	// Its speed shows only while it plays: a slider of three stops from
+	// the turtle to the rabbit, as macOS's key repeat; a click on either
+	// animal (Slower, Faster to a screen reader; its seconds as the
+	// tooltip) goes to its end.
+	if state.Opening && len(state.OpeningLengthValues) > 0 {
+		settingRow(c, "opening-speed", i18n.T("Opening speed"), "", func() {
+			t := c.Theme()
+			last := len(state.OpeningLengthValues) - 1
+			choose := func(stop int) {
+				local.openingSpeed = float64(stop)
+				actions.setOpeningLength(state.OpeningLengthValues[stop])
+			}
+			ui.Row(c).Gap(px(t, sp1)).AlignItems(ui.Center).Children(func() {
+				if iconButton(c.Key("opening-slow"), icons.OpeningSlow, i18n.T("Slower")).Tooltip(state.OpeningLengthOptions[0]).Clicked() {
+					choose(0)
+				}
+				slider := ui.Slider(c.Key("opening-speed-slider"), &local.openingSpeed, 0, float64(last)).Step(1).
+					Label(i18n.T("Opening speed")).Width(px(t, 64)).Shrink(0)
+				stop := min(max(int(local.openingSpeed+.5), 0), last)
+				slider.Tooltip(state.OpeningLengthOptions[stop])
+				if slider.Changed() {
+					choose(stop)
+				}
+				if iconButton(c.Key("opening-fast"), icons.OpeningFast, i18n.T("Faster")).Tooltip(state.OpeningLengthOptions[last]).Clicked() {
+					choose(last)
+				}
+			})
+		})
+	}
 }
 
 // sidebarRow chooses the sidebar's layout: automatic, names and icons,

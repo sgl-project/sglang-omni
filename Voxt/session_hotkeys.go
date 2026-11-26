@@ -7,8 +7,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -64,7 +64,9 @@ func (a *app) strictFeature() string {
 // event acts only on the card that was visible when the helper read its id.
 func (a *app) cardHotkeyGeneration() uint64 {
 	identity := ""
-	if a.overlayModeNow() == ovAnswer {
+	// A title being typed takes c and r, and a session's empty card has
+	// nothing for them to act on.
+	if a.overlayModeNow() == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) {
 		identity = a.sess.ID + "/draft"
 		if a.answer.open {
 			identity = a.answer.id + "/open"
@@ -98,11 +100,15 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
+	if e.Binding == proto.HotkeyCancel && a.renaming {
+		a.endRename() // the cancel shortcut ends the typing first, then closes the card
+		return
+	}
 	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgVisible() && a.bgSess.State.Live() {
 		// The backgrounded answer still streams (the session beside it
 		// ended): stop a partial answer, cancel one with no text yet.
 		if a.cardSnapshot().CanStop() {
@@ -156,6 +162,17 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
+		if n, ok := hotkey.SessionSlot(d.Feature); ok {
+			// Session 1, 2 or 3 of the list, or the next one, around (#4005).
+			list := a.sessions()
+			if d.Feature == hotkey.SessionNext {
+				n = (a.slotIndex(a.slot) + 1) % len(list)
+			}
+			if n < len(list) {
+				a.showSession(list[n].id)
+			}
+			return
+		}
 		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {
 			return // only Transcribe starts beside a streaming answer (wall 116)
 		}
@@ -227,11 +244,12 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	}
 }
 
-// returnFinishes is whether Return finishes the session: a Transcribe
-// recording (not a note) with the setting on. The plan binds Finish then,
-// and routing reads it for a paste-last tap on the same key.
+// returnFinishes is whether Return finishes the session: a Transcribe,
+// Translate or Rewrite recording (not a note) with Settings → Shortcuts'
+// switch on. The plan binds Finish then, and routing reads it for a
+// paste-last tap on the same key.
 func (a *app) returnFinishes() bool {
-	return a.sess.State == session.Recording && a.sess.Kind == store.KindTranscribe && !a.sess.Note && a.prefs.Features.Transcribe.ReturnFinishes
+	return a.sess.State == session.Recording && !a.sess.Note && a.prefs.Features.ReturnFinishes
 }
 
 // hotkeyPlan is what the settings' shortcuts become.
@@ -263,7 +281,11 @@ func (a *app) syncHotkeys() {
 		// The card's single-letter keys (#4127) bind only while it shows.
 		params.Bindings = append(slices.Clone(params.Bindings), hotkey.CardBindings(cardGeneration, plan.Cancel)...)
 	}
-	key := fmt.Sprintf("%+v", params)
+	// The JSON, not %+v: that prints the address of Cancel (a new one from
+	// each plan), so every call looked changed, counted the generation up
+	// and dropped the events the helper had decided under the last one.
+	raw, _ := json.Marshal(params) // plain data: cannot fail
+	key := string(raw)
 	if key == a.hotkeysSent {
 		return
 	}

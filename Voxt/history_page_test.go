@@ -352,8 +352,8 @@ func TestHistoryEmpty(t *testing.T) {
 		t.Fatalf("no empty state: %q", firstTexts(tt))
 	}
 	click(t, tt, "Set up Transcribe")
-	if a.currentPage() != "transcribe" {
-		t.Errorf("page = %s", a.currentPage())
+	if a.shownPath() != "/settings/transcribe" {
+		t.Errorf("page = %s", a.shownPath())
 	}
 }
 

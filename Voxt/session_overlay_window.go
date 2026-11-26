@@ -14,31 +14,39 @@ type overlayState struct {
 	overlayTranscript transcriptPreview
 	bubbleTranscripts []*transcriptPreview
 	ov                struct {
-		win     *mygo.Window
-		shown   bool
-		visible bool
-		mode    overlayMode
-		w, h    int
-		frame   mygo.Rectangle
-		live    struct {
+		win *mygo.Window
+		// other is the window kept hidden: the ordinary one while win is
+		// the panel shown over another app's full screen, or that panel
+		// (overlayOnSpace); otherFront is its overlayFront.
+		other      *mygo.Window
+		otherFront overlayFront
+		panel      bool // win is the panel
+		shown      bool
+		visible    bool
+		mode       overlayMode
+		w, h       int
+		frame      mygo.Rectangle
+		live       struct {
 			id string
 			w  int
 		}
-		textW       map[ovSized]ovMeasured
-		area        mygo.Rectangle
-		dragged     struct{ x, y int }
-		style       mygo.VibrancyStyle
-		passThrough bool
-		reveal      bool
-		fade        int
-		epoch       time.Time
-		native      bool
-		front       overlayFront // a preview floats; the answer card takes the front
-		stream      streamReveal
-		projection  sessionOverlayProjection
-		layout      sessionOverlayLayout
-		lang        langMenuState
-		ui          sessionOverlayLocalUI
+		textW          map[ovSized]ovMeasured
+		area           mygo.Rectangle
+		dragged        struct{ x, y int }
+		cardDragged    struct{ x, y int }
+		cardDraggedSet bool
+		style          mygo.VibrancyStyle
+		passThrough    bool
+		reveal         bool
+		fade           int
+		epoch          time.Time
+		native         bool
+		front          overlayFront // a preview floats; the answer card takes the front
+		stream         streamReveal
+		projection     sessionOverlayProjection
+		layout         sessionOverlayLayout
+		lang           langMenuState
+		ui             sessionOverlayLocalUI
 	}
 	// pill is the session pill's own window, for while the answer card
 	// holds the overlay window (wall 116, session_pill_window.go).
@@ -94,8 +102,9 @@ func (a *app) overlayModeNow() overlayMode {
 	live := snapshot.State.Live() && !snapshot.Try
 	// A Transcribe leaves the card on screen (wall 116): the card keeps
 	// the overlay window, the session's pill gets its own (pillModeNow).
-	haveCard := a.answer.open || a.bgID != ""
-	card := haveCard && (!live || a.cardSessionLive() || a.bgID != "" || snapshot.Kind == store.KindTranscribe)
+	// A session without a card keeps the empty card, for its session row.
+	haveCard := a.answer.open || a.bgVisible() || a.emptyCard && !a.box.open
+	card := haveCard && (!live || a.cardSessionLive() || a.bgVisible() || snapshot.Kind == store.KindTranscribe)
 	switch {
 	case a.notice != nil && a.notice.over:
 		return ovNotice
@@ -141,8 +150,98 @@ func (a *app) pillModeNow(main overlayMode) overlayMode {
 	return ovHidden
 }
 
+// sessionOverlayWindowOptions leaves StateKey empty because the pill and
+// card share this window; restored bounds would move the next mode.
+func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOptions {
+	opts := cardWindowOptions("Voxt", frame.Width, frame.Height, content)
+	opts.Vibrancy = mygo.VibrancyHUD
+	opts.X, opts.Y = frame.X, frame.Y
+	return opts
+}
+
+// newOverlayWin creates the overlay window at frame: an ordinary one, or
+// a panel (overlayOnSpace).
+func (a *app) newOverlayWin(frame mygo.Rectangle, panel bool) *mygo.Window {
+	content := sessionOverlayContent(
+		func() *sessionOverlayViewState {
+			a.refreshSessionOverlay(time.Now())
+			return &a.ov.projection.view
+		},
+		func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
+		a,
+		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
+		func() sessionOverlayAnimation {
+			return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave()}
+		},
+		a.postSessionOverlayMeasurements,
+		func() { a.ov.reveal = false; a.post(a.revealOverlay) },
+	)
+	opts := sessionOverlayWindowOptions(frame, hudContent(content))
+	opts.Panel = panel
+	win := mygo.NewWindow(opts)
+	win.OnMove(func() { a.post(a.overlayDragged) })
+	return win
+}
+
+// overlayOnSpace makes the overlay window, about to show, one that shows
+// on the user's Space (spaceSwap): over another app's full screen, where
+// macOS shows no ordinary window of an app with a Dock icon, a panel, as
+// the Rewrite card's (boxPanel). It reports whether it changed windows.
+// Main thread.
+func (a *app) overlayOnSpace(frame mygo.Rectangle) bool {
+	show, keep, panel := spaceSwap(a.ov.win, a.ov.other, a.ov.panel, func() *mygo.Window {
+		win := a.newOverlayWin(frame, true)
+		win.SetIgnoreMouseEvents(a.ov.passThrough)
+		return win
+	})
+	if show == a.ov.win {
+		return false
+	}
+	a.closeOverlayPreviews() // they are the hidden window's
+	a.overlayTranscript, a.bubbleTranscripts = transcriptPreview{}, nil
+	a.ov.win, a.ov.other, a.ov.panel = show, keep, panel
+	a.ov.front, a.ov.otherFront = a.ov.otherFront, a.ov.front
+	if panel {
+		a.ov.front.front.floats = true // VoxtNew never comes in front with it
+	}
+	show.SetIgnoreMouseEvents(a.ov.passThrough)
+	if a.ov.style != (mygo.VibrancyStyle{}) {
+		show.SetVibrancyStyle(a.ov.style)
+	}
+	return true
+}
+
+// spaceSwap picks the window to show on the user's Space: the ordinary
+// one, or, off it (another app's full screen), the panel, which newPanel
+// creates the first time. cur is shown last, other kept hidden, and
+// panel says cur is the panel. It returns them for this show.
+func spaceSwap[W interface {
+	comparable
+	IsOnActiveSpace() bool
+}](cur, other W, panel bool, newPanel func() W) (show, keep W, isPanel bool) {
+	ordinary := cur
+	if panel {
+		ordinary = other // a panel is on every Space: ask the ordinary one
+	}
+	want := !ordinary.IsOnActiveSpace()
+	if want == panel {
+		return cur, other, panel
+	}
+	var none W
+	if other == none {
+		other = newPanel()
+	}
+	return other, cur, want
+}
+
+func (a *app) saveCardDrag() {
+	a.ov.cardDragged = a.ov.dragged
+	a.ov.cardDraggedSet = true
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	a.keepSessions() // session_keep.go: every change of the sessions ends here
 	if a.box.open {
 		defer a.boxSync() // the Rewrite card draws the answer card's state
 	}
@@ -151,6 +250,14 @@ func (a *app) overlaySync() {
 	mode := a.overlayModeNow()
 	defer a.pillOverlaySync(mode) // the session pill's own window (wall 116)
 	was := a.ov.shown
+	if mode == ovAnswer && a.ov.mode != ovAnswer && a.ov.cardDraggedSet {
+		a.ov.dragged = a.ov.cardDragged
+	} else if mode != ovAnswer && a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
+	if (a.ov.mode == ovRecording || a.ov.mode == ovWorking) && (mode == ovHidden || mode == ovNotice) && !a.ov.cardDraggedSet {
+		a.saveCardDrag()
+	}
 	if mode == ovHidden {
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
@@ -189,25 +296,15 @@ func (a *app) overlaySync() {
 		return
 	}
 	if a.ov.win == nil {
-		content := sessionOverlayContent(
-			func() *sessionOverlayViewState {
-				a.refreshSessionOverlay(time.Now())
-				return &a.ov.projection.view
-			},
-			func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
-			a,
-			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
-			func() sessionOverlayAnimation {
-				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()}
-			},
-			a.postSessionOverlayMeasurements,
-			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
-		)
-		opts := cardWindowOptions("Voxt", frame.Width, frame.Height, hudContent(content))
-		opts.Vibrancy = mygo.VibrancyHUD
-		a.ov.win = mygo.NewWindow(opts)
-		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
+		a.ov.win = a.newOverlayWin(frame, false)
 		a.ov.passThrough = false
+		a.overlayDraggedAt(a.ov.win.ContentBounds())
+		frame = a.overlayFrame(width, height)
+		a.ov.frame = frame
+		moved = true
+	}
+	if !was && a.overlayOnSpace(frame) {
+		moved = true
 	}
 	a.syncPassThrough()
 	if !was {
@@ -276,7 +373,18 @@ func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	} else {
 		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	}
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 	a.syncLangMenu()
+}
+
+func (a *app) overlayDraggedAt(bounds mygo.Rectangle) {
+	x, y := layout.Place(a.ov.area, a.prefs.Overlay, bounds.Width, bounds.Height)
+	a.ov.dragged.x, a.ov.dragged.y = bounds.X-x, bounds.Y-y
+	if a.ov.mode == ovAnswer {
+		a.saveCardDrag()
+	}
 }
 
 func (a *app) syncPassThrough() {
@@ -392,12 +500,31 @@ func (a *app) closeOverlay() {
 		a.ov.win = nil
 		a.ov.front = overlayFront{} // a new window starts above the others
 	}
+	if a.ov.other != nil {
+		a.ov.other.Destroy()
+		a.ov.other, a.ov.otherFront = nil, overlayFront{}
+	}
+	a.ov.panel = false
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false
 }
 
 func (a *app) overlayMotion() bool { return a.overlayNative() && !a.prefs.Appearance.ReduceMotion }
+
+// overlayWave gives the waveform's bars at a time, gliding between the
+// levels as they come (a.wave, fed in sessionChanged as they arrive), for
+// the waveform's drawing to ask at every frame it paints; nil when nothing
+// records or nothing moves, and the bars are the levels' own. It feeds the
+// player too, which changes nothing for levels it has and shows a snapshot
+// set without sessionChanged (the overlay's check) as it is.
+func (a *app) overlayWave() func(time.Time) layout.Wave {
+	if !a.overlayMotion() || a.sess.State != session.Recording {
+		return nil
+	}
+	a.wave.Feed(a.sess.ID, a.sess.Levels, a.sess.LevelCount, time.Now())
+	return a.wave.Bars
+}
 
 func (a *app) overlayPhase() float64 {
 	if !a.overlayMotion() || a.ov.epoch.IsZero() {

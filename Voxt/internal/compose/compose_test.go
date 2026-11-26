@@ -151,13 +151,21 @@ func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	custom := base.System + "\nUse British spelling."
+	custom := strings.Replace(base.System, "so never output it", "do not reproduce it", 1) + "\nUse British spelling."
 	edited, err := Build(Input{Task: Transcribe, Cleanup: true, MainLanguage: "en", TaskPrompt: custom, Text: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(edited.System, custom) || strings.Count(edited.System, "Basic cleanup:") != 1 || len(edited.History) != 0 {
 		t.Errorf("edited built-in prompt changed or duplicated cleanup:\n%s", edited.System)
+	}
+	// note (luojiaxuan): and the example, which closes the built-in prompt.
+	if n := strings.Count(edited.System, "Can you send the weekly report to Anna before 5?"); n != 1 {
+		t.Errorf("the example appears %d times:\n%s", n, edited.System)
+	}
+	precedence := "Custom rules and basic cleanup:\n- The custom rules above take precedence over basic cleanup when they request translation or reformatting."
+	if !strings.HasSuffix(edited.System, precedence) {
+		t.Errorf("edited built-in prompt lacks the final custom-rule precedence layer:\n%s", edited.System)
 	}
 }
 
@@ -166,7 +174,7 @@ func TestLayersAndProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output" {
+	if got := strings.Join(out.Layers, " "); got != "transcribe input cleanup structure task output example" {
 		t.Errorf("layers %q", got)
 	}
 	if out.Profile() != "transcribe:cleanup+structure" {
@@ -428,6 +436,9 @@ func TestUntranslated(t *testing.T) {
 		{"我们周五发布", "我们周五发布 Release", "en", true},
 		{"我们周五发布", "我们在周五发版", "en", true}, // still Chinese
 		{"我们周五发布", "We ship on Friday.", "en", false},
+		{"<指令>你好</指令>", "<指令>Hello</指令>", "en", false},
+		{"<指令>你好</指令>", "<指令>你好</指令>", "en", true},
+		{"<指令>你好</指令>", "<指令>你好 Hello</指令>", "en", true},
 		{"我们周五发布", "我们周五发布", "zh-Hans", false},       // already Chinese: nothing to redo
 		{"Good morning", "Good morning", "en", true}, // Latin into Latin: only the same text
 		{"Good morning", "Bonjour", "fr", false},
@@ -668,6 +679,32 @@ func TestTranslateBackLine(t *testing.T) {
 			}
 		} else if !strings.Contains(sys, tc.want) {
 			t.Errorf("%+v: no %q in:\n%s", tc, tc.want, sys)
+		}
+	}
+}
+
+// TestSnippetsRule: marked triggers come with the rule to keep them,
+// with the built-in prompt and with the user's own; without marks the
+// prompt is as before.
+func TestSnippetsRule(t *testing.T) {
+	for _, set := range []struct{ main, rule string }{{"en", "Text between ⟦ and ⟧"}, {"zh", "⟦ 和 ⟧ 之间"}} {
+		for _, custom := range []string{"", "Keep my words; add nothing."} {
+			in := Input{Task: Transcribe, Cleanup: true, MainLanguage: set.main, TaskPrompt: custom, Text: "send it to ⟦my email⟧"}
+			plain, err := Build(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.Snippets = true
+			marked, err := Build(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(plain.System, set.rule) || strings.Count(marked.System, set.rule) != 1 {
+				t.Errorf("%s %q: without %v, with %v", set.main, custom, strings.Contains(plain.System, set.rule), strings.Count(marked.System, set.rule))
+			}
+			if got := strings.Replace(marked.System, "\n"+strings.TrimSpace(template(TemplateSet(set.main), "snippets")), "", 1); custom == "" && got != plain.System {
+				t.Errorf("%s: the rule changed more than its line:\n%s", set.main, marked.System)
+			}
 		}
 	}
 }

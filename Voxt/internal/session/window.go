@@ -23,7 +23,7 @@ const windowTimeout = 3 * time.Second
 func (r *run) shootWindow() {
 	cfg := r.m.cfg
 	t := r.req.Target
-	noLLM := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.Enhance
+	noLLM := r.req.Kind == store.KindTranscribe && !r.windowCleanup()
 	if r.shot != nil || !r.settings.Privacy.SendWindow || noLLM || cfg.Window == nil || r.req.Try || t.PID == 0 || t.PID == cfg.Self ||
 		len(r.req.Images) > 0 || r.clip != nil {
 		return
@@ -60,8 +60,14 @@ func (r *run) readClipboardImage() {
 		r.logf("info", "the clipboard's picture goes to the language model (%d bytes)", len(jpeg))
 	}
 	r.clip = jpeg
-	if jpeg != nil {
-		r.previewImage("clipboard", jpeg)
+}
+
+// previewClip shows the clipboard's picture in the box once it is known
+// to go with the request: a selection drops it (readSelection), and the
+// box never shows a picture that will not be sent (VX-141).
+func (r *run) previewClip() {
+	if r.clip != nil {
+		r.previewImage("clipboard", r.clip)
 	}
 }
 
@@ -70,5 +76,15 @@ func (r *run) readClipboardImage() {
 func (r *run) previewImage(kind string, jpeg []byte) {
 	r.m.update(r, func(s *Snapshot) {
 		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+	})
+}
+
+func (r *run) previewImageContext(ctx context.Context, kind string, jpeg []byte) {
+	r.m.updateIf(r, func(s *Snapshot) bool {
+		if ctx.Err() != nil || r.ctx.Err() != nil || !r.cleanupDecisionOpenLocked() {
+			return false
+		}
+		s.ImagePreviewKind, s.ImagePreview = kind, jpeg
+		return true
 	})
 }

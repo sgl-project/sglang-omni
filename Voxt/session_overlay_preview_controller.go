@@ -20,12 +20,18 @@ func (a *app) overlayTranscriptResult(context *uiContext, request sessionOverlay
 		dark: true, streaming: request.streaming,
 	}
 	if request.blockIndex < 0 {
+		input.rightPadding = layout.CardInset // the page's scroller, as the native body's
 		a.overlayTranscript.restyle = a.overlayRestyle
 		preview := a.overlayTranscript.place(context, a.ov.win, input, request.bodyHeight, request.bodyHeight)
 		if !preview.Valid() {
 			return false
 		}
-		preview.Margin(layout.CardRuleGap, layout.CardInset, 0, 0)
+		// The page fills the card's body, not only its last measured text:
+		// the card grows a line ahead of a streaming answer
+		// (streamHeadroom), and a page as high as its text had no room for
+		// the next line, so it scrolled to its end and flashed its scroll
+		// bar until the card caught up (#3836 feedback).
+		preview.Height(request.bodyHeight).Margin(layout.CardRuleGap, -layout.CardInset, 0, 0)
 		return true
 	}
 	for len(a.bubbleTranscripts) <= request.blockIndex {

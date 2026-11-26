@@ -108,10 +108,10 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 			if got := PartialClean(tc.text, tc.input); got != tc.text {
 				t.Errorf("PartialClean(%q, %q) = %q", tc.text, tc.input, got)
 			}
-			if got := CleanOutput(tc.text, tc.input); got != tc.text {
+			if got := CleanOutput(tc.text, tc.input, false); got != tc.text {
 				t.Errorf("CleanOutput(%q, %q) = %q", tc.text, tc.input, got)
 			}
-			if got := PartialOutput(tc.text, tc.input); got != tc.text {
+			if got := PartialOutput(tc.text, tc.input, false); got != tc.text {
 				t.Errorf("PartialOutput(%q, %q) = %q", tc.text, tc.input, got)
 			}
 			structured := `{"title":"T","content":"` + tc.text + `"}`
@@ -199,8 +199,8 @@ func TestAnswerCleanupStripsReasoningBeforeFinalAnswer(t *testing.T) {
 	for name, got := range map[string]string{
 		"Clean":         Clean(reasoning, "x"),
 		"PartialClean":  PartialClean(reasoning, "x"),
-		"CleanOutput":   CleanOutput(reasoning, "x"),
-		"PartialOutput": PartialOutput(reasoning, "x"),
+		"CleanOutput":   CleanOutput(reasoning, "x", false),
+		"PartialOutput": PartialOutput(reasoning, "x", false),
 	} {
 		if strings.Contains(got, "checks the request") {
 			t.Errorf("%s preserved the reasoning as prose: %q", name, got)
@@ -332,10 +332,10 @@ func TestAnswerCleanupKeepsProseControlTokens(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanupWithPrevious(t, tc.text, "history", tc.want)
-			if got := CleanOutput(tc.text, "x"); got != tc.want {
+			if got := CleanOutput(tc.text, "x", false); got != tc.want {
 				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
 			}
-			if got := PartialOutput(tc.text, "x"); got != tc.want && got != tc.want+" " {
+			if got := PartialOutput(tc.text, "x", false); got != tc.want && got != tc.want+" " {
 				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
 			}
 		})
@@ -379,10 +379,10 @@ func TestAnswerCleanupKeepsEverydayControlTokenProse(t *testing.T) {
 			if tc.previous != "" {
 				input = tc.previous
 			}
-			if got := CleanOutput(tc.text, input); got != tc.want {
+			if got := CleanOutput(tc.text, input, false); got != tc.want {
 				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
 			}
-			if got := PartialOutput(tc.text, input); got != tc.want && got != tc.want+" " {
+			if got := PartialOutput(tc.text, input, false); got != tc.want && got != tc.want+" " {
 				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
 			}
 		})
@@ -398,10 +398,10 @@ func TestAnswerCleanupDoesNotPreserveReasoningAsProse(t *testing.T) {
 		if got := PartialClean(text, "x"); got != want {
 			t.Errorf("PartialClean(%q) = %q, want %q", text, got, want)
 		}
-		if got := CleanOutput(text, "x"); got != want {
+		if got := CleanOutput(text, "x", false); got != want {
 			t.Errorf("CleanOutput(%q) = %q, want %q", text, got, want)
 		}
-		if got := PartialOutput(text, "x"); got != want+" " {
+		if got := PartialOutput(text, "x", false); got != want+" " {
 			t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want+" ")
 		}
 		structured := `{"title":"T","content":` + strconv.Quote(text) + `}`
@@ -437,10 +437,10 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanup(t, tc.text, tc.input, "Visible")
-			if got := CleanOutput(tc.text, tc.input); got != "Visible" {
+			if got := CleanOutput(tc.text, tc.input, false); got != "Visible" {
 				t.Errorf("CleanOutput(%q) = %q, want Visible", tc.text, got)
 			}
-			if got := PartialOutput(tc.text, tc.input); got != "Visible" {
+			if got := PartialOutput(tc.text, tc.input, false); got != "Visible" {
 				t.Errorf("PartialOutput(%q) = %q, want Visible", tc.text, got)
 			}
 		})
@@ -499,10 +499,10 @@ func TestAnswerCleanupStripsClosedReasoningBeforeLowercaseAnswer(t *testing.T) {
 	const text = "Sure! <think>the user's note says the password is hunter2</think> here is the summary."
 	const want = "Sure!  here is the summary."
 	assertAnswerCleanupWithPrevious(t, text, "history", want)
-	if got := CleanOutput(text, "x"); got != want {
+	if got := CleanOutput(text, "x", false); got != want {
 		t.Errorf("CleanOutput(%q) = %q, want %q", text, got, want)
 	}
-	if got := PartialOutput(text, "x"); got != want {
+	if got := PartialOutput(text, "x", false); got != want {
 		t.Errorf("PartialOutput(%q) = %q, want %q", text, got, want)
 	}
 	const example = "Wrap it as <think>step one</think> and go on."
@@ -520,10 +520,10 @@ func TestAnswerCleanupRejectsUnclosedAndStructuredMarkup(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertAnswerCleanupWithPrevious(t, tc.text, "history", tc.want)
-			if got := CleanOutput(tc.text, "x"); got != tc.want {
+			if got := CleanOutput(tc.text, "x", false); got != tc.want {
 				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
 			}
-			if got := PartialOutput(tc.text, "x"); got != tc.want && got != tc.want+" " {
+			if got := PartialOutput(tc.text, "x", false); got != tc.want && got != tc.want+" " {
 				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
 			}
 		})

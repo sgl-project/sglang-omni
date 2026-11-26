@@ -35,8 +35,9 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	return st, nil
 }
 
-// CheckFile opens the database at path, runs SQLite's integrity check
-// and reports the schema version it has.
+// CheckFile opens the database at path, runs SQLite's integrity check,
+// makes sure it is a Voxt library (the first migration's tables) and
+// reports the schema version it has.
 func CheckFile(ctx context.Context, path string) (int, error) {
 	db, err := sqlite.Open(ctx, path, sqlite.OpenOptions{})
 	if err != nil {
@@ -54,8 +55,20 @@ func CheckFile(ctx context.Context, path string) (int, error) {
 		}
 		return 0, fmt.Errorf("sqlitestore: %s: integrity check: %s", path, strings.Join(msgs, "; "))
 	}
+	for _, table := range libraryTables {
+		rows, err := db.Query(ctx, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table)
+		if err != nil {
+			return 0, err
+		}
+		if len(rows.Values) == 0 {
+			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (no table %s)", path, table)
+		}
+	}
 	return userVersion(ctx, db)
 }
+
+// libraryTables are the first migration's, in every Voxt library.
+var libraryTables = []string{"documents", "history", "dictionary_terms"}
 
 // RewritePaths replaces the folder oldDir by newDir at the start of the
 // paths the database at path holds in its text columns (as plain text,

@@ -18,6 +18,12 @@ import (
 type Manager struct {
 	cfg Config
 
+	modeMu sync.Mutex // one SetMode at a time: each starts and stops tracks from the mode it found
+	// modeStarted runs when a mode change's new tracks have started, before
+	// it takes mu again (nil but in tests, which pause or end the meeting
+	// there).
+	modeStarted func()
+
 	mu            sync.Mutex
 	id            string
 	seq           int64
@@ -82,6 +88,8 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		m.mu.Unlock()
 		return "", ErrBusy
 	}
+	// A timed-out track can outlive an interrupted meeting; it must not own the new archive or transcript.
+	m.tracks = map[Source]*track{}
 	started := m.cfg.Now()
 	id := core.NewID(started)
 	m.id = id
@@ -226,39 +234,6 @@ func (m *Manager) Resume(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetMode switches capture tracks without resetting the timeline.
-func (m *Manager) SetMode(ctx context.Context, id string, mode Mode) error {
-	m.mu.Lock()
-	if err := m.requireID(id); err != nil {
-		m.mu.Unlock()
-		return err
-	}
-	if m.state != StateRecording && m.state != StatePaused {
-		m.mu.Unlock()
-		return fmt.Errorf("meeting: not active")
-	}
-	wasPaused := m.state == StatePaused
-	old := m.mode.Sources()
-	m.stopAllTracksLocked()
-	m.mode = mode
-	m.snap.Mode = mode
-	if wasPaused {
-		m.mu.Unlock()
-		return nil
-	}
-	sources := mode.Sources()
-	runCtx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
-	m.runCtx = runCtx
-	m.mu.Unlock()
-	// Start any newly required sources; already-running overlap keeps timeline.
-	need := sourcesToAdd(old, sources)
-	if len(need) == 0 {
-		return nil
-	}
-	return m.startTracks(runCtx, need)
-}
-
 // Finish ends capture and persists the meeting row.
 func (m *Manager) Finish(ctx context.Context, id string) error {
 	m.mu.Lock()
@@ -368,20 +343,55 @@ func (m *Manager) Save(ctx context.Context, id string) error {
 	return nil
 }
 
-// Discard drops the meeting and deletes its files.
+// Discard drops the meeting and deletes its files. A recording in
+// progress stops first: a capture left open would report into a meeting
+// that is gone.
 func (m *Manager) Discard(ctx context.Context, id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if err := m.requireID(id); err != nil {
+		m.mu.Unlock()
 		return err
 	}
-	if !m.state.Active() && m.state != StateAsking {
+	if !m.state.Active() {
+		m.mu.Unlock()
 		return fmt.Errorf("meeting: not active")
 	}
+	if m.state == StateStarting {
+		// As Finish: Start sees the cancel, stops its tracks and drops
+		// the meeting.
+		m.cancel()
+		m.mu.Unlock()
+		return nil
+	}
+	found := m.state
+	m.stopAllTracksLocked() // lets go of mu while the tracks stop
+	if m.id != id {         // ended meanwhile
+		m.mu.Unlock()
+		return ErrNoMeeting
+	}
+	if m.state != found {
+		switch m.state {
+		case StateRecording, StatePaused, StateAsking: // still the user's to cancel
+		default:
+			// End (or Save) came while the tracks stopped: its final pass
+			// has the meeting now, which must not go under it.
+			m.mu.Unlock()
+			return fmt.Errorf("meeting: ended while it was being cancelled")
+		}
+	}
+	if m.archive != nil {
+		_ = m.archive.Close() // an error here is of a file deleted next
+	}
+	if m.cancel != nil {
+		m.cancel()
+	}
 	folder := filepath.Join(m.cfg.Dir, m.id)
-	_ = m.cfg.Store.DeleteMeeting(ctx, m.id)
-	_ = os.RemoveAll(folder)
+	_ = m.cfg.Store.DeleteMeeting(ctx, m.id) // the meeting goes from memory either way: nothing could retry
+	_ = os.RemoveAll(folder)                 // the same
 	m.resetIdle()
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 	return nil
 }
 
@@ -455,7 +465,10 @@ func (m *Manager) requireID(id string) error {
 }
 
 func (m *Manager) notify(s Snapshot) {
-	for _, fn := range m.subs {
+	m.mu.Lock()
+	subs := append([]func(Snapshot){}, m.subs...)
+	m.mu.Unlock()
+	for _, fn := range subs {
 		fn(s)
 	}
 }
@@ -493,13 +506,25 @@ func (m *Manager) stopAllTracks() {
 }
 
 func (m *Manager) stopAllTracksLocked() {
-	if len(m.tracks) == 0 {
-		return
+	sources := make([]Source, 0, len(m.tracks))
+	for src := range m.tracks {
+		sources = append(sources, src)
 	}
-	pending := make([]*track, 0, len(m.tracks))
-	for _, tr := range m.tracks {
-		tr.stopping = true // read under mu when its Record returns
-		pending = append(pending, tr)
+	m.stopTracksLocked(sources)
+}
+
+// stopTracksLocked stops the tracks of sources that are open. It lets go
+// of mu while they stop.
+func (m *Manager) stopTracksLocked(sources []Source) {
+	pending := make([]*track, 0, len(sources))
+	for _, src := range sources {
+		if tr := m.tracks[src]; tr != nil {
+			tr.stopping = true // read under mu when its Record returns
+			pending = append(pending, tr)
+		}
+	}
+	if len(pending) == 0 {
+		return
 	}
 	// Live teardown updates the snapshot and must not run under Manager.mu (Finish holds it).
 	m.mu.Unlock()
@@ -547,18 +572,4 @@ func (m *Manager) refreshProblem(track *Problem) {
 	s := m.snap
 	m.mu.Unlock()
 	m.notify(s)
-}
-
-func sourcesToAdd(old, new []Source) []Source {
-	have := map[Source]bool{}
-	for _, s := range old {
-		have[s] = true
-	}
-	var add []Source
-	for _, s := range new {
-		if !have[s] {
-			add = append(add, s)
-		}
-	}
-	return add
 }

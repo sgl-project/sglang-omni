@@ -9,11 +9,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/omni"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -60,12 +57,8 @@ type modelRowViewState struct {
 	Default    bool                    `json:"default"`
 	Installed  bool                    `json:"installed"`
 	SizeText   string                  `json:"size_text"`
-	UsedBy     string                  `json:"used_by,omitempty"`
-	MemoryText string                  `json:"memory_text,omitempty"`
 	FamilyText string                  `json:"family_text,omitempty"`
-	About      string                  `json:"about"`
 	Languages  string                  `json:"languages,omitempty"`
-	Tags       []string                `json:"tags"`
 	Actions    []modelActionViewState  `json:"actions"`
 	Progress   *modelProgressViewState `json:"progress,omitempty"`
 	Error      *modelErrorViewState    `json:"error,omitempty"`
@@ -75,7 +68,6 @@ type modelRowViewState struct {
 type modelCardViewState struct {
 	Key        string              `json:"key"`
 	FamilyName string              `json:"family_name,omitempty"`
-	CountText  string              `json:"count_text,omitempty"`
 	Languages  string              `json:"languages,omitempty"`
 	Rows       []modelRowViewState `json:"rows"`
 }
@@ -127,7 +119,6 @@ type modelsNetworkViewState struct {
 	Open          bool                         `json:"open"`
 	ProxyMode     int                          `json:"proxy_mode"`
 	ProxyError    string                       `json:"proxy_error,omitempty"`
-	ProxyCaption  string                       `json:"proxy_caption"`
 	Source        int                          `json:"source"`
 	SourceURL     string                       `json:"source_url,omitempty"`
 	SourceLabels  []string                     `json:"source_labels"`
@@ -137,17 +128,20 @@ type modelsNetworkViewState struct {
 }
 
 type modelsViewState struct {
-	ASR           []modelCardViewState      `json:"asr"`
-	Dictation     *modelCardViewState       `json:"dictation,omitempty"`
-	LLM           []modelCardViewState      `json:"llm"`
-	ShowLLM       bool                      `json:"show_llm"`
-	Hidden        []modelCardViewState      `json:"hidden"`
-	HiddenOpen    bool                      `json:"hidden_open"`
-	Advanced      modelsAdvancedViewState   `json:"advanced"`
-	Delete        modelsDeleteViewState     `json:"delete"`
-	Network       modelsNetworkViewState    `json:"network"`
-	SpeechContext string                    `json:"speech_context"`
-	Assignment    *modelAssignmentViewState `json:"assignment,omitempty"`
+	ASR           []modelCardViewState    `json:"asr"`
+	Dictation     *modelCardViewState     `json:"dictation,omitempty"`
+	LLM           []modelCardViewState    `json:"llm"`
+	ShowLLM       bool                    `json:"show_llm"`
+	Hidden        []modelCardViewState    `json:"hidden"`
+	HiddenOpen    bool                    `json:"hidden_open"`
+	Advanced      modelsAdvancedViewState `json:"advanced"`
+	Delete        modelsDeleteViewState   `json:"delete"`
+	Network       modelsNetworkViewState  `json:"network"`
+	SpeechContext string                  `json:"speech_context"`
+	// SpeechContextUnused: every feature's speech model takes no context
+	// (#4067), so the editor says so.
+	SpeechContextUnused bool                      `json:"speech_context_unused"`
+	Assignment          *modelAssignmentViewState `json:"assignment,omitempty"`
 }
 
 type modelsViewStateInput struct {
@@ -168,6 +162,9 @@ type modelsViewStateInput struct {
 	AdvancedOpen   bool
 	HiddenOpen     bool
 	Assignment     *modelAssignmentStateInput
+	// SpeechContextUnused: Transcribe, Translate and Rewrite all use a
+	// local speech model that takes no context.
+	SpeechContextUnused bool
 }
 
 func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInput) modelsViewState {
@@ -176,6 +173,7 @@ func buildModelsViewState(translator *i18n.Translator, input modelsViewStateInpu
 		Hidden: buildHiddenModelCards(translator, input), HiddenOpen: input.HiddenOpen,
 		Advanced: buildModelsAdvancedViewState(translator, input), Delete: buildModelsDeleteViewState(translator, input),
 		Network: buildModelsNetworkViewState(translator, input), SpeechContext: input.Settings.Dictionary.SpeechContext,
+		SpeechContextUnused: input.SpeechContextUnused,
 	}
 	state.Dictation = buildDictationCard(translator, input, false)
 	if input.Assignment != nil {
@@ -219,20 +217,12 @@ func buildModelCards(translator *i18n.Translator, input modelsViewStateInput, ki
 			cards = append(cards, buildSingleModelCard(translator, input, list[0]))
 			continue
 		}
-		installed := 0
 		rows := make([]modelRowViewState, len(list))
 		for index, model := range list {
-			if input.Status[model.ID].Installed {
-				installed++
-			}
-			rows[index] = buildModelRowViewState(translator, input, model, false)
-		}
-		count := translator.N(len(list), "%d model", "%d models", len(list))
-		if installed > 0 {
-			count += " · " + translator.T("%d installed", installed)
+			rows[index] = buildModelRowViewState(translator, input, model)
 		}
 		cards = append(cards, modelCardViewState{
-			Key: "family-" + family, FamilyName: uitext.FamilyName(family), CountText: count,
+			Key: "family-" + family, FamilyName: uitext.FamilyName(family),
 			Languages: uitext.ModelLanguagesFor(translator, list[0].ID), Rows: rows,
 		})
 	}
@@ -240,7 +230,9 @@ func buildModelCards(translator *i18n.Translator, input modelsViewStateInput, ki
 }
 
 func buildSingleModelCard(translator *i18n.Translator, input modelsViewStateInput, model models.Model) modelCardViewState {
-	return modelCardViewState{Key: "model-" + model.ID, Rows: []modelRowViewState{buildModelRowViewState(translator, input, model, true)}}
+	row := buildModelRowViewState(translator, input, model)
+	row.Languages = uitext.ModelLanguagesFor(translator, model.ID)
+	return modelCardViewState{Key: "model-" + model.ID, Rows: []modelRowViewState{row}}
 }
 
 func buildHiddenModelCards(translator *i18n.Translator, input modelsViewStateInput) []modelCardViewState {
@@ -271,8 +263,7 @@ func buildDictationCard(translator *i18n.Translator, input modelsViewStateInput,
 	usedBy := modelsUsedBy(translator, input.Settings, input.InstalledASR, input.InstalledLLM, local.ASR, dictation.ModelID)
 	row := modelRowViewState{
 		ID: dictation.ModelID, Kind: string(local.ASR), Name: uitext.ModelNameFor(translator, dictation.ModelID),
-		SizeText: translator.T("Built-in"), UsedBy: usedBy, About: uitext.ModelAboutFor(translator, dictation.ModelID),
-		Languages: uitext.ModelLanguagesFor(translator, dictation.ModelID), Tags: uitext.ModelTagsFor(translator, dictation.ModelID),
+		SizeText: translator.T("Built-in"), Languages: uitext.ModelLanguagesFor(translator, dictation.ModelID),
 	}
 	row.Actions = buildHideAction(translator, input, dictation.ModelID, usedBy)
 	row.Actions = append(row.Actions, buildAssignAction(translator, models.Model{Kind: models.ASR, ID: dictation.ModelID})...)
@@ -306,7 +297,7 @@ func buildAssignAction(translator *i18n.Translator, model models.Model) []modelA
 	}}
 }
 
-func buildModelRowViewState(translator *i18n.Translator, input modelsViewStateInput, model models.Model, alone bool) modelRowViewState {
+func buildModelRowViewState(translator *i18n.Translator, input modelsViewStateInput, model models.Model) modelRowViewState {
 	status := input.Status[model.ID]
 	usedBy := modelsUsedBy(translator, input.Settings, input.InstalledASR, input.InstalledLLM, local.Kind(model.Kind), model.ID)
 	sizeText, familyText := modelSizeTextFor(translator, model, status), modelFamilyTextFor(translator, model, status)
@@ -315,27 +306,10 @@ func buildModelRowViewState(translator *i18n.Translator, input modelsViewStateIn
 	}
 	row := modelRowViewState{
 		ID: model.ID, Kind: string(model.Kind), Name: uitext.ModelNameFor(translator, model.ID),
-		Default: model.Default && !model.Retired, Installed: status.Installed, SizeText: sizeText, UsedBy: usedBy,
-		FamilyText: familyText, About: uitext.ModelAboutFor(translator, model.ID),
+		Default: model.Default && !model.Retired, Installed: status.Installed, SizeText: sizeText, FamilyText: familyText,
 	}
 	if model.Kind == models.ASR {
 		row.Actions = buildHideAction(translator, input, model.ID, usedBy)
-	}
-	if alone {
-		row.Languages = uitext.ModelLanguagesFor(translator, model.ID)
-	}
-	if memory, ok := input.Memory[model.ID]; ok && status.Installed {
-		row.MemoryText = modelMemTextFor(translator, memory)
-	}
-	if !model.Retired {
-		row.Tags = uitext.ModelTagsFor(translator, model.ID)
-		if spec, ok := omni.Lookup(model.ID); ok && len(spec.Languages) > 0 {
-			if slices.Contains(spec.Languages, lang.Canonical(session.MainLanguage(input.Settings, translator.Locale()))) {
-				row.Tags = append(row.Tags, translator.T("Supports your main language"))
-			} else {
-				row.Tags = append(row.Tags, translator.T("Does not support your main language"))
-			}
-		}
 	}
 	row.Actions = append(row.Actions, buildModelActions(translator, input, model, status)...)
 	if status.Installed && !model.Retired {
@@ -408,7 +382,7 @@ func buildModelDraftViewState(translator *i18n.Translator, input modelsViewState
 	draft, _ := models.Lookup(parent.Draft)
 	on, set := input.Settings.Models.Faster[parent.ID]
 	if !set {
-		on = status.Installed
+		on = settings.FasterDefault(status.Installed, parent.DraftOptIn)
 	}
 	state := &modelDraftViewState{
 		ModelID: draft.ID, ParentID: parent.ID, Installed: status.Installed, NeedsDownload: on && !status.Installed && !status.Downloading,
@@ -476,22 +450,11 @@ func updateModelsNetworkFormViewState(translator *i18n.Translator, state *models
 	state.ProxyMode, state.ProxyError = form.proxyMode, form.proxyErr
 	state.Source, state.SourceURL = form.source, form.sourceURL
 	state.SourceLabels = []string{translator.T("Automatic"), translator.T("Hugging Face only"), translator.T("hf-mirror.com only")}
-	state.ProxyCaption = ""
-	switch form.proxyMode {
-	case proxyAuto:
-		state.ProxyCaption = translator.T("The proxy in this Mac's network settings, or one set by an environment variable.")
-	case proxyNone:
-		state.ProxyCaption = translator.T("Downloads connect to the server directly.")
-	}
 	if form.sourceURL != "" {
 		state.SourceLabels = append(state.SourceLabels, translator.T("Other"))
 	}
-	switch {
-	case form.source == 0:
-		state.SourceCaption = translator.T("Whichever answers first. Every file is checked.")
-	case form.source < len(networkSources):
-		state.SourceCaption = translator.T("Only this server. If it cannot be reached, downloads fail.")
-	default:
+	state.SourceCaption = ""
+	if form.source >= len(networkSources) {
 		state.SourceCaption = translator.T("Custom servers: %s", form.sourceURL)
 	}
 }

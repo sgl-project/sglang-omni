@@ -276,7 +276,7 @@ func TestClockAndTail(t *testing.T) {
 // edge, the first layout.FadeW of it fading in, the rest whole.
 func TestFadeSpans(t *testing.T) {
 	measure := func(s string) float32 { return float32(len([]rune(s))) * 10 } // 10 a letter
-	shown, at, spans := fadeSpans("abcdefghij", 25, measure)
+	shown, at, spans := fadeSpans("abcdefghij", 25, ovLiveAlpha, measure)
 	if shown != "cdefghij" || at != 20 {
 		t.Fatalf("shown %q at %v", shown, at)
 	}
@@ -292,7 +292,7 @@ func TestFadeSpans(t *testing.T) {
 	if b.String() != shown || spans[0].Color.A > 80 || spans[len(spans)-1].Color != ovLiveColor || spans[len(spans)-1].Text != "fghij" {
 		t.Errorf("spans %+v", spans)
 	}
-	if shown, at, _ := fadeSpans("abc", 0, measure); shown != "abc" || at != 0 {
+	if shown, at, _ := fadeSpans("abc", 0, ovLiveAlpha, measure); shown != "abc" || at != 0 {
 		t.Errorf("not scrolled: %q %v", shown, at)
 	}
 }
@@ -627,7 +627,7 @@ func TestOverlayGoesAway(t *testing.T) {
 	if a.ov.mode != ovNotice || a.notice == nil || a.notice.text != "Nothing was heard." || !a.notice.warn {
 		t.Fatalf("no speech: %s %+v", a.ov.mode, a.notice)
 	}
-	ft.advance(noticeTime - time.Millisecond)
+	ft.advance(noSpeechTime - time.Millisecond)
 	if a.ov.mode != ovNotice || !a.ov.visible {
 		t.Fatalf("the notice went early: %s", a.ov.mode)
 	}
@@ -647,6 +647,49 @@ func TestOverlayGoesAway(t *testing.T) {
 	gone("card closed")
 }
 
+// TestShortNotices: Nothing was heard leaves after noSpeechTime, through
+// the fade, a green check after okTime; other notices keep noticeTime.
+func TestShortNotices(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
+	snap(a, session.Snapshot{ID: "s1", State: session.Recording})
+	snap(a, session.Snapshot{ID: "s1", State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}})
+	if a.notice == nil || a.notice.hold != noSpeechTime {
+		t.Fatalf("no speech: %+v", a.notice)
+	}
+	ft.advance(noSpeechTime)
+	if a.notice != nil || a.ov.shown {
+		t.Fatalf("no speech stays after %v: %+v", noSpeechTime, a.notice)
+	}
+	if !a.ov.visible {
+		t.Error("no speech left without the fade")
+	}
+	ft.advance(ovGone)
+	if a.ov.visible {
+		t.Error("no speech still on screen after the fade")
+	}
+	snap(a, session.Snapshot{ID: "s2", State: session.Recording, Note: true})
+	snap(a, session.Snapshot{ID: "s2", State: session.Done, Note: true, Result: "A note."})
+	if a.notice == nil || !a.notice.ok {
+		t.Fatalf("saved: %+v", a.notice)
+	}
+	ft.advance(okTime - time.Millisecond)
+	if a.notice == nil {
+		t.Fatal("saved left early")
+	}
+	ft.advance(time.Millisecond)
+	if a.notice != nil {
+		t.Fatalf("saved stays after %v", okTime)
+	}
+	ft.advance(ovGone)
+	snap(a, session.Snapshot{ID: "s3", State: session.Recording})
+	snap(a, session.Snapshot{ID: "s3", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
+	ft.advance(noticeTime - time.Millisecond)
+	if a.notice == nil {
+		t.Fatal("another notice left before noticeTime")
+	}
+}
+
 // TestOverlayQuickSessions: what the last session left on its way out
 // (the fade, a notice's timer) never hides the next one.
 func TestOverlayQuickSessions(t *testing.T) {
@@ -663,10 +706,10 @@ func TestOverlayQuickSessions(t *testing.T) {
 	// A notice of the second, then a third session failing: the second's
 	// timer leaves the third's notice alone.
 	snap(a, session.Snapshot{ID: "s2", State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}})
-	ft.advance(3 * time.Second)
+	ft.advance(time.Second)
 	snap(a, session.Snapshot{ID: "s3", State: session.Recording})
 	snap(a, session.Snapshot{ID: "s3", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
-	ft.advance(3 * time.Second) // the second's timer is due
+	ft.advance(time.Second) // the second's timer is due
 	if a.notice == nil || a.notice.action != actionModels || !a.ov.visible {
 		t.Fatalf("the third's notice went with the second's timer: %+v", a.notice)
 	}

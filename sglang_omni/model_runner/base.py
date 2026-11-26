@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, Literal, Protocol, TypeAlias
 
 import torch
+from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 from sglang.srt.utils.common import async_h2d, is_pin_memory_available
 
 from sglang_omni.model_runner.model_worker import ModelWorker
@@ -120,6 +121,17 @@ def resolve_deferred_prefill_inputs(
 
     schedule_batch.input_ids = staged_input_ids.to(device, non_blocking=True)
     schedule_batch.prefill_input_ids_cpu = None
+
+
+def request_suppress_tokens(sched_req: SchedulerRequest) -> list[int] | None:
+    """The codec ids a request suppresses: the builder's list, else the one cached on its Req."""
+    suppress_tokens = sched_req.data.suppress_tokens
+    if suppress_tokens:
+        return suppress_tokens
+    else:
+        return getattr(
+            sched_req.data.req, "_codec_suppress_tokens", None
+        )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
 
 
 @dataclass
@@ -748,6 +760,13 @@ class ModelRunner(Generic[RequestDataInput]):
         self.apply_codec_suppress_tokens(logits_output, rows)
         self.process_sampling_logits(logits_output, rows)
 
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Whether apply_speculative_verify_logits would change a verify row of these requests.
+
+        The base hooks only suppress codec tokens; a runner with more hooks extends this.
+        """
+        return any(request_suppress_tokens(request) for request in requests)
+
     def speculative_penalized_rows(self, requests: list[Req]) -> list[int]:
         """Batch rows whose repetition_penalty this runner applies in speculative verify."""
         if self.speculative_repetition_penalty_owner == "verify_logits":
@@ -884,9 +903,18 @@ class ModelRunner(Generic[RequestDataInput]):
             )
 
     def after_speculative_step(
-        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+        self,
+        batch: ScheduleBatch,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: RaggedVerifyLayout | None = None,
     ) -> None:
-        """Hook right after a speculative step, before its tokens are emitted."""
+        """Hook right after a speculative step, before its tokens are emitted.
+
+        verify_layout is the step's layout under a compact verify, which packs each
+        request's rows back to back, and None when every request has num_draft_tokens rows.
+        """
         return None
 
     def on_speculative_tokens(
@@ -1443,17 +1471,7 @@ class ModelRunner(Generic[RequestDataInput]):
         ] = {}
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
-            suppress_tokens = data.suppress_tokens
-            if not suppress_tokens:
-                req = data.req
-                try:
-                    suppress_tokens = (
-                        req._codec_suppress_tokens
-                    )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-                except AttributeError:
-                    suppress_tokens = None
-            else:
-                pass
+            suppress_tokens = request_suppress_tokens(sched_req)
             if not suppress_tokens:
                 continue
             else:

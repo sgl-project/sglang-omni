@@ -5,10 +5,10 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/activity"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
@@ -16,78 +16,63 @@ type homeSloganViewState struct {
 	Before string `json:"before"`
 	Keys   string `json:"keys"`
 	After  string `json:"after"`
+	Model  string `json:"model,omitempty"`
 }
 
-type homeKindCountViewState struct {
-	Kind  string `json:"kind"`
-	Title string `json:"title"`
-	Count string `json:"count"`
-}
-
-type homeTodayViewState struct {
-	Count           string                   `json:"count"`
-	CountLabel      string                   `json:"count_label"`
-	Characters      string                   `json:"characters"`
-	CharactersLabel string                   `json:"characters_label"`
-	Kinds           []homeKindCountViewState `json:"kinds"`
-}
-
-type homeRecentViewState struct {
-	Kind      string              `json:"kind"`
-	KindTitle string              `json:"kind_title"`
-	Row       historyRowViewState `json:"row"`
+type homeUsage struct {
+	asrMS         int64
+	asrCount      int
+	lastProvider  string
+	lastModel     string
+	lastModelName string
 }
 
 type homeViewState struct {
-	Read         bool                     `json:"read"`
-	Loading      bool                     `json:"loading"`
-	Error        string                   `json:"error"`
-	KeepHistory  bool                     `json:"keep_history"`
-	Slogan       homeSloganViewState      `json:"slogan"`
-	Missing      []homeReadinessViewState `json:"missing"`
-	Ready        []homeReadinessViewState `json:"ready"`
-	ShowTry      bool                     `json:"show_try"`
-	TryRecording bool                     `json:"try_recording"`
-	Today        homeTodayViewState       `json:"today"`
-	Recent       []homeRecentViewState    `json:"recent"`
+	KeepHistory bool                     `json:"keep_history"`
+	Error       string                   `json:"error,omitempty"`
+	Slogan      homeSloganViewState      `json:"slogan"`
+	Missing     []homeReadinessViewState `json:"missing"`
+	Ready       []homeReadinessViewState `json:"ready"`
+	// Activity is the activity calendar once its log was read.
+	Activity *homeActivityViewState `json:"activity,omitempty"`
+	// Insights is the log's totals above the calendar (insights_view.go).
+	Insights *insightsViewState `json:"insights,omitempty"`
+	// InsightsClosed folds Looking back to its title row.
+	InsightsClosed bool `json:"insights_closed,omitempty"`
+	// Outfit is what the mascot wears today (mascotOutfitOn), "" none.
+	Outfit string `json:"outfit,omitempty"`
 }
 
 type homeViewStateInput struct {
-	Read         bool
-	Loading      bool
-	Today        dayStats
-	Recent       []store.Entry
-	Error        string
 	KeepHistory  bool
+	Error        string
 	Features     settings.Features
 	Readiness    []homeReadinessViewState
-	ShowTry      bool
-	TryRecording bool
-	Retry        entryRetry
 	Now          time.Time
-}
-
-// dayStats are a day's finished results: how many, and their characters
-// (without spaces), by feature too.
-type dayStats struct {
-	count, chars int
-	byKind       map[store.Kind]int
+	Activity     activity.Log
+	ActivityRead bool
+	ActivityPage int
+	Usage        homeUsage
+	// InsightsClosed is settings.Appearance.LookingBackClosed.
+	InsightsClosed bool
 }
 
 func buildHomeViewState(translator *i18n.Translator, input homeViewStateInput) homeViewState {
+	lastModelName := input.Usage.lastModelName
+	if lastModelName == "" {
+		lastModelName = uitext.ModelNameFor(translator, input.Usage.lastModel)
+	}
 	missing, ready := homeMissing(input.Readiness)
 	state := homeViewState{
-		Read: input.Read, Loading: input.Loading, Error: input.Error, KeepHistory: input.KeepHistory,
-		Slogan: buildHomeSloganViewState(translator, input.Features), Missing: missing, Ready: ready,
-		ShowTry: input.ShowTry, TryRecording: input.TryRecording,
-		Today:  buildHomeTodayViewState(translator, input.Today, input.Features),
-		Recent: make([]homeRecentViewState, len(input.Recent)),
+		KeepHistory: input.KeepHistory, Error: input.Error,
+		Slogan: buildHomeSloganViewState(translator, input.Features, lastModelName), Missing: missing, Ready: ready,
+		Outfit: mascotOutfitOn(input.Now), InsightsClosed: input.InsightsClosed,
 	}
-	for index, entry := range input.Recent {
-		state.Recent[index] = homeRecentViewState{
-			Kind: string(entry.Kind), KindTitle: historyKindName(translator, entry.Kind),
-			Row: buildHistoryRowViewState(translator, entry, "", "", false, input.Retry, input.Now),
-		}
+	if input.ActivityRead {
+		activity := buildHomeActivityViewState(translator, input.Activity, input.ActivityPage, input.Now, input.Usage)
+		state.Activity = &activity
+		insights := buildInsightsViewState(translator, input.Activity, input.Now)
+		state.Insights = &insights
 	}
 	return state
 }
@@ -103,27 +88,15 @@ func homeMissing(list []homeReadinessViewState) (missing, ready []homeReadinessV
 	return missing, ready
 }
 
-func buildHomeSloganViewState(translator *i18n.Translator, features settings.Features) homeSloganViewState {
+func buildHomeSloganViewState(translator *i18n.Translator, features settings.Features, lastModel string) homeSloganViewState {
 	var first *settings.Hotkey
 	if hotkeys := hotkey.HotkeysOf(features, hotkey.Transcribe); len(hotkeys) > 0 {
 		first = &hotkeys[0]
 	}
 	before, keys, after := sloganHintFor(translator, first)
-	return homeSloganViewState{Before: before, Keys: keys, After: after}
-}
-
-func buildHomeTodayViewState(translator *i18n.Translator, stats dayStats, features settings.Features) homeTodayViewState {
-	state := homeTodayViewState{
-		Count: itoa(stats.count), CountLabel: translator.N(stats.count, "result", "results"),
-		Characters: groupDigits(stats.chars), CharactersLabel: translator.N(stats.chars, "character", "characters"),
-	}
-	for _, kind := range store.Kinds {
-		if features.IsHidden(string(kind)) {
-			continue
-		}
-		state.Kinds = append(state.Kinds, homeKindCountViewState{
-			Kind: string(kind), Title: historyKindName(translator, kind), Count: itoa(stats.byKind[kind]),
-		})
+	state := homeSloganViewState{Before: before, Keys: keys, After: after}
+	if lastModel != "" {
+		state.Model = lastModel
 	}
 	return state
 }

@@ -394,6 +394,12 @@ public struct FocusResult: Codable, Sendable {
 public struct SelectionParams: Codable, Sendable {
     public var allowCopy: Bool?
     public var copyTimeoutMs: Int?
+    /// A caret-only reading waits out a settle for a selection made with
+    /// ⌘A in the shortcut's motion (#4467), a reading every caretPollMs.
+    public var caretSettleMs: Int?
+    public var caretPollMs: Int?
+    /// The ⌘C waits this long for the shortcut's held modifiers to lift (#3835).
+    public var modifierWaitMs: Int?
 }
 
 public enum SelectionVia {
@@ -685,7 +691,12 @@ public struct ClipboardImageParams: Codable, Sendable {
 public struct ClipboardImageResult: Codable, Sendable {
     /// A JPEG; base64 on the wire. nil: the clipboard holds no picture to send.
     public var jpeg: Data?
-    public init(jpeg: Data? = nil) { self.jpeg = jpeg }
+    /// True only when a source byte or pixel limit rejected the picture.
+    public var tooLarge: Bool?
+    public init(jpeg: Data? = nil, tooLarge: Bool? = nil) {
+        self.jpeg = jpeg
+        self.tooLarge = tooLarge
+    }
 }
 
 // MARK: output.*
