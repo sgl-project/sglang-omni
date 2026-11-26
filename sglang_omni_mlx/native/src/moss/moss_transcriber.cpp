@@ -696,8 +696,13 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     bool offline;
     MossTranscriber::ChunkOutput output;
     double frontend_build_ms;
+    double frontend_eval_ms;
     double decoder_prefill_ms;
-    std::optional<std::chrono::steady_clock::time_point> first_commit;
+    double autoregressive_decode_ms;
+    double rebuild_ms_before_decode;
+    std::chrono::steady_clock::time_point build_finished;
+    std::chrono::steady_clock::time_point prefill_started;
+    std::optional<std::chrono::steady_clock::time_point> decode_started;
     std::chrono::steady_clock::time_point started;
   };
   std::vector<Row> rows;
@@ -733,12 +738,10 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
           static_cast<double>(request.samples->size()) / kSampleRate * 1000.0);
       const auto build_started = std::chrono::steady_clock::now();
       const mx::array embeddings = steps.build(row.samples, options);
-      row.frontend_build_ms =
-          Milliseconds(std::chrono::steady_clock::now() - build_started);
-      const auto prefill_started = std::chrono::steady_clock::now();
+      row.build_finished = std::chrono::steady_clock::now();
+      row.frontend_build_ms = Milliseconds(row.build_finished - build_started);
+      row.prefill_started = row.build_finished;
       sequences.push_back(steps.prefill(embeddings, *request.cancel));
-      row.decoder_prefill_ms =
-          Milliseconds(std::chrono::steady_clock::now() - prefill_started);
       rows.push_back(std::move(row));
     } catch (...) {
       on_finished(i, {std::nullopt, std::current_exception()});
@@ -748,6 +751,10 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     return;
   } else {
   }
+  // Result rebuilds of earlier rows run inside later rows' decode window,
+  // since the shared loop invokes callbacks in sequence. Track their total so
+  // each row's decode span can exclude work that is not decoding.
+  double rebuild_ms = 0.0;
   steps.decode(sequences, [&](size_t index, int token_id) {
     Row &row = rows[index];
     const BatchRequest &request = requests[row.request_index];
@@ -758,16 +765,27 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
       return true;
     } else {
     }
-    const bool finished = steps.commit(row.output, token_id, *request.options,
-                                       row.max_new_tokens);
-    if (!row.first_commit.has_value()) {
-      row.first_commit = std::chrono::steady_clock::now();
+    if (!row.decode_started.has_value()) {
+      // Prefill only queues work; the first blocking evaluation is inside the
+      // shared decode, where the encoder, the prefill and the first token
+      // materialize. End both clocks at that callback so the wait is counted.
+      const auto observed = std::chrono::steady_clock::now();
+      row.frontend_eval_ms = Milliseconds(observed - row.build_finished);
+      row.decoder_prefill_ms = Milliseconds(observed - row.prefill_started);
+      row.rebuild_ms_before_decode = rebuild_ms;
+      row.decode_started = observed;
     } else {
     }
+    const bool finished = steps.commit(row.output, token_id, *request.options,
+                                       row.max_new_tokens);
     if (!finished) {
       return false;
     } else {
     }
+    const double decode_ms =
+        Milliseconds(std::chrono::steady_clock::now() - *row.decode_started);
+    row.autoregressive_decode_ms =
+        std::max(0.0, decode_ms - (rebuild_ms - row.rebuild_ms_before_decode));
     const auto rebuild_started = std::chrono::steady_clock::now();
     TranscriptionResult result =
         steps.finish(row.output, row.sample_count, row.offset_seconds);
@@ -777,13 +795,13 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     }
     result.result_rebuild_ms =
         Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
+    rebuild_ms += result.result_rebuild_ms;
     result.frontend_build_ms = row.frontend_build_ms;
-    // Batch prefills the row alone, so the encoder is forced inside
-    // decoder_prefill_ms and there is no separately observable frontend wait.
-    result.frontend_eval_ms = 0.0;
+    // Frontend eval ends at the same callback as prefill, so it sits inside
+    // the prefill span by design; the shared decode's wait is in both.
+    result.frontend_eval_ms = row.frontend_eval_ms;
     result.decoder_prefill_ms = row.decoder_prefill_ms;
-    result.autoregressive_decode_ms =
-        Milliseconds(std::chrono::steady_clock::now() - *row.first_commit);
+    result.autoregressive_decode_ms = row.autoregressive_decode_ms;
     result.native_total_ms =
         Milliseconds(std::chrono::steady_clock::now() - row.started);
     if (row.offline) {
