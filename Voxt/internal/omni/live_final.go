@@ -51,7 +51,7 @@ func (s *live) finalPass(pcm []byte) {
 					s.mu.Lock()
 					known.text = s.asm.text()
 					s.mu.Unlock()
-				} else if !s.req.LiveResult && known.session != "" {
+				} else if !s.req.LiveResult {
 					// note (chenye): an auto-language Final generates a language
 					// header. Let the server propose it with the preview text.
 					known.guessAutoLanguage = true
