@@ -22,6 +22,7 @@ import (
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // parkedSlot is a session: its id, which never changes (its number on
@@ -283,4 +284,16 @@ func (a *app) parkAnswer(s session.Snapshot) {
 	}
 	p.answer, p.under, p.followUp = a.answer, a.under, a.followUp
 	a.answer, a.under, a.followUp = answer, under, followUp
+}
+
+// boxForAnswer shows a restored Rewrite answer in the Rewrite card, the
+// one card its conversation had (wall 122): the answer card would trade
+// the input for Continue.
+func (a *app) boxForAnswer() {
+	if a.box.open || !a.answer.open || a.answer.kind != store.KindRewrite || a.sess.State.Live() {
+		return
+	}
+	a.box = rewriteBox{open: true, shown: true, target: a.answer.target, focusText: true, dragged: a.ov.cardDragged}
+	a.boxShare.reset()
+	a.boxSync()
 }

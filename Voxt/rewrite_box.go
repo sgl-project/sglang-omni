@@ -268,18 +268,6 @@ func (a *app) boxAnswered() bool {
 	return a.box.open && a.answer.open && (a.answer.kind == store.KindRewrite || a.followUp != "" && a.followUp == a.answer.id)
 }
 
-// boxForAnswer shows a restored Rewrite answer in the Rewrite card, the
-// one card its conversation had (wall 122): the answer card would trade
-// the input for Continue.
-func (a *app) boxForAnswer() {
-	if a.box.open || !a.answer.open || a.answer.kind != store.KindRewrite || a.sess.State.Live() {
-		return
-	}
-	a.box = rewriteBox{open: true, shown: true, target: a.answer.target, focusText: true, dragged: a.ov.cardDragged}
-	a.boxShare.reset()
-	a.boxSync()
-}
-
 // boxKeep keeps the card open for its answer once a session of its ends:
 // the sent input is emptied, but text changed during that send stays for
 // the next follow-up.
