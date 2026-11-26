@@ -41,7 +41,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **A system-audio failure no longer leaves meeting startup stuck** (#4409): if the microphone stop after a system-capture failure goes unanswered, Voxt stops waiting after five seconds and returns the original capture error instead of leaving the meeting In progress. A late Final or queued audio from a replaced track cannot appear in the next meeting's transcript or recording. A microphone lost while its speech-recognition connection hangs (after sleep, or a network loss) reconnects after five seconds instead of recording nothing more. With the final pass turned off, a last line that takes longer than five seconds to transcribe after Stop is not saved.
-- **No flash as the overlay fades out**: when a dictation ends, the overlay fades with its last words still in it; it no longer flashes the microphone row alone in the empty card first.
+- **No flash as the overlay fades out**: when a dictation ends, the overlay, or the dictation pill beside an open answer card, fades with its last words still in it; it no longer flashes the microphone row alone in the empty card first.
 
 - **Select all with ⌘A right before the shortcut is read as the selection** (#3835): pressing ⌘A and the Rewrite or Translate shortcut in one motion often sent no selected text, because Voxt read the selection before the app showed it to accessibility and concluded nothing was selected; it now keeps reading for a moment before giving up. And when the shortcut has Control, Option or Shift in it (such as Control+C), the helper's copy keystroke now waits for those keys to lift — and is not sent at all while they stay held — instead of reaching the app as a different key that copies nothing.
 - **Recording overlays open on the display you are working on**: with several displays, the recording pill and answer card now prefer the foreground app's focused-window display instead of following the pointer. Without Accessibility, Voxt reads the front window through the window server instead. If neither source has a focused window, they still use the pointer's display. A kept answer card on another display no longer pulls the recording pill away from the app you are dictating into. Pill show, hide and display choices are logged. A recording started while a Rewrite answer is kept now puts the pill beside that card instead of over it.
@@ -91,7 +91,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **系统音频采集失败不再让会议一直停在“进行中”**（#4409）：系统音频采集失败后，如果停止麦克风的请求没有回应，Voxt 最多等待 5 秒，随后显示原来的采集错误，不再让会议启动过程卡住。被替换音轨迟到的最终结果和排队音频也不会写进下一场会议的转录稿或录音。麦克风断开时如果语音识别连接卡住（睡眠唤醒后或断网），5 秒后照样重连，不会之后什么都录不到。关掉最终转写时，停止后超过 5 秒才转写出来的最后一句不会保存。
-- **浮窗淡出时不再闪一下**：听写结束时，浮窗带着最后的文字淡出，不会先闪回只剩麦克风那一行的空卡片。
+- **浮窗淡出时不再闪一下**：听写结束时，浮窗（包括答案卡片旁边的听写小窗）带着最后的文字淡出，不会先闪回只剩麦克风那一行的空卡片。
 
 - **按快捷键前用 ⌘A 全选，选中内容能被读到了**（#3835）：⌘A 和改写、翻译快捷键连着按时，常常读不到任何选中内容，因为 Voxt 在 App 把选区交给辅助功能之前就读了选区，得出没有选中的结论；现在会多读一会儿再下结论。另外，快捷键里带 Control、Option 或 Shift 时（比如 Control+C），辅助进程的复制按键会等这些键松开再发，键一直不松就不发，不会再变成 App 里复制不了内容的另一个按键。
 - **录音浮窗显示在前台窗口所在屏**：使用多块显示器时，录音胶囊和答案卡片优先显示在前台 App 焦点窗口所在的屏幕，不再跟着鼠标跑到另一块屏；没有辅助功能权限时改从窗口服务器读取前台窗口，两种途径都读不到时才退回鼠标所在屏。保留的答案卡片在另一块屏时，也不会把录音胶囊带离正在输入的 App。胶囊显示、隐藏和选屏依据都会写入日志。保留着改写答案卡片时开始录音，录音胶囊贴在卡片旁边，不再盖住它。

@@ -2,14 +2,14 @@
   "name": "session-state-delivering",
   "kind": "session-overlay",
   "session": {
-    "revision": 1,
+    "revision": 2,
     "session_id": "session-delivering",
-    "state": "recording",
-    "mode": "recording",
+    "state": "delivering",
+    "mode": "hidden",
     "pill": {
       "kind": "",
       "title": "Transcribe",
-      "working_label": "Recognising…",
+      "working_label": "Inserting…",
       "elapsed_text": "0:00",
       "levels": [
         0,

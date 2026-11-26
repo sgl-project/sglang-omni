@@ -2,10 +2,11 @@
   "name": "session-problem-too-short",
   "kind": "session-overlay",
   "session": {
-    "revision": 1,
+    "revision": 2,
     "session_id": "session-problem",
-    "state": "recording",
-    "mode": "recording",
+    "state": "cancelled",
+    "problem_code": "tooShort",
+    "mode": "hidden",
     "pill": {
       "kind": "",
       "title": "Transcribe",

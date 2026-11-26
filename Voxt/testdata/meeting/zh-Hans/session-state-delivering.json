@@ -2,14 +2,14 @@
   "name": "session-state-delivering",
   "kind": "session-overlay",
   "session": {
-    "revision": 1,
+    "revision": 2,
     "session_id": "session-delivering",
-    "state": "recording",
-    "mode": "recording",
+    "state": "delivering",
+    "mode": "hidden",
     "pill": {
       "kind": "",
       "title": "转录",
-      "working_label": "识别中…",
+      "working_label": "插入中…",
       "elapsed_text": "0:00",
       "levels": [
         0,

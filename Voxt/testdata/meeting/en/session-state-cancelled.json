@@ -2,10 +2,10 @@
   "name": "session-state-cancelled",
   "kind": "session-overlay",
   "session": {
-    "revision": 1,
+    "revision": 2,
     "session_id": "session-cancelled",
-    "state": "recording",
-    "mode": "recording",
+    "state": "cancelled",
+    "mode": "hidden",
     "pill": {
       "kind": "",
       "title": "Transcribe",

@@ -165,7 +165,7 @@ func (a *app) newOverlayWin(frame mygo.Rectangle, panel bool) *mygo.Window {
 	content := sessionOverlayContent(
 		func() *sessionOverlayViewState {
 			a.refreshSessionOverlay(time.Now())
-			return &a.ov.projection.view
+			return a.ov.projection.drawn()
 		},
 		func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
 		a,
