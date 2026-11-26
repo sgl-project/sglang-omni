@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -568,4 +569,30 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	if a.box.text != "some text\n" {
 		t.Errorf("Return on: text %q after Enter, want Enter taken", a.box.text)
 	}
+}
+
+// TestRewriteCardWaitsForTheCopiedSelection: Notion item 141's lost Slack
+// selection. The card opens right after the session starts, before its
+// first snapshot reaches the app; it took the front then, so the ⌘C that
+// copies the selection went to VoxtNew and nothing was read. It waits
+// until the selection is read, then takes the front.
+func TestRewriteCardWaitsForTheCopiedSelection(t *testing.T) {
+	native := &fakeBoxDropWindow{onTop: true}
+	previous, front := newBoxNativeWindow, frontmostPID
+	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
+	frontmostPID = func() int { return slackApp.PID }
+	t.Cleanup(func() { newBoxNativeWindow, frontmostPID = previous, front }) // registered first: it runs after the app's own cleanup, which still syncs the card
+	a := newBoxApp(t, helpertest.Opt("delay", "textio.selection:800"), &fakeChat{text: "A shorter text."})
+	focusedAtOpen := -1
+	a.postQueue(func() {
+		a.ov.native = true
+		a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea} // already placed: no screen to ask in a test
+		a.openBox(slackApp, session.StartRequest{Kind: store.KindRewrite, Target: slackApp})
+		focusedAtOpen = native.focused
+	})
+	a.pump("the selection read", func() bool { return a.box.open && a.sess.Selection != "" })
+	if focusedAtOpen != 0 {
+		t.Fatalf("the card took the front while the selection was read (focused %d)", focusedAtOpen)
+	}
+	a.pump("the card in front", func() bool { return native.focused == 1 })
 }
