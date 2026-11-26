@@ -35,6 +35,7 @@ const previewQuiet = previewDrain
 func (s *live) wrapUpPreview() {
 	s.mu.Lock()
 	ok := s.finalOnly
+	s.lateCandidates = false
 	s.mu.Unlock()
 	if !ok {
 		return

@@ -200,18 +200,25 @@ const (
 type sessionNotice struct {
 	text, more string
 	action     string
-	entry      string // actionRetry's history entry
-	warn       bool   // a warning (the session went on), not an error
-	ok         bool   // done as asked (a term added, a note saved), not a problem
-	seq        int    // which notice: its timer hides only itself
-	over       bool   // shows before the card that came back as its session ended (#4013)
+	entry      string        // actionRetry's history entry
+	warn       bool          // a warning (the session went on), not an error
+	ok         bool          // done as asked (a term added, a note saved), not a problem
+	seq        int           // which notice: its timer hides only itself
+	over       bool          // shows before the card that came back as its session ended (#4013)
+	hold       time.Duration // how long it shows; 0 is okTime or noticeTime
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.
 	then func()
 }
 
-// noticeTime is how long a notice shows.
-const noticeTime = 5 * time.Second
+// noticeTime is how long a notice shows. Shorter ones have nothing more
+// to read: okTime a green check (added, saved), noSpeechTime Nothing was
+// heard.
+const (
+	noticeTime   = 5 * time.Second
+	okTime       = 2 * time.Second
+	noSpeechTime = 1500 * time.Millisecond
+)
 
 // openSessions makes the session manager; connectHelper calls it once the
 // supervisor exists.
@@ -510,6 +517,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
 			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech, over: back}
+			if p.Code == session.ProblemNoSpeech {
+				n.hold = noSpeechTime
+			}
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}
@@ -535,7 +545,15 @@ func (a *app) showNotice(n sessionNotice) {
 	n.seq = seq
 	a.notice = &n
 	a.overlaySync()
-	a.later(noticeTime, func() {
+	hold := n.hold
+	switch {
+	case hold > 0:
+	case n.ok:
+		hold = okTime
+	default:
+		hold = noticeTime
+	}
+	a.later(hold, func() {
 		if a.notice != nil && a.notice.seq == seq {
 			if then := a.notice.then; then != nil {
 				then() // in its place, without hiding the overlay between

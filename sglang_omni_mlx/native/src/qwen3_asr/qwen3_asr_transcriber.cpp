@@ -184,6 +184,17 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
   return {{}, "", token_ids};
 }
 
+std::vector<int>
+Qwen3ASRTranscriber::AutoLanguageGuesses(const std::string &language,
+                                         const std::string &text) const {
+  const auto normalized = NormalizeLanguage(language);
+  if (!normalized.has_value() || text.empty()) {
+    return {};
+  }
+  return RetainedPrefix("language " + *normalized + kAsrTextMarker + text, 0)
+      .prefix_ids;
+}
+
 int Qwen3ASRTranscriber::MaxNewTokens(size_t sample_count,
                                       const TranscriptionOptions &options) {
   // Note (Jiaxin Deng): an unset or zero budget means the default.

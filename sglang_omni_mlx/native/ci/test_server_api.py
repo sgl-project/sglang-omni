@@ -30,6 +30,7 @@ from sglang_omni_mlx.native.ci.long_audio_corpus import build_recording, load_cl
 
 RUNTIME_BIN = os.environ.get("NATIVE_RUNTIME_BIN")
 DATA_ROOT = os.environ.get("CI_DATA_ROOT")
+AUTO_LANGUAGE_TEST_BIN = os.environ.get("NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST")
 pytestmark = pytest.mark.skipif(
     not RUNTIME_BIN or not DATA_ROOT, reason="set NATIVE_RUNTIME_BIN and CI_DATA_ROOT"
 )
@@ -39,14 +40,19 @@ LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 # Bounds on a server that hangs, so a test fails instead of waiting forever.
 STARTUP_TIMEOUT_SECONDS = 600
 SHUTDOWN_TIMEOUT_SECONDS = 10
+MODEL_TEST_TIMEOUT_SECONDS = 1800
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
     return Path(DATA_ROOT) / "models" / repo.replace("/", "_")
 
 
+def clip_path(clip_id: str) -> Path:
+    return Path(DATA_ROOT) / "corpus" / "v1" / "clips" / f"{clip_id}.wav"
+
+
 def clip(clip_id: str) -> bytes:
-    return (Path(DATA_ROOT) / "corpus" / "v1" / "clips" / f"{clip_id}.wav").read_bytes()
+    return clip_path(clip_id).read_bytes()
 
 
 def pcm16(clip_id: str) -> bytes:
@@ -717,6 +723,50 @@ def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> Non
     assert reused["text"] == sse_events(body)[0]["text"]
     # note (XXXXRT666): the head of the prompt and two 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_prompt_token_count"] > 208
+
+
+@pytest.mark.skipif(
+    not AUTO_LANGUAGE_TEST_BIN,
+    reason="set NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST",
+)
+@pytest.mark.parametrize("draft_repo", [None, DRAFT_REPO], ids=["greedy", "dflash"])
+def test_an_incorrect_auto_language_guess_does_not_replace_final_output(
+    draft_repo: str | None,
+) -> None:
+    assert AUTO_LANGUAGE_TEST_BIN is not None
+    draft_directory = (
+        model_directory(draft_repo) if draft_repo is not None else Path("-")
+    )
+    subprocess.run(
+        [
+            AUTO_LANGUAGE_TEST_BIN,
+            str(model_directory()),
+            str(draft_directory),
+            str(clip_path("0098_en_mid")),
+            "wrong_guess",
+        ],
+        check=True,
+        timeout=MODEL_TEST_TIMEOUT_SECONDS,
+    )
+
+
+@pytest.mark.skipif(
+    not AUTO_LANGUAGE_TEST_BIN,
+    reason="set NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST",
+)
+def test_auto_language_final_guess_requires_an_eligible_live_preview() -> None:
+    assert AUTO_LANGUAGE_TEST_BIN is not None
+    subprocess.run(
+        [
+            AUTO_LANGUAGE_TEST_BIN,
+            str(model_directory()),
+            "-",
+            str(clip_path("0098_en_mid")),
+            "eligibility",
+        ],
+        check=True,
+        timeout=MODEL_TEST_TIMEOUT_SECONDS,
+    )
 
 
 def test_a_louder_frame_after_the_last_window_rebuilds_the_prefill(

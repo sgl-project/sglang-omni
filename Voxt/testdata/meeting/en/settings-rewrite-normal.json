@@ -227,14 +227,14 @@
         },
         "asr_status": {
           "key": "rw-asr-model",
-          "text": "MOSS-Transcribe-Diarize · 2.1 GB download",
-          "model_id": "asr.moss",
+          "text": "Qwen3-ASR 1.7B (8bit) · 3.2 GB download",
+          "model_id": "asr.accurate",
           "actions": [
             {
               "kind": "download",
-              "model_id": "asr.moss",
+              "model_id": "asr.accurate",
               "label": "Download",
-              "accessibility_label": "Download MOSS-Transcribe-Diarize"
+              "accessibility_label": "Download Qwen3-ASR 1.7B (8bit)"
             }
           ]
         }
