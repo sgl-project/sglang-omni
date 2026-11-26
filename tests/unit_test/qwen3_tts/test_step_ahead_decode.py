@@ -28,8 +28,6 @@ from sglang_omni.models.qwen3_tts.model_runner import (
     Qwen3TTSModelRunner,
 )
 from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
-from sglang_omni.platforms.interface import OmniPlatform
-from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.scheduling.types import RequestOutput
 
 EOS = 42
@@ -171,7 +169,7 @@ def test_a_later_launch_keeps_its_inflight_marker_through_an_earlier_resolve():
     assert sched_req.data.inflight_feedback is later_row
 
 
-def test_inflight_repetition_penalty_scatters_into_the_launch_snapshot_only():
+def test_inflight_repetition_penalty_scatters_into_the_launch_snapshot():
     runner = make_runner()
     requests = [
         make_request("a", repetition_penalty=1.05),
@@ -190,6 +188,34 @@ def test_inflight_repetition_penalty_scatters_into_the_launch_snapshot_only():
     expected[0, 3] = 1.05
     expected[1, 5] = 1.2
     assert torch.allclose(scaling, expected)
+
+
+def test_staged_penalty_rows_restage_when_members_change_at_the_same_rows():
+    runner = make_runner()
+    first = [
+        make_request("a", repetition_penalty=1.05),
+        make_request("b", repetition_penalty=1.2),
+    ]
+    second = [make_request("c", repetition_penalty=1.5), first[1]]
+    first[0].data.inflight_codec_id = torch.tensor(3)
+    first[1].data.inflight_codec_id = torch.tensor(5)
+    second[0].data.inflight_codec_id = torch.tensor(7)
+
+    def launch_snapshot(requests: list[SimpleNamespace]) -> torch.Tensor:
+        scaling = torch.ones((2, 8))
+        runner.add_inflight_repetition_penalty(
+            SimpleNamespace(
+                sampling_info=SimpleNamespace(acc_scaling_penalties=scaling)
+            ),
+            requests,
+        )
+        return scaling
+
+    launch_snapshot(first)
+    restaged = launch_snapshot(second)
+
+    assert restaged[0, 7].item() == pytest.approx(1.5)
+    assert restaged[1, 5].item() == pytest.approx(1.2)
 
 
 def test_inflight_repetition_penalty_skips_rows_without_an_inflight_step():
@@ -383,10 +409,3 @@ def test_launch_keeps_the_live_penalizer_that_sampling_isolation_hides():
     with runner.execution_context(batch, isolate_sampling=True):
         assert batch.sampling_info.penalizer_orchestrator is None
         assert runner.live_penalizer_orchestrator is live_orchestrator
-
-
-def test_step_ahead_decode_is_an_xpu_default_only():
-    assert OmniPlatform.enable_tts_async_decode(object.__new__(OmniPlatform)) is False
-    assert (
-        XPUOmniPlatform.enable_tts_async_decode(object.__new__(XPUOmniPlatform)) is True
-    )

@@ -103,6 +103,8 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.platforms.interface import OmniPlatform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 from sglang_omni.preprocessing.cache_key import PromptRowCacheKeys
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
@@ -1238,19 +1240,18 @@ def test_qwen3_tts_extra_scheduler_kwargs_keeps_stream_output_builder() -> None:
     assert kwargs["prefill_coalesce_wait_ms"] == 120.0
 
 
-@pytest.mark.parametrize("platform_default", [True, False])
+@pytest.mark.parametrize(
+    ("platform_cls", "platform_default"),
+    [(OmniPlatform, False), (XPUOmniPlatform, True)],
+)
 @pytest.mark.parametrize("override", [None, True, False])
 def test_qwen3_tts_async_decode_follows_the_platform_unless_overridden(
     monkeypatch: pytest.MonkeyPatch,
+    platform_cls: type[OmniPlatform],
     platform_default: bool,
     override: bool | None,
 ) -> None:
-    monkeypatch.setattr(
-        qwen3_engine_builder.current_platform,
-        "enable_tts_async_decode",
-        lambda: platform_default,
-        raising=False,
-    )
+    monkeypatch.setattr(qwen3_engine_builder, "current_platform", platform_cls())
 
     builder = Qwen3TtsEngineBuilder(enable_async_decode=override)
 
