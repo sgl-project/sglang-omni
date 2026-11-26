@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
+from unittest.mock import Mock
 
+import huggingface_hub
 import pytest
 import torch
 from sglang.srt.mem_cache import allocation_sizing
+from sglang.srt.speculative import dflash_utils
 
 import sglang_omni.models.fun_asr.engine_builder as fun_asr_builder
 import sglang_omni.models.fun_asr.sglang_model as fun_asr_model
@@ -208,7 +212,10 @@ def test_fun_asr_threads_generation_batch_and_request_build_policy(
         lambda **kwargs: validations.append(kwargs),
     )
 
-    scheduler = fun_asr_stages.create_sglang_fun_asr_executor("dummy")
+    scheduler = fun_asr_stages.create_sglang_fun_asr_executor(
+        "dummy", total_gpu_memory_fraction=0.85
+    )
+    assert infra_kwargs[-1]["total_gpu_memory_fraction"] == 0.85
 
     assert build_kwargs["cuda_graph_max_bs"] == 64
     assert build_kwargs["cuda_graph_bs"] == [
@@ -360,7 +367,7 @@ def capture_builder(monkeypatch, **stage_kwargs) -> fun_asr_builder.FunASREngine
     return captured[0]
 
 
-def write_speculators_config(directory: Path) -> None:
+def write_speculators_config(directory: Path, **draft_overrides: str | int) -> None:
     (directory / "config.json").write_text(
         json.dumps(
             {
@@ -373,9 +380,100 @@ def write_speculators_config(directory: Path) -> None:
                 "mask_token_id": 151705,
                 "block_size": 8,
                 "transformer_layer_config": {"hidden_size": 1024},
+                **draft_overrides,
             }
         )
     )
+
+
+@pytest.mark.parametrize("pd_role", [None, "prefill"])
+def test_fun_asr_resolves_pinned_checkpoints_for_each_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pd_role: Literal["prefill", "decode"] | None,
+) -> None:
+    snapshot = Mock(return_value=str(tmp_path))
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    builder = capture_builder(monkeypatch, pd_role=pd_role)
+    assert builder.resolve_checkpoint("org/model") == "org/model"
+    assert builder.resolve_checkpoint("org/model@" + "a" * 40) == str(tmp_path)
+    snapshot.assert_called_once_with("org/model", revision="a" * 40)
+
+
+@pytest.mark.parametrize(
+    ("draft_kind", "error"),
+    [
+        ("selector", "without a candidate selector"),
+        ("window", "shared draft request table"),
+    ],
+)
+def test_fun_asr_pd_rejects_incompatible_drafts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, draft_kind: str, error: str
+) -> None:
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    overrides: dict[str, object] = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+    }
+    if draft_kind == "selector":
+        write_speculators_config(
+            tmp_path,
+            speculators_model_type="dflash2",
+            conv_kernel_size=3,
+            conv_group_size=1,
+            selector_rank=16,
+            selector_top_k=32,
+        )
+    else:
+        write_speculators_config(tmp_path)
+        overrides["speculative_draft_window_size"] = 32
+    builder = capture_builder(monkeypatch, pd_role="prefill")
+
+    try:
+        with pytest.raises(ValueError, match=error):
+            builder.adjust_overrides(overrides)
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
+
+
+@pytest.mark.parametrize("pd_role", [None, "prefill"])
+@pytest.mark.parametrize("sampling_available", [False, True])
+def test_fun_asr_dflash_uses_verifier_capability_and_pd_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pd_role: Literal["prefill", "decode"] | None,
+    sampling_available: bool,
+) -> None:
+    monkeypatch.setattr(fun_asr_builder.current_platform, "is_cuda", lambda: True)
+    monkeypatch.setattr(
+        dflash_utils, "is_dflash_sampling_verify_available", lambda: sampling_available
+    )
+    monkeypatch.setattr(
+        request_builders, "make_fun_asr_scheduler_adapters", lambda **kwargs: kwargs
+    )
+    write_speculators_config(tmp_path)
+    builder = capture_builder(monkeypatch, pd_role=pd_role)
+    overrides: dict[str, object] = {
+        "speculative_algorithm": "DFLASH",
+        "speculative_draft_model_path": str(tmp_path),
+        "disable_overlap_schedule": False,
+        "enable_mixed_chunk": True,
+    }
+
+    try:
+        builder.adjust_overrides(overrides)
+        assert builder.make_adapters(object())["greedy_only"] is not sampling_available
+        assert overrides["disable_overlap_schedule"] is (pd_role is not None)
+        assert overrides["enable_mixed_chunk"] is (pd_role is None)
+        assert builder.speculative_worker_class is ReducedVocabularyDFlashWorker
+    finally:
+        if builder.draft_checkpoint is not None:
+            builder.draft_checkpoint.cleanup()
+        else:
+            pass
 
 
 def test_a_full_length_request_fits_the_engine_context_under_a_draft(

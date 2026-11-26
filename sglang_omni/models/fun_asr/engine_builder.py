@@ -7,9 +7,11 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from functools import partial
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.mem_cache.allocation_sizing import get_alloc_reserve_per_decode
 from sglang.srt.server_args import ServerArgs
@@ -25,6 +27,7 @@ from sglang_omni.models.fun_asr.encoder_service import (
     FunASRPreLMEncoderService,
     build_cache_namespace,
 )
+from sglang_omni.models.fun_asr.pd import FunASRPDAdapter
 from sglang_omni.models.fun_asr.tool_funcs.audio_lengths import (
     fun_asr_low_frame_rate_length,
 )
@@ -40,7 +43,13 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
+from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 
 if TYPE_CHECKING:
@@ -87,7 +96,13 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         request_build_max_pending: int | None,
         early_request_builds: bool | None,
         stream_emit_interval_s: float,
+        pd_role: Literal["prefill", "decode"] | None = None,
     ) -> None:
+        if pd_role not in (None, "prefill", "decode"):
+            raise ValueError(f"Invalid Fun-ASR PD role: {pd_role!r}")
+        else:
+            pass
+        self.pd_role = pd_role
         self.max_running_requests = max_running_requests
         self.max_new_tokens = max_new_tokens
         self.mem_fraction_static = mem_fraction_static
@@ -123,9 +138,16 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         self.torch_mps_model_runner: FunASRTorchMpsModelRunner | None = None
         self.speculative_worker_class: type[BaseSpecWorker] | None = None
         self.draft_checkpoint: TemporaryDirectory[str] | None = None
+        self.dflash_greedy_only = False
         self.speculative_reserve_tokens = 0
         self.engine_context_padding = 0
         self.context_length = 0
+
+    def resolve_checkpoint(self, model_path: str) -> str:
+        if "@" in model_path:
+            return resolve_checkpoint(model_path)
+        else:
+            return super().resolve_checkpoint(model_path)
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -177,8 +199,13 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             raise ValueError(f"{self.model_name} DFLASH needs a CUDA GPU")
         else:
             # note (wilsonzheng0327): hosts without a draft never load its kernels.
+            from sglang.srt.speculative.dflash_utils import (
+                is_dflash_sampling_verify_available,
+            )
+
             from sglang_omni.speculative.dflash_draft import (
                 ReducedVocabularyDFlashWorker,
+                draft_worker_class,
                 materialize_draft_checkpoint,
             )
 
@@ -189,6 +216,23 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             )
             overrides["speculative_draft_model_path"] = self.draft_checkpoint.name
             overrides["speculative_draft_model_revision"] = None
+            if self.pd_role is not None:
+                if (
+                    draft_worker_class(self.draft_checkpoint.name)
+                    is not ReducedVocabularyDFlashWorker
+                ):
+                    raise ValueError(
+                        "Fun-ASR PD requires a draft without a candidate selector"
+                    )
+                elif overrides.get("speculative_draft_window_size") is not None:
+                    raise ValueError("Fun-ASR PD requires a shared draft request table")
+                else:
+                    pass
+                overrides["disable_overlap_schedule"] = True
+                overrides["enable_mixed_chunk"] = False
+            else:
+                pass
+            self.dflash_greedy_only = not is_dflash_sampling_verify_available()
             self.speculative_worker_class = ReducedVocabularyDFlashWorker
             # note (wilsonzheng0327): async decode under a draft means speculative
             # overlap, which this runner has not opted into.
@@ -216,6 +260,12 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             self.context_length += self.engine_context_padding
 
     def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        if self.pd_role is not None and (
+            not current_platform.is_cuda() or resolved_view(server_args).tp_size != 1
+        ):
+            raise ValueError("Fun-ASR PD requires CUDA and TP=1")
+        else:
+            pass
         if self.uses_torch_mps():
             if not current_platform.is_mps():
                 raise ValueError("Fun-ASR Torch/MPS requires the Apple Metal platform")
@@ -369,7 +419,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        if self.uses_torch_mps():
+        if self.uses_torch_mps() or self.pd_role == "decode":
             return
         else:
             pass
@@ -425,7 +475,11 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         model: FunAsrNanoForConditionalGeneration | None,
         server_args: ServerArgs | None,
     ) -> None:
-        if self.uses_torch_mps() or not self.enable_pre_lm_encoder:
+        if (
+            self.uses_torch_mps()
+            or not self.enable_pre_lm_encoder
+            or self.pd_role == "decode"
+        ):
             return
         else:
             pass
@@ -456,7 +510,7 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
             # draft; only the engine holds the reserve.
             context_length=self.context_length - self.engine_context_padding,
             audio_encoder_service=self.audio_encoder_service,
-            greedy_only=self.uses_torch_mps(),
+            greedy_only=self.uses_torch_mps() or self.dflash_greedy_only,
         )
 
     def extra_scheduler_callbacks(self) -> dict[str, Callable[[], None] | None]:
@@ -474,13 +528,46 @@ class FunASREngineBuilder(AsrEngineBuilder[request_builders.FunASRRequestData]):
         else:
             pass
 
+    def scheduler_factory(
+        self,
+    ) -> (
+        type[OmniScheduler[request_builders.FunASRRequestData]]
+        | partial[OmniScheduler[request_builders.FunASRRequestData]]
+    ):
+        if self.pd_role is None:
+            return super().scheduler_factory()
+        else:
+            pass
+        adapter = FunASRPDAdapter()
+        if self.pd_role == "prefill":
+            return partial(
+                OmniPrefillScheduler,
+                stage_name="asr",
+                partner_stage="asr_decode",
+                state_builder=adapter.build_state,
+                enable_dflash=self.draft_checkpoint is not None,
+            )
+        else:
+            return partial(
+                OmniDecodeScheduler,
+                stage_name="asr_decode",
+                resume_schema=adapter.schema,
+                state_restorer=adapter.restore_state,
+                emit_transferred_token=True,
+                enable_dflash=self.draft_checkpoint is not None,
+            )
+
     def extra_scheduler_kwargs(
         self,
     ) -> SchedulerExtras[request_builders.FunASRRequestData]:
         return {
-            "stream_output_builder": request_builders.make_fun_asr_stream_output_builder(
-                tokenizer=self.tokenizer,
-                min_emit_interval_s=self.stream_emit_interval_s,
+            "stream_output_builder": (
+                None
+                if self.pd_role == "prefill"
+                else request_builders.make_fun_asr_stream_output_builder(
+                    tokenizer=self.tokenizer,
+                    min_emit_interval_s=self.stream_emit_interval_s,
+                )
             ),
             "enable_async_decode": (
                 False if self.uses_torch_mps() else self.enable_async_decode

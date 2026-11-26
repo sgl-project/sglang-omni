@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
+from functools import partial
 from numbers import Integral
 from typing import TYPE_CHECKING, ClassVar, Generic
 
@@ -536,8 +537,6 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         result_adapter: Callable[[RequestDataT], StagePayload] | None,
         extra_scheduler_kwargs: SchedulerExtras[RequestDataT],
     ) -> "OmniScheduler[RequestDataT]":
-        from sglang_omni.scheduling import omni_scheduler
-
         scheduler_kwargs = {
             "tp_worker": model_worker,
             "tree_cache": tree_cache,
@@ -553,7 +552,14 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
         }
         scheduler_kwargs.update(self.extra_scheduler_callbacks())
         scheduler_kwargs.update(extra_scheduler_kwargs)
-        return omni_scheduler.OmniScheduler(**scheduler_kwargs)
+        return self.scheduler_factory()(**scheduler_kwargs)
+
+    def scheduler_factory(
+        self,
+    ) -> type[OmniScheduler[RequestDataT]] | partial[OmniScheduler[RequestDataT]]:
+        from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+        return OmniScheduler
 
     def post_scheduler_setup(
         self,

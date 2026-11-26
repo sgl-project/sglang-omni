@@ -279,7 +279,7 @@ def make_fun_asr_scheduler_adapters(
         temperature = float(params.get("temperature") or 0.0)
         if greedy_only and temperature != 0.0:
             raise ValueError(
-                "Fun-ASR Apple currently requires temperature=0 (greedy decoding)"
+                "This Fun-ASR configuration supports only greedy decoding (temperature=0)"
             )
         else:
             pass

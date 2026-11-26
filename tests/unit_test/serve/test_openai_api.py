@@ -4453,28 +4453,6 @@ def test_transcription_endpoint_maps_input_length_error_to_400() -> None:
     assert "exceeds the maximum allowed length" in response.json()["detail"]
 
 
-def test_transcription_endpoint_maps_runtime_input_length_error_to_400() -> None:
-    transcription_client = FailingTranscriptionClient(
-        "Input length (140000 tokens) exceeds the maximum allowed length "
-        "(131071 tokens).",
-        exc_type=RuntimeError,
-    )
-    client = TestClient(
-        create_app(
-            transcription_client,
-            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
-        )
-    )
-
-    response = client.post(
-        "/v1/audio/transcriptions",
-        data={"model": "OpenMOSS-Team/MOSS-Transcribe-Diarize"},
-        files={"file": ("sample.wav", b"RIFF", "audio/wav")},
-    )
-
-    assert response.status_code == 400
-
-
 def test_transcription_endpoint_maps_processor_max_length_error_to_400() -> None:
     transcription_client = FailingTranscriptionClient(
         "Prompt/audio sequence exceeds max_length=132096"
@@ -4601,30 +4579,37 @@ def test_speech_to_text_returns_spec_tokens_details_only_when_requested(
         assert "sglext" not in body
 
 
-def test_transcription_stream_maps_input_length_error_to_400() -> None:
-    transcription_client = FailingTranscriptionClient(
-        "Input length (140000 tokens) exceeds the maximum allowed length "
-        "(131071 tokens).",
-        exc_type=RuntimeError,
-    )
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("model", "error"),
+    [
+        (
+            "OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            "Input length (140000 tokens) exceeds the maximum allowed length (131071 tokens).",
+        ),
+        (
+            "FunAudioLLM/Fun-ASR-Nano-2512-hf",
+            "This Fun-ASR configuration supports only greedy decoding (temperature=0)",
+        ),
+    ],
+)
+def test_transcription_rejects_invalid_model_input_before_headers(
+    stream: bool, model: str, error: str
+) -> None:
     client = TestClient(
         create_app(
-            transcription_client,
-            model_name="OpenMOSS-Team/MOSS-Transcribe-Diarize",
+            FailingTranscriptionClient(error, exc_type=RuntimeError), model_name=model
         )
     )
 
     response = client.post(
         "/v1/audio/transcriptions",
-        data={
-            "model": "OpenMOSS-Team/MOSS-Transcribe-Diarize",
-            "stream": "true",
-        },
+        data={"model": model, "stream": str(stream).lower()},
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
     )
 
     assert response.status_code == 400
-    assert "exceeds the maximum allowed length" in response.json()["detail"]
+    assert response.json()["detail"] == error
 
 
 def test_transcription_first_chunk_disconnect_aborts_backend() -> None:
