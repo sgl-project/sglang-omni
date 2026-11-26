@@ -161,11 +161,13 @@ python -m sglang_omni.cli serve --model-path tencent/AuK \
 
 The kernel derives the head dimension and output dtype from the model. It
 leaves the conditioner, VAE, and sampling recipe unchanged. Other devices and
-AuK-Flash use the native path. On XPU the kernel's output is within about one
-fp32 ulp of the native ops rather than bitwise equal to them. The first
-request may include Triton JIT compilation; the 32-step AuK checkpoint has
-been validated on H100 with FP32 weights under BF16 autocast and with native
-BF16 weights.
+AuK-Flash use the native path. On XPU the kernel is not bitwise equal to the
+native ops: with FP32 weights under BF16 autocast its output is within about
+one FP32 ulp of them, and with the default BF16 weights it differs at BF16
+rounding, about 1e-2 of the largest value on an Arc Pro B60. The first request
+may include Triton JIT compilation; the 32-step AuK checkpoint has been
+validated on H100 with FP32 weights under BF16 autocast and with native BF16
+weights.
 
 ## SeedTTS Evaluation
 
