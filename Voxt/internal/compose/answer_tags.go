@@ -39,7 +39,7 @@ func stripInputTags(s string, content bool, request string, input ...string) str
 			j += i + len(open)
 			inner := strings.TrimSpace(s[i+len(open) : j])
 			whole := strings.TrimSpace(s[:i]) == "" && strings.TrimSpace(s[j+len(close):]) == ""
-			positiveIntent, negatedIntent := inputTemplateIntent(request, name, inner)
+			positiveIntent, negatedIntent := inputTemplateIntent(request, name)
 			requestedTemplate := content && positiveIntent
 			keepLiteral := content && currentHasLiteral && (!requestHasLiteral || !negatedIntent)
 			if (whole && !requestedTemplate || inner != "" && strings.Contains(sent, "\n"+inner+"\n")) && !keepLiteral {
@@ -64,7 +64,7 @@ func requestFromInput(input []string) string {
 	return request
 }
 
-func inputTemplateIntent(request, name, answer string) (bool, bool) {
+func inputTemplateIntent(request, name string) (bool, bool) {
 	splitWords := func(text string) []string {
 		return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
 			return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_')
@@ -132,11 +132,8 @@ func inputTemplateIntent(request, name, answer string) (bool, bool) {
 		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您") || strings.Contains(clause, "能不能")
 		modalPrefix := strings.TrimSpace(prefix)
 		politeModal := strings.HasPrefix(modalPrefix, "can you") || strings.HasPrefix(modalPrefix, "could you") || strings.HasPrefix(modalPrefix, "你能") || strings.HasPrefix(modalPrefix, "你可以") || strings.HasPrefix(modalPrefix, "您能") || strings.HasPrefix(modalPrefix, "您可以") || strings.HasPrefix(modalPrefix, "能不能")
-		placeholderOpen, placeholderClose := strings.IndexByte(answer, '{'), strings.IndexByte(answer, '}')
-		hasPlaceholder := placeholderOpen >= 0 && placeholderClose > placeholderOpen+1
-		// A polite question is a template request only when the answer has the
-		// structure of a template, so description and explanation verbs stay out.
-		questionIsNotARequest := question && !positiveQuestion && (!politeModal || !secondPerson || !hasPlaceholder)
+		informationQuestion := question && (hasWord(clauseWords, "explain", "describe") || strings.Contains(clause, "tell me") || strings.Contains(clause, "解释") || strings.Contains(clause, "描述"))
+		questionIsNotARequest := question && !positiveQuestion && (informationQuestion || !politeModal && (!secondPerson || hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要")))
 		if negated || questionIsNotARequest {
 			positiveMention, negatedMention = false, true
 			continue
@@ -155,7 +152,7 @@ func stripPartialInputTags(s string, content bool, request string, input ...stri
 		if i >= 0 {
 			rest = s[i+len(open):]
 		}
-		positiveIntent, negatedIntent := inputTemplateIntent(request, name, rest)
+		positiveIntent, negatedIntent := inputTemplateIntent(request, name)
 		requestedTemplate := content && positiveIntent
 		currentHasLiteral := len(input) > 0 && (strings.Contains(input[0], open) || strings.Contains(input[0], close))
 		requestHasLiteral := strings.Contains(request, open) || strings.Contains(request, close)
