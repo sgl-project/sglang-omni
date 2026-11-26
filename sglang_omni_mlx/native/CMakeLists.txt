@@ -92,9 +92,9 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
-# Note (wilsonzheng0327): the Kaldi fbank pieces and the SAN-M encoder keep the
+# Note (wilsonzheng0327): the Kaldi mel filters and the Hamming window keep the
 # rounding they had in campplus and sensevoice_asr.
-set_source_files_properties(src/common/kaldi_fbank.cpp src/common/sanm_encoder.cpp
+set_source_files_properties(src/common/kaldi_fbank.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 # Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
 # operations.
