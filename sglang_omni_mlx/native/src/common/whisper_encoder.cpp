@@ -27,7 +27,8 @@ WeightMap WhisperConvMlxLayout(WeightMap weights, const std::string &prefix) {
 
 mx::array WhisperEncoderLayer(const Checkpoint &checkpoint, const mx::array &x,
                               const std::string &layer_prefix, int head_count,
-                              bool rotary_query_key) {
+                              bool rotary_query_key,
+                              const std::optional<mx::array> &key_mask) {
   const int batch = x.shape(0);
   const int length = x.shape(1);
   const int width = x.shape(2);
@@ -52,7 +53,8 @@ mx::array WhisperEncoderLayer(const Checkpoint &checkpoint, const mx::array &x,
   }
   const mx::array attended = mx::fast::scaled_dot_product_attention(
       queries, keys, project("v_proj"),
-      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)));
+      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)),
+      /*window_size=*/-1, "", key_mask);
   const mx::array hidden = mx::add(
       x, checkpoint.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
                                        {batch, length, width}),
