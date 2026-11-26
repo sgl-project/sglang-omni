@@ -246,18 +246,30 @@ func runLatencyRounds(rounds, attempt int, runRound func(int)) {
 }
 
 func TestLatencyAttemptRunsOneColdWarmPair(t *testing.T) {
-	var sessions []string
-	runLatencyRounds(2, 1, func(round int) {
-		if len(sessions) > 0 {
-			t.Fatalf("selected attempt ran another cold+warm pair in round %d", round)
-		}
-		if round != 1 {
-			t.Fatalf("selected attempt label = %d, want 1", round)
-		}
-		sessions = append(sessions, "cold", "warm")
-	})
-	if !slices.Equal(sessions, []string{"cold", "warm"}) {
-		t.Fatalf("sessions = %v, want one cold+warm pair", sessions)
+	tests := []struct {
+		name            string
+		rounds, attempt int
+		wantRounds      []int
+	}{
+		{name: "selected attempt", rounds: 2, attempt: 1, wantRounds: []int{1}},
+		{name: "selected attempt label", rounds: 3, attempt: 2, wantRounds: []int{2}},
+		{name: "all rounds", rounds: 2, wantRounds: []int{1, 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotRounds []int
+			var sessions []string
+			runLatencyRounds(test.rounds, test.attempt, func(round int) {
+				if len(gotRounds) >= len(test.wantRounds) {
+					t.Fatalf("extra cold+warm pair in round %d", round)
+				}
+				gotRounds = append(gotRounds, round)
+				sessions = append(sessions, "cold", "warm")
+			})
+			if !slices.Equal(gotRounds, test.wantRounds) || len(sessions) != 2*len(test.wantRounds) {
+				t.Fatalf("rounds = %v, sessions = %v, want rounds %v with one cold+warm pair each", gotRounds, sessions, test.wantRounds)
+			}
+		})
 	}
 }
 
