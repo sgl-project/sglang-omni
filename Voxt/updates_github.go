@@ -17,8 +17,8 @@ package main
 // check is older than that, a check runs in the background: a newer
 // version surfaces in the sidebar footer update button and the menu bar
 // tray, never a window. A failed background check shows nothing: the log
-// says it. The preferences (automatic checks, the last check, legacy
-// dismissed version) are in settings.Updates.
+// says it. The preferences (automatic checks, the last check, the last
+// available version, legacy dismissed version) are in settings.Updates.
 
 import (
 	"context"
@@ -227,7 +227,7 @@ func (r *releaseUpdates) Prefs() updatePrefs {
 	u := r.store.Get().Updates
 	avail := u.Available
 	if avail != "" {
-		if v, ok := parseVersion(avail); !ok || !r.newer(v) || u.Dismissed == avail {
+		if v, ok := parseVersion(avail); !ok || !r.newer(v) || (v[3] == 0 && !u.BetaOn(r.version)) || u.Dismissed == avail {
 			avail = ""
 		}
 	}
@@ -393,7 +393,7 @@ func (a *app) checkReleasesNow() {
 func (a *app) downloadRelease(address string) { openExternal(address) }
 
 // autoCheckReleases is the background check, when it is on and the last
-// one is a day old: a newer version becomes a card.
+// one is a day old: a newer version surfaces in the sidebar and tray.
 func (a *app) autoCheckReleases() {
 	r := a.releases()
 	if r == nil {

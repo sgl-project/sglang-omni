@@ -238,7 +238,9 @@ func TestReleaseCheckMergeBetas(t *testing.T) {
 func newReleaseApp(t *testing.T, srv *ghServer) (*app, *ui.Tester) {
 	t.Helper()
 	a, _, tt := newTestApp(t)
-	a.upd = newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+	r := newReleaseUpdates(a.settings, srv.start(t), "2.0.3", a.checkReleasesNow)
+	r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+	a.upd = r
 	a.connectUpdates()
 	return a, tt
 }
@@ -347,7 +349,7 @@ func TestReleaseAutoCheck(t *testing.T) {
 	}
 	a.navigate("/home")
 	if !has(tt, "Update 2.0.4") {
-		t.Fatalf("header pill: %q", firstTexts(tt))
+		t.Fatalf("sidebar update button: %q", firstTexts(tt))
 	}
 	if top := a.trayItems()[0].Label; top != "Update available (2.0.4)…" {
 		t.Fatalf("tray top: %q", top)
@@ -400,6 +402,36 @@ func TestReleaseAutoCheck(t *testing.T) {
 	if len(cards(a)) != 0 || a.prefs.Updates.Available != "" {
 		t.Errorf("the installed version's state stayed: cards=%+v avail=%q", cards(a), a.prefs.Updates.Available)
 	}
+
+	// Turning Beta updates on finds a beta; turning it off re-checks and clears
+	// the beta from the sidebar, tray and persisted settings (and hides it even
+	// if the follow-up check fails offline).
+	r := newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)
+	r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+	a.upd = r
+	a.connectUpdates()
+	srv.set(func(s *ghServer) {
+		s.list = ghList([]string{"voxt-v2.0.4-beta.1", "pre"}, []string{"voxt-v2.0.3"})
+	})
+	a.setBeta(true)
+	if a.updPrefs.AvailableVersion != "2.0.4-beta.1" || a.settings.Get().Updates.Available != "2.0.4-beta.1" {
+		t.Fatalf("beta on: avail=%q saved=%q", a.updPrefs.AvailableVersion, a.settings.Get().Updates.Available)
+	}
+	a.setBeta(false)
+	if a.updPrefs.AvailableVersion != "" || a.settings.Get().Updates.Available != "" {
+		t.Fatalf("beta off: avail=%q saved=%q", a.updPrefs.AvailableVersion, a.settings.Get().Updates.Available)
+	}
+	// Turning Beta off while offline still hides the stale beta immediately.
+	a.setBeta(true)
+	if a.updPrefs.AvailableVersion != "2.0.4-beta.1" {
+		t.Fatalf("beta on again: avail=%q", a.updPrefs.AvailableVersion)
+	}
+	srv.set(func(s *ghServer) { s.status = http.StatusBadGateway })
+	a.setBeta(false)
+	if a.updPrefs.AvailableVersion != "" {
+		t.Fatalf("beta off offline: avail=%q, want empty", a.updPrefs.AvailableVersion)
+	}
+	srv.set(func(s *ghServer) { s.status = 0 })
 
 	// Back on 2.0.3: failures say nothing; off, nothing is asked.
 	a.upd = newReleaseUpdates(a.settings, srv.url(), "2.0.3", a.checkReleasesNow)

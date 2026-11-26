@@ -377,10 +377,15 @@ func TestSidebarUpdateControlAndTray(t *testing.T) {
 		t.Fatalf("beta button missing: %q", firstTexts(tt))
 	}
 
-	// Turning Beta updates on triggers an immediate background check.
+	// Changing Beta updates in either direction triggers an immediate background
+	// check (turning on finds newer betas; turning off clears a stale beta offer).
 	a.setBeta(true)
 	if f.bgChecked() != 1 {
 		t.Fatalf("setBeta(true) bgChecks = %d, want 1", f.bgChecked())
+	}
+	a.setBeta(false)
+	if f.bgChecked() != 2 {
+		t.Fatalf("setBeta(false) bgChecks = %d, want 2", f.bgChecked())
 	}
 
 	// Background install finished: sidebar switches to "Restart to update"

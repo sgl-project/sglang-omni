@@ -69,7 +69,7 @@ type updateService interface {
 }
 
 // updatePrefs is a snapshot of the updater for Settings → About and the
-// shell's update pill and tray menu.
+// sidebar update control and tray menu.
 type updatePrefs struct {
 	Enabled          bool // this build can update itself
 	CheckOnly        bool // it only checks GitHub's releases (updates_github.go)
@@ -104,10 +104,11 @@ type updateState struct {
 	updPrefs   updatePrefs   // as Prefs last said
 	updKnown   bool          // updPrefs was read
 	updLoading bool
+	updReload  bool // OnChange arrived while a Prefs read was in flight
 	// bundleStale reports that the app on disk is another version than
 	// the one running (appbundle.Updated); nil: never (tests set it).
 	bundleStale func() bool
-	// bundleUpdated is set once it did: the card asks to restart.
+	// bundleUpdated is set once it did: the sidebar, tray, Home and About ask to restart.
 	bundleUpdated bool
 	updUI         updatesLocalUI
 	releaseState  // updates_github.go
@@ -144,20 +145,28 @@ func (a *app) connectUpdates() {
 
 // loadUpdates reads the updater's preferences in the background.
 func (a *app) loadUpdates() {
-	if a.upd == nil || a.updLoading || a.updKnown {
+	if a.upd == nil || a.updKnown {
 		return
 	}
-	a.updLoading = true
+	if a.updLoading {
+		a.updReload = true
+		return
+	}
+	a.updLoading, a.updReload = true, false
 	upd := a.upd
 	a.async(func() {
 		p := upd.Prefs()
 		a.post(func() {
-			prevAvail := a.updPrefs.AvailableVersion
+			prevAvail, prevInst := a.updPrefs.AvailableVersion, a.updPrefs.InstalledVersion
 			a.updPrefs, a.updKnown, a.updLoading = p, true, false
 			if p.InstalledVersion != "" && !a.bundleUpdated {
 				a.appUpdated()
-			} else if p.AvailableVersion != prevAvail {
+			} else if p.AvailableVersion != prevAvail || p.InstalledVersion != prevInst {
 				a.buildTrayMenu()
+			}
+			if a.updReload {
+				a.updKnown, a.updReload = false, false
+				a.loadUpdates()
 			}
 		})
 	})
@@ -226,12 +235,15 @@ func (a *app) applyBeta() {
 	}
 }
 
-// setBeta is the user's choice of Beta updates, which lasts. Turning it on
-// kicks off a background check so newer betas show right away.
+// setBeta is the user's choice of Beta updates, which lasts. Changing it
+// kicks off a background check in both directions so newer betas show right
+// away when turned on and a stale beta offer clears when turned off.
 func (a *app) setBeta(on bool) {
 	a.updateSettings(func(s *settings.Settings) { s.Updates.Beta = &on })
 	a.applyBeta()
-	if on && a.upd != nil {
+	if a.upd != nil {
+		a.updKnown = false
+		a.loadUpdates()
 		upd := a.upd
 		a.async(upd.CheckBackground)
 	}
