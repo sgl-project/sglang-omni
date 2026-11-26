@@ -168,7 +168,7 @@ Apache License 2.0（[LICENSE](LICENSE)），与本仓其余部分一致。版�
 
 [![回到顶部][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.4/Voxt-2.1.4-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

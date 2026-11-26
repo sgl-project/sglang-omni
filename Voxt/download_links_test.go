@@ -32,24 +32,19 @@ func TestStableBehaviorTestsRunBeforeVersionRewrite(t *testing.T) {
 	}
 }
 
+const publishedStableVersion = "2.1.3"
+
 // TestDownloadLinks: every Voxt 2 download link in the docs downloads the
-// disk image of the version in mygo.json in one click, not a release page or
-// a release search (GitHub's search did not list the newest releases). The
-// tutorials' install steps may also name the version's release page, for
-// a download that does not start.
+// latest published disk image in one click, not a release page or a release
+// search (GitHub's search did not list the newest releases). The published
+// version can lag mygo.json while the next release is being built. The
+// tutorials' install steps may also name that release page for a download
+// that does not start.
 func TestDownloadLinks(t *testing.T) {
-	var cfg struct{ Version string }
-	b, err := os.ReadFile("mygo.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		t.Fatal(err)
-	}
 	link := regexp.MustCompile(`https://github\.com/sgl-project/sglang-omni/releases[^\s)\]>"]*`)
 	dmg := regexp.MustCompile(`^https://github\.com/sgl-project/sglang-omni/releases/download/voxt-v([0-9.]+)/Voxt-([0-9.]+?)(-arm64)?\.dmg$`)
 	tag := regexp.MustCompile(`^https://github\.com/sgl-project/sglang-omni/releases/tag/voxt-v([0-9.]+)$`)
-	want := "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v" + cfg.Version + "/Voxt-" + cfg.Version + "-arm64.dmg"
+	want := "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v" + publishedStableVersion + "/Voxt-" + publishedStableVersion + "-arm64.dmg"
 	files := []struct {
 		path    string
 		tagPage bool
@@ -80,8 +75,8 @@ func TestDownloadLinks(t *testing.T) {
 				continue
 			}
 			if tm := tag.FindStringSubmatch(u); f.tagPage && tm != nil {
-				if tm[1] != cfg.Version {
-					t.Errorf("%s: %s, want the release page of %s", file, u, cfg.Version)
+				if tm[1] != publishedStableVersion {
+					t.Errorf("%s: %s, want the release page of %s", file, u, publishedStableVersion)
 				}
 				continue
 			}
@@ -99,7 +94,7 @@ func TestDownloadLinks(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("%s: no download link for Voxt %s", file, cfg.Version)
+			t.Errorf("%s: no download link for Voxt %s", file, publishedStableVersion)
 		}
 	}
 }
