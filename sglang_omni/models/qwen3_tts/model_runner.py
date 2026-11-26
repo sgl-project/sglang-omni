@@ -54,6 +54,9 @@ class Qwen3TTSModelInfo(TypedDict):
     predictor_cuda_graph: PredictorGraphStats
 
 
+PenaltyRowsKey = tuple[tuple[tuple[str, int | None], ...], tuple[int, ...]]
+
+
 @dataclass(kw_only=True, slots=True)
 class Qwen3TTSLaunchedStep:
     """A launched decode step's sampled ids, codec frame and inputs, held until resolve."""
@@ -85,7 +88,7 @@ class Qwen3TTSModelRunner(ModelRunner):
     codes_event_module: ModuleType | None = None
     resolved_step: Qwen3TTSLaunchedStep | None = None
     launch_input_rows: list[torch.Tensor] | None = None
-    penalty_rows_key: tuple[object, ...] | None = None
+    penalty_rows_key: PenaltyRowsKey | None = None
     penalty_rows: tuple[torch.Tensor, torch.Tensor] | None = None
     live_penalizer_orchestrator: BatchedPenalizerOrchestrator | None = None
 
@@ -213,11 +216,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         result: GenerationBatchResult,
         forward_batch: ForwardBatch | None,
         requests: list[SchedulerRequest],
-    ) -> Qwen3TTSLaunchedStep | None:
-        if not requests or result.next_token_ids is None:
-            return None
-        else:
-            pass
+    ) -> Qwen3TTSLaunchedStep:
+        assert (
+            requests and result.next_token_ids is not None
+        ), "Qwen3-TTS step-ahead launches only sampled, non-empty decode batches"
         layer0_codes = result.next_token_ids
         self.run_code_predictor(result, forward_batch, layer0_codes)
         batch_size = len(requests)
@@ -252,10 +254,9 @@ class Qwen3TTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> None:
         del forward_batch, schedule_batch
-        if launch_buf is None or result is None or not requests:
-            return
-        else:
-            pass
+        assert (
+            launch_buf is not None and result is not None and requests
+        ), "Qwen3-TTS resolves only the step its own launch staged"
         result.next_token_ids = launch_buf.ids[: len(requests)]
         self.resolved_step = launch_buf
 
@@ -419,12 +420,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         batch_size = len(scheduler_output.requests)
         codes_snap = self.model.output_codes[:batch_size].detach().clone()
         embeds_snap = self.model.output_embeds[:batch_size].detach().clone()
-        codes_ready = None
-        if self.codes_event_module is not None:
-            codes_ready = self.codes_event_module.Event()
-            codes_ready.record()
-        else:
-            pass
+        codes_ready = self.record_codes_ready()
         for row_idx, sched_req in enumerate(scheduler_output.requests):
             req_output = outputs[sched_req.request_id]
             # note (ratish): a middle prefill chunk samples at a prompt row; SGLang drops
@@ -559,7 +555,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        key = (
+        key: PenaltyRowsKey = (
             tuple(
                 (sched_req.request_id, sched_req.data.decode_prep_epoch)
                 for sched_req in requests
