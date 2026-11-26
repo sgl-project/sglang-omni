@@ -203,6 +203,122 @@ def test_inflight_repetition_penalty_skips_rows_without_an_inflight_step():
     runner.add_inflight_repetition_penalty(untouched, requests)
 
 
+class ReusedBufferTalker:
+    """Writes every predictor step into the same output buffers, as the graph does."""
+
+    def __init__(self, rows: int) -> None:
+        self.config = SimpleNamespace(codec_eos_token_id=EOS)
+        self.output_codes = torch.zeros((rows, 3), dtype=torch.long)
+        self.output_embeds = torch.zeros((rows, 2))
+        self.decode_feedback_embedding = torch.nn.Embedding(rows, 2)
+
+    def prepare_decode_buffers(self, requests: list[SimpleNamespace]) -> None:
+        del requests
+
+    def code_predictor_forward(
+        self,
+        layer0_codes: torch.Tensor,
+        hidden: torch.Tensor,
+        *,
+        semantic_positions: torch.Tensor,
+    ) -> None:
+        del hidden, semantic_positions
+        rows = layer0_codes.shape[0]
+        self.output_codes[:rows] = layer0_codes + torch.arange(3)
+        self.output_embeds[:rows] = layer0_codes.float() + 0.5
+
+
+def launch_lookahead_step(
+    runner: Qwen3TTSModelRunner,
+    requests: list[SimpleNamespace],
+    tokens: list[int],
+    scaling: torch.Tensor,
+) -> tuple[Qwen3TTSLaunchedStep, SimpleNamespace]:
+    rows = len(requests)
+    forward_batch = SimpleNamespace(
+        input_ids=torch.zeros(rows, dtype=torch.long),
+        positions=torch.zeros(rows, dtype=torch.long),
+        forward_mode=SimpleNamespace(is_decode=lambda: True),
+        sampling_info=SimpleNamespace(acc_scaling_penalties=scaling),
+    )
+    runner.before_decode(forward_batch, None, requests, is_lookahead=True)
+    result = SimpleNamespace(
+        next_token_ids=torch.tensor(tokens),
+        logits_output=SimpleNamespace(hidden_states=torch.zeros((rows, 2))),
+    )
+    return runner.post_decode_launch(result, forward_batch, requests), result
+
+
+def resolve_lookahead_step(
+    runner: Qwen3TTSModelRunner,
+    launched: Qwen3TTSLaunchedStep,
+    result: SimpleNamespace,
+    requests: list[SimpleNamespace],
+) -> list[int]:
+    runner.post_decode_resolve(launched, result, None, None, requests)
+    tokens = result.next_token_ids.tolist()
+    outputs = {
+        sched_req.request_id: RequestOutput(sched_req.request_id, data=token)
+        for sched_req, token in zip(requests, tokens, strict=True)
+    }
+    runner.post_process_outputs(None, SimpleNamespace(requests=requests), outputs)
+    return tokens
+
+
+def test_overlapped_launches_on_reused_buffers_resolve_their_own_step():
+    runner = make_runner()
+    runner.model = ReusedBufferTalker(rows=2)
+    runner.row_ids_cache = None
+    runner.host_staging_buffers = [torch.zeros(2, dtype=torch.long) for _ in range(2)]
+    runner.staging_slot = 0
+    requests = [make_request("r0"), make_request("r1")]
+    for row, sched_req in enumerate(requests):
+        sched_req.data.pending_feedback_queue.append(torch.full((2,), 100.0 + row))
+        sched_req.data.pending_text_queue.extend(
+            [torch.full((2,), 10.0 * step + row) for step in range(3)]
+        )
+    scaling = torch.ones((2, 16))
+
+    first, first_result = launch_lookahead_step(runner, requests, [7, 8], scaling)
+    second, second_result = launch_lookahead_step(runner, requests, [9, 10], scaling)
+
+    assert scaling[0, 7].item() == pytest.approx(1.05)
+    assert scaling[1, 8].item() == pytest.approx(1.05)
+    assert resolve_lookahead_step(runner, first, first_result, requests) == [7, 8]
+    for row, sched_req in enumerate(requests):
+        data = sched_req.data
+        assert [chunk.tolist() for chunk in data.output_codes] == [
+            [7 + row, 8 + row, 9 + row]
+        ]
+        assert [entry.tolist() for entry in data.pending_feedback_queue] == [
+            [7.5 + row] * 2
+        ]
+        assert [
+            entry.tolist() for entry in QwenTalkerModelRunner.decode_input_history(data)
+        ] == [[100.0 + 2 * row] * 2]
+        assert data.inflight_feedback is second.feedback_rows[row]
+        assert int(data.inflight_codec_id) == 9 + row
+
+    assert resolve_lookahead_step(runner, second, second_result, requests) == [9, 10]
+    for row, sched_req in enumerate(requests):
+        data = sched_req.data
+        assert [chunk.tolist() for chunk in data.output_codes] == [
+            [7 + row, 8 + row, 9 + row],
+            [9 + row, 10 + row, 11 + row],
+        ]
+        assert [entry.tolist() for entry in data.pending_feedback_queue] == [
+            [9.5 + row] * 2
+        ]
+        assert [
+            entry.tolist() for entry in QwenTalkerModelRunner.decode_input_history(data)
+        ] == [[100.0 + 2 * row] * 2, [17.5 + 2 * row] * 2]
+        assert [entry.tolist() for entry in data.pending_text_queue] == [
+            [20.0 + row] * 2
+        ]
+        assert data.speech_output_tokens == 2
+        assert data.inflight_feedback is None and data.inflight_codec_id is None
+
+
 def test_step_ahead_decode_is_an_xpu_default_only():
     assert OmniPlatform.enable_tts_async_decode(object.__new__(OmniPlatform)) is False
     assert (
