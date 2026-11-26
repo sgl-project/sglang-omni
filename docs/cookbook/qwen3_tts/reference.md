@@ -18,7 +18,7 @@ These defaults describe the SGLang-Omni Python server. The [native Apple Silicon
 | `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text`, or only `speaker_embedding`: the checkpoint's speaker-encoder x-vector of the clip, 1024 values for 0.6B Base and 2048 for 1.7B Base. See [Precomputed Speaker Embedding](#precomputed-speaker-embedding) |
 | `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
 | `language` | `auto` | Target-language hint. Supported languages: Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish, and Italian |
-| `temperature` | `0.9` | Sampling temperature |
+| `temperature` | `0.9` | Sampling temperature for Talker and Subtalker; `0` makes both greedy unless Subtalker settings are explicitly overridden |
 | `top_p` | `1.0` | Top-p sampling |
 | `top_k` | `50` | Top-k sampling |
 | `repetition_penalty` | `1.05` | Repetition penalty |
@@ -31,6 +31,8 @@ These defaults describe the SGLang-Omni Python server. The [native Apple Silicon
 | `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
 | `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
+
+For greedy speech generation, send `"temperature": 0` and `"repetition_penalty": 1` to `/v1/audio/speech`. This disables random sampling in both predictors and repetition scaling in the Talker. Explicit `subtalker_dosample` and `subtalker_temperature` values in request parameters or `stage_params.tts_engine` take precedence over temperature inheritance. Without a request temperature, checkpoint Subtalker defaults are preserved unless the Talker is greedy.
 
 ## Precomputed Speaker Embedding
 

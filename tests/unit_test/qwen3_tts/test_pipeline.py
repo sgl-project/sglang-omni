@@ -11109,6 +11109,66 @@ def test_qwen3_tts_request_builder_consumes_prepared_payload(
     assert not [key for key in payload.data if key.startswith("prepared_")]
 
 
+@pytest.mark.parametrize(
+    ("sampling_overrides", "expected_do_sample", "expected_temperature"),
+    [
+        ({"temperature": 0.0, "repetition_penalty": 1.0}, False, 0.0),
+        ({"temperature": 0.4}, True, 0.4),
+        ({"do_sample": False}, False, 0.0),
+        (
+            {
+                "temperature": 0.0,
+                "subtalker_dosample": True,
+                "subtalker_temperature": 0.4,
+            },
+            True,
+            0.4,
+        ),
+        ({}, True, 0.9),
+    ],
+)
+def test_qwen3_tts_request_temperature_reaches_subtalker(
+    sampling_overrides: dict[str, float | bool],
+    expected_do_sample: bool,
+    expected_temperature: float,
+) -> None:
+    """A greedy speech request left the residual codebooks sampling at 0.9."""
+    prepared = prepared_request_fixture(dtype=torch.float32)
+    prepared.state.generation_kwargs = sampling_overrides
+    prepared.gen_kwargs = {
+        **prepared.gen_kwargs,
+        "temperature": 0.9,
+        "subtalker_dosample": True,
+        "subtalker_temperature": 0.9,
+        **sampling_overrides,
+    }
+    payload = qwen3_request_builders.store_prepared_qwen3_tts_payload(
+        make_payload(inputs="target"), prepared
+    )
+    request_data = build_sglang_qwen3_tts_request(
+        payload,
+        model=SimpleNamespace(
+            config=SimpleNamespace(codec_eos_token_id=42, vocab_size=1200),
+            model=SimpleNamespace(codec_embedding=torch.nn.Embedding(1, 4)),
+        ),
+        wrapper=object(),
+    )
+
+    assert request_data.subtalker_dosample is expected_do_sample
+    assert request_data.subtalker_temperature == expected_temperature
+    assert (
+        request_data.req.sampling_params.repetition_penalty
+        == sampling_overrides.get("repetition_penalty", 1.05)
+    )
+    if (
+        sampling_overrides.get("temperature") == 0.0
+        or sampling_overrides.get("do_sample") is False
+    ):
+        assert request_data.req.sampling_params.top_k == 1
+    else:
+        pass
+
+
 def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

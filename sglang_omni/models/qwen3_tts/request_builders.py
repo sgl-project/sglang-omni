@@ -1969,7 +1969,17 @@ def build_sglang_qwen3_tts_request(
     ref_code_len = (
         int(prepared.ref_code.shape[0]) if prepared.ref_code is not None else 0
     )
-    subtalker = resolve_subtalker_sampling(gen_kwargs)
+    subtalker_kwargs = dict(gen_kwargs)
+    if temperature == 0.0 or "temperature" in state.generation_kwargs:
+        subtalker_kwargs["subtalker_dosample"] = state.generation_kwargs.get(
+            "subtalker_dosample", temperature > 0.0
+        )
+        subtalker_kwargs["subtalker_temperature"] = state.generation_kwargs.get(
+            "subtalker_temperature", temperature
+        )
+    else:
+        pass
+    subtalker = resolve_subtalker_sampling(subtalker_kwargs)
     data = Qwen3TTSSGLangRequestData(
         input_ids=prepared.input_ids,
         attention_mask=prepared.attention_mask,
