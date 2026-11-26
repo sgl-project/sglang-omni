@@ -519,7 +519,7 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
 		t.Fatalf("the Rewrite card does not explain the wait: %+v", view)
 	}
-	ended := a.answer
+	ended, endedBox := a.answer, a.box
 	const insertError = "The text did not appear in the input field."
 	a.answer.msg = insertError
 	if message := a.cachedCard().Message; !strings.Contains(message, insertError) || !strings.Contains(message, wait) {
@@ -548,8 +548,25 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 		t.Fatal("the blocked Continue accepted a follow-up")
 	}
 
+	a.answer = answerCard{open: true, id: "failed-retry", kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+	a.retryAnswer("")
+	a.newSession()
+	if a.slot != 2 {
+		t.Fatalf("the failed card did not park in Session 2: slot=%d", a.slot)
+	}
 	a.mgr.StopLLM(streaming)
 	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	tap(a, "session-2", textEditApp)
+	if a.answer.msg != "" {
+		t.Fatalf("the retry wait outlived the stream in the parked card: %q", a.answer.msg)
+	}
+	a.retryAnswer("")
+	a.pump("the retry's start", func() bool { return a.sess.State.Live() })
+	a.cancelSession()
+	a.pump("the retry's cancellation", func() bool { return a.sess.State.Ended() })
+	a.answer, a.box = ended, endedBox
+	a.boxSync()
+	a.overlaySync()
 	if !a.canFollowUp() {
 		t.Fatal("Continue stayed off after Session 1's answer ended")
 	}
@@ -588,6 +605,11 @@ func TestSessionSlotIdleRewriteWaitsForStreamingAnswer(t *testing.T) {
 	const wait = "Rewrite is available when the streaming answer finishes."
 	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
 		t.Fatalf("the idle Rewrite card does not explain the wait: %+v", view)
+	}
+	const inputError = "This text is too large."
+	a.box.err = inputError
+	if subtitle := a.boxViewState().Subtitle; !strings.Contains(subtitle, inputError) || !strings.Contains(subtitle, wait) {
+		t.Fatalf("the idle Rewrite wait hides the input error: %q", subtitle)
 	}
 	a.boxActions().send()
 	if a.box.text != "keep this draft" || a.box.instruction != "" {

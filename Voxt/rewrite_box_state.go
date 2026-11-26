@@ -112,7 +112,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if a.boxWaitsForAnswer() {
 		state.CanSend, state.CanSpeak = false, false
 		reason := i18n.T("Rewrite is available when the streaming answer finishes.")
-		if a.boxIdle() {
+		if a.boxIdle() && state.Subtitle == i18n.T("Say or type what to write") {
 			state.Subtitle = reason
 		} else {
 			if a.followUpBlocked() {
