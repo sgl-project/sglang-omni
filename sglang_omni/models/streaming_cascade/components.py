@@ -83,6 +83,7 @@ class ComponentKind:
     optional: OptionalFormats = frozenset()
     probe: Callable[[ComponentConfig], Awaitable[None]] | None = None
     reads_events: frozenset[str] = frozenset()
+    should_batch_appends: bool = False
 
     def required_of(self, config: ComponentConfig) -> frozenset[str]:
         if callable(self.optional):
@@ -108,6 +109,7 @@ class ComponentRegistry:
         optional: OptionalFormats = frozenset(),
         probe: Callable[[ComponentConfig], Awaitable[None]] | None = None,
         reads_events: frozenset[str] = frozenset(),
+        should_batch_appends: bool = False,
     ) -> None:
         kind = config_cls.model_fields["kind"].default
         if not isinstance(kind, str) or not kind:
@@ -126,6 +128,7 @@ class ComponentRegistry:
                 optional,
                 probe,
                 reads_events,
+                should_batch_appends,
             )
 
     def kind(self, name: str) -> ComponentKind:
@@ -187,6 +190,7 @@ COMPONENTS.register(
     consumes=frozenset({TRANSCRIPT_FORMAT, TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
     produces=frozenset({MESSAGES, TOOL_CALL, SESSION_CONTROL}),
     opens_turns=True,
+    should_batch_appends=True,
     optional=frozenset({TOOL_CALL}),
 )
 COMPONENTS.register(
@@ -203,6 +207,7 @@ COMPONENTS.register(
     consumes=frozenset({TEXT_DELTA, TOOL_CALL, SESSION_CONTROL}),
     produces=frozenset({PCM_F32, TEXT_DELTA, SESSION_CONTROL}),
     sample_rate_hz=SPEECH_SAMPLE_RATE_HZ,
+    should_batch_appends=True,
     ends_turns=True,
     optional=frozenset({TEXT_DELTA, TOOL_CALL}),
     probe=probe_openai_service,
@@ -213,5 +218,6 @@ COMPONENTS.register(
     consumes=frozenset({TEXT_DELTA, PCM_F32, SESSION_CONTROL}),
     produces=frozenset({SESSION_CONTROL}),
     probe=probe_alignment_worker,
+    should_batch_appends=True,
     reads_events=frozenset({REPLY_PROGRESS, REPLY_DELIVERED, REPLY_SENTENCE, TRUNCATE}),
 )

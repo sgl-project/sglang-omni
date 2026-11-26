@@ -93,10 +93,10 @@ def message(
         operation=operation,
         session_identity=SessionIdentity(session_id),
         stages=("speech",),
-        chunk=(
-            TimedChunk("audio", seq * 1000, 1000, seq, b"x")
+        chunks=(
+            (TimedChunk("audio", seq * 1000, 1000, seq, b"x"),)
             if operation == "append"
-            else None
+            else ()
         ),
     )
     request = OmniRequest(

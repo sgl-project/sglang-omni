@@ -22,7 +22,7 @@ def operation_payload(operation):
     metadata = operation_metadata(
         operation,
         SessionIdentity("session"),
-        TimedChunk("audio", 0, 20, 0, b"pcm"),
+        TimedChunk("audio", 0, 20, 0, b"pcm") if operation == "append" else None,
     )
     return StagePayload(operation, OmniRequest(None, metadata=metadata), {})
 

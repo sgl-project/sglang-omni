@@ -28,7 +28,9 @@ from sglang_omni.pipeline.stage_workers import (
     StageWorkerProcessSpec,
 )
 from sglang_omni.proto import StreamMessage, SubmitMessage
+from sglang_omni.proto.session import SessionGraph, SessionNode
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.session import BatchedSessionHooks
 from sglang_omni.serve.openai_api import create_app
 from tests.unit_test.fixtures.pipeline_fakes import RecordingCoordinatorControlPlane
 from tests.unit_test.pipeline.helpers import make_stage, stage
@@ -122,6 +124,32 @@ def test_process_failure_is_reported_before_outer_cleanup(
         startup_error_channel.join_thread()
     assert cleanup_called == ["stage process worker failure"]
     assert constructed.stop.await_count == int(partially_started)
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_multi_chunk_appends_on_batched_session_hooks() -> None:
+    class AudioConfig(PipelineConfig):
+        def session_graph(self) -> SessionGraph:
+            node = SessionNode(("speech",), ("input",), should_batch_appends=True)
+            return SessionGraph({"audio": node}, {})
+
+    config = AudioConfig(
+        model_path="model",
+        stages=[
+            stage(
+                "speech",
+                terminal=True,
+                factory_path="sglang_omni.scheduling.session.SessionScheduler",
+                factory={"session_hooks": BatchedSessionHooks()},
+            )
+        ],
+    )
+    runner = MultiProcessPipelineRunner(config)
+    try:
+        with pytest.raises(RuntimeError, match="stage 'speech'.*BatchedSessionHooks"):
+            await runner.start()
+    finally:
+        await runner.stop()
 
 
 @pytest.mark.asyncio

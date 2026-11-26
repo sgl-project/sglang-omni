@@ -39,7 +39,11 @@ from sglang_omni.proto.session import (
 from sglang_omni.scheduling import omni_scheduler as omni_scheduler_module
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
-from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from sglang_omni.scheduling.session import (
+    BatchedSessionHooks,
+    SessionHooks,
+    SessionScheduler,
+)
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 from tests.unit_test.fixtures.pipeline_fakes import (
@@ -193,6 +197,23 @@ def test_stage_routes_results_streams_and_clears_abort_state(monkeypatch) -> Non
         assert not stage_obj.stream_queue.has("req-1")
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("batch_sessions", [True, False])
+def test_stage_rejects_multi_chunk_appends_on_batched_session_hooks(
+    batch_sessions: bool,
+) -> None:
+    spec = StageLaunchConfig(
+        stage_name="speech",
+        should_batch_appends=True,
+        factory="sglang_omni.scheduling.session.SessionScheduler",
+        factory_kwargs={
+            "session_hooks": BatchedSessionHooks(),
+            "batch_sessions": batch_sessions,
+        },
+    )
+    with pytest.raises(ValueError, match="stage 'speech'.*BatchedSessionHooks"):
+        construct_stage(spec, logging.getLogger(__name__))
 
 
 def test_stage_process_rejects_dynamic_targets_outside_static_topology() -> None:
@@ -2026,7 +2047,9 @@ def test_result_resources_survive_partial_fanout():
 
 def session_append_payload(request_id: str, stages: tuple[str, ...]) -> StagePayload:
     chunk = TimedChunk("text", 0, 0, 1, {"text": "hi"}, format="text.delta", turn=1)
-    operation = SessionOperation("append", SessionIdentity("tts"), stages, chunk)
+    operation = SessionOperation(
+        "append", SessionIdentity("tts"), stages, chunks=(chunk,)
+    )
     payload = make_stage_payload(request_id=request_id, data={"codes": [1]})
     payload.request.metadata[SESSION_METADATA_KEY] = operation.to_dict()
     return payload

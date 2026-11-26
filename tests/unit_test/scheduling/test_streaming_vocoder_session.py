@@ -36,7 +36,9 @@ IDENTITY = SessionIdentity("tts")
 
 
 def append_payload(request_id: str, chunk: TimedChunk) -> StagePayload:
-    operation = SessionOperation("append", IDENTITY, ("tts_engine", "vocoder"), chunk)
+    operation = SessionOperation(
+        "append", IDENTITY, ("tts_engine", "vocoder"), chunks=(chunk,)
+    )
     return StagePayload(
         request_id,
         OmniRequest(
@@ -156,7 +158,7 @@ def test_a_session_control_is_answered_and_an_interrupt_drops_the_turn():
         "control", 0, 0, 0, {"type": "interrupt"}, format=SESSION_CONTROL, turn=1
     )
     operation = SessionOperation(
-        "control", IDENTITY, ("tts_engine", "vocoder"), interrupt
+        "control", IDENTITY, ("tts_engine", "vocoder"), chunks=(interrupt,)
     )
     control = StagePayload(
         "c1",
@@ -179,7 +181,7 @@ def test_a_session_control_is_answered_and_an_interrupt_drops_the_turn():
 
 
 def operation_payload(request_id: str, kind: str) -> StagePayload:
-    operation = SessionOperation(kind, IDENTITY, ("tts_engine", "vocoder"), None)
+    operation = SessionOperation(kind, IDENTITY, ("tts_engine", "vocoder"))
     return StagePayload(
         request_id,
         OmniRequest(

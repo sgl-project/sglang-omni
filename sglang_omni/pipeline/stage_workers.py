@@ -47,6 +47,7 @@ from sglang_omni.profiler.event_recorder import (
 )
 from sglang_omni.proto import AbortMessage, AdminResultMessage
 from sglang_omni.scheduling.message import StageScheduler
+from sglang_omni.scheduling.session import BatchedSessionHooks, SessionScheduler
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -142,6 +143,7 @@ class StageLaunchConfig:
     is_stream_receiver: bool = False
     can_accept_stream_before_payload: bool = False
     disable_direct_cuda_ipc_payload: bool = False
+    should_batch_appends: bool = False
 
     # Same-process full payload wiring
     same_process_targets: set[str] = field(default_factory=set)
@@ -1049,6 +1051,17 @@ def construct_stage(
     )
 
     scheduler = construct_scheduler(spec, gpu_id, log)
+    if (
+        spec.should_batch_appends
+        and isinstance(scheduler, SessionScheduler)
+        and isinstance(scheduler.session_hooks, BatchedSessionHooks)
+    ):
+        raise ValueError(
+            f"stage {spec.stage_name!r} cannot use should_batch_appends=True with "
+            "BatchedSessionHooks, which require one chunk per session append"
+        )
+    else:
+        pass
 
     def _target_list(targets: str | list[str] | None) -> list[str]:
         if targets is None:

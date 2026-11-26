@@ -51,6 +51,7 @@ from sglang_omni.pipeline.stage_workers import (
     stage_gpu_ids,
 )
 from sglang_omni.pipeline.weight_share import WeightSharePlan, plan_weight_share
+from sglang_omni.proto.session import SessionGraph
 from sglang_omni.utils.cpu import effective_cpu_count, gpu_local_affinity
 from sglang_omni.utils.imports import import_string
 from sglang_omni.utils.port_claim import NCCL_PORT_BASE, NCCL_PORT_SPAN, claim_tcp_port
@@ -79,6 +80,7 @@ def group_gpu_ids(group: StageGroup) -> set[int]:
 
 class StageLaunchKwargs(TypedDict):
     stage_name: str
+    should_batch_appends: bool
     factory: str
     allow_child_processes: bool
     next_stages: str | list[str] | None
@@ -115,6 +117,7 @@ def build_stage_groups(
     placement_plan: StagePlacementPlan,
     process_plan: ProcessTopologyPlan,
     replica_topology: ReplicaTopology | None = None,
+    session_graph: SessionGraph | None = None,
 ) -> list[StageGroup]:
     """Build lifecycle groups from prepared endpoints and process topology.
 
@@ -145,6 +148,12 @@ def build_stage_groups(
         for target in scfg.stream_to:
             stream_receivers.update(replica_topology.instances(target))
     stage_cfg_by_name = {stage.name: stage for stage in stages_cfg}
+    graph = session_graph if session_graph is not None else config.session_graph()
+    batch_append_stages = (
+        {node.stages[0] for node in graph.nodes.values() if node.should_batch_appends}
+        if graph is not None
+        else set()
+    )
 
     nccl_port_counter = NcclPortAllocator()
 
@@ -183,6 +192,7 @@ def build_stage_groups(
 
         stage_kwargs: StageLaunchKwargs = dict(
             stage_name=stage_cfg.name,
+            should_batch_appends=logical_stage_name in batch_append_stages,
             factory=stage_cfg.factory_path,
             allow_child_processes=stage_cfg.allow_child_processes,
             next_stages=stage_cfg.next,
@@ -687,6 +697,7 @@ class MultiProcessPipelineRunner:
             self._prep = prep  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
             self.ipc_runtime_dir = prep.runtime_dir
             validate_gpu_capacity(prep.placement_plan)
+            session_graph = self.config.session_graph()
             groups = build_stage_groups(
                 self.config,
                 ctx,
@@ -695,6 +706,7 @@ class MultiProcessPipelineRunner:
                 placement_plan=prep.placement_plan,
                 process_plan=prep.process_plan,
                 replica_topology=prep.replica_topology,
+                session_graph=session_graph,
             )
             apply_cpu_thread_plan(groups)
 
@@ -719,7 +731,6 @@ class MultiProcessPipelineRunner:
                 if self.config.terminal_stages_fn
                 else None
             )
-            session_graph = self.config.session_graph()
             max_in_flight = resolve_coordinator_max_in_flight(
                 self.config,
                 logical_process_plan=prep.logical_process_plan,

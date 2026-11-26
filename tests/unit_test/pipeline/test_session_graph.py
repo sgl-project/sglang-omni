@@ -131,6 +131,12 @@ def test_a_marked_feedback_edge_or_a_control_edge_closes_a_cycle_without_orderin
     ("nodes", "publish", "message"),
     [
         ({"a": SessionNode(("x",), ("b",))}, {}, "unknown inputs"),
+        pytest.param(
+            {"a": SessionNode(("x", "y"), ("input",), should_batch_appends=True)},
+            {},
+            "single stage",
+            id="multi-stage-batch",
+        ),
         (
             {"a": SessionNode(("x",), ("b",)), "b": SessionNode(("y",), ("a",))},
             {},
@@ -1368,7 +1374,9 @@ async def test_a_node_chunk_over_max_chunk_bytes_enters_its_reader_as_fragments(
     pending = list(reader.pending)
     assert next_seq == len(pending) > 1
     assert [entry.chunk.seq for entry in pending] == list(range(next_seq))
-    assert [entry.continues for entry in pending] == [True] * (next_seq - 1) + [False]
+    assert [entry.input_kind for entry in pending] == ["fragment"] * (next_seq - 1) + [
+        "final_fragment"
+    ]
     assert all(entry.encoded_bytes <= 1024 for entry in pending)
     restored = join_fragments([entry.chunk for entry in pending])
     assert restored == replace(unit, seq=next_seq - 1)
@@ -1386,7 +1394,7 @@ async def test_a_turn_interrupted_at_the_reader_takes_no_more_fragments():
     await wait_until(lambda: reader.pending_count == 2)
     graph.interrupted_turns["reader"] = {1}
     assert await asyncio.wait_for(delivery, OUTPUT_TIMEOUT_S) == 2
-    assert [entry.continues for entry in reader.pending] == [True, True]
+    assert [entry.input_kind for entry in reader.pending] == ["fragment", "fragment"]
 
 
 @pytest.mark.asyncio

@@ -109,7 +109,9 @@ def payload_for(
         operation,
         identity,
         ("asr",),
-        make_chunk(sequence, samples, eos=eos) if operation == "append" else None,
+        chunks=(
+            (make_chunk(sequence, samples, eos=eos),) if operation == "append" else ()
+        ),
     )
     return StagePayload(
         request_id=f"{identity.id}:{identity.open_index}:{operation}:{sequence}",
