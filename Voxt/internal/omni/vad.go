@@ -92,7 +92,7 @@ func (v *VAD) speechTimed(ctx context.Context, requestID uint64, pcm []byte, rat
 	started = time.Now()
 	var raw []byte
 	var segs []vad.Segment
-	defer func() { logRequestStage(v.rt, requestID, "vad", "read_parse", started, len(raw), len(segs)) }()
+	defer func() { logRequestStage(v.rt, requestID, "vad", "read_parse", started, len(raw), len(raw)) }()
 	raw, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, asr.NetError(ctx, Provider, err)

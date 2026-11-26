@@ -32,7 +32,11 @@ func recordedRequestStages(f *fake) []requestStage {
 
 func TestOfflineRequestStages(t *testing.T) {
 	f, a := mossWithVAD(t, omnitest.Opts{})
-	pcm := append(append(tone(time.Second, 0.3), silence(6*time.Second)...), tone(time.Second, 0.3)...)
+	pcm := tone(time.Second, 0.3)
+	for range 2 {
+		pcm = append(pcm, silence(3*time.Second)...)
+		pcm = append(pcm, tone(time.Second, 0.3)...)
+	}
 	if _, err := a.Transcribe(context.Background(), asr.FileRequest{Audio: pcm, Format: "pcm", SampleRate: sampleRate}); err != nil {
 		t.Fatal(err)
 	}
@@ -64,11 +68,31 @@ func TestOfflineRequestStages(t *testing.T) {
 		if key == "final/multipart" && (stage.InputBytes <= 0 || stage.InputBytes > len(pcm)) {
 			t.Fatalf("compacted input bytes in %+v, want 1..%d", stage, len(pcm))
 		}
+		if key == "vad/read_parse" && (stage.InputBytes != 119 || stage.OutputBytes != 119) {
+			t.Fatalf("VAD response bytes in %+v, want 119", stage)
+		}
 	}
 	for key, found := range want {
 		if !found {
 			t.Errorf("missing %s in %+v", key, stages)
 		}
+	}
+
+	errorFake, errorASR := mossWithVAD(t, omnitest.Opts{Mode: omnitest.ModeVADError})
+	if _, err := errorASR.Transcribe(context.Background(), asr.FileRequest{Audio: pcm, Format: "pcm", SampleRate: sampleRate}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, stage := range recordedRequestStages(errorFake) {
+		if stage.Kind == "vad" && stage.Stage == "read_parse" {
+			found = true
+			if stage.InputBytes != 46 || stage.OutputBytes != 46 {
+				t.Fatalf("malformed VAD response bytes in %+v, want 46", stage)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing malformed VAD read_parse stage")
 	}
 }
 
