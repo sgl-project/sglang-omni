@@ -58,7 +58,7 @@ Remote language models	L	TestRemoteModelEndToEnd	none
 Remote language models	L	TestSavedOllamaSetupMenuIsTheServersModels	none
 Remote language models	L	TestRemoteErrorKeepsNoKey	none
 Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked on a real device only
-Audio settings	M	TestMacHelperMicrophoneSelection	none
+Audio settings	M	TestMacHelperMicrophoneSelection	The selected non-48 kHz microphone case runs by hand with VOXTNEW_MAC_MIC_CAPTURE=1 and VOXTNEW_MAC_MIC_UID naming a connected non-default device
 Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
 Command-line transcription	L	TestTranscribeCLIFailures	none
 Command-line dictionary import	L	TestDictionaryCLIImports	none

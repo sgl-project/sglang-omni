@@ -111,6 +111,7 @@ This table lists every `VOXTNEW_*` variable that the Go code, the Swift helper o
 | `VOXTNEW_MAC` | Any value runs the tests that use real macOS services (Keychain, permissions, app activation). | Unset: these tests skip |
 | `VOXTNEW_MAC_E2E` | `1` runs the headless end-to-end tests on a real Mac. | Unset: the tests skip |
 | `VOXTNEW_MAC_MIC_CAPTURE` | `1` lets the Mac end-to-end test record from the real microphone. | Unset: the test skips |
+| `VOXTNEW_MAC_MIC_UID` | UID of a connected non-default microphone for `TestMacHelperMicrophoneSelection`. With `VOXTNEW_MAC_MIC_CAPTURE=1`, the test records PCM from that device and checks that the capture path reports its hardware sample rate without restarting the audio engine. Use a non-48 kHz device to cover the selected-microphone format regression. Run by hand before a release or after changing microphone capture; the built helper needs microphone permission. | Unset: the test uses the default microphone |
 | `VOXTNEW_MAC_SYSTEM_IDLE` | `1` lets the Mac end-to-end test capture real system audio while the output is idle. Run by hand on a Mac with nothing playing, before a release or when the meeting waveform or silence reminder changes; the built helper needs system audio permission. | Unset: the test skips |
 | `VOXTNEW_MAIN_SHA` | Source revision written to latency JSON objects, for binaries built without VCS stamps. | Unset: read `vcs.revision` from the binary, or `unknown` |
 | `VOXTNEW_MAC_OUTPUT` | UID of an output device that the output device test can switch to. | Unset: the test skips |
