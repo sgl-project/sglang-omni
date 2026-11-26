@@ -178,11 +178,9 @@ func (a *app) deleteSession(id int) {
 	a.overlaySync()
 }
 
-// sessionChips is the card's session row: nothing with sessions off or
-// one session only, so that card is as it is without sessions (a new
-// session then starts from the menu bar, and so does renaming the only
-// one, which brings the row for as long as the title is typed). The other sessions' titles
-// are cut to sessionShortMax; the chip's tooltip has the whole one.
+// sessionChips is the card's session row: nothing with sessions off,
+// one chip per session otherwise, the only one too. The other sessions'
+// titles are cut to sessionShortMax; the chip's tooltip has the whole one.
 func (a *app) sessionChips() []sessionChipViewState {
 	if !a.prefs.Features.SessionsOn {
 		return nil

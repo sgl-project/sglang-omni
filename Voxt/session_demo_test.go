@@ -118,12 +118,7 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 			steps: steps("Session 2", "New session", "Delete session 1"), want: []string{"switchSession 7", "newSession", "deleteSession 3"}},
 		{name: "only session", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
 			host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Current: true}}
-		}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
-			// The last session cannot be deleted, so it has no button for it.
-			if labels := tester.AccessLabels(); slices.Contains(labels, "Delete session 1") || !slices.Contains(labels, "Session 1") {
-				t.Fatalf("controls %q", labels)
-			}
-		}},
+		}, methods: []string{"deleteSession"}, steps: steps("Delete session 1"), want: []string{"deleteSession 3"}}, // the only session closes too
 		{name: "session row scrolls", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
 			chips := []sessionChipViewState{{ID: 1, Title: "First"}}
 			for id := 2; id <= 30; id++ {
