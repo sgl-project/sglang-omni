@@ -196,7 +196,9 @@ def resolve_encoder_graph_buckets(
     return tuple(sorted(resolved))
 
 
-def disables_cuda_graph_phase(server_args: ServerArgs, phase: str) -> bool:
+def disables_cuda_graph_phase(
+    server_args: ServerArgs, phase: Literal["decode", "prefill"]
+) -> bool:
     if phase == "decode":
         phase_disabled = server_args.disable_decode_cuda_graph
         phase_backend = server_args.cuda_graph_backend_decode
