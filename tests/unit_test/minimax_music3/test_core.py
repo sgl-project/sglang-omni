@@ -336,6 +336,20 @@ def test_narrowed_lm_head_keeps_the_c0_rows_in_logit_order() -> None:
     )
 
 
+def test_narrowed_lm_head_reloads_a_full_vocabulary_checkpoint_in_place() -> None:
+    model = c0_head_model()
+    narrow_lm_head_to_c0(model)
+    head_weight = model.lm_head.weight
+    address = head_weight.data_ptr()
+    checkpoint = torch.randn(MUSIC3_BACKBONE_VOCAB_SIZE, head_weight.shape[1])
+
+    Qwen3ForCausalLM.load_weights(model, [("lm_head.weight", checkpoint)])
+
+    assert model.lm_head.weight is head_weight
+    assert head_weight.data_ptr() == address
+    assert torch.equal(head_weight, checkpoint.index_select(0, model.c0_logit_ids))
+
+
 def test_select_c0_logits_rejects_full_vocabulary_logits() -> None:
     model = c0_head_model()
 

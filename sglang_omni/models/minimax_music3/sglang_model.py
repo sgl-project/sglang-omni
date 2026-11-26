@@ -153,11 +153,18 @@ def apply_batch_invariant_policy() -> None:
 
 
 def narrow_lm_head_to_c0(model: "Qwen3ForCausalLM") -> None:
+    def load_c0_head_weight(
+        parameter: nn.Parameter, loaded_weight: torch.Tensor
+    ) -> None:
+        logit_ids = model.c0_logit_ids.to(device=loaded_weight.device)
+        parameter.data.copy_(loaded_weight.index_select(0, logit_ids))
+
     head = model.lm_head
     head.weight = nn.Parameter(
         head.weight.data.index_select(0, model.c0_logit_ids),
         requires_grad=False,
     )
+    head.weight.weight_loader = load_c0_head_weight
 
 
 def select_c0_logits(model: "Qwen3ForCausalLM", logits: torch.Tensor) -> torch.Tensor:
