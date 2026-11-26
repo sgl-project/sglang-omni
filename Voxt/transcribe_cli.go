@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,7 +37,7 @@ func runTranscribeCLI(args []string) int {
 	return transcribeCLI(args, os.Stdout, os.Stderr, filepath.Join(filepath.Dir(historySocketPath()), fileasr.SocketName), decodeAudio)
 }
 
-func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decode func(string) ([]byte, error)) int {
+func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decode func(context.Context, string) ([]byte, error)) int {
 	fs := flag.NewFlagSet("transcribe", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	format := fs.String("format", fileasr.FormatSRT, "")
@@ -63,7 +64,7 @@ func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decod
 		return exitUsage
 	}
 	in := files[0]
-	pcm, err := decode(in)
+	pcm, err := decode(context.Background(), in)
 	if err != nil {
 		fmt.Fprintf(stderr, "Cannot read the sound of %s: %v\n", in, err)
 		return exitUnreadable
@@ -110,7 +111,8 @@ func hms(d time.Duration) string {
 
 // decodeAudio is the file's sound as Voxt's PCM (16-bit, mono, 16 kHz),
 // by macOS's afconvert, which reads the sound of mp4 and mov videos too.
-func decodeAudio(path string) ([]byte, error) {
+// A cancelled ctx kills the conversion.
+func decodeAudio(ctx context.Context, path string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
@@ -124,7 +126,10 @@ func decodeAudio(path string) ([]byte, error) {
 	}
 	defer os.RemoveAll(dir)
 	wav := filepath.Join(dir, "audio.wav")
-	msg, err := exec.Command("/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wav).CombinedOutput()
+	msg, err := exec.CommandContext(ctx, "/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wav).CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		if m := strings.TrimSpace(string(msg)); m != "" {
 			return nil, fmt.Errorf("not an audio or video file macOS can read (%s)", m)

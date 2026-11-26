@@ -178,3 +178,25 @@ func TestModelEventsEnds(t *testing.T) {
 		}
 	})
 }
+
+func TestParseEventKeepsDraftCounters(t *testing.T) {
+	done := `{"type":"transcript.text.done","text":"hello","segments":[],"generation_metadata":{"generated_token_count":5,"language":"zh","finish_reason":"stop","verify_round_count":3,"proposed_draft_token_count":12,"accepted_draft_token_count":8}}`
+	r, err := parseEvent(done)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.draft == nil {
+		t.Fatal("draft counters were dropped")
+	}
+	if r.draft.VerifyRounds != 3 || r.draft.Proposed != 12 || r.draft.Accepted != 8 {
+		t.Errorf("draft counters = %+v", r.draft)
+	}
+	plain := `{"type":"transcript.text.done","text":"hello","segments":[],"generation_metadata":{"generated_token_count":5,"language":"zh","finish_reason":"stop"}}`
+	r, err = parseEvent(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.draft != nil {
+		t.Errorf("a run without a draft reported draft counters: %+v", r.draft)
+	}
+}

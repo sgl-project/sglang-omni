@@ -10,6 +10,7 @@ const (
 type meetingsActions interface {
 	startMeeting()
 	meetingFinish()
+	meetingImport()
 	loadMeetings()
 	searchMeetings(query string)
 	showMeetingsPage(page int)
@@ -23,6 +24,7 @@ type meetingsActions interface {
 	askMeetingFollowUp(id, question string)
 	openMeetingLanguageModels()
 	openMeetingSpeechModels()
+	openMeetingPrivacySettings()
 	copyMeetingTranscript(id string)
 	saveMeetingExport(id string, format meetingExportFormat)
 	toggleMeetingPlayback(id string)

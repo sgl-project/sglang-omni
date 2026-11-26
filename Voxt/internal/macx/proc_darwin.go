@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ebitengine/purego"
 )
@@ -44,19 +45,39 @@ func loadProcLib() error {
 }
 
 func procMemory(pid int) (ProcMemory, error) {
-	if err := loadProcLib(); err != nil {
+	buf, err := rusage(pid)
+	if err != nil {
 		return ProcMemory{}, err
-	}
-	if pid <= 0 {
-		return ProcMemory{}, fmt.Errorf("macx: no process %d", pid)
-	}
-	var buf [rusageSize]byte
-	if rc := procLib.rusage(int32(pid), rusageInfoV0, &buf[0]); rc != 0 {
-		return ProcMemory{}, fmt.Errorf("macx: proc_pid_rusage(%d) failed", pid)
 	}
 	le := binary.LittleEndian // arm64 and amd64
 	return ProcMemory{
 		Footprint: int64(le.Uint64(buf[offFootprint:])),
 		Resident:  int64(le.Uint64(buf[offResident:])),
 	}, nil
+}
+
+func procCPUTime(pid int) (ProcCPU, error) {
+	buf, err := rusage(pid)
+	if err != nil {
+		return ProcCPU{}, err
+	}
+	le := binary.LittleEndian
+	return ProcCPU{
+		User:   time.Duration(le.Uint64(buf[16:])),
+		System: time.Duration(le.Uint64(buf[24:])),
+	}, nil
+}
+
+func rusage(pid int) ([rusageSize]byte, error) {
+	var buf [rusageSize]byte
+	if err := loadProcLib(); err != nil {
+		return buf, err
+	}
+	if pid <= 0 {
+		return buf, fmt.Errorf("macx: no process %d", pid)
+	}
+	if rc := procLib.rusage(int32(pid), rusageInfoV0, &buf[0]); rc != 0 {
+		return buf, fmt.Errorf("macx: proc_pid_rusage(%d) failed", pid)
+	}
+	return buf, nil
 }

@@ -11,12 +11,16 @@ type SystemMemory struct {
 	Pressure string
 	// AvailablePercent is the share of memory macOS counts as available
 	// (kern.memorystatus_level; memory_pressure's "free percentage").
-	AvailablePercent int
+	AvailablePercent      int
+	AvailablePercentValid bool
 	// SwapUsedBytes and SwapTotalBytes are the swap files' use (vm.swapusage).
 	SwapUsedBytes, SwapTotalBytes int64
+	SwapValid                     bool
 	// Swapins and Swapouts count the pages swapped in and out since boot
-	// (vm_stat's Swapins and Swapouts); 0 when this macOS does not say.
-	Swapins, Swapouts int64
+	// (vm_stat's Swapins and Swapouts). Their Valid fields distinguish a
+	// real zero from a counter this macOS does not provide.
+	Swapins, Swapouts           int64
+	SwapinsValid, SwapoutsValid bool
 }
 
 func (m SystemMemory) String() string {

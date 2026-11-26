@@ -283,3 +283,83 @@ func TestMeetingsReplaceFailsMidTransaction(t *testing.T) {
 		t.Fatalf("rolled back: %+v", segs)
 	}
 }
+
+// Migration 14 lets a meeting be an imported recording and keeps the
+// meetings and their lines a version-8 database had.
+func TestMigration14ImportMode(t *testing.T) {
+	dir := t.TempDir()
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	migrations = saved[:8]
+	s := openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 8 {
+		t.Fatalf("user_version %d", v)
+	}
+	m := s.Meetings()
+	rec, err := m.CreateMeeting(ctx, store.Meeting{
+		ID: "m8", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Title: "old call",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.AppendSegments(ctx, rec.Seq, []store.MeetingSegment{seg(store.SegmentSystem, "kept line")}); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	migrations = saved
+	s = openTest(t, dir)
+	if v, _ := userVersion(ctx, s.db); v != 14 {
+		t.Fatalf("user_version %d", v)
+	}
+	m = s.Meetings()
+	mt, segs, err := m.Meeting(ctx, "m8")
+	if err != nil || mt.Title != "old call" || len(segs) != 1 || segs[0].Text != "kept line" {
+		t.Fatalf("old meeting lost: %+v %+v %v", mt, segs, err)
+	}
+	list, err := m.ListMeetings(ctx, store.MeetingQuery{Search: "kept"})
+	if err != nil || len(list) != 1 || list[0].ID != "m8" {
+		t.Fatalf("search after the rebuild: %+v %v", list, err)
+	}
+	if _, err := m.CreateMeeting(ctx, store.Meeting{
+		ID: "m9", CreatedAt: time.Now(), Status: store.MeetingDone, Mode: store.MeetingModeImport,
+	}); err != nil {
+		t.Fatalf("import mode: %v", err)
+	}
+}
+
+func TestMeetingReadsInterleavedTracksInTimeOrder(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	m := s.Meetings()
+	ctx := context.Background()
+	mt, err := m.CreateMeeting(ctx, meetingID("m-two-track"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReplaceSegments(ctx, mt.Seq, store.SegmentMic, []store.MeetingSegment{
+		{Idx: -1, Source: store.SegmentMic, StartMS: 0, EndMS: 5000, Text: "mic-0"},
+		{Idx: -1, Source: store.SegmentMic, StartMS: 20000, EndMS: 25000, Text: "mic-20"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ReplaceSegments(ctx, mt.Seq, store.SegmentSystem, []store.MeetingSegment{
+		{Idx: -1, Source: store.SegmentSystem, StartMS: 10000, EndMS: 15000, Text: "sys-10"},
+		{Idx: -1, Source: store.SegmentSystem, StartMS: 30000, EndMS: 35000, Text: "sys-30"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := m.Meeting(ctx, "m-two-track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int64{0, 10000, 20000, 30000}
+	if len(segs) != len(want) {
+		t.Fatalf("got %d segments, want %d: %+v", len(segs), len(want), segs)
+	}
+	for i, w := range want {
+		if segs[i].StartMS != w {
+			t.Fatalf("segment[%d] start_ms = %d, want %d (full: %+v)", i, segs[i].StartMS, w, segs)
+		}
+	}
+}

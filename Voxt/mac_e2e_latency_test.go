@@ -17,7 +17,12 @@ package main
 // scenario's median and range (scripts/mac-latency.sh runs it).
 // VOXTNEW_LATENCY_PCM names another recording to play and
 // VOXTNEW_LATENCY_SPEAK (2s) how long a session records after its first
-// live text (long sessions: memory, the live text's pace, the Final):
+// live text (long sessions: memory, the live text's pace, the Final).
+// VOXTNEW_LATENCY_OUT appends one JSON object per session with separate
+// ASR Final, helper-paste and whole-session completion times and a text hash.
+// VOXTNEW_LATENCY_ATTEMPT and VOXTNEW_LATENCY_ARM label a run when several
+// independent processes each use VOXTNEW_LATENCY_ROUNDS=1 for an A/B comparison.
+// The native preview timing event supplies its actual min_preview_samples:
 //
 //	VOXTNEW_LATENCY=1 VOXTNEW_OMNI_RUNTIME=… VOXTNEW_OMNI_MODELS="asr.accurate=…;asr.fast=…;vad.silero=…" \
 //	  go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m .
@@ -25,8 +30,10 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -35,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -55,27 +63,64 @@ type latencyStages struct {
 }
 
 type latencyResult struct {
-	MainSHA            string  `json:"main_sha"`
-	Scenario           string  `json:"scenario"`
-	Round              int     `json:"round"`
-	Attempt            int     `json:"attempt"`
-	Arm                string  `json:"arm"`
-	MinPreviewSamples  int     `json:"min_preview_samples"`
-	Model              string  `json:"model"`
-	ASRCold            bool    `json:"asr_cold"`
-	VADCold            bool    `json:"vad_cold"`
-	AppReadyMS         float64 `json:"app_ready_ms"`
-	FirstAudioMS       float64 `json:"first_audio_ms"`
-	ServerReadyMS      float64 `json:"server_ready_ms"`
-	ModelLoadMS        float64 `json:"model_load_ms"`
-	FirstPartialMS     float64 `json:"first_partial_ms"`
-	StopToFinalMS      float64 `json:"stop_to_final_ms"`
-	StopToInsertMS     float64 `json:"stop_to_insert_ms"`
-	StopToDoneMS       float64 `json:"stop_to_done_ms"`
-	LiveUpdates        int     `json:"live_updates"`
-	LongestUpdateGapMS float64 `json:"longest_update_gap_ms"`
-	Text               string  `json:"text"`
-	TextSHA256         string  `json:"text_sha256"`
+	MainSHA  string `json:"main_sha"`
+	Scenario string `json:"scenario"`
+	Round    int    `json:"round"`
+	Attempt  int    `json:"attempt"`
+	Arm      string `json:"arm"`
+	// The native min_preview_samples the run used, null when the model
+	// or runtime emitted no such event; a numeric 0 is never written.
+	MinPreviewSamples                  *int     `json:"min_preview_samples"`
+	MinPreviewSamplesUnavailableReason string   `json:"min_preview_samples_unavailable_reason,omitempty"`
+	Model                              string   `json:"model"`
+	ASRCold                            bool     `json:"asr_cold"`
+	VADCold                            bool     `json:"vad_cold"`
+	AppReadyMS                         float64  `json:"app_ready_ms"`
+	FirstAudioMS                       float64  `json:"first_audio_ms"`
+	ServerReadyMS                      float64  `json:"server_ready_ms"`
+	ModelLoadMS                        float64  `json:"model_load_ms"`
+	FirstPartialMS                     *float64 `json:"first_partial_ms"`
+	FirstPartialUnavailableReason      string   `json:"first_partial_unavailable_reason,omitempty"`
+	StopToFinalMS                      *float64 `json:"stop_to_final_ms"`
+	StopToFinalUnavailableReason       string   `json:"stop_to_final_unavailable_reason,omitempty"`
+	StopToInsertMS                     *float64 `json:"stop_to_insert_ms"`
+	StopToInsertUnavailableReason      string   `json:"stop_to_insert_unavailable_reason,omitempty"`
+	StopToDoneMS                       float64  `json:"stop_to_done_ms"`
+	LiveUpdates                        int      `json:"live_updates"`
+	LongestUpdateGapMS                 float64  `json:"longest_update_gap_ms"`
+	Text                               string   `json:"text"`
+	TextSHA256                         *string  `json:"text_sha256"`
+	TextUnavailableReason              string   `json:"text_unavailable_reason,omitempty"`
+}
+
+// durationEvidence is the wait when the event was observed, else nil: the
+// row then carries the unavailable reason, never a 0 read as a measurement.
+func durationEvidence(d time.Duration) *float64 {
+	if d > 0 {
+		ms := float64(d.Microseconds()) / 1000
+		return &ms
+	}
+	return nil
+}
+
+// minPreviewEvidence is the actual gate when the native event arrived,
+// else nil: the row then carries the unavailable reason, never a 0.
+func minPreviewEvidence(samples int) *int {
+	if samples > 0 {
+		return &samples
+	}
+	return nil
+}
+
+// textSHA256Evidence is the transcript's hash when there is text, else
+// nil: the hash of an empty string is not a transcript and must never
+// pass the kept gate as if one had been delivered.
+func textSHA256Evidence(text string) *string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
+	return &hash
 }
 
 // readyLine is the runtime's line about a server that became ready.
@@ -86,9 +131,10 @@ var minPreviewLine = regexp.MustCompile(`"min_preview_samples"\s*:\s*(\d+)`)
 // latencyLog keeps when each model's server became ready and how long
 // its start took.
 type latencyLog struct {
-	mu                sync.Mutex
-	ready             map[string][]readyAt
-	minPreviewSamples int
+	mu             sync.Mutex
+	ready          map[string][]readyAt
+	latestModel    string
+	previewByModel map[string]int
 }
 
 type readyAt struct {
@@ -99,13 +145,17 @@ type readyAt struct {
 func (l *latencyLog) add(msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if m := minPreviewLine.FindStringSubmatch(msg); m != nil {
-		l.minPreviewSamples, _ = strconv.Atoi(m[1])
+	if m := minPreviewLine.FindStringSubmatch(msg); m != nil && l.latestModel != "" {
+		if l.previewByModel == nil {
+			l.previewByModel = map[string]int{}
+		}
+		l.previewByModel[l.latestModel], _ = strconv.Atoi(m[1])
 	}
 	m := readyLine.FindStringSubmatch(msg)
 	if m == nil {
 		return
 	}
+	l.latestModel = m[1]
 	load, _ := time.ParseDuration(m[2])
 	if l.ready == nil {
 		l.ready = map[string][]readyAt{}
@@ -113,10 +163,10 @@ func (l *latencyLog) add(msg string) {
 	l.ready[m[1]] = append(l.ready[m[1]], readyAt{time.Now(), load})
 }
 
-func (l *latencyLog) minPreview() int {
+func (l *latencyLog) minPreview(id string) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.minPreviewSamples
+	return l.previewByModel[id]
 }
 
 // since is the newest start of model id's server after t.
@@ -169,6 +219,16 @@ func latencyHub(t *testing.T) (hub string, ids []string) {
 	return hub, ids
 }
 
+func latencyMainLanguage() string {
+	if os.Getenv("VOXTNEW_LATENCY_LANG_UNSET") == "1" {
+		return ""
+	}
+	if lang := os.Getenv("VOXTNEW_LATENCY_LANG"); lang != "" {
+		return lang
+	}
+	return "zh"
+}
+
 func TestMacE2EFirstLatency(t *testing.T) {
 	if os.Getenv("VOXTNEW_LATENCY") != "1" || runtime.GOOS != "darwin" {
 		t.Skip("set VOXTNEW_LATENCY=1 on a Mac (scripts/mac-latency.sh)")
@@ -208,7 +268,7 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			a := newSessionApp(t, "frame-ms=100,"+helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
 				s.Features.Transcribe.Enhance = false
 				s.Features.Transcribe.ASR = ids[0]
-				s.General.MainLanguage = "zh"
+				s.General.MainLanguage = latencyMainLanguage()
 			}, realLocal{hub: hub})
 			a.pumpFor(30*time.Second, func() bool {
 				_, ok := a.featureModel(local.ASR, "transcribe")
@@ -268,6 +328,10 @@ func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 	return fmt.Sprintf("%s (%s–%s)", ms(ds[len(ds)/2]), ms(ds[0]), ms(ds[len(ds)-1]))
 }
 
+// firstPartialWait is how long a session waits for its first live text
+// before the no-partial branch; the branch's regression shortens it.
+var firstPartialWait = 5 * time.Minute
+
 // latencySession presses Transcribe's shortcut, stops two seconds after
 // the first live text and returns the session's stages; from is when the
 // scenario began (the app opened, the model changed): a server ready
@@ -281,7 +345,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
-	if !a.pumpFor(5*time.Minute, func() bool {
+	if !a.pumpFor(firstPartialWait, func() bool {
 		if a.sess.ID == last {
 			return false
 		}
@@ -290,9 +354,18 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		}
 		return a.sess.State.Ended() || (a.sess.State == session.Recording && a.sess.Partial != "")
 	}) || a.sess.State.Ended() {
-		t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
+		if os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
+			t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
+		}
+		// The language matrix records a session that produced no partial:
+		// it still speaks the window and stops on time, so the Final or
+		// the problem is on record too.
+		t.Logf("%s: no live text in the first minute (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
+	} else {
+		// Only an observed partial is evidence: with none, first_partial
+		// stays zero and the row writes null with its reason, never the wait.
+		st.partial = time.Since(t0)
 	}
-	st.partial = time.Since(t0)
 	// The live text's updates while the user speaks: their count and the longest wait between two.
 	speak, updates, gap, seen, at := 2*time.Second, 0, time.Duration(0), a.sess.Partial, time.Now()
 	if d, err := time.ParseDuration(os.Getenv("VOXTNEW_LATENCY_SPEAK")); err == nil {
@@ -307,7 +380,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	pastesBefore := len(a.pasted())
 	stopped := time.Now()
 	a.stopSession()
-	if !a.pumpFor(5*time.Minute, func() bool {
+	ended := !a.pumpFor(5*time.Minute, func() bool {
 		if st.final == 0 && a.sess.Raw != "" {
 			st.final = time.Since(stopped)
 		}
@@ -315,14 +388,18 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 			st.insert = time.Since(stopped)
 		}
 		return a.sess.State.Ended()
-	}) || a.sess.State != session.Done || a.sess.ASR.ID != id {
-		t.Fatalf("%s: end %s %+v on %s", name, a.sess.State, a.sess.Problem, a.sess.ASR.ID)
+	})
+	if ended || (a.sess.State != session.Done || a.sess.ASR.ID != id) {
+		if os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
+			t.Fatalf("%s: end %s %+v on %s", name, a.sess.State, a.sess.Problem, a.sess.ASR.ID)
+		}
+		t.Logf("%s: session ended %s %+v; recording the outcome without a Final", name, a.sess.State, a.sess.Problem)
 	}
 	st.done = time.Since(stopped)
-	if st.final == 0 {
+	if st.final == 0 && os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
 		t.Fatalf("%s: no ASR Final was observed before delivery", name)
 	}
-	if st.insert == 0 {
+	if st.insert == 0 && os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
 		t.Fatalf("%s: no helper paste was observed after the ASR Final", name)
 	}
 	if r, ok := lg.since(id, from); ok {
@@ -331,7 +408,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	t.Logf("MEASURE latency %s %s: first audio %v, server ready %v (its start %v), first partial %v, %d live updates in %v (longest wait %v), Final %v / insert %v / done %v after Stop: %d characters %q", name, id,
 		st.heard.Round(time.Millisecond), st.ready.Round(time.Millisecond), st.load.Round(time.Millisecond),
 		st.partial.Round(time.Millisecond), updates, speak, gap.Round(time.Millisecond), st.final.Round(time.Millisecond), st.insert.Round(time.Millisecond), st.done.Round(time.Millisecond), len([]rune(a.sess.Raw)), firstRunes(a.sess.Raw, 40))
-	st.minPreviewSamples = lg.minPreview()
+	st.minPreviewSamples = lg.minPreview(id)
 	writeLatencyResult(t, name, id, round, st, updates, gap, a.sess.Raw)
 	return st
 }
@@ -345,16 +422,31 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	milliseconds := func(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
 	result := latencyResult{
 		MainSHA: latencyMainSHA(), Scenario: name, Round: round, Attempt: round,
-		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: st.minPreviewSamples, Model: id,
+		Arm: os.Getenv("VOXTNEW_LATENCY_ARM"), MinPreviewSamples: minPreviewEvidence(st.minPreviewSamples), Model: id,
 		ASRCold: name != "warm", VADCold: name == "cold",
 		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
-		FirstPartialMS: milliseconds(st.partial), StopToFinalMS: milliseconds(st.final),
-		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
+		FirstPartialMS: durationEvidence(st.partial), StopToFinalMS: durationEvidence(st.final),
+		StopToInsertMS: durationEvidence(st.insert), StopToDoneMS: milliseconds(st.done),
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
-		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
+		TextSHA256: textSHA256Evidence(text),
 	}
-	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if result.FirstPartialMS == nil {
+		result.FirstPartialUnavailableReason = "no live partial was observed in the window"
+	}
+	if result.StopToFinalMS == nil {
+		result.StopToFinalUnavailableReason = "no ASR Final was observed after Stop"
+	}
+	if result.StopToInsertMS == nil {
+		result.StopToInsertUnavailableReason = "no helper paste was observed after the ASR Final"
+	}
+	if result.TextSHA256 == nil {
+		result.TextUnavailableReason = "no transcript text was produced"
+	}
+	if result.MinPreviewSamples == nil {
+		result.MinPreviewSamplesUnavailableReason = "no native moss_preview_timing event for this model or runtime"
+	}
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +459,25 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 	}
 }
 
+func TestLatencyMainLanguage(t *testing.T) {
+	t.Setenv("VOXTNEW_LATENCY_LANG_UNSET", "1")
+	t.Setenv("VOXTNEW_LATENCY_LANG", "en")
+	if got := latencyMainLanguage(); got != "" {
+		t.Fatalf("explicit unset produced language %q, want empty", got)
+	}
+	t.Setenv("VOXTNEW_LATENCY_LANG_UNSET", "0")
+	if got := latencyMainLanguage(); got != "en" {
+		t.Fatalf("explicit language = %q, want en", got)
+	}
+	t.Setenv("VOXTNEW_LATENCY_LANG", "")
+	if got := latencyMainLanguage(); got != "zh" {
+		t.Fatalf("default language = %q, want zh", got)
+	}
+}
+
 func TestLatencyResultJSON(t *testing.T) {
+	previousUmask := syscall.Umask(0)
+	defer syscall.Umask(previousUmask)
 	path := filepath.Join(t.TempDir(), "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", path)
 	t.Setenv("VOXTNEW_LATENCY_ARM", "A")
@@ -382,25 +492,271 @@ func TestLatencyResultJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.AppReadyMS != 1500 || got.StopToFinalMS != 1200 || got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
+	if got.AppReadyMS != 1500 || got.StopToFinalMS == nil || *got.StopToFinalMS != 1200 || got.StopToInsertMS == nil || *got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
 		t.Fatalf("app readiness or the three endpoints collapsed: %+v", got)
+	}
+	if got.StopToFinalUnavailableReason != "" || got.StopToInsertUnavailableReason != "" {
+		t.Fatalf("observed endpoints marked unavailable: %+v", got)
 	}
 	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
 		t.Fatalf("scenario metadata: %+v", got)
 	}
-	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples != 20000 {
+	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples == nil || *got.MinPreviewSamples != 20000 {
 		t.Fatalf("run identity: %+v", got)
 	}
-	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
+	if got.TextSHA256 == nil || *got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
 		t.Fatalf("text hash: %+v", got)
+	}
+	if got.TextUnavailableReason != "" {
+		t.Fatalf("text present but marked unavailable: %+v", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("latency output mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestLatencyResultWritesNullPreviewWithReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	writeLatencyResult(t, "cold", "asr.test", 1, latencyStages{final: time.Second}, 1, time.Second, "text")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	value, present := row["min_preview_samples"]
+	if !present || value != nil {
+		t.Fatalf("a model without the native event must write null, not 0 or a missing field: %v", row)
+	}
+	if reason, _ := row["min_preview_samples_unavailable_reason"].(string); reason == "" {
+		t.Fatalf("a null min_preview_samples needs its unavailable_reason: %v", row)
+	}
+}
+
+func TestLatencyResultWritesUnavailableEvidenceAsNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	writeLatencyResult(t, "cold", "asr.test", 1, latencyStages{minPreviewSamples: 20000}, 0, 0, "  ")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	assertUnavailable := func(field, reasonField string) {
+		t.Helper()
+		value, present := row[field]
+		if !present || value != nil {
+			t.Fatalf("%s must be null when the event never arrived: %v", field, row)
+		}
+		if reason, _ := row[reasonField].(string); reason == "" {
+			t.Fatalf("a null %s needs its unavailable reason: %v", field, row)
+		}
+	}
+	assertUnavailable("first_partial_ms", "first_partial_unavailable_reason")
+	assertUnavailable("stop_to_final_ms", "stop_to_final_unavailable_reason")
+	assertUnavailable("stop_to_insert_ms", "stop_to_insert_unavailable_reason")
+	assertUnavailable("text_sha256", "text_unavailable_reason")
+}
+
+// gateAttemptEnv writes one attempt's environment record the way the
+// runner does (attempt_env.py): clean AC, normal pressure, no contenders.
+func gateAttemptEnv(t *testing.T, dir string, attempt int) {
+	t.Helper()
+	body := fmt.Sprintf(`{"before":{"others":"","pressure":"1"},"after":{"others":"","pressure":"1"},"environment_reasons":[],"peak_pressure":"normal"}`)
+	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("latency-attempt-%d.json", attempt)), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// requireGateRejects runs the real short-open gate and requires its
+// deliberate rejection: exit 1, an incomplete group, no kept attempt and
+// no median. Any other failure (a usage error, a missing file, a Python
+// traceback) is a test failure, not a rejection.
+func requireGateRejects(t *testing.T, python, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "latency-returncode.txt"), []byte("0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(python, "scripts/short_open_gate.py", dir, "3").CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("the gate must reject the group with exit 1, got %v: %s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{`"complete": false`, `"kept": false`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the gate did not report %s: %s", want, out)
+		}
+	}
+	if strings.Contains(text, "median") {
+		t.Fatalf("the gate printed medians for a rejected group: %s", out)
+	}
+}
+
+func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("the short-open gate is a Python script and python3 is not on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	rowsPath := filepath.Join(dir, "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", rowsPath)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	// The reported no-partial branch wrote its wait as first_partial_ms
+	// while producing no Final, insert or text; the serialized rows must
+	// still be rejected by the real gate.
+	st := latencyStages{partial: 60 * time.Second, minPreviewSamples: 20000}
+	for attempt := 1; attempt <= 3; attempt++ {
+		writeLatencyResult(t, "cold", "asr.test", attempt, st, 0, 0, "")
+		writeLatencyResult(t, "warm", "asr.test", attempt, st, 0, 0, "")
+	}
+	splitGateRows(t, rowsPath, dir)
+	for attempt := 1; attempt <= 3; attempt++ {
+		gateAttemptEnv(t, dir, attempt)
+	}
+	requireGateRejects(t, python, dir)
+}
+
+// splitGateRows splits the shared JSONL into the per-attempt files the
+// real runner writes (build/latency-round-N.jsonl).
+func splitGateRows(t *testing.T, rowsPath, dir string) {
+	t.Helper()
+	data, err := os.ReadFile(rowsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var row struct {
+			Attempt int `json:"attempt"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, fmt.Sprintf("latency-round-%d.jsonl", row.Attempt))
+		fh, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fh.WriteString(line + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := fh.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestNoPartialSessionRejectsTheFabricatedPartial drives latencySession's
+// real no-partial branch (VOXTNEW_LATENCY_ALLOW_NO_PARTIAL=1): a speech
+// model transcribes only the finished recording, so no live partial ever
+// arrives, yet the session still delivers a Final, a paste and text. The
+// row must carry a null first partial and the gate must reject the group.
+func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("the short-open gate is a Python script and python3 is not on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	rowsPath := filepath.Join(dir, "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", rowsPath)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	t.Setenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL", "1")
+	t.Setenv("VOXTNEW_LATENCY_SPEAK", "50ms")
+	oldWait := firstPartialWait
+	firstPartialWait = 200 * time.Millisecond
+	t.Cleanup(func() { firstPartialWait = oldWait })
+
+	// NoStream: the speech model gets the recording only once it stops, so
+	// the session never has a live partial but still has a Final and a paste.
+	tr := &fakeTranscriptions{text: "meeting notes"}
+	a := newSessionApp(t, helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+	}, &fakeLocal{ASRP: tr, NoStream: true})
+	lg := &latencyLog{}
+	for attempt := 1; attempt <= 3; attempt++ {
+		for _, name := range []string{"cold", "warm"} {
+			st := latencySession(t, a, lg, time.Now(), time.Time{}, name, fakeASRModel.ID, attempt)
+			if st.partial != 0 {
+				t.Fatalf("%s attempt %d: a no-partial session recorded %v as its first partial", name, attempt, st.partial)
+			}
+			if st.final == 0 || st.insert == 0 {
+				t.Fatalf("%s attempt %d: the session delivered no Final or paste: %+v", name, attempt, st)
+			}
+		}
+	}
+	data, err := os.ReadFile(rowsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("wrote %d latency rows, want 6", len(lines))
+	}
+	for _, line := range lines {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		value, present := row["first_partial_ms"]
+		if !present || value != nil {
+			t.Fatalf("a no-partial session must write null first_partial_ms, not the wait: %v", row)
+		}
+		if reason, _ := row["first_partial_unavailable_reason"].(string); reason == "" {
+			t.Fatalf("a null first_partial_ms needs its unavailable reason: %v", row)
+		}
+		final, _ := row["stop_to_final_ms"].(float64)
+		insert, _ := row["stop_to_insert_ms"].(float64)
+		text, _ := row["text"].(string)
+		if final <= 0 || insert <= 0 || strings.TrimSpace(text) == "" {
+			t.Fatalf("the no-partial row is missing its valid Final, paste or text: %v", row)
+		}
+	}
+	splitGateRows(t, rowsPath, dir)
+	for attempt := 1; attempt <= 3; attempt++ {
+		gateAttemptEnv(t, dir, attempt)
+	}
+	requireGateRejects(t, python, dir)
+}
+
+func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
+	script, err := os.ReadFile("scripts/mac-latency.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), `VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?`) {
+		t.Fatal("the latency runner does not require an explicit source SHA")
 	}
 }
 
 func TestLatencyLogReadsNativePreviewConfig(t *testing.T) {
 	var log latencyLog
+	log.add("omni: asr.one ready on 127.0.0.1:1 after 50ms (pid 1)")
 	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":12000}`)
-	if got := log.minPreview(); got != 12000 {
+	if got := log.minPreview("asr.one"); got != 12000 {
 		t.Fatalf("min_preview_samples = %d, want 12000", got)
+	}
+	log.add("omni: asr.two ready on 127.0.0.1:2 after 50ms (pid 2)")
+	if got := log.minPreview("asr.two"); got != 0 {
+		t.Fatalf("a model switch reused the previous model's preview gate: %d", got)
+	}
+	log.add(`omni: native {"event":"moss_preview_timing","min_preview_samples":10000}`)
+	if got := log.minPreview("asr.two"); got != 10000 {
+		t.Fatalf("min_preview_samples after the switch = %d, want 10000", got)
 	}
 }
 
