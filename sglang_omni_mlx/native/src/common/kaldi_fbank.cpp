@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/kaldi_fbank.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 namespace omni_common {
 
@@ -100,6 +102,33 @@ mx::array KaldiFbank(const std::vector<float> &samples,
   const mx::array power = mx::square(mx::abs(mx::fft::rfft(frames, 1)));
   return mx::log(
       mx::maximum(mx::matmul(power, mel_filters), mx::array(log_floor)));
+}
+
+mx::array LowFrameRateFrames(const mx::array &fbank, int lfr_m, int lfr_n) {
+  const int time = fbank.shape(0);
+  const int mel_count = fbank.shape(1);
+  const int lfr_frames = (time + lfr_n - 1) / lfr_n;
+  if (lfr_frames == 0) {
+    return mx::zeros({0, lfr_m * mel_count}, fbank.dtype());
+  } else {
+  }
+  // Note (Dayuxiaoshui): a gather of the clamped frame indices moves the same
+  // values as the reference's edge padding.
+  const int left_pad = (lfr_m - 1) / 2;
+  std::vector<int32_t> indices;
+  indices.reserve(static_cast<size_t>(lfr_frames) * lfr_m);
+  for (int frame = 0; frame < lfr_frames; ++frame) {
+    for (int offset = 0; offset < lfr_m; ++offset) {
+      indices.push_back(
+          std::clamp(frame * lfr_n + offset - left_pad, 0, time - 1));
+    }
+  }
+  return mx::reshape(
+      mx::take(fbank,
+               mx::array(indices.data(), {static_cast<int>(indices.size())},
+                         mx::int32),
+               0),
+      {lfr_frames, lfr_m * mel_count});
 }
 
 } // namespace omni_common

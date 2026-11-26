@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Kaldi-style fbank pieces CAM++, SenseVoice and Fun-ASR-Nano share: Kaldi's
-// mel filters, the symmetric Hamming window, and a log fbank on MLX.
+// mel filters, the symmetric Hamming window, a log fbank on MLX, and its
+// frames stacked at a low frame rate.
 #pragma once
 
 #include <vector>
@@ -30,5 +31,12 @@ mlx::core::array KaldiFbank(const std::vector<float> &samples,
                             const std::vector<float> &window, int hop_length,
                             const mlx::core::array &mel_filters,
                             float log_floor);
+
+// Fbank frames [frames, mel_bins] stacked lfr_m at a time every lfr_n,
+// [ceil(frames / lfr_n), lfr_m * mel_bins]: stack i starts (lfr_m - 1) / 2
+// frames before frame i * lfr_n, the first and last frames repeated past
+// either end.
+mlx::core::array LowFrameRateFrames(const mlx::core::array &fbank, int lfr_m,
+                                    int lfr_n);
 
 } // namespace omni_common
