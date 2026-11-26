@@ -500,17 +500,35 @@ def short_open_attempt_kept(
 
 
 def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]:
-    """The one text hash a complete group shares, written next to the
-    group's result as text-consistency.json: per scenario, every kept
-    attempt's valid hashes, and whether the whole group shares one."""
+    """The hashes by scenario and whether cold and warm share one."""
     per_scenario: dict[str, list[str]] = {}
     for obs in observations:
         for row in obs.get("rows", []):
             scenario = str(row.get("scenario", ""))
-            per_scenario.setdefault(scenario, [])
-            per_scenario[scenario] += sorted({text_hash(row)} - {""})
-    shared = len({h for hashes in per_scenario.values() for h in hashes}) == 1
+            hashes = [
+                hash_value for hash_value in distinct_text_hashes([row]) if hash_value
+            ]
+            per_scenario.setdefault(scenario, []).extend(hashes)
+    short_open_rows = [
+        row
+        for obs in observations
+        for row in obs.get("rows", [])
+        if str(row.get("scenario")) in SHORT_OPEN_SCENARIOS
+    ]
+    shared = (
+        bool(short_open_rows)
+        and all(row.get("text_sha256") for row in short_open_rows)
+        and len({str(row.get("text_sha256")) for row in short_open_rows}) == 1
+    )
     return {"scenarios": per_scenario, "shared_text_hash": shared}
+
+
+def write_text_consistency(
+    observations: list[dict[str, object]], output_path: Path
+) -> None:
+    output_path.write_text(
+        json.dumps(text_consistency(observations), indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
@@ -519,7 +537,12 @@ def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
     text-consistency.json with text_consistency before calling this."""
     if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
-    rows = [row for obs in observations for row in obs.get("rows", [])]
+    rows = [
+        row
+        for obs in observations
+        for row in obs.get("rows", [])
+        if str(row.get("scenario")) in SHORT_OPEN_SCENARIOS
+    ]
     if not rows or not latency_rows_valid(rows):
         return False
     return bool(distinct_text_hashes(rows)) and len(distinct_text_hashes(rows)) == 1

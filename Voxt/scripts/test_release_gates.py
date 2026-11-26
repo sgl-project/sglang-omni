@@ -10,8 +10,10 @@ text hashes the kept decision was written against.
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -227,16 +229,37 @@ class ShortOpenGateTests(unittest.TestCase):
             [bad, self.observation(), self.observation()]
         )
 
-    def test_group_complete_rejects_cross_attempt_drift(self):
+    def test_group_complete_rejects_cross_attempt_drift_and_writes_consistency(self):
         observations = []
         for letter in "abc":
             obs = self.observation(scenario_hashes=[letter * 64, letter * 64])
-            assert loop.short_open_attempt_kept(0, [], "normal", obs["rows"])
+            self.assertTrue(loop.short_open_attempt_kept(0, [], "normal", obs["rows"]))
             observations.append(obs)
-        assert not loop.short_open_group_complete(observations)
+        self.assertFalse(loop.short_open_group_complete(observations))
         consistency = loop.text_consistency(observations)
-        assert consistency["shared_text_hash"] is False
-        assert consistency["scenarios"]["cold"] == ["a" * 64, "b" * 64, "c" * 64]
+        self.assertFalse(consistency["shared_text_hash"])
+        self.assertEqual(
+            consistency["scenarios"]["cold"], ["a" * 64, "b" * 64, "c" * 64]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "text-consistency.json"
+            loop.write_text_consistency(observations, path)
+            self.assertEqual(json.loads(path.read_text()), consistency)
+
+    def test_consistency_rejects_missing_hash(self):
+        observations = [{"rows": [row(text_sha256=""), row(scenario="warm")]}]
+        self.assertFalse(loop.text_consistency(observations)["shared_text_hash"])
+
+    def test_switch_text_is_separate_from_short_open_consistency(self):
+        observations = []
+        for _ in range(3):
+            obs = self.observation()
+            obs["rows"].append(row(scenario="switch", text_sha256="f" * 64))
+            observations.append(obs)
+        self.assertTrue(loop.short_open_group_complete(observations))
+        consistency = loop.text_consistency(observations)
+        self.assertTrue(consistency["shared_text_hash"])
+        self.assertEqual(consistency["scenarios"]["switch"], ["f" * 64] * 3)
 
     def test_group_complete_rejects_empty_hash(self):
         bad = self.observation()

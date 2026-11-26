@@ -55,6 +55,18 @@ d = json.load(open(sys.argv[1]))
 d["returncode"] = int(sys.argv[2])
 json.dump(d, open(sys.argv[1], "w"))
 PY
+python3 - build/latency.jsonl build/text-consistency.json <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, "scripts")
+import profile_loop as loop
+
+rows_path = Path(sys.argv[1])
+rows = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()] if rows_path.exists() else []
+loop.write_text_consistency([{"rows": rows}], Path(sys.argv[2]))
+PY
 if python3 scripts/short_open_gate.py build/latency.jsonl "$preflight" "${3:-3}"; then
   grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //' || true
 else
