@@ -66,6 +66,28 @@ func fakeOrderedASR() overlapASRFunc {
 	}
 }
 
+// A monitored run stops each method's monitor and the report carries
+// real resource evidence; without the Stop the field stayed zero.
+func TestMeetingOverlapMonitoredCarriesResources(t *testing.T) {
+	config := fakeOverlapConfig("meeting")
+	options := fakeOverlapOptions(config)
+	options.newMonitor = func(ctx context.Context) *ResourceMonitor {
+		return StartResourceMonitor(ctx, SelfAndNative(func() []int { return nil }))
+	}
+	reports := runOverlapWithOptions(context.Background(), config, fakeOverlapPCM(), fakeOrderedASR(), nil, options)
+	if len(reports) != 3 {
+		t.Fatalf("got %d reports", len(reports))
+	}
+	for _, report := range reports {
+		if report.Status != "success" {
+			t.Fatalf("%s failed: %+v", report.Method, report.Errors)
+		}
+		if report.Resources.PeakMemoryPressure.Value == nil || *report.Resources.PeakMemoryPressure.Value == "" {
+			t.Errorf("%s has no peak memory pressure evidence: %+v", report.Method, report.Resources.PeakMemoryPressure)
+		}
+	}
+}
+
 func TestMeetingOverlapFakeThreeMethodsAndStructuredOutput(t *testing.T) {
 	config := fakeOverlapConfig("meeting")
 	reports := runOverlapWithOptions(context.Background(), config, fakeOverlapPCM(), fakeOrderedASR(), nil, fakeOverlapOptions(config))

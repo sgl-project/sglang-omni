@@ -475,14 +475,30 @@ def short_open_attempt_kept(
     )
 
 
+def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]:
+    """The one text hash a complete group shares, written next to the
+    group's result as text-consistency.json: per scenario, every kept
+    attempt's valid hashes, and whether the whole group shares one."""
+    per_scenario: dict[str, list[str]] = {}
+    for obs in observations:
+        for row in obs.get("rows", []):
+            scenario = str(row.get("scenario", ""))
+            per_scenario.setdefault(scenario, [])
+            per_scenario[scenario] += sorted({text_hash(row)} - {""})
+    shared = len({h for hashes in per_scenario.values() for h in hashes}) == 1
+    return {"scenarios": per_scenario, "shared_text_hash": shared}
+
+
 def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
-    """A group is complete only with three kept attempts; observations
-    carry {kept, rows} and the caller writes text-consistency.json with
-    distinct_text_hashes before calling this."""
+    """A group is complete only with three kept attempts whose texts all
+    agree: observations carry {kept, rows}, and the caller writes
+    text-consistency.json with text_consistency before calling this."""
     if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
     rows = [row for obs in observations for row in obs.get("rows", [])]
-    return bool(rows) and latency_rows_valid(rows) and bool(distinct_text_hashes(rows))
+    if not rows or not latency_rows_valid(rows):
+        return False
+    return bool(distinct_text_hashes(rows)) and len(distinct_text_hashes(rows)) == 1
 
 
 def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:

@@ -154,6 +154,23 @@ class ShortOpenGateTests(unittest.TestCase):
             )
         )
 
+    def test_group_complete_rejects_cold_warm_mismatch(self):
+        bad = self.observation()
+        bad["rows"][1]["text_sha256"] = "b" * 64
+        assert not loop.short_open_attempt_kept(0, [], "normal", bad["rows"])
+        assert not loop.short_open_group_complete([bad, self.observation(), self.observation()])
+
+    def test_group_complete_rejects_cross_attempt_drift(self):
+        observations = []
+        for letter in "abc":
+            obs = self.observation(scenario_hashes=[letter * 64, letter * 64])
+            assert loop.short_open_attempt_kept(0, [], "normal", obs["rows"])
+            observations.append(obs)
+        assert not loop.short_open_group_complete(observations)
+        consistency = loop.text_consistency(observations)
+        assert consistency["shared_text_hash"] is False
+        assert consistency["scenarios"]["cold"] == ["a" * 64, "b" * 64, "c" * 64]
+
     def test_group_complete_rejects_empty_hash(self):
         bad = self.observation()
         bad["rows"][1]["text_sha256"] = ""

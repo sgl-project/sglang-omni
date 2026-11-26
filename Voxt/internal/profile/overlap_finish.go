@@ -10,6 +10,13 @@ import (
 
 func (r *overlapRun) finish() OverlapReport {
 	finished := r.options.now()
+	monitored := r.monitor != nil
+	if monitored {
+		// Every path out of the run stops its monitor once, or the report
+		// keeps a zero Resources (and the next method would sample over it).
+		r.resources = r.monitor.Stop(context.WithoutCancel(context.Background()))
+		r.monitor = nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	report := OverlapReport{
@@ -28,7 +35,7 @@ func (r *overlapRun) finish() OverlapReport {
 		Structure:                OverlapStructureArtifact{UnavailableReason: "the run did not produce a complete ordered structure"},
 		Warnings:                 []string{}, Errors: append([]string(nil), r.errors...),
 	}
-	if r.monitor != nil {
+	if monitored {
 		report.Resources = r.resources
 	} else {
 		report.Resources = ResourceReport{
