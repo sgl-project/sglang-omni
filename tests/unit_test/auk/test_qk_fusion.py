@@ -11,6 +11,7 @@ from sglang_omni.models.auk.dit import Attention, AuKDit, Rope
 from sglang_omni.models.auk.flow_matching import AuKFlowMatching
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.platforms import current_platform
+from sglang_omni.platforms.xpu import XPUOmniPlatform
 
 
 @pytest.fixture
@@ -193,5 +194,52 @@ def test_qk_fusion_falls_back_to_native(monkeypatch, device, name):
     assert dit.qk_fusion is None
     assert all(
         block.attn.qk_fusion is None
+        for block in (*dit.transformer_blocks, *dit.single_transformer_blocks)
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform_opts_in", "name", "installed"),
+    [(True, "AuK", True), (False, "AuK", False), (True, "AuK-Flash", False)],
+    ids=["xpu_opts_in", "xpu_declines", "xpu_flash"],
+)
+def test_the_xpu_engine_installs_qk_fusion_only_where_the_platform_opts_in(
+    monkeypatch, platform_opts_in, name, installed
+):
+    pytest.importorskip("triton")
+    from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
+
+    platform = XPUOmniPlatform()
+    monkeypatch.setattr(
+        platform, "enable_auk_fused_qk_norm_rope", lambda: platform_opts_in
+    )
+    monkeypatch.setattr(stages, "current_platform", platform)
+    dit = AuKDit(
+        dim=64,
+        heads=1,
+        dim_head=64,
+        text_hidden_dim=64,
+        num_layers=1,
+        num_single_layers=1,
+    )
+    flow = AuKFlowMatching(dit, num_llm_layers=2)
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(
+        stages,
+        "make_runtime_config",
+        lambda path: AuKRuntimeConfig(model_path=path, name=name),
+    )
+    monkeypatch.setattr(stages, "load_flow", lambda *args: flow)
+    monkeypatch.setattr(
+        stages, "resolve_concrete_device", lambda device, index: torch.device(device)
+    )
+    monkeypatch.setattr(stages, "scheduler", Mock())
+
+    stages.create_auk_engine_executor("stub", device="xpu", dtype="float32")
+
+    expected = fused_qk_norm_rope if installed else None
+    assert dit.qk_fusion is expected
+    assert all(
+        block.attn.qk_fusion is expected
         for block in (*dit.transformer_blocks, *dit.single_transformer_blocks)
     )

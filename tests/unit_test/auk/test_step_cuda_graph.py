@@ -140,15 +140,12 @@ def test_a_shape_that_fails_to_capture_is_left_out_rather_than_raising(caplog):
     assert "will run eager" in caplog.text
 
 
-@pytest.mark.parametrize(
-    ("platform", "builds_runner"),
-    [(CUDAOmniPlatform(), True), (XPUOmniPlatform(), False)],
-)
-def test_xpu_declines_the_step_graph_its_backend_could_record(
-    monkeypatch: pytest.MonkeyPatch, platform: OmniPlatform, builds_runner: bool
+@pytest.mark.parametrize("platform", [CUDAOmniPlatform(), XPUOmniPlatform()])
+def test_an_explicit_step_graph_request_builds_a_runner_wherever_graphs_record(
+    monkeypatch: pytest.MonkeyPatch, platform: OmniPlatform
 ) -> None:
     monkeypatch.setattr(step_cuda_graph, "current_platform", platform)
 
     built = build_step_graph_runner(torch.device(platform.device_type, 0))
 
-    assert (built is not None) == builds_runner
+    assert built is not None

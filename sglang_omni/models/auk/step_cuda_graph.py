@@ -123,12 +123,6 @@ def build_step_graph_runner(
     backend = current_platform.get_device_graph_backend(device)
     if backend is None:
         return None
-    elif not current_platform.enable_auk_dit_graph():
-        logger.info(
-            f"AuK DiT step graph: {current_platform.device_type} declines it; "
-            "every step runs eager"
-        )
-        return None
     else:
         pass
     return AuKStepCudaGraphRunner(

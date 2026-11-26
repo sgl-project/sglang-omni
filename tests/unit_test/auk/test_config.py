@@ -20,6 +20,7 @@ from sglang_omni.models.auk.config import (
     AuKPipelineConfig,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
+from sglang_omni.platforms import current_platform
 
 
 @pytest.mark.parametrize(
@@ -156,3 +157,11 @@ def test_capture_shapes_cli_text_becomes_a_list_of_shapes() -> None:
         [1, 192, 0, 192],
         [1, 320, 320, 384],
     ]
+
+
+def test_the_step_graph_default_follows_the_platform():
+    engine = AuKPipelineConfig(model_path="tencent/AuK").stage_named(ENGINE_STAGE)
+
+    assert (
+        engine.factory.enable_dit_cuda_graph is current_platform.enable_auk_dit_graph()
+    )
