@@ -181,6 +181,12 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		if d.Hold {
 			hold = e.Binding
 		}
+		// In the Rewrite card holding an answer, the dictation shortcuts
+		// speak the next instruction too, as the Rewrite shortcut does:
+		// they used to dictate into its input, which then waited for Enter.
+		if (d.Feature == hotkey.Transcribe || d.Feature == hotkey.Note) && isSelf(target) && a.boxAnswered() && a.followUpAnswer(hold) {
+			return
+		}
 		// In another app than the card's, the Rewrite shortcut begins a new
 		// conversation (the card waits under it, setAside); the card's
 		// Continue still follows up from any app (#4013).
