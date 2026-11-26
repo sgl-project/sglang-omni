@@ -206,7 +206,8 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	if input.FollowDisabled {
 		reason := translator.T("Continue is available when the streaming answer finishes.")
-		state.Message, state.FollowTooltip = reason, reason
+		state.Message = strings.TrimSpace(state.Message + " " + reason)
+		state.FollowTooltip = reason
 	}
 	state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
 	state.Inputs = sessionCardInputs(card.previews)

@@ -156,7 +156,11 @@ func (a *app) retryAnswer(lang string) {
 		a.answer.msg = n.text
 		return
 	}
-	if _, err := a.mgr.Start(req); err == nil && len(req.Previous) == 0 {
+	if _, err := a.mgr.Start(req); err != nil {
+		if a.answerStreaming() {
+			a.answer.msg = i18n.T("Try again is available when the streaming answer finishes.")
+		}
+	} else if len(req.Previous) == 0 {
 		a.answer = answerCard{}
 	}
 	a.syncHotkeys()
@@ -175,6 +179,8 @@ func (a *app) redoAnswer(req session.StartRequest) {
 	}
 	if id, err := a.mgr.Start(req); err == nil {
 		a.answer.redo, a.answer.redoLang, a.answer.redoThink = id, req.TargetLanguage, req.Thinking
+	} else if a.answerStreaming() {
+		a.answer.msg = i18n.T("Try again is available when the streaming answer finishes.")
 	}
 	a.syncHotkeys()
 	a.overlaySync()
@@ -249,16 +255,19 @@ func (a *app) followUpReady() bool {
 	return card.open && ok && card.problem == nil && !a.sess.State.Live()
 }
 
+// answerStreaming reports whether any session's backgrounded answer is live.
+func (a *app) answerStreaming() bool { return a.bgID != "" && a.bgSess.State.Live() }
+
 // canFollowUp keeps one answer streaming at a time, including another
 // session's backgrounded answer (the card's own follow-up may stream there).
 func (a *app) canFollowUp() bool {
-	return a.followUpReady() && (a.bgID == "" || !a.bgSess.State.Live())
+	return a.followUpReady() && !a.answerStreaming()
 }
 
 // followUpBlocked distinguishes an intentional wait from a card that cannot
 // take a follow-up, so the controls can explain it.
 func (a *app) followUpBlocked() bool {
-	return a.followUpReady() && a.bgID != "" && a.bgSess.State.Live()
+	return a.followUpReady() && a.answerStreaming()
 }
 
 // closeAnswer closes the answer card (and cancels a follow-up, another

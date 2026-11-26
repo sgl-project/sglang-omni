@@ -30,5 +30,6 @@
   "Text": "文字",
   "Nothing here yet. Start a Rewrite, Translate or Transcribe and it runs in this session.": "这里还没有内容。开始一次改写、翻译或转录，它就在这个会话里进行。",
   "History is off, so sessions end when Voxt quits.": "历史已关闭，退出 Voxt 后会话不保留。",
-  "Rename session": "重命名会话"
+  "Rename session": "重命名会话",
+  "Try again is available when the streaming answer finishes.": "正在生成的回答完成后，才能重试。"
 }

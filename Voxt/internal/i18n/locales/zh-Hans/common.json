@@ -191,6 +191,7 @@
   "Retry": "重试",
   "Return ↩": "Return ↩",
   "Rewrite": "改写",
+  "Rewrite is available when the streaming answer finishes.": "正在生成的回答完成后，才能改写。",
   "Rewriting the selection…": "正在改写选中的文字…",
   "Right %s": "右 %s",
   "Save": "保存",

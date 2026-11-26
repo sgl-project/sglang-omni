@@ -519,6 +519,31 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
 		t.Fatalf("the Rewrite card does not explain the wait: %+v", view)
 	}
+	ended := a.answer
+	const insertError = "The text did not appear in the input field."
+	a.answer.msg = insertError
+	if message := a.cachedCard().Message; !strings.Contains(message, insertError) || !strings.Contains(message, wait) {
+		t.Fatalf("the wait hides the insert error: %q", message)
+	}
+	if subtitle := a.boxViewState().Subtitle; !strings.Contains(subtitle, insertError) || !strings.Contains(subtitle, wait) {
+		t.Fatalf("the Rewrite wait hides the insert error: %q", subtitle)
+	}
+	const retryWait = "Try again is available when the streaming answer finishes."
+	for _, action := range []struct {
+		name string
+		run  func()
+	}{
+		{name: "retry", run: func() { a.retryAnswer("") }},
+		{name: "redo", run: func() { a.redoAnswer(session.StartRequest{Kind: store.KindTranslate}) }},
+	} {
+		a.answer = answerCard{open: true, id: "failed-" + action.name, kind: store.KindTranslate, problem: &session.Problem{Code: session.ProblemEmpty}}
+		action.run()
+		if !strings.Contains(a.answer.msg, retryWait) {
+			t.Fatalf("%s does not explain the wait: %q", action.name, a.answer.msg)
+		}
+	}
+	a.answer = ended
+	a.overlaySync()
 	if a.followUpAnswer("") {
 		t.Fatal("the blocked Continue accepted a follow-up")
 	}
@@ -537,6 +562,53 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	}
 	a.cancelSession()
 	a.pump("the follow-up's cancellation", func() bool { return a.sess.State.Ended() })
+}
+
+// TestSessionSlotIdleRewriteWaitsForStreamingAnswer: a new session's idle
+// Rewrite card also waits for the other session's answer. Speak and Send say
+// why, and a blocked Send leaves the typed instruction untouched.
+func TestSessionSlotIdleRewriteWaitsForStreamingAnswer(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	a.newSession()
+	streaming := a.bgID
+	if streaming == "" || !a.boxIdle() {
+		t.Fatalf("the new session is not idle: bg=%q box=%+v", a.bgID, a.box)
+	}
+	a.box.text = "keep this draft"
+	const wait = "Rewrite is available when the streaming answer finishes."
+	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
+		t.Fatalf("the idle Rewrite card does not explain the wait: %+v", view)
+	}
+	a.boxActions().send()
+	if a.box.text != "keep this draft" || a.box.instruction != "" {
+		t.Fatalf("the blocked Send changed the draft: text=%q instruction=%q", a.box.text, a.box.instruction)
+	}
+	a.boxActions().speak()
+	if a.box.session != "" {
+		t.Fatalf("the blocked Speak started %q", a.box.session)
+	}
+
+	a.mgr.StopLLM(streaming)
+	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	if view := a.boxViewState(); !view.CanSpeak || !view.CanSend {
+		t.Fatalf("the idle Rewrite card kept the wait: %+v", view)
+	}
+	a.boxActions().send()
+	if a.box.sending == "" {
+		t.Fatalf("the idle Rewrite's first instruction did not start: box=%+v sess=%+v bg=%q notice=%+v", a.box, a.sess, a.bgID, a.notice)
+	}
+	a.cancelSession()
+	a.pump("the first instruction's cancellation", func() bool { return a.sess.State.Ended() })
 }
 
 // TestSessionToggleRefreshesOpenCard: switching Sessions on or off redraws
