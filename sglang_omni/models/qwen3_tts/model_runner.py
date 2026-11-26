@@ -178,7 +178,11 @@ class Qwen3TTSModelRunner(ModelRunner):
         return True
 
     def lookahead_eligible(self, batch: ScheduleBatch | None) -> bool:
-        if batch is None:
+        if (
+            batch is None
+            or batch.forward_mode is None
+            or not batch.forward_mode.is_decode()
+        ):
             return False
         else:
             return bool(batch.reqs) and all(

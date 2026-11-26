@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
 
 from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
@@ -138,34 +139,51 @@ def test_a_middle_prefill_chunk_does_not_advance_its_generation_step():
     assert runner.finalize_skip_rids(SimpleNamespace(requests=requests)) == {"r1"}
 
 
+def lookahead_request(**overrides) -> SimpleNamespace:
+    params = {
+        "repetition_penalty": 1.05,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+        "min_new_tokens": 0,
+    }
+    params.update(overrides)
+    return SimpleNamespace(
+        sampling_params=SimpleNamespace(**params), custom_logit_processor=None
+    )
+
+
+def decode_batch(*requests: SimpleNamespace) -> SimpleNamespace:
+    return SimpleNamespace(reqs=list(requests), forward_mode=ForwardMode.DECODE)
+
+
 def test_lookahead_admits_repetition_penalty_but_not_additive_history_terms():
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
 
-    def request(**overrides):
-        params = {
-            "repetition_penalty": 1.05,
-            "frequency_penalty": 0.0,
-            "presence_penalty": 0.0,
-            "min_new_tokens": 0,
-        }
-        params.update(overrides)
-        return SimpleNamespace(
-            sampling_params=SimpleNamespace(**params), custom_logit_processor=None
-        )
-
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[request()])) is True
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[])) is False
+    assert runner.lookahead_eligible(decode_batch(lookahead_request())) is True
+    assert runner.lookahead_eligible(decode_batch()) is False
     assert runner.lookahead_eligible(None) is False
     for blocked in (
         {"frequency_penalty": 0.5},
         {"presence_penalty": 0.5},
         {"min_new_tokens": 2},
     ):
-        batch = SimpleNamespace(reqs=[request(), request(**blocked)])
+        batch = decode_batch(lookahead_request(), lookahead_request(**blocked))
         assert runner.lookahead_eligible(batch) is False
-    custom = request()
+    custom = lookahead_request()
     custom.custom_logit_processor = object()
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[custom])) is False
+    assert runner.lookahead_eligible(decode_batch(custom)) is False
+
+
+@pytest.mark.parametrize(
+    "forward_mode",
+    [mode for mode in ForwardMode if not mode.is_decode()] + [None],
+)
+def test_lookahead_rejects_every_batch_that_is_not_a_decode(forward_mode):
+    """An async prefill never stages step-ahead inputs, so it must take the synchronous path."""
+    runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
+    batch = SimpleNamespace(reqs=[lookahead_request()], forward_mode=forward_mode)
+
+    assert runner.lookahead_eligible(batch) is False
 
 
 @pytest.mark.accelerator
