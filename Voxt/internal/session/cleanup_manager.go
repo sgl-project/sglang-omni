@@ -124,7 +124,7 @@ func (r *run) cleanupDecisionOpenLocked() bool {
 		return false
 	}
 	deadline := r.cleanupDeadline
-	if deadline.IsZero() && r.m.cfg.CleanupLatency.AutoFallbackAfter > 0 {
+	if deadline.IsZero() && r.ordinaryTranscribe() && r.m.cfg.CleanupLatency.AutoFallbackAfter > 0 {
 		if stopAt := r.stoppedAt(); !stopAt.IsZero() {
 			deadline = stopAt.Add(r.m.cfg.CleanupLatency.AutoFallbackAfter)
 		}

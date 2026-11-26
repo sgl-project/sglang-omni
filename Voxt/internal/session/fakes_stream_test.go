@@ -28,10 +28,11 @@ type fakeStreamer struct {
 	partials []string
 	// pieces are the cumulative "final so far" texts it reports while
 	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
-	pieces     []string
-	candidates []string
-	salvage    string    // the text its streams salvage (asr.Salvager), "" for none
-	onSend     func(int) // called after the i-th send (nil: not)
+	pieces              []string
+	candidates          []string
+	salvage             string // the text its streams salvage (asr.Salvager), "" for none
+	salvageRequiresOpen bool
+	onSend              func(int) // called after the i-th send (nil: not)
 
 	mu               sync.Mutex
 	streams          []*fakeStream
@@ -101,6 +102,7 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 		f: f, ctx: ctx, events: make(chan asr.Event, 1024),
 		latePartials: req.LatePartials, candidates: f.candidates,
 		partialGate: f.partialGate, partialReturnGate: f.partialReturnGate,
+		salvageRequiresOpen: f.salvageRequiresOpen,
 	}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
@@ -116,20 +118,22 @@ func (f *fakeStreamer) latePartialsRequested() bool {
 }
 
 type fakeStream struct {
-	f                 *fakeStreamer
-	ctx               context.Context
-	mu                sync.Mutex
-	bytes             int
-	data              []byte // what was sent
-	sends             int
-	closed            bool
-	done              bool
-	earlyPieces       bool
-	latePartials      bool
-	candidates        []string
-	partialGate       <-chan struct{}
-	partialReturnGate <-chan struct{}
-	events            chan asr.Event
+	f                   *fakeStreamer
+	ctx                 context.Context
+	mu                  sync.Mutex
+	bytes               int
+	data                []byte // what was sent
+	sends               int
+	closed              bool
+	done                bool
+	earlyPieces         bool
+	latePartials        bool
+	candidates          []string
+	partialGate         <-chan struct{}
+	partialReturnGate   <-chan struct{}
+	salvageRequiresOpen bool
+	lifecycle           []string
+	events              chan asr.Event
 }
 
 func (s *fakeStream) emit(ev asr.Event) {
@@ -197,7 +201,15 @@ func (s *fakeStream) Send(pcm []byte) error {
 	return nil
 }
 
-func (s *fakeStream) Salvage() string { return s.f.salvage }
+func (s *fakeStream) Salvage() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lifecycle = append(s.lifecycle, "salvage")
+	if s.salvageRequiresOpen && s.closed {
+		return ""
+	}
+	return s.f.salvage
+}
 
 func (s *fakeStream) Finish() error {
 	defer func() {
@@ -244,6 +256,7 @@ func (s *fakeStream) Close() {
 	defer s.mu.Unlock()
 	if !s.closed {
 		s.closed = true
+		s.lifecycle = append(s.lifecycle, "close")
 		if !s.done && !s.f.closeLeavesEventsOpen {
 			close(s.events)
 		}

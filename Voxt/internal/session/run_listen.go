@@ -475,13 +475,13 @@ func (r *run) listen() (string, bool) {
 				err = waitErr
 			}
 		}
+		if err != nil {
+			salvaged = r.salvage(stream)
+		}
 		if !r.stopStreamReader(stream) {
 			r.recognitionFailed = true
 			r.endFailed(&Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}, nil)
 			return "", false
-		}
-		if err != nil {
-			salvaged = r.salvage(stream)
 		}
 		if silent && r.typedOnly() {
 			return "", true

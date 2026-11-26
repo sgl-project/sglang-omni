@@ -76,6 +76,10 @@ func (r *run) spoken(raw string) string {
 	return text
 }
 
+func (r *run) ordinaryTranscribe() bool {
+	return r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+}
+
 // transcribe cleans up text with the language model (unless the feature
 // has it off or no model is ready) and delivers it. A long dictation is
 // cleaned up in pieces (compose.BuildParts); where the model fails, the
@@ -89,7 +93,7 @@ func (r *run) transcribe(text string) {
 	if r.init.split {
 		readinessOutcome = r.init.llmOutcome
 	}
-	ordinaryTranscribe := r.req.Kind == store.KindTranscribe && !r.req.Note && !r.req.Try && r.req.Text == nil
+	ordinaryTranscribe := r.ordinaryTranscribe()
 	policy := r.m.cfg.CleanupLatency
 	softDeadline := policy.AutoFallbackAfter > 0 && ordinaryTranscribe
 	if ordinaryTranscribe {

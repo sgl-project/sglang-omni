@@ -46,7 +46,7 @@ func TestASRFallback(t *testing.T) {
 	}{
 		{"the Final fails", &fakeStreamer{finalErr: &asr.Error{Kind: asr.KindServer, Detail: "the local speech model stopped answering"}}, false, "partial", asr.KindServer},
 		{"the Final takes too long", &fakeStreamer{hang: true}, true, "partial", asr.KindTimeout},
-		{"the stream salvages its pieces", &fakeStreamer{salvage: "pieces so far", finalErr: &asr.Error{Kind: asr.KindServer}}, false, "pieces so far", asr.KindServer},
+		{"the stream salvages its pieces", &fakeStreamer{salvage: "pieces so far, including the tail", salvageRequiresOpen: true, finalErr: &asr.Error{Kind: asr.KindServer}}, false, "pieces so far, including the tail", asr.KindServer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &fakeLLM{text: "Cleaned."}
@@ -55,6 +55,7 @@ func TestASRFallback(t *testing.T) {
 				h.m.cfg.ASRTimeout, h.m.cfg.ASRPerSecond = 100*time.Millisecond, time.Nanosecond
 			}
 			id := h.start()
+			current := sessionRun(t, h)
 			h.speak(id, 5)
 			end := h.rec.wait(t)
 			if end.State != Done || end.Raw != tc.raw || end.Result != "Cleaned." || !end.Inserted || !end.Recording {
@@ -66,8 +67,24 @@ func TestASRFallback(t *testing.T) {
 			if p := h.text.pastes(); !slices.Equal(p, []string{"Cleaned."}) {
 				t.Errorf("pasted %q", p)
 			}
-			if reqs := model.requests(); len(reqs) != 1 {
-				t.Errorf("%d clean-ups", len(reqs))
+			requests := model.requests()
+			if len(requests) != 1 {
+				t.Errorf("%d clean-ups", len(requests))
+			}
+			if tc.prov.salvageRequiresOpen {
+				tc.prov.mu.Lock()
+				stream := tc.prov.streams[0]
+				tc.prov.mu.Unlock()
+				stream.mu.Lock()
+				calls := append([]string(nil), stream.lifecycle...)
+				closed := stream.closed
+				stream.mu.Unlock()
+				if !slices.Equal(calls, []string{"salvage", "close"}) || !closed || current.streamReaderDone != nil {
+					t.Fatalf("stream calls %q closed=%v reader=%v", calls, closed, current.streamReaderDone)
+				}
+				if len(requests) == 1 && !containsText(requests[0], tc.raw) {
+					t.Fatalf("cleanup request omitted salvaged tail %q", tc.raw)
+				}
 			}
 			es := h.hist.all()
 			if len(es) != 1 || es[0].Status != store.StatusDone || es[0].Error == "" || es[0].RawText != tc.raw || es[0].Audio != id+".wav" {
@@ -330,11 +347,11 @@ func TestStreamReaderShutdownOnTimeoutWithAndWithoutSalvage(t *testing.T) {
 		salvage string
 		want    State
 	}{
-		{name: "salvaged", salvage: "live transcript", want: Done},
+		{name: "salvaged", salvage: "live transcript with recoverable tail", want: Done},
 		{name: "no salvage", want: Failed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := &fakeStreamer{hang: true, salvage: tc.salvage, silent: tc.salvage == "", closeLeavesEventsOpen: true}
+			provider := &fakeStreamer{hang: true, salvage: tc.salvage, salvageRequiresOpen: true, silent: tc.salvage == "", closeLeavesEventsOpen: true}
 			h := newHarness(t, provider, &fakeLLM{text: "Cleaned transcript."}, func(c *Config, s *settings.Settings) {
 				c.ASRTimeout, c.ASRPerSecond = 100*time.Millisecond, time.Nanosecond
 				s.Features.Transcribe.Enhance = tc.salvage != ""
@@ -360,8 +377,17 @@ func TestStreamReaderShutdownOnTimeoutWithAndWithoutSalvage(t *testing.T) {
 			if tc.salvage != "" && (end.Result != "Cleaned transcript." || len(h.text.pastes()) != 1) {
 				t.Fatalf("salvaged result %+v deliveries=%q", end, h.text.pastes())
 			}
+			if tc.salvage != "" && end.Raw != tc.salvage {
+				t.Fatalf("raw transcript %q, want %q", end.Raw, tc.salvage)
+			}
 			if tc.salvage == "" && len(h.text.pastes()) != 0 {
 				t.Fatalf("failed ASR unexpectedly delivered %q", h.text.pastes())
+			}
+			stream.mu.Lock()
+			calls := append([]string(nil), stream.lifecycle...)
+			stream.mu.Unlock()
+			if !slices.Equal(calls, []string{"salvage", "close"}) {
+				t.Fatalf("stream calls %q, want salvage before close", calls)
 			}
 		})
 	}
