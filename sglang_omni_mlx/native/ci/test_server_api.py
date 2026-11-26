@@ -621,8 +621,8 @@ def test_realtime_manual_session(server: Server) -> None:
     assert indexes == sorted(indexes)
 
 
-def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> None:
-    """The Final encodes only the audio after the session's complete windows, and its text is the one without a session; a head the session does not share, a Final of other audio and an unknown session reuse no more than its rows."""
+def test_a_segment_final_reuses_its_live_session_cache(server: Server) -> None:
+    """A segment Final reuses its completed windows and leaves the first segment's HTTP Final cache valid."""
     clip_id = "0098_en_mid"
     pcm = pcm16(clip_id)
     fields = {
@@ -656,7 +656,15 @@ def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> No
                 }
             )
         )
-        assert json.loads(socket.recv())["type"] == "transcription.segment"
+        preview = json.loads(socket.recv())
+        assert preview["type"] == "transcription.segment"
+        assert preview["is_final"] is False
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        finalized = json.loads(socket.recv())
+        assert finalized["type"] == "transcription.segment"
+        assert finalized["is_final"] is True
+        assert finalized["generation_metadata"]["reused_audio_token_count"] == 208
+        assert finalized["generation_metadata"]["reused_prompt_token_count"] > 208
         plain = final({})
         reused = final({"realtime_session": session_id})
         with_context = final({"realtime_session": session_id, "prompt": "GLOSSARY"})
@@ -673,6 +681,38 @@ def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> No
         and "reused_audio_token_count" not in other_audio["generation_metadata"]
         and "reused_audio_token_count" not in unknown["generation_metadata"]
     )
+
+
+def test_a_short_segment_final_encodes_audio_without_a_complete_cache(
+    server: Server,
+) -> None:
+    """A Final with no completed encoder window computes its audio instead of claiming reuse."""
+    pcm = pcm16("0006_en_short")[: 5 * 32000]
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "language": "en"},
+                }
+            )
+        )
+        json.loads(socket.recv())
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm).decode(),
+                }
+            )
+        )
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        events: list[dict[str, object]] = []
+        while not events or not events[-1].get("is_final", False):
+            events.append(json.loads(socket.recv()))
+    finalized = events[-1]
+    assert finalized["type"] == "transcription.segment"
+    assert finalized["generation_metadata"]["reused_audio_token_count"] == 0
 
 
 def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> None:
@@ -987,11 +1027,31 @@ def test_a_long_final_reuses_the_windows_after_the_first_segment(
             )
         )
         # note (XXXXRT666): the first segment's final and the second's preview.
-        for _ in range(2):
-            assert json.loads(socket.recv())["type"] == "transcription.segment"
+        initial_segments = [json.loads(socket.recv()) for _ in range(2)]
+        assert [event["type"] for event in initial_segments] == [
+            "transcription.segment",
+            "transcription.segment",
+        ]
+        assert [event["segment_id"] for event in initial_segments] == [0, 1]
+        assert [event["is_final"] for event in initial_segments] == [True, False]
         # note (XXXXRT666): the second preview queued the background jobs, one window each, and the server is idle again once they are done.
         wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
         reused = final({"realtime_session": session_id})
+        socket.send(json.dumps({"type": "transcription.done"}))
+        second_final = json.loads(socket.recv())
+        completed = json.loads(socket.recv())
+        assert second_final["type"] == "transcription.segment"
+        assert second_final["segment_id"] == 1
+        assert second_final["is_final"] is True
+        assert completed["type"] == "transcription.completed"
+        assert completed["text"]
+        event_indices = [
+            initial_segments[0]["event_index"],
+            initial_segments[1]["event_index"],
+            second_final["event_index"],
+            completed["event_index"],
+        ]
+        assert event_indices == sorted(event_indices)
     # note (XXXXRT666): four complete 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_audio_token_count"] == 416
     assert reused["generation_metadata"]["reused_prompt_token_count"] > 416

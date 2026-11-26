@@ -354,11 +354,18 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
 Transcription
 RealtimeSession::Decode(std::vector<float> samples,
                         TranscriptionOptions options,
-                        std::shared_ptr<RefreshReuse> reuse) const {
+                        std::shared_ptr<RefreshReuse> reuse,
+                        bool snapshot_reuse) const {
   return [&transcriber = transcriber_, samples = std::move(samples),
           options = std::move(options),
-          reuse = std::move(reuse)](const std::atomic<bool> &cancel) {
-    return transcriber.Transcribe(samples, options, cancel, reuse.get());
+          reuse = std::move(reuse),
+          snapshot_reuse](const std::atomic<bool> &cancel) {
+    if (reuse == nullptr || !snapshot_reuse) {
+      return transcriber.Transcribe(samples, options, cancel, reuse.get());
+    } else {
+      RefreshReuse snapshot = *reuse;
+      return transcriber.Transcribe(samples, options, cancel, &snapshot);
+    }
   };
 }
 
@@ -416,7 +423,8 @@ void RealtimeSession::MaybeStartRefresh() {
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      Decode(std::move(samples), std::move(options), std::move(reuse)), cancel_,
+      Decode(std::move(samples), std::move(options), std::move(reuse), false),
+      cancel_,
       [weak_self, segment_id, end_sample](
           std::optional<TranscriptionResult> result, std::exception_ptr error) {
         const std::shared_ptr<RealtimeSession> self = weak_self.lock();
@@ -486,6 +494,7 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
       samples = SegmentSamples(segment, cut_sample);
     }
     std::optional<std::string> text;
+    std::optional<TranscriptionResult> result;
     if (omni_common::PeakIsSilent(samples.data(), samples.size(),
                                   kSilentPeak)) {
       text = std::string();
@@ -496,21 +505,23 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         options = DecodeOptions(segment, false, cut_sample);
       }
       try {
-        TranscriptionResult result =
-            worker_.Transcribe(Decode(samples, options, nullptr), cancel_);
+        result = worker_.Transcribe(
+            Decode(samples, options, segment.reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
-        if (result.finish_reason == FinishReason::kLength &&
+        if (result->finish_reason == FinishReason::kLength &&
             !options.prefix_token_ids.empty()) {
           options.prefix_token_ids.clear();
           options.prefix_text.clear();
           options.max_new_tokens.reset();
           result = worker_.Transcribe(
-              Decode(std::move(samples), std::move(options), nullptr), cancel_);
+              Decode(std::move(samples), std::move(options), segment.reuse,
+                     true),
+              cancel_);
         } else {
         }
-        ApplyResult(segment, result, cut_sample);
-        text = result.text;
+        ApplyResult(segment, *result, cut_sample);
+        text = result->text;
       } catch (...) {
         ReportDecodeFailure(std::current_exception());
       }
@@ -522,10 +533,17 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         std::lock_guard<std::mutex> lock(mutex_);
         committed_.emplace_back(segment.segment_id, *text);
       }
-      Send({{"type", "transcription.segment"},
-            {"segment_id", segment.segment_id},
-            {"text", *text},
-            {"is_final", true}});
+      nlohmann::ordered_json event = {{"type", "transcription.segment"},
+                                      {"segment_id", segment.segment_id},
+                                      {"text", *text},
+                                      {"is_final", true}};
+      if (result.has_value()) {
+        event["generation_metadata"] = {
+            {"reused_audio_token_count", result->reused_audio_token_count},
+            {"reused_prompt_token_count", result->reused_prompt_token_count}};
+      } else {
+      }
+      Send(std::move(event));
     } else {
     }
     {
