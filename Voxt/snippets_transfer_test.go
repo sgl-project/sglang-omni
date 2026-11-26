@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 )
 
 // snippetsTester is the Snippets page, read.
@@ -103,6 +105,41 @@ func TestSnippetsImport(t *testing.T) {
 			t.Errorf("%s: open %v, format shown %v, toasts %q, added %+v", name, a.snipUI.importOpen, a.snipUI.importExample, a.toasts, a.snip.list.Snippets)
 		}
 		click(t, tt, "Cancel")
+	}
+}
+
+// TestSnippetsImportExample: the example under "File format", saved as
+// a file in either language, imports through the dialog. The snippets
+// already there stay; the one with the example's trigger takes its text.
+func TestSnippetsImportExample(t *testing.T) {
+	previous := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previous) })
+	saved := chooseSnippetsFile
+	t.Cleanup(func() { chooseSnippetsFile = saved })
+	for _, locale := range []string{"en", "zh-Hans"} {
+		i18n.SetLocale(locale)
+		a, tt := snippetsTester(t)
+		email := i18n.T("my work email")
+		a.snip.list = snippet.List{Snippets: []snippet.Snippet{
+			{ID: "s1", Trigger: "sign off", Text: "Best, Alex"},
+			{ID: "s2", Trigger: email, Text: "old@company.com"},
+		}}
+		a.saveSnippets()
+		storedSnippets(t, a, tt, 2)
+		in := filepath.Join(t.TempDir(), "example.json")
+		os.WriteFile(in, []byte(snippetsImportExample()), 0o644)
+		chooseSnippetsFile = func(a *app, then func(string)) { then(in) }
+
+		click(t, tt, i18n.T("Import…"))
+		click(t, tt, i18n.T("Choose a .json file"))
+		got := storedSnippets(t, a, tt, 3)
+		if got[0].Text != "Best, Alex" || got[1].Trigger != email || got[1].Text != "name@company.com" ||
+			got[2].Trigger != i18n.T("my meeting link") || got[2].Text != "zoom.us/j/123" {
+			t.Errorf("%s: stored %+v", locale, got)
+		}
+		if want := i18n.T("Imported snippets: %d new, %d updated.", 1, 1); !slices.Contains(a.toasts, want) && !has(tt, want) {
+			t.Errorf("%s: toasts %q", locale, a.toasts)
+		}
 	}
 }
 

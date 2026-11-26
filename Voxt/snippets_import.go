@@ -78,10 +78,15 @@ func snippetsImportFormat(c *ui.Context, local *snippetsLocalUI) {
 	if !local.importExample {
 		return
 	}
-	example := "[\n" +
+	ui.Box(c.Key("snippet-import-example")).Padding(px(t, sp2), px(t, sp3)).Radius(px(t, radiusControl)).Background(k.Subtle).Children(func() {
+		ui.Text(c, snippetsImportExample()).Font("monospace").FontSize(px(t, fsCaption)).Selectable()
+	})
+}
+
+// snippetsImportExample is the file "File format" shows, in the UI's
+// language; it imports as it is.
+func snippetsImportExample() string {
+	return "[\n" +
 		`  { "trigger": "` + i18n.T("my work email") + `", "text": "name@company.com" },` + "\n" +
 		`  { "trigger": "` + i18n.T("my meeting link") + `", "text": "zoom.us/j/123" }` + "\n]"
-	ui.Box(c.Key("snippet-import-example")).Padding(px(t, sp2), px(t, sp3)).Radius(px(t, radiusControl)).Background(k.Subtle).Children(func() {
-		ui.Text(c, example).Font("monospace").FontSize(px(t, fsCaption)).Selectable()
-	})
 }
