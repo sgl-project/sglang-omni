@@ -38,7 +38,8 @@ func shownTriggers(a *app) []string {
 
 // TestSnippetsImport: Import… opens a dialog that shows what the file
 // looks like; choosing a Wispr Flow export there reads it, skips what it
-// cannot use, says so and closes the dialog; importing it again changes
+// cannot use, closes the dialog and says so in the middle of the page for
+// a moment; importing it again changes
 // nothing. A file that is not snippets, or has none Voxt can use, says why
 // in the dialog, which stays open.
 func TestSnippetsImport(t *testing.T) {
@@ -66,18 +67,27 @@ func TestSnippetsImport(t *testing.T) {
 	if got[0].Trigger != "my email address" || got[1].Text != "https://zoom.us/j/123" {
 		t.Errorf("stored %+v", got)
 	}
-	if want := "Imported snippets: 3 new, 0 updated, 1 skipped."; !slices.Contains(a.toasts, want) && !has(tt, want) {
-		t.Errorf("toasts %q", a.toasts)
+	want := "Imported snippets: 3 new, 0 updated, 1 skipped."
+	if !has(tt, want) || len(a.toasts) > 0 {
+		t.Errorf("the notice: shown %v, toasts %q", has(tt, want), a.toasts)
 	}
 	if a.snipUI.importOpen {
 		t.Error("the dialog stayed open after an import")
 	}
-	a.toasts = nil
-	tt.Advance(10 * time.Second) // the toast covers Import… in a narrow window
+	tt.Advance(snippetsImportNoticeFor + time.Second/2)
+	frames(tt)
+	if !has(tt, want) {
+		t.Errorf("the notice of an import that skipped some went after %v", snippetsImportNoticeFor)
+	}
+	tt.Advance(snippetsImportNoticeSkippedFor - snippetsImportNoticeFor)
+	frames(tt)
+	if has(tt, want) || a.snipUI.notice != "" {
+		t.Errorf("the notice stayed after %v", snippetsImportNoticeSkippedFor)
+	}
 	click(t, tt, "Import…")
 	click(t, tt, "Choose a .json file")
 	frames(tt)
-	if want := "Imported snippets: 0 new, 0 updated, 1 skipped."; len(a.snip.list.Snippets) != 3 || !slices.Contains(a.toasts, want) && !has(tt, want) {
+	if want := "Imported snippets: 0 new, 0 updated, 1 skipped."; len(a.snip.list.Snippets) != 3 || !has(tt, want) {
 		t.Errorf("a second import: %+v, toasts %q", a.snip.list.Snippets, a.toasts)
 	}
 
@@ -141,8 +151,14 @@ func TestSnippetsImportExample(t *testing.T) {
 			got[2].Trigger != i18n.T("my meeting link") || got[2].Text != "zoom.us/j/123" {
 			t.Errorf("%s: stored %+v", locale, got)
 		}
-		if want := i18n.T("Imported snippets: %d new, %d updated.", 1, 1); !slices.Contains(a.toasts, want) && !has(tt, want) {
-			t.Errorf("%s: toasts %q", locale, a.toasts)
+		want := i18n.T("Imported snippets: %d new, %d updated.", 1, 1)
+		if !has(tt, want) {
+			t.Errorf("%s: no notice %q; texts %q", locale, want, tt.Texts())
+		}
+		tt.Advance(snippetsImportNoticeFor + time.Second/2)
+		frames(tt)
+		if has(tt, want) {
+			t.Errorf("%s: the notice stayed after %v", locale, snippetsImportNoticeFor)
 		}
 	}
 }
