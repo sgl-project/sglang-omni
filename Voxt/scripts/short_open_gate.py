@@ -44,25 +44,40 @@ def main(argv):
     reasons = list(preflight.get("environment_reasons", []))
     observations = []
     for attempt in range(1, rounds + 1):
-        pair = [
-            r
-            for r in by_attempt.get(attempt, [])
-            if r.get("scenario") in ("cold", "warm")
-        ]
-        pair.sort(key=lambda r: r.get("scenario", ""))
+        attempt_rows = by_attempt.get(attempt, [])
+        (rows_path.parent / f"latency-attempt-{attempt}.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in attempt_rows),
+            encoding="utf-8",
+        )
+        pair = [row for row in attempt_rows if row.get("scenario") in ("cold", "warm")]
+        pair.sort(key=lambda row: row.get("scenario", ""))
         kept = loop.short_open_attempt_kept(
             int(preflight.get("returncode", 1)),
             reasons,
             preflight.get("peak_pressure", ""),
             pair,
         )
-        observations.append({"attempt": attempt, "kept": kept, "rows": pair})
+        observations.append(
+            {
+                "attempt": attempt,
+                "returncode": int(preflight.get("returncode", 1)),
+                "environment_invalid_reason": reasons,
+                "peak_memory_pressure": preflight.get("peak_pressure", ""),
+                "kept": kept,
+                "rows": attempt_rows,
+            }
+        )
+    loop.write_json(rows_path.parent / "short-open-observations.json", observations)
     if not loop.short_open_group_complete(observations):
         detail = [
             {
                 "attempt": o["attempt"],
                 "kept": o["kept"],
-                "scenarios": [r.get("scenario") for r in o["rows"]],
+                "scenarios": [
+                    row.get("scenario")
+                    for row in o["rows"]
+                    if row.get("scenario") in ("cold", "warm")
+                ],
             }
             for o in observations
         ]

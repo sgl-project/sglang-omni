@@ -9,6 +9,9 @@ text hashes the kept decision was written against.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -167,6 +170,126 @@ class ShortOpenGateTests(unittest.TestCase):
                 [bad, self.observation(), self.observation()]
             )
         )
+
+
+class ShortOpenRunnerTests(unittest.TestCase):
+    def run_latency_shell(self, drift=False, rounds=None, pressure_after=False):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            source = Path(__file__).resolve().parent
+            for name in ("mac-latency.sh", "short_open_gate.py", "profile_loop.py"):
+                shutil.copy2(source / name, scripts / name)
+            binaries = root / "bin"
+            binaries.mkdir()
+
+            def command(name, contents):
+                path = binaries / name
+                path.write_text(contents, encoding="utf-8")
+                path.chmod(0o755)
+
+            command("uname", "#!/bin/sh\nprintf 'Darwin\\n'\n")
+            command("pmset", "#!/bin/sh\nprintf \"Now drawing from 'AC Power'\\n\"\n")
+            command("pgrep", "#!/bin/sh\nexit 1\n")
+            command(
+                "sysctl",
+                "#!/bin/sh\nif [ -f build/latency.log ] && [ \"${LATENCY_FAKE_PRESSURE_AFTER:-0}\" = 2 ]; then printf '2\\n'; else printf '1\\n'; fi\n",
+            )
+            command(
+                "go",
+                """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+
+rounds = int(os.environ["VOXTNEW_LATENCY_ROUNDS"])
+rows = []
+for attempt in range(1, rounds + 1):
+    for scenario in ("cold", "warm", "switch"):
+        text_hash = "z" * 64 if scenario == "switch" else "a" * 64
+        if os.environ.get("LATENCY_FAKE_DRIFT") == "1" and attempt == 2 and scenario == "warm":
+            text_hash = "b" * 64
+        rows.append({
+            "attempt": attempt,
+            "round": attempt,
+            "scenario": scenario,
+            "text": "fixed text",
+            "text_sha256": text_hash,
+            "min_preview_samples": 20000,
+            "first_partial_ms": 1200.0,
+            "stop_to_final_ms": 900.0,
+            "stop_to_insert_ms": 1000.0,
+            "stop_to_done_ms": 1100.0,
+        })
+Path(os.environ["VOXTNEW_LATENCY_OUT"]).write_text(
+    "".join(json.dumps(row) + "\\n" for row in rows), encoding="utf-8"
+)
+print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
+""",
+            )
+            environment = os.environ.copy()
+            environment["PATH"] = str(binaries) + os.pathsep + environment["PATH"]
+            environment["VOXTNEW_MAIN_SHA"] = "test-source-sha"
+            environment["VOXTNEW_HUB"] = str(root / "empty-hub")
+            environment["LATENCY_FAKE_DRIFT"] = "1" if drift else "0"
+            environment["LATENCY_FAKE_PRESSURE_AFTER"] = "2" if pressure_after else "1"
+            arguments = [str(scripts / "mac-latency.sh"), "accurate", "fast"]
+            if rounds is not None:
+                arguments.append(str(rounds))
+            process = subprocess.run(
+                arguments,
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            attempt_path = root / "build" / "latency-attempt-2.jsonl"
+            observations_path = root / "build" / "short-open-observations.json"
+            return {
+                "process": process,
+                "attempt": attempt_path.read_text() if attempt_path.exists() else None,
+                "observations": (
+                    observations_path.read_text()
+                    if observations_path.exists()
+                    else None
+                ),
+            }
+
+    def test_shell_emits_go_summary_and_attempt_evidence_for_complete_group(self):
+        result = self.run_latency_shell()
+        self.assertEqual(
+            result["process"].returncode,
+            0,
+            result["process"].stdout + result["process"].stderr,
+        )
+        self.assertIn("MEASURE latency", result["process"].stdout)
+        self.assertIsNotNone(result["attempt"])
+        self.assertEqual(len(result["attempt"].splitlines()), 3)
+        observations = json.loads(result["observations"])
+        self.assertEqual(len(observations), 3)
+        self.assertTrue(all(observation["kept"] for observation in observations))
+
+    def test_shell_rejects_invalid_attempt_without_measure_and_keeps_evidence(self):
+        result = self.run_latency_shell(drift=True)
+        self.assertEqual(result["process"].returncode, 1)
+        self.assertNotIn("MEASURE latency", result["process"].stdout)
+        self.assertIn('"complete": false', result["process"].stdout)
+        self.assertIsNotNone(result["attempt"])
+        observations = json.loads(result["observations"])
+        self.assertFalse(observations[1]["kept"])
+
+    def test_shell_rejects_pressure_that_rises_during_the_run(self):
+        result = self.run_latency_shell(pressure_after=True)
+        self.assertEqual(result["process"].returncode, 1)
+        self.assertNotIn("MEASURE latency", result["process"].stdout)
+        observations = json.loads(result["observations"])
+        self.assertEqual(observations[0]["peak_memory_pressure"], "warn")
+
+    def test_shell_rejects_non_three_rounds(self):
+        result = self.run_latency_shell(rounds=1)
+        self.assertEqual(result["process"].returncode, 2)
+        self.assertIn("ROUNDS must be 3", result["process"].stderr)
 
 
 if __name__ == "__main__":
