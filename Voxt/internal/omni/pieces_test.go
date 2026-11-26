@@ -251,6 +251,71 @@ func TestLiveNoPiecesWhenShort(t *testing.T) {
 	}
 }
 
+func TestEnableEarlyPiecesRechecksAudioAlreadySent(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 60*time.Second, 10*time.Second, 15*time.Second, 25*time.Second
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	pcm := speechAndPauses(12) // 20.4 s: below the original policy, above EarlyPieces' threshold.
+	sendAll(t, st, pcm)
+	if finals := f.records("final"); len(finals) != 0 {
+		t.Fatalf("the normal policy cut early: %+v", finals)
+	}
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok || !enabler.EnableEarlyPieces() {
+		t.Fatal("Qwen3 stream refused safe late EarlyPieces activation")
+	}
+	f.waitLogged(t, "piece 1 of the recording")
+	if a.spec.ASR.PiecesAfter != 60*time.Second {
+		t.Fatalf("late activation changed the shared ASR policy to %v", a.spec.ASR.PiecesAfter)
+	}
+}
+
+func TestEnableEarlyPiecesKeepsClaimedPieceBoundaries(t *testing.T) {
+	f := newFake(t, omnitest.Opts{Text: "p{n}"}, nil)
+	a := piecesASR(t, f)
+	a.spec.ASR.PiecesAfter, a.spec.ASR.PieceMin, a.spec.ASR.PieceSeconds, a.spec.ASR.PieceMax = 25*time.Second, 10*time.Second, 15*time.Second, 25*time.Second
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sendAll(t, st, speechAndPauses(15)) // 25.5 s reaches the existing policy.
+	f.waitLogged(t, "piece 1 of the recording")
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok {
+		t.Fatal("Qwen3 stream does not expose EarlyPieces activation")
+	}
+	if enabler.EnableEarlyPieces() {
+		t.Fatal("late activation changed segmentation after a piece had been claimed")
+	}
+}
+
+func TestEnableEarlyPiecesIsUnavailableForLiveResult(t *testing.T) {
+	f := newFake(t, omnitest.Opts{}, nil)
+	a := f.asr(t, ASRAccurate)
+	st, err := a.Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate, LiveResult: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	enabler, ok := st.(asr.EarlyPiecesEnabler)
+	if !ok || enabler.EnableEarlyPieces() {
+		t.Fatal("LiveResult stream accepted an unsupported EarlyPieces policy")
+	}
+}
+
+func TestEnableEarlyPiecesRejectsOtherModelKinds(t *testing.T) {
+	stream := &live{a: &ASR{spec: Spec{Kind: kindWhisper}}, pc: &pieces{}}
+	if stream.EnableEarlyPieces() {
+		t.Fatal("Whisper accepted Qwen3's EarlyPieces policy")
+	}
+}
+
 // TestLiveFinalFailsWithText: a Final that fails (an error, a stall)
 // ends the stream with the error, and Salvage gives the text the live
 // preview had, for the session to go on with.

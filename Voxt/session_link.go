@@ -19,10 +19,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -195,6 +193,7 @@ func (a *app) openSessions() {
 	} else if cleanupLatency.AutoFallbackAfter > 0 {
 		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "experimental cleanup fallback enabled: " + cleanupLatency.AutoFallbackAfter.String() + " after Stop"})
 	}
+	resolve, resolveASR, resolveLLM := sessionResolvers(lm)
 	a.mgr = session.New(session.Config{
 		Audio:  session.HelperAudio{H: sup},
 		Text:   a.textIO(), // family_runtime.go: the family's paste rule
@@ -218,7 +217,9 @@ func (a *app) openSessions() {
 		BoxInput:          a.boxShare.load,
 		BoxAutoSuppressed: func() (bool, bool) { return a.boxShare.automaticSuppressed() },
 		BoxReview:         a.boxShare.waitForReview,
-		Resolve:           resolver(lm),
+		Resolve:           resolve,
+		ResolveASR:        resolveASR,
+		ResolveLLM:        resolveLLM,
 		History:           lib.store.History(),
 		Languages:         readingLanguages, // settings_locale.go
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
@@ -241,85 +242,6 @@ func (a *app) openSessions() {
 	a.sess = a.mgr.Current()
 }
 
-// resolver opens a session's local models (off the main thread: opening
-// one may start its runtime). A model that is not installed stays nil:
-// the session says what it lacks when it needs it. Without speech the
-// speech model is not opened at all: loading it again after it went
-// idle cost a selection Translate seconds (#3838).
-func resolver(lm local.Services) session.Resolver {
-	return func(ctx context.Context, kind session.Kind, s settings.Settings, speech bool) (session.Services, error) {
-		f := featureOf(s, string(kind))
-		var svc session.Services
-		if speech {
-			id := strings.TrimSpace(f.ASR)
-			skip := false
-			if id == "" {
-				// Automatic: only a model that can recognise the main
-				// language (automaticSpeech). Models installed but none
-				// for it is as without one; none installed opens "" and
-				// reports the lack, as before.
-				all := lm.Installed(local.ASR)
-				if m, ok := local.Choose(automaticSpeech(s, all), ""); ok {
-					id = m.ID
-				} else {
-					skip = len(all) > 0
-				}
-			}
-			if !skip {
-				p, m, err := lm.ASR(ctx, id)
-				switch {
-				case err == nil:
-					svc.ASR, svc.ASRInfo = p, sessionModel(m)
-				case !errors.Is(err, local.ErrNotInstalled):
-					return svc, err
-				}
-			}
-		}
-		if va, ok := svc.ASR.(local.VoiceActivity); ok {
-			// No model: speech is found by energy.
-			svc.VAD = va.VAD()
-		}
-		if kind == store.KindTranscribe && !s.Features.Transcribe.Enhance {
-			return svc, nil
-		}
-		// A model that serves the feature (the translation model only
-		// translates).
-		ready := local.ForFeature(lm.Installed(local.LLM), string(kind))
-		want := strings.TrimSpace(f.LLM)
-		m, ok := local.Choose(ready, want)
-		if !ok {
-			return svc, nil
-		}
-		// An unavailable explicit choice stays unavailable; only Translate's
-		// own fallback may stand in.
-		if want != "" && m.ID != want {
-			m = local.Model{}
-		}
-		// When it does not open, there is no language model: the text goes
-		// on as recognised.
-		if m.ID != "" {
-			if c, ml, err := lm.LLM(ctx, m.ID); err == nil && ml.ID == m.ID {
-				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
-			}
-		}
-		// The fallback model, or the model when that one did not open: the
-		// first candidate that opens.
-		for _, id := range fallbackCandidates(kind, s, ready, m.ID) {
-			c, ml, err := lm.LLM(ctx, id)
-			if err != nil || ml.ID != id {
-				continue
-			}
-			if svc.LLM == nil {
-				svc.LLM, svc.LLMInfo = c, sessionModel(ml)
-			} else {
-				svc.Fallback, svc.FallbackInfo = c, sessionModel(ml)
-			}
-			break
-		}
-		return svc, nil
-	}
-}
-
 // fallbackCandidates are the models a session may fall back to, in order:
 // Translate's fallback model, then, with Models.LLMSwitch, every other
 // ready model in the Language models page's order.
@@ -337,11 +259,6 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 		}
 	}
 	return ids
-}
-
-// sessionModel is how a session (and its history entry) names a model.
-func sessionModel(m local.Model) session.Model {
-	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID, Remote: m.Remote}
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and

@@ -123,6 +123,16 @@ func (r *run) hearLive(text string) {
 	if r.liveOff {
 		return
 	}
+	if r.ctx.Err() != nil || r.cancelled.Load() {
+		return
+	}
+	if r.init.split {
+		select {
+		case <-r.svcResolved:
+		default:
+			return
+		}
+	}
 	r.liveOnce.Do(func() { r.live = newLivePolish(r) })
 	if r.live == nil {
 		return
@@ -156,7 +166,7 @@ func (r *run) endLive() {
 // Nor where the head start asks the whole text at every pause (headstart.go):
 // it is ahead of the sentences this would clean one by one.
 func newLivePolish(r *run) *livePolish {
-	if r.head.enabled {
+	if r.head.enabled.Load() {
 		return nil
 	}
 	r.m.mu.Lock()
