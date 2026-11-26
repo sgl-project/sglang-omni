@@ -58,7 +58,7 @@ def load_vae(checkpoint: str, device: str) -> BigVGANFlowVAE:
     config = make_runtime_config(checkpoint)
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
     load_vae_weights(vae, checkpoint)
-    vae = vae.to(device=device).eval().requires_grad_(False)
+    vae = vae.to(device=device).eval()
     fuse_activations = (
         torch.device(device).type == current_platform.device_type
         and current_platform.enable_auk_fused_vae_activations()
@@ -71,7 +71,7 @@ def load_vae(checkpoint: str, device: str) -> BigVGANFlowVAE:
             module.enable_fused_kernel()
         else:
             pass
-    return vae
+    return vae.requires_grad_(False)
 
 
 # Order matches the fuse_hidden_states signature.

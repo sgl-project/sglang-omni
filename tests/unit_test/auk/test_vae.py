@@ -73,6 +73,7 @@ def test_the_loader_folds_weight_norm_without_moving_the_waveform(
         for name, _ in loaded.named_parameters()
         if name.endswith(("weight_g", "weight_v"))
     ]
+    assert not [name for name, p in loaded.named_parameters() if p.requires_grad]
     with torch.inference_mode():
         assert torch.equal(
             loaded.inference_from_latents(latents),

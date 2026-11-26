@@ -63,6 +63,8 @@ def test_qk_fusion_supports_native_bf16_backbone(triton_device):
     attention = (
         Attention(dim=128, heads=2, dim_head=64).to(triton_device).to(torch.bfloat16)
     )
+    for norm in (attention.q_norm, attention.k_norm):
+        torch.nn.init.uniform_(norm.weight, 0.5, 1.5)
     qkv = torch.randn(2, 17, 384, device=triton_device, dtype=torch.bfloat16)
     query, key, _ = qkv.chunk(3, dim=-1)
     query = attention.split_heads(query, 2, 64)
@@ -70,6 +72,9 @@ def test_qk_fusion_supports_native_bf16_backbone(triton_device):
     rope = make_rope(torch.randn(2, 17, 64, device=triton_device))
 
     with torch.inference_mode():
+        expected = attention.apply_rope(
+            attention.q_norm(query), attention.k_norm(key), rope
+        )
         actual = fused_qk_norm_rope(
             query, key, attention.q_norm, attention.k_norm, rope
         )
@@ -77,6 +82,14 @@ def test_qk_fusion_supports_native_bf16_backbone(triton_device):
     assert all(output.dtype == torch.bfloat16 for output in actual)
     assert all(output.shape == query.shape for output in actual)
     assert all(torch.isfinite(output).all() for output in actual)
+    for output, reference in zip(actual, expected, strict=True):
+        assert reference.dtype == torch.bfloat16
+        torch.testing.assert_close(
+            output.float(),
+            reference.float(),
+            rtol=0,
+            atol=2**-6 * reference.abs().max().item(),
+        )
 
 
 def test_qk_fusion_is_shared_by_attention_blocks_and_fed_by_the_backbone(monkeypatch):
