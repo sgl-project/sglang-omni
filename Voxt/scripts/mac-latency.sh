@@ -79,4 +79,3 @@ else
   echo "short-open group incomplete: no median (see build/latency-attempt-*.json and build/latency-round-*.jsonl)" >&2
   exit 1
 fi
-

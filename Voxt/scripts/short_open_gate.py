@@ -35,11 +35,18 @@ def main(argv):
         env = (
             json.loads(env_path.read_text())
             if env_path.exists()
-            else {"environment_reasons": ["no environment record"], "peak_pressure": "warn"}
+            else {
+                "environment_reasons": ["no environment record"],
+                "peak_pressure": "warn",
+            }
         )
         rows_path = build / f"latency-round-{attempt}.jsonl"
         rows = (
-            [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()]
+            [
+                json.loads(line)
+                for line in rows_path.read_text().splitlines()
+                if line.strip()
+            ]
             if rows_path.exists()
             else []
         )
@@ -80,7 +87,12 @@ def main(argv):
     ):
         for scenario in ("cold", "warm"):
             med = medians(
-                [r for o in observations for r in o["rows"] if r.get("scenario") == scenario],
+                [
+                    r
+                    for o in observations
+                    for r in o["rows"]
+                    if r.get("scenario") == scenario
+                ],
                 key,
             )
             if med is not None:

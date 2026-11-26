@@ -54,7 +54,9 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
     def test_complete_group_prints_medians(self):
         proc = self.run_gate([self.pair(), self.pair(), self.pair()], {})
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual(json.loads(proc.stdout)["cold_first_partial_ms_median"], 1200.0)
+        self.assertEqual(
+            json.loads(proc.stdout)["cold_first_partial_ms_median"], 1200.0
+        )
 
     def test_transient_contender_inside_one_attempt_rejects_it(self):
         envs = {
@@ -87,13 +89,19 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
 
     def test_text_drift_between_attempts_rejects(self):
         proc = self.run_gate(
-            [self.pair(), [row("cold", text_sha256="b" * 64), row("warm", text_sha256="b" * 64)], self.pair()],
+            [
+                self.pair(),
+                [row("cold", text_sha256="b" * 64), row("warm", text_sha256="b" * 64)],
+                self.pair(),
+            ],
             {},
         )
         self.assertEqual(proc.returncode, 1)
 
     def test_no_partial_attempt_rejects(self):
-        proc = self.run_gate([self.pair(first_partial_ms=None), self.pair(), self.pair()], {})
+        proc = self.run_gate(
+            [self.pair(first_partial_ms=None), self.pair(), self.pair()], {}
+        )
         self.assertEqual(proc.returncode, 1)
 
 
