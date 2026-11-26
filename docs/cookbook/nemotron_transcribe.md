@@ -12,6 +12,8 @@ Install SGLang-Omni following [Installation](../get_started/installation.md), th
 hf download nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B
 ```
 
+For Intel GPUs, follow the [Nemotron Transcribe XPU recipe](../other_platforms/installation_xpu.md#nemotron-transcribe-speech-to-text-multi-xpu-tensor-parallel): 24 GB cards need the stage sharded across four of them.
+
 The BF16 30B-A4B checkpoint was validated on one H100 80 GB. Leave memory for audio encoding and graph workspaces in addition to the weights and KV cache:
 
 ```bash
@@ -33,7 +35,7 @@ The pipeline runs one ASR stage. It accepts uploads up to one hour, resamples to
 | `--asr.factory.context_length` | `73728` | Decoder context budget in tokens |
 | `--asr.factory.max_new_tokens` | `16384` | Response token budget; `length` means the transcript stopped there |
 | `--asr.factory.chunked_prefill_size` | `4096` | Decoder prefill chunk in tokens |
-| `--asr.factory.mm_embedding_cache_size_bytes` | `0` | Audio embedding cache capacity |
+| `--asr.factory.mm_embedding_cache_size_bytes` | `0`, 512 MiB per rank above one rank | Audio embedding cache capacity |
 | `--asr.factory.compile_perception` | `false` | Compile encoder transformer layers |
 | `--asr.factory.perception_cuda_graphs` | `false` | Capture encoder graphs; requires compilation |
 | `--asr.factory.perception_fp8` | `true` | Run an FP8 checkpoint's encoder linears as FP8 GEMMs; `false` dequantizes them to BF16 |

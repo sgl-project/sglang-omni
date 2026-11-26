@@ -58,7 +58,11 @@ func privacySettings(c *ui.Context, state settingsPrivacyViewState, actions sett
 	})
 
 	sectionTitle(c, i18n.T("Kept on this Mac"))
-	settingRow(c, "priv-history", i18n.T("Keep a history"), i18n.T("When off, the menu bar and Dock menus do not list cards to reopen."), func() {
+	historyHelp := i18n.T("When off, the menu bar and Dock menus do not list cards to reopen.")
+	if state.SessionsOn {
+		historyHelp = i18n.T("When off, the menu bar and Dock menus do not list cards to reopen, and sessions end when Voxt quits. Clear history ends the other sessions too.")
+	}
+	settingRow(c, "priv-history", i18n.T("Keep a history"), historyHelp, func() {
 		if ui.Switch(c.Key("priv-history"), &local.keepHistory).Label(i18n.T("Save each result")).Changed() {
 			actions.setKeepHistory(local.keepHistory)
 		}

@@ -124,6 +124,10 @@ type run struct {
 	liveOnce sync.Once
 	live     *livePolish
 	liveOff  bool
+	// head asks the language model about the live text ahead of the Final
+	// (headstart.go); silent tells the recording loop of the user's pauses.
+	head   headStart
+	silent chan bool
 }
 
 type capResult struct {
@@ -243,9 +247,10 @@ func (r *run) main() {
 		return
 	}
 	var selDone chan string
+	var listened chan struct{}
 	switch {
 	case selTranslate:
-		sel := r.readSelection()
+		sel := r.readSelection(nil)
 		if r.ctx.Err() != nil {
 			r.endCancelled(nil)
 			return
@@ -260,7 +265,7 @@ func (r *run) main() {
 		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
-		selDone = make(chan string, 1)
+		selDone, listened = make(chan string, 1), make(chan struct{})
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
 			if !r.req.Box {
@@ -269,11 +274,16 @@ func (r *run) main() {
 				// picture that will not be sent is never taken.
 				r.shootWindow()
 			}
-			selDone <- r.readSelection()
+			sel := r.readSelection(listened)
+			r.previewClip()
+			selDone <- sel
 		}()
 	}
 
 	raw, ok := r.listen()
+	if listened != nil {
+		close(listened)
+	}
 	if !ok {
 		return
 	}

@@ -209,6 +209,48 @@ def test_local_seedtts_source_does_not_claim_huggingface_revision(
     assert captured["server_config"]["quantization"] is None
 
 
+def test_seedtts_main_creates_missing_output_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    meta_path = tmp_path / "meta.lst"
+    meta_path.write_text("sample-1|hello|ref.wav|target one\n")
+    (tmp_path / "ref.wav").write_bytes(b"audio")
+    output_path = tmp_path / "missing" / "child" / "result.json"
+
+    async def empty_sweep(*args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_asr_seedtts",
+            "--port",
+            "8000",
+            "--meta",
+            str(meta_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+    monkeypatch.setattr(benchmark_asr_seedtts, "_sweep", empty_sweep)
+    monkeypatch.setattr(
+        benchmark_asr_seedtts,
+        "collect_benchmark_provenance",
+        lambda **kwargs: {},
+    )
+
+    benchmark_asr_seedtts.main()
+    payload = json.loads(output_path.read_text())
+    assert payload["schema_version"] == 2
+    assert payload["results"] == []
+
+    # The rerun exercises exist_ok: the output directory already exists.
+    benchmark_asr_seedtts.main()
+    assert json.loads(output_path.read_text())["schema_version"] == 2
+
+
 def test_custom_seedtts_repo_does_not_use_canonical_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -121,6 +121,7 @@ func (r *run) write(raw, selection string) {
 			// A send again (Text) with no pictures of its own keeps
 			// today's rule: the clipboard's picture, else the window's.
 			r.readClipboardImage()
+			r.previewClip()
 		}
 		if !automaticImageSuppressed {
 			r.shootWindow()

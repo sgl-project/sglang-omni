@@ -60,26 +60,56 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 		m.releaseModels = nil
 	}
 	m.mu.Unlock()
+	auto := !m.cfg.Settings().NoAutoSummary
+	if auto {
+		if o := m.startCorrectOverlap(mt.ID); o != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			o.cancel = cancel
+			m.mu.Lock()
+			m.cfg.correctOverlap = o
+			m.mu.Unlock()
+		}
+	}
 	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
+	if err != nil {
+		m.dropCorrectOverlap()
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.id != mt.ID {
+		m.mu.Unlock()
 		return
 	}
 	if err != nil {
 		m.state = StateInterrupted
 		m.snap.State = StateInterrupted
-		m.notify(m.snap)
+		s := m.snap
+		m.mu.Unlock()
+		m.notify(s)
 		return
 	}
 	meetingID := mt.ID
-	auto := !m.cfg.Settings().NoAutoSummary
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
-	m.notify(m.snap)
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 	if auto {
 		go m.correctAndSummarize(context.Background(), meetingID)
+	}
+}
+
+// dropCorrectOverlap cancels and clears the speculative correction, so a
+// later correction asks the language model afresh (its context, like the
+// dictionary, may have changed since).
+func (m *Manager) dropCorrectOverlap() {
+	m.mu.Lock()
+	o := m.cfg.correctOverlap
+	m.cfg.correctOverlap = nil
+	m.mu.Unlock()
+	if o != nil && o.cancel != nil {
+		o.cancel()
 	}
 }
 
@@ -103,6 +133,7 @@ func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
 	}
+	m.dropCorrectOverlap()
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
 	}

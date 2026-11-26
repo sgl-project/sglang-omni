@@ -1,6 +1,7 @@
 feature	level	check	gap
 Transcribe	L	TestSessionEndToEnd	Pasting into a real app is checked by hand only
 Transcribe	M	TestMacE2ESessionLocal	none
+Transcribe	M	TestMacHelperCaptureFile	none
 Transcript clean-up by the language model	L	TestStopAnswerEndToEnd	No check of a real model's answer format
 Transcript clean-up by the language model	L	TestSkipLLMEndToEnd	none
 Transcript clean-up while the user speaks	L	TestLivePolishLeavesNothingAfterStop	The wait after Stop with a real speech model and a remote language model is measured by hand on a Mac
@@ -16,14 +17,17 @@ Image input: window screenshot and clipboard image	L	TestClipboardImageEndToEnd	
 Answer card	L	TestAnswerCardMarkdown	none
 Answer card	L	TestCardThinkingLevel	none
 Answer card	L	TestRewriteNoCard	none
-Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position and several displays are checked by hand only
+Recording overlay and live text	L	TestSessionEscapeAndFailures	Overlay position within a display and full-screen Space behavior are checked by hand only
 Recording overlay and live text	L	TestOverlayHidesWhileInserting	none
+Recording overlay and live text	L	TestOverlayDisplayPrefersFocusedWindow	none
 Shortcuts	L	TestStrictShortcuts	Real key events run only in the Mac script
 Shortcuts	L	TestTranscribeMouseButton	none
 Shortcuts	M	scripts/mac-hotkey-coexist.sh	none
 End word and long press	L	TestTranscribeEndWord	none
 End word and long press	L	TestSessionLongPress	none
-App enhancement	L	TestSessionAppEnhancement	Finding the real front app and browser URL is checked by hand only
+App enhancement	L	TestSessionAppEnhancement	Each real target app is exercised by hand only
+App enhancement	M	TestMacHelperReadOnly	A real browser's URL is read only when one is running
+App enhancement	M	TestMacHelperIcons	none
 App enhancement: per-app Transcribe clean-up	L	TestAppEnhancementTranscribeCleanup	none
 Dictionary and hot words	L	TestTranscribeDictionaryHighlights	none
 Dictionary and hot words	E	TestEvalDictASR	none
@@ -68,6 +72,9 @@ Opening at each start of the app	L	TestOpeningPlaysAtEachStart	A real quit and r
 Opening at each start of the app	L	TestOpeningOff	none
 Opening at each start of the app	L	TestOpeningLength	none
 Settings and appearance	L	TestWindowTransparencySettings	none
+Settings and appearance	M	TestTextFitsItsOwnWidth	none
+Settings and appearance	M	TestTranslationsFit	none
+Feature settings navigation	L	TestFeaturesMovedToSettings	none
 Announcements and release notes	L	TestAnnouncements	none
 Privacy and where data goes	L	TestRemoteErrorKeepsNoKey	none
 Privacy and where data goes	L	TestDefaultSessionContactsNoRemoteHost	Only HTTP requests through the default transport are recorded
@@ -90,3 +97,5 @@ Hat studio: draw, erase, undo, the wardrobe, put on	L	TestShareStudioDrawsUndoes
 Home Insights	L	TestInsightsNumbers	none
 The insights cards to share	L	TestInsightsFaces	How the cards look and move is checked by hand only
 Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none
+Session list: switch sessions on the card, each keeping its card and conversation	L	TestSessionSlotSwitchKeepsConversations	A real-app pass over the session row and the parked cards is checked by hand only
+Sessions come back after a restart while history is kept	L	TestSessionsSurviveRestart	none

@@ -48,7 +48,7 @@
       "radius": 24,
       "margin": 96,
       "show_time": false,
-      "live_lines": true
+      "live_lines": false
     }
   }
 }

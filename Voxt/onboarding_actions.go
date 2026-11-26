@@ -15,6 +15,7 @@ type onboardingActions interface {
 	onboardingNoticeAction(action string)
 	onboardingTryLanguage()
 	onboardingDownloadAndContinue()
+	obDownload()
 	downloadModel(id string)
 	obUse(ids ...string)
 	askRequired()

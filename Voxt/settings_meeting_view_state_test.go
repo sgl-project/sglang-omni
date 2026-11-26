@@ -21,7 +21,10 @@ func TestMeetingSettingsViewState(t *testing.T) {
 		},
 		ReadyASR: readyASR,
 		ShownASR: readyASR[1:],
-		ReadyLLM: []local.Model{{ID: "llm-first", Name: "First LLM"}, {ID: "llm-second", Name: "Second LLM"}},
+		// The app side picks the Automatic model (meetingSettingsModel);
+		// the builder only names it.
+		AutomaticASR: readyASR[0],
+		ReadyLLM:     []local.Model{{ID: "llm-first", Name: "First LLM"}, {ID: "llm-second", Name: "Second LLM"}},
 	}
 	state := buildSettingsMeetingViewState(translator, input)
 	if code := settingsLanguageCode(state.CaptureModeSelected, state.CaptureModeOptions); code != "subtitles" {

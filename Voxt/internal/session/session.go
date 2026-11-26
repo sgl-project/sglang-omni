@@ -137,11 +137,6 @@ type Problem struct {
 	Degraded bool
 }
 
-// Model names a model a session used.
-type Model struct {
-	ID, Name, Model string
-}
-
 // Timings are a session's stage times. Sent is how much of the
 // recording (Audio) the speech model got: less without the silence the
 // local voice activity detection left out (0 when it got none, or
@@ -363,7 +358,11 @@ const (
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
-	DefaultReadTimeout    = 1500 * time.Millisecond
+	// DefaultReadTimeout must cover Translate's worst selection read:
+	// the settle (selectionSettleMS), the modifier wait
+	// (selectionModifierWaitMS) and the copy wait (selectionCopyMS),
+	// plus AX and IPC overhead (selectionOverheadMS) — 2 s.
+	DefaultReadTimeout = 2 * time.Second
 	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
 	// read, and its ⌘C landing on the clipboard (the helper's default
 	// 300 ms), in Rewrite (#3644: long selections failed).
