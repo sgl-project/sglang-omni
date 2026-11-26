@@ -8,7 +8,7 @@ package main
 // conversation; switching back restores them, so a covered Rewrite
 // result is never lost. An answer still streaming when the user switches
 // finishes in the background in its own session (wall 116): its card
-// waits there until the session comes back. With Settings → Shortcuts'
+// waits there until the session comes back. With Settings → Experimental's
 // Sessions switch off there is one session and everything behaves as
 // before.
 
@@ -16,12 +16,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // parkedSlot is a session: its id, which never changes (its number on
@@ -65,6 +68,8 @@ func (a *app) switchSlot(id int) {
 	if id == a.slot || n < 0 || a.answer.inserting {
 		return // an insert pastes: its callback must find its card in place
 	}
+	pin, pinned := a.cardWindowFrame()
+	wasBox, boxTarget := a.box.open, a.box.target
 	if a.box.open && a.sess.State.Live() && a.sess.ID == a.boxSessionID() && !a.answerBackgroundable() {
 		a.closeBox() // which cancels its session
 		a.sess = session.Snapshot{State: session.Idle, Rev: a.sess.Rev}
@@ -84,6 +89,9 @@ func (a *app) switchSlot(id int) {
 	if a.box.open {
 		a.closeBox()
 	}
+	if pinned {
+		a.slotPin = &pin
+	}
 	from := &a.slots[a.slotIndex(a.slot)]
 	if from.answer.open && a.answer.open && !a.under.open {
 		a.under = from.answer // the card that waited here since the restart, never shown
@@ -98,6 +106,10 @@ func (a *app) switchSlot(id int) {
 	a.notice, a.renaming = nil, false
 	a.resurface()
 	a.emptyCard = a.prefs.Features.SessionsOn && !a.answer.open && !a.bgVisible()
+	a.boxForAnswer()
+	if wasBox && !a.answer.open && !a.bgVisible() {
+		a.boxIn(boxTarget) // a new session goes on in the Rewrite card
+	}
 	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
@@ -166,19 +178,14 @@ func (a *app) deleteSession(id int) {
 	a.overlaySync()
 }
 
-// sessionChips is the card's session row: nothing with sessions off or
-// one session only, so that card is as it is without sessions (a new
-// session then starts from the menu bar, and so does renaming the only
-// one, which brings the row for as long as the title is typed). The other sessions' titles
-// are cut to sessionShortMax; the chip's tooltip has the whole one.
+// sessionChips is the card's session row: nothing with sessions off,
+// one chip per session otherwise, the only one too. The other sessions'
+// titles are cut to sessionShortMax; the chip's tooltip has the whole one.
 func (a *app) sessionChips() []sessionChipViewState {
 	if !a.prefs.Features.SessionsOn {
 		return nil
 	}
-	list := a.sessions()
-	if len(list) < 2 && !a.renaming {
-		return nil
-	}
+	list := a.sessions() // one session too: the row's "+" adds the next
 	chips := make([]sessionChipViewState, len(list))
 	for i, p := range list {
 		chip := sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
@@ -232,11 +239,22 @@ func sessionTitle(text string) string {
 	return cutTitle(strings.Join(strings.Fields(text), " "), sessionTitleMax)
 }
 
+// cutTitle cuts text to most columns: a wide (CJK) character takes two.
 func cutTitle(text string, most int) string {
-	if runes := []rune(text); len(runes) > most {
-		text = strings.TrimSpace(string(runes[:most])) + "…"
+	columns := 0
+	for i, r := range text {
+		if columns += runeColumns(r); columns > most {
+			return strings.TrimSpace(text[:i]) + "…"
+		}
 	}
 	return text
+}
+
+func runeColumns(r rune) int {
+	if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) || r >= 0x3000 && r <= 0x303f || r >= 0xff00 && r <= 0xffef {
+		return 2
+	}
+	return 1
 }
 
 // titleSession names the session an ended session ran in after its
@@ -282,4 +300,33 @@ func (a *app) parkAnswer(s session.Snapshot) {
 	}
 	p.answer, p.under, p.followUp = a.answer, a.under, a.followUp
 	a.answer, a.under, a.followUp = answer, under, followUp
+}
+
+// boxForAnswer shows a restored Rewrite answer in the Rewrite card, the
+// one card its conversation had (wall 122): the answer card would trade
+// the input for Continue.
+func (a *app) boxForAnswer() {
+	if a.box.open || !a.answer.open || a.answer.kind != store.KindRewrite || a.sess.State.Live() {
+		return
+	}
+	a.boxIn(a.answer.target)
+}
+
+// boxIn opens the Rewrite card for target with nothing running: an
+// answer restored in it, or a new session's first instruction to come.
+func (a *app) boxIn(target proto.App) {
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, dragged: a.ov.cardDragged}
+	a.boxShare.reset()
+	a.boxSync()
+}
+
+// cardWindowFrame is the frame of the card window on screen, if any.
+func (a *app) cardWindowFrame() (mygo.Rectangle, bool) {
+	switch {
+	case a.box.open && a.box.winShown:
+		return a.box.frame, true
+	case a.ov.shown && a.ov.mode == ovAnswer:
+		return a.ov.frame, true
+	}
+	return mygo.Rectangle{}, false
 }

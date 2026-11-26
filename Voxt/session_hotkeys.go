@@ -64,9 +64,10 @@ func (a *app) strictFeature() string {
 // event acts only on the card that was visible when the helper read its id.
 func (a *app) cardHotkeyGeneration() uint64 {
 	identity := ""
-	// A title being typed takes c and r, and a session's empty card has
-	// nothing for them to act on.
-	if a.overlayModeNow() == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) {
+	// A title being typed takes c and r, a session's empty card has
+	// nothing for them to act on, and the Rewrite card's input takes them.
+	mode := a.overlayModeNow()
+	if mode == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) && !a.boxHoldsCard(mode) {
 		identity = a.sess.ID + "/draft"
 		if a.answer.open {
 			identity = a.answer.id + "/open"
@@ -179,6 +180,12 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
+		}
+		// In the Rewrite card holding an answer, the dictation shortcuts
+		// speak the next instruction too, as the Rewrite shortcut does:
+		// they used to dictate into its input, which then waited for Enter.
+		if (d.Feature == hotkey.Transcribe || d.Feature == hotkey.Note) && isSelf(target) && a.boxAnswered() && a.followUpAnswer(hold) {
+			return
 		}
 		// In another app than the card's, the Rewrite shortcut begins a new
 		// conversation (the card waits under it, setAside); the card's

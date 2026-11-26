@@ -26,17 +26,21 @@ func TestRevealRunes(t *testing.T) {
 		{100, 4000, 100 * time.Millisecond, 116},
 		{50, 20, 33 * time.Millisecond, 20}, // the draft got shorter
 	} {
-		if got := revealRunes(c.shown, c.total, c.dt); got != c.want {
+		if got := revealRunes(c.shown, c.total, c.dt, true); got != c.want {
 			t.Errorf("revealRunes(%d, %d, %v) = %d, want %d", c.shown, c.total, c.dt, got, c.want)
 		}
+	}
+	// The model ended: no slower than revealMax, no cap on a long rest.
+	if few, many := revealRunes(0, 50, 100*time.Millisecond, false), revealRunes(0, 4000, 100*time.Millisecond, false); few != 16 || many != 800 {
+		t.Errorf("ended: %d of 50, %d of 4000 after 100 ms", few, many)
 	}
 }
 
 // TestStreamedAnswerCalm (#3836): a fast model streams a long Rewrite
 // answer, 8 runes every 20 ms as the fake model does. The card shows it
 // at a steady pace, the text a part of the draft, and its height changes
-// at most twice in any second; when the model ends, the whole answer
-// shows at once.
+// at most twice in any second; when the model ends, the rest streams on
+// and shows in full within about two seconds.
 func TestStreamedAnswerCalm(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	clock := (&fakeTimers{}).install(a)
@@ -69,8 +73,18 @@ func TestStreamedAnswerCalm(t *testing.T) {
 	}
 	s.State, s.Result, s.Delivery = session.Done, long, deliver.ReasonCard
 	snap(a, s)
-	if v := a.cachedCard(); a.answer.text != long || cardTextForTest(v) != strings.TrimSpace(long) {
-		t.Errorf("the model ended: result %d bytes, card shows %d of %d runes", len(a.answer.text), len(cardTextForTest(v)), len(long))
+	// The rest streams on, as Claude's answers do, and catches up soon.
+	shown := len(cardTextForTest(a.cachedCard()))
+	if a.answer.text != long || shown >= len(strings.TrimSpace(long)) || shown == 0 {
+		t.Errorf("the model ended: result %d bytes, card shows %d of %d runes at once", len(a.answer.text), shown, len(long))
+	}
+	clock.advance(100 * time.Millisecond)
+	if more := len(cardTextForTest(a.cachedCard())); more <= shown || !strings.HasPrefix(long, cardTextForTest(a.cachedCard())) {
+		t.Errorf("after the end the card went from %d to %d runes", shown, more)
+	}
+	clock.advance(2300 * time.Millisecond)
+	if v := a.cachedCard(); cardTextForTest(v) != strings.TrimSpace(long) {
+		t.Errorf("2.4 s after the end the card shows %d of %d runes", len(cardTextForTest(v)), len(long))
 	}
 	clock.advance(time.Second)
 	if len(clock.timers) != 0 {

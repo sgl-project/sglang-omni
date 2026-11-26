@@ -91,6 +91,8 @@ type sessionState struct {
 	slot, slotSeq int
 	slots         []parkedSlot
 	emptyCard     bool
+	// slotPin: where a switch found the card window, kept for the next one.
+	slotPin *mygo.Rectangle
 	// renaming: session renameID's title is being typed on the session
 	// row; the card's keys go to the text meanwhile.
 	renaming bool

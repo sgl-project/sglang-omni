@@ -4,8 +4,8 @@ package main
 // /settings/{section}, and the theme. The dialog is AudioSmith's, with the sections
 // every app of the family has and VoxtNew's own: Audio
 // (settings_audio.go), Overlay style (settings_overlay.go) and the table
-// of Shortcuts (settings_shortcuts.go) and a section for each feature
-// (feature_page.go).
+// of Shortcuts (settings_shortcuts.go), Experimental
+// (settings_experimental.go) and a section for each feature (feature_page.go).
 
 import (
 	"strings"
@@ -25,6 +25,7 @@ type settingsForm struct {
 	settingsPrivacyLocalUI
 	settingsAudioLocalUI
 	settingsShortcutsLocalUI
+	settingsExperimentalLocalUI
 	ovStyle overlayForm // settings_overlay.go
 
 	// loginIs is whether macOS opens VoxtNew at login, as last read or
@@ -66,6 +67,8 @@ func settingsSectionIcon(id string) icons.Icon {
 		return icons.ShieldCheck
 	case "storage":
 		return icons.Database
+	case "experimental":
+		return icons.Tuning2
 	}
 	return icons.InfoCircle
 }
@@ -279,6 +282,8 @@ func settingsSection(c *ui.Context, r *ui.Route, state settingsDialogViewState, 
 			privacySettings(c, *state.Privacy, actions, &local.Form.settingsPrivacyLocalUI, local.HistoryAccess)
 		case "storage":
 			storageSettings(c, *state.Storage, actions, local.Storage)
+		case "experimental":
+			experimentalSettings(c, *state.Experimental, actions, &local.Form.settingsExperimentalLocalUI)
 		case "about":
 			aboutDetails(c, *state.About)
 			updateSettingsSection(c, *state.Updates, actions, local.Updates)

@@ -11,7 +11,7 @@ type settingsPrivacyViewState struct {
 	SendClipboard              bool   `json:"send_clipboard"`
 	SendClipboardWithSelection bool   `json:"send_clipboard_with_selection"`
 	KeepHistory                bool   `json:"keep_history"`
-	// SessionsOn: Shortcuts' Sessions switch is on, which Keep a history
+	// SessionsOn: Experimental's Sessions switch is on, which Keep a history
 	// then says it covers.
 	SessionsOn       bool                   `json:"sessions_on,omitempty"`
 	KeepAudio        bool                   `json:"keep_audio"`

@@ -233,7 +233,7 @@ func FeatureTitleFor(translator *i18n.Translator, feature string) string {
 		return translator.T("Next session")
 	}
 	if slot, ok := hotkey.SessionSlot(feature); ok {
-		return translator.T("Session %d", slot+1)
+		return translator.T("Go to session %d", slot+1)
 	}
 	return translator.T("Transcribe")
 }

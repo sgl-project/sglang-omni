@@ -196,12 +196,17 @@ Paths are JSON paths in the document; "Default" is a fresh install's value. Type
 | `features.pasteLast` | shortcut | `{"keys": "Control+Option+V", "trigger": "tap"}` | Transcribe → Paste the last result |
 | `features.cancel` | shortcut | `{"keys": "Escape", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Transcribe → Cancel recording |
 | `features.note` | shortcut | `{"keys": "RightCommand", "trigger": "tap"}` (tap only; `"keys": ""` = off) | Notes |
-| `features.sessionsOn` | boolean | `false`: no session row on the cards, no session list in the menu bar menu, and the session shortcuts do nothing (sessions are an experiment). While on with `privacy.keepHistory` on, the session list is kept over a restart in the database's `sessions` document; with history off it is not saved | Settings → Shortcuts → Sessions (experimental) |
-| `features.sessions` | array of 4 shortcuts: Session 1, 2, 3 (go to that session when it exists), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Shortcuts → Sessions |
 | `features.strictShortcuts` | bool | `false` | Settings → Shortcuts → Strict shortcuts: only the starting feature's shortcut stops a recording |
 | `features.returnFinishes` | bool | `true` | Settings → Shortcuts → Return finishes a recording: Return stops a Transcribe, Translate or Rewrite recording (not a note's); off, Return reaches the app. Until 2.1.3 it was `features.transcribe.returnFinishes`, Transcribe's alone, which a document without this field still keeps |
 
 Settings → Shortcuts → presets set the four main shortcuts at once; no field stores the preset, Voxt recognises it from the keys.
+
+### Experimental (Settings → Experimental)
+
+| Path | Type | Default | On the page |
+|---|---|---|---|
+| `features.sessionsOn` | boolean | `false`: no session row on the cards, no session list in the menu bar menu, and the session shortcuts do nothing (sessions are an experiment). While on with `privacy.keepHistory` on, the session list is kept over a restart in the database's `sessions` document; with history off it is not saved | Settings → Experimental → Sessions (experimental) |
+| `features.sessions` | array of 4 shortcuts: Go to session 1, 2, 3 (go to that session when it exists; set only in the settings file, the page lists Next session alone), then Next session (the next one in the list, around) | `[{"keys": ""}, {"keys": ""}, {"keys": ""}, {"keys": "Option+Tab", "trigger": "tap"}]` (tap only; `"keys": ""` = that shortcut off) | Settings → Experimental → Sessions |
 
 ### Transcribe, Translate and Rewrite (Settings → Transcribe, Translate or Rewrite)
 
