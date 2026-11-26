@@ -32,6 +32,9 @@ const (
 	Cancel
 	// Paste the last result.
 	Paste
+	// ToggleMeeting starts a meeting, or ends the one in progress (the
+	// caller knows which): a press of a meeting's binding.
+	ToggleMeeting
 )
 
 func (a Action) String() string {
@@ -44,6 +47,8 @@ func (a Action) String() string {
 		return "cancel"
 	case Paste:
 		return "paste"
+	case ToggleMeeting:
+		return "meeting"
 	}
 	return "none"
 }
@@ -76,6 +81,10 @@ type Decision struct {
 //   - Composing: an answer streams into its card; a feature's binding
 //     starts its session as in Idle (the answer finishes in the
 //     background), the cancel shortcut acts on the streaming session.
+//   - A meeting's binding, in any phase: its tap, double tap or long
+//     press's "down" toggles the meeting (ToggleMeeting: the caller
+//     starts one or ends the one in progress), its "up" does nothing;
+//     it never stops or starts a dictation (#4641).
 //
 // holdBinding is the binding whose long press started the session ("":
 // none); strict is the feature that started it with Strict shortcuts on
@@ -121,6 +130,12 @@ func Route(e proto.HotkeyEventParams, phase Phase, holdBinding, strict string, f
 			}
 		}
 		return Decision{}
+	}
+	if feature == Meeting {
+		if e.Phase == proto.PhaseUp {
+			return Decision{}
+		}
+		return Decision{Action: ToggleMeeting}
 	}
 	switch phase {
 	case Idle, Composing:

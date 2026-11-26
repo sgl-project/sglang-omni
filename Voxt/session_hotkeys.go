@@ -18,6 +18,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -248,6 +249,8 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 		a.cancelSession()
 	case hotkey.Paste:
 		a.pasteLast(target)
+	case hotkey.ToggleMeeting:
+		a.meetingShortcut()
 	}
 }
 
@@ -261,11 +264,20 @@ func (a *app) returnFinishes() bool {
 
 // hotkeyPlan is what the settings' shortcuts become.
 func (a *app) hotkeyPlan() hotkey.Plan {
-	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.prefs.Features.IsHidden)
+	shown := slices.DeleteFunc(slices.Clone(liveFeatures), a.featureHidden)
 	if a.returnFinishes() {
 		shown = append(shown, hotkey.FinishID)
 	}
 	return hotkey.Build(a.prefs.Features, shown)
+}
+
+// featureHidden is whether feature is hidden (features.hidden), which turns
+// its shortcuts off. Meetings hides as "meetings", the others by their id.
+func (a *app) featureHidden(feature string) bool {
+	if feature == hotkey.Meeting {
+		feature = settings.HideMeetings
+	}
+	return a.prefs.Features.IsHidden(feature)
 }
 
 // syncHotkeys sends the shortcuts to the helper (and flips "active" while

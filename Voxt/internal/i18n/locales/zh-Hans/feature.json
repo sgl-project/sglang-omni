@@ -34,6 +34,7 @@
   "Press a shortcut anywhere, speak, and the text is typed where your cursor is.": "在任何地方按下快捷键说话，文字会输入到光标所在的位置。",
   "Ignores fillers and false starts in what you say. The selected text is not changed.": "忽略口头语和说了一半的话，不改动选中的文字。",
   "Remove shortcut %d": "删除快捷键 %d",
+  "Shortcut %d already uses these keys.": "快捷键 %d 已经在用这个按键。",
   "Removes fillers and false starts, fixes punctuation, and turns spoken punctuation (\"comma\") into marks.": "去掉口头语和说了一半的话，整理标点，把口述的标点（“逗号”）变成符号。",
   "Reset to default": "恢复默认",
   "Rewriting": "改写",

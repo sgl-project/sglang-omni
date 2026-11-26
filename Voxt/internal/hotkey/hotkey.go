@@ -293,7 +293,8 @@ const (
 	// Note is the binding id of Features.Note: it starts a Transcribe
 	// session whose text becomes a note.
 	Note = "note"
-	// Meeting is Features.Meeting's binding id (dev builds).
+	// Meeting is Features.Meeting's binding id: a press starts a meeting
+	// or ends the one in progress (Route's ToggleMeeting).
 	Meeting = "meeting"
 	// Session1 … Session3 are the binding ids of Features.Sessions: a
 	// tap switches to session 1, 2 or 3 of the list, when it exists

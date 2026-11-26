@@ -7,18 +7,24 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 - **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
+- **A shortcut cannot take keys another shortcut of its feature has** (#4656): choosing or typing them keeps the shortcut as it was, and a notice names the shortcut that has them. Before, both were saved and only one of them worked.
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **Meeting shortcuts start and end a meeting** (#4656): a meeting shortcut was never bound, so pressing it did nothing. Now a press starts a meeting, or ends the one in progress, as Start meeting and End meeting in the menu bar do. It does not start a meeting while you dictate, and it is off while Meetings is hidden.
+- **Meeting settings' shortcuts are the meeting's own** (#4656): Add a shortcut in Meeting settings put the new shortcut on Transcribe, so meetings still had none and Transcribe had one more. Changing or removing a meeting shortcut there, such as one brought over from Voxt 1.x, changed Transcribe's shortcut instead. All three now change only the meeting's shortcuts. A second Add a shortcut picks another free key, and a meeting shortcut that clashes with another shortcut is flagged.
 
 ### 中文
 
 #### 变更
 - **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
 - **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
+- **同一个功能的两个快捷键不能用同一个按键**（#4656）：选择或输入另一个快捷键已经在用的按键时，这个快捷键保持不变，并提示是哪一个快捷键在用。之前两个都会保存，但只有一个能用。
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **会议快捷键可以开始和结束会议**（#4656）：会议快捷键以前根本没有绑定，按下去没有反应。现在按一下开始会议，会议进行中再按一下结束，和菜单栏的「开始会议」「结束会议」一样。正在听写时不会开始会议；隐藏会议页时，这个快捷键也不生效。
+- **会议设置里的快捷键只属于会议**（#4656）：在会议设置里点「添加快捷键」，新快捷键会加到转录上，会议仍然没有快捷键，转录却多了一个；在那里修改或删除会议快捷键（比如从 Voxt 1.x 带过来的），改的其实是转录的快捷键。现在这三种操作都只改会议自己的快捷键。再点一次「添加快捷键」会换一个没被占用的键；会议快捷键和别的快捷键冲突时，也会有提示。
 
 ## [Unreleased]
 
