@@ -651,3 +651,51 @@ func TestEarlyCleanBrokenPieceCancelsBacklog(t *testing.T) {
 		t.Error("the queued third request started after the broken event")
 	}
 }
+
+func TestEarlyCleanFinalizedBacklogDoesNotWaitForWorkerExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workerDone := make(chan struct{})
+	defer close(workerDone)
+	completed := time.Now()
+	e := &earlyClean{
+		ctx: ctx, cancel: cancel, workerDone: workerDone,
+		covered: "one two three",
+		jobs: []segJob{
+			{replaced: "one"},
+			{sep: " ", replaced: "two"},
+			{sep: " ", replaced: "three"},
+		},
+		segs: []*segResult{{
+			replaced: "one", parts: []compose.Part{{}},
+			answers: []string{"early one"}, done: true, completedAt: completed,
+		}},
+	}
+	e.cond = sync.NewCond(&e.mu)
+	type result struct {
+		parts       []compose.Part
+		answers     []string
+		tail        string
+		failed      error
+		completedAt time.Time
+		ok          bool
+	}
+	returned := make(chan result, 1)
+	go func() {
+		parts, answers, tail, failed, completedAt, ok := e.drain("one two three tail")
+		returned <- result{parts, answers, tail, failed, completedAt, ok}
+	}()
+	select {
+	case got := <-returned:
+		if !got.ok || got.failed != nil || len(got.parts) != 1 ||
+			len(got.answers) != 1 || got.answers[0] != "early one" ||
+			got.tail != " two three tail" || !got.completedAt.Equal(completed) {
+			t.Fatalf("unexpected drain result: %+v", got)
+		}
+		if ctx.Err() != context.Canceled || !e.finalized || !e.closed {
+			t.Fatal("discarded backlog was not cancelled and fenced")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain waited for the finalized worker to exit")
+	}
+}
