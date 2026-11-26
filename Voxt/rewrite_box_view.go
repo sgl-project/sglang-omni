@@ -87,6 +87,13 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	if !hadPaste && local.text != state.Text {
 		local.text = state.Text
 	}
+	send := actions.send
+	actions.send = func() {
+		send()
+		// Send empties the box's text: the frame's last textChanged must
+		// not write the sent words back (they were sent a second time).
+		local.text = actions.viewState().Text
+	}
 	root := ui.Column(context).Fill().Padding(layout.Pad)
 	if context.Shortcut(0, ui.KeyEscape) {
 		if local.addOpen {

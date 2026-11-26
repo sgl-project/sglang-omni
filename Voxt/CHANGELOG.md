@@ -11,6 +11,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **The Rewrite card's Speak stayed on while another answer streamed in the background**, and pressing it did nothing. Speak and Send now wait for that answer.
+- **A follow-up typed into the Rewrite card stayed in the input after Send**, with Send still on, so a second press sent the same turn again. The input is empty once the turn is sent.
 
 ### 中文
 
@@ -21,6 +23,8 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **后台还有回答在输出时，改写卡片的“说话”按钮仍可点击，点了没反应**：现在“说话”和“发送”会等那条回答结束。
+- **在改写卡片里打字追问，发送后文字还留在输入框里**，发送键也还亮着，再点一次会把同一轮再发一遍。现在发送后输入框会清空。
 
 ## [Unreleased]
 
