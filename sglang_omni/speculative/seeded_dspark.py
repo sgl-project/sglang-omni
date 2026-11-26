@@ -45,6 +45,7 @@ from sglang_omni.sampling.speculative_noise import (
     seeded_uniform_noise,
 )
 from sglang_omni.speculative.dspark_sampling import (
+    filter_min_p,
     prepare_seeded_batch,
     sample_draft_block,
     verify_draft_block,
@@ -186,6 +187,13 @@ class SeededVerifyExecutor(TargetVerifyExecutor):
                 temperatures=sampling_info.temperatures,
                 rows_per_request=self.verify_num_draft_tokens,
             ).view(bs, self.verify_num_draft_tokens, -1)
+        if sampling_info.need_min_p_sampling:
+            probabilities = filter_min_p(
+                probabilities.view(bs, self.verify_num_draft_tokens, -1),
+                sampling_info.min_ps[:bs],
+            )
+        else:
+            pass
         uniforms = (
             seeded_uniform_noise(
                 seeds,
@@ -315,7 +323,12 @@ class SeededDSparkWorker(DSparkWorkerV2):
             or batch.forward_mode.is_idle()
             or batch.sampling_info.is_all_greedy
             or all(
-                request.sampling_params.sampling_seed is None for request in batch.reqs
+                request.sampling_params.sampling_seed is None
+                and (
+                    request.sampling_params.min_p == 0.0
+                    or request.sampling_params.top_k == 1
+                )
+                for request in batch.reqs
             )
         ):
             return super().forward_batch_generation(

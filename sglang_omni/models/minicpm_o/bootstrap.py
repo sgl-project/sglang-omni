@@ -306,6 +306,9 @@ def create_thinker_scheduler(
         model_runner.speculative_ignores_request_seed = (
             not model_worker.speculative_worker.supports_request_seed
         )
+        model_runner.speculative_verify_applies_min_p = (
+            model_worker.speculative_worker.supports_request_seed
+        )
     else:
         pass
 

@@ -17,6 +17,7 @@ from sglang_omni.sampling.speculative_noise import (
     seeded_uniform_noise,
 )
 from sglang_omni.speculative.dspark_sampling import (
+    filter_min_p,
     prepare_seeded_batch,
     sample_draft_block,
     verify_draft_block,
@@ -435,3 +436,17 @@ def test_graph_replay_reads_updated_request_seeds_and_positions() -> None:
         accepted_counts.append(captured[1].tolist())
     assert accepted_counts[0] != accepted_counts[1]
     assert any(count < 3 for counts in accepted_counts for count in counts)
+
+
+def test_min_p_keeps_the_tokens_at_or_above_its_share_of_the_top_probability() -> None:
+    """SGLang's sampler keeps a token whose probability is at least min_p of the top one."""
+    probabilities = torch.tensor([[[0.5, 0.3, 0.15, 0.05]], [[0.4, 0.3, 0.2, 0.1]]])
+
+    filtered = filter_min_p(probabilities, torch.tensor([0.3, 0.0]))
+
+    torch.testing.assert_close(
+        filtered[0, 0], torch.tensor([0.5, 0.3, 0.15, 0.0]) / 0.95
+    )
+    torch.testing.assert_close(
+        filtered[1], probabilities[1], msg="min_p 0 keeps every token"
+    )

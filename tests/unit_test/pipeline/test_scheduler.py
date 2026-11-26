@@ -2547,6 +2547,7 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
     scheduler.model_runner = SimpleNamespace(
         speculative_repetition_penalty_owner=repetition_penalty_owner,
         speculative_ignores_request_seed=True,
+        speculative_verify_applies_min_p=False,
     )
     sampling_params = {
         "min_p": 0.0,
@@ -2578,6 +2579,35 @@ def test_speculative_admission_refuses_sampling_the_draft_cannot_reproduce(
         ), "only a runner whose verify ignores the seed refuses it"
         scheduler.draft_worker = None
         assert scheduler.speculative_request_error(request, request_data) is None
+
+
+def test_a_verify_that_filters_by_min_p_admits_a_sampled_min_p() -> None:
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DSPARK
+    scheduler.model_runner = SimpleNamespace(
+        speculative_repetition_penalty_owner=None,
+        speculative_ignores_request_seed=False,
+        speculative_verify_applies_min_p=True,
+    )
+    request = SimpleNamespace(
+        rid="request",
+        sampling_params=SimpleNamespace(
+            min_p=0.05,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+            repetition_penalty=1.0,
+            sampling_seed=None,
+            top_k=-1,
+            max_new_tokens=2,
+        ),
+        return_hidden_states=False,
+    )
+    request_data = SimpleNamespace(return_logprob=False)
+
+    assert scheduler.speculative_request_error(request, request_data) is None
+    scheduler.model_runner.speculative_verify_applies_min_p = False
+    assert "min_p" in scheduler.speculative_request_error(request, request_data)
 
 
 @pytest.mark.parametrize(
