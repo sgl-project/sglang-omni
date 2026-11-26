@@ -2,11 +2,13 @@
 
 import copy
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from sglang_omni.models.auk import runtime
+from sglang_omni.models.auk import vae as vae_module
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.vae import (
     Activation1d,
@@ -79,6 +81,63 @@ def test_the_loader_folds_weight_norm_without_moving_the_waveform(
             loaded.inference_from_latents(latents),
             served_vae.inference_from_latents(latents),
         )
+
+
+@pytest.mark.parametrize("snake_logscale", [True, False])
+def test_the_loader_fuses_activations_only_for_a_log_scale_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, snake_logscale: bool
+) -> None:
+    if snake_logscale and vae_module.anti_aliased_snake_beta is None:
+        pytest.skip("the fused activation kernel needs Triton")
+    else:
+        pass
+    vae_config = {**TINY_VAE, "snake_logscale": snake_logscale}
+    torch.manual_seed(0)
+    checkpoint = BigVGANFlowVAE(AuKVAEConfig.from_dict(vae_config)).eval()
+    with torch.no_grad():
+        for parameter in checkpoint.parameters():
+            parameter.uniform_(0.1, 0.5)
+    monkeypatch.setattr(
+        runtime,
+        "make_runtime_config",
+        lambda path: AuKRuntimeConfig(
+            model_path=path, vae={"model_init_kwargs": vae_config}
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "load_vae_weights",
+        lambda vae, path: vae.load_state_dict(checkpoint.state_dict()),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "current_platform",
+        SimpleNamespace(
+            device_type="cpu", enable_auk_fused_vae_activations=lambda: True
+        ),
+    )
+    runtime.load_vae.cache_clear()
+    try:
+        loaded = runtime.load_vae("stub", "cpu")
+    finally:
+        runtime.load_vae.cache_clear()
+
+    activations = [
+        module for module in loaded.modules() if isinstance(module, Activation1d)
+    ]
+    assert activations
+    assert all(
+        (module.inverse_beta is not None) is snake_logscale for module in activations
+    )
+    if not snake_logscale:
+        latents = torch.randn(1, 8, 13, generator=torch.Generator().manual_seed(2))
+        with torch.inference_mode():
+            assert torch.equal(
+                loaded.inference_from_latents(latents),
+                checkpoint.inference_from_latents(latents),
+            )
+    else:
+        pass
 
 
 @requires_xpu

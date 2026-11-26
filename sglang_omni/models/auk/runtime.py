@@ -62,6 +62,7 @@ def load_vae(checkpoint: str, device: str) -> BigVGANFlowVAE:
     fuse_activations = (
         torch.device(device).type == current_platform.device_type
         and current_platform.enable_auk_fused_vae_activations()
+        and vae.h.snake_logscale
     )
     for module in vae.modules():
         parameters = dict(module.named_parameters(recurse=False))
