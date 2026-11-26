@@ -208,7 +208,11 @@ class PersistentCacheDiTRunner(CachedDiTRunner):
                 return self.new_cache(batch_size=batch_size, nfe=nfe)
             else:
                 pass
-            cache = self.new_cache(batch_size=batch_size, nfe=nfe)
+            try:
+                cache = self.new_cache(batch_size=batch_size, nfe=nfe)
+            except Exception:
+                self.budget.release(self, shape_key)
+                raise
             self.persistent_caches[shape_key] = cache
         else:
             self.budget.touch(self, shape_key)

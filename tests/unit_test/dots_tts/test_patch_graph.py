@@ -321,6 +321,32 @@ def test_a_cache_larger_than_the_budget_is_request_scoped(tmp_path: Path) -> Non
     )
 
 
+def test_a_failed_cache_allocation_releases_its_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flow = flow_head(tmp_path, meanflow=False)
+    probe = cpu_runner(graphed_solver(flow, object()), 64)
+    small = probe.cache_bytes(batch_size=1, nfe=ODE_STEPS)
+    solver = graphed_solver(flow, object(), resident_cache_bytes=small)
+    runner = cpu_runner(solver, 64)
+    allocate = runner.new_cache
+
+    def out_of_memory(*, batch_size: int, nfe: int) -> DiTKvCache:
+        raise torch.OutOfMemoryError("device out of memory")
+
+    monkeypatch.setattr(runner, "new_cache", out_of_memory)
+    with pytest.raises(torch.OutOfMemoryError):
+        runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    assert not solver.cache_budget.entries and not runner.persistent_caches
+
+    monkeypatch.setattr(runner, "new_cache", allocate)
+    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS - 1)
+
+    assert list(solver.cache_budget.entries) == [(runner, (1, ODE_STEPS - 1))]
+    assert list(runner.persistent_caches) == [(1, ODE_STEPS - 1)]
+
+
 @pytest.mark.parametrize("meanflow", [False, True], ids=["flow_matching", "meanflow"])
 def test_a_refused_capture_solves_eagerly_and_is_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meanflow: bool
