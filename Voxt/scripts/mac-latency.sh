@@ -28,36 +28,18 @@ HUB="${VOXTNEW_HUB:-$HOME/Library/Application Support/SGLang Omni/models}"
 silero="$(ls -d "$HUB"/models--mlx-community--silero-vad-v6/snapshots/* 2>/dev/null | head -1 || true)"
 models="asr.accurate=$1;asr.fast=$2"
 [[ -n "$silero" ]] && models="$models;vad.silero=$silero"
-others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
-[[ -z "$others" ]] || { echo "note: other model processes are running; the times are skewed:"; echo "$others" | cut -c1-160; }
 mkdir -p build
-reasons=()
-[[ -z "$others" ]] || reasons+=("contenders present before run")
-power="$(pmset -g ps 2>/dev/null || true)"
-[[ "$power" == *"AC Power"* ]] || reasons+=("not on AC power before run")
-pressure="$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 0)"
-preflight="build/latency-preflight.json"
-rm -f build/latency.jsonl
-export VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS="$rounds" VOXTNEW_LATENCY_SETTLE="${4:-3s}" VOXTNEW_OMNI_MODELS="$models"
-export VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?VOXTNEW_MAIN_SHA must name the source commit}"
-export VOXTNEW_OMNI_RUNTIME="${VOXTNEW_OMNI_RUNTIME:-$APP/Contents/Resources/omni}"
-export VOXTNEW_LATENCY_OUT=build/latency.jsonl
-rc=0
-go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || rc=$?
-others_after="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
-[[ -z "$others_after" ]] || reasons+=("contenders present after run")
-power_after="$(pmset -g ps 2>/dev/null || true)"
-[[ "$power_after" == *"AC Power"* ]] || reasons+=("not on AC power after run")
-pressure_after="$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 0)"
-peak=normal
-[[ "$pressure" == 1 && "$pressure_after" == 1 ]] || peak=warn
-python3 - "$preflight" "$rc" "${reasons[@]+"${reasons[@]}"}" "$peak" <<'PY'
-import json, sys
-json.dump({"returncode": int(sys.argv[2]),
-           "environment_reasons": sys.argv[3:-1] if len(sys.argv) > 3 else [],
-           "peak_pressure": sys.argv[-1]}, open(sys.argv[1], "w"))
-PY
-python3 - build/latency.jsonl build/text-consistency.json <<'PY'
+rm -f build/latency.jsonl build/latency.log build/text-consistency.json build/short-open-observations.json
+rm -f build/latency-round-*.jsonl build/latency-attempt-*.json build/latency-attempt-*.jsonl
+for round in $(seq 1 "$rounds"); do
+  export VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS=1 VOXTNEW_LATENCY_ATTEMPT="$round" VOXTNEW_LATENCY_SETTLE="${4:-3s}" VOXTNEW_OMNI_MODELS="$models"
+  export VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?VOXTNEW_MAIN_SHA must name the source commit}"
+  export VOXTNEW_OMNI_RUNTIME="${VOXTNEW_OMNI_RUNTIME:-$APP/Contents/Resources/omni}"
+  export VOXTNEW_LATENCY_OUT="build/latency-round-$round.jsonl"
+  python3 scripts/attempt_env.py "build/latency-attempt-$round.json" "build/latency-attempt-$round-samples.jsonl" build/latency.log \
+    go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . || true
+done
+python3 - <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -65,14 +47,16 @@ from pathlib import Path
 sys.path.insert(0, "scripts")
 import profile_loop as loop
 
-rows_path = Path(sys.argv[1])
-rows = [json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()] if rows_path.exists() else []
-loop.write_text_consistency([{"rows": rows}], Path(sys.argv[2]))
+observations = []
+for round_file in sorted(Path("build").glob("latency-round-*.jsonl")):
+    rows = [json.loads(line) for line in round_file.read_text().splitlines() if line.strip()]
+    observations.append({"rows": rows})
+loop.write_text_consistency(observations, Path("build/text-consistency.json"))
 PY
-if python3 scripts/short_open_gate.py build/latency.jsonl "$preflight" "$rounds"; then
+if python3 scripts/short_open_gate.py build "$rounds"; then
   grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //' || true
 else
   tail -30 build/latency.log | grep -v 'MEASURE latency' || true
-  echo "short-open group incomplete: no median (see build/latency-preflight.json and build/latency.jsonl)" >&2
+  echo "short-open group incomplete: no median (see build/latency-attempt-*.json and build/latency-round-*.jsonl)" >&2
   exit 1
 fi

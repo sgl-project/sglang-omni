@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Gate a short-open latency run (mac-latency.sh): medians only when the
-group is complete (mac_e2e_latency_test rows + environment evidence).
+"""Gate a short-open latency run (mac-latency.sh).
 
-Input: a JSONL of latencyResult rows (VOXTNEW_LATENCY_OUT), a preflight
-JSON {returncode, environment_reasons, peak_pressure}, and the rounds to
-expect. Every round (attempt) must be kept: clean process, clean
-environment, cold+warm scenarios, evidence gates, one shared text hash.
-Only with three kept attempts are medians printed; otherwise the runner
-exits 1 with the reason and no median is shown.
+Each attempt has its own latency rows and before/during/after environment
+record. Only three kept attempts with one shared text hash produce medians.
 """
 import json
 import sys
@@ -25,55 +20,58 @@ def medians(rows, key):
 
 
 def main(argv):
-    if len(argv) != 4:
-        print(
-            "usage: short_open_gate.py <latency.jsonl> <preflight.json> <rounds>",
-            file=sys.stderr,
-        )
+    if len(argv) != 3:
+        print("usage: short_open_gate.py <build_dir> <rounds>", file=sys.stderr)
         return 2
-    rows_path, preflight_path, rounds = Path(argv[1]), Path(argv[2]), int(argv[3])
-    preflight = json.loads(preflight_path.read_text())
-    rows = (
-        [
-            json.loads(line)
-            for line in rows_path.read_text().splitlines()
-            if line.strip()
-        ]
-        if rows_path.exists()
-        else []
-    )
-    by_attempt: dict[int, list[dict]] = {}
-    for row in rows:
-        by_attempt.setdefault(int(row.get("attempt", row.get("round", 0))), []).append(
-            row
-        )
-    reasons = list(preflight.get("environment_reasons", []))
+    build, rounds = Path(argv[1]), int(argv[2])
     observations = []
     for attempt in range(1, rounds + 1):
-        attempt_rows = by_attempt.get(attempt, [])
-        (rows_path.parent / f"latency-attempt-{attempt}.jsonl").write_text(
+        environment_path = build / f"latency-attempt-{attempt}.json"
+        environment = (
+            json.loads(environment_path.read_text())
+            if environment_path.exists()
+            else {
+                "returncode": 1,
+                "environment_reasons": ["no environment record"],
+                "peak_pressure": "warn",
+                "samples": [],
+            }
+        )
+        rows_path = build / f"latency-round-{attempt}.jsonl"
+        attempt_rows = (
+            [
+                json.loads(line)
+                for line in rows_path.read_text().splitlines()
+                if line.strip()
+            ]
+            if rows_path.exists()
+            else []
+        )
+        (build / f"latency-attempt-{attempt}.jsonl").write_text(
             "".join(json.dumps(row) + "\n" for row in attempt_rows),
             encoding="utf-8",
         )
         pair = [row for row in attempt_rows if row.get("scenario") in ("cold", "warm")]
         pair.sort(key=lambda row: row.get("scenario", ""))
         kept = loop.short_open_attempt_kept(
-            int(preflight.get("returncode", 1)),
-            reasons,
-            preflight.get("peak_pressure", ""),
+            int(environment.get("returncode", 1)),
+            list(environment.get("environment_reasons", [])),
+            environment.get("peak_pressure", ""),
             pair,
         )
         observations.append(
             {
                 "attempt": attempt,
-                "returncode": int(preflight.get("returncode", 1)),
-                "environment_invalid_reason": reasons,
-                "peak_memory_pressure": preflight.get("peak_pressure", ""),
+                "returncode": int(environment.get("returncode", 1)),
+                "environment_invalid_reason": environment.get(
+                    "environment_reasons", []
+                ),
+                "peak_memory_pressure": environment.get("peak_pressure", ""),
                 "kept": kept,
                 "rows": attempt_rows,
             }
         )
-    loop.write_json(rows_path.parent / "short-open-observations.json", observations)
+    loop.write_json(build / "short-open-observations.json", observations)
     if not loop.short_open_group_complete(observations):
         detail = [
             {

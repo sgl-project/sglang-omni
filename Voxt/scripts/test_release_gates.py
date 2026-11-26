@@ -180,6 +180,7 @@ class ShortOpenRunnerTests(unittest.TestCase):
         pressure_after=False,
         fail_before_rows=False,
         contender_after=False,
+        contender_during=False,
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -188,6 +189,9 @@ class ShortOpenRunnerTests(unittest.TestCase):
             source = Path(__file__).resolve().parent
             for name in ("mac-latency.sh", "short_open_gate.py", "profile_loop.py"):
                 shutil.copy2(source / name, scripts / name)
+            optional_monitor = source / "attempt_env.py"
+            if optional_monitor.exists():
+                shutil.copy2(optional_monitor, scripts / optional_monitor.name)
             binaries = root / "bin"
             binaries.mkdir()
 
@@ -200,7 +204,7 @@ class ShortOpenRunnerTests(unittest.TestCase):
             command("pmset", "#!/bin/sh\nprintf \"Now drawing from 'AC Power'\\n\"\n")
             command(
                 "pgrep",
-                "#!/bin/sh\nif [ -f build/latency.log ] && [ \"${LATENCY_FAKE_CONTENDER_AFTER:-0}\" = 1 ]; then printf '123 /tmp/qwen3_asr_server --supervised\\n'; exit 0; fi\nexit 1\n",
+                "#!/bin/sh\nif [ -f build/fake-contender-active ]; then printf '123 /tmp/qwen3_asr_server --supervised\\n'; exit 0; fi\nif [ -f build/latency.log ] && [ \"${LATENCY_FAKE_CONTENDER_AFTER:-0}\" = 1 ]; then printf '123 /tmp/qwen3_asr_server --supervised\\n'; exit 0; fi\nexit 1\n",
             )
             command(
                 "sysctl",
@@ -212,6 +216,7 @@ class ShortOpenRunnerTests(unittest.TestCase):
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 if os.environ.get("LATENCY_FAKE_FAIL_BEFORE_ROWS") == "1":
@@ -219,8 +224,19 @@ if os.environ.get("LATENCY_FAKE_FAIL_BEFORE_ROWS") == "1":
     sys.exit(1)
 
 rounds = int(os.environ["VOXTNEW_LATENCY_ROUNDS"])
+first_attempt = int(os.environ.get("VOXTNEW_LATENCY_ATTEMPT", "1"))
 rows = []
-for attempt in range(1, rounds + 1):
+for attempt in range(first_attempt, first_attempt + rounds):
+    if os.environ.get("LATENCY_FAKE_CONTENDER_DURING") == "1" and attempt == 2:
+        contender = Path("build/fake-contender-active")
+        contender.touch()
+        samples = Path(f"build/latency-attempt-{attempt}-samples.jsonl")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if samples.exists() and "qwen3_asr_server" in samples.read_text():
+                break
+            time.sleep(0.01)
+        contender.unlink()
     for scenario in ("cold", "warm", "switch"):
         text_hash = "z" * 64 if scenario == "switch" else "a" * 64
         if os.environ.get("LATENCY_FAKE_DRIFT") == "1" and attempt == 2 and scenario == "warm":
@@ -255,6 +271,9 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
             environment["LATENCY_FAKE_CONTENDER_AFTER"] = (
                 "1" if contender_after else "0"
             )
+            environment["LATENCY_FAKE_CONTENDER_DURING"] = (
+                "1" if contender_during else "0"
+            )
             arguments = [str(scripts / "mac-latency.sh"), "accurate", "fast"]
             if rounds is not None:
                 arguments.append(str(rounds))
@@ -266,10 +285,14 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
                 text=True,
             )
             attempt_path = root / "build" / "latency-attempt-2.jsonl"
+            environment_path = root / "build" / "latency-attempt-2.json"
             observations_path = root / "build" / "short-open-observations.json"
             return {
                 "process": process,
                 "attempt": attempt_path.read_text() if attempt_path.exists() else None,
+                "environment": (
+                    environment_path.read_text() if environment_path.exists() else None
+                ),
                 "observations": (
                     observations_path.read_text()
                     if observations_path.exists()
@@ -316,6 +339,25 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
             "contenders present after run",
             observations[0]["environment_invalid_reason"],
         )
+
+    def test_shell_rejects_contender_that_exits_before_the_after_check(self):
+        result = self.run_latency_shell(contender_during=True)
+        self.assertEqual(result["process"].returncode, 1)
+        self.assertNotIn("MEASURE latency", result["process"].stdout)
+        observations = json.loads(result["observations"])
+        self.assertTrue(observations[0]["kept"])
+        self.assertFalse(observations[1]["kept"])
+        self.assertTrue(observations[2]["kept"])
+        self.assertIn(
+            "contenders present during run",
+            observations[1]["environment_invalid_reason"],
+        )
+        environment = json.loads(result["environment"])
+        self.assertEqual(
+            [sample["phase"] for sample in environment["samples"][:2]],
+            ["before", "during"],
+        )
+        self.assertEqual(environment["samples"][-1]["phase"], "after")
 
     def test_shell_preserves_empty_evidence_and_log_when_go_fails(self):
         result = self.run_latency_shell(fail_before_rows=True)

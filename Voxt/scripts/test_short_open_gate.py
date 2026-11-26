@@ -28,21 +28,22 @@ def row(attempt, scenario, **overrides):
 class ShortOpenGateRunnerTests(unittest.TestCase):
     def run_gate(self, rows, preflight=None, rounds=3):
         with tempfile.TemporaryDirectory() as tmp:
-            rows_path = Path(tmp) / "latency.jsonl"
-            rows_path.write_text("\n".join(json.dumps(r) for r in rows))
-            pre = Path(tmp) / "preflight.json"
-            pre.write_text(
-                json.dumps(
-                    preflight
-                    or {
-                        "returncode": 0,
-                        "environment_reasons": [],
-                        "peak_pressure": "normal",
-                    }
+            build = Path(tmp)
+            environment = preflight or {
+                "returncode": 0,
+                "environment_reasons": [],
+                "peak_pressure": "normal",
+            }
+            for attempt in range(1, rounds + 1):
+                attempt_rows = [row for row in rows if row["attempt"] == attempt]
+                (build / f"latency-round-{attempt}.jsonl").write_text(
+                    "\n".join(json.dumps(row) for row in attempt_rows)
                 )
-            )
+                (build / f"latency-attempt-{attempt}.json").write_text(
+                    json.dumps(environment)
+                )
             return subprocess.run(
-                [sys.executable, str(SCRIPT), str(rows_path), str(pre), str(rounds)],
+                [sys.executable, str(SCRIPT), str(build), str(rounds)],
                 capture_output=True,
                 text=True,
             )
