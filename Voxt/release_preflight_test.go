@@ -55,7 +55,9 @@ func TestReleasePreflight(t *testing.T) {
 		{"no Chinese", "Voxt/CHANGELOG.md", "## [9.2.0] - 2026-01-02\n\n- A thing (#12)\n", "changelog  FAIL", true},
 		{"empty Chinese entry", "Voxt/CHANGELOG.md", strings.Replace(good["Voxt/CHANGELOG.md"], "- 一件事（#12）\n", "", 1), "changelog  FAIL", true},
 		{"old link", "docs/get_started/voxt-tutorials/en/start.md", strings.ReplaceAll(dmg, "9.1.0", "9.0.0"), "links      FAIL", true},
-		{"unnamed pull request", "Voxt/CHANGELOG.md", strings.ReplaceAll(good["Voxt/CHANGELOG.md"], "#12", "#120"), "pulls      note  since voxt-v9.0.0, not in CHANGELOG.md: #12", false},
+		{"unpublished link", "all docs", strings.ReplaceAll(dmg, "9.1.0", "9.3.0"), "links      FAIL", true},
+		{"upcoming link", "all docs", strings.ReplaceAll(dmg, "9.1.0", "9.2.0"), "links      FAIL", true},
+		{"unnamed pull request", "Voxt/CHANGELOG.md", strings.ReplaceAll(good["Voxt/CHANGELOG.md"], "#12", "#120"), "pulls      note  since voxt-v9.1.0, not in CHANGELOG.md: #12", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			repo := t.TempDir()
@@ -70,8 +72,12 @@ func TestReleasePreflight(t *testing.T) {
 			git("init", "-q")
 			git("commit", "-q", "--allow-empty", "-m", "start")
 			git("tag", "voxt-v9.0.0")
+			git("tag", "voxt-v9.1.0")
 			git("tag", "voxt-v9.2.0-beta.1")
 			for file, content := range good {
+				if c.file == "all docs" && strings.HasSuffix(file, ".md") && file != "Voxt/CHANGELOG.md" {
+					content = c.content
+				}
 				if file == c.file {
 					content = c.content
 				}

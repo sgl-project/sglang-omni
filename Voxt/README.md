@@ -71,7 +71,7 @@ Every shortcut can be changed in its feature's section in Settings, and Settings
 
 ### New to Voxt
 
-1. **Download** [`Voxt-2.1.4-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.1.3-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
 2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit) with its Faster transcription draft, 3.2 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.

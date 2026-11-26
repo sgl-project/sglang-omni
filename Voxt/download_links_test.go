@@ -44,6 +44,7 @@ func TestDownloadLinks(t *testing.T) {
 	link := regexp.MustCompile(`https://github\.com/sgl-project/sglang-omni/releases[^\s)\]>"]*`)
 	dmg := regexp.MustCompile(`^https://github\.com/sgl-project/sglang-omni/releases/download/voxt-v([0-9.]+)/Voxt-([0-9.]+?)(-arm64)?\.dmg$`)
 	tag := regexp.MustCompile(`^https://github\.com/sgl-project/sglang-omni/releases/tag/voxt-v([0-9.]+)$`)
+	visibleDmg := regexp.MustCompile("\\[`?(Voxt-([0-9.]+)-arm64\\.dmg)`?\\]\\[download\\]")
 	want := "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v" + publishedStableVersion + "/Voxt-" + publishedStableVersion + "-arm64.dmg"
 	files := []struct {
 		path    string
@@ -65,6 +66,11 @@ func TestDownloadLinks(t *testing.T) {
 		b, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
+		}
+		for _, m := range visibleDmg.FindAllStringSubmatch(string(b), -1) {
+			if m[2] != publishedStableVersion {
+				t.Errorf("%s: visible link text %s does not match [download] %s", file, m[1], want)
+			}
 		}
 		found := false
 		for _, u := range link.FindAllString(string(b), -1) {

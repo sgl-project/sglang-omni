@@ -8,7 +8,7 @@
 # fail the run:
 #   version    mygo.json and the helper's Info.plist both say the version
 #   changelog  CHANGELOG.md has "## [VERSION] - DATE" with English and 中文
-#   links      the six pages that link the disk image name the same published version
+#   links      the six pages name one published version with a stable tag, not this one
 #   pulls      [Voxt] pull requests merged since the last stable tag that
 #              CHANGELOG.md does not name (a note: a change no user can
 #              notice needs no entry)
@@ -66,10 +66,18 @@ else
     ../docs/get_started/voxt-tutorials/start.md ../docs/get_started/voxt-tutorials/en/start.md; do
     grep -qF "$dmg" "$page" 2>/dev/null || missing+=" $page"
   done
-  if [[ -z "$missing" ]]; then
-    row links ok "six pages link the same published disk image"
-  else
+  if [[ -n "$missing" ]]; then
     row links FAIL "no link to $dmg in:$missing"
+  else
+    published="${dmg#*voxt-v}"
+    published="${published%%/*}"
+    if [[ "$published" == "$version" ]]; then
+      row links FAIL "six pages still link the upcoming $published; keep the previous published version until its release is published"
+    elif ! git rev-parse --verify --quiet "refs/tags/voxt-v$published" >/dev/null; then
+      row links FAIL "voxt-v$published has no stable tag; the six pages would link an unpublished disk image"
+    else
+      row links ok "six pages link published $published, behind upcoming $version"
+    fi
   fi
 fi
 
