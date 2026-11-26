@@ -1,6 +1,8 @@
 package hotkey
 
 import (
+	"strings"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -18,9 +20,20 @@ const (
 	// ProblemSystem: macOS (or most apps) use these keys (System names
 	// them).
 	ProblemSystem = "system"
-	// ProblemBareKey: a key without a modifier, swallowed everywhere.
+	// ProblemBareKey: a key alone (Refused), which would be taken from
+	// every app: never bound (Build).
 	ProblemBareKey = "bareKey"
 )
+
+// Refused reports whether c may not be a shortcut (Cancel's aside, which
+// is taken only while a session records): a key with no modifier, fn
+// included. A modifier alone (Right ⌥, fn), an F-key or a mouse button is
+// fine: it types nothing. 11-24: Delete pressed to clear the shortcut
+// field saved a bare Delete, and each Delete then started a dictation in
+// every app.
+func Refused(c Chord) bool {
+	return !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) && !c.Mouse()
+}
 
 // Problem is something wrong with one binding: Feature's Index-th hotkey
 // (PasteLast: index 0).
@@ -134,8 +147,7 @@ func Check(f settings.Features) []Problem {
 			if !clash {
 				if sys := SystemShortcut(c); sys != "" {
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemSystem, System: sys})
-				} else if !c.ModifierOnly() && len(c.Mods) == 0 && !isFKey(c.Key) && !c.Mouse() && feat != CancelID {
-					// F-keys and mouse buttons alone are fine; any other key alone is not.
+				} else if Refused(c) && feat != CancelID {
 					// Cancel may be a bare key: it is only taken while a
 					// session records or the answer card shows.
 					out = append(out, Problem{Feature: feat, Index: i, Code: ProblemBareKey})
@@ -160,8 +172,8 @@ func ProblemsOf(ps []Problem, feature string) map[int][]Problem {
 
 // isFKey reports whether a key is F1–F20.
 func isFKey(k string) bool {
-	if len(k) < 2 || k[0] != 'F' {
-		return false
+	if len(k) < 2 || k[0] != 'F' || strings.Trim(k[1:], "0123456789") != "" {
+		return false // ForwardDelete starts with F too
 	}
 	_, ok := keyCodes[k]
 	return ok

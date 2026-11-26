@@ -125,7 +125,7 @@ func (a *app) tryCard(c *uiContext, options tryOpts) {
 func (a *app) recordFeatureKeys(row *keyRow, event uiInputEvent, save func(string)) {
 	keys, ok := pressedKeys(event)
 	row.unknown = !ok
-	if ok {
+	if ok && !refuseKeys(row, keys) {
 		row.text, row.edited = keys, false
 		save(keys)
 	}

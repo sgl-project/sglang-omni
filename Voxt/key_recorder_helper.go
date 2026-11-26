@@ -49,6 +49,12 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) string {
 			return
 		}
 		keys := ch.String()
+		if refuseKeys(r, keys) {
+			// Not saved: the focused field records again from its next
+			// frame (keyRecorder, featureKeyRecorder), as if just focused.
+			r.recFocused = false
+			return
+		}
 		r.text, r.edited = keys, false
 		save(keys)
 	})
@@ -56,9 +62,21 @@ func (a *app) beginHotkeyRecord(r *keyRow, save func(keys string)) string {
 }
 
 func (a *app) saveShortcutRecorderKeys(keys string, r *keyRow, save func(keys string)) string {
+	if refuseKeys(r, keys) {
+		return uitext.HotkeyText(r.text)
+	}
 	r.text, r.edited = keys, false
 	save(keys)
 	return uitext.HotkeyText(keys)
+}
+
+// refuseKeys reports whether keys pressed in r's field are not saved: a
+// key alone (hotkey.Refused), except on Cancel's row. It notes it in
+// r.refused, which the field shows.
+func refuseKeys(r *keyRow, keys string) bool {
+	c, err := hotkey.Parse(keys)
+	r.refused = err == nil && !r.allowBare && hotkey.Refused(c)
+	return r.refused
 }
 
 func (a *app) customShortcutKeysState(keys string) customKeysViewState {

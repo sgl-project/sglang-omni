@@ -20,6 +20,9 @@ type keyRow struct {
 	unknown      bool
 	recFocused   bool
 	recordDenied bool
+	// refused: the last keys pressed were a key alone, not saved
+	// (hotkey.Refused); allowBare: Cancel's row, which takes one.
+	refused, allowBare bool
 }
 
 func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsViewState, actions featureActions, local *featureUI) {
@@ -56,6 +59,7 @@ func featureShortcuts(c *ui.Context, feature string, state *featureShortcutsView
 			state.HelperRecordsKeys, actions, &local.paste, actions.chooseFeaturePasteLast, actions.saveFeaturePasteLast)
 	}
 	if state.Cancel != nil {
+		local.cancel.allowBare = true // Cancel is taken only while a session records
 		featurePasteCancelRow(c, "tr-cancel", i18n.T("Cancel recording"), i18n.T("The recording stays in History, so you can retry."), i18n.T("Keys to cancel recording"), i18n.T("Custom keys to cancel recording"), state.Cancel,
 			state.HelperRecordsKeys, actions, &local.cancel, actions.chooseFeatureCancelKeys, actions.saveFeatureCancelKeys)
 	}
@@ -272,6 +276,8 @@ func featureKeyRecorder(c *ui.Context, local *keyRow, label string, state *featu
 				actions.openFeaturePermissions()
 			}
 		})
+	case local.refused:
+		warnLine(c, i18n.T("A single key would be taken from every app. Add ⌃, ⌥, ⇧, ⌘ or fn."))
 	case local.unknown:
 		warnLine(c, i18n.T("Voxt cannot use that key. Press another, or type the keys instead."))
 	case focused:
