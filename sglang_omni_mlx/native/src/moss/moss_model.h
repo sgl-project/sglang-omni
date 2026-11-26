@@ -13,6 +13,11 @@
 
 namespace moss {
 
+// The checkpoint's weights as the model reads them: Conv1d weights in MLX's
+// layout, and the tied embedding as the output projection unless the
+// checkpoint carries a prequantized one.
+omni_common::WeightMap LoadedWeights(omni_common::WeightMap weights);
+
 struct WhisperEncoderConfig {
   int num_mel_bins = 0;
   int encoder_layers = 0;

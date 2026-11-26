@@ -234,6 +234,7 @@ add_executable(moss_transcribe tools/moss_transcribe.cpp)
 target_link_libraries(moss_transcribe PRIVATE moss_asr)
 add_executable(moss_model_test EXCLUDE_FROM_ALL tests/moss_model_test.cpp)
 target_link_libraries(moss_model_test PRIVATE moss_asr)
+target_compile_options(moss_model_test PRIVATE -Wall -Wextra)
 set_target_properties(moss_transcribe_diarize_server moss_transcribe moss_model_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")

@@ -2,7 +2,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "../src/moss/moss_model.cpp"
+#include "moss/moss_model.h"
 
 namespace {
 
@@ -11,6 +11,7 @@ namespace mx = mlx::core;
 void Require(bool condition, const std::string &message) {
   if (!condition) {
     throw std::runtime_error(message);
+  } else {
   }
 }
 
