@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class BucketResolver(Protocol):
-    def __call__(self, requested: int, /) -> int: ...
+    def __call__(self, requested_patch_count: int, /) -> int: ...
 
 
 class GraphedDiTSolver(DiTSolver):
