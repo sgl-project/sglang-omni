@@ -46,7 +46,7 @@ func TestASRFallback(t *testing.T) {
 	}{
 		{"the Final fails", &fakeStreamer{finalErr: &asr.Error{Kind: asr.KindServer, Detail: "the local speech model stopped answering"}}, false, "partial", asr.KindServer},
 		{"the Final takes too long", &fakeStreamer{hang: true}, true, "partial", asr.KindTimeout},
-		{"the stream salvages its pieces", &fakeStreamer{salvage: "pieces so far", finalErr: &asr.Error{Kind: asr.KindServer}}, false, "pieces so far", asr.KindServer},
+		{"the stream salvages its pieces", &fakeStreamer{salvage: "pieces so far, including the tail", salvageRequiresOpen: true, finalErr: &asr.Error{Kind: asr.KindServer}}, false, "pieces so far, including the tail", asr.KindServer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &fakeLLM{text: "Cleaned."}
@@ -55,6 +55,7 @@ func TestASRFallback(t *testing.T) {
 				h.m.cfg.ASRTimeout, h.m.cfg.ASRPerSecond = 100*time.Millisecond, time.Nanosecond
 			}
 			id := h.start()
+			current := sessionRun(t, h)
 			h.speak(id, 5)
 			end := h.rec.wait(t)
 			if end.State != Done || end.Raw != tc.raw || end.Result != "Cleaned." || !end.Inserted || !end.Recording {
@@ -66,8 +67,24 @@ func TestASRFallback(t *testing.T) {
 			if p := h.text.pastes(); !slices.Equal(p, []string{"Cleaned."}) {
 				t.Errorf("pasted %q", p)
 			}
-			if reqs := model.requests(); len(reqs) != 1 {
-				t.Errorf("%d clean-ups", len(reqs))
+			requests := model.requests()
+			if len(requests) != 1 {
+				t.Errorf("%d clean-ups", len(requests))
+			}
+			if tc.prov.salvageRequiresOpen {
+				tc.prov.mu.Lock()
+				stream := tc.prov.streams[0]
+				tc.prov.mu.Unlock()
+				stream.mu.Lock()
+				calls := append([]string(nil), stream.lifecycle...)
+				closed := stream.closed
+				stream.mu.Unlock()
+				if !slices.Equal(calls, []string{"salvage", "close"}) || !closed || current.streamReaderDone != nil {
+					t.Fatalf("stream calls %q closed=%v reader=%v", calls, closed, current.streamReaderDone)
+				}
+				if len(requests) == 1 && !containsText(requests[0], tc.raw) {
+					t.Fatalf("cleanup request omitted salvaged tail %q", tc.raw)
+				}
 			}
 			es := h.hist.all()
 			if len(es) != 1 || es[0].Status != store.StatusDone || es[0].Error == "" || es[0].RawText != tc.raw || es[0].Audio != id+".wav" {
@@ -287,17 +304,18 @@ func TestRetry(t *testing.T) {
 		}
 	})
 	t.Run("beside a session", func(t *testing.T) {
-		h, e := retryHarness(t, &fakeFile{text: "again"}, nil, false)
+		h, e := retryHarness(t, &fakeFile{text: "again"}, &fakeLLM{err: errors.New("primary unavailable")}, false)
+		h.fallback = &fakeLLM{text: "Again."}
 		id := h.start()
 		out, err := h.m.Retry(context.Background(), RetryRequest{Entry: e})
-		if err != nil || out.Result != "again" {
+		if err != nil || out.Result != "Again." || out.LLMProvider != "ollama" || out.LLMModel != "qwen3" {
 			t.Fatalf("entry %+v, %v", out, err)
 		}
 		if cur := h.m.Current(); cur.ID != id || cur.State != Recording {
 			t.Fatalf("the session changed: %+v", cur)
 		}
 		h.speak(id, 3)
-		if end := h.rec.wait(t); end.State != Done || end.Result != "again" {
+		if end := h.rec.wait(t); end.State != Done || end.Result != "Again." || end.LLM.ID != "ollama" {
 			t.Errorf("session %+v", end)
 		}
 	})
@@ -306,4 +324,128 @@ func TestRetry(t *testing.T) {
 // containsText reports whether a request's last message holds text.
 func containsText(req llm.Request, text string) bool {
 	return len(req.Messages) > 0 && strings.Contains(req.Messages[len(req.Messages)-1].Content, text)
+}
+
+func openFakeSessionStream(t *testing.T, h *harness, provider *fakeStreamer) (*run, *fakeStream, <-chan struct{}) {
+	t.Helper()
+	signals := observeSessionSignals(h)
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPCM, "PCM send")
+	r := sessionRun(t, h)
+	provider.mu.Lock()
+	stream := provider.streams[len(provider.streams)-1]
+	provider.mu.Unlock()
+	if r.streamReaderDone == nil {
+		t.Fatal("ASR event reader did not start")
+	}
+	return r, stream, r.streamReaderDone
+}
+
+func TestStreamReaderShutdownOnTimeoutWithAndWithoutSalvage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		salvage string
+		want    State
+	}{
+		{name: "salvaged", salvage: "live transcript with recoverable tail", want: Done},
+		{name: "no salvage", want: Failed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &fakeStreamer{hang: true, salvage: tc.salvage, salvageRequiresOpen: true, silent: tc.salvage == "", closeLeavesEventsOpen: true}
+			h := newHarness(t, provider, &fakeLLM{text: "Cleaned transcript."}, func(c *Config, s *settings.Settings) {
+				c.ASRTimeout, c.ASRPerSecond = 100*time.Millisecond, time.Nanosecond
+				s.Features.Transcribe.Enhance = tc.salvage != ""
+			})
+			id := h.start()
+			_, stream, readerDone := openFakeSessionStream(t, h, provider)
+			h.speak(id, 4)
+			end := h.rec.wait(t)
+			if end.State != tc.want {
+				t.Fatalf("end %+v, want %s", end, tc.want)
+			}
+			select {
+			case <-readerDone:
+			default:
+				t.Fatal("event reader remained blocked on the open Events channel")
+			}
+			stream.mu.Lock()
+			closed := stream.closed
+			stream.mu.Unlock()
+			if !closed {
+				t.Fatal("timed out ASR stream was not closed")
+			}
+			if tc.salvage != "" && (end.Result != "Cleaned transcript." || len(h.text.pastes()) != 1) {
+				t.Fatalf("salvaged result %+v deliveries=%q", end, h.text.pastes())
+			}
+			if tc.salvage != "" && end.Raw != tc.salvage {
+				t.Fatalf("raw transcript %q, want %q", end.Raw, tc.salvage)
+			}
+			if tc.salvage == "" && len(h.text.pastes()) != 0 {
+				t.Fatalf("failed ASR unexpectedly delivered %q", h.text.pastes())
+			}
+			stream.mu.Lock()
+			calls := append([]string(nil), stream.lifecycle...)
+			stream.mu.Unlock()
+			if !slices.Equal(calls, []string{"salvage", "close"}) {
+				t.Fatalf("stream calls %q, want salvage before close", calls)
+			}
+		})
+	}
+}
+
+func TestStreamReaderShutdownOnCancellationIgnoresLateEvents(t *testing.T) {
+	provider := &fakeStreamer{hang: true, closeLeavesEventsOpen: true}
+	h := newHarness(t, provider, &fakeLLM{text: "unused"}, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+	})
+	id := h.start()
+	r, stream, readerDone := openFakeSessionStream(t, h, provider)
+	h.m.Cancel(id)
+	end := h.rec.wait(t)
+	if end.State != Cancelled {
+		t.Fatalf("end %+v, want cancelled", end)
+	}
+	select {
+	case <-readerDone:
+	default:
+		t.Fatal("cancelled event reader remained blocked on the open Events channel")
+	}
+	before := h.m.Current()
+	stream.events <- asr.Event{Kind: asr.EventPartial, Text: "stale partial"}
+	stream.events <- asr.Event{Kind: asr.EventPiece, Text: "stale stable text"}
+	if after := h.m.Current(); after.Rev != before.Rev || after.Partial != before.Partial || after.Draft != before.Draft {
+		t.Fatalf("late events mutated the cancelled snapshot: before %+v, after %+v", before, after)
+	}
+	if len(h.text.pastes()) != 0 || r.streamReaderDone != nil {
+		t.Fatalf("cancellation delivered text or retained reader ownership: deliveries=%q done=%v", h.text.pastes(), r.streamReaderDone)
+	}
+}
+
+func TestStreamReaderShutdownClosesBeforeJoiningReader(t *testing.T) {
+	provider := &fakeStreamer{closeLeavesEventsOpen: true}
+	opened, err := provider.Open(context.Background(), asr.StreamRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := &closeSignalStream{Stream: opened, closed: make(chan struct{})}
+	readerDone := make(chan struct{})
+	r := &run{streamReaderDone: readerDone, stream: stream}
+	joined := make(chan bool, 1)
+	go func() { joined <- r.stopStreamReader(stream) }()
+
+	waitInitializationSignal(t, stream.closed, "stream Close before reader join")
+	select {
+	case ok := <-joined:
+		t.Fatalf("reader shutdown returned %v before the reader exited", ok)
+	default:
+	}
+	close(readerDone)
+	select {
+	case ok := <-joined:
+		if !ok || r.streamReaderDone != nil || r.stream != nil {
+			t.Fatalf("reader shutdown ok=%v, remaining reader=%v stream=%v", ok, r.streamReaderDone, r.stream)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader shutdown did not finish after the reader exited")
+	}
 }

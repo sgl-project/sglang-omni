@@ -69,6 +69,7 @@ from sglang.srt.runtime_context import get_model, get_parallel, get_serving, get
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.session.session_controller import SessionController
 from sglang.srt.speculative.base_spec_worker import BaseSpecWorker
+from sglang.srt.speculative.ragged_verify import ragged_verify_compact_enabled
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.utils import DynamicGradMode, broadcast_pyobj
 from typing_extensions import TypedDict
@@ -219,7 +220,6 @@ class UpstreamAbortSender(Generic[RequestDataT]):
         self.scheduler = scheduler
 
     def send_output(self, msg: object, req: Req | None = None) -> None:
-        del req
         if not isinstance(msg, AbortReq):
             raise RuntimeError(
                 f"Unexpected upstream scheduler IPC output: {type(msg).__name__}"
@@ -240,6 +240,10 @@ class UpstreamAbortSender(Generic[RequestDataT]):
             pass
 
         scheduler = self.scheduler
+        if req is not None and req.rid == request_id:
+            request_id = scheduler.request_id_for_row(req.rid)
+        else:
+            pass
         scheduler.emit_request_error(request_id, RuntimeError(message))
         scheduler.abort(request_id, defer_running_cleanup=False)
 
@@ -1238,6 +1242,10 @@ class OmniScheduler(Generic[RequestDataT]):
             self.attn_tp_rank == 0 or self.enable_metrics_for_all_schedulers
         )
 
+    def request_id_for_row(self, row_id: str) -> str:
+        """Resolve a scheduler row id to its externally visible request id."""
+        return row_id
+
     def poll_request_timeout_aborts(self) -> tuple[RequestTimeoutAbort, ...]:
         now = time.perf_counter()
         timeout_aborts: list[RequestTimeoutAbort] = []
@@ -1249,7 +1257,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 if 0 < entry_time < waiting_deadline:
                     timeout_aborts.append(
                         RequestTimeoutAbort(
-                            rid=queued_request.rid,
+                            rid=self.request_id_for_row(queued_request.rid),
                             abort_message="Request waiting timeout reached.",
                         )
                     )
@@ -1270,7 +1278,7 @@ class OmniScheduler(Generic[RequestDataT]):
                     ):
                         timeout_aborts.append(
                             RequestTimeoutAbort(
-                                rid=running_request.rid,
+                                rid=self.request_id_for_row(running_request.rid),
                                 abort_message="Request running timeout reached.",
                             )
                         )
@@ -2153,14 +2161,25 @@ class OmniScheduler(Generic[RequestDataT]):
                 return
             else:
                 pass
-            if self._abort_on_queued_limit(req):  # noqa: leading-underscore
-                logger.warning(
-                    "Rejecting request %s: waiting queue is full "
-                    "(max_queued_requests=%s, waiting=%s)",
-                    req_id,
-                    self.max_queued_requests,
-                    len(self.waiting_queue),
-                )
+            request_rows = self.built_request_rows(req_data)
+            if len(request_rows) == 1:
+                if self._abort_on_queued_limit(req):  # noqa: leading-underscore
+                    logger.warning(
+                        "Rejecting request %s: waiting queue is full "
+                        "(max_queued_requests=%s, waiting=%s)",
+                        req_id,
+                        self.max_queued_requests,
+                        len(self.waiting_queue),
+                    )
+                    return
+                else:
+                    pass
+            elif (
+                self.max_queued_requests is not None
+                and len(self.waiting_queue) + len(request_rows)
+                > self.max_queued_requests
+            ):
+                self.reject_queue_full(payload)
                 return
             else:
                 pass
@@ -2170,12 +2189,28 @@ class OmniScheduler(Generic[RequestDataT]):
                 stage=None,
                 event_name="scheduler_queue_enter",
             )
-            req._coalesce_enqueue_t = (
-                time.perf_counter()
-            )  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req._omni_terminal_claimed = False  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            req.omni_data = req_data  # noqa: leading-underscore  # upstream spelling, or the public name is already taken
-            self.waiting_queue.append(req)
+            enqueue_seconds = time.perf_counter()
+            for row_data in request_rows:
+                row = row_data.req
+                if row is not req:
+                    self.normalize_req_token_arrays(row)
+                    row.priority = req.priority
+                else:
+                    pass
+                if len(request_rows) > 1:
+                    row.time_stats.set_wait_queue_entry_time(enqueue_seconds)
+                else:
+                    pass
+                row._coalesce_enqueue_t = (
+                    enqueue_seconds  # noqa: leading-underscore  # upstream spelling
+                )
+                row._omni_terminal_claimed = (
+                    False  # noqa: leading-underscore  # upstream spelling
+                )
+                row.omni_data = (
+                    row_data  # noqa: leading-underscore  # upstream spelling
+                )
+            self.waiting_queue.extend(row_data.req for row_data in request_rows)
             enqueued_unit = self.active_session_unit(req_id)
             if enqueued_unit is not None:
                 enqueued_unit.is_enqueued = True
@@ -2187,6 +2222,12 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             with self.request_admission_lock:
                 enqueue_if_live()
+
+    def built_request_rows(
+        self, request_data: RequestDataT | SGLangARRequestData
+    ) -> tuple[RequestDataT | SGLangARRequestData, ...]:
+        """Return the rows that must enter the waiting queue together."""
+        return (request_data,)
 
     def apply_prompt_cache_epoch(self, req: Req) -> None:
         cache_key = getattr(
@@ -2467,13 +2508,14 @@ class OmniScheduler(Generic[RequestDataT]):
         # note (wilsonzheng0327): SGLang's draft workers drop min_p and apply each
         # penalty once per verify block; logprobs come from the runner's sampler, which
         # speculative decode bypasses, and hidden-state results need the per-request
-        # extend lengths run_speculative_batch leaves unset.
+        # extend lengths run_speculative_batch leaves unset. A greedy request keeps
+        # min_p, since min_p never drops the most likely token.
         unsupported_options = [
             option_name
             for option_name, is_set in (
                 ("logprobs", request_data.return_logprob),
                 ("return_hidden_states", request.return_hidden_states),
-                ("min_p", sampling_params.min_p > 0.0),
+                ("min_p", sampling_params.min_p > 0.0 and sampling_params.top_k != 1),
                 (
                     "seed",
                     sampling_params.sampling_seed is not None
@@ -2496,6 +2538,23 @@ class OmniScheduler(Generic[RequestDataT]):
             return (
                 f"Speculative decoding does not support "
                 f"{', '.join(unsupported_options)}. Unset them for this request."
+            )
+        elif (
+            self.draft_algorithm == SpeculativeAlgorithm.DSPARK
+            and ragged_verify_compact_enabled()
+            and (
+                sampling_params.repetition_penalty != 1.0
+                or self.model_runner.verify_rows_take_logits_hooks(
+                    [SchedulerRequest(request_id=request.rid, data=request_data)]
+                )
+            )
+        ):
+            # note (wilsonzheng0327): the graph epilogue copies a compact verify's logits
+            # before the shared verify hooks would scale them.
+            return (
+                "Speculative decoding does not support repetition_penalty, "
+                "length_penalty or codec suppression under a compact verify. Unset "
+                "them for this request, or serve with SGLANG_RAGGED_VERIFY_MODE=static."
             )
         else:
             return None
@@ -3037,6 +3096,9 @@ class OmniScheduler(Generic[RequestDataT]):
                     batch,
                     is_prefill=is_prefill,
                     num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+                    verify_layout=getattr(
+                        batch.spec_info, "ragged_verify_layout", None
+                    ),
                 )
                 self.model_runner.record_speculative_output(
                     batch, result, is_prefill=is_prefill
@@ -3070,6 +3132,8 @@ class OmniScheduler(Generic[RequestDataT]):
             batch,
             is_prefill=is_prefill,
             num_draft_tokens=self.draft_worker.speculative_num_draft_tokens,
+            # note (0xtoward): the worker leaves its verify input on the batch; a compact verify's layout rides on it.
+            verify_layout=getattr(batch.spec_info, "ragged_verify_layout", None),
         )
         self.model_runner.record_speculative_output(
             batch, result, is_prefill=is_prefill
@@ -3080,9 +3144,11 @@ class OmniScheduler(Generic[RequestDataT]):
             new_sequence_lengths is not None
             and new_sequence_lengths is not batch.seq_lens
         ):
-            batch.seq_lens = new_sequence_lengths
+            # note (0xtoward): the worker may hand out a view of a buffer that its
+            # next verify rewrites mid-step (sglang#42465), so the batch keeps a copy.
+            batch.seq_lens = new_sequence_lengths.clone()
             if batch.seq_lens_cpu is not None:
-                batch.seq_lens_cpu = new_sequence_lengths.to("cpu")
+                batch.seq_lens_cpu = batch.seq_lens.to("cpu")
                 batch.seq_lens_sum = int(batch.seq_lens_cpu.sum())
             else:
                 pass
@@ -3811,7 +3877,13 @@ class OmniScheduler(Generic[RequestDataT]):
         executor.shutdown(wait=False, cancel_futures=True)
         self.request_build_executor = None
 
-    def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
+    def abort(
+        self,
+        request_id: str,
+        *,
+        defer_running_cleanup: bool = True,
+        batch_to_abort: ScheduleBatch | None = None,
+    ) -> None:
         bridge = self.session_bridge
         if self.scheduler_thread_id != threading.get_ident() and (
             self.enable_overlap
@@ -3867,7 +3939,7 @@ class OmniScheduler(Generic[RequestDataT]):
             immediate_reqs = (
                 []
                 if running_abort or should_keep_session_rows
-                else self.mark_request_finished_immediately(request_id)
+                else self.mark_request_finished_immediately(request_id, batch_to_abort)
             )
             pending = self.pending_request_builds.pop(request_id, None)
             if pending is not None:
@@ -4393,7 +4465,7 @@ class OmniScheduler(Generic[RequestDataT]):
             for req in self.waiting_queue:
                 rid = req.rid
                 if rid is not None:
-                    request_ids.add(rid)
+                    request_ids.add(self.request_id_for_row(rid))
                 else:
                     pass
         # note (Richard Wang): a request whose build waits for upstream chunks
@@ -4411,7 +4483,7 @@ class OmniScheduler(Generic[RequestDataT]):
                 pass
             for req in batch.reqs:
                 if req.rid is not None and not req.finished():
-                    request_ids.add(req.rid)
+                    request_ids.add(self.request_id_for_row(req.rid))
                 else:
                     pass
         return sorted(request_ids)
@@ -4537,8 +4609,10 @@ class OmniScheduler(Generic[RequestDataT]):
                 marked = True
         return marked
 
-    def mark_request_finished_immediately(self, request_id: str) -> list[Req]:
-        """Make immediate cleanup visible without rewriting prepared batches."""
+    def mark_request_finished_immediately(
+        self, request_id: str, batch_to_abort: ScheduleBatch | None = None
+    ) -> list[Req]:
+        """Include a failed batch even when it has not been published to the loop."""
         matches = []
         seen: set[int] = set()
         for batch in (
@@ -4546,6 +4620,7 @@ class OmniScheduler(Generic[RequestDataT]):
             self.cur_batch,
             self.last_batch,
             *self.pending_batches(),
+            batch_to_abort,
         ):
             if batch is None:
                 continue

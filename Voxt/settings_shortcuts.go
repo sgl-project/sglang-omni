@@ -1,6 +1,6 @@
 package main
 
-// Settings → Shortcuts (/settings/shortcuts): every global shortcut
+// Settings → Shortcuts (/settings/shortcuts): the feature shortcuts
 // in one table (Transcribe's, Translate's and Rewrite's, Paste the
 // last result, Cancel transcription and Notes'), with their trigger and what
 // hotkey.Check finds wrong:
@@ -135,7 +135,7 @@ func shortcutIcon(code string) icons.Icon {
 	case "rewrite":
 		return icons.PenNewRound
 	default:
-		return icons.Microphone3
+		return transcribeIcon
 	}
 }
 

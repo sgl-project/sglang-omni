@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -189,7 +190,18 @@ func (a *app) openHistoryPrivacy() { a.navigate("/settings/privacy") }
 
 // saveHistoryDetailWidth keeps the detail width in DIPs at 100 %, 0 for the default.
 func (a *app) saveHistoryDetailWidth(width float64) {
-	a.updateSettings(func(s *settings.Settings) { s.Appearance.HistoryDetailWidth = width })
+	revision := a.historyWidthRevision.Add(1)
+	a.updateSettings(historyWidthUpdate(width, revision, &a.historyWidthRevision))
+}
+
+// historyWidthUpdate writes the detail width, unless a reset stamped a
+// newer generation after the save started.
+func historyWidthUpdate(width float64, revision uint64, current *atomic.Uint64) func(*settings.Settings) {
+	return func(s *settings.Settings) {
+		if current.Load() == revision {
+			s.Appearance.HistoryDetailWidth = width
+		}
+	}
 }
 
 func (a *app) copyHistoryText(text string) {
@@ -210,15 +222,9 @@ func (a *app) copyHistoryText(text string) {
 }
 
 func (a *app) historyEntryByID(id string) (store.Entry, bool) {
-	visible := [][]store.Entry{a.hist.list, a.hm.recent}
-	if a.currentPage() == "home" {
-		visible = [][]store.Entry{a.hm.recent, a.hist.list}
-	}
-	for _, entries := range visible {
-		for _, entry := range entries {
-			if entry.ID == id {
-				return entry, true
-			}
+	for _, entry := range a.hist.list {
+		if entry.ID == id {
+			return entry, true
 		}
 	}
 	return store.Entry{}, false
@@ -254,6 +260,7 @@ func (a *app) deleteHistoryEntry(id string) {
 				a.histUI.sel = ""
 			}
 			a.toast(i18n.T("Entry deleted"))
+			a.untitleSessions() // session_keep.go: a session titled after it
 			a.historyChanged()
 		})
 	})

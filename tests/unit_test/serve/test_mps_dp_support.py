@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -411,11 +410,7 @@ class TestLaunchFailsClosedBeforeResources:
         )
         assert proc.returncode != 0
         assert not state_root.exists()
-        # Note (Jiaxin Deng): the RUN_ID check sits after the GPU probes, so
-        # only assert its message where nvidia-smi exists; without a GPU the
-        # launch still fails closed before any state is created.
-        if shutil.which("nvidia-smi"):
-            assert "RUN_ID must be a single" in proc.stdout + proc.stderr
+        assert "RUN_ID must be a single" in proc.stdout + proc.stderr
 
 
 def engine_stage_name(config_cls) -> str:

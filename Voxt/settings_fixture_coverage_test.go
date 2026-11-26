@@ -74,12 +74,19 @@ func checkSettingsDialogFixture(t *testing.T, locale, name string, state *settin
 		"models": state.Models != nil, "language-models": state.Remote != nil,
 		"audio": state.Audio != nil, "overlay": state.Overlay != nil,
 		"shortcuts": state.Shortcuts != nil, "appearance": state.Appearance != nil,
-		"privacy": state.Privacy != nil, "storage": state.Storage != nil, "about": state.About != nil,
+		"privacy": state.Privacy != nil, "storage": state.Storage != nil,
+		"experimental": state.Experimental != nil, "about": state.About != nil,
 	}
 	for id, present := range sectionStates {
 		if want := id == sectionID; present != want {
 			t.Errorf("%s/%s: %s section present=%t, want %t", locale, name, id, present, want)
 		}
+	}
+	featureSection := sectionID == "transcribe" || sectionID == "translate" || sectionID == "rewrite"
+	if present := state.Feature != nil; present != featureSection {
+		t.Errorf("%s/%s: feature section present=%t, want %t", locale, name, present, featureSection)
+	} else if present && state.Feature.Feature != sectionID {
+		t.Errorf("%s/%s: feature state is %q, want %q", locale, name, state.Feature.Feature, sectionID)
 	}
 	if present := state.Updates != nil; present != (sectionID == "about") {
 		t.Errorf("%s/%s: updates state present=%t, want %t", locale, name, present, sectionID == "about")
@@ -130,10 +137,16 @@ func checkSettingsFixtureValues(t *testing.T, locale string, fixtures map[string
 		accessibilityStates[permissions.Accessibility.Allowed] = true
 	}
 	assertSettingsFixtureSet(t, locale+" accessibility states", map[bool]bool{false: true, true: true}, accessibilityStates)
+	for name, asked := range map[string]bool{"settings-permissions-state-granted": false, "settings-permissions-system-audio-asked": true} {
+		if audio := requireSettingsDialogFixture(t, locale, fixtures, name).Permissions.SystemAudio; audio != systemAudioPermission(translator, asked) {
+			t.Errorf("%s/%s: system audio %+v, want asked=%t", locale, name, audio, asked)
+		}
+	}
 
 	checkSettingsAudioFixtures(t, locale, fixtures)
 	checkSettingsAppearanceFixtures(t, locale, fixtures)
 	checkSettingsShortcutFixtures(t, locale, fixtures)
+	checkSettingsExperimentalFixtures(t, locale, fixtures)
 	checkSettingsPrivacyFixtures(t, locale, fixtures)
 	checkSettingsStorageFixtures(t, locale, fixtures)
 	checkSettingsAboutFixtures(t, locale, fixtures)
@@ -219,6 +232,9 @@ func checkSettingsAppearanceFixtures(t *testing.T, locale string, fixtures map[s
 	if !variant.ReduceMotion {
 		t.Errorf("%s: appearance variant does not reduce motion", locale)
 	}
+	if variant.Opening {
+		t.Errorf("%s: the opening's switch shows on while Reduce motion is on", locale)
+	}
 	overlay := requireSettingsDialogFixture(t, locale, fixtures, "settings-overlay-top-live-lines").Overlay
 	if overlay.Position != 1 || overlay.LiveLayout != 1 {
 		t.Errorf("%s: overlay variant has position=%d and live layout=%d", locale, overlay.Position, overlay.LiveLayout)
@@ -271,6 +287,18 @@ func checkSettingsShortcutFixtures(t *testing.T, locale string, fixtures map[str
 		return row.Feature == hotkey.Transcribe && slices.Contains(row.Problems, expectedLine)
 	}) {
 		t.Errorf("%s: family-conflict fixture lacks %q", locale, expectedLine)
+	}
+}
+
+func checkSettingsExperimentalFixtures(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
+	t.Helper()
+	translator := i18n.NewTranslator(locale)
+	experimental := requireSettingsDialogFixture(t, locale, fixtures, "settings-experimental-normal").Experimental
+	if len(experimental.Sessions) != 1 {
+		t.Fatalf("%s: experimental fixture has %d session rows, want Next session only", locale, len(experimental.Sessions))
+	}
+	if next := experimental.Sessions[0]; next.Slot != 3 || next.Title != translator.T("Next session") || next.Recorder.DisplayedKeys != "⌥Tab" {
+		t.Errorf("%s: next-session row is %+v", locale, next)
 	}
 }
 
@@ -357,7 +385,7 @@ func checkSettingsAboutFixtures(t *testing.T, locale string, fixtures map[string
 		!checkOnly.AutoCheck || checkOnly.AutoInstall || !checkOnly.Beta {
 		t.Errorf("%s: check-only updater fixture has unexpected state %+v", locale, checkOnly)
 	}
-	if checkOnly.CheckDescription != expectedDescription || checkOnly.AutomaticDescription != translator.T("Once a day. A card says when a new version is out.") ||
+	if checkOnly.CheckDescription != expectedDescription || checkOnly.AutomaticDescription != translator.T("Once a day. An Update button shows when a new version is out.") ||
 		checkOnly.BetaNote != translator.T("Betas and releases, whichever is newer.") {
 		t.Errorf("%s: check-only updater fixture has unexpected text %+v", locale, checkOnly)
 	}

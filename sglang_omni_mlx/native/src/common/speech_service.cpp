@@ -461,17 +461,11 @@ int SpeechServedModel::Speak(
   const size_t prompt_tokens = channel->result.prompt_token_count;
   const int completion_tokens = channel->result.completion_token_count;
   if (job.is_generate_response) {
-    std::string base64(4 * ((audio.size() + 2) / 3) + 1, '\0');
-    size_t base64_length = base64.size();
-    mg_base64_encode(reinterpret_cast<const unsigned char *>(audio.data()),
-                     audio.size(), base64.data(), &base64_length);
-    // Note (XXXXRT666): civetweb counts the terminating NUL it writes.
-    base64.resize(base64_length - 1);
     return omni_server::WriteJson(
         connection, 200,
         {{"text", ""},
          {"audio",
-          {{"data", base64},
+          {{"data", omni_server::EncodeBase64(audio)},
            {"format", job.response_format},
            {"sample_rate", SampleRate()}}},
          {"meta_info",

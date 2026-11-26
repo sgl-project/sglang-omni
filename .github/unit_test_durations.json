@@ -571,7 +571,6 @@
   "tests/unit_test/utils/test_managed_workers.py": 0.063,
   "tests/unit_test/utils/test_port_claim.py": 0.089,
   "tests/unit_test/utils/test_snake_beta.py": 0.007,
-  "tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py": 0.005,
   "tests/unit_test/vendor/test_sglang_layers_patch.py": 0.01,
   "tests/unit_test/vendor/test_sglang_server_args.py": 0.006,
   "tests/unit_test/voxtral_tts/test_pipeline.py": 0.05,

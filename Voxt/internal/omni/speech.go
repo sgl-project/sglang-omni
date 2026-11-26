@@ -15,10 +15,16 @@ import (
 // timestamps or another language. Without Silero, or when it fails, pcm
 // itself.
 func (a *ASR) speechOnly(ctx context.Context, pcm []byte) ([]byte, bool) {
+	return a.speechOnlyTimed(ctx, 0, pcm)
+}
+
+func (a *ASR) speechOnlyTimed(ctx context.Context, requestID uint64, pcm []byte) ([]byte, bool) {
 	if !a.spec.ASR.SpeechOnly || a.vad == nil {
 		return pcm, true
 	}
-	segs, err := a.vad.Speech(ctx, pcm, sampleRate)
+	started := time.Now()
+	segs, err := a.vad.speechTimed(ctx, requestID, pcm, sampleRate)
+	logRequestStage(a.rt, requestID, "vad", "total", started, len(pcm), 0)
 	if err != nil {
 		if ctx.Err() == nil {
 			a.rt.logf("warning", "%s: looking for the speech to send: %v", a.spec.ID, err)
@@ -28,7 +34,10 @@ func (a *ASR) speechOnly(ctx context.Context, pcm []byte) ([]byte, bool) {
 	if len(segs) == 0 {
 		return nil, false
 	}
-	return vad.Compact(pcm, sampleRate, vad.Analysis{Segments: segs, Speech: true}, vad.Params{}).PCM, true
+	started = time.Now()
+	compacted := vad.Compact(pcm, sampleRate, vad.Analysis{Segments: segs, Speech: true}, vad.Params{})
+	logRequestStage(a.rt, requestID, "compact", "total", started, len(pcm), len(compacted.PCM))
+	return compacted.PCM, true
 }
 
 // pauseCut keeps a SpeechOnly model's live pauses off its realtime

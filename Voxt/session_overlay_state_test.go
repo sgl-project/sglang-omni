@@ -72,13 +72,16 @@ func TestRecordingDurationFitsPastTenMinutes(t *testing.T) {
 			}
 			measured := float32(0)
 			row, exact := recordingPillRow(&pill, false, true, 0, func(key ovSized) (float32, bool) {
+				if key == kindTitleText(pill.Title) {
+					return 30, true
+				}
 				if key.text != test.want {
 					t.Errorf("measured text = %q, want %q", key.text, test.want)
 				}
 				measured = float32(len(key.text)) * 7.4
 				return measured, true
 			})
-			wantRow := layout.RowW + layout.Gap + int(math.Ceil(float64(measured)))
+			wantRow := layout.RowW + layout.Gap + 30 + layout.Gap + int(math.Ceil(float64(measured)))
 			if row != wantRow || !exact {
 				t.Errorf("row = %d, exact %v; want %d for the measured time, exact true", row, exact, wantRow)
 			}

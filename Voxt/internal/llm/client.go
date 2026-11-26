@@ -94,8 +94,23 @@ func (c *Client) Prefill(ctx context.Context, req Request) error {
 	return nil
 }
 
-// Chat runs req with retries. A streaming request is retried only while
-// nothing has been streamed yet. The returned Usage sums every attempt.
+// Connect passes to the backend when it is a Connector; nil otherwise.
+func (c *Client) Connect(ctx context.Context) error {
+	if b, ok := c.Backend.(Connector); ok {
+		return b.Connect(ctx)
+	}
+	return nil
+}
+
+// CanPrefill reports whether the backend implements real prompt prefill.
+func (c *Client) CanPrefill() bool {
+	_, ok := c.Backend.(Prefiller)
+	return ok
+}
+
+// Chat runs req with retries. A stream retries by default until output is
+// emitted; later retries need authorization to discard private output.
+// Usage sums every attempt.
 func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 	if c.Backend == nil {
 		return Response{}, newErr(CodeNoRoute, "skill", string(req.Skill))
@@ -126,6 +141,7 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		}
 	}
 	var total Usage
+	limited := false // an attempt was refused for the rate limit
 	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -157,7 +173,7 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 				resp.Usage = estimateUsage(req.Messages, resp.Text)
 			}
 			total = total.Add(resp.Usage)
-			resp.Usage, resp.Attempts = total, attempt
+			resp.Usage, resp.Attempts, resp.RateLimited = total, attempt, limited
 			if resp.Text == "" && (resp.FinishReason != FinishLength || serializedReply) {
 				err = newErr(CodeEmpty, "provider", c.Backend.Info().ID)
 				c.Meter.record(c.Backend.Info().ID, req, resp, err, time.Since(start))
@@ -173,24 +189,34 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		if stalled != nil {
 			e = stalled
 		}
+		limited = limited || e.Code == CodeRateLimited
+		failed := Response{Usage: total, Attempts: attempt, RateLimited: limited}
 		// A timeout of the attempt (not the caller's deadline) is retryable.
 		if ctx.Err() != nil {
 			e = ctxErr(ctx, c.Backend.Info().ID, ctx.Err(), timeout)
 		}
-		if !e.Retryable || streamed || attempt >= c.Retry.attempts() || ctx.Err() != nil {
-			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
-			return Response{Usage: total, Attempts: attempt}, e
+		if !e.Retryable || attempt >= c.Retry.attempts() || ctx.Err() != nil {
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e
 		}
 		d, ok := c.Retry.delay(attempt, e, rand.Float64)
 		if !ok {
-			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
-			return Response{Usage: total, Attempts: attempt}, e
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e
 		}
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < d {
-			return Response{Usage: total, Attempts: attempt}, e // no time left to wait
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e // no time left to wait
+		}
+		if streamed {
+			if req.RetryPrivateStream == nil || !req.RetryPrivateStream() {
+				c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+				return failed, e
+			}
+			streamed = false
 		}
 		if err := c.sleep(ctx, d); err != nil {
-			return Response{Usage: total, Attempts: attempt}, ctxErr(ctx, c.Backend.Info().ID, err, timeout)
+			return failed, ctxErr(ctx, c.Backend.Info().ID, err, timeout)
 		}
 	}
 }

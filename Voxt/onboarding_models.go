@@ -52,7 +52,7 @@ func obLanguageRow(c *ui.Context, state onboardingModelsViewState, actions onboa
 		if state.LanguageReady {
 			return
 		}
-		caption(c, i18n.T("Cleans up, translates and rewrites the text. Run one on this Mac with Ollama, LM Studio or oMLX, or use a service's API key."))
+		caption(c, i18n.T("In Settings → Language models, choose Ollama, LM Studio, oMLX, or an API service. Paste any required key into API key, then select Test connection."))
 		ui.Row(c).Children(func() {
 			if ui.Button(c.Key("ob-llm-setup"), i18n.T("Set up a language model")).Clicked() {
 				actions.obLeave(remotePath)
@@ -127,7 +127,7 @@ func obModelRow(c *ui.Context, state onboardingSpeechViewState, actions onboardi
 	if state.ShowDownload {
 		ui.Row(c).Margin(px(t, sp2), 0, 0, 0).Children(func() {
 			if secondaryIconButton(c.Key("ob-download"), icons.DownloadMinimalistic, state.DownloadLabel).Clicked() {
-				actions.downloadModel(state.ID)
+				actions.obDownload() // the pack: the speech model and its catalogue draft
 			}
 		})
 	}
@@ -142,7 +142,7 @@ func obAlternativeLine(c *ui.Context, state onboardingAlternativeViewState, acti
 		ui.Text(c, state.Message).FontSize(px(t, fsCaption))
 		ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
 			if secondaryIconButton(c.Key("ob-alt-download"), icons.DownloadMinimalistic, state.DownloadLabel).Clicked() {
-				actions.downloadModel(state.WantID)
+				actions.obDownload() // state.WantID is the pack's speech model (obAlternative)
 			}
 			if ghostButton(c.Key("ob-alt-use"), state.UseLabel).Clicked() {
 				actions.obUse(state.UseID)

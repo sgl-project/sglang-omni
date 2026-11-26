@@ -22,6 +22,8 @@
 #   scripts/release-appcast.sh hardware-kept BUILD REPLY < APPCASTS   # fails unless the update service kept arm64
 #   scripts/release-appcast.sh feed-base        # Voxt 2's MyGo update feed base URL
 #   scripts/release-appcast.sh feed-url beta    # the channel's MyGo manifest URL (beta or stable)
+#   scripts/release-appcast.sh feed-offers stable 2.1.3 < RELEASES.json   # fails unless the app's feed resolves to voxt-v2.1.3
+#   scripts/release-appcast.sh feed-check stable 2.1.3 OWNER/REPO         # the same against GitHub, and reads the manifest
 #   scripts/release-appcast.sh github-manifest 2.0.1 OWNER/REPO < update-darwin-arm64.json
 #   scripts/release-appcast.sh cask 2.0.1 SHA256 OWNER/REPO   # Homebrew's Casks/voxt.rb
 set -euo pipefail
@@ -30,8 +32,10 @@ set -euo pipefail
 public_key="iMt1voRdgfUUpKxdY7DliGLaOl17gJFB8Jhlo5ox2eE="
 # Voxt 2 runs on Apple silicon only.
 hardware=arm64
-# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads.
-voxt2_feed="https://voxt.actnow.dev/updates/voxt2"
+# Voxt 2's MyGo manifests are separate from the Sparkle appcasts Voxt 1.x reads. They are the
+# update-darwin-arm64.json of each GitHub release: MyGo resolves {version} to the highest voxt-v
+# release, and under beta/ to the highest version of the releases and prereleases (patch 0021).
+voxt2_feed="https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}"
 
 usage() {
   sed -n 's/^#   //p' "$0" >&2
@@ -174,6 +178,40 @@ case "${1:-}" in
       stable) echo "$voxt2_feed/update-darwin-arm64.json" ;;
       *) fail "the Voxt 2 feed channel is beta or stable, got '$2'" ;;
     esac
+    ;;
+  feed-offers)
+    # What MyGo's ResolveFeed does (patch 0021) with the first page of the repository's releases:
+    # the highest voxt-v version that is not a draft, prereleases only on the beta channel.
+    (($# == 3)) || usage
+    [[ "$2" == beta || "$2" == stable ]] || fail "the Voxt 2 feed channel is beta or stable, got '$2'"
+    build_number "${3%%-*}" >/dev/null
+    offered="$(jq -r --arg channel "$2" '
+      def key: ltrimstr("voxt-v") | split("-") as $p
+        | ($p[0] | split(".") | map(tonumber))
+          + [if ($p | length) > 1 then 0 else 1 end]
+          + (($p[1:] | join("-")) | split(".") | map(tonumber? // .));
+      [.[] | select((.draft | not) and (.tag_name | test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+(-.+)?$"))
+                    and ($channel == "beta" or (.prerelease | not))) | .tag_name]
+      | sort_by(key) | last // ""')"
+    [[ -n "$offered" ]] || fail "the $2 feed has no voxt-v release: Check for Updates would say up to date"
+    [[ "$offered" == "voxt-v$3" ]] || fail "the $2 feed offers $offered, not voxt-v$3"
+    echo "$offered"
+    ;;
+  feed-check)
+    # After a release is published: the feed the installed apps read must name it, with files that download.
+    (($# == 4)) || usage
+    [[ "$4" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$4' is not OWNER/REPO"
+    auth=()
+    [[ -n "${GH_TOKEN:-}" ]] && auth=(-H "Authorization: Bearer $GH_TOKEN")
+    tag="$(curl -fsSL --retry 3 ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/$4/releases?per_page=100" | "$0" feed-offers "$2" "$3")"
+    manifest="$(curl -fsSL --retry 3 "https://github.com/$4/releases/download/$tag/update-darwin-arm64.json")" ||
+      fail "$tag has no update-darwin-arm64.json: installed apps cannot update to it"
+    jq -e --arg version "$3" '.version == $version and .signature != "" and .size > 0' <<<"$manifest" >/dev/null ||
+      fail "the manifest of $tag is not a signed manifest of $3"
+    url="$(jq -r .url <<<"$manifest")"
+    size="$(curl -fsSLI --retry 3 "$url" | tr -d '\r' | awk 'tolower($1) == "content-length:" { n = $2 } END { print n }')"
+    [[ "$size" == "$(jq -r .size <<<"$manifest")" ]] || fail "$url is $size bytes, the manifest says $(jq -r .size <<<"$manifest")"
+    echo "The $2 feed offers Voxt $3: $url ($size bytes)"
     ;;
   github-manifest)
     (($# == 3)) || usage

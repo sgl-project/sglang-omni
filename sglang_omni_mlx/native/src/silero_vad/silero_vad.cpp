@@ -16,6 +16,10 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr int kLstmHidden = 128;
+constexpr int kWarmupChunks = 8;
+// Chunks per graph on the file path: each block batches its front end, and the
+// LSTM graph stays bounded however long the recording is.
+constexpr int kFileBlockChunks = 250;
 constexpr const char *kBranchPrefix = "vad_16k.";
 
 mx::array Relu(const mx::array &x) {
@@ -74,6 +78,11 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
         "final_conv.bias"}) {
     checkpoint_.Weight(name);
   }
+  // A throwaway stream compiles the feed's Metal kernels here rather than on
+  // the first dictation's feed; its state and probabilities are discarded.
+  StreamState warmup;
+  const std::vector<float> quiet(kWarmupChunks * kChunkSamples, 0.0f);
+  Feed(quiet.data(), kWarmupChunks, warmup);
 }
 
 std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
@@ -156,9 +165,18 @@ SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
   padded.resize((samples.size() + kChunkSamples - 1) / kChunkSamples *
                     kChunkSamples,
                 0.0f);
+  const int chunk_count = static_cast<int>(padded.size() / kChunkSamples);
   StreamState state;
-  return Feed(padded.data(), static_cast<int>(padded.size() / kChunkSamples),
-              state);
+  std::vector<float> probabilities;
+  probabilities.reserve(chunk_count);
+  for (int first_chunk = 0; first_chunk < chunk_count;
+       first_chunk += kFileBlockChunks) {
+    const std::vector<float> block =
+        Feed(padded.data() + static_cast<size_t>(first_chunk) * kChunkSamples,
+             std::min(kFileBlockChunks, chunk_count - first_chunk), state);
+    probabilities.insert(probabilities.end(), block.begin(), block.end());
+  }
+  return probabilities;
 }
 
 std::vector<Timestamp>

@@ -76,18 +76,21 @@ func anchored(t *testing.T, what string, o settings.Overlay, f mygo.Rectangle) {
 // Escape, a notice, and two sessions in quick succession too.
 func TestOverlayFadeClearsSessionText(t *testing.T) {
 	a, _, _ := newTestApp(t)
+	ft := new(fakeTimers).install(a)
 	snap(a, session.Snapshot{ID: "fade-text", State: session.Recording, StartedAt: time.Now(), HeardAt: time.Now(), Partial: "stale live words", Levels: wave()})
 	snap(a, session.Snapshot{ID: "fade-text", State: session.Done, Inserted: true, Result: "inserted"})
 	if a.ov.shown || !a.ov.visible {
 		t.Fatalf("the overlay is not fading: shown %t visible %t", a.ov.shown, a.ov.visible)
 	}
+	ft.advance(time.Second) // the fade ends
+	snap(a, session.Snapshot{ID: "next", State: session.Recording, StartedAt: time.Now(), Levels: wave()})
 	if text := a.ov.projection.view.Pill.LiveText; text != "" {
-		t.Fatalf("hidden projection kept live text %q", text)
+		t.Fatalf("the next session kept live text %q", text)
 	}
 	tester := hudTester(a.overlayView, a.ov.w+2*layout.Pad, a.ov.h+2*layout.Pad)
 	frames(tester)
 	if tester.HasText("stale live words") {
-		t.Fatal("the fading overlay kept the previous session's live text")
+		t.Fatal("the next session shows the previous session's live text")
 	}
 }
 

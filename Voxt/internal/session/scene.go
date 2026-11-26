@@ -47,6 +47,9 @@ type sceneState struct {
 	match    appctx.Match
 	deadline time.Time
 	fallback appctx.Match // without the address: the browser as an app
+	// cleanupPending is set before the run starts. Only a possible override
+	// makes model resolution wait for the address.
+	cleanupPending bool
 }
 
 // startScene starts deciding the session's group (Manager.Start, before
@@ -73,6 +76,7 @@ func (r *run) startScene() {
 		return
 	}
 	in.Browser = true
+	sc.cleanupPending = cleanupCanVary(rules, target.BundleID, r.settings.Features.Transcribe.Enhance)
 	timeout := cfg.URLTimeout
 	if timeout <= 0 {
 		timeout = DefaultURLTimeout
@@ -120,7 +124,6 @@ func (r *run) setScene(m appctx.Match, publish bool) {
 		sc.mu.Lock()
 		sc.match = m
 		sc.mu.Unlock()
-		close(sc.done)
 		if m.Matched() {
 			r.logf("info", "app enhancement: %s by %s", m.GroupName(), m.Source)
 		}
@@ -128,6 +131,7 @@ func (r *run) setScene(m appctx.Match, publish bool) {
 			c := cloneMatch(m)
 			r.m.update(r, func(s *Snapshot) { s.Scene = &c })
 		}
+		close(sc.done)
 	})
 }
 

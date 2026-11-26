@@ -146,7 +146,7 @@ func (a *ASR) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Result, 
 	}
 	defer l.release()
 	start := time.Now()
-	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.spec.ASR.contextBias(req.Hints, req.Prompt))
+	text, language, err := a.final(ctx, l, pcm, a.spec.languageHint(req.Lang), a.finalBias(a.spec.ASR.contextBias(req.Hints, req.Prompt)), prior{})
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -172,7 +172,9 @@ func (a *ASR) Diarize(ctx context.Context, req asr.FileRequest) (asr.Result, err
 	if a.noSpeech(ctx, pcm) {
 		return asr.Result{Duration: asr.Duration(pcm, sampleRate), Model: a.spec.ID, Latency: time.Since(start)}, nil
 	}
-	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: req.Prompt, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
+	b := a.spec.ASR.contextBias(req.Hints, req.Prompt)
+	b.context = req.Prompt
+	r, err := transcribe(ctx, l, finalRequest{pcm: pcm, language: a.spec.languageHint(req.Lang), context: a.finalBias(b).context, layout: a.spec.ASR.AudioLayout}, a.rt.cfg.StallTimeout)
 	if err != nil {
 		return asr.Result{}, err
 	}
@@ -212,10 +214,23 @@ func filePCM(req asr.FileRequest) ([]byte, error) {
 	return nil, &asr.Error{Kind: asr.KindAudio, Provider: Provider, Detail: "unknown audio format " + req.Format}
 }
 
+// finalBias adds MOSS's hotwords only to post-stop Finals, keeping them out
+// of live and intermediate previews.
+func (a *ASR) finalBias(b bias) bias {
+	if len(b.hotwords) > 0 {
+		if b.context == "" {
+			b.context = mossDiarizePrompt
+		}
+		b.context += " Hotwords: " + strings.Join(b.hotwords, ", ")
+	}
+	return b
+}
+
 // final transcribes quiet-cut chunks in order, with a shared token budget
 // for Qwen3-ASR and one budget per Whisper window. The first detected
-// language, when available, is passed to subsequent requests.
-func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias) (string, string, error) {
+// language, when available, is passed to subsequent requests. known is of
+// the recording's start: the chunks after the first have no part of it.
+func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, b bias, known prior) (string, string, error) {
 	t := a.spec.ASR
 	budget := t.tokenBudget(asr.Duration(pcm, sampleRate))
 	shared := t.TokensPerSecond > 0 // else each request has the whole budget
@@ -223,6 +238,10 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 	chunks := t.splitChunks(pcm)
 	if a.spec.Kind == kindWhisper {
 		chunks = trimWhisperSilenceTail(chunks)
+	}
+	if len(chunks) > 1 {
+		known.text = "" // the text is of all the chunks: none of them is all of it
+		known.guessAutoLanguage = false
 	}
 	var parts []string
 	for len(chunks) > 0 {
@@ -252,12 +271,15 @@ func (a *ASR) final(ctx context.Context, l *lease, pcm []byte, language string, 
 		}
 		c := chunks[0]
 		chunks = chunks[1:]
-		pcm, ok := a.speechOnly(ctx, c.pcm)
+		start := known
+		known = prior{}
+		requestID := nextOfflineRequestID()
+		pcm, ok := a.speechOnlyTimed(ctx, requestID, c.pcm)
 		if !ok {
 			continue
 		}
-		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout}
-		r, err := transcribe(ctx, l, req, a.rt.cfg.StallTimeout)
+		req := finalRequest{pcm: pcm, language: language, context: b.context, maxTokens: budget, layout: t.AudioLayout, known: start}
+		r, err := transcribeTimed(ctx, l, req, a.rt.cfg.StallTimeout, requestID)
 		if err != nil {
 			return "", "", err
 		}

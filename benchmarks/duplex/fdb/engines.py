@@ -27,6 +27,7 @@ class Engine:
     max_sessions: int
     sets_max_sessions: bool
     needs_aligner: bool
+    needs_inkling_venv: bool
 
     @property
     def trace_format(self) -> TraceFormat:
@@ -62,6 +63,7 @@ ENGINES: dict[EngineName, Engine] = {
         max_sessions=8,
         sets_max_sessions=True,
         needs_aligner=False,
+        needs_inkling_venv=False,
     ),
     "qwen3-omni": Engine(
         name="qwen3-omni",
@@ -76,18 +78,20 @@ ENGINES: dict[EngineName, Engine] = {
         max_sessions=4,
         sets_max_sessions=False,
         needs_aligner=False,
+        needs_inkling_venv=False,
     ),
     "cascade": Engine(
         name="cascade",
-        model_id="Qwen/Qwen3.8-27B",
-        model_revision=None,
+        model_id="thinkingmachines/Inkling-2-Mini",
+        model_revision="b85c3cfa615fc413cc9af3379f491b963f3b586a",
         record_profile="turn-based",
+        # note (wenyao): the Qwen3.8-27B profile, qwen3-asr-qwen3.8-27b-vivian-tts-tool, stays beside it to roll back to.
         launch_config=(
             "examples/streaming_cascade/profiles/"
-            "qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml"
+            "qwen3-asr-inkling-2-mini-vivian-tts-tool/launch.yaml"
         ),
         hf_model_ids=(
-            "Qwen/Qwen3.8-27B",
+            "thinkingmachines/Inkling-2-Mini",
             "Qwen/Qwen3-ASR-1.7B",
             "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
             "Qwen/Qwen3-ForcedAligner-0.6B",
@@ -96,5 +100,6 @@ ENGINES: dict[EngineName, Engine] = {
         max_sessions=NODE_STAGE_MAX_OPEN_SESSIONS,
         sets_max_sessions=False,
         needs_aligner=True,
+        needs_inkling_venv=True,
     ),
 }

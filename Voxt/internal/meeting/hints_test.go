@@ -23,6 +23,7 @@ type heardHints struct {
 	mu    sync.Mutex
 	hints [][]string
 	heard chan struct{}
+	text  string
 }
 
 func (h *heardHints) keep(hints []string) {
@@ -48,7 +49,52 @@ func (h *heardHints) Open(ctx context.Context, req asr.StreamRequest) (asr.Strea
 
 func (h *heardHints) Transcribe(_ context.Context, req asr.FileRequest) (asr.Result, error) {
 	h.keep(req.Hints)
-	return asr.Result{Text: "heard"}, nil
+	text := h.text
+	if text == "" {
+		text = "heard"
+	}
+	return asr.Result{Text: text}, nil
+}
+
+func TestMeetingLiveFileChineseScript(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := sqlitestore.Open(ctx, filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	h := &heardHints{heard: make(chan struct{}, 1), text: "我們今天討論會議轉寫。"}
+	m := meeting.NewManager(meeting.Config{
+		Mic:       newFakeAudio(liveTestPCM(t)),
+		Store:     db.Meetings(),
+		Dir:       filepath.Join(dir, "meetings"),
+		Privacy:   func() settings.Privacy { return settings.Privacy{KeepHistory: true} },
+		Settings:  func() settings.Meeting { return settings.Meeting{NoFinalPass: true, NoAutoSummary: true} },
+		FreeSpace: func(string) (int64, error) { return meeting.DiskMinStartBytes() + 1, nil },
+		ASR: func(context.Context, meeting.Source) (meeting.TrackASR, error) {
+			return meeting.TrackASR{Caps: asr.Caps{File: true}, File: h, Lang: "zh-Hans"}, nil
+		},
+	})
+	id, err := m.Start(ctx, meeting.StartRequest{Mode: meeting.ModeRecording})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.heard:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the speech model got no live request")
+	}
+	if err := m.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := db.Meetings().Meeting(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segs) != 1 || segs[0].Text != "我们今天讨论会议转写。" {
+		t.Fatalf("segments %+v", segs)
+	}
 }
 
 // TestMeetingSendsHotWords: the hot words of a meeting's speech setup (the

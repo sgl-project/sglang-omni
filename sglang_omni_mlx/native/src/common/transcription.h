@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// Model-independent transcription results and their JSON form.
+// Model-independent transcription results, their JSON form, and long audio
+// decoded one 30 s window at a time.
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common/generation.h"
@@ -48,13 +52,37 @@ struct TranscriptionResult {
   double result_rebuild_ms = 0.0;
   double cache_clear_ms = 0.0;
   double native_total_ms = 0.0;
-  // Ordered text of each window in a multi-window Whisper request.
+  // Ordered text of the windows of a request cut into several.
   std::vector<std::string> window_texts;
+  // Audio tokens a live session had already encoded.
+  int reused_audio_token_count = 0;
+  // Prompt tokens a live session had already computed.
+  int reused_prompt_token_count = 0;
 };
 
 // Segments as the HTTP and realtime APIs send them: start, end, speaker, text,
 // and language, emotion and event when set.
 nlohmann::ordered_json
 SpeakerSegmentsJson(const std::vector<SpeakerSegment> &segments);
+
+// Sample ranges of at most 30 s that cover samples, each cut at the quietest
+// 0.1 s in the 5 s before its limit, the last at least 1 s long; one range
+// for shorter audio.
+std::vector<std::pair<size_t, size_t>>
+ThirtySecondWindows(const std::vector<float> &samples);
+
+// samples transcribed one window at a time and the texts joined with
+// JoinTranscriptParts, token and draft counts summed. max_new_tokens gives a
+// window's budget from the tokens the windows before it generated; below 1,
+// the request stops there. Truncation by either ends it with kLength, and
+// window_texts lists every window's text when there are several.
+TranscriptionResult TranscribeEachWindow(
+    const std::vector<float> &samples,
+    const std::vector<std::pair<size_t, size_t>> &windows,
+    const std::function<int(const std::pair<size_t, size_t> &window,
+                            int generated_token_count)> &max_new_tokens,
+    const std::function<TranscriptionResult(
+        const std::vector<float> &window_samples, int max_new_tokens)>
+        &transcribe_window);
 
 } // namespace omni_common

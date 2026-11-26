@@ -93,10 +93,10 @@ func TestResolverSwitch(t *testing.T) {
 		wantMain, wantBack string
 	}{
 		{"off", store.KindRewrite, false, "", "", "deepseek", ""},
-		{"rewrite skips the external API", store.KindRewrite, true, "", "", "deepseek", "custom"},
-		{"transcribe skips the external API", store.KindTranscribe, true, "", "", "deepseek", "custom"},
-		{"the next one does not open", store.KindRewrite, true, "", "custom", "deepseek", "ollama"},
-		{"the model does not open", store.KindRewrite, true, "", "deepseek", "custom", ""},
+		{"rewrite uses the next configured API", store.KindRewrite, true, "", "", "deepseek", "openai"},
+		{"transcribe uses the next configured API", store.KindTranscribe, true, "", "", "deepseek", "openai"},
+		{"the next one does not open", store.KindRewrite, true, "", "openai", "deepseek", "custom"},
+		{"the model does not open", store.KindRewrite, true, "", "deepseek", "openai", ""},
 		{"translate's own external fallback first", store.KindTranslate, true, "openai", "", "deepseek", "openai"},
 		{"translate's fallback does not open", store.KindTranslate, true, "openai", "openai", "deepseek", "custom"},
 	} {
@@ -118,10 +118,9 @@ func TestResolverSwitch(t *testing.T) {
 	}
 }
 
-// TestResolverSwitchKeepsTextOnTheMac: with only external APIs besides
-// the feature's own model, the switch finds no fallback, so a failure
-// never sends the text to a provider the feature did not choose.
-func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
+// TestResolverSwitchUsesRemoteAPI: with no local server after the chosen
+// model, the switch uses the next configured external API.
+func TestResolverSwitchUsesRemoteAPI(t *testing.T) {
 	models := []local.Model{{Kind: local.LLM, ID: "ollama"}, {Kind: local.LLM, ID: "deepseek"}, {Kind: local.LLM, ID: "openai"}}
 	s := settings.Defaults()
 	s.Models.LLMSwitch = true
@@ -131,8 +130,8 @@ func TestResolverSwitchKeepsTextOnTheMac(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.LLMInfo.ID != "ollama" || svc.Fallback != nil {
-		t.Errorf("model %q, fallback %q; want ollama and none: Transcribe's text would go to an external API it did not choose", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+	if svc.LLMInfo.ID != "ollama" || svc.FallbackInfo.ID != "deepseek" || svc.Fallback == nil {
+		t.Errorf("model %q, fallback %q; want ollama and deepseek", svc.LLMInfo.ID, svc.FallbackInfo.ID)
 	}
 }
 
@@ -226,6 +225,104 @@ func TestResolverWithoutSpeech(t *testing.T) {
 		if svc.LLMInfo.ID != "deepseek" || svc.FallbackInfo.ID != "ollama" {
 			t.Errorf("speech %v: model %q, fallback %q", speech, svc.LLMInfo.ID, svc.FallbackInfo.ID)
 		}
+	}
+}
+
+type splitResolverServices struct {
+	models       []local.Model
+	speechModels []local.Model
+	asrCalls     int
+	asrInstalled int
+	llmCalls     []string
+	installed    int
+}
+
+func (s *splitResolverServices) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		s.asrInstalled++
+		return s.speechModels
+	}
+	if kind == local.LLM {
+		s.installed++
+		return s.models
+	}
+	return nil
+}
+
+func (s *splitResolverServices) ASR(_ context.Context, id string) (asr.Provider, local.Model, error) {
+	s.asrCalls++
+	return nil, local.Model{Kind: local.ASR, ID: id, Name: "Fake speech"}, nil
+}
+
+func (s *splitResolverServices) LLM(_ context.Context, id string) (local.Chat, local.Model, error) {
+	s.llmCalls = append(s.llmCalls, id)
+	m, _ := local.Choose(s.models, id)
+	return &llm.Client{Backend: &fakeChat{}}, m, nil
+}
+
+func TestSessionResolversSplitSpeechAndCleanupProviderWork(t *testing.T) {
+	shelf := &splitResolverServices{models: []local.Model{
+		{Kind: local.LLM, ID: "deepseek", Name: "DeepSeek"},
+		{Kind: local.LLM, ID: "ollama", Name: "Ollama"},
+	}}
+	_, resolveASR, resolveLLM := sessionResolvers(shelf)
+	s := settings.Defaults()
+	s.Features.Transcribe.ASR = "sensevoice"
+	s.Features.Transcribe.Enhance = true
+	s.Features.Transcribe.LLM = "deepseek"
+
+	voice := resolveASR(context.Background(), store.KindTranscribe, s)
+	if voice.Err != nil || voice.ASRInfo.ID != "sensevoice" || shelf.asrCalls != 1 || shelf.installed != 0 || len(shelf.llmCalls) != 0 {
+		t.Fatalf("ASR readiness %+v, shelf %+v", voice, shelf)
+	}
+
+	s.Features.Translate.Fallback = "ollama"
+	cleanup := resolveLLM(context.Background(), store.KindTranslate, s)
+	if cleanup.Outcome != session.LLMAvailable || cleanup.LLMInfo.ID != "deepseek" || cleanup.FallbackInfo.ID != "ollama" ||
+		shelf.asrCalls != 1 || shelf.installed != 1 || len(shelf.llmCalls) != 2 || shelf.llmCalls[0] != "deepseek" || shelf.llmCalls[1] != "ollama" {
+		t.Fatalf("LLM readiness %+v, shelf %+v", cleanup, shelf)
+	}
+
+	s.Features.Transcribe.Enhance = false
+	notRequested := resolveLLM(context.Background(), store.KindTranscribe, s)
+	if notRequested.Outcome != session.LLMNotRequested || shelf.installed != 1 || len(shelf.llmCalls) != 2 {
+		t.Fatalf("disabled Cleanup did provider work: %+v, shelf %+v", notRequested, shelf)
+	}
+}
+
+func TestSessionResolversAutomaticSpeechSelectionInBothPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		models []local.Model
+		want   string
+	}{
+		{"prefer installed local speech model", []local.Model{
+			{Kind: local.ASR, ID: "doubao"}, {Kind: local.ASR, ID: "asr.fast"},
+		}, "asr.fast"},
+		{"use remote when no local speech model exists", []local.Model{
+			{Kind: local.ASR, ID: "doubao"},
+		}, "doubao"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shelf := &splitResolverServices{speechModels: tc.models}
+			resolve, resolveASR, _ := sessionResolvers(shelf)
+			prefs := settings.Defaults()
+			prefs.General.MainLanguage = "en"
+			prefs.Features.Transcribe.ASR = ""
+			prefs.Features.Transcribe.Enhance = false
+
+			voice := resolveASR(context.Background(), store.KindTranscribe, prefs)
+			if voice.Err != nil || voice.ASRInfo.ID != tc.want {
+				t.Fatalf("split ASR readiness %+v, want %q", voice, tc.want)
+			}
+			combined, err := resolve(context.Background(), store.KindTranscribe, prefs, true)
+			if err != nil || combined.ASRInfo.ID != tc.want {
+				t.Fatalf("combined services %+v, error %v, want ASR %q", combined, err, tc.want)
+			}
+			if shelf.asrCalls != 2 || shelf.asrInstalled != 2 {
+				t.Fatalf("automatic speech resolution opened %d models after %d installed-list reads", shelf.asrCalls, shelf.asrInstalled)
+			}
+		})
 	}
 }
 

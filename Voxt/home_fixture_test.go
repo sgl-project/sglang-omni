@@ -21,26 +21,26 @@ func TestHomeFixtureCoverage(t *testing.T) {
 func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]meetingFixtureState) {
 	t.Helper()
 	for _, name := range []string{
-		"home-loading", "home-empty", "home-normal", "home-error", "home-error-initial", "home-reloading",
-		"home-history-off", "home-history-off-empty", "home-hidden-features", "home-speech-missing",
+		"home-loading", "home-empty", "home-normal", "home-error", "home-history-off", "home-history-off-empty",
+		"home-looking-back", "home-looking-back-closed", "home-speech-missing",
 		"home-speech-on-disk", "home-speech-downloading", "home-speech-dictation-auto", "home-speech-dictation-explicit",
-		"home-permissions-unchecked", "home-access-missing", "home-shortcut-missing", "home-shortcut-waiting", "home-shortcut-carbon",
+		"home-permissions-unchecked", "home-access-missing", "home-shortcut-missing", "home-shortcut-double", "home-shortcut-long",
+		"home-shortcut-waiting", "home-shortcut-carbon",
 	} {
 		if _, ok := fixtures[name]; !ok {
 			t.Errorf("%s: missing required home fixture %s", locale, name)
 		}
 	}
-	kinds, fixes := map[string]bool{}, map[string]bool{}
+	for name, fixture := range fixtures {
+		if fixture.Home != nil && fixture.Home.Activity == nil && name != "home-loading" {
+			t.Errorf("%s: %s has no activity calendar", locale, name)
+		}
+	}
+	fixes := map[string]bool{}
 	for _, fixture := range fixtures {
 		home := fixture.Home
 		if home == nil {
 			continue
-		}
-		for _, kind := range home.Today.Kinds {
-			kinds[kind.Kind] = true
-		}
-		for _, entry := range home.Recent {
-			kinds[entry.Kind] = true
 		}
 		for _, readiness := range append(append([]homeReadinessViewState{}, home.Missing...), home.Ready...) {
 			if readiness.Fix != "" {
@@ -48,7 +48,6 @@ func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]mee
 			}
 		}
 	}
-	assertMeetingFixtureSet(t, locale+" home kinds", meetingTypedConstants(t, "internal/store/store.go", "Kind"), kinds)
 	assertMeetingFixtureSet(t, locale+" home readiness actions", meetingNamedConstants(t, "home_actions.go", "homeFix"), fixes)
 
 	for name := range homePermissionConstantNames(t) {
@@ -58,7 +57,7 @@ func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]mee
 		}
 	}
 	helperStates, helperReasons := map[string]bool{}, map[string]bool{}
-	problemCodes, triggers, retryStages := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	problemCodes, triggers := map[string]bool{}, map[string]bool{}
 	for _, scenario := range meetingFixtureScenarios() {
 		if scenario.kind != "home" {
 			continue
@@ -79,9 +78,6 @@ func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]mee
 			}
 			triggers[trigger] = true
 		}
-		if stage := scenario.home.Retry.stage; stage != "" {
-			retryStages[string(stage)] = true
-		}
 	}
 	assertMeetingFixtureSet(t, locale+" home helper states", meetingTypedConstants(t, "internal/helper/helper.go", "State"), helperStates)
 	assertMeetingFixtureSet(t, locale+" home helper reasons", meetingTypedConstants(t, "internal/helper/helper.go", "FailReason"), helperReasons)
@@ -92,7 +88,6 @@ func checkHomeFixtureValues(t *testing.T, locale string, fixtures map[string]mee
 	delete(requiredProblems, hotkey.ProblemConflict)
 	assertMeetingFixtureSet(t, locale+" home shortcut problems", requiredProblems, problemCodes)
 	assertMeetingFixtureSet(t, locale+" home shortcut triggers", meetingNamedConstants(t, "internal/settings/settings.go", "Trigger"), triggers)
-	assertMeetingFixtureSet(t, locale+" home retry stages", map[string]bool{"recognizing": true, "composing": true}, retryStages)
 }
 
 func homePermissionConstantNames(t *testing.T) map[string]bool {

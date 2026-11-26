@@ -19,6 +19,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -37,15 +38,29 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx  context.Context
-	llmStop context.CancelFunc
-	skipped atomic.Bool
-	stopped atomic.Bool
-	rethink atomic.Bool
+	llmCtx      context.Context
+	llmStop     context.CancelFunc
+	skipped     atomic.Bool
+	stopped     atomic.Bool
+	rethink     atomic.Bool
+	cleanupWake chan struct{}
+	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
+	// here before waking the session owner; only the owner delivers one.
+	cleanupChoice           cleanupChoice
+	cleanupOutcome          cleanupOutcome
+	cleanupDeadline         time.Time
+	cleanupDeadlineNotified bool
+	cleanupGeneration       uint64
+	cleanupAttempt          uint64
+	cleanupWorkerRunning    bool
+	cleanupCandidate        *cleanupOutput
+	cleanupOutput           cleanupOutput
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
-	think *llm.Thinking
-	stop  chan struct{}
+	think    *llm.Thinking
+	stop     chan struct{}
+	stopAt   time.Time // captured by Stop before recognition or clean-up can begin
+	stopAtMu sync.Mutex
 	// recorded is closed once listen's recording loop has the capture's
 	// end: the stream's Finish waits for it, so that the Final's answer
 	// never comes while that loop still runs.
@@ -53,16 +68,20 @@ type run struct {
 	stopOnce sync.Once
 	pcm      *pcmBuffer
 	ended    bool // guarded by m.mu
-	// onDraft is a history retry's (RetryRequest.OnDraft): it has no
-	// session, so update applies its changes to own (guarded by m.mu) and
-	// passes the draft on.
-	onDraft func(string)
-	own     Snapshot
+	// historyRetry owns a private snapshot instead of a Manager session.
+	// onDraft optionally receives its streaming answer.
+	historyRetry bool
+	onDraft      func(string)
+	own          Snapshot
 
-	svc   Services
-	terms []store.Term
-	// svcDone gets the services, resolved meanwhile; resolved once r.svc
-	// holds them.
+	svc         Services
+	terms       []store.Term
+	snippets    []snippet.Snippet
+	speechHints []string
+	init        runInitialization
+	// svcDone gets the compatibility resolver result. On split Transcribe
+	// sessions, resolved means the speech lane is ready; cleanup state is
+	// published separately by the session owner.
 	svcDone  chan svcResult
 	resolved bool
 	sc       sceneState // app enhancement (scene.go)
@@ -92,17 +111,31 @@ type run struct {
 	// typed is Rewrite's typed text: StartRequest.Text's, or the input
 	// box's (Config.BoxInput) when the answer is asked for.
 	typed string
-	// heard takes the stream's live texts to the recording loop while it
-	// listens for the end word (endword.go); nil otherwise.
-	heard chan string
+	// heard carries whole-text updates and advisory candidates to the session owner.
+	heard chan heardText
 	// svcResolved is closed when the session's services are resolved
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
-	svcResolved chan struct{}
-	// early cleans the stretches the speech model finalised while the
-	// recording went on (asr.EventPiece), so Stop leaves only the tail
-	// (earlyclean.go); the Once makes it on the first stretch or use.
-	earlyOnce sync.Once
-	early     *earlyClean
+	svcResolved      chan struct{}
+	streamReaderDone chan struct{}
+	streamReaderStop context.CancelFunc
+	streamReaderOff  atomic.Bool
+	stream           asr.Stream // the session owner's current stream
+	// early cleans finalized speech stretches before Stop (earlyclean.go).
+	earlyMu sync.Mutex
+	early   *earlyClean
+	// note (luojiaxuan): live cleans the stream's live text up while the user
+	// speaks, so Stop leaves only what was said last (livepolish.go); the
+	// Once makes it on the first live text or at Stop. liveOff: the stream's
+	// own stretches took over (hearPiece). Both are the stream's reader
+	// goroutine's until it returns.
+	liveOnce sync.Once
+	live     *livePolish
+	liveOff  bool
+	// head asks the language model about the live text ahead of the Final
+	// (headstart.go); silent tells the recording loop of the user's pauses.
+	head       headStart
+	silent     chan bool
+	pauseWatch *pauseWatch // written before feed workers start; read by the owner
 }
 
 type capResult struct {
@@ -111,9 +144,10 @@ type capResult struct {
 }
 
 type svcResult struct {
-	svc   Services
-	terms []store.Term
-	err   error
+	svc      Services
+	terms    []store.Term
+	snippets []snippet.Snippet
+	err      error
 }
 
 type openResult struct {
@@ -144,6 +178,28 @@ func (r *run) logText(s string) string {
 }
 
 func (r *run) now() time.Time { return r.m.cfg.Now() }
+
+func (r *run) recordStopAt(at time.Time) time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	if r.stopAt.IsZero() {
+		r.stopAt = at
+	}
+	return r.stopAt
+}
+
+func (r *run) stoppedAt() time.Time {
+	r.stopAtMu.Lock()
+	defer r.stopAtMu.Unlock()
+	return r.stopAt
+}
+
+func (r *run) stopRecording() {
+	r.stopOnce.Do(func() {
+		r.recordStopAt(r.now())
+		close(r.stop)
+	})
+}
 
 // firstState is where a session starts: composing with its text,
 // reading the selection (Translate), else recording.
@@ -199,9 +255,10 @@ func (r *run) main() {
 		return
 	}
 	var selDone chan string
+	var listened chan struct{}
 	switch {
 	case selTranslate:
-		sel := r.readSelection()
+		sel := r.readSelection(nil)
 		if r.ctx.Err() != nil {
 			r.endCancelled(nil)
 			return
@@ -216,7 +273,7 @@ func (r *run) main() {
 		r.resolve(true)
 		r.m.update(r, func(s *Snapshot) { s.State = Recording })
 	case kind == store.KindRewrite && r.canSelect():
-		selDone = make(chan string, 1)
+		selDone, listened = make(chan string, 1), make(chan struct{})
 		go func() {
 			r.readClipboardImage() // first: reading the selection may ⌘C over the clipboard
 			if !r.req.Box {
@@ -225,18 +282,35 @@ func (r *run) main() {
 				// picture that will not be sent is never taken.
 				r.shootWindow()
 			}
-			selDone <- r.readSelection()
+			sel := r.readSelection(listened)
+			r.previewClip()
+			selDone <- sel
 		}()
 	}
 
 	raw, ok := r.listen()
+	if listened != nil {
+		close(listened)
+	}
 	if !ok {
+		return
+	}
+	if r.init.split && !r.awaitTranscribeData() {
 		return
 	}
 	text := r.spoken(raw)
 	switch kind {
 	case store.KindTranscribe:
-		r.transcribe(text)
+		if !r.insertSnippet(text) {
+			if r.init.split && !r.awaitCleanupReadiness() {
+				if r.ctx.Err() != nil || r.cancelled.Load() {
+					return
+				}
+				r.finish(Done, nil, r.expandSnippets(text, text), r.transcribeOpts())
+				return
+			}
+			r.transcribe(text)
+		}
 	case store.KindTranslate:
 		r.write(text, "")
 	case store.KindRewrite:
@@ -251,23 +325,6 @@ func (r *run) main() {
 		}
 		r.write(text, sel)
 	}
-}
-
-// resolve opens the session's services and reads the dictionary,
-// meanwhile, into a new svcDone (an earlier resolve's result is
-// dropped); speech: as Resolver's.
-func (r *run) resolve(speech bool) {
-	cfg := r.m.cfg
-	done := make(chan svcResult, 1)
-	r.svcDone = done
-	go func() {
-		svc, err := cfg.Resolve(r.ctx, r.req.Kind, r.settings, speech)
-		var terms []store.Term
-		if err == nil && r.settings.Dictionary.Enabled && cfg.Glossary != nil {
-			terms, _ = cfg.Glossary(r.ctx)
-		}
-		done <- svcResult{svc, terms, err}
-	}()
 }
 
 // finishOpts say how a result is delivered: card, when set, sends it to
@@ -298,7 +355,16 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres.Reason = o.card
 		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
 	default:
-		r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		if r.req.Kind == store.KindTranscribe {
+			if !r.m.beginTranscribeDelivery(r, result) {
+				// Cancellation or loss of the current session slot must not
+				// insert this result into another session's target.
+				r.endCancelled(nil)
+				return
+			}
+		} else {
+			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
+		}
 		press := r.press(o.replace) // app enhancement's auto key
 		ctx, cancel := context.WithTimeout(context.Background(), cfg.DeliverTime)
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
@@ -311,6 +377,9 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		}
 		if dres.Err != nil {
 			r.logf("warning", "insert: %v", dres.Err)
+		}
+		if stopAt := r.stoppedAt(); !stopAt.IsZero() {
+			r.logf("info", "stop_to_delivery=%v", r.now().Sub(stopAt).Round(time.Millisecond))
 		}
 		r.logf("info", "delivery: %s", dres.Diag())
 		switch {
@@ -361,8 +430,8 @@ func (r *run) fail(p *Problem) {
 // endFailed ends the session failed after it recorded: the entry keeps
 // the recording when the settings say so.
 func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) {
-	if stream != nil {
-		stream.Close()
+	if !r.stopStreamReader(stream) {
+		p = &Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}
 	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
@@ -384,10 +453,11 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 }
 
 func (r *run) endCancelled(stream asr.Stream) {
-	if stream != nil {
-		stream.Close()
-	}
+	readerStopped := r.stopStreamReader(stream)
 	r.cancel()
+	if !readerStopped {
+		r.logf("warning", "the speech stream reader did not stop after cancellation")
+	}
 	r.logf("info", "cancelled")
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)
