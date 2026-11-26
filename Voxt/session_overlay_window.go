@@ -165,7 +165,7 @@ func (a *app) newOverlayWin(frame mygo.Rectangle, panel bool) *mygo.Window {
 	content := sessionOverlayContent(
 		func() *sessionOverlayViewState {
 			a.refreshSessionOverlay(time.Now())
-			return &a.ov.projection.view
+			return a.ov.projection.drawn()
 		},
 		func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
 		a,
@@ -436,6 +436,11 @@ func (a *app) overlayFadeOut() {
 	if a.prefs.Appearance.ReduceMotion {
 		hide()
 		return
+	}
+	if a.ov.win != nil && !a.ov.passThrough {
+		// The last frame stays while it fades: its buttons no longer act.
+		a.ov.passThrough = true
+		a.ov.win.SetIgnoreMouseEvents(true)
 	}
 	dim := func(opacity float64) func() {
 		return func() {
