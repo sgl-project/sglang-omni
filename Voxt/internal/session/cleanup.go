@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/deliver"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -256,15 +257,30 @@ func (r *run) cleanTranscribe(text string, generation uint64) cleanupOutput {
 // finished while the recording went on is not asked again, only the
 // tail left at Stop is (earlyclean.go). A Rethink reruns cleanUp on the
 // whole text instead.
+//
+// note (luojiaxuan): without the speech model's stretches, the clean-ups of
+// the live text (livepolish.go) count the same way; their tail goes with the
+// end of the cleaned text before it (liveContext), after the last sentences
+// of that text that are asked again (redo).
 func (r *run) cleanUpFirst(text string) cleanupOutput {
 	parts, answers, tail, failed, completedAt, ok := r.earlyCleanup().drain(text)
+	before := ""
 	if !ok {
-		if !r.cleanupMayContinue() {
-			return cleanupOutput{text: text, completedAt: r.now()}
+		r.liveOnce.Do(func() {})
+		var redo string
+		if r.live != nil {
+			parts, answers, redo, tail = r.live.finish(text)
+			completedAt = r.now()
 		}
-		return r.cleanUpOutput(text, nil)
-	}
-	if len(answers) > 0 {
+		if len(answers) == 0 && redo == "" {
+			if !r.cleanupMayContinue() {
+				return cleanupOutput{text: text, completedAt: r.now()}
+			}
+			return r.cleanUpOutput(text, nil)
+		}
+		before = liveContext(compose.JoinParts(parts, answers))
+		tail = joinRedo(redo, tail)
+	} else if len(answers) > 0 {
 		r.logf("info", "%d characters were cleaned while the recording went on", len([]rune(text))-len([]rune(tail)))
 	}
 	if strings.TrimSpace(tail) == "" {
@@ -273,7 +289,9 @@ func (r *run) cleanUpFirst(text string) cleanupOutput {
 	if !r.cleanupMayContinue() {
 		return cleanupOutput{text: text, completedAt: r.now()}
 	}
-	tailParts, err := compose.BuildParts(r.transcribeInput(tail))
+	in := r.transcribeInput(tail)
+	in.Before = before
+	tailParts, err := compose.BuildParts(in)
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
@@ -282,6 +300,20 @@ func (r *run) cleanUpFirst(text string) cleanupOutput {
 		err = failed
 	}
 	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
+}
+
+// note (luojiaxuan): joinRedo is the cleaned sentences asked again (redo,
+// without the snippets' marks, which the request marks again) and the text
+// left after them, joined as the clean-up joins Latin text (a space) or
+// Chinese (nothing).
+func joinRedo(redo, tail string) string {
+	if redo = snippet.Unmark(redo); redo == "" {
+		return tail
+	}
+	if last, _ := utf8.DecodeLastRuneInString(redo); last < utf8.RuneSelf {
+		return redo + " " + tail
+	}
+	return redo + tail
 }
 
 // cleanUp runs the language model over text, a request per part, each
@@ -344,6 +376,9 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			answers = append(answers, p.Text)
 		default:
 			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+			if u := resp.Usage; u.PromptTokens > 0 && !u.Estimated {
+				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
+			}
 		}
 		draft.done(answers)
 	}
