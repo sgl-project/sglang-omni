@@ -3,11 +3,16 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, TypedDict
 
 import torch
+from sglang.srt.sampling.penaltylib import (
+    BatchedPenalizerOrchestrator,
+    BatchedRepetitionPenalizer,
+)
 from sglang.srt.utils.common import async_h2d
 
 from sglang_omni.model_runner.base import ModelRunner
@@ -82,6 +87,7 @@ class Qwen3TTSModelRunner(ModelRunner):
     launch_input_rows: list[torch.Tensor] | None = None
     penalty_rows_key: tuple[object, ...] | None = None
     penalty_rows: tuple[torch.Tensor, torch.Tensor] | None = None
+    live_penalizer_orchestrator: BatchedPenalizerOrchestrator | None = None
 
     def __init__(
         self,
@@ -104,6 +110,19 @@ class Qwen3TTSModelRunner(ModelRunner):
 
     def model_info(self) -> Qwen3TTSModelInfo:
         return {"predictor_cuda_graph": self.model.predictor_graph_stats()}
+
+    def execution_context(
+        self,
+        schedule_batch: ScheduleBatch,
+        *,
+        isolate_sampling: bool = False,
+    ) -> AbstractContextManager[None]:
+        self.live_penalizer_orchestrator = (
+            schedule_batch.sampling_info.penalizer_orchestrator
+        )
+        return super().execution_context(
+            schedule_batch, isolate_sampling=isolate_sampling
+        )
 
     def before_prefill(
         self,
@@ -566,6 +585,23 @@ class Qwen3TTSModelRunner(ModelRunner):
             requests, rows, scaling.device, scaling.dtype
         )
         scaling.index_put_((row_index, codec_ids), penalties)
+        live_penalties = self.live_repetition_penalties()
+        if live_penalties is not None:
+            live_penalties.index_put_((row_index, codec_ids), penalties)
+        else:
+            pass
+
+    def live_repetition_penalties(self) -> torch.Tensor | None:
+        orchestrator = self.live_penalizer_orchestrator
+        if orchestrator is None:
+            return None
+        else:
+            pass
+        penalizer = orchestrator.penalizers.get(BatchedRepetitionPenalizer)
+        if penalizer is None or not penalizer.is_prepared():
+            return None
+        else:
+            return penalizer.cumulated_repetition_penalties
 
     def staged_penalty_rows(
         self,

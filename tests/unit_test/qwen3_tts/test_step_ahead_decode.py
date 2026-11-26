@@ -9,11 +9,18 @@ retracted while its step was in flight leaves the queues and history untouched.
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
+from collections.abc import Iterator
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.sampling.penaltylib import (
+    BatchedPenalizerOrchestrator,
+    BatchedRepetitionPenalizer,
+)
 
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
 from sglang_omni.models.qwen3_tts.model_runner import (
@@ -317,6 +324,65 @@ def test_overlapped_launches_on_reused_buffers_resolve_their_own_step():
         ]
         assert data.speech_output_tokens == 2
         assert data.inflight_feedback is None and data.inflight_codec_id is None
+
+
+class PenaltyBatch:
+    def __init__(self, reqs: list[SimpleNamespace]) -> None:
+        self.reqs = reqs
+        self.device = torch.device("cpu")
+
+
+def test_a_drained_inflight_token_stays_in_the_live_repetition_penalty():
+    """A drained step's token is never cumulated by prepare_for_decode, so launch must add it."""
+    runner = make_runner()
+    requests = [
+        make_request("a", repetition_penalty=1.05),
+        make_request("b", repetition_penalty=1.2),
+    ]
+    penalty_batch = PenaltyBatch([sched_req.data.req for sched_req in requests])
+    orchestrator = BatchedPenalizerOrchestrator(
+        vocab_size=16, batch=penalty_batch, penalizers={BatchedRepetitionPenalizer}
+    )
+    runner.live_penalizer_orchestrator = orchestrator
+    requests[0].data.inflight_codec_id = torch.tensor(3)
+    requests[1].data.inflight_codec_id = torch.tensor(5)
+    snapshot = orchestrator.accumulate_scaling_penalties()
+
+    runner.add_inflight_repetition_penalty(
+        SimpleNamespace(sampling_info=SimpleNamespace(acc_scaling_penalties=snapshot)),
+        requests,
+    )
+    orchestrator.cumulate_output_tokens(torch.tensor([9, 10]))
+
+    live = orchestrator.penalizers[BatchedRepetitionPenalizer]
+    expected = torch.ones((2, 16))
+    expected[0, [3, 9]] = 1.05
+    expected[1, [5, 10]] = 1.2
+    assert torch.allclose(live.cumulated_repetition_penalties, expected)
+    assert snapshot[0, 3].item() == pytest.approx(1.05)
+    assert snapshot[1, 5].item() == pytest.approx(1.2)
+
+
+def test_launch_keeps_the_live_penalizer_that_sampling_isolation_hides():
+    runner = make_runner()
+    live_orchestrator = SimpleNamespace(penalizers={})
+    batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        sampling_info=SimpleNamespace(penalizer_orchestrator=live_orchestrator),
+    )
+
+    @contextlib.contextmanager
+    def isolated(batch, *, isolate_sampling: bool) -> Iterator[None]:
+        live_sampling_info = batch.sampling_info
+        batch.sampling_info = SimpleNamespace(penalizer_orchestrator=None)
+        yield
+        batch.sampling_info = live_sampling_info
+
+    runner.execution_bridge = SimpleNamespace(forward_context=isolated)
+
+    with runner.execution_context(batch, isolate_sampling=True):
+        assert batch.sampling_info.penalizer_orchestrator is None
+        assert runner.live_penalizer_orchestrator is live_orchestrator
 
 
 def test_step_ahead_decode_is_an_xpu_default_only():
