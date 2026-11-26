@@ -545,6 +545,13 @@ target_compile_options(moss_timing_test PRIVATE -Wall -Wextra)
 set_target_properties(moss_timing_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+add_executable(moss_batch_timing_test
+  EXCLUDE_FROM_ALL tests/moss_batch_timing_test.cpp)
+target_link_libraries(moss_batch_timing_test PRIVATE moss_asr)
+target_compile_options(moss_batch_timing_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_batch_timing_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 add_executable(tokenizer_preference_test EXCLUDE_FROM_ALL tests/tokenizer_preference_test.cpp)
 target_link_libraries(tokenizer_preference_test PRIVATE common)
 target_compile_options(tokenizer_preference_test PRIVATE -Wall -Wextra)

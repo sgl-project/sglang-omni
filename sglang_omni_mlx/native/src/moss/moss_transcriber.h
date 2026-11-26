@@ -61,6 +61,12 @@ public:
   // the speculative draft.
   bool CanBatch(const std::vector<float> &samples,
                 const MossOptions &options) const;
+  // Generated ids of a chunk and why decoding stopped.
+  struct ChunkOutput {
+    std::vector<int> output_ids;
+    omni_common::FinishReason finish_reason =
+        omni_common::FinishReason::kLength;
+  };
   // Transcribes several requests, decoding them together; on_finished gets
   // each request's index and outcome as soon as that request finishes.
   using BatchFinished = std::function<void(size_t, BatchOutcome)>;
@@ -68,12 +74,6 @@ public:
                        const BatchFinished &on_finished) const;
 
 private:
-  // Generated ids of a chunk and why decoding stopped.
-  struct ChunkOutput {
-    std::vector<int> output_ids;
-    omni_common::FinishReason finish_reason =
-        omni_common::FinishReason::kLength;
-  };
   // Audio encoder and prompt embeddings [1, length, hidden] of one chunk.
   mlx::core::array
   PromptEmbeddings(const std::vector<float> &samples,
@@ -104,6 +104,33 @@ private:
   int time_marker_every_seconds_ = 5;
   bool enable_time_marker_ = true;
 };
+
+// The model-bound steps of a batched decode, so the row loop and its timing
+// events run in tests without a checkpoint.
+struct BatchSteps {
+  std::function<mlx::core::array(const std::vector<float> &samples,
+                                 const MossOptions &options)>
+      build;
+  std::function<omni_common::PrefilledSequence(
+      const mlx::core::array &embeddings, const std::atomic<bool> &cancel)>
+      prefill;
+  std::function<void(std::vector<omni_common::PrefilledSequence> &sequences,
+                     const std::function<bool(size_t, int)> &commit)>
+      decode;
+  std::function<bool(MossTranscriber::ChunkOutput &output, int token_id,
+                     const MossOptions &options, int max_new_tokens)>
+      commit;
+  std::function<omni_common::TranscriptionResult(
+      const MossTranscriber::ChunkOutput &output, int sample_count,
+      double offset_seconds)>
+      finish;
+};
+
+// Decodes the requests together through the given steps and emits one
+// moss_native_timing event for each finished offline request.
+void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
+                           const BatchSteps &steps,
+                           const MossTranscriber::BatchFinished &on_finished);
 
 // One request the worker may decode together with others. Called alone it
 // transcribes serially; BatchableTranscriptionRunner finds it through

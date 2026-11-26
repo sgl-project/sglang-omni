@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -656,14 +657,48 @@ bool MossTranscriber::CanBatch(const std::vector<float> &samples,
 
 void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
                                       const BatchFinished &on_finished) const {
+  BatchSteps steps;
+  steps.build = [this](const std::vector<float> &samples,
+                       const MossOptions &options) {
+    return PromptEmbeddings(samples, options.prompt);
+  };
+  steps.prefill = [this](const mx::array &embeddings,
+                         const std::atomic<bool> &cancel) {
+    return Prefill(embeddings, cancel);
+  };
+  steps.decode = [this](std::vector<PrefilledSequence> &sequences,
+                        const std::function<bool(size_t, int)> &commit) {
+    model_.decoder().DecodeGreedyBatch(sequences, commit);
+  };
+  steps.commit = [this](ChunkOutput &output, int token_id,
+                        const MossOptions &options, int max_new_tokens) {
+    return Commit(output, token_id, options, max_new_tokens);
+  };
+  steps.finish = [this](const ChunkOutput &output, int sample_count,
+                        double offset_seconds) {
+    return ChunkResult(output, sample_count, offset_seconds, {});
+  };
+  RunTranscriptionBatch(requests, steps, on_finished);
+}
+
+void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
+                           const BatchSteps &steps,
+                           const MossTranscriber::BatchFinished &on_finished) {
   // A request decoded as one chunk: a realtime window as it is, else the
   // final pass's single chunk, padded to the minimum length.
   struct Row {
     size_t request_index;
     std::vector<float> samples;
+    int sample_count;
+    int64_t audio_ms;
     double offset_seconds;
     int max_new_tokens;
-    ChunkOutput output;
+    bool offline;
+    MossTranscriber::ChunkOutput output;
+    double frontend_build_ms;
+    double decoder_prefill_ms;
+    std::optional<std::chrono::steady_clock::time_point> first_commit;
+    std::chrono::steady_clock::time_point started;
   };
   std::vector<Row> rows;
   std::vector<PrefilledSequence> sequences;
@@ -677,20 +712,33 @@ void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
       } else {
       }
       const MossOptions &options = *request.options;
-      Row row{i, {}, 0.0, 0, {}};
-      if (options.window_offset_seconds.has_value()) {
-        row.samples = *request.samples;
-        row.offset_seconds = *options.window_offset_seconds;
-        row.max_new_tokens = *options.max_new_tokens;
-      } else {
+      const bool offline = !options.window_offset_seconds.has_value();
+      Row row{};
+      row.request_index = i;
+      row.offline = offline;
+      row.started = std::chrono::steady_clock::now();
+      if (offline) {
         row.samples = PaddedTo(
             *request.samples,
             static_cast<size_t>(kMinChunkDurationSeconds * kSampleRate));
         row.max_new_tokens =
             FinalMaxNewTokens(request.samples->size(), options);
+      } else {
+        row.samples = *request.samples;
+        row.offset_seconds = *options.window_offset_seconds;
+        row.max_new_tokens = *options.max_new_tokens;
       }
-      sequences.push_back(Prefill(PromptEmbeddings(row.samples, options.prompt),
-                                  *request.cancel));
+      row.sample_count = static_cast<int>(row.samples.size());
+      row.audio_ms = static_cast<int64_t>(
+          static_cast<double>(request.samples->size()) / kSampleRate * 1000.0);
+      const auto build_started = std::chrono::steady_clock::now();
+      const mx::array embeddings = steps.build(row.samples, options);
+      row.frontend_build_ms =
+          Milliseconds(std::chrono::steady_clock::now() - build_started);
+      const auto prefill_started = std::chrono::steady_clock::now();
+      sequences.push_back(steps.prefill(embeddings, *request.cancel));
+      row.decoder_prefill_ms =
+          Milliseconds(std::chrono::steady_clock::now() - prefill_started);
       rows.push_back(std::move(row));
     } catch (...) {
       on_finished(i, {std::nullopt, std::current_exception()});
@@ -700,30 +748,51 @@ void MossTranscriber::TranscribeBatch(const std::vector<BatchRequest> &requests,
     return;
   } else {
   }
-  model_.decoder().DecodeGreedyBatch(
-      sequences, [&](size_t index, int token_id) {
-        Row &row = rows[index];
-        const BatchRequest &request = requests[row.request_index];
-        if (request.cancel->load()) {
-          on_finished(
-              row.request_index,
-              {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
-          return true;
-        } else if (!Commit(row.output, token_id, *request.options,
-                           row.max_new_tokens)) {
-          return false;
-        } else {
-        }
-        TranscriptionResult result =
-            ChunkResult(row.output, static_cast<int>(row.samples.size()),
-                        row.offset_seconds, {});
-        if (!request.options->window_offset_seconds.has_value()) {
-          result.text = StripUnicodeWhitespace(result.text);
-        } else {
-        }
-        on_finished(row.request_index, {std::move(result), nullptr});
-        return true;
-      });
+  steps.decode(sequences, [&](size_t index, int token_id) {
+    Row &row = rows[index];
+    const BatchRequest &request = requests[row.request_index];
+    if (request.cancel->load()) {
+      on_finished(
+          row.request_index,
+          {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
+      return true;
+    } else {
+    }
+    const bool finished = steps.commit(row.output, token_id, *request.options,
+                                       row.max_new_tokens);
+    if (!row.first_commit.has_value()) {
+      row.first_commit = std::chrono::steady_clock::now();
+    } else {
+    }
+    if (!finished) {
+      return false;
+    } else {
+    }
+    const auto rebuild_started = std::chrono::steady_clock::now();
+    TranscriptionResult result =
+        steps.finish(row.output, row.sample_count, row.offset_seconds);
+    if (row.offline) {
+      result.text = StripUnicodeWhitespace(result.text);
+    } else {
+    }
+    result.result_rebuild_ms =
+        Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
+    result.frontend_build_ms = row.frontend_build_ms;
+    // Batch prefills the row alone, so the encoder is forced inside
+    // decoder_prefill_ms and there is no separately observable frontend wait.
+    result.frontend_eval_ms = 0.0;
+    result.decoder_prefill_ms = row.decoder_prefill_ms;
+    result.autoregressive_decode_ms =
+        Milliseconds(std::chrono::steady_clock::now() - *row.first_commit);
+    result.native_total_ms =
+        Milliseconds(std::chrono::steady_clock::now() - row.started);
+    if (row.offline) {
+      std::cerr << MossNativeTimingJson(result, row.audio_ms, 1).dump() << "\n";
+    } else {
+    }
+    on_finished(row.request_index, {std::move(result), nullptr});
+    return true;
+  });
 }
 
 omni_server::BatchRunner BatchableTranscriptionRunner() {
