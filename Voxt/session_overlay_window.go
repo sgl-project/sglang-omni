@@ -273,6 +273,19 @@ func (a *app) overlaySync() {
 	}
 	width, height := a.overlayFace(mode)
 	frame := a.overlayFrame(width, height)
+	defer a.syncLangMenu()
+	if a.overlayNative() && a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122). The window is not
+		// shown or resized here, so its fade and frame stay as they are:
+		// a bump would cancel a running fade-out's hide.
+		a.ov.mode, a.ov.w, a.ov.h = mode, width, height
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
+		return
+	}
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, width, height, frame
 	a.ov.shown = true
@@ -281,18 +294,8 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	defer a.syncLangMenu()
 	if !a.overlayNative() {
 		a.syncPassThrough()
-		return
-	}
-	if a.boxHoldsCard(mode) {
-		// Rewrite's card draws its answer itself: one window from the
-		// shortcut to the last follow-up (wall 122).
-		a.ov.shown = false
-		if was {
-			a.overlayFadeOut()
-		}
 		return
 	}
 	if a.ov.win == nil {
