@@ -100,4 +100,4 @@ curl -fsS http://localhost:8008/v1/chat/completions \
 ```
 
 **Expected result:** Check `choices[0].message.content` for a text answer that
-identifies the question about the number of cars in the picture. See [Omni Model Usage](../basic_usage/qwen3_omni.md#request-parameters) for more request options.
+identifies the question about the number of cars in the picture. See [Omni Model Usage](../basic_usage/omni.md#request-parameters) for more request options.

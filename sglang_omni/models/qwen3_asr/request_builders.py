@@ -439,8 +439,8 @@ def make_qwen3_asr_scheduler_adapters(
         positions = torch.arange(seq_len, dtype=torch.long)
         mm_inputs.mrope_positions = positions.unsqueeze(0).expand(3, -1).clone()
         mm_inputs.mrope_position_delta = torch.zeros((1, 1), dtype=torch.long)
-        # Mark the input as degenerate-mrope so the vectorized decode fast path
-        # (mrope_fast_path.py) can skip the per-request position loop for it.
+        # Mark the input as degenerate-mrope so the decode and speculative fast
+        # paths (mrope_fast_path.py) can skip the per-request delta work for it.
         setattr(mm_inputs, mrope_fast_path.DEGENERATE_MROPE_FLAG, True)
 
         logger.debug(

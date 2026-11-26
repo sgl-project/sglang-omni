@@ -6,12 +6,12 @@ The workloads are the ones in the ASR CI (`.github/workflows/test-asr-ci.yaml`).
 
 ## What is Measured
 
-| CI stage | Model | Data | Concurrency |
+| CI job | Model | Data | Concurrency |
 |---|---|---|---|
-| 1 | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
-| 2 | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
+| MOSS-TD multi-speaker | MOSS-Transcribe-Diarize, multiple speakers | `movies800times` (800 samples, run once without and once with streaming), `aishell4_long` (20), `googletime` (25) | 16 |
+| SeedTTS ASR | Qwen3-ASR-1.7B, Whisper-large-v3 or Fun-ASR-Nano | SeedTTS EN (1088) and ZH (2020) | 32 |
 
-CI stage 1 also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). CI stage 2 runs one of the three models per CI run, picked at random unless a `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b` or `run-whisper-large-v3` label is set with `run-asr-ci`.
+The MOSS-TD multi-speaker job also has `aishell4_long90`, one 90 minute sample stitched together from three `aishell4_long` clips. It only runs through pytest (see [Run the CI tests](#run-the-ci-tests)). The SeedTTS ASR job runs one of the three models per CI run, picked at random unless a `run-fun-asr-nano-2512`, `run-qwen3-asr-1.7b` or `run-whisper-large-v3` label pins it; that label alone also runs SeedTTS ASR without the MOSS-TD job.
 
 This page uses one server on one GPU, with the same datasets, concurrency and request settings as CI.
 
@@ -390,9 +390,9 @@ python -m pytest tests/test_model/test_asr_ci_multi_speaker.py -v -s -x
 ## Caveats
 
 - **Private datasets.** `movies800time`, `AISHELL4` and `googletime` are private and cannot be pinned by the client. Compare the loaded fingerprints and remote heads in `moss_dataset_revisions.txt` before comparing MOSS-Transcribe-Diarize numbers from different machines or dates.
-- **Known flaky stage.** On 2026-10-09, 5 sampled CI stage 1 jobs reached only 43.2 to 44.7 req/s on `movies800times` in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets `TORCHINDUCTOR_CACHE_DIR` to `$OMNI_CI_HOME/.torchinductor`. Outside CI, SGLang-Omni uses `~/.cache/sglang-omni/torchinductor` unless `TORCHINDUCTOR_CACHE_DIR` is set, as Step 4 does.
+- **Known flaky job.** On 2026-10-09, 5 sampled MOSS-TD multi-speaker CI jobs reached only 43.2 to 44.7 req/s on `movies800times` in their first pytest attempt. After the server restarted for the second attempt, they reached 57.0 to 59.1 req/s. The cause is not known. A compile or file cache on disk is the likely suspect. CI sets `TORCHINDUCTOR_CACHE_DIR` to `$OMNI_CI_HOME/.torchinductor`. Outside CI, SGLang-Omni uses `~/.cache/sglang-omni/torchinductor` unless `TORCHINDUCTOR_CACHE_DIR` is set, as Step 4 does.
 - **Token budget on movies800times.** Sending a fixed 65536 token budget instead of none lets a clip that loops run far past the duration scaled budget. That changes throughput and latency a lot. Check `config.max_new_tokens` in `transcribe_diarize_speed_results.json` before comparing with CI.
 - **Warmup sees the scored audio.** `--warmup` sends the same audio as the timed pass. Any cache keyed on audio content, file path or sample ID would hit on every timed request and make throughput meaningless.
-- **Stage 2 is one model per CI run.** A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.
+- **SeedTTS ASR is one model per CI run.** A CI run measures only the model it picked. Run all three blocks of Step 5 here to see all of them.
 
 For a profile of where the time goes, see the model profiling skill in `.claude/skills/model-profiling/`.

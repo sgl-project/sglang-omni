@@ -55,7 +55,8 @@ type SystemParams struct {
 
 // CaptureStartedParams: the job records. Until it comes the user's first
 // words are not being heard (200–400 ms after capture.start).
-// capture.system: Device is the output's UID, DeviceName "" (a Bluetooth
+// capture.system sends this when the output tap is running, even during
+// silence. Device is the output's UID, DeviceName "" (a Bluetooth
 // device's name may hold a person's), DeviceChannels 1 (the mix).
 type CaptureStartedParams struct {
 	Job        string `json:"job"`

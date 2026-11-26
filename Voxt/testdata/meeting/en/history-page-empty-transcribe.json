@@ -1,0 +1,28 @@
+{
+  "name": "history-page-empty-transcribe",
+  "kind": "history",
+  "history": {
+    "read": true,
+    "error": "",
+    "kind": "transcribe",
+    "query": "",
+    "tabs": [
+      "Transcribe",
+      "Translate",
+      "Rewrite",
+      "All"
+    ],
+    "count_label": "",
+    "keep_history": true,
+    "settings_available": true,
+    "folder_notice": "",
+    "rows": [],
+    "empty": {
+      "search": false,
+      "kind": "transcribe",
+      "title": "No transcriptions yet",
+      "body": "Each result shows up here.",
+      "action_label": "Set up Transcribe"
+    }
+  }
+}

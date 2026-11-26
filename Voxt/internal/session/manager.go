@@ -2,32 +2,111 @@ package session
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// Manager runs one session at a time. Goroutine-safe.
+// Manager runs one session at a time, plus at most one backgrounded one
+// (Background): an answer still composing keeps streaming into its card
+// while a new session records. Goroutine-safe.
+type publication struct {
+	snapshot Snapshot
+	kept     func(Snapshot)
+}
+
+type publisher struct {
+	mu       sync.Mutex
+	queue    []publication
+	wake     *sync.Cond
+	done     chan struct{}
+	closed   bool
+	onChange func(Snapshot)
+}
+
+func newPublisher(onChange func(Snapshot)) *publisher {
+	p := &publisher{done: make(chan struct{}), onChange: onChange}
+	p.wake = sync.NewCond(&p.mu)
+	go p.loop()
+	return p
+}
+
+func (p *publisher) enqueue(publication publication) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return
+	}
+	p.queue = append(p.queue, publication)
+	p.wake.Signal()
+}
+
+func (p *publisher) close() {
+	p.mu.Lock()
+	p.closed = true
+	p.wake.Signal()
+	p.mu.Unlock()
+	<-p.done
+}
+
+func (p *publisher) loop() {
+	defer close(p.done)
+	for {
+		p.mu.Lock()
+		for len(p.queue) == 0 && !p.closed {
+			p.wake.Wait()
+		}
+		if len(p.queue) == 0 && p.closed {
+			p.mu.Unlock()
+			return
+		}
+		publication := p.queue[0]
+		p.queue = p.queue[1:]
+		p.mu.Unlock()
+		if publication.kept != nil {
+			publication.kept(publication.snapshot)
+		}
+		if p.onChange != nil {
+			p.onChange(publication.snapshot)
+		}
+	}
+}
+
 type Manager struct {
 	cfg Config
 
 	mu sync.Mutex
-	// pub orders publication: taken before mu is released, so snapshots
-	// reach OnChange in the order of their revisions.
-	pub  sync.Mutex
-	cur  *run
+	// Each lane publishes in revision order, allocated and queued under mu.
+	// A background lane's history write never holds up the foreground lane.
+	foregroundPub *publisher
+	backgroundPub *publisher
+	cur           *run
+	// bg is the backgrounded run; its snapshots are its own (run.own),
+	// published like the current session's (their IDs differ).
+	bg   *run
 	snap Snapshot // the current (or last) session's
 	rev  uint64
 	last string // the last result delivered or shown, for "paste the last result"
+	// restUntil is when the services that limited the rate (429) are asked
+	// several things at once again (resting).
+	restUntil map[string]time.Time
 }
 
 // New returns a Manager; nothing runs until Start.
 func New(cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.AfterFunc == nil {
+		cfg.AfterFunc = func(delay time.Duration, callback func()) func() bool {
+			timer := time.AfterFunc(delay, callback)
+			return timer.Stop
+		}
 	}
 	if cfg.Settings == nil {
 		cfg.Settings = settings.Defaults
@@ -63,7 +142,10 @@ func New(cfg Config) *Manager {
 	def(&cfg.StopGrace, DefaultStopGrace)
 	def(&cfg.EndWordPause, DefaultEndWordPause)
 	def(&cfg.WaitNote, DefaultWaitNote)
-	return &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
+	m := &Manager{cfg: cfg, snap: Snapshot{State: Idle}}
+	m.foregroundPub = newPublisher(cfg.OnChange)
+	m.backgroundPub = newPublisher(cfg.OnChange)
+	return m
 }
 
 func itoa(n int) string {
@@ -82,6 +164,17 @@ func itoa(n int) string {
 func (m *Manager) Current() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.snap.clone()
+}
+
+// snapshot is run r's own snapshot: the backgrounded run's is not the
+// current session's.
+func (m *Manager) snapshot(r *run) Snapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.bg == r {
+		return r.own.clone()
+	}
 	return m.snap.clone()
 }
 
@@ -104,9 +197,14 @@ func (m *Manager) SetLast(text string) {
 }
 
 // Start begins a session: it records at once, and resolves the services
-// meanwhile. It fails with ErrBusy while a session is live.
+// meanwhile. It fails with ErrBusy while the current session is live, or
+// while a background answer is live and the new one is not Transcribe.
 func (m *Manager) Start(req StartRequest) (string, error) {
 	m.mu.Lock()
+	if m.bg != nil && m.bg.own.State.Live() && (req.Kind != store.KindTranscribe || req.Try) {
+		m.mu.Unlock()
+		return "", ErrBusy
+	}
 	if m.cur != nil && m.snap.State.Live() {
 		m.mu.Unlock()
 		return "", ErrBusy
@@ -119,52 +217,97 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
+		svcResolved: make(chan struct{}), cleanupWake: make(chan struct{}, 1), cleanupGeneration: 1,
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
+	r.think = req.Thinking
 	m.cur = r
 	m.rev++
 	m.snap = Snapshot{
 		Rev: m.rev, ID: r.id, Kind: req.Kind, State: r.firstState(), Try: req.Try, Note: req.Note, HoldBinding: req.HoldBinding,
-		Target: req.Target, StartedAt: at,
+		Target: req.Target, StartedAt: at, MaxLen: time.Duration(r.settings.Audio.MaxSeconds) * time.Second,
 	}
 	if req.Kind == store.KindTranslate {
 		r.target = TranslateTarget(r.settings, m.cfg.Locale(), req.TargetLanguage)
 		m.snap.TargetLanguage = r.target
 	}
 	if t := req.Text; t != nil {
-		m.snap.Raw, m.snap.Selection = strings.TrimSpace(t.Raw), t.Selection
+		m.snap.Raw, m.snap.Selection, m.snap.Typed = strings.TrimSpace(t.Raw), t.Selection, t.Typed
 	}
+	// Set before the id is returned: the caller's card waits for it.
+	m.snap.ReadingSelection = req.Text == nil && r.canSelect()
 	s := m.snap.clone()
-	m.pub.Lock()
+	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
-	m.publish(s)
-	m.pub.Unlock()
 	r.startScene()
 	go r.main()
 	return r.id, nil
 }
 
+// Background lets a Rewrite or Translate answer finish composing beside
+// a new session. Transcribe cannot background: its cleanup and delivery
+// still own the foreground session slot. The run keeps publishing to its
+// own snapshot and no longer blocks Start.
+func (m *Manager) Background(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.cur
+	if r == nil || r.id != id || m.snap.State != Composing || m.bg != nil ||
+		!slices.Contains([]store.Kind{store.KindRewrite, store.KindTranslate}, r.req.Kind) {
+		return false
+	}
+	r.own = m.snap.clone()
+	m.bg, m.cur = r, nil
+	return true
+}
+
+// find is the run session id names and its snapshot: the current
+// session's, or the backgrounded one's.
+func (m *Manager) find(id string) (*run, *Snapshot) {
+	if r := m.cur; r != nil && r.id == id {
+		return r, &m.snap
+	}
+	if r := m.bg; r != nil && r.id == id {
+		return r, &r.own
+	}
+	return nil, nil
+}
+
 // Stop ends the recording of session id; it goes on to recognition. A
-// session that is not recording, or not the current one, is left alone.
+// session that is not recording, or not running, is left alone.
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
-	r := m.cur
-	ok := r != nil && r.id == id && m.snap.State == Recording
+	r, snap := m.find(id)
+	ok := r != nil && snap.State == Recording
 	m.mu.Unlock()
 	if ok {
-		r.stopOnce.Do(func() { close(r.stop) })
+		r.stopRecording()
 	}
 }
 
 // Cancel ends session id where it is: nothing more is delivered or kept.
 func (m *Manager) Cancel(id string) {
 	m.mu.Lock()
-	r := m.cur
-	ok := r != nil && r.id == id && m.snap.State.Live()
-	m.mu.Unlock()
+	r, snap := m.find(id)
+	ok := r != nil && snap.State.Live()
+	alreadyCancelled := r != nil && r.cancelled.Load()
+	logCleanupCancellation := ok && !alreadyCancelled && r.req.Kind == store.KindTranscribe && snap.State == Composing && r.cleanupChoice == cleanupUndecided
 	if ok {
 		r.cancelled.Store(true)
+		if logCleanupCancellation {
+			r.cleanupOutcome = cleanupOutcomeCancelled
+		}
+		if r.cleanupChoice == cleanupUndecided {
+			wakeCleanupLocked(r)
+		}
+	}
+	m.mu.Unlock()
+	if ok {
+		if logCleanupCancellation {
+			r.logf("info", "cleanup outcome=%s", cleanupOutcomeCancelled)
+		}
 		r.cancel()
+		r.finalizeEarlyCleanup()
 	}
 }
 
@@ -173,31 +316,101 @@ func (m *Manager) Cancel(id string) {
 // in place of the answer (#3821). Otherwise it does nothing.
 func (m *Manager) SkipLLM(id string) {
 	m.mu.Lock()
-	r := m.cur
-	ok := r != nil && r.id == id && m.snap.State == Composing && m.snap.CanSkip
-	m.mu.Unlock()
-	if ok {
+	r, snap := m.find(id)
+	if r != nil && snap.State == Composing && snap.CanSkip && r.cleanupChoice == cleanupUndecided {
 		r.skipped.Store(true)
 		r.llmStop()
+		wakeCleanupLocked(r)
 	}
+	m.mu.Unlock()
 }
 
-// update changes the snapshot of run r, if r is still the current,
-// live session, and publishes it. It reports whether it did.
-func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
+// StopLLM ends session id's answer where it is, when its snapshot says it
+// can (Snapshot.CanStop): the request to the model ends and the card keeps
+// the answer so far, to copy, insert or follow up (#3886).
+func (m *Manager) StopLLM(id string) {
 	m.mu.Lock()
-	if m.cur != r || r.ended {
+	r, snap := m.find(id)
+	if r != nil && snap.CanStop() {
+		r.stopped.Store(true)
+		r.llmStop()
+	}
+	m.mu.Unlock()
+}
+
+// Rethink asks the language model again at thinking level t (nil: the
+// service's setting) while it works on session id's Transcribe text or
+// Translate's or Rewrite's answer (#3940, #3957: the preview's thinking
+// menu): the request ends where it is and the model starts again from
+// the start; only the new answer goes in. The service's setting stays.
+// Otherwise it does nothing.
+func (m *Manager) Rethink(id string, t *llm.Thinking) {
+	m.mu.Lock()
+	r, _ := m.find(id)
+	m.mu.Unlock()
+	if r == nil {
+		return
+	}
+	m.update(r, func(s *Snapshot) {
+		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() || r.cleanupChoice != cleanupUndecided || !r.cleanupDecisionOpenLocked() {
+			return
+		}
+		s.Thinking, r.think = t, t
+		s.Draft, s.Title = "", ""
+		r.rethink.Store(true)
+		r.cleanupGeneration++
+		r.cleanupCandidate = nil
+		r.llmStop()
+		wakeCleanupLocked(r)
+	})
+}
+
+// update changes the snapshot of run r, if r is still a live session —
+// the current one (its snapshot is the Manager's) or the backgrounded
+// one (its own) — and publishes it. It reports whether it did.
+func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
+	return m.updateIf(r, func(s *Snapshot) bool {
+		fn(s)
+		return true
+	})
+}
+
+// updateIf routes snapshot changes for the current session or the one
+// background answer. History retries own a private snapshot instead and
+// may report Draft changes to History without publishing a session.
+func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
+	m.mu.Lock()
+	var snap *Snapshot
+	var pub *publisher
+	switch {
+	case m.cur == r && !r.ended:
+		snap, pub = &m.snap, m.foregroundPub
+	case m.bg == r && !r.ended:
+		snap, pub = &r.own, m.backgroundPub
+	case r.historyRetry && !r.ended:
+		was := r.own.Draft
+		if !snapshotUpdate(&r.own) {
+			m.mu.Unlock()
+			return false
+		}
+		draft, onDraft := r.own.Draft, r.onDraft
+		m.mu.Unlock()
+		if onDraft != nil && draft != was {
+			onDraft(draft)
+		}
+		return true
+	default:
 		m.mu.Unlock()
 		return false
 	}
-	fn(&m.snap)
+	if !snapshotUpdate(snap) {
+		m.mu.Unlock()
+		return false
+	}
 	m.rev++
-	m.snap.Rev = m.rev
-	s := m.snap.clone()
-	m.pub.Lock()
+	snap.Rev = m.rev
+	pub.enqueue(publication{snapshot: snap.clone()})
 	m.mu.Unlock()
-	m.publish(s)
-	m.pub.Unlock()
 	return true
 }
 
@@ -207,8 +420,25 @@ func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
 func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot)) bool {
 	m.mu.Lock()
 	if m.cur != r || r.ended {
+		if m.bg != r || r.ended {
+			m.mu.Unlock()
+			return false
+		}
+		if fn != nil {
+			fn(&r.own)
+		}
+		r.own.State = st
+		r.ended = true
+		if st == Done && r.own.Result != "" && !r.own.Try && !r.own.Note {
+			m.last = r.own.Result
+		}
+		m.rev++
+		r.own.Rev = m.rev
+		s := r.own.clone()
+		m.bg = nil
+		m.backgroundPub.enqueue(publication{snapshot: s, kept: kept})
 		m.mu.Unlock()
-		return false
+		return true
 	}
 	if fn != nil {
 		fn(&m.snap)
@@ -221,18 +451,14 @@ func (m *Manager) end(r *run, st State, fn func(*Snapshot), kept func(Snapshot))
 	m.rev++
 	m.snap.Rev = m.rev
 	s := m.snap.clone()
-	m.pub.Lock()
+	m.foregroundPub.enqueue(publication{snapshot: s, kept: kept})
 	m.mu.Unlock()
-	if kept != nil {
-		kept(s)
-	}
-	m.publish(s)
-	m.pub.Unlock()
 	return true
 }
 
-func (m *Manager) publish(s Snapshot) {
-	if m.cfg.OnChange != nil {
-		m.cfg.OnChange(s)
-	}
+// Close drains both publication queues and stops their publishers. Late
+// session events are ignored after shutdown.
+func (m *Manager) Close() {
+	m.foregroundPub.close()
+	m.backgroundPub.close()
 }

@@ -1,0 +1,168 @@
+{
+  "name": "remote-generation-format-plain",
+  "kind": "remote-dialog",
+  "remote_dialog": {
+    "open": true,
+    "kind": "llm",
+    "id": "fixture",
+    "account": "llm.fixture",
+    "name": "Fixture service",
+    "subtitle": "远程语言模型 · OpenAI 兼容 API",
+    "what": "识别出的文字和选中的文字会发送到下面地址的服务。",
+    "has_key_url": true,
+    "key": {
+      "info": "本机上的服务可不填。保存在这台 Mac 的钥匙串里。",
+      "placeholder": "已保存：•••• · 粘贴新的密钥即可替换",
+      "has_saved": true
+    },
+    "endpoint": {
+      "info": "任意 OpenAI 兼容服务的 API 根地址，以 /v1 结尾。HTTP 会明文发送 API Key 和文本。",
+      "placeholder": "https://…/v1"
+    },
+    "model_options": [
+      "fixture-model",
+      "other-model",
+      "其他模型…"
+    ],
+    "other_model": "其他模型…",
+    "generation": {
+      "think_options": [
+        {
+          "title": "默认",
+          "value": ""
+        },
+        {
+          "title": "关闭",
+          "value": "off"
+        },
+        {
+          "title": "开启",
+          "value": "on"
+        },
+        {
+          "title": "推理强度",
+          "value": "effort"
+        },
+        {
+          "title": "预算",
+          "value": "budget"
+        }
+      ],
+      "thinking": "on",
+      "effort_options": [
+        {
+          "title": "无",
+          "value": "none"
+        },
+        {
+          "title": "极低",
+          "value": "minimal"
+        },
+        {
+          "title": "低",
+          "value": "low"
+        },
+        {
+          "title": "中",
+          "value": "medium"
+        },
+        {
+          "title": "高",
+          "value": "high"
+        },
+        {
+          "title": "超高",
+          "value": "xhigh"
+        },
+        {
+          "title": "最高",
+          "value": "max"
+        }
+      ],
+      "effort_selection": "无",
+      "short_under_placeholder": "200",
+      "show_max": true,
+      "verbosity_options": [
+        {
+          "title": "默认",
+          "value": ""
+        },
+        {
+          "title": "低",
+          "value": "low"
+        },
+        {
+          "title": "中",
+          "value": "medium"
+        },
+        {
+          "title": "高",
+          "value": "high"
+        }
+      ],
+      "show_keep_alive": true,
+      "show_usage": true,
+      "api_options": [
+        {
+          "title": "Chat Completions",
+          "value": ""
+        },
+        {
+          "title": "Responses",
+          "value": "responses"
+        }
+      ],
+      "service_default": "服务默认",
+      "show_temperature": true,
+      "show_top_p": true,
+      "show_top_k": true,
+      "show_min_p": true,
+      "show_penalties": true,
+      "show_seed": true,
+      "response_format_options": [
+        {
+          "title": "纯文本",
+          "value": ""
+        },
+        {
+          "title": "JSON",
+          "value": "json"
+        },
+        {
+          "title": "JSON Schema",
+          "value": "jsonSchema"
+        }
+      ],
+      "logprobs_cap": true,
+      "stop_cap": true,
+      "show_extra_body": true,
+      "extra_body_example": "{\"options\": {\"num_ctx\": 8192}}",
+      "form": {
+        "think": "开启",
+        "format": "纯文本",
+        "verbosity": "默认",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    },
+    "can_test": true,
+    "test": {
+      "state": "empty"
+    },
+    "show_remove": true,
+    "saving": false,
+    "unsaved": false,
+    "form": {
+      "model": "fixture-model",
+      "generation": {
+        "think": "开启",
+        "format": "纯文本",
+        "verbosity": "默认",
+        "usage": true,
+        "advanced": true,
+        "api": "Chat Completions"
+      }
+    }
+  }
+}

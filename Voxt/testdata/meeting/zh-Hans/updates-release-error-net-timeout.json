@@ -1,0 +1,14 @@
+{
+  "name": "updates-release-error-net-timeout",
+  "kind": "updates-release",
+  "updates_release": {
+    "available": true,
+    "done": true,
+    "newer": false,
+    "title": "无法检查更新",
+    "subtitle": "",
+    "error_text": "GitHub 没有及时回应。请检查网络连接，或“语音识别模型 → 网络”里的代理。",
+    "notes": "",
+    "download": ""
+  }
+}

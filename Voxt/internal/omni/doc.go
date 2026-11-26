@@ -22,10 +22,9 @@
 // internal/models'; this package gets a model's folder. An ASR may carry
 // the VAD (WithVAD): its VAD method is local.VoiceActivity, how a session
 // finds the Silero model beside the speech model. It may carry a
-// speculative draft (WithDraft): the DFlash draft the catalogue pairs
-// with the model goes to the server as --draft-model-path, which then
-// decodes several tokens a step; a server that refuses the draft starts
-// again without it.
+// speculative draft (WithDraft): the catalogue's draft path goes to the
+// server as --draft-model-path, so it can decode several tokens a step.
+// A server that refuses the draft starts again without it.
 //
 // # Processes (Runtime)
 //
@@ -58,7 +57,9 @@
 // layout, and recordings over 60 s (Voxt: 1200 s; the encoder's memory
 // grows with a request's audio) cut at their quietest 100 ms, the
 // chunks sharing the budget and the first chunk's detected language
-// forced on the rest. On audio without speech the model writes its
+// forced on the rest. MOSS instead gets the bounded terms in its Hotwords
+// format on post-stop Finals only, never on live or intermediate previews.
+// On audio without speech the model writes its
 // context out: a request's text that ends in a sentence of the context's
 // terms is checked against the same audio recognised without it, and
 // the terms it did not hear go (echo.go).

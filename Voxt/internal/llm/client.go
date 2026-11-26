@@ -94,8 +94,23 @@ func (c *Client) Prefill(ctx context.Context, req Request) error {
 	return nil
 }
 
-// Chat runs req with retries. A streaming request is retried only while
-// nothing has been streamed yet. The returned Usage sums every attempt.
+// Connect passes to the backend when it is a Connector; nil otherwise.
+func (c *Client) Connect(ctx context.Context) error {
+	if b, ok := c.Backend.(Connector); ok {
+		return b.Connect(ctx)
+	}
+	return nil
+}
+
+// CanPrefill reports whether the backend implements real prompt prefill.
+func (c *Client) CanPrefill() bool {
+	_, ok := c.Backend.(Prefiller)
+	return ok
+}
+
+// Chat runs req with retries. A stream retries by default until output is
+// emitted; later retries need authorization to discard private output.
+// Usage sums every attempt.
 func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 	if c.Backend == nil {
 		return Response{}, newErr(CodeNoRoute, "skill", string(req.Skill))
@@ -126,6 +141,7 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		}
 	}
 	var total Usage
+	limited := false // an attempt was refused for the rate limit
 	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -151,13 +167,14 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 			if filter != nil {
 				filter.flush()
 			}
+			serializedReply := strings.HasPrefix(strings.TrimSpace(resp.Text), "<|open|>")
 			resp.Text = StripThinking(resp.Text)
 			if resp.Usage.TotalTokens == 0 {
 				resp.Usage = estimateUsage(req.Messages, resp.Text)
 			}
 			total = total.Add(resp.Usage)
-			resp.Usage, resp.Attempts = total, attempt
-			if resp.Text == "" && resp.FinishReason != FinishLength {
+			resp.Usage, resp.Attempts, resp.RateLimited = total, attempt, limited
+			if resp.Text == "" && (resp.FinishReason != FinishLength || serializedReply) {
 				err = newErr(CodeEmpty, "provider", c.Backend.Info().ID)
 				c.Meter.record(c.Backend.Info().ID, req, resp, err, time.Since(start))
 				return resp, err
@@ -172,24 +189,34 @@ func (c *Client) Chat(ctx context.Context, req Request) (Response, error) {
 		if stalled != nil {
 			e = stalled
 		}
+		limited = limited || e.Code == CodeRateLimited
+		failed := Response{Usage: total, Attempts: attempt, RateLimited: limited}
 		// A timeout of the attempt (not the caller's deadline) is retryable.
 		if ctx.Err() != nil {
 			e = ctxErr(ctx, c.Backend.Info().ID, ctx.Err(), timeout)
 		}
-		if !e.Retryable || streamed || attempt >= c.Retry.attempts() || ctx.Err() != nil {
-			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
-			return Response{Usage: total, Attempts: attempt}, e
+		if !e.Retryable || attempt >= c.Retry.attempts() || ctx.Err() != nil {
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e
 		}
 		d, ok := c.Retry.delay(attempt, e, rand.Float64)
 		if !ok {
-			c.Meter.record(c.Backend.Info().ID, req, Response{Usage: total, Attempts: attempt}, e, time.Since(start))
-			return Response{Usage: total, Attempts: attempt}, e
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e
 		}
 		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < d {
-			return Response{Usage: total, Attempts: attempt}, e // no time left to wait
+			c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+			return failed, e // no time left to wait
+		}
+		if streamed {
+			if req.RetryPrivateStream == nil || !req.RetryPrivateStream() {
+				c.Meter.record(c.Backend.Info().ID, req, failed, e, time.Since(start))
+				return failed, e
+			}
+			streamed = false
 		}
 		if err := c.sleep(ctx, d); err != nil {
-			return Response{Usage: total, Attempts: attempt}, ctxErr(ctx, c.Backend.Info().ID, err, timeout)
+			return failed, ctxErr(ctx, c.Backend.Info().ID, err, timeout)
 		}
 	}
 }
@@ -284,7 +311,8 @@ func repairPrompt(problems []string) string {
 // (<|channel>thought…<channel|>; it comes with thinking on, which
 // VoxtNew never asks for, and its card says a model may still send an
 // empty one).
-var thinkTags = [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}}
+// A serialized tool message has no trusted answer boundary; discard it entirely.
+var thinkTags = [][2]string{{"<think>", "</think>"}, {"<|channel>", "<channel|>"}, {"<|open|>", ""}}
 
 // thinkOpen is the tag pair whose opening t starts with (nil for none);
 // undecided when t could still become one.
@@ -309,6 +337,9 @@ func StripThinking(s string) string {
 	if tag == nil {
 		return s
 	}
+	if tag[1] == "" {
+		return ""
+	}
 	if i := strings.Index(t, tag[1]); i >= 0 {
 		return strings.TrimLeft(t[i+len(tag[1]):], " \t\r\n")
 	}
@@ -321,13 +352,15 @@ type thinkFilter struct {
 	emit  func(string)
 	buf   strings.Builder
 	tag   *[2]string
-	state int // 0 deciding, 1 inside think, 2 passing through, 3 after think (trim leading space)
+	state int // 0 deciding, 1 inside think, 2 passing through, 3 after think (trim leading space), 4 discarded protocol
 }
 
 func (f *thinkFilter) reset() { f.buf.Reset(); f.state, f.tag = 0, nil }
 
 func (f *thinkFilter) write(s string) {
 	switch f.state {
+	case 4:
+		return
 	case 2:
 		f.emit(s)
 		return
@@ -345,6 +378,11 @@ func (f *thinkFilter) write(s string) {
 		tag, undecided := thinkOpen(strings.TrimLeft(b, " \t\r\n"))
 		switch {
 		case tag != nil:
+			if tag[1] == "" {
+				f.state = 4
+				f.buf.Reset()
+				return
+			}
 			f.state, f.tag = 1, tag
 		case undecided:
 			return

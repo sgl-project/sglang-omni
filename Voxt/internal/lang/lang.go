@@ -96,11 +96,18 @@ var load = sync.OnceValue(func() *table {
 			t.aliases[l.WhisperCode] = l.Code
 		}
 	}
+	// The English name too: Qwen3-ASR reports the language it heard as "Chinese" (#3981).
+	for _, l := range t.all {
+		n := strings.ToLower(l.Name)
+		if _, ok := t.byCode[n]; !ok && t.aliases[n] == "" {
+			t.aliases[n] = l.Code
+		}
+	}
 	return t
 })
 
 // Canonical returns the table code for a tag or alias ("zh-Hans-CN" → "zh",
-// "cmn" → "zh", "iw" → "he", "jw" → "jv"), or "" when unknown.
+// "cmn" → "zh", "iw" → "he", "jw" → "jv", "Chinese" → "zh"), or "" when unknown.
 func Canonical(tag string) string {
 	t := load()
 	tag = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(tag, "_", "-")))

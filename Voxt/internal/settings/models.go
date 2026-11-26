@@ -1,6 +1,11 @@
 package settings
 
-import "time"
+import (
+	"math"
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Models: how the local models' runtimes keep what they loaded (the Local
 // models page's Advanced section), and the models hidden from the
@@ -18,11 +23,17 @@ type Models struct {
 	// use (Voxt 1.x's hiddenModelVisibilityIDs).
 	Hidden []string `json:"hidden,omitempty"`
 	// LLMWait is how long Transcribe, Translate and Rewrite wait at least
-	// for a language model's answer: one of WaitChoices. "" (Automatic),
+	// for a language model's answer: one of WaitChoices, or another
+	// WaitMinutes saved by an earlier version (#3941). "" (Automatic),
 	// or a value VoxtNew does not know, keeps the session's own limits
 	// (internal/session's LLMTimeout and WriteTimeout), so older documents
 	// need no migration (#3821). Either way a long text gets longer.
 	LLMWait string `json:"llmWait,omitempty"`
+	// LLMSwitch: when a feature's language model fails, or does not open,
+	// its session asks the next configured language model that serves the
+	// feature, once, including an external API chosen for another feature.
+	// Translate's own fallback model goes first.
+	LLMSwitch bool `json:"llmSwitch,omitempty"`
 	// Faster is each speech model's Faster transcription switch (its id:
 	// on): whether its server verifies the model's speculative draft. A
 	// model the user never switched is on while its draft is installed,
@@ -32,12 +43,21 @@ type Models struct {
 }
 
 // FasterOn says whether speech model id uses its draft, given whether
-// the draft is installed: the switch, else the installed draft.
-func (m Models) FasterOn(id string, draftInstalled bool) bool {
+// the draft is installed: the switch, else FasterDefault.
+func (m Models) FasterOn(id string, draftInstalled, optIn bool) bool {
 	if on, set := m.Faster[id]; set {
 		return on && draftInstalled
 	}
-	return draftInstalled
+	return FasterDefault(draftInstalled, optIn)
+}
+
+// FasterDefault is a never-switched model's Faster transcription state:
+// on while its draft is installed, as 2.0.2 and 2.0.3 did — but an
+// opt-in model's (a draft that came with another's download) waits for
+// the switch. The model card's switch and the runtime share it so the
+// two cannot drift.
+func FasterDefault(draftInstalled, optIn bool) bool {
+	return draftInstalled && !optIn
 }
 
 // The choices of Models.LLMWait.
@@ -47,25 +67,39 @@ const (
 	Wait2Min  = "2m"
 	Wait5Min  = "5m"
 	Wait10Min = "10m"
+	Wait30Min = "30m"
+	Wait60Min = "60m"
+	// WaitNoLimit sets no overall deadline (#3978): a stalled answer
+	// still fails, and the user can still skip the language model.
+	WaitNoLimit = "none"
 )
 
 // WaitChoices are Models.LLMWait's choices in the order the UI lists them.
-var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min}
+var WaitChoices = []string{WaitAuto, Wait1Min, Wait2Min, Wait5Min, Wait10Min, Wait30Min, Wait60Min, WaitNoLimit}
 
-// LLMWaitFor is the least time LLMWait gives a language model's answer;
-// 0 for Automatic.
+// NoLimit is LLMWaitFor's WaitNoLimit: longer than any request runs
+// (about 292 years), so every deadline built on it never passes.
+const NoLimit = time.Duration(math.MaxInt64)
+
+// WaitMaxMinutes is the most minutes a custom LLMWait may be (#3941).
+const WaitMaxMinutes = 60
+
+// WaitMinutes is LLMWait for n minutes, the presets' form ("5m").
+func WaitMinutes(n int) string { return strconv.Itoa(n) + "m" }
+
+// LLMWaitFor is the least time LLMWait gives a language model's answer:
+// a whole number of minutes in 1..WaitMaxMinutes, NoLimit, or 0 for
+// Automatic.
 func (m Models) LLMWaitFor() time.Duration {
-	switch m.LLMWait {
-	case Wait1Min:
-		return time.Minute
-	case Wait2Min:
-		return 2 * time.Minute
-	case Wait5Min:
-		return 5 * time.Minute
-	case Wait10Min:
-		return 10 * time.Minute
+	if m.LLMWait == WaitNoLimit {
+		return NoLimit
 	}
-	return 0
+	s, ok := strings.CutSuffix(m.LLMWait, "m")
+	n, err := strconv.Atoi(s)
+	if !ok || err != nil || n < 1 || n > WaitMaxMinutes || WaitMinutes(n) != m.LLMWait { // WaitMinutes: no "+5m" or "05m"
+		return 0
+	}
+	return time.Duration(n) * time.Minute
 }
 
 // The choices of Models.KeepLoaded.

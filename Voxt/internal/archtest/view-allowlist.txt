@@ -1,0 +1,11 @@
+# Root view files with existing boundary violations (TestViewFiles). One line
+# per file; migrate the area, then remove the file's line. Do not add lines.
+# Views may depend on view state, actions, local UI state, the UI kit, MyGo,
+# internal/icons, internal/i18n and internal/overlay/layout. They do no I/O,
+# start no goroutines and do not take app or call logic functions directly.
+#
+# path  # area
+
+legacy_report.go  # legacy: exempt one-time 1.x import reporting
+
+ui_panels.go  # ui kit

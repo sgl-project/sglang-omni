@@ -191,3 +191,64 @@ func TestRemoteAPIFormat(t *testing.T) {
 		t.Errorf("reopened: %q, unsaved %v", a.provDlg.gen.api, a.provDlg.unsaved())
 	}
 }
+
+// TestThinkingOffForShortInputs (#3951): a service set to think offers
+// Off for short inputs; on, it saves the limit (200 when empty), it shows
+// again on reopen, and Voxt's default or Off thinking saves none.
+func TestThinkingOffForShortInputs(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate(remotePath)
+	frames(tt)
+	a.openProviderDialog(local.LLM, llm.Custom)
+	frames(tt)
+	if has(tt, "Off for short inputs") {
+		t.Fatal("Voxt's default thinking offers Off for short inputs")
+	}
+	d := &a.provDlg
+	d.endpoint, d.customModel = "https://example.com/v1", "m"
+	d.gen.think, d.gen.effort = thinkTitle(llm.ThinkEffort), "high"
+	frames(tt)
+	if !has(tt, "Off for short inputs") || has(tt, "Fewer characters than") {
+		t.Fatalf("thinking on: %q", tt.Texts())
+	}
+	if err := tt.ClickControl("Off for short inputs"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !d.gen.shortOff || !has(tt, "Fewer characters than") {
+		t.Fatalf("switched on: %v %q", d.gen.shortOff, tt.Texts())
+	}
+	// A visible title beside each control's accessibility name (#3958 verify).
+	if countText(tt, "Off for short inputs") != 2 || countText(tt, "Fewer characters than") != 2 {
+		t.Fatalf("no visible labels: %q", tt.Texts())
+	}
+	click(t, tt, "Save")
+	frames(tt)
+	if s := a.lib.settings.Get().Providers.LLM; len(s) != 1 || s[0].Generation.ThinkingOffUnder != 200 {
+		t.Fatalf("saved %+v (error %q)", s, d.err)
+	}
+	a.openProviderDialog(local.LLM, llm.Custom)
+	frames(tt)
+	if f := a.provDlg.gen; !f.shortOff || f.shortUnder != "200" || a.provDlg.unsaved() {
+		t.Fatalf("reopened %+v, unsaved %v", f, a.provDlg.unsaved())
+	}
+	for _, c := range []struct {
+		f    genForm
+		want int
+	}{
+		{genForm{think: thinkTitle(llm.ThinkOn), shortOff: true, shortUnder: "80"}, 80},
+		{genForm{think: thinkTitle(llm.ThinkOn), shortOff: true, shortUnder: "0"}, 200},
+		{genForm{think: thinkTitle(llm.ThinkOff), shortOff: true, shortUnder: "80"}, 0},
+		{genForm{think: thinkTitle(llm.ThinkDefault), shortOff: true}, 0},
+		{genForm{think: thinkTitle(llm.ThinkOn), shortUnder: "80"}, 0},
+	} {
+		if g, bad := c.f.settings(); bad != "" || g.ThinkingOffUnder != c.want {
+			t.Errorf("%+v: ThinkingOffUnder %d (bad %q), want %d", c.f, g.ThinkingOffUnder, bad, c.want)
+		}
+	}
+	if _, bad := (&genForm{think: thinkTitle(llm.ThinkOn), shortOff: true, shortUnder: "many"}).settings(); bad != "Fewer characters than" {
+		t.Errorf("a limit that is not a number: bad %q", bad)
+	}
+}

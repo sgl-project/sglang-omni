@@ -1,0 +1,8 @@
+{
+  "name": "start-model-not-downloaded",
+  "kind": "start",
+  "start": {
+    "code": "meeting.model.not_downloaded",
+    "text": "The speech model for meetings is not downloaded. Download it in Settings → Meetings."
+  }
+}

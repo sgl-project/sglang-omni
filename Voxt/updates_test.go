@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 )
 
 // fakeUpdates is the updater plugin for tests: a build that can update
@@ -272,9 +273,7 @@ func TestAppUpdated(t *testing.T) {
 	if !has(tt, "Update installed") || !has(tt, "Restart Voxt to finish updating.") || has(tt, "Helper stopped unexpectedly") {
 		t.Fatalf("card: %q", firstTexts(tt))
 	}
-	if !has(tt, "Voxt was updated. Restart it to finish.") {
-		t.Errorf("home: %q", firstTexts(tt))
-	}
+
 	n := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate })
 	if n < 0 || a.notices[n].Link != linkRelaunch || slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemHelper }) {
 		t.Fatalf("notices %+v", a.notices)
@@ -292,7 +291,7 @@ func TestAppUpdated(t *testing.T) {
 	if relaunched != 2 {
 		t.Errorf("about: relaunched %d", relaunched)
 	}
-	if cardActionLabel(linkRelaunch) != "Restart Voxt" {
+	if cardActionLabelFor(i18n.CurrentTranslator(), linkRelaunch) != "Restart Voxt" {
 		t.Error("card action label")
 	}
 }

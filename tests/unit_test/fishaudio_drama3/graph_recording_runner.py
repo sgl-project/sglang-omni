@@ -194,12 +194,13 @@ class GraphRecordingRunner(Drama3ModelRunner):
         super().before_decode(
             forward_batch, schedule_batch, requests, is_lookahead=is_lookahead
         )
-        row_count = len(requests)
-        self.staged_ras_windows = self.decode_buffers.ras_windows[:row_count].tolist()
-        if self.sampling_mode == "greedy":
-            self.decode_buffers.ras_windows[:row_count].fill_(EMPTY_RAS_SLOT)
-        else:
-            pass
+        assert forward_batch is not None
+        recording_buffers = self.model.recording_buffers
+        assert recording_buffers is not None
+        self.staged_ras_windows = self.state_pool.ras_windows[
+            forward_batch.req_pool_indices
+        ].tolist()
+        recording_buffers.empties_ras_windows.fill_(self.sampling_mode == "greedy")
         self.stage_end_of_speech(forward_batch, requests)
         self.take_snapshots()
 

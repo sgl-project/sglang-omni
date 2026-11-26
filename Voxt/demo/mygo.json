@@ -1,0 +1,7 @@
+{
+  "name": "Voxt UI Demo",
+  "identifier": "dev.hehehai.voxtnew.uidemo",
+  "version": "0.1.0",
+  "main": "..",
+  "out": "../build/demo"
+}

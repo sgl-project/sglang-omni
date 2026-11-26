@@ -405,16 +405,9 @@ def patches_from_stages_mapping(
 
 
 def sources_from_config_file(
-    file_path: str,
+    file_path: str, *, model_path_override: str | None = None
 ) -> tuple[PipelineConfig, ConfigPatchSet]:
-    """Split a config file into the config it declares and its overrides.
-
-    ``ConfigManager.from_file`` folds the returned patches into the config,
-    which is what launching needs and the opposite of what explaining needs:
-    by the time the caller holds the config, the stage entry that set a value
-    has already been absorbed into it. Keeping the two apart is what lets
-    ``sgl-omni config explain`` name the file as a source.
-    """
+    """Build defaults for the selected checkpoint and preserve the source patches."""
     # Local import: the registry pulls in model packages, several of which
     # import this module's callers.
     from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -458,7 +451,10 @@ def sources_from_config_file(
     # file twice -- the baseline would already carry the value, so a diff
     # against it shows nothing and provenance calls the same value both the
     # model default and the file's write.
-    construction: dict[str, object] = {}
+    # note (kermit): Construction can read checkpoint metadata before any patch is applied.
+    construction: dict[str, object] = (
+        {"model_path": model_path_override} if model_path_override is not None else {}
+    )
     while True:
         try:
             config = config_cls(**construction)
@@ -507,6 +503,12 @@ def sources_from_config_file(
                 (stage.name for stage in config.stages),
                 origin=str(file_path),
             )
+        )
+    else:
+        pass
+    if model_path_override is not None:
+        patches = patches.merge(
+            patches_from_model_path_flag(model_path_override, config)
         )
     else:
         pass

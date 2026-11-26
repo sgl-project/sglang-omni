@@ -202,7 +202,7 @@ def test_packed_dit_compile_warmup_failure_fails_startup() -> None:
     assert leftover_batches == []
 
 
-def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
+def test_cpu_f0_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
     calls = []
 
     class Predictor:
@@ -221,7 +221,7 @@ def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
 
     hift = SimpleNamespace(f0_predictor=Predictor())
 
-    stages.MpsHiFTAdapter(hift, "mps")
+    stages.CpuF0HiFTAdapter(hift, "mps")
 
     assert calls == [
         ((), {"device": "cpu"}),
@@ -1345,6 +1345,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
         def load_weights(self, weights) -> None:
             del weights
 
+    monkeypatch.setattr(engine_builder.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(engine_builder, "SpeechTokenizerV3", fake_tokenizer)
     monkeypatch.setattr(engine_builder, "SpeakerEncoder", fake_encoder)
     monkeypatch.setattr(engine_builder, "CosyVoice3Tokenizer", lambda path: object())

@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "moss/moss_model.h"
 
-#include <cmath>
 #include <stdexcept>
+
+#include "common/whisper_encoder.h"
 
 namespace moss {
 
 namespace mx = mlx::core;
 using omni_common::Gelu;
 using omni_common::LoadSafetensors;
+using omni_common::Qwen3DecoderConfig;
 using omni_common::ReadJson;
 using omni_common::Silu;
 using omni_common::WeightMap;
-using qwen3_asr::Qwen3DecoderConfig;
 
 namespace {
 
@@ -20,22 +21,29 @@ constexpr float kWhisperLayerNormEps = 1e-5f;
 constexpr const char *kWhisperPrefix = "model.whisper_encoder";
 constexpr const char *kAdaptorPrefix = "model.vq_adaptor.layers";
 constexpr const char *kDecoderPrefix = "model.language_model";
-
-// Note (Dayuxiaoshui): the checkpoint keeps PyTorch's Conv1d layout, and its
-// lm_head is a copy of the tied embedding table.
-WeightMap MlxLayoutWeights(WeightMap weights) {
-  weights.erase("lm_head.weight");
-  const std::string conv_prefix = std::string(kWhisperPrefix) + ".conv";
-  for (auto &[name, array] : weights) {
-    if (name.rfind(conv_prefix, 0) == 0 && array.ndim() == 3) {
-      array = mx::transpose(array, {0, 2, 1});
-    } else {
-    }
-  }
-  return weights;
-}
+// Note (XXXXRT666): the decoder's layers are quantized at load, attention to
+// 8 bits and the MLPs to 4, which keeps the transcripts and speakers, and so
+// is its output projection, to 8 bits; its tied embedding table stays in the
+// checkpoint dtype, since quantizing the lookup changed them, as did 4-bit
+// attention.
+constexpr int kAttentionQuantizationBits = 8;
+constexpr int kOutputQuantizationBits = 8;
+constexpr int kMlpQuantizationBits = 4;
+constexpr int kDecoderQuantizationGroupSize = 64;
 
 } // namespace
+
+// Note (Dayuxiaoshui): the checkpoint keeps PyTorch's Conv1d layout, and its
+// lm_head is a copy of the tied embedding table, kept as the decoder's output
+// projection.
+WeightMap LoadedWeights(WeightMap weights) {
+  // A prequantized checkpoint already carries its own output projection.
+  weights.emplace(
+      std::string(kDecoderPrefix) + ".output_projection.weight",
+      weights.at(std::string(kDecoderPrefix) + ".embed_tokens.weight"));
+  weights.erase("lm_head.weight");
+  return omni_common::WhisperConvMlxLayout(std::move(weights), kWhisperPrefix);
+}
 
 MossTranscribeDiarize::MossTranscribeDiarize(
     const std::filesystem::path &model_directory)
@@ -44,7 +52,22 @@ MossTranscribeDiarize::MossTranscribeDiarize(
 
 MossTranscribeDiarize::MossTranscribeDiarize(
     const nlohmann::json &config, const std::filesystem::path &model_directory)
-    : checkpoint_(MlxLayoutWeights(LoadSafetensors(model_directory)), config),
+    : checkpoint_(omni_common::QuantizedCheckpoint(
+          LoadedWeights(LoadSafetensors(model_directory)), config,
+          kDecoderQuantizationGroupSize,
+          [](const std::string &name) {
+            if (name ==
+                std::string(kDecoderPrefix) + ".output_projection.weight") {
+              return kOutputQuantizationBits;
+            } else if (!name.starts_with(std::string(kDecoderPrefix) +
+                                         ".layers.")) {
+              return 0;
+            } else if (name.find(".self_attn.") != std::string::npos) {
+              return kAttentionQuantizationBits;
+            } else {
+              return kMlpQuantizationBits;
+            }
+          })),
       decoder_(checkpoint_, kDecoderPrefix,
                Qwen3DecoderConfig::FromJson(config.at("text_config"))) {
   const nlohmann::json &audio = config.at("audio_config");
@@ -68,40 +91,6 @@ mx::array MossTranscribeDiarize::Conv1d(const mx::array &x,
       checkpoint_.Weight(prefix + ".bias"));
 }
 
-mx::array MossTranscribeDiarize::WhisperEncoderLayer(const mx::array &x,
-                                                     int layer) const {
-  const std::string prefix =
-      std::string(kWhisperPrefix) + ".layers." + std::to_string(layer);
-  const int batch = x.shape(0);
-  const int length = x.shape(1);
-  const int width = x.shape(2);
-  const int head_count = whisper_.encoder_attention_heads;
-  const int head_dim = width / head_count;
-  const mx::array normed = checkpoint_.LayerNorm(
-      x, prefix + ".self_attn_layer_norm", kWhisperLayerNormEps);
-  const auto project = [&](const std::string &name) {
-    return mx::transpose(
-        mx::reshape(checkpoint_.Linear(normed, prefix + ".self_attn." + name),
-                    {batch, length, head_count, head_dim}),
-        {0, 2, 1, 3});
-  };
-  const mx::array attended = mx::fast::scaled_dot_product_attention(
-      project("q_proj"), project("k_proj"), project("v_proj"),
-      static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)));
-  const mx::array hidden = mx::add(
-      x, checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                        {batch, length, width}),
-                            prefix + ".self_attn.out_proj"));
-  return mx::add(
-      hidden,
-      checkpoint_.Linear(
-          Gelu(checkpoint_.Linear(
-              checkpoint_.LayerNorm(hidden, prefix + ".final_layer_norm",
-                                    kWhisperLayerNormEps),
-              prefix + ".fc1")),
-          prefix + ".fc2"));
-}
-
 mx::array MossTranscribeDiarize::EncodeAudio(
     const mx::array &window_features,
     const std::vector<int> &window_token_counts) const {
@@ -116,7 +105,9 @@ mx::array MossTranscribeDiarize::EncodeAudio(
               mx::slice(checkpoint_.Weight(whisper + ".embed_positions.weight"),
                         {0, 0}, {frame_count, width}));
   for (int layer = 0; layer < whisper_.encoder_layers; ++layer) {
-    x = WhisperEncoderLayer(x, layer);
+    x = omni_common::WhisperEncoderLayer(
+        checkpoint_, x, whisper + ".layers." + std::to_string(layer),
+        whisper_.encoder_attention_heads, false);
   }
   x = checkpoint_.LayerNorm(x, whisper + ".layer_norm", kWhisperLayerNormEps);
 

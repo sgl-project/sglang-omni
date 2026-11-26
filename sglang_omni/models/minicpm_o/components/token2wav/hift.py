@@ -27,11 +27,28 @@ from scipy.signal import get_window
 from torch.nn import Conv1d, ConvTranspose1d
 from torch.nn.utils.parametrizations import weight_norm
 
+from sglang_omni.models.minicpm_o.components.token2wav.hift_cuda_graph import (
+    HiftBodyCudaGraphRunner,
+)
 from sglang_omni.models.minicpm_o.components.token2wav.hift_layers import (
     ResBlock,
     SourceModuleHnNSF2,
     init_weights,
+    masked,
 )
+
+
+def frame_mask(
+    frame_lengths: torch.Tensor | None,
+    scale: int,
+    extra_frames: int,
+    like: torch.Tensor,
+) -> torch.Tensor | None:
+    if frame_lengths is None:
+        return None
+    else:
+        positions = torch.arange(like.shape[-1], device=like.device)
+        return (positions < frame_lengths[:, None] * scale + extra_frames)[:, None]
 
 
 @contextmanager
@@ -128,6 +145,7 @@ class HiFTGenerator(nn.Module):
         self.audio_limit = audio_limit
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
+        self.upsample_rates = upsample_rates
         self.m_source = SourceModuleHnNSF2(
             sampling_rate=sampling_rate,
             upsample_scale=np.prod(upsample_rates) * istft_params["hop_len"],
@@ -208,6 +226,7 @@ class HiFTGenerator(nn.Module):
             ConvRNNF0Predictor() if f0_predictor is None else f0_predictor
         )
         self.noise_generator: torch.Generator | None = None
+        self.body_graph_runner: HiftBodyCudaGraphRunner | None = None
 
     def stft(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         with default_stream_for_cufft(x.device) as caller_stream:
@@ -247,32 +266,48 @@ class HiFTGenerator(nn.Module):
     def decode(self, x: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         s_stft_real, s_stft_imag = self.stft(s.squeeze(1))
         s_stft = torch.cat([s_stft_real, s_stft_imag], dim=1)
-        magnitude, phase = self.decode_body(x, s_stft)
+        if self.body_graph_runner is None:
+            magnitude, phase = self.decode_body(x, s_stft)
+        else:
+            magnitude, phase = self.body_graph_runner.run(x, s_stft)
         x = self.istft(magnitude, phase)
         x = torch.clamp(x, -self.audio_limit, self.audio_limit)
         return x
 
     def decode_body(
-        self, x: torch.Tensor, s_stft: torch.Tensor
+        self,
+        x: torch.Tensor,
+        s_stft: torch.Tensor,
+        frame_lengths: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Waveform STFT magnitude and phase; everything between the two STFTs."""
-        x = self.conv_pre(x)
+        spectrum_scale = (
+            int(self.f0_upsamp.scale_factor) // self.istft_params["hop_len"]
+        )
+        s_stft = masked(s_stft, frame_mask(frame_lengths, spectrum_scale, 1, s_stft))
+        mask = frame_mask(frame_lengths, 1, 0, x)
+        x = masked(self.conv_pre(masked(x, mask)), mask)
+        scale = 1
         for i in range(self.num_upsamples):
             x = F.leaky_relu(x, self.lrelu_slope)
             x = self.ups[i](x)
+            scale *= self.upsample_rates[i]
             if i == self.num_upsamples - 1:
                 x = self.reflection_pad(x)
             else:
                 pass
-            si = self.source_downs[i](s_stft)
-            si = self.source_resblocks[i](si)
+            # note (MayDomine): the final left reflection pad adds one valid spectrum frame.
+            mask = frame_mask(frame_lengths, scale, int(i == self.num_upsamples - 1), x)
+            x = masked(x, mask)
+            si = masked(self.source_downs[i](s_stft), mask)
+            si = self.source_resblocks[i](si, mask)
             x = x + si
             xs = None
             for j in range(self.num_kernels):
                 if xs is None:
-                    xs = self.resblocks[i * self.num_kernels + j](x)
+                    xs = self.resblocks[i * self.num_kernels + j](x, mask)
                 else:
-                    xs += self.resblocks[i * self.num_kernels + j](x)
+                    xs += self.resblocks[i * self.num_kernels + j](x, mask)
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
         x = self.conv_post(x)

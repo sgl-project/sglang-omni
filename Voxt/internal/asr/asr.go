@@ -69,6 +69,17 @@ type FileRequest struct {
 	// Speech models without Caps.Hints fold the hints into the prompt.
 	Hints  []string
 	Prompt string
+	// MaxBytes, when over 0 and under the service's own upload limit,
+	// caps each upload instead (Settings → Audio, #3840): a longer PCM
+	// recording goes in smaller pieces (TranscribeInPieces).
+	MaxBytes int
+}
+
+// SpeakerSegment is one timed part of a diarized transcription.
+type SpeakerSegment struct {
+	Start, End time.Duration
+	Speaker    string
+	Text       string
 }
 
 // Result is a finished transcription.
@@ -78,6 +89,13 @@ type Result struct {
 	Duration time.Duration // of the audio, when the speech model reported it
 	Model    string
 	Latency  time.Duration // from the end of the audio to the final text
+	Segments []SpeakerSegment
+}
+
+// Diarizer transcribes a recording with timestamps and speaker labels.
+type Diarizer interface {
+	Provider
+	Diarize(ctx context.Context, req FileRequest) (Result, error)
 }
 
 // FileTranscriber transcribes a whole recording and returns its text.
@@ -92,10 +110,16 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// note (chenye): LatePartials requests advisory whole-text candidates while an authoritative Final runs.
+	LatePartials bool
 	// LiveResult asks for the live text as the result, without a second
 	// pass over the whole recording at Finish, where the model makes one
 	// (settings.Audio.LiveResult); the others ignore it.
 	LiveResult bool
+	// EarlyPieces asks for the first stretch (EventPiece) sooner than the
+	// model's policy gives it: the session works on the stretches while the
+	// recording goes on. A model that finalises none ignores it.
+	EarlyPieces bool
 }
 
 // Streamer opens recognition streams.
@@ -108,12 +132,23 @@ type Streamer interface {
 	Open(ctx context.Context, req StreamRequest) (Stream, error)
 }
 
+// EarlyPiecesEnabler lets a live stream switch to the model's earlier
+// incremental Final policy after Open, when the session's eligibility
+// decision was not yet available. A stream returns false when the policy
+// can no longer be changed safely or is unsupported.
+type EarlyPiecesEnabler interface {
+	EnableEarlyPieces() bool
+}
+
 // Stream is one recognition session.
 //
-// Send and Finish are called from one goroutine (the session's); Close
-// from any. Events delivers EventPartial while audio comes in, then
-// exactly one EventFinal or EventError, then closes. ctx of Open bounds the whole
-// stream: cancelling it ends the stream with a KindCancelled Error.
+// note (chenye): Send and Finish are called from one goroutine (the session's);
+// Close may be called from any goroutine. Events delivers EventPartial while
+// audio comes in, then optionally EventCandidate while an opted-in authoritative
+// Final runs, followed by exactly one EventFinal or EventError, then closes. A
+// stream that finalises stretches of the recording while it continues may
+// deliver EventPiece before them. ctx of Open bounds the whole stream:
+// cancelling it ends the stream with a KindCancelled Error.
 type Stream interface {
 	// Send sends PCM16LE mono audio at the request's sample rate, any
 	// length (the stream frames it as its speech model wants). It may
@@ -146,6 +181,13 @@ const (
 	EventFinal
 	// EventError: the stream failed (Err is an *Error). The last event.
 	EventError
+	// EventPiece: a stretch of the recording is final while the recording
+	// continues. Text is the final text so far (the stretches joined, a
+	// prefix of the EventFinal's text), as EventPartial's is the whole
+	// hypothesis. Never the last event.
+	EventPiece
+	// note (chenye): EventCandidate is a whole provisional transcript for opted-in speculative work, never authoritative speech.
+	EventCandidate
 )
 
 func (k EventKind) String() string {
@@ -156,6 +198,10 @@ func (k EventKind) String() string {
 		return "final"
 	case EventError:
 		return "error"
+	case EventPiece:
+		return "piece"
+	case EventCandidate:
+		return "candidate"
 	}
 	return "unknown"
 }
@@ -163,7 +209,8 @@ func (k EventKind) String() string {
 // Event is one event of a Stream.
 type Event struct {
 	Kind EventKind
-	Text string // EventPartial and EventFinal
+	// note (chenye): Text is the whole transcript for EventPartial, EventCandidate, EventFinal and EventPiece.
+	Text string
 	// Result is the final event's details (Text repeats there).
 	Result Result
 	Err    error // EventError

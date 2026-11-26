@@ -470,20 +470,29 @@ def test_incremental_codec_capture_rollback_resets_temporary_graphs(
     assert temporary == {}
 
 
-def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
+@pytest.mark.parametrize(
+    ("decodes_whole_requests", "windows_captured", "serves_whole_requests"),
+    [(False, True, False), (True, True, True), (True, False, False)],
+)
+def test_incremental_codec_graphs_capture_during_vocoder_warmup(
+    decodes_whole_requests: bool, windows_captured: bool, serves_whole_requests: bool
+) -> None:
+    """A server whose window graphs failed to capture decodes whole requests on its whole-utterance graphs and batch wait."""
     captures: list[str] = []
 
-    def graph_holder(name: str) -> SimpleNamespace:
-        return SimpleNamespace(capture=lambda: captures.append(name))
+    def graph_holder(name: str, enabled: bool = True) -> SimpleNamespace:
+        return SimpleNamespace(capture=lambda: captures.append(name), enabled=enabled)
 
     scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
         Qwen3TTSStreamingVocoderScheduler
     )
     scheduler.async_decode = True
+    scheduler.decodes_whole_requests = decodes_whole_requests
+    scheduler.max_batch_wait_s = 0.002
     scheduler.initial_decode_graphs = graph_holder("whole-sequence-initial")
     scheduler.followup_graph_holders = (graph_holder("whole-sequence-followup"),)
     scheduler.initial_incremental_decode_graphs = graph_holder("cold")
-    scheduler.initial_window_decode_graphs = graph_holder("window")
+    scheduler.initial_window_decode_graphs = graph_holder("window", windows_captured)
     scheduler.initial_tail_decode_graphs = graph_holder("tail")
     scheduler.followup_incremental_graph_holders = (graph_holder("warm"),)
     scheduler.full_decode_graphs = graph_holder("full-decode")
@@ -497,8 +506,10 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
         "cold",
         "window",
         "tail",
-        "full-decode",
+        *([] if serves_whole_requests else ["full-decode"]),
     ]
+    assert scheduler.decodes_whole_requests is serves_whole_requests
+    assert scheduler.max_batch_wait_s == (0.0 if serves_whole_requests else 0.002)
 
 
 @pytest.mark.accelerator

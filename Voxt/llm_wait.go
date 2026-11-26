@@ -1,39 +1,52 @@
 package main
 
-// How long Transcribe, Translate and Rewrite wait at least for a language
-// model's answer (settings.Models.LLMWait, the Language models page,
-// #3821): Automatic keeps the session's own limits; a long text gets
-// longer either way (internal/session's llmDeadlines).
+// The Language models page's wait setting. The controller supplies the
+// saved value and localized choices; this file owns only widget state.
 
 import (
-	"slices"
-
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// waitLabels are the choices' labels, in settings.WaitChoices' order.
-func waitLabels() []string {
-	return []string{i18n.T("Automatic"), i18n.T("1 minute"), i18n.T("2 minutes"), i18n.T("5 minutes"), i18n.T("10 minutes")}
+// llmWaitLocalUI is the select's widget state. Its field names stay
+// compatible with the existing modelsState embedding and tests.
+type llmWaitLocalUI struct {
+	llmWaitSel, llmWaitFor string
 }
 
-// llmWaitRow is the Language models page's wait setting. The label
-// follows the setting and the language, unless a choice of this select
-// is on its way to the setting (models_keep.go's).
-func (a *app) llmWaitRow(c *ui.Context) {
-	t := c.Theme()
-	help := i18n.T("How long Voxt waits for an answer before it inserts the recognised text instead. Automatic waits 20 seconds to a minute, longer for long text.")
-	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
-		v := a.prefs.Models.LLMWait
-		if want := v + "\x00" + i18n.Locale(); a.llmWaitFor != want {
-			a.llmWaitSel, a.llmWaitFor = waitLabels()[max(slices.Index(settings.WaitChoices, v), 0)], want
+func remoteOptionTitles(options []remoteOptionViewState) []string {
+	titles := make([]string, len(options))
+	for index, option := range options {
+		titles[index] = option.Title
+	}
+	return titles
+}
+
+func remoteOptionValue(options []remoteOptionViewState, title string) (string, bool) {
+	for _, option := range options {
+		if option.Title == title {
+			return option.Value, option.Custom
 		}
-		opts := waitLabels()
-		if ui.Select(c.Key("llm-wait-select"), &a.llmWaitSel, opts).Label(i18n.T("Wait for the language model")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
-			v = settings.WaitChoices[max(slices.Index(opts, a.llmWaitSel), 0)]
-			a.llmWaitFor = v + "\x00" + i18n.Locale()
-			a.updateSettings(func(s *settings.Settings) { s.Models.LLMWait = v })
+	}
+	return "", false
+}
+
+// llmWaitView is the wait select: a preset, or the custom wait an earlier
+// version saved, which shows but is not offered again. The label follows
+// the setting and the language, unless a choice of this select is on its
+// way to the setting (models_keep.go's).
+func llmWaitView(c *ui.Context, state *remoteWaitViewState, actions remoteWaitActions, local *llmWaitLocalUI) {
+	t := c.Theme()
+	help := i18n.T("If the language model does not answer by then, Voxt inserts the text as recognised, without the clean-up. Automatic waits 20 seconds to a minute, depending on the text's length.")
+	settingRow(c, "llm-wait", i18n.T("Wait for the language model"), help, func() {
+		if local.llmWaitFor != state.Token {
+			local.llmWaitFor = state.Token
+			local.llmWaitSel = state.Selected
+		}
+		if ui.Select(c.Key("llm-wait-select"), &local.llmWaitSel, remoteOptionTitles(state.Options)).Label(i18n.T("Wait for the language model")).Width(px(t, 200)).Shrink(1).MinWidth(px(t, 140)).Changed() {
+			if value, saved := remoteOptionValue(state.Options, local.llmWaitSel); !saved {
+				actions.chooseLLMWait(value)
+			}
 		}
 	})
 }

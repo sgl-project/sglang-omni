@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image/png"
 	"slices"
@@ -42,8 +43,6 @@ func TestTrayIcons(t *testing.T) {
 
 func TestTrayMeetingStatus(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	meetingDevHook = func() bool { return true }
-	t.Cleanup(func() { meetingDevHook = nil })
 	a.openMeetings()
 	if a.trayShowsRecording() {
 		t.Fatal("idle icon at rest")
@@ -111,7 +110,7 @@ func TestTrayRecent(t *testing.T) {
 	if tip := trayTip(huge); len([]rune(tip)) != trayTipRunes+1 || trayTip(" short \n") != "short" {
 		t.Errorf("tip %d", len([]rune(tip)))
 	}
-	// The items: the recent results, a click copies one.
+	// The items say what a click does, a click copies one and confirms it.
 	a, _, _ := newTestApp(t)
 	var copied []string
 	a.copyText = func(s string) error { copied = append(copied, s); return nil }
@@ -120,10 +119,10 @@ func TestTrayRecent(t *testing.T) {
 	found, title := 0, false
 	for _, it := range a.trayItems() {
 		switch it.Label {
-		case "hello there", "Please send the meeting…":
+		case "Copy: hello there", "Copy: Please send the meeting…":
 			found++
 			it.Click(it, nil)
-			if it.Label != "hello there" && it.ToolTip != long {
+			if it.Label != "Copy: hello there" && it.ToolTip != long {
 				t.Errorf("tooltip %q", it.ToolTip)
 			}
 		case "Recent results":
@@ -132,6 +131,9 @@ func TestTrayRecent(t *testing.T) {
 	}
 	if found != 2 || !title || !slices.Equal(copied, []string{"hello there", long}) {
 		t.Errorf("recent items: found %d, title %v, copied %q", found, title, copied)
+	}
+	if !slices.Equal(a.toasts, []string{"Copied", "Copied"}) {
+		t.Errorf("toasts %q", a.toasts)
 	}
 }
 
@@ -195,5 +197,31 @@ func TestTrayMicrophone(t *testing.T) {
 	a.audio.devices = nil
 	if got := microphones(); got != "[No microphone available (disabled)]" {
 		t.Errorf("submenu without inputs %s", got)
+	}
+}
+
+// A read that started before a delete must not land after the read that
+// followed the delete: the menu would list the deleted entries again.
+func TestTrayRecentStaleReadDropped(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Privacy.KeepHistory = true
+	h := a.lib.store.History()
+	if err := h.Put(context.Background(), store.Entry{ID: "e1", Kind: store.KindTranscribe, Status: store.StatusDone, Result: "deleted result"}); err != nil {
+		t.Fatal(err)
+	}
+	var queued []func()
+	a.postQueue = func(fn func()) { queued = append(queued, fn) }
+	a.loadTrayRecent()
+	if err := h.Delete(context.Background(), "e1"); err != nil {
+		t.Fatal(err)
+	}
+	a.loadTrayRecent()
+	if len(queued) != 2 {
+		t.Fatalf("%d reads posted", len(queued))
+	}
+	queued[1]() // the post-delete read lands first
+	queued[0]() // then the stale one: dropped
+	if len(a.recent) != 0 {
+		t.Fatalf("the stale read revived %q", a.recent)
 	}
 }

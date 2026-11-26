@@ -1,0 +1,128 @@
+//go:build darwin
+
+package macx
+
+import (
+	"fmt"
+	"runtime"
+	"strings"
+	"sync"
+	"unicode/utf8"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
+	"github.com/ebitengine/purego/objc"
+)
+
+type pdfSize struct {
+	width, height float64
+}
+
+var pdfNative struct {
+	once      sync.Once
+	err       error
+	thumbnail func(objc.ID, objc.SEL, pdfSize, int) objc.ID
+}
+
+var (
+	pdfSelAlloc          = objc.RegisterName("alloc")
+	pdfSelAutorelease    = objc.RegisterName("autorelease")
+	pdfSelRelease        = objc.RegisterName("release")
+	pdfSelFileURL        = objc.RegisterName("fileURLWithPath:")
+	pdfSelInitURL        = objc.RegisterName("initWithURL:")
+	pdfSelInitBytes      = objc.RegisterName("initWithBytes:length:encoding:")
+	pdfSelString         = objc.RegisterName("string")
+	pdfSelPageCount      = objc.RegisterName("pageCount")
+	pdfSelPageAt         = objc.RegisterName("pageAtIndex:")
+	pdfSelThumbnail      = objc.RegisterName("thumbnailOfSize:forBox:")
+	pdfSelTIFF           = objc.RegisterName("TIFFRepresentation")
+	pdfSelImageRep       = objc.RegisterName("imageRepWithData:")
+	pdfSelRepresentation = objc.RegisterName("representationUsingType:properties:")
+	pdfSelLength         = objc.RegisterName("length")
+	pdfSelBytes          = objc.RegisterName("bytes")
+)
+
+func loadPDF() error {
+	if err := load(); err != nil {
+		return err
+	}
+	pdfNative.once.Do(func() {
+		const rtld = purego.RTLD_GLOBAL | purego.RTLD_NOW
+		if _, err := purego.Dlopen("/System/Library/Frameworks/PDFKit.framework/PDFKit", rtld); err != nil {
+			pdfNative.err = err
+			return
+		}
+		messageSend, err := purego.Dlsym(purego.RTLD_DEFAULT, "objc_msgSend")
+		if err != nil {
+			pdfNative.err = err
+			return
+		}
+		purego.RegisterFunc(&pdfNative.thumbnail, messageSend)
+	})
+	return pdfNative.err
+}
+
+func pdfNSString(value string) objc.ID {
+	data := unsafe.StringData(value)
+	text := class("NSString").Send(pdfSelAlloc).Send(pdfSelInitBytes,
+		uintptr(unsafe.Pointer(data)), uintptr(len(value)), uintptr(4))
+	runtime.KeepAlive(value)
+	return text.Send(pdfSelAutorelease)
+}
+
+func pdfBytes(data objc.ID) []byte {
+	if data == 0 {
+		return nil
+	}
+	length := objc.Send[int](data, pdfSelLength)
+	if length == 0 {
+		return []byte{}
+	}
+	pointer := objc.Send[*byte](data, pdfSelBytes)
+	if pointer == nil {
+		return nil
+	}
+	return append([]byte(nil), unsafe.Slice(pointer, length)...)
+}
+
+// ReadPDF extracts a PDF's text layer. It also renders up to maxPages pages
+// that have no text or only a thin multi-page text layer. The returned page
+// count says how many pages need rendering, including pages beyond maxPages.
+func ReadPDF(path string, maxPages int) (text string, pages [][]byte, pageCount int, err error) {
+	if err = loadPDF(); err != nil {
+		return "", nil, 0, err
+	}
+	pooled(func() {
+		url := class("NSURL").Send(pdfSelFileURL, pdfNSString(path))
+		document := class("PDFDocument").Send(pdfSelAlloc).Send(pdfSelInitURL, url)
+		if document == 0 {
+			err = fmt.Errorf("macx: cannot open PDF %q", path)
+			return
+		}
+		defer document.Send(pdfSelRelease)
+		text = goString(document.Send(pdfSelString))
+		documentPageCount := objc.Send[int](document, pdfSelPageCount)
+		const minTextRunesPerPage = 20 // Short multi-page text is usually a scan's page numbers or watermark.
+		for index := 0; index < documentPageCount; index++ {
+			page := document.Send(pdfSelPageAt, index)
+			pageText := strings.TrimSpace(goString(page.Send(pdfSelString)))
+			if pageText != "" && (documentPageCount == 1 || utf8.RuneCountInString(pageText) >= minTextRunesPerPage) {
+				continue
+			}
+			pageCount++
+			if len(pages) >= maxPages {
+				continue
+			}
+			image := pdfNative.thumbnail(page, pdfSelThumbnail, pdfSize{width: 1600, height: 1600}, 1)
+			representation := class("NSBitmapImageRep").Send(pdfSelImageRep, image.Send(pdfSelTIFF))
+			encoded := pdfBytes(representation.Send(pdfSelRepresentation, uintptr(4), uintptr(0)))
+			if len(encoded) == 0 {
+				err = fmt.Errorf("macx: cannot render PDF page %d", index+1)
+				pages = nil
+				return
+			}
+			pages = append(pages, encoded)
+		}
+	})
+	return text, pages, pageCount, err
+}

@@ -39,10 +39,50 @@ MTP uses additional GPU memory. Speedup depends on the workload and output lengt
 Usage notes:
 
 - To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
-- MTP uses synchronous decoding (`--thinker.factory.enable_async_decode false`, the default).
+- MTP decodes synchronously by default. Add `--thinker.factory.enable_async_decode true` to overlap each verify round with the host work of the previous one. `--thinker.factory.async_decode_min_batch_size N` keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.
 - Keep `speculative_eagle_topk=1` and `repetition_penalty=1`. Prefix caching and chunked prefill are unavailable for this model.
 
 For MTP acceptance statistics, set `return_spec_tokens_details=true` on chat or transcription requests and read `sglext.spec_tokens_details` in the JSON response.
+
+## DFlash decoding
+
+The thinker can also verify tokens proposed by the DFlash draft [`wilsonzheng0327/Ming-3.0-audio-flash-dflash`](https://huggingface.co/wilsonzheng0327/Ming-3.0-audio-flash-dflash), which was trained on English and Chinese transcription and proposes 15 tokens per step. Use it for a server that mainly transcribes; for audio chat, use MTP. The draft is off by default. Enable it with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
+  --model-path inclusionAI/Ming-3.0-audio-flash \
+  --thinker.tp_size 2 \
+  --thinker.engine.speculative_algorithm DFLASH \
+  --thinker.engine.speculative_draft_model_path wilsonzheng0327/Ming-3.0-audio-flash-dflash \
+  --thinker.engine.speculative_num_draft_tokens 16
+```
+
+Speed against the same server without a draft, on two H200s with SGLang 0.5.23, greedy decoding, the thinker's CUDA graphs on and the default 8 running requests. Transcription uses held-out English and Chinese FLEURS, LibriSpeech, VoxPopuli and YODAS2 clips that the draft never saw. Audio questions are MMSU questions with a 512-token budget, which the model answers with an explanation. Audio chat asks what other held-out clips are about:
+
+| Workload, 1 at a time / 8 at a time | No draft | MTP | DFlash |
+|---|---:|---:|---:|
+| Transcription | 2.62 / 8.46 clips/s | 1.33x / 1.21x | 1.64x / 1.46x |
+| Audio questions, about 130-token answers | 136 / 529 tokens/s | 1.58x / 1.25x | 0.67x / 0.63x |
+| Audio chat in English, about 34-token answers | 98 / 284 tokens/s | 1.30x / 1.20x | 0.98x / 0.98x |
+| Audio chat in Chinese, about 29-token answers | 89 / 253 tokens/s | 1.26x / 1.16x | 0.96x / 0.90x |
+
+The draft accepts about 6.8 tokens per step on transcripts but only 1.3-2.5 on chat answers, so it slows chat down; MTP accepts 2.4-2.8 on every workload. Each server takes one algorithm, so pick the one that matches most of its traffic.
+
+More running requests on two GPUs, transcribing SeedTTS English and Chinese (3,106 clips) with the load equal to `max_running_requests`:
+
+| Running requests | No draft | MTP | DFlash |
+|---|---:|---:|---:|
+| 16 | 15.95 clips/s | 20.82 (1.31x) | 22.84 (1.43x) |
+| 32 | 21.92 clips/s | Does not start | 34.20 (1.56x) |
+| 64 | 29.46 clips/s | Does not start | 38.71 (1.31x) |
+
+MTP at 32 starts only when the thinker loads before the other stages on its GPUs.
+
+Usage notes:
+
+- Verifying on the Kimi delta attention layers records each proposed token's inputs in a ring buffer and folds the accepted prefix into the state (`--thinker.engine.enable_linear_replayssm_spec`, on by default with the draft).
+- SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
+- The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
 
 ## Transcription
 
@@ -109,7 +149,7 @@ The chat response keeps the generated answer. Set `modalities` to `["text", "aud
 
 ## Apple Silicon: native MLX
 
-The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's MLX 0.32.3 toolchain, without Python, PyTorch or CUDA.
+The standalone `ming3_audio_server` serves `/v1/chat/completions` on an Apple Silicon Mac using [Ming-3.0-audio-tiny](https://huggingface.co/inclusionAI/Ming-3.0-audio-tiny). Inference runs in C++ with the native runtime's pinned MLX toolchain, without Python, PyTorch or CUDA.
 
 ```bash
 python sglang_omni_mlx/native/ci/provision_models.py "$MING3_AUDIO_DATA" \
@@ -162,6 +202,7 @@ The native server supports audio questions with text responses, with these limit
 - One user message containing exactly one audio clip, with an optional leading system message. Text may appear before or after the audio part.
 - Input is nonempty 16 kHz mono PCM16 or float32 WAV. Audio is encoded in 30-second chunks. Top-level `audios`, file paths and `audio_url` are not supported.
 - Generation is greedy (`temperature=0`), with a positive output token budget. Both `ming3_audio_server` and `ming3_audio_chat` accept `--context-length N` (default: 8,192); the effective limit is the smaller of this value and the checkpoint's `max_position_embeddings`. The prompt, including audio tokens, and the requested output budget must fit within that limit. `max_completion_tokens` takes precedence over `max_tokens`.
+- Both binaries accept `--speculative-algorithm NEXTN` to decode with the checkpoint's multi-token prediction layer as a one-token draft. On an M4 Pro, long answers took about 30% less time per token, and the speech clips of the CI corpus took about 8% less time end to end. Transcripts can differ from plain decoding at near-tie tokens, and the server uses about 0.85 GB more memory. With NEXTN, `ming3_audio_chat` also reports how many drafts were checked (`draft_tokens`) and accepted (`accepted_draft_tokens`).
 - Streaming, speech output and multi-turn conversations are not supported. The transcription and speech endpoints above are not available on this server.
 - Request bodies are limited to 4 MiB. One generation runs at a time; concurrent requests receive 429. `/health` and `/v1/models` are supported.
 

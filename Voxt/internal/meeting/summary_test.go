@@ -39,6 +39,24 @@ func TestRenderSummaryPromptReplacesTranscriptAndSpeakerNames(t *testing.T) {
 	if strings.Contains(prompt, "{{TRANSCRIPT_RECORD}}") {
 		t.Fatal("placeholder not replaced")
 	}
+	// A custom template too says who Me and Them are (由 Me 负责, 11-15).
+	if !strings.Contains(prompt, `write "you" in the user's main language`) {
+		t.Fatalf("no speakers rule: %q", prompt)
+	}
+}
+
+// #4026: the summary and follow-up prompts, a user's own template too, ask
+// for the instructions' words in the answer's language.
+func TestPromptsAskForOwnWords(t *testing.T) {
+	for name, p := range map[string]string{
+		"default":   meeting.RenderSummaryPrompt("", "Chinese", "我: 你好"),
+		"own":       meeting.RenderSummaryPrompt("Sum up {{TRANSCRIPT_RECORD}}", "Chinese", "我: 你好"),
+		"follow-up": meeting.RenderFollowUpSystem("Chinese", nil, "我: 你好"),
+	} {
+		if !strings.Contains(p, `write 会议记录 for "transcript", never the English word`) {
+			t.Errorf("%s prompt lacks the rule:\n%s", name, p)
+		}
+	}
 }
 
 func TestParseSummaryKeysAndFences(t *testing.T) {

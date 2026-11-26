@@ -35,10 +35,10 @@ from sglang_omni.models.minimax_music3.model_runner import HiddenFrameBuffer
 from sglang_omni.models.minimax_music3.rvq_cuda_graph import RVQDepthCudaGraphRunner
 from sglang_omni.models.minimax_music3.rvq_decoder import sample_topk_seeded
 from sglang_omni.models.minimax_music3.serial_offload import SerialOffloadCoordinator
-from sglang_omni.models.minimax_music3.weight_cache import checkpoint_identity
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
+from sglang_omni.scheduling.weight_cache import checkpoint_identity
 
 
 def get_test_device_if_eligible() -> torch.device:

@@ -10,22 +10,14 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/sanm_encoder.h"
 #include "mlx/mlx.h"
 
 namespace sensevoice {
 
 struct SenseVoiceConfig {
   int vocabulary_size = 0;
-  // Width of the stacked features and of the first encoder layer's input.
-  int input_size = 0;
-  int model_width = 0;
-  int head_count = 0;
-  int feed_forward_width = 0;
-  // The first layer plus the main stack, then the stack after after_norm.
-  int block_count = 0;
-  int tp_block_count = 0;
-  int kernel_size = 0;
-  int sanm_shift = 0;
+  omni_common::SanmEncoderConfig encoder;
   int sample_rate = 0;
   int mel_count = 0;
   int frame_length_ms = 0;
@@ -44,20 +36,17 @@ public:
   // Stacked, normalized fbank frames [frames, input_size] of 16 kHz samples;
   // no frames for audio shorter than one 25 ms window.
   mlx::core::array Features(const std::vector<float> &samples) const;
-  // Log probabilities [4 + frames, vocabulary] of features [frames,
+  // CTC logits [4 + frames, vocabulary] of features [frames,
   // input_size]: the language, emotion, event and text normalization query
   // frames first, then the speech.
-  mlx::core::array LogProbabilities(const mlx::core::array &features,
-                                    int language_id, bool use_itn) const;
+  mlx::core::array Logits(const mlx::core::array &features, int language_id,
+                          bool use_itn) const;
 
   const SenseVoiceConfig &config() const { return config_; }
 
 private:
   SenseVoiceModel(const nlohmann::json &config,
                   const std::filesystem::path &model_directory);
-  mlx::core::array Fbank(const std::vector<float> &samples) const;
-  mlx::core::array EncoderLayer(const mlx::core::array &x,
-                                const std::string &prefix, bool residual) const;
 
   SenseVoiceConfig config_;
   omni_common::Checkpoint checkpoint_;

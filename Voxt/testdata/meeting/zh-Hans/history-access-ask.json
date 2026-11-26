@@ -1,0 +1,17 @@
+{
+  "name": "history-access-ask",
+  "kind": "history-access",
+  "history_access": {
+    "on": false,
+    "selection": true,
+    "ask": true,
+    "list_open": false,
+    "show_last_read": true,
+    "last_read": "1月2日 15:03 · 1 条记录 · daily-editor (fixture-shell)",
+    "command": "",
+    "read_lines": [
+      "1月2日 15:03 · 1 条记录 · daily-editor (fixture-shell)",
+      "1月2日 15:02 · 状态查询 · 未知程序"
+    ]
+  }
+}

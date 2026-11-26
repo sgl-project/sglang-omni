@@ -31,8 +31,8 @@ func TestCardFollowUpQuote(t *testing.T) {
 			a.overlaySync()
 			tt := cardTester(t, a)
 			frames(tt)
-			v := a.cardNow()
-			short, long := v.bubbles[4], v.bubbles[6]
+			v := a.cachedCard()
+			short, long := cardBubblesForTest(v)[4], cardBubblesForTest(v)[6]
 			if short.quote != cardQuote || short.cut || !long.cut || len([]rune(long.quote)) > quoteMax+1 || !strings.HasSuffix(long.quote, "…") {
 				t.Fatalf("bubbles %+v / %+v", short, long)
 			}
@@ -42,15 +42,15 @@ func TestCardFollowUpQuote(t *testing.T) {
 			before := a.ov.h
 			click(t, tt, tc.all)
 			frames(tt)
-			if v := a.cardNow(); !a.answer.quotesOpen[3] || v.bubbles[6].quote != strings.TrimSpace(cardQuoteLong) || !has(tt, tc.less) || a.ov.h < before {
-				t.Errorf("after %q: open %v, %d high (was %d)", tc.all, a.answer.quotesOpen, a.ov.h, before)
+			if v := a.cachedCard(); !a.answer.ui.quotesOpen[3] || cardBubblesForTest(v)[6].quote != strings.TrimSpace(cardQuoteLong) || !has(tt, tc.less) || a.ov.h < before {
+				t.Errorf("after %q: open %v, %d high (was %d)", tc.all, a.answer.ui.quotesOpen, a.ov.h, before)
 			}
 			click(t, tt, tc.less)
 			frames(tt)
-			if a.answer.quotesOpen[3] || !has(tt, tc.all) {
-				t.Errorf("after %q: %v", tc.less, a.answer.quotesOpen)
+			if a.answer.ui.quotesOpen[3] || !has(tt, tc.all) {
+				t.Errorf("after %q: %v", tc.less, a.answer.ui.quotesOpen)
 			}
-			if tip := continueTip(a.cardNow().follow); !strings.Contains(tip, tc.tip) || !strings.Contains(continueTip(""), tc.tip) {
+			if tip := a.cachedCard().FollowTooltip; !strings.Contains(tip, tc.tip) || !strings.Contains(continueTipFor(i18n.NewTranslator(tc.locale), ""), tc.tip) {
 				t.Errorf("Continue's tip %q", tip)
 			}
 		})

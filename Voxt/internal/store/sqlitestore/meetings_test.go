@@ -131,6 +131,30 @@ func TestMeetingsReplaceTransactional(t *testing.T) {
 	}
 }
 
+// A batch of text updates lands whole or not at all: one statement SQLite
+// rejects rolls back the ones before it.
+func TestMeetingsUpdateSegmentTextsAtomic(t *testing.T) {
+	s := openTest(t, t.TempDir())
+	m := s.Meetings()
+	ctx := context.Background()
+	mt, _ := m.CreateMeeting(ctx, meetingID("m-atomic"))
+	m.AppendSegments(ctx, mt.Seq, []store.MeetingSegment{seg(store.SegmentMic, "one"), seg(store.SegmentMic, "two")})
+	if err := m.UpdateSegmentTexts(ctx, mt.Seq, map[int]string{0: "fixed one", 1: string([]byte{0xff})}); err == nil {
+		t.Fatal("invalid UTF-8 accepted")
+	}
+	_, segs, _ := m.Meeting(ctx, "m-atomic")
+	if len(segs) != 2 || segs[0].Text != "one" || segs[1].Text != "two" {
+		t.Fatalf("a rejected batch changed lines: %+v", segs)
+	}
+	if err := m.UpdateSegmentTexts(ctx, mt.Seq, map[int]string{0: "fixed one", 1: "fixed two"}); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, _ = m.Meeting(ctx, "m-atomic")
+	if segs[0].Text != "fixed one" || segs[1].Text != "fixed two" {
+		t.Fatalf("a good batch did not land: %+v", segs)
+	}
+}
+
 func TestMeetingsUnfinishedAndExpiredAudio(t *testing.T) {
 	s := openTest(t, t.TempDir())
 	m := s.Meetings()
@@ -203,7 +227,7 @@ func TestMeetingsConstraints(t *testing.T) {
 func TestMeetingsMigrateFromV6(t *testing.T) {
 	dir := t.TempDir()
 	s := openTest(t, dir)
-	if v, _ := userVersion(ctx, s.db); v != 7 {
+	if v, _ := userVersion(ctx, s.db); v != Version() {
 		t.Fatalf("version %d", v)
 	}
 	s.Close()

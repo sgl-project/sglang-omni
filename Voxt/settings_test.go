@@ -1,6 +1,6 @@
 package main
 
-// Tests of the settings sections: Overlay style, Shortcuts, General's
+// Tests of the settings sections: Overlay style, Shortcuts, Experimental, General's
 // other languages, and the dialog's size (Audio: settings_audio_test.go;
 // the sidebar's automatic rail: shell_nav_test.go; the menu bar:
 // tray_test.go).
@@ -13,9 +13,22 @@ import (
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
+
+func TestSettingsSectionNavigation(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/general")
+	if err := tt.ClickControl("Audio"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.shownPath() != "/settings/audio" || !has(tt, "Microphones") {
+		t.Fatalf("section: path %q, texts %q", a.shownPath(), firstTexts(tt))
+	}
+}
 
 func TestOverlayStyleSettings(t *testing.T) {
 	a, _, tt := newTestApp(t)
@@ -77,20 +90,57 @@ func TestShortcutsSettings(t *testing.T) {
 	if !has(tt, "None") {
 		t.Error("a feature without shortcut")
 	}
+	// The Strict shortcuts row above the table pushes this row near the
+	// bottom; with taller fonts (Linux CI) it is below the window.
+	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
-	if a.settingsOpen || a.shownPath() != "/transcribe" {
+	if !a.settingsOpen || a.shownPath() != "/settings/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
 	}
 	a.navigate("/settings/shortcuts")
 	click(t, tt, "Translate Right ⌥")
-	if a.shownPath() != "/translate" {
+	if a.shownPath() != "/settings/translate" {
 		t.Fatalf("Translate row: %s", a.shownPath())
+	}
+}
+
+func TestShortcutsUseTheTranscribeIcon(t *testing.T) {
+	if got := shortcutIcon("transcribe"); got.Name != transcribeIcon.Name {
+		t.Fatalf("Transcribe shortcut icon = %q, want %q", got.Name, transcribeIcon.Name)
+	}
+}
+
+// TestReturnFinishesSetting: Settings → Shortcuts has the switch for
+// Return finishing a recording, under the shortcuts, on by default, in
+// English and Chinese, and it saves. It was Transcribe's page's, for
+// Transcribe alone; it now covers every feature (TestReturnFinishPlanScope).
+func TestReturnFinishesSetting(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	const title = "Return finishes a recording"
+	scrollToText(tt, title)
+	if !has(tt, title) || !a.settings.Get().Features.ReturnFinishes {
+		t.Fatalf("section: %v %q", a.settings.Get().Features.ReturnFinishes, firstTexts(tt))
+	}
+	if err := tt.ClickControl(title); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if a.settings.Get().Features.ReturnFinishes {
+		t.Fatal("the switch did not turn Return finishing off")
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	scrollToText(tt, "按回车结束录音")
+	if !has(tt, "按回车结束录音") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }
 
 // TestStrictShortcutsSetting: Settings → Shortcuts has the Strict
 // shortcuts switch, off by default, with its line in English and Chinese;
-// it saves, and settings search finds it (#3823).
+// it shows without scrolling at the default and the smallest window size
+// (#3916); it saves, and settings search finds it (#3823).
 func TestStrictShortcutsSetting(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
@@ -98,7 +148,18 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	if !has(tt, "Strict shortcuts") || !has(tt, about) || a.settings.Get().Features.StrictShortcuts {
 		t.Fatalf("section: %q", firstTexts(tt))
 	}
-	scrollToText(tt, "Strict shortcuts") // under the table
+	inView := func(what, title string) {
+		t.Helper()
+		for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
+			tt.SetSize(size[0], size[1])
+			frames(tt)
+			if r, ok := tt.Find(title); !ok || r.Y+r.H > float32(size[1]) {
+				t.Errorf("%s, %dx%d: Strict shortcuts needs a scroll: %v %v", what, size[0], size[1], r, ok)
+			}
+		}
+		tt.SetSize(windowWidth, windowHeight)
+	}
+	inView("English", "Strict shortcuts")
 	if err := tt.ClickControl("Strict shortcuts"); err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +178,12 @@ func TestStrictShortcutsSetting(t *testing.T) {
 	if !has(tt, "快捷键严格模式") || !has(tt, "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。") {
 		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
+	inView("zh-Hans", "快捷键严格模式")
+	a.applyShortcutPreset(settings.PresetFn) // its warnings go under the preset, above the switch
+	if !has(tt, "Auralink 也用 fn，它运行时，两个 App 都会响应这些键。") {
+		t.Errorf("fn preset's warning: %q", firstTexts(tt))
+	}
+	inView("zh-Hans, fn preset", "快捷键严格模式")
 }
 
 // TestShortcutPreset: a preset gives its keys to the shortcuts the user
@@ -241,11 +308,40 @@ func TestSettingsDialogSize(t *testing.T) {
 	}
 }
 
+// TestHideNotesAndMeetings: Settings → General lists Notes and Meetings;
+// hidden, their pages leave the sidebar and Notes' shortcut leaves the
+// Shortcuts page (#4224).
+func TestHideNotesAndMeetings(t *testing.T) {
+	translator := i18n.NewTranslator("en")
+	prefs := settings.Defaults()
+	prefs.Features.Hidden = []string{settings.HideNotes, settings.HideMeetings}
+	shownByID := map[string]bool{}
+	for _, feature := range buildSettingsGeneralViewState(translator, prefs).Features {
+		shownByID[feature.ID] = feature.Shown
+	}
+	for _, featureID := range []string{settings.HideNotes, settings.HideMeetings} {
+		if shown, listed := shownByID[featureID]; !listed || shown {
+			t.Errorf("General: %s listed %v, shown %v; want listed and unchecked", featureID, listed, shown)
+		}
+	}
+	for _, group := range buildNavViewState(translator, navViewStateInput{Current: "/home", Features: prefs.Features}).Groups {
+		for _, page := range group.Pages {
+			if page.Path == "/notes" || page.Path == "/meetings" {
+				t.Errorf("hidden page %s is in the sidebar", page.Path)
+			}
+		}
+	}
+	for _, row := range buildSettingsShortcutsViewState(translator, settingsShortcutsStateInput{Features: prefs.Features}).Rows {
+		if row.Feature == hotkey.Note {
+			t.Errorf("hidden Notes keeps its shortcut row %+v", row)
+		}
+	}
+}
+
 // TestHideFeatures: unchecking Translate in Settings → General takes its
-// page out of the sidebar and ⌘K and its shortcuts out of the event tap;
-// a hidden App enhancement's scene rules are off; checking them brings
-// everything back. Voxt 1.x could hide unused features; Voxt 2
-// always showed them (#3644).
+// Settings command out of ⌘K and its shortcuts out of the event tap;
+// App enhancement leaves the sidebar and its scene rules turn off;
+// checking them brings everything back. Voxt 1.x could hide unused features.
 func TestHideFeatures(t *testing.T) {
 	if settings.HideTranslate != hotkey.Translate || settings.HideRewrite != hotkey.Rewrite {
 		t.Fatal("Features.Hidden's ids are not internal/hotkey's")
@@ -255,7 +351,7 @@ func TestHideFeatures(t *testing.T) {
 	state := func() (sidebar, palette, keys, scenes bool) {
 		a.navigate("/home")
 		frames(tt)
-		sidebar = hasExact(tt, "Translate")
+		sidebar = hasExact(tt, "App enhancement")
 		defer func() {
 			a.navigate("/settings/general")
 			frames(tt)
@@ -265,7 +361,7 @@ func TestHideFeatures(t *testing.T) {
 			}
 		}()
 		for _, cmd := range a.paletteItems() {
-			palette = palette || cmd.id == "go/translate"
+			palette = palette || cmd.id == "go/settings/translate"
 		}
 		for _, b := range a.hotkeyPlan().Bindings {
 			keys = keys || strings.HasPrefix(b.ID, hotkey.Translate+"/")
@@ -325,5 +421,56 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 		if from[1] <= from[0] {
 			t.Errorf("%s: the pill is %.1f from its edge at the largest distance, %.1f at none", pos, from[1], from[0])
 		}
+	}
+}
+
+func TestShortcutsOmitSessions(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	if has(tt, "Sessions (experimental)") {
+		t.Fatalf("Shortcuts still shows the Sessions switch: %q", firstTexts(tt))
+	}
+}
+
+// TestExperimentalSessionsSettings: Settings → Experimental lists the
+// session switch and four shortcut rows (#4005), in English and Chinese;
+// Change… opens the recorder, whose pressed keys save.
+func TestExperimentalSessionsSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/experimental")
+	const description = "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart."
+	if !has(tt, description) {
+		t.Errorf("no feature description: %q", firstTexts(tt))
+	}
+	scrollToText(tt, "Sessions (experimental)")
+	if has(tt, "Go to session 1") || a.settings.Get().Features.SessionsOn {
+		t.Fatalf("sessions are off by default: %q", firstTexts(tt))
+	}
+	if err := tt.ClickControl("Sessions (experimental)"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Features.SessionsOn {
+		t.Fatal("the switch did not turn sessions on")
+	}
+	// Only Next session: the card's row and the menu bar go to a given
+	// session, and its number shifts as sessions come and go. No use counts.
+	scrollToText(tt, "Next session")
+	if !has(tt, "Next session") || !has(tt, "⌥Tab") || has(tt, "Go to session 1") || has(tt, "Switched sessions") {
+		t.Errorf("the session rows: %q", firstTexts(tt))
+	}
+	click(t, tt, "Change…")
+	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
+	frames(tt)
+	if got := a.settings.Get().Features.Sessions[3].Keys; got != "Control+Option+4" {
+		t.Fatalf("the recorder saved %q", got)
+	}
+	if !hasExact(tt, "⌃⌥4") {
+		t.Errorf("the row shows the new keys: %q", firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if !has(tt, "下一个会话") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }

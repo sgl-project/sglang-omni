@@ -90,7 +90,7 @@ mx::array MingAcoustic::TimeEmbeddings() const {
               prefix + ".0")),
           prefix + ".2"),
       1);
-  mx::eval(embeddings);
+  mx::async_eval(embeddings);
   return embeddings;
 }
 
@@ -100,31 +100,43 @@ mx::array MingAcoustic::ProjectSpeaker(const mx::array &speaker) const {
 }
 
 mx::array MingAcoustic::Blocks(mx::array hidden, const AcousticConfig &config,
-                               const std::string &prefix) const {
-  const int batch = hidden.shape(0), length = hidden.shape(1),
+                               const std::string &prefix, int kept_begin,
+                               int kept_count) const {
+  const int batch = hidden.shape(0),
             head_dim = config.hidden_size / config.num_heads;
   for (int layer = 0; layer < config.depth; ++layer) {
     const std::string block = prefix + ".blocks." + std::to_string(layer);
+    const bool last = layer + 1 == config.depth;
     const mx::array normed =
         checkpoint_.RmsNorm(hidden, block + ".norm1", kNormEpsilon);
-    const auto project = [&](const std::string &projection) {
+    const auto project = [&](const mx::array &rows,
+                             const std::string &projection) {
       return mx::transpose(
-          mx::reshape(checkpoint_.Linear(normed, block + ".attn." + projection),
-                      {batch, length, config.num_heads, head_dim}),
+          mx::reshape(checkpoint_.Linear(rows, block + ".attn." + projection),
+                      {batch, rows.shape(1), config.num_heads, head_dim}),
           {0, 2, 1, 3});
     };
+    const auto kept = [&](const mx::array &x) {
+      return mx::slice(x, {0, kept_begin, 0},
+                       {batch, kept_begin + kept_count, x.shape(2)});
+    };
+    if (last) {
+      hidden = kept(hidden);
+    } else {
+    }
     const mx::array attended = mx::fast::scaled_dot_product_attention(
-        mx::fast::rope(project("to_q"), head_dim, true,
+        mx::fast::rope(project(last ? kept(normed) : normed, "to_q"), head_dim,
+                       true, static_cast<float>(kFrequencyBase), 1.0f,
+                       last ? kept_begin : 0),
+        mx::fast::rope(project(normed, "to_k"), head_dim, true,
                        static_cast<float>(kFrequencyBase), 1.0f, 0),
-        mx::fast::rope(project("to_k"), head_dim, true,
-                       static_cast<float>(kFrequencyBase), 1.0f, 0),
-        project("to_v"),
+        project(normed, "to_v"),
         static_cast<float>(std::pow(static_cast<double>(head_dim), -0.5)));
     hidden = mx::add(
-        hidden,
-        checkpoint_.Linear(mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
-                                       {batch, length, config.hidden_size}),
-                           block + ".attn.to_out.0"));
+        hidden, checkpoint_.Linear(
+                    mx::reshape(mx::transpose(attended, {0, 2, 1, 3}),
+                                {batch, hidden.shape(1), config.hidden_size}),
+                    block + ".attn.to_out.0"));
     hidden = mx::add(
         hidden,
         checkpoint_.Linear(
@@ -147,9 +159,7 @@ mx::array MingAcoustic::Aggregate(const mx::array &latents) const {
       prefix + ".x_embedder");
   const mx::array cls = checkpoint_.Embed(
       mx::zeros({latents.shape(0), 1}, mx::int32), prefix + ".word_embedder");
-  const mx::array output =
-      Blocks(mx::concatenate({cls, hidden}, 1), aggregator_, prefix);
-  return mx::slice(output, {0, 0, 0}, {latents.shape(0), 1, llm_hidden_size_});
+  return Blocks(mx::concatenate({cls, hidden}, 1), aggregator_, prefix, 0, 1);
 }
 
 TailOutput MingAcoustic::Step(const mx::array &hidden, const mx::array &history,
@@ -180,6 +190,7 @@ TailOutput MingAcoustic::Step(const mx::array &hidden, const mx::array &history,
           ? std::optional(mx::random::normal(
                 {kCfmSteps - 1, batch, patch_size_, latent_dim_}, mx::float32))
           : std::nullopt;
+  const int rows = conditioning.shape(1) + history_frames_ + patch_size_;
   for (int step = 0; step < kCfmSteps; ++step) {
     const mx::array output = Blocks(
         mx::concatenate(
@@ -189,11 +200,8 @@ TailOutput MingAcoustic::Step(const mx::array &hidden, const mx::array &history,
              doubled(checkpoint_.Linear(mx::astype(sampled, embedder_dtype),
                                         embedder_prefix))},
             1),
-        dit_, prefix);
-    const auto predictions =
-        mx::split(mx::slice(output, {0, output.shape(1) - patch_size_, 0},
-                            output.shape()),
-                  2, 0);
+        dit_, prefix, rows - patch_size_, patch_size_);
+    const auto predictions = mx::split(output, 2, 0);
     const mx::array velocity =
         mx::add(predictions[0],
                 mx::multiply(mx::subtract(predictions[0], predictions[1]),
@@ -210,6 +218,7 @@ TailOutput MingAcoustic::Step(const mx::array &hidden, const mx::array &history,
                                    sampled.shape())));
     } else {
     }
+    mx::async_eval(sampled);
   }
   const mx::array stop =
       mx::softmax(checkpoint_.Linear(

@@ -10,13 +10,18 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from sglang_omni.client import audio as client_audio
 from sglang_omni.client.client import build_params
 from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.preprocessing import resource_connector
 from sglang_omni.serve import speech_service
-from sglang_omni.serve.protocol import CreateSpeechRequest
+from sglang_omni.serve.protocol import (
+    CreateSpeechBatchRequest,
+    CreateSpeechRequest,
+    SpeechStreamSessionConfig,
+)
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 
@@ -1332,3 +1337,57 @@ def test_reference_list_rejects_outside_allowlist_bare_path(tmp_path: Path) -> N
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.param == "references.audio_path"
+
+
+def test_output_sample_rate_stays_in_serving_layer() -> None:
+    """Output resampling must not change the model's generation parameters."""
+    service = SpeechRequestValidator(default_model="tts")
+    request = service.parse_request({"input": "Hello.", "sample_rate": 16000})
+    generate_request = service.build_generate_request(request)
+    assert "sample_rate" not in generate_request.metadata["tts_params"]
+
+
+@pytest.mark.parametrize(
+    "request_type",
+    [CreateSpeechRequest, CreateSpeechBatchRequest, SpeechStreamSessionConfig],
+)
+@pytest.mark.parametrize(
+    ("supported_sample_rate", "unsupported_sample_rate"),
+    [(7350, 7349), (192000, 192001)],
+)
+def test_output_sample_rate_limit(
+    request_type: type[
+        CreateSpeechRequest | CreateSpeechBatchRequest | SpeechStreamSessionConfig
+    ],
+    supported_sample_rate: int,
+    unsupported_sample_rate: int,
+) -> None:
+    """Every request schema must reject rates outside the speech encoding range."""
+    payload = {"input": "Hello.", "items": [{"input": "Hello."}]}
+    request = request_type.model_validate(
+        {**payload, "sample_rate": supported_sample_rate}
+    )
+    assert request.sample_rate == supported_sample_rate
+    with pytest.raises(ValidationError) as error:
+        request_type.model_validate({**payload, "sample_rate": unsupported_sample_rate})
+    assert error.value.errors()[0]["loc"] == ("sample_rate",)
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize(
+    ("response_format", "sample_rate"),
+    [("opus", 8000), ("mp3", 12345), ("mp3", 96000)],
+)
+def test_speech_rejects_unsupported_encoder_sample_rates(
+    batch: bool, response_format: str, sample_rate: int
+) -> None:
+    """Unsupported encoder rates must fail before model generation instead of changing the requested rate."""
+    service = SpeechRequestValidator(default_model="tts")
+    payload = {"response_format": response_format, "sample_rate": sample_rate}
+    with pytest.raises(SpeechAPIError) as error:
+        if batch:
+            service.parse_batch_request({**payload, "items": [{"input": "Hello."}]})
+        else:
+            service.parse_request({**payload, "input": "Hello."})
+    assert error.value.status_code == 400
+    assert error.value.param == "sample_rate"

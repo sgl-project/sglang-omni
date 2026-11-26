@@ -129,6 +129,14 @@ if [[ "$mode" == developer-id ]]; then
     manifest="$dir/update-darwin-arm64.json"
     check "the update archive" bash -c "compgen -G '$dir/*-$version-darwin-arm64.tar.gz'"
     check "the update manifest says $version" bash -c "jq -e --arg v '$version' '.version == \$v and (.signature | length > 0)' '$manifest'"
+    # What the app itself will ask for once it is installed (MyGo links
+    # both feeds and the key in): a build with another feed or key cannot
+    # be given an update later.
+    release="$(dirname "$0")/../release/mygo.release.json"
+    feed="$(jq -r .updates.url "$release")"
+    check "the app reads its updates from $feed" grep -aqF "$feed/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"
+    check "the app has the beta feed" grep -aqF "$feed/beta/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"
+    check "the app checks updates against the release's public key" grep -aqF "$(jq -r .updates.publicKey "$release")" "$app/Contents/MacOS/Voxt"
   else
     check "no update files (the release has no feed)" bash -c "! compgen -G '$dir/update-*.json'"
   fi

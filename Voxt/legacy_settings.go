@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -213,12 +214,12 @@ func (s legacyLLMSetup) provider() (p settings.Provider, check, ok bool) {
 	endpoint, check := legacyEndpoint(s.ProviderID, s.Endpoint)
 	model := strings.TrimSpace(s.Model)
 	if s.ProviderID == "openAI" {
-		gen = legacyOpenAIGeneration(gen, model)
+		gen = providers.LegacyOpenAIGeneration(gen, model)
 		// Extra Body went into a Responses request here; those models only exist there.
-		check = check || gen.ExtraBodyJSON != "" || legacyModelIs(model, "gpt-5.2-pro") || legacyModelIs(model, "gpt-5-pro")
+		check = check || gen.ExtraBodyJSON != "" || providers.LegacyModelIs(model, "gpt-5.2-pro") || providers.LegacyModelIs(model, "gpt-5-pro")
 	}
 	p = settings.Provider{ID: id, Endpoint: endpoint, Model: model, Generation: gen}
-	if id == "openai" && legacyResponsesAPI(s.OpenAIAPIFormat, s.Endpoint) {
+	if id == "openai" && providers.LegacyResponsesAPI(s.OpenAIAPIFormat, s.Endpoint) {
 		p.APIFormat = llm.APIResponses
 	}
 	return p, check, true
@@ -563,7 +564,7 @@ func (l legacySettings) apply(s *settings.Settings, voxtDir string) (llmAdded, s
 		prompts++
 	}
 	if len(s.Features.Meeting.Hotkeys) == 0 {
-		if hks := parseLegacyMeetingHotkeys(voxtDir); len(hks) > 0 {
+		if hks := hotkey.ParseLegacyMeetingHotkeys(voxtDir, legacyPreference); len(hks) > 0 {
 			s.Features.Meeting.Hotkeys = hks
 		}
 	}

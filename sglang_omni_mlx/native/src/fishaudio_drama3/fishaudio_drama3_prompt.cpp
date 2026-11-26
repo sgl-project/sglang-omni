@@ -113,7 +113,7 @@ PromptFrames BuildFrames(const omni_common::Tokenizer &tokenizer,
     blocks.push_back(block);
   }
   mx::array frames = mx::concatenate(blocks, 0);
-  mx::eval(frames);
+  mx::async_eval(frames);
   return {frames, system_rows};
 }
 

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -34,6 +35,9 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 	case store.KindTranslate:
 		f := r.settings.Features.Translate
 		in.Task, in.TaskPrompt, in.TargetLanguage = compose.Translate, f.Prompt, r.target
+		if strings.TrimSpace(r.req.TargetLanguage) == "" { // a language picked for this text stays
+			in.BackLanguage = in.MainLanguage
+		}
 		if selection != "" {
 			in.Text, in.Selected = selection, true
 		} else {
@@ -41,11 +45,18 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 		}
 	case store.KindRewrite:
 		f := r.settings.Features.Rewrite
-		in.Task, in.TaskPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.Cleanup, raw, selection
+		// The source is the selection; typed text alone takes its place
+		// (its order stays: the source, the typed text, the instruction).
+		source, typed := selection, r.typed
+		if source == "" {
+			source, typed = typed, ""
+		}
+		in.Task, in.TaskPrompt, in.Cleanup, in.Instruction, in.Text = compose.Rewrite, f.Prompt, f.Cleanup, raw, source
+		in.Typed = typed
 		in.Previous = r.req.Previous
 		// Written from an instruction: an answer with a title; a follow-up
 		// answers in plain text, as a conversation does (Voxt's).
-		in.Answer = selection == "" && len(in.Previous) == 0
+		in.Answer = source == "" && len(in.Previous) == 0
 	}
 	return in
 }
@@ -59,9 +70,101 @@ func (r *run) writeInput(raw, selection string) compose.Input {
 func (r *run) write(raw, selection string) {
 	cfg := r.m.cfg
 	kind := r.req.Kind
+	if kind == store.KindRewrite {
+		// The box's own text and pictures, as they are now (the user
+		// typed and pasted while it recorded). They win over the
+		// clipboard's picture and the window's, which an empty box
+		// leaves to today's rule — the window's is shot only now, so
+		// that one that will not be sent is never taken.
+		readBox := func(reviewed bool) bool {
+			if !r.req.Box || cfg.BoxInput == nil {
+				return true
+			}
+			typed, images, err := cfg.BoxInput(r.ctx)
+			if err != nil {
+				if r.ctx.Err() != nil {
+					r.endCancelled(nil)
+					return false
+				}
+				// The box keeps this error and the recognised instruction
+				// for the user's confirmation before another send.
+				r.m.update(r, func(s *Snapshot) { s.Spoken, s.Selection = raw, selection })
+				r.endWriteFailed(ProblemOf(err), false)
+				return false
+			}
+			// A live box can be cleared; a retry from the card keeps its
+			// typed text when the closed box returns nothing. After the
+			// review the box was shown, so what it holds is the answer.
+			if typed != "" || r.req.Text == nil || reviewed {
+				r.typed = typed
+			}
+			if len(images) > 0 {
+				r.req.Images = images
+			}
+			return true
+		}
+		if !readBox(false) {
+			return
+		}
+		automaticImageSuppressed := false
+		if r.req.Box && cfg.BoxAutoSuppressed != nil {
+			selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+			if selectionSuppressed {
+				selection = ""
+			}
+			automaticImageSuppressed = imageSuppressed
+			if imageSuppressed {
+				r.clip, r.shot = nil, nil
+			}
+		}
+		if r.req.Box && r.req.Text != nil && len(r.req.Images) == 0 && r.clip == nil && !automaticImageSuppressed {
+			// A send again (Text) with no pictures of its own keeps
+			// today's rule: the clipboard's picture, else the window's.
+			r.readClipboardImage()
+			r.previewClip()
+		}
+		if !automaticImageSuppressed {
+			r.shootWindow()
+			if r.req.Box && r.shot != nil && r.svc.LLM != nil && cfg.BoxReview != nil {
+				if jpeg := r.shot(); jpeg != nil {
+					r.previewImage("window", jpeg)
+					if err := cfg.BoxReview(r.ctx); err != nil {
+						r.endCancelled(nil)
+						return
+					}
+					// The user may have typed or pasted while reviewing; the
+					// box's pictures then win over the window's.
+					if !readBox(true) {
+						return
+					}
+					if len(r.req.Images) > 0 {
+						r.previewImage("", nil)
+					}
+					if cfg.BoxAutoSuppressed != nil {
+						selectionSuppressed, imageSuppressed := cfg.BoxAutoSuppressed()
+						if selectionSuppressed {
+							selection = ""
+						}
+						if imageSuppressed {
+							r.clip, r.shot = nil, nil
+						}
+					}
+				}
+			}
+		}
+	}
+	if kind == store.KindRewrite && raw == "" && r.typed != "" {
+		// Nothing said: the typed text is the instruction, in the request,
+		// the card's conversation and the history.
+		raw, r.typed = r.typed, ""
+		r.m.update(r, func(s *Snapshot) { s.Raw = raw })
+	}
 	if r.svc.LLM == nil {
 		r.endWriteFailed(&Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}, false)
 		return
+	}
+	if kind == store.KindTranslate && strings.TrimSpace(r.req.TargetLanguage) == "" {
+		r.target = TranslateInto(r.target, MainLanguage(r.settings, cfg.Locale()), cmp.Or(selection, raw))
 	}
 	in := r.writeInput(raw, selection)
 	// The feature's card switch: on, the answer waits in the answer card,
@@ -83,7 +186,11 @@ func (r *run) write(raw, selection string) {
 	// already there.
 	keepSpeech := kind == store.KindTranslate && selection == "" && raw != ""
 	r.m.update(r, func(s *Snapshot) {
-		s.State, s.Selection, s.Card, s.CanSkip = Composing, selection, o.card != "" && !r.req.Try, keepSpeech
+		s.State, s.Selection, s.Card, s.CanSkip, s.Spoken = Composing, selection, o.card != "" && !r.req.Try, keepSpeech, raw
+		s.Typed = r.typed
+		if kind == store.KindTranslate {
+			s.TargetLanguage = r.target
+		}
 	})
 
 	// Can it replace the selection? If not, the answer streams into the
@@ -105,15 +212,22 @@ func (r *run) write(raw, selection string) {
 		source = selection
 	}
 	llmStart := r.now()
-	res, profile, truncated, err := r.askOrFallback(in)
-	if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil {
-		r.logf("warning", "the translation looks untranslated: asking again, strictly")
-		r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
-		in.Strict = true
-		if again, p, cut, err2 := r.ask(in); err2 == nil {
-			res, profile, truncated = again, p, cut
-		} else if r.ctx.Err() == nil {
-			r.logf("warning", "the strict retry failed, keeping the first answer: %v", err2)
+	var res compose.Answer
+	var profile string
+	var truncated bool
+	var err error
+	for first := true; first || r.askAgain(); first = false {
+		in.Strict = false
+		res, profile, truncated, err = r.askOrFallback(in)
+		if err == nil && kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && r.ctx.Err() == nil && !r.stopped.Load() {
+			r.logf("warning", "the translation looks untranslated: asking again, strictly")
+			r.m.update(r, func(s *Snapshot) { s.Retried, s.Draft = true, "" })
+			in.Strict = true
+			if again, p, cut, err2 := r.ask(in); err2 == nil {
+				res, profile, truncated = again, p, cut
+			} else if r.ctx.Err() == nil && !r.rethink.Load() {
+				r.logf("warning", "the strict retry failed, keeping the first answer: %v", err2)
+			}
 		}
 	}
 	llmTime := r.now().Sub(llmStart)
@@ -127,6 +241,14 @@ func (r *run) write(raw, selection string) {
 		r.logf("info", "the language model was skipped after %v: the speech goes on as recognised", llmTime.Round(time.Millisecond))
 		r.finish(Done, nil, raw, o)
 		return
+	case err != nil && r.stopped.Load():
+		// The user stopped it: the card keeps the answer so far, nothing
+		// goes over the selection or in unseen.
+		s := r.m.snapshot(r)
+		r.logf("info", "the answer was stopped after %v: the card keeps %s", llmTime.Round(time.Millisecond), r.logText(s.Draft))
+		o.card = deliver.ReasonCard
+		r.finish(Done, nil, s.Draft, o)
+		return
 	case err != nil && keepSpeech && TimedOut(err):
 		r.logf("warning", "language model %s (model %s) did not answer in %v, the speech goes on as recognised: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.finish(Done, &Problem{Code: ProblemLLM, Err: err, Degraded: true}, raw, o)
@@ -135,6 +257,11 @@ func (r *run) write(raw, selection string) {
 	if err != nil {
 		r.logf("warning", "language model %s (model %s) failed after %v: %v", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, llmTime.Round(time.Millisecond), err)
 		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: err}, true)
+		return
+	}
+	if kind == store.KindTranslate && compose.Untranslated(source, res.Content, in.TargetLanguage) && compose.LanguageMismatch(source, in.TargetLanguage) {
+		r.logf("warning", "the translation still looks untranslated after the strict retry")
+		r.endWriteFailed(&Problem{Code: ProblemLLM, Err: ErrNotTranslated}, true)
 		return
 	}
 	r.logf("info", "wrote %s in %v", r.logText(res.Content), llmTime.Round(time.Millisecond))
@@ -164,15 +291,51 @@ func (r *run) write(raw, selection string) {
 // requests, the snapshot and the history entry use it.
 func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
 	res, profile, truncated, err := r.ask(in)
-	// A used-up plan is the user's to manage: moving to another paid
-	// service without asking would spend it unseen.
-	if err == nil || r.svc.Fallback == nil || r.ctx.Err() != nil || r.skipped.Load() || llm.Code(err) == llm.CodeUsageLimit {
+	if !r.useFallback(err) {
 		return res, profile, truncated, err
 	}
-	r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", r.svc.LLMInfo.ID, r.svc.LLMInfo.Model, err, r.svc.FallbackInfo.ID, r.svc.FallbackInfo.Model)
-	r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, r.svc.FallbackInfo, nil
-	r.m.update(r, func(s *Snapshot) { s.LLM, s.Draft = r.svc.LLMInfo, "" })
+	if !r.swapFallback(err) {
+		return res, profile, truncated, err
+	}
 	return r.ask(in)
+}
+
+// useFallback says a failed request may go to the fallback model once:
+// there is one, the session goes on (not cancelled, skipped, stopped or
+// asked to rethink), and the failure is not the user's to manage — a
+// used-up plan is, so moving to another paid service without asking
+// would spend it unseen.
+func (r *run) useFallback(err error) bool {
+	if err == nil || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || llm.Code(err) == llm.CodeUsageLimit {
+		return false
+	}
+	r.m.mu.Lock()
+	canFallback := r.cleanupDecisionOpenLocked() && r.svc.Fallback != nil
+	r.m.mu.Unlock()
+	return canFallback
+}
+
+// swapFallback makes the fallback the session's model: later requests,
+// the snapshot and the history entry use it. The answer starts over, as
+// when asked again: nothing of the failed model's draft or title stays.
+func (r *run) swapFallback(err error) bool {
+	var failed, fallback Model
+	swapped := r.m.updateIf(r, func(s *Snapshot) bool {
+		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || !r.cleanupDecisionOpenLocked() || r.svc.Fallback == nil {
+			return false
+		}
+		failed, fallback = r.svc.LLMInfo, r.svc.FallbackInfo
+		r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, fallback, nil
+		if r.req.Kind == store.KindTranscribe {
+			r.cleanupAttempt++
+		}
+		s.LLM, s.Draft, s.Title = fallback, "", ""
+		return true
+	})
+	if swapped {
+		r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", failed.ID, failed.Model, err, fallback.ID, fallback.Model)
+	}
+	return swapped
 }
 
 // ask sends one request and streams its answer into the snapshot. It
@@ -194,6 +357,11 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		skill = llm.SkillRewrite
 	}
 	var buf strings.Builder
+	answerInputs := []string{in.Text + "\n" + in.Typed + "\n" + in.Instruction}
+	for _, turn := range in.Previous {
+		answerInputs = append(answerInputs, turn.Instruction+"\n"+turn.Selection+"\n"+turn.Typed+"\n"+turn.Answer.Title+"\n"+turn.Answer.Content)
+	}
+	quoteSource := cmp.Or(in.Text, in.Instruction)
 	var last time.Time
 	publish := func(force bool) {
 		now := time.Now()
@@ -203,14 +371,16 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 		last = now
 		var a compose.Answer
 		if in.Answer {
-			a = compose.PartialAnswer(buf.String())
+			a = compose.PartialAnswer(buf.String(), answerInputs...)
+		} else if in.Task == compose.Rewrite {
+			a.Content = compose.CleanRewrite(buf.String(), answerInputs, true, quoteSource)
 		} else {
-			a.Content = strings.TrimSpace(buf.String())
+			a.Content = compose.PartialCleanWithInputs(buf.String(), answerInputs, quoteSource)
 		}
 		r.m.update(r, func(s *Snapshot) { s.Draft, s.Title = a.Content, a.Title })
 	}
 	req := llm.Request{
-		Messages: msgs, Skill: skill,
+		Messages: msgs, Skill: skill, Thinking: r.thinking(),
 		OnDelta: func(d string) {
 			buf.WriteString(d)
 			publish(false)
@@ -219,27 +389,30 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 	if in.Answer {
 		req.Format, req.Schema = llm.FormatJSON, answerSchema
 	}
-	chars := utf8.RuneCountInString(in.Text + in.Instruction)
+	chars := utf8.RuneCountInString(in.Text + in.Typed + in.Instruction)
+	req.InputChars = chars          // this turn's: a follow-up's earlier turns do not make it long
 	for _, t := range in.Previous { // note (luojiaxuan): a follow-up sends the earlier turns again, read before the first token
-		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Answer.Title + t.Answer.Content)
+		chars += utf8.RuneCountInString(t.Instruction + t.Selection + t.Typed + t.Answer.Title + t.Answer.Content)
 	}
 	resp, err := r.llmChat(cfg.llmDeadlines(req, chars, r.llmFloor(cfg.WriteTimeout)))
+	if buf.Len() > 0 {
+		publish(true) // all of it: a stopped answer keeps the words since the last publish too
+	}
 	if err != nil {
 		return compose.Answer{}, out.Profile(), false, err
 	}
-	if buf.Len() > 0 {
-		publish(true)
-	}
 	truncated := resp.FinishReason == llm.FinishLength
 	if in.Answer {
-		if a, ok := compose.ParseAnswer(resp.Text); ok {
+		if a, ok := compose.ParseAnswer(resp.Text, answerInputs...); ok {
 			return a, out.Profile(), truncated, nil
 		}
 		r.logf("warning", "the answer is not the JSON asked for: taking it as text")
-		return compose.Answer{Content: compose.Clean(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), in.Instruction)}, out.Profile(), truncated, nil
+		return compose.Answer{Content: compose.CleanRewrite(strings.TrimSpace(strings.Trim(strings.TrimSpace(resp.Text), "`")), answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
 	}
-	input := in.Text
-	return compose.Answer{Content: compose.Clean(resp.Text, input)}, out.Profile(), truncated, nil
+	if in.Task == compose.Rewrite {
+		return compose.Answer{Content: compose.CleanRewrite(resp.Text, answerInputs, false, quoteSource)}, out.Profile(), truncated, nil
+	}
+	return compose.Answer{Content: compose.CleanWithInputs(resp.Text, answerInputs, quoteSource)}, out.Profile(), truncated, nil
 }
 
 // endWriteFailed ends a Translate or Rewrite session failed. With card,
@@ -249,7 +422,7 @@ func (r *run) ask(in compose.Input) (compose.Answer, string, bool, error) {
 func (r *run) endWriteFailed(p *Problem, card bool) {
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
-	total := r.now().Sub(r.m.Current().StartedAt)
+	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	r.m.end(r, Failed, func(s *Snapshot) {
 		s.Problem, s.Timings.Total = p, total
 		s.Card = card && !r.req.Try

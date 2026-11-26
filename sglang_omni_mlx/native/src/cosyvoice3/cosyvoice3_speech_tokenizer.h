@@ -24,9 +24,6 @@ private:
                          const mlx::core::array &attention_mask) const;
 
   const omni_common::Checkpoint &checkpoint_;
-  // Rotary tables [positions, head dim].
-  mlx::core::array rotary_cos_;
-  mlx::core::array rotary_sin_;
 };
 
 } // namespace cosyvoice3

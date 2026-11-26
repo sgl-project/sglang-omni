@@ -17,6 +17,8 @@ public struct SpeechTranscript: Sendable {
 
     /// The whole text with the recognizer's latest result (partial or final).
     public mutating func update(_ text: String) -> String {
+        // macOS may finish with an empty result after reporting speech.
+        guard !text.isEmpty else { return self.text }
         if Self.restarted(from: last, to: text) {
             kept.append(last)
         }

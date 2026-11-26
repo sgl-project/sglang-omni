@@ -2,6 +2,8 @@ module github.com/sgl-project/sglang-omni/Voxt
 
 go 1.27.1
 
+toolchain go1.27.4
+
 tool github.com/egoist/mygo/cmd/mygo
 
 require (

@@ -97,6 +97,30 @@ func TestLLMDebugButtonsFit(t *testing.T) {
 // TestLLMDebugCloses: Esc or × leaves the debug page for Language
 // models; it had neither, so with no model set up its only way out was
 // Open Language models (#3781). Esc in an open menu closes only the menu.
+func TestLLMDebugPresetUsesItsSavedPrompt(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
+	a, _, _ := newTestApp(t)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{{ID: llm.Custom, Endpoint: "http://localhost/v1", Model: "mock-model"}}
+		s.Features.Transcribe.Prompt = "Transcribe saved"
+		s.Features.Rewrite.Prompt = "Rewrite saved"
+	})
+	a.readUnreadKeys()
+	a.navigate(llmDebugPath)
+	model := a.llmDebugModel()
+	if model.SavedPrompt != "Transcribe saved" || model.Edited {
+		t.Fatalf("initial prompt %q, edited %v", model.SavedPrompt, model.Edited)
+	}
+	a.llmDbg.preset = "Rewrite"
+	model = a.llmDebugModel()
+	if model.SavedPrompt != "Rewrite saved" || model.PromptLabel != "System prompt" || !model.Instruction || model.Edited || a.llmDbg.prompt != "Rewrite saved" {
+		t.Fatalf("rewrite state %+v, local prompt %q", model, a.llmDbg.prompt)
+	}
+	if len(model.PresetStates) != 3 || model.PresetStates[0].SavedPrompt != "Transcribe saved" || model.PresetStates[2].SavedPrompt != "Rewrite saved" {
+		t.Fatalf("preset prompts %+v", model.PresetStates)
+	}
+}
+
 func TestLLMDebugCloses(t *testing.T) {
 	srv, _ := mockOpenAI(t, "Hello there.")
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
@@ -108,24 +132,33 @@ func TestLLMDebugCloses(t *testing.T) {
 	a.navigate(llmDebugPath)
 	rewrites := func() int { return strings.Count("\x00"+strings.Join(tt.Texts(), "\x00")+"\x00", "\x00Rewrite\x00") }
 	click(t, tt, "Request")
-	if rewrites() != 2 { // the sidebar's and the menu's
+	if rewrites() != 1 { // the menu's Rewrite; the feature lives in Settings now
 		t.Fatalf("menu not open: %q", tt.Texts())
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if p := a.router.Path(); p != llmDebugPath || rewrites() != 1 {
+	if p := a.router.Path(); p != llmDebugPath || rewrites() != 0 {
 		t.Fatalf("Esc in the menu: at %q, %q", p, tt.Texts())
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Esc: at %q", p)
+	}
+	// Closing Settings must not bring the debug page back.
+	a.settingsOpen = false
+	if p := a.shownPath(); p == llmDebugPath {
+		t.Fatalf("the debug page came back after Settings closed")
 	}
 	a.navigate(llmDebugPath)
 	frames(tt)
 	click(t, tt, "Close")
 	frames(tt)
-	if p := a.router.Path(); p != remotePath {
+	if p := a.shownPath(); p != remotePath {
 		t.Fatalf("Close: at %q", p)
+	}
+	a.settingsOpen = false
+	if p := a.shownPath(); p == llmDebugPath {
+		t.Fatalf("the debug page came back after Settings closed")
 	}
 }

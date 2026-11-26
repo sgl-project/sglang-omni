@@ -1,0 +1,8 @@
+{
+  "name": "remote-cards-empty",
+  "kind": "remote-cards",
+  "remote_cards": {
+    "kind": "asr",
+    "groups": null
+  }
+}

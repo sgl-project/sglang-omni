@@ -1,26 +1,18 @@
 # Qwen3-Omni
 
-[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is a multi-modal model
-that accepts text, image, audio, and video input and can produce text-only or text + audio output.
-This page covers every supported server configuration — use the generator to get the exact launch
-command for your hardware, then check the tables to confirm your combination is supported.
+[Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) accepts text, images, audio, and video, and can return text alone or with audio. Use the generator for a hardware-specific launch command, then check the tables for supported configurations.
+
+For shared request examples, response formats, SSE clients, and error handling, see [Omni Model Usage](../basic_usage/omni.md). This page documents Qwen3-Omni deployment, model-specific parameters, and realtime profiles.
+
+![Qwen3-Omni architecture: multimodal inputs feed the Thinker, followed by the Talker and streaming codec decoder](../_static/image/qwen3-omni-architecture.png)
+
+The Thinker processes multimodal inputs and generates text. The Talker uses the Thinker's representations and text to produce speech tokens, and the streaming codec decoder turns them into audio.
+
+Figure credit: Qwen team, [official Qwen3-Omni architecture](https://github.com/QwenLM/Qwen3-Omni#model-architecture). See the [release blog](https://qwen.ai/blog?id=65f766fc2dcba7905c1cb69cc4cab90e94126bf4) for the model overview.
 
 ## Prerequisites
 
-```bash
-docker pull hongccc/sglang-omni:dev
-docker run -it --shm-size 32g --gpus all hongccc/sglang-omni:dev /bin/zsh
-```
-
-```bash
-pip install --upgrade pip
-pip install uv
-
-uv venv .venv -p 3.12 && source .venv/bin/activate
-uv pip install --prerelease=allow "sglang-omni==0.2.0"
-```
-
-See [Installation](../get_started/installation.md) for Docker digests and source installs.
+Install `sglang-omni` using the [installation guide](../get_started/installation.md).
 
 ## Server Configuration
 
@@ -32,8 +24,7 @@ Use the selector below to generate the exact launch command for your configurati
 
 ## Compatibility Matrix
 
-Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
-(or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
+Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml` (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
 All configurations listed below are supported.
 
@@ -52,33 +43,173 @@ All configurations listed below are supported.
 | Thinker-Talker | Colocated | TP=1 | FP8 |
 | Thinker-Talker | Colocated | TP=1 | AutoRound INT4 thinker + BF16 talker/code2wav |
 
+## Text-Only Deployment
+
+Text-only mode runs the thinker pipeline on a single GPU. It accepts multi-modal input (text, image, audio) and produces text output only.
+
+### Launch a Text-Only Server
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --port 8008
+```
+
+Multimodal preprocessing (tokenization, image/video/audio feature extraction) runs serially by default. Add `--preprocessing.factory.max_concurrency 4` to run it on a thread pool when CPU preprocessing is the bottleneck under concurrent load. Threaded preprocessing changes how requests arrive at the thinker, so greedy outputs of the bf16 MoE can differ from the serial default; keep the default when comparing accuracy across runs.
+
+For video decoder thread allocation and overrides, see [Video Decoding](../basic_usage/omni.md#video-decoding).
+
+For MMSU-style audio-input / text-output benchmarks with short requests, use the fused text-path config so the full text path stays inside one worker process:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_mmsu.yaml \
+  --text-only \
+  --port 8008
+```
+
+## Speech Deployment and Tuning
+
+Speech mode runs the full eight-stage pipeline on one or more GPUs. It produces both text (from the thinker) and audio (from the talker) output.
+
+### Launch a Speech Server
+
+Speech mode can run as a colocated one-GPU worker using the colocated config:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate \
+  --port 8008
+```
+
+Use `examples/configs/qwen3_omni_colocated_h200.yaml` on single-H200 workers.
+
+For manual multi-GPU placement, use the example script:
+
+```bash
+python examples/run_omni.py qwen3-speech-server \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --gpu-thinker 0 \
+  --gpu-talker 1 \
+  --gpu-code-predictor 1 \
+  --gpu-code2wav 0 \
+  --port 8008
+```
+
+Or use the CLI without `--text-only` for the standard speech pipeline:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --port 8008
+```
+
+### Memory and Concurrency
+
+For automatic memory sizing, global memory budgets, and per-stage overrides, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
+
+The speech server launcher exposes the same per-stage controls:
+
+```bash
+python examples/run_omni.py qwen3-speech-server \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --gpu-thinker 0 \
+  --gpu-talker 1 \
+  --gpu-code-predictor 1 \
+  --gpu-code2wav 0 \
+  --port 8008 \
+  --thinker-mem-fraction-static 0.88 \
+  --talker-mem-fraction-static 0.88
+```
+
+The thinker admits up to 64 running requests by default. Use the thinker-specific flag to lower or raise that limit in either text-only or speech mode:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+  --thinker.engine.max_running_requests 16
+```
+
+For the equivalent YAML layout, see [Memory and Concurrency](../basic_usage/omni.md#memory-and-concurrency).
+
+<span id="codec-coalescing-and-first-audio-latency"></span>
+
+### Speech Chunking and First-Audio Latency
+
+Start with the default speech chunking settings and measure time to first playable audio before tuning. Smaller chunks alone do not guarantee earlier playback. See [speech chunking and first-audio latency](qwen3_omni/tuning.md#speech-chunking-and-first-audio-latency) for frame counts and decoder timing.
+
+### Code2Wav Execution
+
+Code2Wav turns encoded speech into playable audio. Its GPU optimizations are enabled by default, so keep the launch defaults unless you are troubleshooting. See [Code2Wav execution](qwen3_omni/tuning.md#code2wav-execution) for memory requirements and individual optimization controls.
+
+### Speech Stage Placement
+
+Start with the launch examples: the thinker and talker use separate GPUs, and Code2Wav shares the thinker GPU. If you move the thinker, move Code2Wav explicitly when needed and leave memory for both stages. See [speech stage placement](qwen3_omni/tuning.md#speech-stage-placement) for workload trade-offs and measurements.
+
+## Single-GPU FP8 on H100/H20
+
+SGLang-Omni can also serve native FP8 Qwen3-Omni checkpoints. Native FP8 uses the checkpoint quantization config when loading the thinker and talker AR stages, while keeping the same Qwen3-Omni request format shown below.
+
+For one-GPU H100/H20 colocated launch, use the FP8 colocated config:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
+The config file contains the FP8 checkpoint path: `marksverdhei/Qwen3-Omni-30B-A3B-FP8`. You can still pass `--model-path` to override the config value.
+
+The FP8 path keeps dense FP8 GEMM on SGLang `auto` and defaults native FP8 MoE to CUTLASS when supported. For Qwen3-Omni pipeline launches, `SGLANG_JIT_DEEPGEMM_PRECOMPILE=0` is set as a default unless the operator has already set that environment variable. This disables SGLang's all-M DeepGEMM precompile session while keeping DeepGEMM available for dense FP8 GEMMs.
+
+To opt back into SGLang's all-M DeepGEMM precompile behavior:
+
+```bash
+SGLANG_JIT_DEEPGEMM_PRECOMPILE=1 sgl-omni serve \
+  --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8008
+```
+
+## Single-GPU AutoRound INT4 Thinker on H100/H20
+
+SGLang-Omni also supports AutoRound INT4 quantized Qwen3-Omni checkpoints. AutoRound uses a 4-bit quantization scheme with group size 128, significantly reducing memory footprint compared to BF16 or FP8.
+
+The public AutoRound checkpoint quantizes the thinker transformer layers. In speech mode, the talker and code2wav stages load as BF16 from the same checkpoint. For one-GPU H100/H20 colocated launch, use the colocated config with the AutoRound checkpoint:
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_colocated_h20.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --model-path Intel/Qwen3-Omni-30B-A3B-Instruct-int4-AutoRound \
+  --port 8008
+```
+
+AutoRound quantization provides:
+
+- **~50% memory reduction** compared to BF16 (from ~60GB to ~30GB)
+- **~25% memory reduction** compared to FP8 (from ~40GB to ~30GB)
+- **Accuracy at ultra-low bit widths**: maintains high accuracy even at 2–4 bits, requiring minimal tuning effort thanks to its sign-gradient descent optimization.
+
+## Server Readiness
+
+Qwen3-Omni warms up with a chat request containing a small image, one second of audio, and a short instruction. Speech mode requests text and audio output; text-only mode requests text. Each stage that generates tokens is limited to 8 new tokens. See [Server Readiness](../basic_usage/omni.md#server-readiness) for health status, replica coverage, timeout, and the skip option.
+
 ## Input / Output Modalities
 
-All input modality combinations work with both text-only and speech servers.
-`modalities: ["text", "audio"]` requires a **speech-mode server** (omit `--text-only`).
-
-| Input | Output | Speech server | Minimal request body | Notes |
-|---|---|---|---|---|
-| Text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "modalities": ["text"]}` | — |
-| Image + text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "images": ["path/or/url"], "modalities": ["text"]}` | — |
-| Audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Image + audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Image | Text | No | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "modalities": ["text"]}` | content must be "" when query comes from image |
-| Video + text | Text | No | `{"messages": [{"role": "user", "content": "..."}], "videos": ["path/or/url"], "modalities": ["text"]}` | — |
-| Video + audio | Text | No | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text"]}` | content must be "" when the query is spoken |
-| Video | Text | No | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "modalities": ["text"]}` | content must be "" when query comes from video |
-| Text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "modalities": ["text", "audio"]}` | — |
-| Image + text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "images": ["path/or/url"], "modalities": ["text", "audio"]}` | — |
-| Audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Image + audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Image | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "images": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when query comes from image |
-| Video + text | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": "..."}], "videos": ["path/or/url"], "modalities": ["text", "audio"]}` | — |
-| Video + audio | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "audios": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when the query is spoken |
-| Video | Text + Audio | **Yes** | `{"messages": [{"role": "user", "content": ""}], "videos": ["path/or/url"], "modalities": ["text", "audio"]}` | content must be "" when query comes from video |
+Qwen3-Omni accepts text, image, audio, and video input in both text-only and speech deployments. The [shared request examples](../basic_usage/omni.md#general-usage) cover image questions, spoken questions with images or video, and text-and-speech replies. For speech output requirements and text-only server behavior, see [Speech Output](../basic_usage/omni.md#speech-output). Realtime audio negotiation has a separate contract described below.
 
 ### Sampling Parameters
 
-Standard sampling parameters apply to the thinker stage. When `modalities` includes `"audio"`, the additional talker-specific parameters below control the speech generation independently.
+The [shared request parameters](../basic_usage/omni.md#request-parameters) document standard sampling fields, output formats, per-stage overrides, and video controls. The table below lists Qwen3-Omni sampling defaults and its talker-specific fields. Standard sampling parameters apply to the thinker; talker parameters apply when `modalities` includes `"audio"`.
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|
@@ -88,40 +219,19 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 | `min_p` | float | `0.0` | Thinker |
 | `repetition_penalty` | float | `1.0` | Thinker |
 | `max_tokens` | int | `2048` | Thinker |
-| `max_completion_tokens` | int | `null` | Thinker; OpenAI-compatible alias for `max_tokens` |
-| `stop` | str \| list | `null` | Thinker |
-| `seed` | int | `null` | Thinker |
-| `stream` | bool | `false` | Both |
-| `audio` | dict | `null` | Speech response format config, e.g. `{"format": "wav"}` |
 | `talker_temperature` | float | `0.9` | Talker (audio output only) |
 | `talker_top_p` | float | `1.0` | Talker (audio output only) |
 | `talker_top_k` | int | `50` | Talker (audio output only) |
 | `talker_repetition_penalty` | float | `1.05` | Talker (audio output only) |
 | `talker_max_new_tokens` | int | `4096` | Talker (audio output only) |
-| `stage_sampling` | dict | `null` | Per-stage sampling override |
-| `stage_params` | dict | `null` | Per-stage non-sampling params |
-| `video_fps` | float | `null` | Frame sampling rate for video input (uses server default if unset) |
-| `video_max_frames` | int | `null` | Maximum number of frames sampled from a video |
-| `video_min_pixels` | int | `null` | Minimum pixels per video frame |
-| `video_max_pixels` | int | `null` | Maximum pixels per video frame |
-| `video_total_pixels` | int | `null` | Total pixel budget across all video frames |
-| `use_audio_in_video` | bool | `null` | Set to `true` to process embedded audio. Requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported. |
 
-Non-streaming chat requests return HTTP 400 for invalid media, HTTP 503 when the request queue is full, and HTTP 500 for other
-server failures. With `stream=true`, errors detected after the event stream
-starts are sent as `data: {"error": {"message": "...", "type": "invalid_request_error", "code": 400}}`,
-followed by `data: [DONE]`. A full request queue uses `type: "server_error"` and `code: 503`. Other server failures use `type: "server_error"` and
-`code: 500`. The HTTP status remains 200 once streaming has started; clients
-must check for an `error` event, including after partial output.
+With `use_audio_in_video: true`, requests where all videos lack audio use video-only processing; mixing videos with and without audio is rejected. Audio decoding errors are reported.
 
-### Known Limitations
+For HTTP and SSE errors, see [Known Limitations](../basic_usage/omni.md#known-limitations).
 
-- **Multiple videos must have the same sampled frame rate.** The processor accepts one frame rate for video token timestamps. Requests with different sampled frame rates follow the invalid-input error contract above.
+## Realtime Speech with Server-Side Turn Detection
 
-- **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
-- **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
-- **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
-- **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit. Without `--preprocessing.factory.max_seq_len` and `--thinker.factory.max_seq_len`, the limit is the thinker's context in the checkpoint config (65,536 tokens for the Instruct checkpoint). Setting both to a lower value caps it. The talker's context is likewise the checkpoint's unless `--talker_ar.factory.max_seq_len` sets it. When a long spoken prompt leaves less room than `talker_max_new_tokens`, the talker generates only the frames that fit, so the audio can end before the text.
+The speech pipeline also streams spoken responses over `/v1/realtime` with `--enable-realtime`, with server-side turn detection and barge-in. Its protocol is in {ref}`Realtime on the speech pipeline <realtime-on-the-speech-pipeline>`; the Session graph that most realtime clients use is in [Turn-Based: Qwen3-Omni](../developer_reference/full_duplex_guide.md#turn-based-qwen3-omni).
 
 ## Qwen3-Omni persistent session stages
 
@@ -129,7 +239,7 @@ The session profile serves Qwen3-Omni as a turn-based realtime voice assistant o
 
 ## Speculative Decoding
 
-The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server.
+The thinker can verify tokens proposed by SpeechSpec's DFlash draft [`yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_dflash_block8) or EAGLE3 draft [`yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio`](https://huggingface.co/yuekai/qwen3_omni_30b_a3b_instruct_eagle3_audio) on a text-only server or in the session profile.
 
 ```bash
 # DFlash: one 8-token block per step
@@ -153,13 +263,38 @@ sgl-omni serve \
   --port 8000
 ```
 
-- **Acceptance length.** Send `return_spec_tokens_details: true` with a chat request to get its `sglext.spec_tokens_details`: `spec_accept_length` (output tokens per verify, including the token sampled at prefill, so it can read higher than the scheduler log's `accept len`, which counts only verified tokens), `spec_accept_rate`, the draft counts and the per-verify histogram. A streamed response sends it in a chunk with empty `choices` before `[DONE]`. `spec_accept_rate` and `spec_num_proposed_drafts` are left out when no drafts were proposed or the draft width is adaptive. Only the Thinker draft is reported for now; a per-stage field can follow once the Talker has a draft too.
-- **Context.** The drafts shown above have an 8,192-token context. The prompt, output budget and speculative reservations must fit within it. Use `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
-- **Sampling.** Keep `repetition_penalty=1`, `frequency_penalty=0`, `presence_penalty=0`, and `min_p=0`. Disable logprobs and `return_hidden_states`. For `/generate`, send `return_logprob: false`.
-- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to either command to enable overlap, keeping `async_decode_min_batch_size=1`. Mixed prefill/decode batches (`enable_mixed_chunk=true`), sessions and weight updates are unsupported with a draft.
-- **Overlap trade-offs.** Overlap can improve decode throughput. Prefill-heavy workloads or short outputs can see higher TTFT and lower throughput.
-- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost. Decode rounds continue to overlap.
-- **Execution failure.** An execution failure in speculative overlap stops the pipeline and fails its pending requests.
-- **Speech output.** Speech generation is unsupported with a draft; use `--text-only`.
+- **Acceptance statistics.** Set `return_spec_tokens_details: true` to include thinker draft statistics in `sglext.spec_tokens_details`.
+- **Context.** These drafts have an 8,192-token context; the prompt, output budget, and speculative reservations must fit. Set `--preprocessing.factory.max_seq_len 8192` to reject oversized prompts early.
+- **Sampling.** Use `repetition_penalty=1`, `frequency_penalty=0`, and `presence_penalty=0`. A sampled request also needs `min_p=0`; a greedy request keeps `min_p`. Disable logprobs and `return_hidden_states`. For `/generate`, set `return_logprob: false`.
+- **Scheduling.** Speculative decoding is synchronous by default. Add `--thinker.factory.enable_async_decode true` to overlap work. With `--thinker.factory.async_decode_min_batch_size` set above 1, a decode batch smaller than it, or a prefill after which fewer requests than it are decoding, has its result processed before the next batch is chosen; other batches overlap. Mixed prefill/decode batches (`enable_mixed_chunk=true`) and weight updates are unsupported with a draft.
+- **Overlap trade-offs.** Overlap can improve decode throughput, but prefill-heavy workloads or short outputs may have higher TTFT and lower throughput.
+- **Prefill boundary.** Set `SGLANG_DISABLE_CONSECUTIVE_PREFILL_OVERLAP=1` before launch to process the previous prefill batch's result before launching the next consecutive prefill batch. This can lower TTFT at a throughput cost; decode rounds still follow `async_decode_min_batch_size`.
+- **Execution failure.** A failure during speculative overlap stops the pipeline and fails pending requests.
+- **Speech output.** A request server needs `--text-only` with a draft. The session profile keeps speech output with either draft.
+- **Sessions.** The session profile takes either draft with synchronous decoding. The draft's 8,192-token context bounds the whole conversation, so add `--thinker.factory.max_seq_len 8192 --preprocessing.factory.max_seq_len 8192` to the session command along with the draft flags above.
 
-Compare modes with matching workloads and prefix-cache conditions. Measure TTFT, throughput and accuracy for your workload.
+On a single H20, EAGLE3 delivered lower request throughput than the no-draft baseline on both MMMU and MMSU. Use `qwen3_omni_eagle3.yaml` to benchmark EAGLE3.
+
+The shared speculative sweep supports `omni-mmmu` (image input) and `omni-mmsu` (audio input), both with streamed text output. Use `examples/configs/qwen3_omni_dflash.yaml` or `examples/configs/qwen3_omni_eagle3.yaml`; the sweep derives the matching no-draft configuration. For a small functional check:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.speculative_sweep \
+  --draft-config examples/configs/qwen3_omni_dflash.yaml \
+  --workload omni-mmmu --output-dir results/sweep/qwen3_omni_dflash_smoke \
+  --concurrencies 1,2 --repeats 1 --max-samples 4 --order AB \
+  --skip-gpu-cleanup -- --repo-id zhaochenyang20/mmmu-ci-50 --max-tokens 128
+```
+
+`--skip-gpu-cleanup` stops only the managed server and skips the GPU memory release wait. Peak GPU memory covers the whole device, including any other processes. For the full c1–c64 ABBA sweep with three repeats per load, remove `--max-samples`, `--concurrencies`, `--repeats`, `--order` and the client arguments after `--`. Use `-- --repo-id PATH` to compare both sides on the same local dataset. To measure repeated prefixes, pass a dataset with duplicated prompts and add `--prefix-cache` before `--`. Check the cached prompt token share in the report to verify reuse.
+
+The report includes accuracy, request throughput, end-to-end and first-text p95 latency, failures, sampled GPU memory, and KV and acceptance statistics from the server log.
+
+## Known Limitations
+
+- **Use the same frame sampling rate for videos in one request.** This is how many frames the model reads per second, not the original video frame rate. Different sampling rates in the same request cause an error.
+- **Check the deployment layout when using multiple GPUs.** The colocated layout does not support splitting the text-generation model across two GPUs. If you need that setup, choose the disaggregated layout in [Server Configuration](#server-configuration).
+- **Long inputs leave less room for the answer.** The model has a limit on how much input and output it can handle together. If a request is too long, shorten the input or ask for a shorter answer. A long spoken question can also cause the audio reply to stop before the text reply finishes.
+
+## Advanced Guides
+
+- [Speech tuning](qwen3_omni/tuning.md): speech chunking, Code2Wav GPU optimizations, and stage placement measurements.

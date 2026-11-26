@@ -196,23 +196,25 @@ Community & Resources
    cookbook/companies/openbmb.md
    cookbook/companies/boson_ai.md
    cookbook/companies/minimax.md
+   cookbook/companies/map.md
    cookbook/companies/inclusionai.md
    cookbook/companies/tencent.md
    cookbook/companies/zyphra.md
    cookbook/companies/autoark_ai.md
    cookbook/companies/mistral_ai.md
    cookbook/companies/dots_studio.md
+   cookbook/companies/fireredteam.md
 
 .. toctree::
    :hidden:
    :maxdepth: 1
    :caption: General Usage
 
-   basic_usage/qwen3_omni.md
    basic_usage/native_chat_stage.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/asr.md
+   basic_usage/omni.md
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
    basic_usage/process_topology_migration.md

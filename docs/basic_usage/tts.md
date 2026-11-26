@@ -3,7 +3,7 @@
 Use the OpenAI-compatible `/v1/audio/speech` interface to synthesize text. This
 page covers common part in TTS cookbook inlcluding: model setup, required inputs, and
 implementation-specific options belong in the linked cookbooks. The examples
-use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
+use [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice), which accepts text-only requests. Replace the model and add any fields required by your checkpoint.
 
 ## Prerequisites
 
@@ -18,8 +18,9 @@ model you are serving.
 | Model | Incremental audio | Request requirements and model-specific behavior |
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
+| [Fish Audio Drama 3](../cookbook/fishaudio_drama3.md) | Yes | Text-only or voice cloning with `references` and their transcripts; `previous_takes` for editing; a request `seed` is refused |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
-| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice-checkpoints) | Yes | Built-in speakers; 1.7B supports instruction control |
+| [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
 | [Qwen3-TTS VoiceDesign](../cookbook/qwen3_tts.md) | Yes | `task_type: "VoiceDesign"` and non-empty `instructions`; checkpoint `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` uses `examples/configs/qwen3_tts_1_7b_voicedesign.yaml` |
 | [Fun-CosyVoice3](../cookbook/fun_cosyvoice3.md) | Yes | One reference clip; cloning, cross-lingual and instruction modes |
 | [MOSS-TTS](../cookbook/moss_tts.md) | Yes | Optional reference and model-specific duration control |
@@ -27,6 +28,7 @@ model you are serving.
 | [Higgs TTS](../cookbook/higgs_tts.md) | Yes | Optional reference, inline control tokens |
 | [Voxtral TTS](../cookbook/voxtral_tts.md) | Yes | Named preset voices; no reference cloning |
 | [dots.tts](../cookbook/dots_tts.md) | Yes | Reference audio and transcript; MeanFlow and SOAR have different settings |
+| [FireRedTTS3](../cookbook/firered_tts3.md) | Yes | Base uses a reference clip and transcript; Instruct supports voice design and editing; Speaker provides text-only synthesis and optional dual-stream decoding |
 | [Ming-Omni-TTS](../cookbook/ming_tts.md) | Yes | Optional reference and transcript; `initial_codec_chunk_frames` is rejected |
 | [Ming-3.0-TTS](../cookbook/ming3_tts.md) | CUDA; CPU decodes a complete waveform | Optional reference; the Tiny and 0.5B checkpoints handle `ref_text` differently |
 | [Ming-3.0 audio](../cookbook/ming3_audio.md) | See cookbook | Speech uses one reference clip and its transcript |
@@ -380,6 +382,39 @@ curl --fail-with-body -sS -X POST http://localhost:8000/v1/audio/speech \
 
 To stream the same reference, add `"stream": true` and use the [streaming examples](#streaming). The example allows `us.aws.cdn.hf.co`, the redirect host observed for this clip; if the download redirects to a different host, allow that host too.
 
+## Voice Design
+
+Voice design generates a voice from a text description without reference audio. Support and required fields vary by model. Describing a voice is different from controlling the speaking style of a preset or reference voice.
+
+### Qwen3-TTS VoiceDesign
+
+This example requires the 1.7B VoiceDesign checkpoint, not CustomVoice or Base. The `task_type: "VoiceDesign"` setting is specific to Qwen3-TTS.
+
+Launch VoiceDesign:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign \
+  --config examples/configs/qwen3_tts_1_7b_voicedesign.yaml \
+  --port 8000
+```
+
+After `/health` returns HTTP 200, provide the text to speak in `input` and a non-empty voice description in `instructions`. Omit `voice` and reference-audio fields.
+
+```bash
+curl --fail-with-body http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+    "input": "Hello from Qwen VoiceDesign.",
+    "task_type": "VoiceDesign",
+    "instructions": "A warm, natural young adult voice."
+  }' \
+  --output designed-voice.wav
+```
+
+To stream the generated speech, add `"stream": true` and use the [streaming examples](#streaming). See the [Qwen3-TTS cookbook](../cookbook/qwen3_tts.md#voicedesign) for model selection and configuration details.
+
 ## Batch Speech
 
 Use `/v1/audio/speech/batch` when one request should synthesize several
@@ -477,6 +512,7 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `input` | string | (required) | Text to synthesize |
 | `voice` | string | `"default"` | Preset or uploaded voice identifier |
 | `response_format` | string | `"wav"` | Output audio format: `wav`, `mp3`, `flac`, `pcm`, `aac`, or `opus`. Explicit values override the default in every mode. HTTP streaming accepts only `wav` or `pcm` |
+| `sample_rate` | int | `null` | Requested output rate in Hz for the Python server, from `7350` to `192000` subject to the format's encoder limits. For example, pass `8000` for 8 kHz |
 | `speed` | float | `1.0` | Playback speed multiplier from `0.25` to `4.0` |
 | `stream` | bool | `false` | Enable raw WAV streaming by default. Set `response_format="pcm"` for raw PCM, or `stream_format="sse"` for SSE events |
 | `stream_format` | string | `"audio"` | Streaming transport: `audio` returns raw WAV or PCM bytes when streaming is enabled; `sse` enables SSE even when `stream` is omitted or false. SSE uses data-only `message` events by default. The server startup flag `--enable-speech-sse-named-events` selects the framing and error type shown in the [SSE Event Framing table](#sse-event-framing) |
@@ -501,6 +537,10 @@ These fields are accepted by the shared speech endpoint. Model support and defau
 | `seed` | int | `null` | Model-specific. Qwen3-TTS Base accepts request-scoped seed, Voxtral TTS currently rejects seed |
 | `stage_params` | object | `null` | Model-specific stage overrides; see the model cookbook |
 | `return_spec_tokens_details` | bool | `false` | With a speculative draft, return this request's acceptance statistics: `X-SGLang-Omni-Spec-*` headers on buffered audio, `sglext.spec_tokens_details` on `speech.audio.done` and on the raw audio outcome |
+
+The Python server also accepts `sample_rate` in batch defaults, batch items, and WebSocket session configuration. WAV and PCM accept any rate in the supported range. FLAC rates above `65535` Hz must be divisible by 10. AAC and MP3 accept rates supported by their encoders, and explicit Opus output uses `48000` Hz. The server rejects unsupported explicit rates before synthesis.
+
+Omitting `sample_rate` uses the model's native rate where the encoder supports it. Compressed encoders may adapt that rate, such as Opus playback at 48 kHz. WAV headers, HTTP `X-Sample-Rate`, batch result `sample_rate`, and WebSocket `audio.start.sample_rate` report the delivered rate.
 
 ## Error Handling
 

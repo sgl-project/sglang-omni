@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"slices"
 	"strings"
@@ -14,12 +15,68 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
+
+func TestBackgroundToastDoesNotRearm(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		life time.Duration
+		add  func(c *ui.Context)
+	}{
+		{name: "plain", life: 4 * time.Second, add: func(c *ui.Context) { c.Toast("Copied") }},
+		{name: "action", life: 8 * time.Second, add: func(c *ui.Context) {
+			c.ToastAction("Deleted", "Undo", func() {})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			local := &shellLocalUI{nav: &navLocalUI{sideW: sidebarWidth}}
+			state := &shellViewState{}
+			frames, added := 0, false
+			tt := ui.NewTester(func(c *ui.Context) {
+				frames++
+				if !added {
+					tc.add(c)
+					added = true
+				}
+				toastsView(c, state, local)
+			}, windowWidth, windowHeight)
+
+			tt.SetFocused(false)
+			before := frames
+			tt.Advance(30 * time.Second)
+			if frames != before {
+				t.Fatalf("a background toast armed another frame: %d frames in 30 seconds", frames-before)
+			}
+			if !tt.HasText("Copied") && !tt.HasText("Deleted") {
+				t.Fatal("the background toast expired while its timer was paused")
+			}
+
+			tt.SetFocused(true)
+			tt.Advance(tc.life + 500*time.Millisecond)
+			if tt.HasText("Copied") || tt.HasText("Deleted") {
+				t.Fatal("the toast did not expire after the window regained focus")
+			}
+		})
+	}
+}
+
+func TestAnnouncementModelChangesWithTimeZone(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	instant := time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+	a.announceShown = core.Notification{ID: "zone", Time: instant.Add(-time.Hour)}
+	a.announceShownOpen = true
+	firstAnnouncement := a.announcementModel(instant)
+	secondAnnouncement := a.announcementModel(instant.In(time.FixedZone("UTC+8", 8*60*60)))
+	if firstAnnouncement == nil || secondAnnouncement == nil || firstAnnouncement.Sub == secondAnnouncement.Sub {
+		t.Fatalf("announcement cache kept stale timezone %q and %q", firstAnnouncement.Sub, secondAnnouncement.Sub)
+	}
+}
 
 func TestSidebarAndShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
@@ -43,22 +100,30 @@ func TestSidebarAndShortcuts(t *testing.T) {
 			t.Fatalf("clicking %s went to %s", p.title, a.router.Path())
 		}
 	}
-	// ⌘1…⌘6.
+	// ⌘1…⌘6. A moved page opens its Settings section over the current page.
 	for i, path := range shortcutPages {
+		a.settingsOpen = false
+		frames(tt)
 		tt.Key(ui.Cmd, ui.Key1+ui.Key(i))
 		frames(tt)
-		if a.router.Path() != path {
-			t.Errorf("⌘%d went to %s, want %s", i+1, a.router.Path(), path)
+		want := path
+		if moved, ok := movedPaths[path]; ok {
+			want = moved
+		}
+		if a.shownPath() != want {
+			t.Errorf("⌘%d went to %s, want %s", i+1, a.shownPath(), want)
 		}
 	}
+	a.settingsOpen = false
 	if len(shortcutPages) != 6 {
 		t.Errorf("%d shortcut pages", len(shortcutPages))
 	}
 	// Settings, the System section's last item, opens the dialog over the
 	// page, and is the chosen item while it shows.
+	wantSettings := "/settings/" + a.lastSettings
 	click(t, tt, "Settings")
-	if !a.settingsOpen || a.shownPath() != "/settings/general" || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
-		t.Fatalf("settings: %v %s over %s, chosen %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav)
+	if !a.settingsOpen || a.shownPath() != wantSettings || a.router.Path() != "/app-enhancement" || a.nav != settingsPath {
+		t.Fatalf("settings: %v %s over %s, chosen %s; want %s", a.settingsOpen, a.shownPath(), a.router.Path(), a.nav, wantSettings)
 	}
 	tt.Key(0, ui.KeyEscape)
 	frames(tt)
@@ -101,6 +166,32 @@ func TestPaletteFitsTheWindow(t *testing.T) {
 	}
 }
 
+func TestPalettePopulatesItsFirstFrame(t *testing.T) {
+	for _, name := range []string{"keyboard", "sidebar"} {
+		t.Run(name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			var counts []int
+			var opens []bool
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.view(c)
+				counts = append(counts, len(a.paletteView.Items))
+				opens = append(opens, a.paletteOpen)
+			}, windowWidth, windowHeight)
+			before := len(counts)
+			if name == "keyboard" {
+				tt.Key(ui.Cmd, ui.KeyK)
+			} else if err := tt.Click("Command palette"); err != nil {
+				t.Fatal(err)
+			}
+			for i, open := range opens[before:] {
+				if open && counts[before+i] == 0 {
+					t.Fatalf("the palette's first open frame has no commands: counts %v, opens %v", counts, opens)
+				}
+			}
+		})
+	}
+}
+
 func TestPaletteAndDeepLinks(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.Key(ui.Cmd, ui.KeyK)
@@ -122,14 +213,14 @@ func TestPaletteAndDeepLinks(t *testing.T) {
 	// Chinese words find commands too, through their translation.
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	a.paletteQuery = "翻译"
-	if items := a.paletteItems(); len(items) == 0 || items[0].id != "go/translate" {
+	if items := a.paletteItems(); len(items) == 0 || items[0].id != "go/settings/translate" {
 		t.Errorf("zh palette %+v", items)
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "en" })
 
 	for link, want := range map[string]string{
 		"voxtnew://history":           "/history",
-		"voxtnew:///translate":        "/translate",
+		"voxtnew:///translate":        "/settings/translate",
 		"voxtnew://settings/audio":    "/settings/audio",
 		"/settings/privacy":           "/settings/privacy",
 		"VOXTNEW://app-enhancement/x": "/app-enhancement",
@@ -217,10 +308,18 @@ func TestProblemCards(t *testing.T) {
 	if !hasExact(tt, "No models") || !has(tt, "To start, install a speech model, then set up a language model.") {
 		t.Fatalf("no models card: %q", firstTexts(tt))
 	}
-	click(t, tt, "Open Speech models")
-	if a.router.Path() != modelsPath {
-		t.Errorf("its action: %s", a.router.Path())
+	cardTitle, _ := tt.Find("No models")
+	tt.Move(cardTitle.X+cardTitle.W/2, cardTitle.Y+cardTitle.H/2)
+	tt.Advance(time.Second)
+	if hasExact(tt, i18n.DateTime(a.notices[0].Time)) {
+		t.Fatal("hovering the problem card shows its timestamp over the sidebar navigation")
 	}
+	click(t, tt, "Open Speech models")
+	if a.shownPath() != modelsPath {
+		t.Errorf("its action: %s", a.shownPath())
+	}
+	tt.Key(0, ui.KeyEscape)
+	frames(tt)
 	// The helper: a card while it does not run, the newest on top.
 	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailMissing, Err: "voxtnew-helper was not found"})
 	if !has(tt, "Helper missing") || !has(tt, "2 notifications") || a.notices[0].ID != problemHelper {
@@ -294,6 +393,34 @@ func TestPermissionsSettings(t *testing.T) {
 	if !slices.Contains(fs.methods(), proto.MethodPermissionsStatus) || a.perms.mic != permission.NotDetermined || a.perms.access || a.perms.speech != permission.NotDetermined {
 		t.Errorf("permissions %+v after %v", a.perms, fs.methods())
 	}
+	// A recheck keeps what is shown until the helper answers: this
+	// process's read (the microphone allowed) never shows in between
+	// (#4365).
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermDenied, SpeechRecognition: proto.PermNotDetermined}, nil
+	}
+	var held []func()
+	a.postQueue = func(fn func()) { held = append(held, fn) }
+	a.recheckPermissions()
+	if a.perms.mic != permission.NotDetermined || a.perms.speech != permission.NotDetermined {
+		t.Errorf("before the helper answered: %+v", a.perms)
+	}
+	a.postQueue = nil
+	for _, fn := range held {
+		fn()
+	}
+	if len(held) == 0 || a.perms.mic != permission.Denied {
+		t.Errorf("after the helper answered (%d posts): %+v", len(held), a.perms)
+	}
+	// An older helper does not read Speech Recognition: this process does.
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) {
+		return proto.PermissionsResult{Microphone: proto.PermNotDetermined}, nil
+	}
+	a.permSys.(*permission.Fake).Speech = permission.Granted
+	a.recheckPermissions()
+	if a.perms.speech != permission.Granted {
+		t.Errorf("speech with an older helper: %+v", a.perms)
+	}
 	if slices.ContainsFunc(fs.methods(), func(m string) bool { return strings.HasPrefix(m, "automation.") }) {
 		t.Errorf("asked for Automation: %v", fs.methods())
 	}
@@ -341,8 +468,8 @@ func TestPermissionsAskRequired(t *testing.T) {
 	}
 }
 
-// TestPermissionsMoved: the old page's path, its deep link and the Home
-// page's button open the settings section; the sidebar has no such page.
+// TestPermissionsMoved: the old page's path and deep links open the
+// settings section; the sidebar has no such page.
 func TestPermissionsMoved(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == "/permissions" }) {
@@ -352,7 +479,6 @@ func TestPermissionsMoved(t *testing.T) {
 		func() { a.navigate("/permissions") },
 		func() { a.openURL("voxtnew://permissions") },
 		func() { a.openURL("voxtnew://settings/permissions") },
-		func() { a.navigate("/home"); frames(tt); click(t, tt, "Accessibility: Open Permissions") },
 	} {
 		a.settingsOpen = false
 		a.navigate("/home")
@@ -364,6 +490,57 @@ func TestPermissionsMoved(t *testing.T) {
 	}
 	if a.router.Path() != "/home" {
 		t.Errorf("page under the dialog %s", a.router.Path())
+	}
+}
+
+// TestModelsMovedToSettings: both model resources have one home in Settings;
+// their old pages, deep links and palette commands open the same sections.
+func TestModelsMovedToSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	for _, path := range []string{"/models", "/language-models"} {
+		if slices.ContainsFunc(pages, func(p navPage) bool { return p.path == path }) {
+			t.Errorf("%s is still a page of the sidebar", path)
+		}
+	}
+	for _, tc := range []struct {
+		open func()
+		want string
+	}{
+		{func() { a.navigate("/models") }, "/settings/models"},
+		{func() { a.openURL("voxtnew://models") }, "/settings/models"},
+		{func() { a.navigate("/language-models") }, "/settings/language-models"},
+		{func() { a.openURL("voxtnew://language-models") }, "/settings/language-models"},
+	} {
+		a.settingsOpen = false
+		a.navigate("/home")
+		tc.open()
+		frames(tt)
+		if got := a.shownPath(); got != tc.want {
+			t.Errorf("shown %s, want %s", got, tc.want)
+		}
+		if a.router.Path() != "/home" {
+			t.Errorf("page under the dialog %s", a.router.Path())
+		}
+	}
+	for _, link := range []string{"voxtnew://models/network", "voxtnew://settings/models/network"} {
+		a.netOpen = false
+		a.openURL(link)
+		if a.shownPath() != "/settings/models" || !a.netOpen {
+			t.Errorf("%s → %s, Network open %v", link, a.shownPath(), a.netOpen)
+		}
+	}
+	for id, want := range map[string]string{"go/models": "/settings/models", "go/language-models": "/settings/language-models"} {
+		i := slices.IndexFunc(a.commands(), func(cmd command) bool { return cmd.id == id })
+		if i < 0 {
+			t.Errorf("palette command %s is gone", id)
+			continue
+		}
+		cmd := a.commands()[i]
+		a.runCommand(cmd)
+		frames(tt)
+		if a.shownPath() != want {
+			t.Errorf("%s → %s, want %s", id, a.shownPath(), want)
+		}
 	}
 }
 
@@ -386,13 +563,52 @@ func TestPrivacyGoesOnline(t *testing.T) {
 	}
 }
 
-// TestPermissionsMeetingSystemAudio: Optional row for meeting system audio.
+// TestPermissionsMeetingSystemAudio: Optional row for meeting system
+// audio. macOS lists Voxt under System Audio Recording only once it was
+// asked, so the row's Ask has the helper ask (#3948); without the helper
+// it asks nothing else.
 func TestPermissionsMeetingSystemAudio(t *testing.T) {
-	a, _, tt := newTestApp(t)
+	a, fs, tt := newTestApp(t)
+	// Everything else allowed, so the row's Ask is the only one.
+	allowed := proto.PermissionsResult{Microphone: proto.PermGranted, Accessibility: true, SpeechRecognition: proto.PermGranted}
+	fs.handlers[proto.MethodPermissionsStatus] = func(json.RawMessage) (any, error) { return allowed, nil }
+	request := fs.handlers[proto.MethodPermissionsRequest]
+	fs.handlers[proto.MethodPermissionsRequest] = func(raw json.RawMessage) (any, error) {
+		_, err := request(raw)
+		return allowed, err
+	}
 	a.navigate("/settings/permissions")
 	frames(tt)
-	if !has(tt, "System audio recording (for meetings)") {
+	if !hasExact(tt, "System audio recording") { // one line in English, so its ⓘ sits beside it
 		t.Errorf("permissions: %q", firstTexts(tt))
+	}
+	// Its status and Ask sit under the name, as on the other rows, not at
+	// the far right of the name's line.
+	name, _ := tt.Find("System audio recording")
+	status, _ := tt.Find("Unknown")
+	ask, _ := tt.Find("Ask")
+	if status.Y < name.Y+name.H || status.X > name.X+30 || ask.Y > status.Y+2 || ask.Y < status.Y-2 {
+		t.Errorf("name at %v, status at %v, Ask at %v: want status and Ask under the name", name, status, ask)
+	}
+	click(t, tt, "Ask")
+	if !slices.Equal(fs.asked, []string{proto.PermissionSystemAudio}) {
+		t.Errorf("asked %v", fs.asked)
+	}
+	// Once asked, the row says so instead of offering Ask again (#4364).
+	frames(tt)
+	if unknown, asked, ask := has(tt, "Unknown"), has(tt, "Asked: check System Settings"), hasExact(tt, "Ask"); unknown || !asked || ask {
+		t.Errorf("after asking: Unknown shown %v, Asked shown %v, Ask shown %v", unknown, asked, ask)
+	}
+	a.ob.step = obPermissions // the setup guide's row says the same
+	if p := a.onboardingViewStateForTranslator(i18n.CurrentTranslator()).Permissions; p == nil || p.SystemAudio.CanAsk || p.SystemAudio.Text != "Asked: check System Settings" {
+		t.Errorf("setup guide after asking: %+v", p)
+	}
+	fs.set(helper.Status{State: helper.Failed, Reason: helper.FailCrashed})
+	f := a.permSys.(*permission.Fake)
+	f.Mic = permission.NotDetermined
+	a.askPermission(proto.PermissionSystemAudio, nil)
+	if len(fs.asked) != 1 || f.Prompted != 0 || f.Mic != permission.NotDetermined {
+		t.Errorf("without the helper: asked %v, prompted %d, microphone %v", fs.asked, f.Prompted, f.Mic)
 	}
 }
 
@@ -431,6 +647,8 @@ func TestPrivacyClearsHistory(t *testing.T) {
 	// how far down Clear… is depends on the fonts (CI's wrap more lines).
 	tt.SetSize(windowWidth, 1000)
 	a.navigate("/settings/privacy")
+	frames(tt)
+	tt.Scroll(500, 500, 0, 400) // the settings dialog's height is capped: Clear… is further down
 	click(t, tt, "Clear…")
 	if !a.clearHistoryAsk {
 		t.Fatal("no confirmation")
@@ -545,4 +763,27 @@ func TestHelperProcess(t *testing.T) {
 			return e.Message == "hotkey transcribe/0 trigger in com.tinyspeck.slackmacgap"
 		})
 	})
+}
+
+// A page that moved into Settings keeps its section's icon in the
+// command palette.
+func TestCommandIconsMovedPages(t *testing.T) {
+	for id, want := range map[string]icons.Icon{
+		"go/settings/transcribe": transcribeIcon,
+		"go/settings/translate":  translateIcon,
+		"go/settings/rewrite":    rewriteIcon,
+	} {
+		if ic := commandIcon(id); ic == nil || *ic != want {
+			t.Errorf("%s lost its feature icon", id)
+		}
+	}
+	if ic := commandIcon("go/models"); ic == nil || *ic != modelsIcon {
+		t.Error("go/models lost the Speech models icon")
+	}
+	if ic := commandIcon("go/language-models"); ic == nil || *ic != remoteIcon {
+		t.Error("go/language-models lost the Language models icon")
+	}
+	if ic := commandIcon("go/history"); ic == nil || *ic != historyIcon {
+		t.Error("go/history lost the page icon")
+	}
 }

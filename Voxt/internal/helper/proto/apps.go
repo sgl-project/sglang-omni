@@ -30,7 +30,7 @@ const (
 // the prompt that adds VoxtNew to the list in System Settings (answered
 // at once: the user grants it there).
 type PermissionsRequestParams struct {
-	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility | PermissionSpeechRecognition | PermissionScreenRecording
+	Permission string `json:"permission"` // PermissionMicrophone | PermissionAccessibility | PermissionSpeechRecognition | PermissionScreenRecording | PermissionSystemAudio
 }
 
 // Permissions, as in permissions.request and permission_denied's data.
@@ -39,7 +39,7 @@ const (
 	PermissionAccessibility     = "accessibility"
 	PermissionSpeechRecognition = "speechRecognition"
 	PermissionScreenRecording   = "screenRecording" // asks once, adds Voxt to the list in System Settings, answers at once
-	PermissionSystemAudio       = "systemAudio"     // capture.system's permission_denied only: macOS asks for it itself
+	PermissionSystemAudio       = "systemAudio"     // a short process tap: adds Voxt to the list in System Settings, answers at once; macOS also asks on capture.system
 )
 
 // ---- app.* ----

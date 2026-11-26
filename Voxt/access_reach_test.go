@@ -14,7 +14,8 @@ func TestReachableButtons(t *testing.T) {
 	a, tt, _ := retryApp(t, "Recovered dictation.")
 	a.navigate(remotePath)
 	frames(tt)
-	click(t, tt, "DeepSeek")
+	scrollSettingsToText(tt, "DeepSeek")
+	clickControl(t, tt, "DeepSeek")
 	frames(tt)
 	a.provDlg.key = "sk-deep-0123456789"
 	click(t, tt, "Save")

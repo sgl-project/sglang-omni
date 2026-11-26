@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -71,5 +73,18 @@ func TestSoundText(t *testing.T) {
 		if got := SoundText(store.Entry{DSP: c.dsp, GainDB: c.gain}); got != c.want {
 			t.Errorf("%q %v: %q, want %q", c.dsp, c.gain, got, c.want)
 		}
+	}
+}
+
+func TestAppEnhancementTextFor(t *testing.T) {
+	translator := i18n.NewTranslator("zh-Hans")
+	if got := SourceTextFor(translator, appctx.SourceApp, ""); got != "按 App" {
+		t.Errorf("SourceTextFor = %q", got)
+	}
+	if got := PatternErrorTextFor(translator, appctx.ErrPatternSpace); got != "网站规则里不能有空格。" {
+		t.Errorf("PatternErrorTextFor = %q", got)
+	}
+	if got := AutoKeyLabelFor(translator, "Command+Return"); got != "⌘回车" {
+		t.Errorf("AutoKeyLabelFor = %q", got)
 	}
 }

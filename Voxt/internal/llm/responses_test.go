@@ -42,7 +42,7 @@ func rsObject(status string, output []any, usage, details, failure any) map[stri
 }
 
 var rsUsed = map[string]any{
-	"input_tokens": 11, "input_tokens_details": map[string]any{"cached_tokens": 0},
+	"input_tokens": 11, "input_tokens_details": map[string]any{"cached_tokens": 4},
 	"output_tokens": 7, "output_tokens_details": map[string]any{"reasoning_tokens": 2}, "total_tokens": 18,
 }
 
@@ -290,7 +290,7 @@ func TestResponsesStream(t *testing.T) {
 	if resp.Text != "Hello" || strings.Join(deltas, "|") != "Hel|lo" || resp.FinishReason != FinishStop || resp.Model != "gpt-reported" || resp.Provider != "openai" {
 		t.Fatalf("resp %+v deltas %q", resp, deltas)
 	}
-	if u := resp.Usage; u.PromptTokens != 11 || u.CompletionTokens != 7 || u.TotalTokens != 18 || u.Estimated {
+	if u := resp.Usage; u.PromptTokens != 11 || u.CompletionTokens != 7 || u.TotalTokens != 18 || u.CachedTokens != 4 || u.Estimated {
 		t.Errorf("usage %+v", u)
 	}
 	if b := f.requests()[0].Body; b["stream"] != true || b["stream_options"] != nil {

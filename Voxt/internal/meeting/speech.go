@@ -34,6 +34,10 @@ func NewSpeech(rate int, model vad.ModelStream) *Speech {
 	return s
 }
 
+// SpokeSince says whether a frame after t (on the pushed audio's
+// timeline) was speech.
+func (s *Speech) SpokeSince(t time.Duration) bool { return s.hasSpeech && s.lastSpeech > t }
+
 // Push ingests PCM and returns whether the latest frame is speech and silence since last speech.
 func (s *Speech) Push(pcm []byte) (speaking bool, silence time.Duration) {
 	if len(s.pending) > 0 {

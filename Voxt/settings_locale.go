@@ -1,13 +1,13 @@
 package main
 
 // The language VoxtNew shows (shell_settings.go): applying it, the
-// system's, the language MyGo shows, and the lists of languages the settings
-// offer.
+// system's, and the language MyGo shows.
 
 import (
+	"sync/atomic"
+
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // applyLocale switches the UI to the settings' language, or the system's,
@@ -18,6 +18,7 @@ func (a *app) applyLocale() {
 		tag = a.systemLocale
 	}
 	i18n.SetLocale(tag)
+	a.syncMeetingOverlay()
 	if a.hasMenu { // the app runs: MyGo's locale waits for its main loop
 		showLanguage(i18n.Locale())
 	}
@@ -54,23 +55,21 @@ func showLanguage(tag string) {
 	}
 }
 
-// The options of the selects, and what they mean.
-func languageOptions() []string {
-	opts := []string{i18n.T("Follow the system")}
-	for _, tag := range i18n.Supported() {
-		opts = append(opts, i18n.Name(tag))
-	}
-	return opts
+// systemLanguages are the languages the user reads, as the system lists
+// them (mygo.App.PreferredLanguages), read when the window opens: MyGo
+// answers on its main thread, which a session must not wait for. They
+// pick the Chinese script of dictation (session.Config.Languages).
+var systemLanguages atomic.Pointer[[]string]
+
+func readSystemLanguages() {
+	langs := mygo.App.PreferredLanguages()
+	systemLanguages.Store(&langs)
 }
 
-// mainLanguages are the languages the main language select offers (lang
-// codes), most spoken by VoxtNew's users first.
-var mainLanguages = []string{"zh", "en", "ja", "ko", "yue", "fr", "de", "es", "pt", "ru", "it", "vi", "th", "id", "ar"}
-
-func mainLanguageOptions() []string {
-	opts := []string{i18n.T("Same as the app")}
-	for _, code := range mainLanguages {
-		opts = append(opts, uitext.LangLabel(code))
+// readingLanguages are the systemLanguages, nil before the window opens.
+func readingLanguages() []string {
+	if p := systemLanguages.Load(); p != nil {
+		return *p
 	}
-	return opts
+	return nil
 }

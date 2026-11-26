@@ -65,7 +65,7 @@ func TestPersonalDictionary(t *testing.T) {
 					if in != (mode == "on") {
 						t.Errorf("the dictionary in the system prompt: %v\n%s", in, sys)
 					}
-					if in && (strings.Count(sys, "<dictionary>") != 1 || mode == "on" && strings.Index(sys, "</dictionary>") > strings.Index(sys, "- VoxtNew")) {
+					if in && (strings.Count(sys, "`幺零幺` → 101") != 1 || strings.Contains(sys, "dictionary>") || strings.Index(sys, "Bay Area highways") > strings.Index(sys, "- VoxtNew")) {
 						t.Errorf("the dictionary once, before the glossary:\n%s", sys)
 					}
 					for _, m := range r.Messages[1:] {

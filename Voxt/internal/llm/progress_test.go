@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -59,6 +60,9 @@ func TestProgressDeadlines(t *testing.T) {
 			Request{FirstTokenTimeout: 80 * ms, StallTimeout: 50 * ms, Timeout: 5 * time.Second}, WaitFirstToken, "0", time.Second},
 		{"stall", &pacedBackend{deltas: []string{"a", "b", "c", "d"}, pauses: []time.Duration{5 * ms, 5 * ms, 5 * ms, -1}},
 			Request{FirstTokenTimeout: time.Second, StallTimeout: 80 * ms, Timeout: 5 * time.Second}, WaitStall, "3", time.Second},
+		// #3978: a wait with no limit (math.MaxInt64) still ends a stall
+		{"stall without a cap", &pacedBackend{deltas: []string{"a", "b", "c", "d"}, pauses: []time.Duration{5 * ms, 5 * ms, 5 * ms, -1}},
+			Request{StallTimeout: 80 * ms, Timeout: math.MaxInt64}, WaitStall, "3", time.Second},
 		{"cap", &pacedBackend{deltas: words, pauses: []time.Duration{20 * ms}},
 			Request{FirstTokenTimeout: 100 * ms, StallTimeout: 100 * ms, Timeout: 150 * ms}, "-", "", time.Second},
 		{"slow but steady", &pacedBackend{deltas: words, pauses: []time.Duration{60 * ms, 30 * ms}},

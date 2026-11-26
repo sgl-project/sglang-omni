@@ -25,20 +25,20 @@ func (r *notesRepo) Put(ctx context.Context, n store.Note) error {
 	if n.CreatedAt.IsZero() {
 		n.CreatedAt = time.Now()
 	}
-	_, err := r.db.Execute(ctx, `INSERT INTO notes (id, text, created_at) VALUES (?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at`,
-		n.ID, n.Text, n.CreatedAt.UnixMilli())
+	_, err := r.db.Execute(ctx, `INSERT INTO notes (id, text, created_at, app_name) VALUES (?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET text = excluded.text, created_at = excluded.created_at, app_name = excluded.app_name`,
+		n.ID, n.Text, n.CreatedAt.UnixMilli(), n.AppName)
 	return wrap("note "+n.ID, err)
 }
 
 func (r *notesRepo) List(ctx context.Context) ([]store.Note, error) {
-	rows, err := r.db.Query(ctx, `SELECT id, text, created_at FROM notes ORDER BY created_at DESC, id DESC`)
+	rows, err := r.db.Query(ctx, `SELECT id, text, created_at, app_name FROM notes ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, wrap("notes", err)
 	}
 	out := make([]store.Note, 0, len(rows.Values))
 	for _, row := range rows.Values {
-		out = append(out, store.Note{ID: asString(row[0]), Text: asString(row[1]), CreatedAt: fromMS(row[2])})
+		out = append(out, store.Note{ID: asString(row[0]), Text: asString(row[1]), CreatedAt: fromMS(row[2]), AppName: asString(row[3])})
 	}
 	return out, nil
 }

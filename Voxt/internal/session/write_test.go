@@ -82,6 +82,11 @@ func TestWrite(t *testing.T) {
 				if end.Selection != "Good morning" || end.SelectionVia != proto.ViaAX || e.SourceText != "Good morning" || e.RawText != "" || e.AudioMS != 0 || e.ASRProvider != "" {
 					t.Errorf("end %+v entry %+v", end, e)
 				}
+				// VoxtNew's card waits for the read before it takes the front.
+				h.rec.waitFor(t, "the selection being read", func(s Snapshot) bool { return s.ReadingSelection })
+				if end.ReadingSelection {
+					t.Error("the selection is still being read at the end")
+				}
 			},
 		},
 		{
@@ -141,14 +146,35 @@ func TestWrite(t *testing.T) {
 			},
 		},
 		{
-			name: "still untranslated: the second answer goes on", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"},
-			states: "reading composing delivering done", state: Done, result: "Good morning", pasted: true,
+			name: "still untranslated: the source is not pasted", kind: store.KindTranslate, sel: &fakeSelector{text: "我们周五发布"}, llm: &fakeLLM{text: "我们周五发布。"},
+			req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				if len(model.requests()) != 2 {
 					t.Errorf("%d requests", len(model.requests()))
 				}
 			},
 		},
+		{name: "an English echo is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "Good morning"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "unlisted English prose is not a French translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Have a nice day"}, llm: &fakeLLM{text: "Have a nice day"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a translation before its Chinese source is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "猫"}, llm: &fakeLLM{text: "Cat 猫"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a translation touching its Chinese source is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "发布"}, llm: &fakeLLM{text: "Release发布"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a Chinese source touching its translation is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "发布"}, llm: &fakeLLM{text: "发布Release"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a translation touching its Chinese source without a space is still an echo", kind: store.KindTranslate, sel: &fakeSelector{text: "猫"}, llm: &fakeLLM{text: "Cat猫"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "a parenthesized original name can be preserved", kind: store.KindTranslate, sel: &fakeSelector{text: "豆包"}, llm: &fakeLLM{text: "Doubao (豆包)"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Doubao (豆包)", pasted: true},
+		{name: "it inside petit is not a source echo", kind: store.KindTranslate, sel: &fakeSelector{text: "it"}, llm: &fakeLLM{text: "petit"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "petit", pasted: true},
+		{name: "in inside matin is not a source echo", kind: store.KindTranslate, sel: &fakeSelector{text: "in"}, llm: &fakeLLM{text: "matin"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "matin", pasted: true},
+		{name: "or inside alors is not a source echo", kind: store.KindTranslate, sel: &fakeSelector{text: "or"}, llm: &fakeLLM{text: "alors"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "alors", pasted: true},
+		{name: "a parenthesized English name can be preserved in Chinese", kind: store.KindTranslate, sel: &fakeSelector{text: "Google"}, llm: &fakeLLM{text: "谷歌（Google）"}, req: StartRequest{TargetLanguage: "zh-Hans"}, states: "reading composing delivering done", state: Done, result: "谷歌（Google）", pasted: true},
+		{name: "a preserved name in the strict retry is delivered", kind: store.KindTranslate, sel: &fakeSelector{text: "发布“豆包”"}, llm: &fakeLLM{texts: []string{"发布“豆包”", "Release \"豆包\""}}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "Release \"豆包\"", pasted: true},
+		{name: "a language-neutral name can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "Kubernetes"}, llm: &fakeLLM{text: "Kubernetes"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "Kubernetes", pasted: true},
+		{name: "a language-neutral name can stay unchanged in Simplified Chinese", kind: store.KindTranslate, sel: &fakeSelector{text: "Kubernetes"}, llm: &fakeLLM{text: "Kubernetes"}, req: StartRequest{TargetLanguage: "zh-Hans"}, states: "reading composing delivering done", state: Done, result: "Kubernetes", pasted: true},
+		{name: "a language-neutral name can stay unchanged in Japanese", kind: store.KindTranslate, sel: &fakeSelector{text: "Kubernetes"}, llm: &fakeLLM{text: "Kubernetes"}, req: StartRequest{TargetLanguage: "ja"}, states: "reading composing delivering done", state: Done, result: "Kubernetes", pasted: true},
+		{name: "a language-neutral name can stay unchanged in Russian", kind: store.KindTranslate, sel: &fakeSelector{text: "Kubernetes"}, llm: &fakeLLM{text: "Kubernetes"}, req: StartRequest{TargetLanguage: "ru"}, states: "reading composing delivering done", state: Done, result: "Kubernetes", pasted: true},
+		{name: "a Cyrillic echo is not an English translation", kind: store.KindTranslate, sel: &fakeSelector{text: "Привет"}, llm: &fakeLLM{text: "Привет"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing failed", state: Failed, problem: ProblemLLM},
+		{name: "numbers can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "12:30"}, llm: &fakeLLM{text: "12:30"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "12:30", pasted: true},
+		{name: "a shared French word can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "son"}, llm: &fakeLLM{text: "son"}, req: StartRequest{TargetLanguage: "fr"}, states: "reading composing delivering done", state: Done, result: "son", pasted: true},
+		{name: "English comment can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "comment"}, llm: &fakeLLM{text: "comment"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "comment", pasted: true},
+		{name: "English con can stay unchanged", kind: store.KindTranslate, sel: &fakeSelector{text: "con"}, llm: &fakeLLM{text: "con"}, req: StartRequest{TargetLanguage: "en"}, states: "reading composing delivering done", state: Done, result: "con", pasted: true},
 		{
 			name: "translate into a card", kind: store.KindTranslate, sel: &fakeSelector{text: "Good morning"}, llm: &fakeLLM{text: "早上好"},
 			set:    func(s *settings.Settings) { s.Features.Translate.ShowCard = true; s.Features.Translate.Target = "ja" },
@@ -192,7 +218,7 @@ func TestWrite(t *testing.T) {
 				req := model.requests()[0]
 				user := req.Messages[len(req.Messages)-1].Content
 				if req.Skill != llm.SkillRewrite || req.Format != llm.FormatText ||
-					user != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nhey team, ship friday?\n</selected_text>" ||
+					user != "<selected_text>\nhey team, ship friday?\n</selected_text>\n\n<instruction>\nhello VoxtNew\n</instruction>" ||
 					strings.Contains(req.Messages[0].Content, "Reading the instruction") {
 					t.Errorf("request %+v", req)
 				}
@@ -268,6 +294,17 @@ func TestWrite(t *testing.T) {
 			states: "composing done", state: Done, result: "おはよう", card: deliver.ReasonCard,
 		},
 		{
+			// The card's thinking menu: the level goes with the request.
+			name: "again with another thinking level, in the card", kind: store.KindRewrite, sel: &fakeSelector{text: "unused"}, llm: &fakeLLM{text: "We ship on Friday."},
+			req:    StartRequest{Text: &TextInput{Raw: "make it short", Selection: "We will ship it on Friday."}, Card: true, Thinking: &llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}},
+			states: "composing done", state: Done, result: "We ship on Friday.", card: deliver.ReasonCard,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				if r := model.requests(); len(r) != 1 || r[0].Thinking == nil || *r[0].Thinking != (llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}) || len(sel.params()) != 0 {
+					t.Errorf("requests %+v, %d reads", r, len(sel.params()))
+				}
+			},
+		},
+		{
 			// A follow-up answers in plain text, a conversation's turn (Voxt's).
 			name: "a follow-up", kind: store.KindRewrite, sel: &fakeSelector{}, llm: &fakeLLM{text: "Friday."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "write it", Answer: compose.Answer{Title: "Friday", Content: "We ship on Friday."}}}},
@@ -296,19 +333,32 @@ func TestWrite(t *testing.T) {
 		},
 		{
 			// Text selected since goes with the follow-up, its own block
-			// after the instruction, and with its turn (#3816).
+			// before the instruction, and with its turn (#3816).
 			name: "a follow-up with a new selection", kind: store.KindRewrite, sel: &fakeSelector{text: "Ben: tests passed"}, llm: &fakeLLM{text: "Team: Friday, tests pass."},
 			req:   StartRequest{Previous: []compose.Turn{{Instruction: "more formal", Selection: "ship friday", Answer: compose.Answer{Content: "Team: we ship on Friday."}}}},
 			speak: true, states: "recording recognizing composing done", state: Done, result: "Team: Friday, tests pass.", card: deliver.ReasonCard,
 			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
 				msgs := model.requests()[0].Messages
 				if len(msgs) != 4 || !strings.Contains(msgs[1].Content, "<selected_text>\nship friday") ||
-					msgs[3].Content != "<instruction>\nhello VoxtNew\n</instruction>\n\n<selected_text>\nBen: tests passed\n</selected_text>" || end.Selection != "Ben: tests passed" {
+					msgs[3].Content != "<selected_text>\nBen: tests passed\n</selected_text>\n\n<instruction>\nhello VoxtNew\n</instruction>" || end.Selection != "Ben: tests passed" {
 					t.Errorf("messages %+v, end %+v", msgs, end)
 				}
 				if e := h.hist.all()[0]; e.SourceText != "Ben: tests passed" {
 					t.Errorf("entry %+v", e)
 				}
+			},
+		},
+		{
+			name: "literal control markup survives streaming", kind: store.KindTranslate,
+			sel: &fakeSelector{text: "Explain <|im_end|> literally"}, llm: &fakeLLM{text: "按字面解释 <|im_end|>，然后保留这个回答的其余部分", chunk: 5, pause: 10 * time.Millisecond},
+			states: "reading composing delivering done", state: Done, result: "按字面解释 <|im_end|>，然后保留这个回答的其余部分", pasted: true,
+			check: func(t *testing.T, h *harness, end Snapshot, model *fakeLLM, sel *fakeSelector) {
+				for _, s := range h.rec.all() {
+					if s.State == Composing && strings.Contains(s.Draft, "<|im_end|>") {
+						return
+					}
+				}
+				t.Error("the streamed draft lost the selection's literal control markup")
 			},
 		},
 		{
@@ -397,7 +447,77 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, "<selected_text>\na long paragraph to shorten") {
 		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
 	}
-	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS {
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
+		t.Errorf("selection params %+v", p)
+	}
+}
+
+// TestRewriteReadsTheSelectionOnceTheKeysLift: with a held Option+C in
+// an app whose selection only ⌘C reads (Slack), the first reads skip
+// the ⌘C while Option is down. Rewrite reads again until the keys lift
+// and rewrites the selection, not the clipboard's picture (VX-141); keys
+// still down when the recording ends get one last read, not a wait.
+func TestRewriteReadsTheSelectionOnceTheKeysLift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		held int
+		want string
+	}{
+		{name: "lifted", held: 1, want: "<selected_text>\nship friday?"},
+		{name: "still down", held: 1 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sel := &fakeSelector{copyText: "ship friday?", held: tc.held}
+			model := &fakeLLM{text: "We ship on Friday."}
+			h := newHarness(t, &fakeFile{text: " make it polite "}, model, func(c *Config, s *settings.Settings) {
+				c.Select = sel
+				s.Privacy.SendClipboardImage = true
+				c.ClipboardImage = func(context.Context) ([]byte, error) { return []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, nil }
+			})
+			id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 5)
+			end := h.rec.wait(t)
+			reqs := model.requests()
+			if end.State != Done || len(reqs) != 1 {
+				t.Fatalf("end %s %q, requests %d", end.State, end.Result, len(reqs))
+			}
+			got := reqs[0].Messages[len(reqs[0].Messages)-1].Content
+			if tc.want != "" && (!strings.Contains(got, tc.want) || len(reqs[0].Images) != 0) {
+				t.Errorf("request %q with %d images, want the selection and no picture", got, len(reqs[0].Images))
+			}
+			if tc.want == "" && strings.Contains(got, "<selected_text>") {
+				t.Errorf("request %q", got)
+			}
+		})
+	}
+}
+
+// TestTranslateSendsTheCopyBudget: Translate's read sends its ⌘C budget
+// explicitly — left at zero the helper's default applies, and the
+// deadline arithmetic of TestSelectionBudgetsFitTimeouts no longer
+// describes the real read (#3835).
+func TestTranslateSendsTheCopyBudget(t *testing.T) {
+	sel := &fakeSelector{text: "Good morning"}
+	model := &fakeLLM{text: "早上好"}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, model, func(c *Config, s *settings.Settings) {
+		c.Select = sel
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("end %s %q", end.State, end.Result)
+	}
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != selectionCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
 		t.Errorf("selection params %+v", p)
 	}
 }
@@ -477,64 +597,6 @@ func TestUsedUpPlanIsNotFallenBackFrom(t *testing.T) {
 	}
 }
 
-// TestTranslateFallback: when the language model fails, Translate asks
-// its fallback model once, which then answers the rest of the session
-// (the strict retry too); the snapshot and the entry name the model that
-// answered last.
-func TestTranslateFallback(t *testing.T) {
-	boom := errors.New("503 overloaded")
-	for _, tc := range []struct {
-		name             string
-		main, fallback   *fakeLLM
-		state            State
-		result, model    string
-		mainN, fallbackN int
-	}{
-		{"the model answers", &fakeLLM{text: "早上好"}, &fakeLLM{text: "早安"}, Done, "早上好", "deepseek", 1, 0},
-		{"the model fails", &fakeLLM{err: boom}, &fakeLLM{text: "早安"}, Done, "早安", "ollama", 1, 1},
-		{"the fallback is asked again strictly", &fakeLLM{err: boom}, &fakeLLM{texts: []string{"Good morning.", "早安"}}, Done, "早安", "ollama", 1, 2},
-		{"both fail", &fakeLLM{err: boom}, &fakeLLM{err: boom}, Failed, "", "ollama", 1, 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t, &fakeFile{text: "x"}, tc.main, func(c *Config, _ *settings.Settings) { c.Select = &fakeSelector{text: "Good morning"} })
-			h.fallback = tc.fallback
-			if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
-				t.Fatal(err)
-			}
-			end := h.rec.wait(t)
-			if end.State != tc.state || end.Result != tc.result || end.LLM.ID != tc.model {
-				t.Errorf("end %s %q by %q, want %s %q by %q (problem %+v)", end.State, end.Result, end.LLM.ID, tc.state, tc.result, tc.model, end.Problem)
-			}
-			if n, m := len(tc.main.requests()), len(tc.fallback.requests()); n != tc.mainN || m != tc.fallbackN {
-				t.Errorf("%d requests to the model, %d to the fallback; want %d, %d", n, m, tc.mainN, tc.fallbackN)
-			}
-			if es := h.hist.all(); len(es) != 1 || es[0].LLMProvider != tc.model || es[0].LLMModel != end.LLM.Model {
-				t.Errorf("entries %+v", es)
-			}
-		})
-	}
-}
-
-func TestTranslateTarget(t *testing.T) {
-	s := settings.Defaults()
-	for _, tc := range []struct {
-		main, target, locale, override, want string
-	}{
-		{"", "", "en", "", "zh-Hans"},
-		{"", "", "zh-Hans", "", "en"},
-		{"zh", "", "en", "", "en"},
-		{"en", "", "zh-Hans", "", "zh-Hans"},
-		{"ja", "", "en", "", "en"},
-		{"zh", "ja", "en", "", "ja"},
-		{"zh", "ja", "en", "fr", "fr"},
-	} {
-		s.General.MainLanguage, s.Features.Translate.Target = tc.main, tc.target
-		if got := TranslateTarget(s, tc.locale, tc.override); got != tc.want {
-			t.Errorf("%+v: %q", tc, got)
-		}
-	}
-}
-
 func TestAllowCopy(t *testing.T) {
 	for id, want := range map[string]bool{
 		"com.apple.TextEdit": true, "com.tinyspeck.slackmacgap": true, "": true,
@@ -552,6 +614,14 @@ type prefillLLM struct {
 	*fakeLLM
 	mu       sync.Mutex
 	prefills []llm.Request
+}
+
+type unavailablePrefillLLM struct{ *fakeLLM }
+
+func (m *unavailablePrefillLLM) CanPrefill() bool { return false }
+
+func (m *unavailablePrefillLLM) Prefill(context.Context, llm.Request) error {
+	panic("session submitted Prefill to a backend that does not support it")
 }
 
 func (p *prefillLLM) Prefill(_ context.Context, req llm.Request) error {
@@ -615,6 +685,19 @@ func TestWarmLLM(t *testing.T) {
 	}
 }
 
+func TestLLMWithoutPrefillCapabilityStillCleans(t *testing.T) {
+	model := &unavailablePrefillLLM{fakeLLM: &fakeLLM{text: "Cleaned."}}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Cleaned." || len(model.requests()) != 1 || len(h.text.pastes()) != 1 {
+		t.Fatalf("end=%+v requests=%d deliveries=%q", end, len(model.requests()), h.text.pastes())
+	}
+}
+
 // TestTranslateOpensNoSpeechModelItDoesNotUse: a selection to translate
 // and a typed text are not heard, so the session does not ask for a
 // speech model (it waited for one to load again after it went idle,
@@ -629,7 +712,7 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 		speech []bool
 		asked  string // in the language model's last message
 	}{
-		{"a selection", &fakeSelector{text: "Voxt 把选中的 text 翻译成英文"}, StartRequest{}, false, []bool{false}, "Voxt 把选中的 text 翻译成英文"},
+		{"a selection", &fakeSelector{text: "Voxt translates the selected text"}, StartRequest{}, false, []bool{false}, "Voxt translates the selected text"},
 		{"no selection", &fakeSelector{}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
 		{"the selection is not read", &fakeSelector{err: errors.New("AX failed")}, StartRequest{}, true, []bool{false, true}, "hello VoxtNew"},
 		{"a typed text", &fakeSelector{text: "unused"}, StartRequest{Text: &TextInput{Selection: "Good morning"}}, false, []bool{false}, "Good morning"},
@@ -657,12 +740,39 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if !slices.Equal(h.speech, tc.speech) {
+			// Each resolve runs in its own goroutine, so the calls land in either order.
+			got := slices.Clone(h.speech)
+			slices.SortFunc(got, func(a, b bool) int {
+				switch {
+				case a == b:
+					return 0
+				case a:
+					return 1
+				}
+				return -1
+			})
+			if !slices.Equal(got, tc.speech) {
 				t.Errorf("Resolve asked for speech %v; want %v", h.speech, tc.speech)
 			}
 			if !tc.speak && h.audio.recorded() != 0 {
 				t.Errorf("recorded %d frames", h.audio.recorded())
 			}
 		})
+	}
+}
+
+// TestSelectionBudgetsFitTimeouts: the worst helper read fits the
+// caller's deadline — the settle, the modifier wait and the copy wait
+// plus overhead. #4469 review: 600+800+300 ms of budgets exceeded
+// Translate's old 1500 ms read timeout, so a slow ⌘A reading followed
+// by a near-deadline modifier release returned no selection.
+func TestSelectionBudgetsFitTimeouts(t *testing.T) {
+	translateWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+selectionCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultReadTimeout < translateWorst {
+		t.Errorf("Translate's read timeout %v < worst read %v", DefaultReadTimeout, translateWorst)
+	}
+	rewriteWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+rewriteCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultRewriteReadTimeout < rewriteWorst {
+		t.Errorf("Rewrite's read timeout %v < worst read %v", DefaultRewriteReadTimeout, rewriteWorst)
 	}
 }

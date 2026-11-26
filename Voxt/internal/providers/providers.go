@@ -10,20 +10,23 @@
 // main thread with internal/secrets) and a hasKey function for the
 // decisions that only need to know whether one is saved.
 //
-// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), codexauth, llm, local,
-// settings.
+// Imports: asr (+ openai, doubao, aliyun, gemini, mimo), codexauth, core, llm,
+// local, settings.
 package providers
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/codexauth"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -84,6 +87,33 @@ func Model(p settings.Provider) string {
 	}
 	pr, _ := llm.LookupPreset(p.ID)
 	return pr.DefaultModel
+}
+
+// localNames are the endings of names that are not on the internet: mDNS,
+// a router's, RFC 8375's and ICANN's private ones, and a tailnet's.
+var localNames = []string{".local", ".lan", ".home", ".home.arpa", ".internal", ".localdomain", ".ts.net"}
+
+// sharedNet is the shared address range (RFC 6598), which tailnets use.
+var sharedNet = net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
+
+// overNetwork says a setup's server is on the internet, not this Mac or its
+// local network, by its address or its name's spelling: names are not
+// looked up.
+func overNetwork(p settings.Provider) bool {
+	pr, err := Config(p).Resolve()
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(pr.BaseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback() && !ip.IsPrivate() && !ip.IsLinkLocalUnicast() && !sharedNet.Contains(ip)
+	}
+	return strings.Contains(host, ".") && !core.IsLoopback(host) &&
+		!slices.ContainsFunc(localNames, func(end string) bool { return strings.HasSuffix(host, end) })
 }
 
 // What a setup can lack (Missing).
@@ -196,17 +226,31 @@ type TestResult struct {
 	Latency time.Duration
 	Err     error // nil: it works
 	At      time.Time
+	Models  []string // when the server lacks the model: the ones it has, if it lists them
 }
 
-// Test checks that a setup works: one tiny request (llm.Probe).
+// Test checks that a setup works: one tiny request (llm.Probe). When the
+// server says it lacks the model, it also asks which models it has.
 func Test(ctx context.Context, p settings.Provider, key string, client *http.Client) TestResult {
 	res := TestResult{At: time.Now()}
 	b, err := NewLLM(p, key, client)
 	if err == nil {
 		res.Latency, err = llm.Probe(ctx, b)
+		if llm.Code(err) == llm.CodeModelNotFound {
+			res.Models, _ = b.Models(ctx)
+		}
 	}
 	res.Err = err
 	return res
+}
+
+// Models lists the models a setup's server has (llm.OpenAI.Models).
+func Models(ctx context.Context, p settings.Provider, key string, client *http.Client) ([]string, error) {
+	b, err := NewLLM(p, key, client)
+	if err != nil {
+		return nil, err
+	}
+	return b.Models(ctx)
 }
 
 // TestLog is the log line of a connection test: the service, its model,

@@ -383,6 +383,12 @@ def test_resume_after_a_retract_replays_the_generated_positions() -> None:
     prompt_positions = timeline.num_prompt_positions
 
     generate(runner, request, [77, 78, 79])
+    previous_feedback = runner.decode_feedback(data).user_rows
+    previous_copy = previous_feedback.clone()
+    timeline.append_caller_frames(torch.arange(1024).view(128, 8))
+    expanded_feedback = runner.decode_feedback(data).user_rows
+    assert expanded_feedback.shape == timeline.user_rows.shape
+    assert torch.equal(previous_feedback, previous_copy)
 
     generated = [77, 78, 79]
     agent_rows = list(data.talker_model_inputs["agent_rows"])
@@ -773,3 +779,45 @@ def test_prefill_from_a_cached_prefix_embeds_only_the_missing_rows(cached: str):
     feedback = request.data.talker_model_inputs["decode_feedback"]
     assert torch.equal(feedback.agent_row, agent_rows[-1])
     assert (request.data.talker_model_inputs["prefill_forced"] == -1).all()
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "cuda",
+            marks=[
+                pytest.mark.accelerator,
+                pytest.mark.skipif(
+                    not torch.cuda.is_available(), reason="requires CUDA"
+                ),
+            ],
+        ),
+    ],
+)
+def test_feedback_appends_only_valid_history_and_preserves_old_views(device):
+    model = FakeModel()
+    model.fusion_buffer = model.fusion_buffer.to(device)
+    runner = make_runner(model)
+    request = make_request(1)
+    timeline = request.data.talker_model_inputs["timeline"]
+    feedback = runner.decode_feedback(request.data)
+    saved_views = []
+    for added_frames in [1, 1, 64, 1, 200, 1]:
+        old_rows = feedback.user_rows
+        old_storage = feedback.user_rows_storage
+        saved_views.append((old_rows, old_rows.clone()))
+        timeline.append_caller_frames(
+            torch.arange(added_frames * 8).view(added_frames, 8)
+        )
+        assert runner.decode_feedback(request.data) is feedback
+        assert torch.equal(feedback.user_rows.cpu(), timeline.user_rows)
+        if timeline.user_rows.shape[0] <= old_storage.shape[0]:
+            assert feedback.user_rows_storage is old_storage
+        else:
+            assert feedback.user_rows_storage is not old_storage
+        unchanged_rows = feedback.user_rows
+        assert runner.decode_feedback(request.data).user_rows is unchanged_rows
+    for old_rows, old_copy in saved_views:
+        assert torch.equal(old_rows, old_copy)
