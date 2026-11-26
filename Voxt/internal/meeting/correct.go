@@ -74,7 +74,7 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	if m.cfg.Context != nil {
 		tc = m.cfg.Context(ctx)
 	}
-	var speculative map[string]string
+	var speculative map[string]map[int]string
 	var completed map[string]bool
 	if overlap != nil && overlap.meeting == id {
 		speculative, completed = overlap.takeFor(currentSettings.LLM, currentSettings.CorrectionStyle, tc)
@@ -87,8 +87,9 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 	var firstErr error
 	for _, batch := range correctionBatches(segs) {
 		if speculativelyCorrected(batch, speculative, completed) {
+			batchFixed := speculative[correctionBatchKey(batch)]
 			for _, s := range batch {
-				if t := speculative[correctedLineKey(s)]; t != s.Text {
+				if t, ok := batchFixed[s.Idx]; ok && t != s.Text {
 					fixed[s.Idx] = t
 				}
 			}
@@ -116,12 +117,13 @@ func (m *Manager) CorrectTranscript(ctx context.Context, id string) error {
 
 // speculativelyCorrected says whether the overlap corrected this exact
 // batch, not merely every line under a different track or batch boundary.
-func speculativelyCorrected(batch []store.MeetingSegment, speculative map[string]string, completed map[string]bool) bool {
-	if speculative == nil || !completed[correctionBatchKey(batch)] {
+func speculativelyCorrected(batch []store.MeetingSegment, speculative map[string]map[int]string, completed map[string]bool) bool {
+	batchFixed, ok := speculative[correctionBatchKey(batch)]
+	if !ok || !completed[correctionBatchKey(batch)] {
 		return false
 	}
 	for _, s := range batch {
-		if _, ok := speculative[correctedLineKey(s)]; !ok {
+		if _, ok := batchFixed[s.Idx]; !ok {
 			return false
 		}
 	}

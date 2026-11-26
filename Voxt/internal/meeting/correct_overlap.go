@@ -31,7 +31,7 @@ type correctionOverlap struct {
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 
-	fixed     map[string]string
+	fixed     map[string]map[int]string
 	completed map[string]bool
 	pending   []store.MeetingSegment
 	runes     int
@@ -59,7 +59,7 @@ func (m *Manager) startCorrectOverlap(id string) *correctionOverlap {
 		return nil
 	}
 	return &correctionOverlap{
-		meeting: id, fixed: map[string]string{}, completed: map[string]bool{},
+		meeting: id, fixed: map[string]map[int]string{}, completed: map[string]bool{},
 		queues: map[Source][]correctionWork{}, next: SourceMic,
 	}
 }
@@ -107,7 +107,7 @@ func (o *correctionOverlap) add(ctx context.Context, cfg Config, track Source, s
 		o.chat, o.context, o.style, o.llm = chat, tc, style, llmID
 	}
 	if o.fixed == nil {
-		o.fixed = map[string]string{}
+		o.fixed = map[string]map[int]string{}
 	}
 	if o.completed == nil {
 		o.completed = map[string]bool{}
@@ -185,9 +185,16 @@ func (o *correctionOverlap) run(ctx context.Context) {
 		}
 		key := correctionBatchKey(work.batch)
 		o.mu.Lock()
+		// A batch's answers are kept by store index inside their own batch:
+		// identical text on different lines can never share an answer.
+		batchFixed := o.fixed[key]
+		if batchFixed == nil {
+			batchFixed = map[int]string{}
+			o.fixed[key] = batchFixed
+		}
 		for _, s := range work.batch {
 			if t, ok := got[s.Idx]; ok {
-				o.fixed[correctedLineKey(s)] = t
+				batchFixed[s.Idx] = t
 			}
 		}
 		o.completed[key] = true
@@ -220,8 +227,9 @@ func (o *correctionOverlap) nextWorkLocked() (correctionWork, bool) {
 }
 
 // takeFor closes submission, waits for the worker, and returns only results
-// produced with the final correction's model, style and transcript context.
-func (o *correctionOverlap) takeFor(llmID string, style string, tc TranscriptContext) (map[string]string, map[string]bool) {
+// produced with the final correction's model, style and transcript context:
+// per exact batch, the corrected text of each of its lines by store index.
+func (o *correctionOverlap) takeFor(llmID string, style string, tc TranscriptContext) (map[string]map[int]string, map[string]bool) {
 	o.mu.Lock()
 	o.closed = true
 	o.mu.Unlock()
@@ -245,7 +253,7 @@ func (o *correctionOverlap) abort() {
 	}
 	o.wg.Wait()
 	o.mu.Lock()
-	o.fixed = map[string]string{}
+	o.fixed = map[string]map[int]string{}
 	o.completed = map[string]bool{}
 	o.pending = nil
 	o.nextIdx = 0

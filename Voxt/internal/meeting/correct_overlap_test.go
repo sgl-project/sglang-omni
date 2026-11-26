@@ -195,7 +195,7 @@ func TestMeetingCorrectionOverlapStartsDuringSystemTrack(t *testing.T) {
 	micTexts := []string{"mic Box one", "mic Box two"}
 	sysTexts := []string{"system Box three", "system Box four"}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 3, 3, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	chat.first = make(chan struct{})
 	sysASR := &overlapFileASR{texts: sysTexts}
 	cfg.ASR = func(_ context.Context, src Source) (TrackASR, error) {
@@ -256,7 +256,7 @@ func TestMeetingCorrectionOverlapCoversBothTracks(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(filler)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 31, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestMeetingCorrectionOverlapEchoDroppedLine(t *testing.T) {
 	micTexts := []string{echo, "mic Box own words", echo}
 	sysTexts := []string{echo}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 4, 2, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestSystemCorrectionOverlapStartsBeforeSecondMTDChunk(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	chat.first = make(chan struct{})
 	d := &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}
 	d.onCall = func(n int) {
@@ -444,7 +444,7 @@ func TestSystemCorrectionOverlapDoesNotSplitBatchAtChunk(t *testing.T) {
 	}
 	sysTexts[30], sysTexts[31] = "system tail 00", "system tail 01"
 	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTailN("system tail", 2)}}, nil
 	}
@@ -482,7 +482,7 @@ func TestSystemCorrectionOverlapRoundRobinSingleFlight(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, _, mt, chat := overlapFixture(t, 61, 200, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	release := make(chan struct{})
 	chat.onBatch = func(texts []string) {
 		if texts[0] == micTexts[0] {
@@ -521,7 +521,7 @@ func TestSystemCorrectionOverlapFailureIsRetried(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	chat.fail = map[string]int{sysTexts[0]: 2}
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
@@ -559,7 +559,7 @@ func TestSystemCorrectionOverlapSingleChunkWaitsForFinal(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 100, nil, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30)}}, nil
 	}
@@ -584,7 +584,7 @@ func TestSystemCorrectionOverlapSettingsChangeForcesRetry(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, _, mt, chat := overlapFixture(t, 0, 200, nil, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
 	}
@@ -607,7 +607,7 @@ func TestSystemCorrectionOverlapAbortDropsLateResults(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, _, mt, _ := overlapFixture(t, 0, 200, nil, sysTexts)
-	o := &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	o := &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	cfg.correctOverlap = o
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}, failAt: 2}, nil
@@ -628,7 +628,7 @@ func TestSystemCorrectionOverlapKeepsCrossTrackBatch(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box %02d", i))
 	}
 	ctx, cfg, _, mt, chat := overlapFixture(t, 3, 200, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	cfg.Diarizer = func(context.Context) (asr.Diarizer, error) {
 		return &seqDiarizer{results: []asr.Result{mtdResult("system Box", 30), mtdTail("system tail")}}, nil
 	}
@@ -668,7 +668,7 @@ func TestSystemCorrectionOverlapEchoInvalidatesOnlyItsBatches(t *testing.T) {
 		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(systemFiller)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 32, micTexts, sysTexts)
-	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}}
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -723,4 +723,54 @@ func TestSystemCorrectionOverlapEchoInvalidatesOnlyItsBatches(t *testing.T) {
 		t.Fatalf("%d correction requests in flight at once, want 1", chat.max)
 	}
 	t.Logf("%d requests for 60 surviving lines (echo line dropped)", len(chat.batches))
+}
+
+// Identical text on different lines can never share an answer: the reuse
+// is keyed by the exact batch and the line's store index, not by text.
+func TestSystemCorrectionOverlapSameTextKeepsLineAnswers(t *testing.T) {
+	ctx, cfg, repo, mt, _ := overlapFixture(t, 4, 2, []string{"mic Box same", "mic Box same"}, []string{"system Box x"})
+	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]map[int]string{}, completed: map[string]bool{}}
+	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(cfg)
+	if err := m.CorrectTranscript(ctx, mt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, segs, err := repo.Meeting(ctx, mt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range segs {
+		if !strings.HasPrefix(s.Text, "mic Voxt same") && s.Source == store.SegmentMic && strings.Contains(s.Text, "same") {
+			t.Fatalf("line %d was not corrected as its own answer: %q", s.Idx, s.Text)
+		}
+	}
+}
+
+// One meeting's cleanup cancels only its own overlap: another meeting's
+// armed run keeps its context.
+func TestDropCorrectOverlapKeepsOtherMeetingsRun(t *testing.T) {
+	m, _, _ := correctFixture(t, store.MeetingSegment{Idx: 0, Source: store.SegmentMic, Text: "Box"})
+	other := m.startCorrectOverlap("meeting-B")
+	if other == nil {
+		t.Skip("no remote language model in this fixture")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	other.cancel = cancel
+	m.cfg.correctOverlap = other
+	m.dropCorrectOverlap("m")
+	if ctx.Err() != nil {
+		t.Fatal("meeting A's cleanup cancelled meeting B's overlap")
+	}
+	if m.cfg.correctOverlap != other {
+		t.Fatal("meeting A's cleanup removed meeting B's overlap from the config")
+	}
+	m.dropCorrectOverlap("meeting-B")
+	if ctx.Err() == nil {
+		t.Fatal("meeting B's own cleanup did not cancel its overlap")
+	}
+	if m.cfg.correctOverlap != nil {
+		t.Fatal("meeting B's own cleanup did not clear its overlap from the config")
+	}
 }

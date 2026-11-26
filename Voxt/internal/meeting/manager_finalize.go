@@ -73,7 +73,7 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 	}
 	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
 	if err != nil {
-		m.dropCorrectOverlap()
+		m.dropCorrectOverlap(mt.ID)
 	}
 	m.mu.Lock()
 	if m.id != mt.ID {
@@ -102,11 +102,16 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 
 // dropCorrectOverlap cancels and clears the speculative correction, so a
 // later correction asks the language model afresh (its context, like the
-// dictionary, may have changed since).
-func (m *Manager) dropCorrectOverlap() {
+// dictionary, may have changed since). Only the run of the finished
+// meeting goes: another meeting's overlap must not be cancelled.
+func (m *Manager) dropCorrectOverlap(id string) {
 	m.mu.Lock()
 	o := m.cfg.correctOverlap
-	m.cfg.correctOverlap = nil
+	if o != nil && o.meeting != id {
+		o = nil
+	} else {
+		m.cfg.correctOverlap = nil
+	}
 	m.mu.Unlock()
 	if o != nil {
 		o.abort()
@@ -133,7 +138,7 @@ func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
 	}
-	m.dropCorrectOverlap()
+	m.dropCorrectOverlap(id)
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
 	}
