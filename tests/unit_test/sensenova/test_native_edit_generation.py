@@ -1,6 +1,7 @@
 """Exercise reference conditioning and prefix memory admission on CPU."""
 
 import inspect
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -32,7 +33,14 @@ from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import (
 from tests.unit_test.fixtures.sensenova import (
     tiny_sensenova_model,
     tiny_sensenova_tokenizer,
+    torch_fused_op_backend,
 )
+
+
+@pytest.fixture(autouse=True)
+def cpu_fused_ops() -> Iterator[None]:
+    with torch_fused_op_backend():
+        yield
 
 
 @pytest.fixture

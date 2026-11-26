@@ -36,6 +36,7 @@ from tests.unit_test.fixtures.sensenova import (
     tiny_sensenova_config,
     tiny_sensenova_model,
     tiny_sensenova_tokenizer,
+    torch_fused_op_backend,
 )
 
 DECODER_LAYERS = 2
@@ -83,7 +84,7 @@ class Unpatchify(Protocol):
 
 
 @pytest.fixture(autouse=True)
-def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> None:
+def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for variable in CACHE_DIT_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(
@@ -94,6 +95,8 @@ def cpu_generation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (4 * 1024**3, 0))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device: 0)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: 0)
+    with torch_fused_op_backend():
+        yield
 
 
 @pytest.fixture

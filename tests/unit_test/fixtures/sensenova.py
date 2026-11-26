@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
@@ -61,3 +66,14 @@ def tiny_sensenova_tokenizer() -> PreTrainedTokenizerFast:
         pad_token="[PAD]",
         additional_special_tokens=["<img>", "</img>", "<IMG_CONTEXT>"],
     )
+
+
+@contextmanager
+def torch_fused_op_backend() -> Iterator[None]:
+    """Force native PyTorch ops for CPU tests when running on an accelerator host."""
+    previous_backend = get_fused_op_backend()
+    set_fused_op_backend(KernelBackend.TORCH)
+    try:
+        yield
+    finally:
+        set_fused_op_backend(previous_backend)
