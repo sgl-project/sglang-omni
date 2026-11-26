@@ -23,6 +23,7 @@ from sglang_omni.platforms.device_graph import DeviceGraphBackend
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.platforms.xpu import XPUOmniPlatform
 from tests.unit_test.fixtures.accelerator import require_device_streams
+from tests.unit_test.fixtures.dots_tts import FM_HIDDEN, PATCH_SIZE, tiny_flow_head
 
 import_dots_tts()
 
@@ -34,53 +35,8 @@ from dots_tts.modules.backbone.dit_inference import (  # noqa: E402
 )
 from dots_tts.modules.backbone.layers import rotate_half  # noqa: E402
 
-LLM_HIDDEN = 48
-FM_HIDDEN = 32
-LATENT_DIM = 6
-PATCH_SIZE = 2
 UNIT_TOKENS = 1 + PATCH_SIZE
 ODE_STEPS = 2
-
-
-def flow_head(tmp_path: Path, *, meanflow: bool) -> DotsTTSFlowHead:
-    torch.save(
-        {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
-        tmp_path / "latent_stats.pt",
-    )
-    config = {
-        "latent_dim": LATENT_DIM,
-        "patch_size": PATCH_SIZE,
-        "PatchEncoder": {
-            "num_layers": 1,
-            "num_heads": 2,
-            "hidden_size": FM_HIDDEN,
-            "ffn_hidden_size": 64,
-            "causal": True,
-        },
-        "DiT": {
-            "num_layers": 2,
-            "num_heads": 2,
-            "hidden_size": FM_HIDDEN,
-            "ffn_hidden_size": 64,
-            "modulation": True,
-            "qk_norm": True,
-            "rotary_bias": True,
-        },
-        "vocoder": {"sample_rate": 48000},
-        "meanflow": (
-            {"enabled": True, "use_duration_embedding": True} if meanflow else None
-        ),
-    }
-    flow = DotsTTSFlowHead(
-        config,
-        llm_hidden_size=LLM_HIDDEN,
-        latent_stats_path=str(tmp_path / "latent_stats.pt"),
-        optimize=True,
-    )
-    with torch.no_grad():
-        for parameter in flow.parameters():
-            parameter.normal_(0.0, 0.2)
-    return flow.eval()
 
 
 def eager_solver(flow: DotsTTSFlowHead) -> DiTSolver:
@@ -171,7 +127,7 @@ def test_flow_head_builds_the_graphed_solver_only_when_the_platform_asks(
     monkeypatch.setattr(
         current_platform, "get_device_graph_backend", lambda device: graph_backend
     )
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
 
     solver = flow.solver()
 
@@ -189,7 +145,7 @@ def test_flow_head_keeps_the_eager_solver_without_optimize(
     monkeypatch.setattr(
         current_platform, "get_device_graph_backend", lambda device: object()
     )
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
     flow.optimize = False
 
     assert type(flow.solver()) is DiTSolver
@@ -210,7 +166,7 @@ def test_the_concat_free_rotation_matches_rotate_half_bit_for_bit(
 
 
 def test_the_persistent_runner_refuses_the_flex_backend(tmp_path: Path) -> None:
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
 
     with pytest.raises(ValueError, match="sdpa"):
         PersistentCacheDiTRunner(
@@ -227,7 +183,7 @@ def test_the_persistent_runner_refuses_the_flex_backend(tmp_path: Path) -> None:
 
 
 def test_a_reused_cache_starts_zeroed_like_a_fresh_one(tmp_path: Path) -> None:
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
     solver = graphed_solver(flow, object())
     runner = solver._get_cached_runner(  # noqa: leading-underscore  # DiTSolver hook
         capacity_patches=64, device=torch.device("cpu"), dtype=torch.float32
@@ -276,7 +232,7 @@ def install_graph(runner: PersistentCacheDiTRunner, steps: int) -> RecordingGrap
 
 
 def test_resident_caches_share_one_byte_budget_across_buckets(tmp_path: Path) -> None:
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
     probe = cpu_runner(graphed_solver(flow, object()), 64)
     small = probe.cache_bytes(batch_size=1, nfe=ODE_STEPS)
     solver = graphed_solver(flow, object(), resident_cache_bytes=3 * small)
@@ -302,7 +258,7 @@ def test_resident_caches_share_one_byte_budget_across_buckets(tmp_path: Path) ->
 
 
 def test_a_cache_larger_than_the_budget_is_request_scoped(tmp_path: Path) -> None:
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
     probe = cpu_runner(graphed_solver(flow, object()), 128)
     solver = graphed_solver(
         flow,
@@ -324,7 +280,7 @@ def test_a_cache_larger_than_the_budget_is_request_scoped(tmp_path: Path) -> Non
 def test_a_failed_cache_allocation_releases_its_reservation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    flow = flow_head(tmp_path, meanflow=False)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True)
     probe = cpu_runner(graphed_solver(flow, object()), 64)
     small = probe.cache_bytes(batch_size=1, nfe=ODE_STEPS)
     solver = graphed_solver(flow, object(), resident_cache_bytes=small)
@@ -351,7 +307,7 @@ def test_a_failed_cache_allocation_releases_its_reservation(
 def test_a_refused_capture_solves_eagerly_and_is_not_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meanflow: bool
 ) -> None:
-    flow = flow_head(tmp_path, meanflow=meanflow)
+    flow = tiny_flow_head(tmp_path, meanflow=meanflow, optimize=True)
     flow_sequence = FlowSequence(flow, torch.device("cpu"), torch.float32)
     eager = eager_solver(flow)
     graphed = graphed_solver(flow, object())
@@ -393,7 +349,7 @@ def test_graph_replay_matches_the_eager_solve_bit_for_bit(
         pytest.skip(f"{device.type} does not replay dots.tts patch solves as graphs")
     else:
         pass
-    flow = flow_head(tmp_path, meanflow=meanflow).to(
+    flow = tiny_flow_head(tmp_path, meanflow=meanflow, optimize=True).to(
         device=device, dtype=torch.bfloat16
     )
     flow_sequence = FlowSequence(flow, device, torch.bfloat16)
@@ -439,7 +395,9 @@ def test_a_graph_captures_after_every_resident_graph_was_evicted(
         pytest.skip(f"{device.type} does not replay dots.tts patch solves as graphs")
     else:
         pass
-    flow = flow_head(tmp_path, meanflow=False).to(device=device, dtype=torch.bfloat16)
+    flow = tiny_flow_head(tmp_path, meanflow=False, optimize=True).to(
+        device=device, dtype=torch.bfloat16
+    )
     flow_sequence = FlowSequence(flow, device, torch.bfloat16)
     eager = eager_solver(flow)
     one_long_cache = (

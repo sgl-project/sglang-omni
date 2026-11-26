@@ -12,56 +12,20 @@ import torch
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 from sglang_omni.platforms import current_platform
 from tests.unit_test.fixtures.accelerator import require_device_streams
+from tests.unit_test.fixtures.dots_tts import (
+    FM_HIDDEN,
+    LATENT_DIM,
+    LLM_HIDDEN,
+    PATCH_SIZE,
+    tiny_flow_head,
+)
 
-LLM_HIDDEN = 48
-FM_HIDDEN = 32
-LATENT_DIM = 6
-PATCH_SIZE = 2
 NFE = 2
-
-
-def flow_head(tmp_path) -> DotsTTSFlowHead:
-    torch.save(
-        {"mean": torch.zeros(LATENT_DIM), "var": torch.ones(LATENT_DIM)},
-        tmp_path / "latent_stats.pt",
-    )
-    config = {
-        "latent_dim": LATENT_DIM,
-        "patch_size": PATCH_SIZE,
-        "PatchEncoder": {
-            "num_layers": 1,
-            "num_heads": 2,
-            "hidden_size": FM_HIDDEN,
-            "ffn_hidden_size": 64,
-            "causal": True,
-        },
-        "DiT": {
-            "num_layers": 2,
-            "num_heads": 2,
-            "hidden_size": FM_HIDDEN,
-            "ffn_hidden_size": 64,
-            "modulation": True,
-            "qk_norm": True,
-            "rotary_bias": True,
-        },
-        "vocoder": {"sample_rate": 48000},
-        "meanflow": {"enabled": True, "use_duration_embedding": True},
-    }
-    flow = DotsTTSFlowHead(
-        config,
-        llm_hidden_size=LLM_HIDDEN,
-        latent_stats_path=str(tmp_path / "latent_stats.pt"),
-        optimize=False,
-    )
-    with torch.no_grad():
-        for parameter in flow.parameters():
-            parameter.normal_(0.0, 0.2)
-    return flow.eval()
 
 
 def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
     torch.manual_seed(1234)
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     state, prompt_embeddings = flow.new_request(
         max_audio_patch_count=8,
         prompt_latents=None,
@@ -96,7 +60,7 @@ def test_single_stream_decode_batch_accepts_2d_hidden(tmp_path) -> None:
 
 
 def test_append_hidden_uses_bias_for_null_projection(tmp_path) -> None:
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     state, _ = flow.new_request(
         max_audio_patch_count=2,
         prompt_latents=None,
@@ -139,7 +103,9 @@ def assert_single_stream_seed_survives_rematerialization(
     tmp_path: Path, *, device: torch.device, dtype: torch.dtype
 ) -> None:
     torch.manual_seed(1618)
-    flow = flow_head(tmp_path).to(device=device, dtype=dtype)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False).to(
+        device=device, dtype=dtype
+    )
     prefill_hidden = torch.randn(1, 1, LLM_HIDDEN, device=device, dtype=dtype)
     next_hidden = torch.randn(1, LLM_HIDDEN, device=device, dtype=dtype)
     schedule = torch.tensor([[0, 1]], device=device)
@@ -239,7 +205,7 @@ def test_flow_rematerialization_matches_uninterrupted_next_step(
     tmp_path, dtype: torch.dtype
 ) -> None:
     torch.manual_seed(1618)
-    flow = flow_head(tmp_path).to(dtype=dtype)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False).to(dtype=dtype)
     flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
     prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM, dtype=dtype)
     prefill_hidden = torch.randn(1, 3, LLM_HIDDEN, dtype=dtype)
@@ -469,7 +435,7 @@ def test_flow_matching_checkpoint_runs_the_single_request_solver(
 
 
 def test_batched_eos_ignores_cuda_compatibility_alias(tmp_path, monkeypatch) -> None:
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     flow.prepare_batched_eos_staging(2, torch.device("cpu"))
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
     for flags in ([True, False], [False, True]):
@@ -480,7 +446,7 @@ def test_batched_eos_ignores_cuda_compatibility_alias(tmp_path, monkeypatch) -> 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not current_platform.is_npu(), reason="requires NPU")
 def test_batched_eos_staging_on_npu(tmp_path) -> None:
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     device = torch.device("npu")
     flow.prepare_batched_eos_staging(2, device)
     for flags in ([True, False], [False, True]):
@@ -490,7 +456,7 @@ def test_batched_eos_staging_on_npu(tmp_path) -> None:
 
 def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
     torch.manual_seed(7)
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     flow.init_batched_tail(num_slots=2, nfe=NFE, max_audio_patches=8)
     prompt_latents = torch.randn(1, 2 * PATCH_SIZE, LATENT_DIM)
     states = []
@@ -540,7 +506,7 @@ def test_batched_eos_resolve_reads_staged_flags(tmp_path) -> None:
 
 def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
     torch.manual_seed(8)
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
     state, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -597,7 +563,7 @@ def test_batched_eos_staging_requires_resolve_before_reuse(tmp_path) -> None:
 
 def test_batched_eos_suppresses_first_check_until_resolve(tmp_path) -> None:
     torch.manual_seed(9)
-    flow = flow_head(tmp_path)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False)
     flow.init_batched_tail(num_slots=1, nfe=NFE, max_audio_patches=8)
     state, _ = flow.new_request(
         max_audio_patch_count=6,
@@ -649,7 +615,9 @@ def test_rotary_angles_stay_fp32_under_accelerator_autocast(
     tmp_path: Path,
 ) -> None:
     device = require_device_streams()
-    flow = flow_head(tmp_path).to(device=device, dtype=torch.bfloat16)
+    flow = tiny_flow_head(tmp_path, meanflow=True, optimize=False).to(
+        device=device, dtype=torch.bfloat16
+    )
     rotary = flow.velocity_field_predictor.blocks[0].attn.rotary
     positions = torch.tensor(
         [0, 1, 255, 256, 257, 4095, 4096, 4097],
