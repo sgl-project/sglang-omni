@@ -11,7 +11,7 @@ import (
 
 func (a *app) privacySettingsModel(now time.Time) settingsPrivacyViewState {
 	return buildSettingsPrivacyViewState(i18n.CurrentTranslator(), settingsPrivacyStateInput{
-		Privacy: a.prefs.Privacy, HasUpdateFeed: a.upd != nil, ClearHistoryAsk: a.clearHistoryAsk,
+		Privacy: a.prefs.Privacy, SessionsOn: a.prefs.Features.SessionsOn, HasUpdateFeed: a.upd != nil, ClearHistoryAsk: a.clearHistoryAsk,
 		HistoryAccess: a.historyAccessModel(now),
 	})
 }
@@ -69,6 +69,9 @@ func (a *app) clearHistory() {
 		a.post(func() {
 			if n > 0 {
 				a.historyChanged() // history_page.go
+			}
+			if err == nil {
+				a.endSessions() // session_keep.go
 			}
 			if err != nil {
 				a.toast(i18n.T("Could not clear the history: %v", err))

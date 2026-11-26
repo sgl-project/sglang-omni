@@ -65,11 +65,12 @@ type boxDropWindow interface {
 var newBoxNativeWindow = func(options mygo.WindowOptions) boxDropWindow { return mygo.NewWindow(options) }
 
 // newBoxWindow creates the input box's window: an ordinary one, above
-// every window until it takes the front (cardFront).
+// every window until it takes the front (cardFront), or a panel with
+// options.Panel (boxPanel).
 func newBoxWindow(state func() rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI, options mygo.WindowOptions) boxWindow {
 	options.Content = hudContent(func(context *ui.Context) { rewriteBoxView(context, state(), actions, local) })
 	options.Vibrancy = mygo.VibrancyHUD
-	options.Panel, options.NonActivating = false, false // an ordinary window: it takes typing, and a click brings VoxtNew in front
+	options.NonActivating = false // it takes typing; an ordinary window: a click brings VoxtNew in front
 	options.DisableClose = true
 	window := newBoxNativeWindow(options)
 	window.OnFileDrop(func(event *mygo.FileDropEvent) { actions.drop(event.Paths) })
@@ -96,30 +97,29 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 	}
 	root.Children(func() {
 		faceStyle(context, ui.Column(context.Key("box-face")).Fill().Padding(layout.CardPadTop-layout.Border, layout.CardPadX-layout.Border, layout.CardPadY-layout.Border).Gap(8), state.Radius, state.Alpha).DragWindow().Children(func() {
-			// The header: what it is, Send while it records or a resend
-			// waits, Close.
+			// The header is the same in every turn: what it is, the
+			// answer's Insert and Copy (dimmed until there is one), Close.
+			// Speaking and sending live in the composer at the foot.
 			ui.Row(context).Height(layout.CardHeadH).Shrink(0).Gap(layout.CardHeadGap).AlignItems(ui.Center).Children(func() {
 				ui.Icon(context, icons.VoxtAnswer.Bold).Size(layout.CardIcon, layout.CardIcon).TextColor(ui.RGB(255, 255, 255)).Shrink(0).Label(i18n.T("Rewrite"))
 				ui.Text(context, i18n.T("Rewrite")).FontSize(layout.CardTitleSize).FontWeight(600).TextColor(ui.RGB(255, 255, 255)).SingleLine()
-
-				if state.Recording {
-					cardWave(context, state.Levels[:], state.Wave, state.Recording, state.Heard, state.Motion, state.Phase)
-				}
 				ui.Box(context).Grow(1).MinWidth(0)
-				if state.CanSend {
-					if cardCapsule(context.Key("box-send"), i18n.T("Send"), i18n.T("Send (Enter)")) {
-						actions.textChanged(local.text)
-						actions.send()
-					}
-				}
 				if card := state.Card; card != nil && !card.Failed && card.CanCopy {
 					cardInsertCopy(context, card, actions.card)
+				} else {
+					cardIconButton(context.Key("box-insert-off"), i18n.T("Insert"), "", icons.Pen, false)
+					cardIconButton(context.Key("box-copy-off"), i18n.T("Copy"), "", icons.Copy, false)
+				}
+				if label, icon := sizeStepLabel(state.SizeStep); cardIconButton(context.Key("box-size"), label, label, icon, true) {
+					actions.cycleSize()
 				}
 				if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
 					actions.close()
 				}
 			})
-			ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			if !sessionRow(context, state.Sessions, 0, actions.card, actions.cardLocal().Card) {
+				ui.Box(context).Height(1).Shrink(0).Margin(layout.CardRuleTop, 0, 0, 0).Background(ovCardRule)
+			}
 
 			if state.Subtitle != "" {
 				ui.Row(context).Shrink(0).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -216,9 +216,6 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				})
 			}
 
-			if sizeStepButton(context.Key("box-size"), state.SizeStep) {
-				actions.cycleSize()
-			}
 			ui.Row(context.Key("box-footer")).Shrink(0).Gap(5).AlignItems(ui.Center).Children(func() {
 				add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
 				if add.Clicked() {
@@ -245,13 +242,26 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 						}
 					})
 				})
-				if state.EnterSends {
-					keycap(context, "Enter")
-					ui.Text(context, i18n.T("send")).FontSize(11).TextColor(ovText2).SingleLine()
-					ui.Text(context, "·").FontSize(11).TextColor(ovText2).SingleLine()
+				// The microphone: speak the next instruction, or, while it
+				// listens, finish and send what was said.
+				speakTip := i18n.T("Speak")
+				if state.SpeakKeys != "" {
+					speakTip += " (" + state.SpeakKeys + ")"
 				}
-				keycap(context, "Esc")
-				ui.Text(context, i18n.T("close")).FontSize(11).TextColor(ovText2).SingleLine()
+				if state.Recording {
+					if cardIconButton(context.Key("box-mic"), i18n.T("Stop and send"), i18n.T("Stop and send"), icons.Stop, true) {
+						actions.textChanged(local.text)
+						actions.send()
+					}
+					cardWave(context, state.Levels[:], state.Wave, state.Recording, state.Heard, state.Motion, state.Phase)
+				} else if cardIconButton(context.Key("box-mic"), i18n.T("Speak"), speakTip, icons.VoxtTranscribe, state.CanSpeak) {
+					actions.speak()
+				}
+				ui.Box(context).Grow(1).MinWidth(0)
+				if boxSendButton(context.Key("box-send"), state.CanSend, state.EnterSends) {
+					actions.textChanged(local.text)
+					actions.send()
+				}
 			})
 		})
 	})
@@ -427,7 +437,7 @@ func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, rem
 // height.
 func boxConversation(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
 	card, count := state.Card, sessionCardBlockCount(state.Card)
-	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || card.Writing && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
+	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || (card.Writing || count > 0 && sessionCardBlockAt(card, count-1).Live) && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
 		local.turnsKey, local.turnScroll.Y = key, math.MaxFloat32 // the newest turn is in view
 	}
 	overlayLocal := actions.cardLocal()
@@ -438,4 +448,25 @@ func boxConversation(context *ui.Context, state rewriteBoxViewState, actions rew
 			}
 		})
 	})
+}
+
+// boxSendButton is the composer's Send: always there, dimmed with nothing
+// to send, so the foot of the card keeps its shape from turn to turn.
+func boxSendButton(context *ui.Context, enabled, enterSends bool) bool {
+	tip := i18n.T("Send")
+	if enterSends {
+		tip = i18n.T("Send (Enter)")
+	}
+	button := ui.ButtonBase(context).Height(layout.CardBtn).Padding(0, 12-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(i18n.T("Send")).Tooltip(tip).Disabled(!enabled)
+	background, line, alpha := ui.RGBA(255, 255, 255, 0.14), ui.RGBA(255, 255, 255, 0.12), float32(0.92)
+	switch {
+	case !enabled:
+		background, line, alpha = ui.RGBA(255, 255, 255, 0.04), ui.RGBA(255, 255, 255, 0), 0.42*0.92
+	case button.Hovered():
+		background, line = ui.RGBA(255, 255, 255, 0.22), ui.RGBA(255, 255, 255, 0.18)
+	}
+	button.Background(background).Border(1, line)
+	return button.Children(func() {
+		ui.Text(context, i18n.T("Send")).FontSize(12).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, alpha)).SingleLine()
+	}).Clicked()
 }

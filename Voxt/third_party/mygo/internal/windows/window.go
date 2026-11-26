@@ -757,6 +757,10 @@ func (w *window) IsVisible() bool {
 	return r != 0
 }
 
+// IsOnActiveSpace is true: a window shows on the virtual desktop the user
+// is on when shown.
+func (w *window) IsOnActiveSpace() bool { return true }
+
 func (w *window) Focus() {
 	if w.host != nil {
 		w.focusWebView()

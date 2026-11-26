@@ -753,6 +753,15 @@ func (w *window) IsVisible() bool {
 	return sendBool(w.win, "isVisible")
 }
 
+// IsOnActiveSpace asks AppKit, which answers for a hidden window whether
+// ordering it in would put it on the active Space.
+func (w *window) IsOnActiveSpace() bool {
+	if w.popover != 0 {
+		return true // it shows over its parent
+	}
+	return sendBool(w.win, "isOnActiveSpace")
+}
+
 func (w *window) Focus() {
 	if w.host != nil {
 		if !w.closed {

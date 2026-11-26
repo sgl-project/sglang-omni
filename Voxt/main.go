@@ -132,7 +132,9 @@ func main() {
 	case updates.FeedUpdates:
 		a.upd = pluginUpdates{}
 	case updates.GitHubUpdates:
-		a.upd = newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
+		r := newReleaseUpdates(a.settings, releasesURL, v, a.checkReleasesNow)
+		r.bgCheck = func() { a.post(a.checkReleasesBackground) }
+		a.upd = r
 	}
 	a.bundleStale = h.stale
 	a.connectUpdates()                    // updates.go
@@ -145,8 +147,10 @@ func main() {
 	mygo.App.WhenReady(func() {
 		a.openWindow()           // shell.go
 		a.applyBeta()            // updates.go: betas or not, before the first check
+		a.loadUpdates()          // updates.go: restore persisted update state for sidebar and tray
 		a.startHelper()          // helperlink.go
 		a.openTray()             // tray.go: the menu bar icon, close to the menu bar
+		a.loadSessions()         // session_keep.go: the sessions of the last run
 		a.applyDock()            // tray.go: in the Dock or not
 		a.connectWindowLife()    // tray.go
 		a.watchBundle()          // updates.go: an update installed while it runs

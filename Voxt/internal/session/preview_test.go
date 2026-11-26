@@ -279,17 +279,20 @@ func TestBoxWindowReviewDoesNotBlockMissingLanguageModel(t *testing.T) {
 func TestAutomaticImagePreviewFollowsTheImageSent(t *testing.T) {
 	clip, shot, own := []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, []byte{0xff, 0xd8, 'w', 0xff, 0xd9}, []byte{0xff, 0xd8, 'o', 0xff, 0xd9}
 	for _, tc := range []struct {
-		name, wantKind string
-		images         [][]byte
-		want           []byte
+		name, wantKind, sel string
+		images              [][]byte
+		want                []byte
 	}{
 		{name: "clipboard", wantKind: "clipboard", want: clip},
-		{name: "box image wins", images: [][]byte{own}, wantKind: "", want: nil},
+		// VX-141: the selection goes instead of the clipboard's picture,
+		// so the box does not show it either.
+		{name: "selection drops the clipboard", sel: "ship friday?", wantKind: "", want: nil},
+		{name: "box image wins", sel: "ship friday?", images: [][]byte{own}, wantKind: "", want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &fakeLLM{text: "We ship on Friday."}
 			h := newHarness(t, &fakeFile{text: "make it polite"}, model, func(c *Config, s *settings.Settings) {
-				c.Select = &fakeSelector{text: "ship friday?"}
+				c.Select = &fakeSelector{text: tc.sel}
 				s.Privacy.SendClipboardImage = true
 				c.ClipboardImage = func(context.Context) ([]byte, error) { return clip, nil }
 			})

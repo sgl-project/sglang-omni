@@ -15,7 +15,6 @@ func speechContextSection(c *ui.Context, unused bool, saved string, actions mode
 		sc.text, sc.seen = saved, saved
 	}
 	sectionTitle(c, i18n.T("Speech context"))
-	caption(c, i18n.T("Tell the speech model who is speaking and about what."))
 	if unused { // still offered: meeting transcript correction reads it (meeting_link.go)
 		caption(c, i18n.T("The speech models in use do not take it while they recognise. The language model still gets it when it corrects a meeting's transcript, and your dictionary still guides its clean-up."))
 	}

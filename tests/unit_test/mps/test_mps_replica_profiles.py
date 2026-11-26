@@ -25,6 +25,7 @@ from sglang_omni.mps.devices import MpsPhysicalDevice
 from sglang_omni.mps.manager import MpsClientRef
 from sglang_omni.mps.replica_profiles import (
     B200,
+    H200,
     REPLICA_PROFILES,
     RTX_4090_D,
     MeasuredGpu,
@@ -33,7 +34,7 @@ from sglang_omni.mps.replica_profiles import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-EXAMPLE_GPUS = {"b200": B200, "rtx4090d": RTX_4090_D}
+EXAMPLE_GPUS = {"b200": B200, "h200": H200, "rtx4090d": RTX_4090_D}
 EXAMPLES = sorted(
     (example, gpu)
     for directory, gpu in EXAMPLE_GPUS.items()
@@ -216,8 +217,18 @@ def idle_4090_d() -> MpsPhysicalDevice:
     )
 
 
+def idle_h200() -> MpsPhysicalDevice:
+    return MpsPhysicalDevice(
+        "GPU-200",
+        name=H200.name,
+        total_memory_bytes=H200.total_memory_mib * MIB,
+        free_memory_bytes=(H200.total_memory_mib - 600) * MIB,
+    )
+
+
 @pytest.mark.parametrize(
-    "device, gpu", [(idle_b200(), B200), (idle_4090_d(), RTX_4090_D)]
+    "device, gpu",
+    [(idle_b200(), B200), (idle_h200(), H200), (idle_4090_d(), RTX_4090_D)],
 )
 def test_each_gpu_serves_its_own_measured_count(mps_host, device, gpu) -> None:
     profile = profile_for(MOSS_TD, gpu)

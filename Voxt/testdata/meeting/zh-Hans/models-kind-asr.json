@@ -4,36 +4,29 @@
   "models": {
     "asr": [
       {
-        "key": "model-asr.moss",
+        "key": "model-asr.accurate",
         "rows": [
           {
-            "id": "asr.moss",
+            "id": "asr.accurate",
             "kind": "asr",
-            "name": "MOSS-Transcribe-Diarize",
+            "name": "Qwen3-ASR 1.7B (8bit)",
             "default": true,
             "installed": false,
-            "size_text": "需下载 1.8 GB",
-            "about": "专为多人对话设计，边说边出文字。",
-            "languages": "中文和英语",
-            "tags": [
-              "本地",
-              "实时",
-              "不支持词典",
-              "支持主要语言"
-            ],
+            "size_text": "需下载 2.5 GB",
+            "languages": "30 种语言和 22 种中文方言，包括中文、英语、粤语、日语和韩语",
             "actions": [
               {
                 "kind": "hide",
-                "model_id": "asr.moss",
+                "model_id": "asr.accurate",
                 "label": "隐藏",
-                "accessibility_label": "隐藏 MOSS-Transcribe-Diarize",
+                "accessibility_label": "隐藏 Qwen3-ASR 1.7B (8bit)",
                 "tooltip": "不在功能页的模型菜单里列出"
               },
               {
                 "kind": "download",
-                "model_id": "asr.moss",
+                "model_id": "asr.accurate",
                 "label": "下载",
-                "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+                "accessibility_label": "下载 Qwen3-ASR 1.7B (8bit)"
               }
             ]
           }
@@ -80,14 +73,13 @@
     "network": {
       "open": false,
       "proxy_mode": 0,
-      "proxy_caption": "使用这台 Mac 网络设置里的代理，或环境变量指定的代理。",
       "source": 0,
       "source_labels": [
         "自动",
         "只用 Hugging Face",
         "只用 hf-mirror.com"
       ],
-      "source_caption": "哪个先响应用哪个，每个文件都会校验。",
+      "source_caption": "",
       "proxy_family": {
         "key": "network.proxy",
         "kind": "",

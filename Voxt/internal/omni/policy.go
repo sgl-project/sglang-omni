@@ -48,8 +48,9 @@ func (s Spec) languageHint(code string) string {
 
 // bias is a Final request's context and the dictionary's terms in it.
 type bias struct {
-	context string
-	terms   []string
+	context  string
+	terms    []string
+	hotwords []string
 }
 
 // contextBias is the Final's context: prompt (free text), then the
@@ -83,6 +84,9 @@ func (t *ASRTuning) contextBias(hints []string, prompt string) bias {
 		if len(terms) >= t.ContextTerms || chars >= t.ContextChars {
 			break
 		}
+	}
+	if t.Hotwords {
+		return bias{context: t.Instruction, hotwords: terms}
 	}
 	parts := []string{}
 	if p := strings.TrimSpace(prompt); p != "" {

@@ -3,9 +3,12 @@ package main
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/actnow"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 func TestModelsDemoActionControls(t *testing.T) {
@@ -20,13 +23,17 @@ func TestModelsDemoActionControls(t *testing.T) {
 		{name: "network open", fixture: "en/models-page-normal", steps: historySteps("Network…"), want: []string{"openNetwork"}},
 		{name: "network cancel", fixture: "en/models-network-automatic", steps: historySteps("Cancel"), want: []string{"closeNetwork"}},
 		{name: "network save", fixture: "en/models-network-no-proxy", steps: historySteps("Save"), want: []string{"saveNetwork", "closeNetwork"}},
-		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), wantText: "The password is kept in the Keychain.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network custom", fixture: "en/models-network-automatic", steps: historySteps("Custom"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.proxyMode != proxyCustom {
 				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
 			}
 		}},
-		{name: "network no proxy", fixture: "en/models-network-automatic", steps: historySteps("No proxy"), wantText: "Downloads connect to the server directly."},
-		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), wantText: "Only this server. If it cannot be reached, downloads fail.", check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "network no proxy", fixture: "en/models-network-automatic", steps: historySteps("No proxy"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.modelsUI.netForm.proxyMode != proxyNone {
+				t.Fatalf("proxy mode %d", host.modelsUI.netForm.proxyMode)
+			}
+		}},
+		{name: "network source", fixture: "en/models-network-automatic", steps: historySteps("hf-mirror.com only"), check: func(t *testing.T, host *meetingDemoHost) {
 			if host.modelsUI.netForm.source != 2 {
 				t.Fatalf("source %d", host.modelsUI.netForm.source)
 			}
@@ -132,11 +139,11 @@ func TestModelsDemoActionControls(t *testing.T) {
 				switch {
 				case step.text != "":
 					if step.label == "Speech context" {
-						caption, ok := tester.Find("Tell the speech model who is speaking and about what.")
+						title, ok := tester.Find("Speech context")
 						if !ok {
-							t.Fatal("no Speech context caption")
+							t.Fatal("no Speech context title")
 						}
-						tester.ClickAt(caption.X+10, caption.Y+caption.H+30)
+						tester.ClickAt(title.X+10, title.Y+title.H+30)
 					} else {
 						err = tester.Click(step.label)
 					}
@@ -161,6 +168,69 @@ func TestModelsDemoActionControls(t *testing.T) {
 			}
 			if test.check != nil {
 				test.check(t, host)
+			}
+		})
+	}
+}
+
+// TestModelsDemoTooltips keeps language and family guidance available on hover
+// without putting it back into the simplified rows.
+func TestModelsDemoTooltips(t *testing.T) {
+	previousLocale := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
+	for _, locale := range []string{"en", "zh-Hans"} {
+		t.Run(locale, func(t *testing.T) {
+			host, err := loadMeetingDemoHost("testdata/meeting")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectMeetingDemoFixture(t, host, locale+"/models-page-normal")
+			state := host.modelsViewState()
+			var single modelRowViewState
+			var family modelCardViewState
+			for _, card := range state.ASR {
+				if card.FamilyName == "" && single.ID == "" {
+					single = card.Rows[0]
+				}
+				if card.FamilyName != "" && family.FamilyName == "" {
+					family = card
+				}
+			}
+			if single.ID == "" || family.FamilyName == "" || state.Dictation == nil {
+				t.Fatal("the fixture needs a single-model card, a family card and System dictation")
+			}
+			for _, test := range []struct {
+				name   string
+				anchor string
+				want   string
+			}{
+				{name: "family languages", anchor: family.FamilyName, want: family.Languages},
+				{name: "single-model languages", anchor: single.Name, want: uitext.ModelLanguages(single.ID)},
+				{name: "dictation languages", anchor: state.Dictation.Rows[0].Name, want: uitext.ModelLanguages(state.Dictation.Rows[0].ID)},
+				{name: "family status", anchor: family.Rows[0].SizeText, want: family.Rows[0].FamilyText},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					if test.want == "" {
+						t.Fatal("empty tooltip expectation")
+					}
+					tester := newMeetingDemoTester(t, host)
+					tester.SetSize(1000, 6000)
+					frames(tester)
+					if tester.HasText(test.want) {
+						t.Fatalf("tooltip starts visible: %q", test.want)
+					}
+					anchor, ok := tester.Find(test.anchor)
+					if !ok {
+						t.Fatalf("no anchor %q in %q", test.anchor, tester.Texts())
+					}
+					tester.Move(anchor.X+anchor.W/2, anchor.Y+anchor.H/2)
+					frames(tester)
+					tester.Advance(time.Second)
+					frames(tester)
+					if !tester.HasText(test.want) {
+						t.Fatalf("hovering %q does not show %q: %q", test.anchor, test.want, tester.Texts())
+					}
+				})
 			}
 		})
 	}

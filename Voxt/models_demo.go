@@ -39,7 +39,10 @@ func (host *meetingDemoHost) followNetwork(key string, on bool) {
 	host.record("followNetwork %s %t", key, on)
 }
 func (host *meetingDemoHost) downloadModel(id string) { host.record("downloadModel %s", id) }
-func (host *meetingDemoHost) cancelModel(id string)   { host.record("cancelModel %s", id) }
+func (host *meetingDemoHost) downloadModelPack(id string) {
+	host.record("downloadModelPack %s", id)
+}
+func (host *meetingDemoHost) cancelModel(id string) { host.record("cancelModel %s", id) }
 func (host *meetingDemoHost) askDeleteModel(id string) {
 	host.record("askDeleteModel %s", id)
 }

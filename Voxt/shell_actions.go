@@ -48,6 +48,12 @@ type shellKeyActions interface {
 	toggleLogsPanel()
 }
 
+// sidebarUpdateActions are the intents of the sidebar footer update control.
+type sidebarUpdateActions interface {
+	checkForUpdates()
+	relaunch()
+}
+
 // shellActions are the intents of the window shell's views (shell.go).
 type shellActions interface {
 	navActions
@@ -55,6 +61,7 @@ type shellActions interface {
 	logsActions
 	paletteActions
 	shellKeyActions
+	sidebarUpdateActions
 }
 
 // logsActions are the intents of the logs page and panel (shell_logs.go).

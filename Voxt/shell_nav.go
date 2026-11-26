@@ -62,7 +62,7 @@ func navIcon(path string) icons.Icon {
 
 // sidebarFrame lays out the sidebar and the page: the rail, or the full
 // sidebar beside a divider that resizes it.
-func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, page func()) {
+func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState, update *sidebarUpdateViewState, actions navActions, noticeActs noticeActions, updateActs sidebarUpdateActions, local *navLocalUI, page func()) {
 	t := c.Theme()
 	k := tok(t)
 	sidebarBg, background := k.Sidebar, k.Bg
@@ -86,7 +86,7 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 		headerInset = max(0, c.TitleBar().Left-px(t, railWidth)-px(t, sp6)+px(t, sp3))
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c).Width(px(t, railWidth)).Shrink(0).Background(sidebarBg).Children(func() {
-				navRail(c, state, notices, actions, noticeActs, local, sidebarBg)
+				navRail(c, state, notices, update, actions, noticeActs, updateActs, local, sidebarBg)
 			})
 			ui.Box(c).Width(1).Background(k.Line)
 			ui.Column(c).Grow(1).MinWidth(0).Background(background).Children(page)
@@ -103,7 +103,7 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 		local.sideW, local.sideWScale = px(t, float32(w)), scale
 	}
 	split := ui.Split(c.Key("sidebar-split"), &local.sideW, func() {
-		ui.Column(c).Fill().Background(sidebarBg).Children(func() { sidebar(c, state, notices, actions, noticeActs, local, sidebarBg) })
+		ui.Column(c).Fill().Background(sidebarBg).Children(func() { sidebar(c, state, notices, update, actions, noticeActs, updateActs, local, sidebarBg) })
 	}, func() {
 		ui.Column(c).Grow(1).MinWidth(0).Background(background).Children(page)
 	}).Grow(1).MinHeight(0)
@@ -124,7 +124,7 @@ func sidebarFrame(c *ui.Context, state *navViewState, notices []noticeViewState,
 
 // navRail is the sidebar as a column of icons; their titles show as
 // tooltips, a badge as a dot.
-func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, background ui.Color) {
+func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, update *sidebarUpdateViewState, actions navActions, noticeActs noticeActions, updateActs sidebarUpdateActions, local *navLocalUI, background ui.Color) {
 	t := c.Theme()
 	k := tok(t)
 	if bar := c.TitleBar(); bar.Left > 0 {
@@ -164,6 +164,11 @@ func navRail(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 		})
 		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 16)).Gradient(background.Alpha(0), background, 180).PassThrough()
 	})
+	if update != nil {
+		ui.Column(c).AlignItems(ui.Center).Padding(px(t, sp1), 0, px(t, sp2), 0).Shrink(0).Children(func() {
+			sidebarUpdateControl(c, update, updateActs, true)
+		})
+	}
 }
 
 // railItem is a page's icon in the rail. Settings' has a dot while there
@@ -229,7 +234,7 @@ func railButton(c *ui.Context, key string, ic icons.Icon, label, tip string, sel
 	return b
 }
 
-func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, actions navActions, noticeActs noticeActions, local *navLocalUI, background ui.Color) {
+func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, update *sidebarUpdateViewState, actions navActions, noticeActs noticeActions, updateActs sidebarUpdateActions, local *navLocalUI, background ui.Color) {
 	t := c.Theme()
 	k := tok(t)
 	ui.Row(c).Height(titleBarHeight).Shrink(0).DragWindow().AlignItems(ui.Center).Justify(ui.End).Padding(0, px(t, sp2), 0, 0).Children(func() {
@@ -286,6 +291,11 @@ func sidebar(c *ui.Context, state *navViewState, notices []noticeViewState, acti
 		})
 		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(px(t, 20)).Gradient(background.Alpha(0), background, 180).PassThrough()
 	})
+	if update != nil {
+		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() {
+			sidebarUpdateControl(c, update, updateActs, false)
+		})
+	}
 	// The notifications, at the foot (shell_notices.go).
 	if len(notices) > 0 {
 		ui.Column(c).Shrink(0).Padding(px(t, sp1), px(t, 10), px(t, sp2)).Children(func() {

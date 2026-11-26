@@ -94,6 +94,12 @@ std::vector<mx::array> SwigluGraph(const std::vector<mx::array> &inputs) {
   return {mx::multiply(SiluGraph({inputs[0]})[0], inputs[1])};
 }
 
+std::vector<mx::array> MishGraph(const std::vector<mx::array> &inputs) {
+  const mx::array &x = inputs[0];
+  return {
+      mx::multiply(x, mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype()))))};
+}
+
 // Note (XXXXRT666): computed in float32 and returned in the inputs' promoted
 // dtype, since a half-precision alpha * x of a few hundred loses the sine's
 // phase.
@@ -214,6 +220,22 @@ mx::array Silu(const mx::array &x) {
 mx::array Swiglu(const mx::array &gate, const mx::array &up) {
   static const auto compiled = mx::compile(SwigluGraph, true);
   return compiled({gate, up})[0];
+}
+
+mx::array Mish(const mx::array &x) {
+  static const auto compiled = mx::compile(MishGraph, true);
+  return compiled({x})[0];
+}
+
+mx::array LeakyRelu(const mx::array &x, float negative_slope) {
+  return mx::maximum(x, mx::multiply(x, Scalar(negative_slope, x)));
+}
+
+mx::array ModulatedLayerNorm(const mx::array &x, const mx::array &shift,
+                             const mx::array &scale, float eps) {
+  return mx::fast::layer_norm(
+      x, mx::reshape(mx::add(Scalar(1.0f, x), scale), {-1}),
+      mx::reshape(shift, {-1}), eps);
 }
 
 mx::array Snake(const mx::array &x, const mx::array &alpha,

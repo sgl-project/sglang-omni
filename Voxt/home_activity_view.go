@@ -32,10 +32,14 @@ const (
 func homeActivitySection(c *ui.Context, state *homeViewState, actions homeActions) {
 	t := c.Theme()
 	act := state.Activity
-	if !state.KeepHistory || act == nil {
-		return // Today already says the history is off; the log is on its way
+	if act == nil {
+		return // the log is on its way
 	}
 	sectionTitle(c, i18n.T("Activity"))
+	if !state.KeepHistory {
+		caption(c, i18n.T("History is off, so nothing is counted."))
+		return
+	}
 	fillCard(c.Key("home-activity")).Children(func() {
 		// The numbers sit on the calendar's middle line: the legend over the
 		// squares is as tall as the months under them.
@@ -74,8 +78,8 @@ func homeActivityGridW(c *ui.Context, act *homeActivityViewState) float32 {
 	return px(t, activityDayW) + float32(len(act.Weeks))*(px(t, activityCellMax)+px(t, activityGap))
 }
 
-// homeActivityNumbers is the numbers beside the calendar, after a
-// hairline: each figure as Today's are, its words after it.
+// homeActivityNumbers is the four usage numbers beside the calendar,
+// after a hairline.
 func homeActivityNumbers(c *ui.Context, stats []homeActivityStatViewState) {
 	t := c.Theme()
 	k := tok(t)
@@ -116,7 +120,7 @@ func homeActivityGrid(c *ui.Context, act *homeActivityViewState, actions homeAct
 					day := days[weekday]
 					square := activitySquare(c.Key(strconv.Itoa(week)), day.Level, day.Future, lit[week]).Grow(1).Basis(0).AspectRatio(1)
 					if !day.Future {
-						square.Label(day.Date + " " + day.Count)
+						square.Label(day.Date + " " + day.summary())
 						activityTip(c, square, day)
 					}
 				}
@@ -169,8 +173,7 @@ func activitySquare(c *ui.Context, level int, future bool, lit float32) ui.Eleme
 	return square
 }
 
-// activityTip is a square's tooltip, in the theme's tooltip colors: its
-// day, softer, over its results.
+// activityTip is a square's tooltip: its day, results and characters.
 func activityTip(c *ui.Context, square ui.Element, day homeActivityDayViewState) {
 	t := c.Theme()
 	ui.TooltipBase(c, square, func(tip ui.Element) {
@@ -179,7 +182,7 @@ func activityTip(c *ui.Context, square ui.Element, day homeActivityDayViewState)
 		tip.AttachTo(square, ui.AnchorTop, ui.AnchorBottom).Margin(0, 0, px(t, 6), 0)
 		tip.Children(func() {
 			ui.Text(c, day.Date).FontSize(px(t, fsCaption)).TextColor(t.InverseText.Alpha(0.6)).SingleLine()
-			ui.Text(c, day.Count).FontSize(px(t, fsCaption)).TextColor(t.InverseText).SingleLine()
+			ui.Text(c, day.summary()).FontSize(px(t, fsCaption)).TextColor(t.InverseText).SingleLine()
 		})
 	})
 }

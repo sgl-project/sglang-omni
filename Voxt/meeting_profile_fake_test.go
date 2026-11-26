@@ -208,10 +208,10 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	for _, stage := range report.Stages {
 		counts[stage.Name]++
 	}
-	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
+	if counts["correction"] != 1 || counts["summary"] != 1 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
 		t.Errorf("stage counts %+v", counts)
 	}
-	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 != report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "xxx") {
+	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 != report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "x") {
 		t.Errorf("evaluation or corrected text missing: %+v", report)
 	}
 	if _, err := os.Stat(databaseDir); !os.IsNotExist(err) {

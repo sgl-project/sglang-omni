@@ -19,6 +19,8 @@ SERVED_KINDS = {
     "nemotron_asr_server": ("nemotron_asr",),
     "parakeet_server": ("parakeet",),
     "sensevoice_server": ("sensevoice",),
+    "arkasr_server": ("arkasr",),
+    "funasr_server": ("funasr",),
     "voxtral_tts_server": ("voxtral_tts",),
     "qwen3_tts_server": ("qwen3_tts",),
     "cosyvoice3_server": ("cosyvoice3",),
@@ -27,6 +29,7 @@ SERVED_KINDS = {
     "music3_server": ("minimax_music3",),
     "ming3_audio_server": ("ming3_audio",),
     "ming_tts_server": ("ming_tts",),
+    "haru_server": ("haru",),
 }
 SYSTEM_LIBRARY_PREFIXES = ("/usr/lib/", "/System/Library/")
 
@@ -135,6 +138,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("qwen3_asr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
         ("moss_transcribe_diarize_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
+        ("arkasr_server", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
+        ("arkasr_server", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("qwen3_asr_server", ("--cache-limit-mb", "-2"), "--cache-limit-mb must be 0 to 1073741824"),
         ("qwen3_asr_server", ("--max-batch", "0"), "--max-batch must be at least 1"),
         ("qwen3_asr_server", ("--max-batch", "-3"), "--max-batch must be at least 1"),
@@ -149,6 +154,8 @@ def test_a_load_without_a_checkpoint_reports_failed(
         ("fish_s2_pro_server", ("--request-timeout-s", "0"), "--request-timeout-s must be above 0"),
         ("whisper_server", ("--draft-steps", "0"), "--draft-steps must be at least 1"),
         ("whisper_server", ("--draft-steps", "3"), "--draft-steps needs --draft-model-path"),
+        ("haru_server", ("--warmup-frames", "-1"), "--warmup-frames must be >= 0"),
+        ("haru_server", ("--input-sample-rate", "8000"), "--input-sample-rate must be 16000 or 24000"),
     ],
 )  # fmt: skip
 def test_invalid_server_flags_exit_before_the_load(
@@ -173,6 +180,8 @@ def test_invalid_server_flags_exit_before_the_load(
             for penalty in ("0", "-1", "nan", "inf")
         ],
         ("qwen3_asr_transcribe", ("--draft-policy", "unknown"), "--draft-policy must be adaptive or fixed"),
+        ("arkasr_transcribe", ("--draft-bits", "-1"), "--draft-bits must be 4, 6 or 8"),
+        ("arkasr_transcribe", ("--draft-bits", "8"), "--draft-bits needs --draft-model-path"),
         ("music3_synthesize", ("--stage-offload-components", "dit"), "requires both ar,dit"),
         ("ming3_audio_chat", ("--context-length", "0"), "--context-length must be a positive integer"),
         ("ming3_audio_chat", ("--speculative-algorithm", "EAGLE3"), "--speculative-algorithm must be NEXTN"),
