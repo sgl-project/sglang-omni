@@ -163,6 +163,10 @@ func TestEditedBuiltinPromptKeepsOneCleanup(t *testing.T) {
 	if n := strings.Count(edited.System, "Can you send the weekly report to Anna before 5?"); n != 1 {
 		t.Errorf("the example appears %d times:\n%s", n, edited.System)
 	}
+	precedence := "Custom rules and basic cleanup:\n- The custom rules above take precedence over basic cleanup when they request translation or reformatting."
+	if !strings.HasSuffix(edited.System, precedence) {
+		t.Errorf("edited built-in prompt lacks the final custom-rule precedence layer:\n%s", edited.System)
+	}
 }
 
 func TestLayersAndProfile(t *testing.T) {

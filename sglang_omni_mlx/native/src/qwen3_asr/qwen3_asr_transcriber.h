@@ -101,12 +101,9 @@ class Qwen3ASRTranscriber {
 public:
   // With a DFlash draft directory, decoding verifies the draft's proposals
   // instead of one token per step; the transcript stays greedy.
-  explicit Qwen3ASRTranscriber(
-      const std::filesystem::path &model_directory,
-      const std::filesystem::path &draft_directory = {},
-      int draft_quantization_bits = 0,
-      omni_common::DraftPolicy draft_policy =
-          omni_common::DraftPolicy::kAdaptive);
+  Qwen3ASRTranscriber(const std::filesystem::path &model_directory,
+                      const omni_common::DraftOptions &draft,
+                      omni_common::DraftPolicy draft_policy);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;

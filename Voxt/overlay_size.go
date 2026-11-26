@@ -145,7 +145,7 @@ func sessionOverlayLayoutFor(state *sessionOverlayViewState, input sessionOverla
 		width := layout.CardSizes[card.SizeStep].Width(input.WorkArea, input.Overlay.Margin)
 		bodyMax := sessionOverlayCardBodyMax(card, input.WorkArea.Height, input.Overlay.Margin)
 		body, streamHeight, exact := sessionOverlayCardBodyHeight(state.SessionID, card, measureHeight, input.PreviewHeights, bodyMax, input.Memory.StreamHeight, width)
-		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardAttachmentHeight(card)+body, exact, streamHeight
+		model.Width, model.Height, model.Exact, model.StreamHeight = width, layout.CardChrome+sessionCardSessionsHeight(card)+sessionCardAttachmentHeight(card)+body, exact, streamHeight
 		model.CardScrolls = body >= bodyMax
 		if card.Message != "" {
 			model.Height += layout.CardMsgGap + layout.CardMsgH
@@ -240,7 +240,7 @@ func sessionCardAttachmentHeight(card *sessionCardViewState) int {
 }
 
 func sessionOverlayCardBodyMax(card *sessionCardViewState, workAreaHeight int, margin float64) int {
-	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardAttachmentHeight(card)
+	room := workAreaHeight - int(math.Round(margin)) - layout.Pad - layout.CardChrome - sessionCardSessionsHeight(card) - sessionCardAttachmentHeight(card)
 	if card != nil && card.Message != "" {
 		room -= layout.CardMsgGap + layout.CardMsgH
 	}

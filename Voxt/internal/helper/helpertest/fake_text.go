@@ -167,6 +167,7 @@ func (f *fake) textio(m proto.Message) {
 	case proto.MethodTextSelection:
 		var p proto.SelectionParams
 		m.DecodeParams(&p)
+		appendLine(f.opts["selection-log"], p)
 		res := proto.SelectionResult{Via: proto.ViaNone, MS: 1, Steps: []string{"focus=AXTextArea"}}
 		// The AX reading: selection-file= when set, selection= otherwise.
 		// An empty selection file is no reading at all; a reading of only

@@ -29,6 +29,7 @@ type TrackASR struct {
 
 type trackTranscriber struct {
 	mgr      *Manager
+	owner    *track
 	src      Source
 	job      string
 	path     LivePath
@@ -104,7 +105,7 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 		if err := tr.live.Push(ctx, pcm); err != nil {
 			return err
 		}
-		tr.mgr.updateLive(tr.src, tr.live.LiveText())
+		tr.mgr.updateLive(tr.src, tr.live.LiveText(), tr.owner)
 		return nil
 	}
 	for _, u := range tr.cutter.Push(pcm) {
@@ -122,7 +123,7 @@ func (tr *trackTranscriber) onPCM(ctx context.Context, pcm []byte) error {
 
 func (tr *trackTranscriber) finish(ctx context.Context) error {
 	if tr.live != nil {
-		tr.mgr.updateLive(tr.src, "")
+		tr.mgr.updateLive(tr.src, "", tr.owner)
 		return tr.live.Finish(ctx)
 	}
 	for _, u := range tr.cutter.Flush() {
@@ -143,7 +144,7 @@ func (tr *trackTranscriber) emit(seg Segment) {
 	if seg.Source == SourceMic {
 		seg.Speaker = "me"
 	}
-	tr.mgr.commitSegment(seg)
+	tr.mgr.commitSegment(seg, tr.owner)
 }
 
 func (tr *trackTranscriber) fileWorker(ctx context.Context) {
@@ -193,11 +194,15 @@ func (tr *trackTranscriber) transcribeFile(ctx context.Context, u Utterance) {
 	if tr.src == SourceMic {
 		seg.Speaker = "me"
 	}
-	tr.mgr.commitSegment(seg)
+	tr.mgr.commitSegment(seg, tr.owner)
 }
 
-func (m *Manager) updateLive(src Source, text string) {
+func (m *Manager) updateLive(src Source, text string, expected *track) {
 	m.mu.Lock()
+	if expected != nil && m.tracks[src] != expected {
+		m.mu.Unlock()
+		return
+	}
 	live := map[Source]string{} // a new map: snapshots handed out keep theirs
 	for k, v := range m.snap.Live {
 		if k != src {
@@ -213,7 +218,7 @@ func (m *Manager) updateLive(src Source, text string) {
 	m.notify(s)
 }
 
-func (m *Manager) commitSegment(seg Segment) {
+func (m *Manager) commitSegment(seg Segment, expected *track) {
 	seg.Text = collapseLoops(seg.Text)
 	if seg.Text == "" {
 		return
@@ -222,6 +227,10 @@ func (m *Manager) commitSegment(seg Segment) {
 		seg.ID = core.NewID(m.cfg.Now())
 	}
 	m.mu.Lock()
+	if expected != nil && m.tracks[seg.Source] != expected {
+		m.mu.Unlock()
+		return
+	}
 	// The system track may not have committed this speech yet: its live text counts too.
 	if seg.Source == SourceMic && isEcho(seg.Text, systemTextNear(m.snap.Segments, seg.Start, seg.End)+m.snap.Live[SourceSystem]) {
 		m.mu.Unlock()

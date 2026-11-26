@@ -7,9 +7,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func homeFixtureScenarios() []meetingFixtureScenario {
@@ -20,20 +18,17 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 		scenarios = append(scenarios, meetingFixtureScenario{name: name, kind: "home", home: input, homeReadiness: readiness})
 	}
 	add("home-loading", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		input.Read, input.Loading, input.Recent, input.Today, input.ShowTry = false, true, nil, dayStats{byKind: map[store.Kind]int{}}, true
+		input.ActivityRead = false
 	})
 	add("home-empty", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		input.Recent, input.Today, input.ShowTry = nil, dayStats{byKind: map[store.Kind]int{}}, true
+		input.Activity, input.Usage = activity.Log{}, homeUsage{}
 	})
 	add("home-normal", func(_ *homeViewStateInput, _ *homeReadinessInput) {})
 	add("home-error", func(input *homeViewStateInput, _ *homeReadinessInput) { input.Error = "fixture read failed" })
-	add("home-error-initial", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		input.Error, input.Recent, input.Today = "fixture read failed", nil, dayStats{byKind: map[store.Kind]int{}}
-	})
-	add("home-reloading", func(input *homeViewStateInput, _ *homeReadinessInput) { input.Loading = true })
 	add("home-history-off", func(input *homeViewStateInput, _ *homeReadinessInput) { input.KeepHistory = false })
 	add("home-history-off-empty", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		input.KeepHistory, input.Recent, input.Today, input.ShowTry = false, nil, dayStats{byKind: map[store.Kind]int{}}, true
+		input.KeepHistory = false
+		input.Activity, input.Usage = activity.Log{}, homeUsage{}
 	})
 	add("home-hidden-features", func(input *homeViewStateInput, _ *homeReadinessInput) {
 		input.Features.Hidden = []string{settings.HideTranslate, settings.HideRewrite}
@@ -46,16 +41,6 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 	add("home-looking-back-closed", func(input *homeViewStateInput, _ *homeReadinessInput) {
 		input.Activity, input.ActivityRead, input.InsightsClosed = homeFixtureActivity(), true, true
 	})
-	add("home-recent-no-audio", func(input *homeViewStateInput, _ *homeReadinessInput) {
-		for index := range input.Recent {
-			input.Recent[index].Audio = ""
-		}
-	})
-	for _, stage := range []session.State{session.Recognizing, session.Composing} {
-		add("home-recent-retry-"+string(stage), func(input *homeViewStateInput, _ *homeReadinessInput) {
-			input.Retry = entryRetry{id: input.Recent[0].ID, stage: stage}
-		})
-	}
 
 	for _, state := range []struct {
 		name  string
@@ -151,12 +136,14 @@ func homeFixtureScenarios() []meetingFixtureScenario {
 }
 
 func homeFixtureInput() homeViewStateInput {
+	var log activity.Log
+	log.Add(meetingFixtureNow, activity.Result{Chars: 120, Spoken: 100, Audio: 30 * time.Second})
+	log.Add(meetingFixtureNow.AddDate(0, 0, -10), activity.Result{Chars: 30})
+	log.Add(meetingFixtureNow.AddDate(0, -9, 0), activity.Result{Chars: 1})
 	return homeViewStateInput{
-		Read: true, KeepHistory: true, Features: settings.Defaults().Features,
-		Today: dayStats{count: 7, chars: 12345, byKind: map[store.Kind]int{
-			store.KindTranscribe: 4, store.KindTranslate: 2, store.KindRewrite: 1,
-		}},
-		Recent: homeFixtureEntries(), Now: meetingFixtureNow,
+		KeepHistory: true, Features: settings.Defaults().Features, Now: meetingFixtureNow,
+		Activity: log, ActivityRead: true,
+		Usage: homeUsage{asrMS: 4000, asrCount: 2, lastModel: "fixture-speech"},
 	}
 }
 
@@ -179,25 +166,4 @@ func homeFixtureReadiness() homeReadinessInput {
 		PermissionsChecked: true, Microphone: permission.Granted, Accessibility: true,
 		HotkeysInstalled: true, Helper: helper.Status{State: helper.Ready},
 	}
-}
-
-func homeFixtureEntries() []store.Entry {
-	first := historyFixtureBaseEntry()
-	first.ID = "home-transcribe"
-	first.Result = "  Weekly plan\nI'll send the new agenda tonight.  \n"
-	first.RawText = "weekly plan\nI'll send the new agenda tonight"
-	translate := first
-	translate.ID, translate.Kind, translate.Result = "home-translate", store.KindTranslate, "晚上好"
-	translate.RawText, translate.SourceText, translate.TargetLang = "good evening", "selected source", "zh-Hans"
-	translate.Audio = ""
-	rewrite := first
-	rewrite.ID, rewrite.Kind, rewrite.Result = "home-rewrite", store.KindRewrite, "A formal answer"
-	rewrite.TypedText, rewrite.SourceText, rewrite.PromptText = "make this formal", "an informal source", "Rewrite formally"
-	second := first
-	second.ID, second.CreatedAt, second.Result = "home-second", meetingFixtureNow.Add(-2*time.Hour), "Second result"
-	second.RawText, second.Audio = second.Result, ""
-	older := translate
-	older.ID, older.CreatedAt, older.Result = "home-older", meetingFixtureNow.Add(-48*time.Hour), "Older result"
-	older.RawText = older.Result
-	return []store.Entry{first, translate, rewrite, second, older}
 }

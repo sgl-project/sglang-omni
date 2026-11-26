@@ -173,3 +173,30 @@ func TestMTDSpeakerNumbers(t *testing.T) {
 		t.Errorf("SpeakerLabel(\"\") = %q", got)
 	}
 }
+
+// The final pass applies the same repetition guard as live captions: a
+// hallucinated phrase cannot reach correction or summary as a long loop.
+func TestFinalPassCollapsesRepeatedText(t *testing.T) {
+	repeated := "Mm. " + strings.Repeat("Mm. ", 20)
+	rate := asr.SampleRate
+	segments, err := transcribeChunks(context.Background(), SourceMic, &chineseFileASR{text: repeated}, asr.FileRequest{}, rate, make([]byte, rate*2), []Chunk{{Start: 0, End: rate}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Mm." {
+		t.Fatalf("plain final pass kept the loop: %+v", segments)
+	}
+
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{
+			{Start: 0, End: time.Second, Speaker: "S01", Text: repeated},
+		}},
+	}}
+	segments, err = diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*2), []vad.Segment{{Start: 0, End: rate}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Mm." || segments[0].Speaker != "s1" {
+		t.Fatalf("diarized final pass kept the loop or changed its speaker: %+v", segments)
+	}
+}

@@ -344,3 +344,30 @@ func TestMeetingDetailReprocessNeedsRecording(t *testing.T) {
 		}
 	}
 }
+
+// Close in the header of a meeting with Ask shown closes the detail
+// without the rest of that frame reading the cleared state.
+func TestMeetingDetailClosesWithAskShown(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.local = readyLocal()
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "m-close", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.openMeetingDetail("m-close")
+	frames(tt)
+	if _, ok := tt.Find("Ask about this meeting"); !ok {
+		t.Fatalf("no Ask section (%q)", firstTexts(tt))
+	}
+	if err := tt.ClickControl("Close"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if a.mv.detail != nil {
+		t.Fatal("the detail is still open")
+	}
+}

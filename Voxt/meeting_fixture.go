@@ -83,6 +83,7 @@ func cloneSessionOverlayViewState(state sessionOverlayViewState) sessionOverlayV
 		card := *state.Card
 		card.Blocks = slices.Clone(state.Card.Blocks)
 		card.Inputs = slices.Clone(state.Card.Inputs)
+		card.Sessions = slices.Clone(state.Card.Sessions)
 		clone.Card = &card
 	}
 	clone.Menu = cloneSessionMenuViewState(state.Menu)

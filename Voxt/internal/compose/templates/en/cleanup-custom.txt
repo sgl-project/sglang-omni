@@ -1,0 +1,2 @@
+Custom rules and basic cleanup:
+- The custom rules above take precedence over basic cleanup when they request translation or reformatting.
