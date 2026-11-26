@@ -165,7 +165,7 @@ func (m listedModel) made() time.Time {
 // requests: embeddings, speech, pictures, video, moderation, the old
 // completion models.
 var notChat = []string{
-	"embed", "tts", "whisper", "transcribe", "audio", "realtime", "dall-e", "image", "sora", "veo",
+	"embed", "tts", "whisper", "transcribe", "audio", "realtime", "dall-e", "image", "sora", "veo", "video",
 	"moderation", "guard", "rerank", "babbage", "davinci", "turbo-instruct",
 }
 

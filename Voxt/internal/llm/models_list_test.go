@@ -20,6 +20,7 @@ func TestModelsOfAServiceWithAKey(t *testing.T) {
 			return
 		}
 		_, _ = w.Write([]byte(`{"object":"list","data":[
+			{"id":"fixture-video-1","created":1700001000},
 			{"id":"text-embedding-3-small","created":1700000300},
 			{"id":"gpt-4.1-mini","created":1700000100},
 			{"id":"whisper-1","created":1700000400},
@@ -42,7 +43,7 @@ func TestModelsOfAServiceWithAKey(t *testing.T) {
 	}
 
 	got, err = NewOpenAI(presetAt(t, "ollama", srv.URL), "", srv.Client()).Models(context.Background())
-	if err != nil || len(got) != 12 || got[0] != "text-embedding-3-small" || got[11] != "no-date" {
-		t.Errorf("on this Mac: %q, %v; want all 12 in the server's order", got, err)
+	if err != nil || len(got) != 13 || got[0] != "fixture-video-1" || got[1] != "text-embedding-3-small" || got[12] != "no-date" {
+		t.Errorf("on this Mac: %q, %v; want all 13 in the server's order", got, err)
 	}
 }
