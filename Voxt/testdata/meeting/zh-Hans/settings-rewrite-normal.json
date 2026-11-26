@@ -222,14 +222,14 @@
         },
         "asr_status": {
           "key": "rw-asr-model",
-          "text": "MOSS-Transcribe-Diarize · 需下载 2.1 GB",
-          "model_id": "asr.moss",
+          "text": "Qwen3-ASR 1.7B (8bit) · 需下载 3.2 GB",
+          "model_id": "asr.accurate",
           "actions": [
             {
               "kind": "download",
-              "model_id": "asr.moss",
+              "model_id": "asr.accurate",
               "label": "下载",
-              "accessibility_label": "下载 MOSS-Transcribe-Diarize"
+              "accessibility_label": "下载 Qwen3-ASR 1.7B (8bit)"
             }
           ]
         }
