@@ -9,13 +9,14 @@ import torch
 
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
-from sglang_omni.models.dots_tts.patch_graph import (
-    MAX_RESIDENT_SHAPES,
-    GraphedDiTSolver,
+from sglang_omni.models.dots_tts.patch_cache import (
+    RESIDENT_CACHE_BYTES,
     PatchSolveGraph,
     PersistentCacheDiTRunner,
+    ResidentCacheBudget,
     apply_rotary_embedding,
 )
+from sglang_omni.models.dots_tts.patch_graph import GraphedDiTSolver
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend
@@ -92,7 +93,9 @@ def eager_solver(flow: DotsTTSFlowHead) -> DiTSolver:
 
 
 def graphed_solver(
-    flow: DotsTTSFlowHead, graph_backend: DeviceGraphBackend
+    flow: DotsTTSFlowHead,
+    graph_backend: DeviceGraphBackend,
+    resident_cache_bytes: int = RESIDENT_CACHE_BYTES,
 ) -> GraphedDiTSolver:
     return GraphedDiTSolver(
         DiTInferenceContext.from_core(flow),
@@ -100,6 +103,7 @@ def graphed_solver(
         bucket_resolver=flow.bucket,
         meanflow=flow.mode == "meanflow",
         graph_backend=graph_backend,
+        resident_cache_bytes=resident_cache_bytes,
     )
 
 
@@ -218,6 +222,7 @@ def test_the_persistent_runner_refuses_the_flex_backend(tmp_path: Path) -> None:
             attn_backend="flex",
             compile_step=False,
             branch_multiplier=2,
+            budget=ResidentCacheBudget(RESIDENT_CACHE_BYTES),
         )
 
 
@@ -254,33 +259,66 @@ class RecordingGraph:
         self.resets += 1
 
 
-def test_the_runner_keeps_at_most_two_step_counts_resident(tmp_path: Path) -> None:
+def cpu_runner(
+    solver: GraphedDiTSolver, capacity_patches: int
+) -> PersistentCacheDiTRunner:
+    return solver._get_cached_runner(  # noqa: leading-underscore  # DiTSolver hook
+        capacity_patches=capacity_patches,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+
+def install_graph(runner: PersistentCacheDiTRunner, steps: int) -> RecordingGraph:
+    graph = RecordingGraph()
+    runner.patch_graphs[(1, steps)] = PatchSolveGraph(graph, {}, torch.zeros(1))
+    return graph
+
+
+def test_resident_caches_share_one_byte_budget_across_buckets(tmp_path: Path) -> None:
     flow = flow_head(tmp_path, meanflow=False)
-    solver = graphed_solver(flow, object())
-    runner = solver._get_cached_runner(  # noqa: leading-underscore  # DiTSolver hook
-        capacity_patches=64, device=torch.device("cpu"), dtype=torch.float32
-    )
-    graphs: dict[int, RecordingGraph] = {}
-    caches: dict[int, DiTKvCache] = {}
-    for steps in (ODE_STEPS, ODE_STEPS + 1):
-        caches[steps] = runner.allocate_cache(batch_size=1, nfe=steps)
-        graphs[steps] = RecordingGraph()
-        runner.patch_graphs[(1, steps)] = PatchSolveGraph(
-            graphs[steps], {}, torch.zeros(1)
-        )
+    probe = cpu_runner(graphed_solver(flow, object()), 64)
+    small = probe.cache_bytes(batch_size=1, nfe=ODE_STEPS)
+    solver = graphed_solver(flow, object(), resident_cache_bytes=3 * small)
+    short, long = cpu_runner(solver, 64), cpu_runner(solver, 128)
 
-    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
-    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS + 2)
+    short.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    short_graph = install_graph(short, ODE_STEPS)
+    stale = long.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    long_graph = install_graph(long, ODE_STEPS)
+    short.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    short.allocate_cache(batch_size=1, nfe=ODE_STEPS + 1)
 
-    assert MAX_RESIDENT_SHAPES == 2
-    assert list(runner.persistent_caches) == [(1, ODE_STEPS), (1, ODE_STEPS + 2)]
-    assert list(runner.patch_graphs) == [(1, ODE_STEPS)]
-    assert graphs[ODE_STEPS + 1].resets == 1
-    assert graphs[ODE_STEPS].resets == 0
-    evicted = solver.patch_graph(
-        runner, caches[ODE_STEPS + 1], {}, ode_steps=ODE_STEPS + 1, batch_size=1
+    assert list(solver.cache_budget.entries) == [
+        (short, (1, ODE_STEPS)),
+        (short, (1, ODE_STEPS + 1)),
+    ]
+    assert solver.cache_budget.resident_bytes <= 3 * small
+    assert not long.persistent_caches and not long.patch_graphs
+    assert long_graph.resets == 1 and short_graph.resets == 0
+    assert (
+        solver.patch_graph(long, stale, {}, ode_steps=ODE_STEPS, batch_size=1) is None
     )
-    assert evicted is None
+
+
+def test_a_cache_larger_than_the_budget_is_request_scoped(tmp_path: Path) -> None:
+    flow = flow_head(tmp_path, meanflow=False)
+    probe = cpu_runner(graphed_solver(flow, object()), 128)
+    solver = graphed_solver(
+        flow,
+        object(),
+        resident_cache_bytes=probe.cache_bytes(batch_size=1, nfe=ODE_STEPS) - 1,
+    )
+    runner = cpu_runner(solver, 128)
+
+    first = runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    second = runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+
+    assert first.cache_k.data_ptr() != second.cache_k.data_ptr()
+    assert not runner.persistent_caches and not solver.cache_budget.entries
+    assert (
+        solver.patch_graph(runner, first, {}, ode_steps=ODE_STEPS, batch_size=1) is None
+    )
 
 
 @pytest.mark.parametrize("meanflow", [False, True], ids=["flow_matching", "meanflow"])
@@ -363,3 +401,45 @@ def test_graph_replay_matches_the_eager_solve_bit_for_bit(
 
     assert graphed.declined == set()
     assert graphed.replays == patches
+
+
+@pytest.mark.accelerator
+def test_a_graph_captures_after_every_resident_graph_was_evicted(
+    tmp_path: Path,
+) -> None:
+    device = require_device_streams()
+    graph_backend = current_platform.get_device_graph_backend(device)
+    if graph_backend is None or not current_platform.enable_dots_tts_patch_graph():
+        pytest.skip(f"{device.type} does not replay dots.tts patch solves as graphs")
+    else:
+        pass
+    flow = flow_head(tmp_path, meanflow=False).to(device=device, dtype=torch.bfloat16)
+    flow_sequence = FlowSequence(flow, device, torch.bfloat16)
+    eager = eager_solver(flow)
+    one_long_cache = (
+        graphed_solver(flow, graph_backend)
+        ._get_cached_runner(  # noqa: leading-underscore  # DiTSolver hook
+            capacity_patches=128, device=device, dtype=torch.bfloat16
+        )
+        .cache_bytes(batch_size=1, nfe=ODE_STEPS)
+    )
+    graphed = graphed_solver(flow, graph_backend, resident_cache_bytes=one_long_cache)
+
+    patches = 0
+    for request, start_patches in enumerate((60, 20)):
+        eager_state, graphed_state = DiTSolverState(), DiTSolverState()
+        flow_tokens = start_patches * UNIT_TOKENS + 1
+        for patch in range(8):
+            seed = 100 * request + patch
+            expected = flow_sequence.decode(eager, eager_state, flow_tokens, seed)
+            actual = flow_sequence.decode(graphed, graphed_state, flow_tokens, seed)
+            assert torch.equal(actual, expected), (request, patch)
+            flow_tokens += UNIT_TOKENS
+            patches += 1
+
+    assert graphed.declined == set()
+    assert graphed.replays == patches
+    assert [
+        (owner.capacity_patches, shape) for owner, shape in graphed.cache_budget.entries
+    ] == [(64, (1, ODE_STEPS))]
+    torch.randn(4, device=device)
