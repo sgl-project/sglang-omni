@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -57,6 +59,7 @@ func (a *app) openMeetings() {
 			chat, _, err := a.local.LLM(ctx, id)
 			return chat, err
 		},
+		LLMIsLocal: a.languageModelIsLocal,
 		MainLanguage: func() string {
 			return uitext.LangLabel(a.prefs.General.MainLanguage)
 		},
@@ -84,6 +87,25 @@ func (a *app) openMeetings() {
 // the helper's handshake, when its methods are not known yet.
 func (a *app) systemCaptureOK() bool {
 	return a.host != nil && a.host.sup != nil && a.host.sup.Status().Has(proto.MethodCaptureSystem)
+}
+
+// languageModelIsLocal says whether the language model id is served on
+// this Mac (a loopback address): its meeting correction does not overlap
+// the final pass, which needs the GPU and memory for recognition.
+func (a *app) languageModelIsLocal(id string) bool {
+	endpoint := ""
+	for _, p := range a.prefs.Providers.LLM {
+		if p.ID == id {
+			endpoint = p.Endpoint
+			break
+		}
+	}
+	preset, err := llm.ProviderConfig{ID: id, BaseURL: endpoint}.Resolve()
+	if err != nil {
+		return false
+	}
+	u, err := url.Parse(preset.BaseURL)
+	return err == nil && core.IsLoopback(u.Hostname())
 }
 
 func (a *app) meetingActive() bool {

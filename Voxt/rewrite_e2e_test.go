@@ -67,7 +67,7 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 // TestRewriteShortAnswerInCard: 10-15, the user's case, with the card
 // switch on: nothing selected, an app that takes text, a short answer: it
 // waits in the card (it was typed, with no way to follow up), with
-// Continue; Insert pastes it.
+// Continue, as a chat under the instruction; Insert pastes it.
 func TestRewriteShortAnswerInCard(t *testing.T) {
 	chat := &fakeChat{text: `{"title":"Help","content":"Sure: tell me the problem."}`}
 	a, _ := rewriteOnce(t, "", chat, "help me with a problem")
@@ -75,7 +75,7 @@ func TestRewriteShortAnswerInCard(t *testing.T) {
 	if a.sess.State != session.Done || a.sess.Inserted || !a.answer.open || a.ov.mode != ovAnswer || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || v.Conversation {
+	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || !v.Conversation {
 		t.Errorf("card %+v", v)
 	}
 	a.insertAnswer()

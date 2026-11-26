@@ -3,8 +3,8 @@ package main
 // Home's activity calendar (home_activity_view.go): the days Voxt gave a
 // result, counted in a document of their own (internal/activity) so the
 // history's clean-up keeps them. The first read of a store without that
-// document counts the history it has. Like Today, nothing is counted
-// while the history is off.
+// document counts the history it has. Nothing is counted while the
+// history is off.
 
 import (
 	"cmp"

@@ -2,13 +2,13 @@ package main
 
 // The sounds of a recording, Settings → Audio → Sound (settings_audio.go;
 // its controls are settings_soundchoice.go's): which sound plays when a
-// recording starts and when it stops (the ActNow family's sounds,
-// actnowkit's sounds package, shipped in resources/sounds; a macOS system
-// sound; none), their volume, and trying them. A preview cuts the one
-// before it short; Try shows the accent while it is heard. The cues of a
-// recording are recordingAudio's (mute_link.go). Without the family's
-// sounds (a build without resources/sounds) the cues are Voxt's Pop and
-// Tink.
+// recording starts and when it stops (Voxt's own cues, internal/cues, in
+// every build; the ActNow family's sounds, actnowkit's sounds package,
+// shipped in resources/sounds; a macOS system sound; none), their volume,
+// and trying them. A preview cuts the one before it short; Try shows the
+// accent while it is heard. The cues of a recording are recordingAudio's
+// (mute_link.go). A family sound a build lacks (one without
+// resources/sounds) plays as Pop or Tink.
 
 import (
 	"slices"

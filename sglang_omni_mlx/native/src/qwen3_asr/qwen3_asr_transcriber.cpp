@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "common/audio.h"
+#include "common/audio_chunks.h"
 #include "common/generation.h"
 #include "common/kv_cache.h"
 #include "common/text.h"
@@ -42,6 +43,9 @@ constexpr int kReflectedTailFrames = 2;
 // Tokens of a Final's prompt head one background job prefills, so that a live
 // refresh waits for no more than this long.
 constexpr int kFinalPrefillChunkTokens = 256;
+constexpr size_t kChunkSearchSamples = 5 * omni_common::kSampleRate;
+constexpr size_t kChunkEnergyWindowSamples = omni_common::kSampleRate / 10;
+constexpr size_t kMinTailSamples = 5 * omni_common::kSampleRate;
 
 const std::map<std::string, std::string> &LanguageCodeToName() {
   static const std::map<std::string, std::string> table = {
@@ -121,17 +125,15 @@ std::optional<std::string> NormalizeLanguage(const std::string &language) {
 
 Qwen3ASRTranscriber::Qwen3ASRTranscriber(
     const std::filesystem::path &model_directory,
-    const std::filesystem::path &draft_directory, int draft_quantization_bits,
-    DraftPolicy draft_policy)
+    const omni_common::DraftOptions &draft, DraftPolicy draft_policy)
     : model_(model_directory), tokenizer_(model_directory),
       audio_pad_id_(tokenizer_.AddedTokenId(kAudioPad)),
       end_of_text_id_(tokenizer_.AddedTokenId("<|endoftext|>")),
       im_end_id_(tokenizer_.AddedTokenId("<|im_end|>")),
       asr_text_ids_(tokenizer_.Encode(kAsrTextMarker)),
       draft_policy_(draft_policy) {
-  if (!draft_directory.empty()) {
-    draft_.emplace(draft_directory, draft_quantization_bits,
-                   model_.decoder().config());
+  if (!draft.directory.empty()) {
+    draft_.emplace(draft, model_.decoder().config());
   } else {
   }
 }
@@ -180,6 +182,17 @@ Qwen3ASRTranscriber::RetainedPrefix(const std::string &text,
     }
   }
   return {{}, "", token_ids};
+}
+
+std::vector<int>
+Qwen3ASRTranscriber::AutoLanguageGuesses(const std::string &language,
+                                         const std::string &text) const {
+  const auto normalized = NormalizeLanguage(language);
+  if (!normalized.has_value() || text.empty()) {
+    return {};
+  }
+  return RetainedPrefix("language " + *normalized + kAsrTextMarker + text, 0)
+      .prefix_ids;
 }
 
 int Qwen3ASRTranscriber::MaxNewTokens(size_t sample_count,
@@ -466,6 +479,60 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
 }
 
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
+    const std::vector<float> &samples, const TranscriptionOptions &options,
+    const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (samples.size() <= kMaxChunkSamples || reuse != nullptr ||
+      !options.prefix_token_ids.empty()) {
+    return TranscribeChunk(samples, options, cancel, reuse);
+  } else {
+  }
+  TranscriptionResult merged;
+  merged.language = NormalizeLanguage(options.language.value_or(""));
+  merged.finish_reason = FinishReason::kStop;
+  const int max_new_tokens = options.max_new_tokens.value_or(0);
+  TranscriptionOptions chunk_options = options;
+  // The guesses are the whole recording's text, which no chunk is.
+  chunk_options.guessed_token_ids.clear();
+  std::vector<std::string> texts;
+  for (const auto &[start_sample, end_sample] :
+       omni_common::BoundedEnergyCutChunks(
+           samples, kMaxChunkSamples, kChunkSearchSamples,
+           kChunkEnergyWindowSamples, kMinTailSamples)) {
+    if (omni_common::PeakIsSilent(samples.data() + start_sample,
+                                  end_sample - start_sample, kSilentPeak)) {
+      continue;
+    } else if (max_new_tokens != 0 &&
+               merged.generated_token_count >= max_new_tokens) {
+      merged.finish_reason = FinishReason::kLength;
+      break;
+    } else if (max_new_tokens != 0) {
+      chunk_options.max_new_tokens =
+          max_new_tokens - merged.generated_token_count;
+    } else {
+    }
+    const TranscriptionResult chunk = TranscribeChunk(
+        {samples.begin() + start_sample, samples.begin() + end_sample},
+        chunk_options, cancel, nullptr);
+    texts.push_back(chunk.text);
+    if (!merged.language.has_value()) {
+      merged.language = chunk.language;
+    } else {
+    }
+    merged.generated_token_count += chunk.generated_token_count;
+    merged.verify_round_count += chunk.verify_round_count;
+    merged.proposed_draft_token_count += chunk.proposed_draft_token_count;
+    merged.accepted_draft_token_count += chunk.accepted_draft_token_count;
+    // One truncated chunk cuts the whole transcript short.
+    if (chunk.finish_reason == FinishReason::kLength) {
+      merged.finish_reason = FinishReason::kLength;
+    } else {
+    }
+  }
+  merged.text = omni_common::JoinTranscriptParts(texts);
+  return merged;
+}
+
+TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
     const std::vector<float> &samples, const TranscriptionOptions &options,
     const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
   if (cancel.load()) {

@@ -120,7 +120,16 @@ func (m *Manager) chooseCleanup(r *run) (cleanupChoice, cleanupOutput) {
 }
 
 func (r *run) cleanupDecisionOpenLocked() bool {
-	return r.cleanupChoiceOpenLocked() && (r.cleanupDeadline.IsZero() || r.now().Before(r.cleanupDeadline))
+	if !r.cleanupChoiceOpenLocked() {
+		return false
+	}
+	deadline := r.cleanupDeadline
+	if deadline.IsZero() && r.ordinaryTranscribe() && r.m.cfg.CleanupLatency.AutoFallbackAfter > 0 {
+		if stopAt := r.stoppedAt(); !stopAt.IsZero() {
+			deadline = stopAt.Add(r.m.cfg.CleanupLatency.AutoFallbackAfter)
+		}
+	}
+	return deadline.IsZero() || r.now().Before(deadline)
 }
 
 func (r *run) cleanupChoiceOpenLocked() bool {

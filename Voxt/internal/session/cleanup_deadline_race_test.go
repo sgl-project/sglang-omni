@@ -14,6 +14,35 @@ import (
 
 const cleanupSoftDeadlineTestDuration = 1500 * time.Millisecond
 
+func TestCleanupSoftDeadlineExcludesNotesTriesAndTextInput(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	manager := New(Config{Now: clock.Now, CleanupLatency: CleanupLatencyPolicy{AutoFallbackAfter: cleanupSoftDeadlineTestDuration}})
+	t.Cleanup(manager.Close)
+	for _, tc := range []struct {
+		name    string
+		request StartRequest
+	}{
+		{name: "note", request: StartRequest{Kind: store.KindTranscribe, Note: true}},
+		{name: "try", request: StartRequest{Kind: store.KindTranscribe, Try: true}},
+		{name: "text input", request: StartRequest{Kind: store.KindTranscribe, Text: &TextInput{Raw: "retry"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "available"}
+			current := &run{m: manager, req: tc.request, ctx: context.Background(), svc: Services{LLM: model}, cleanupChoice: cleanupUndecided}
+			current.recordStopAt(clock.Now())
+			clock.Advance(cleanupSoftDeadlineTestDuration + time.Second)
+			response, err := current.llmChatContext(context.Background(), llm.Request{Timeout: time.Second})
+			if err != nil || response.Text != "available" || len(model.requests()) != 1 {
+				t.Fatalf("chat response %+v, error %v, requests %d", response, err, len(model.requests()))
+			}
+			current.cleanupDeadline = clock.Now().Add(-time.Nanosecond)
+			if current.cleanupDecisionOpenLocked() {
+				t.Fatal("an explicit cleanup deadline was ignored")
+			}
+		})
+	}
+}
+
 type stagedCleanupLLM struct {
 	started  chan int
 	requests chan llm.Request

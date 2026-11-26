@@ -102,14 +102,6 @@ func ownerNameFor(translator *i18n.Translator, bundleID string) string {
 	return actnow.AppName(bundleID)
 }
 
-// modelMemTextFor says a loaded model's memory use (0: not measured).
-func modelMemTextFor(translator *i18n.Translator, bytes int64) string {
-	if bytes <= 0 {
-		return translator.T("Loaded")
-	}
-	return translator.T("Loaded · %s in memory", uitext.MemoryBytes(bytes))
-}
-
 // keepLabelsFor returns the choices' labels, in settings.KeepChoices' order.
 func keepLabelsFor(translator *i18n.Translator) []string {
 	return []string{
