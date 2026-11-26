@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Changed
+- **Cleaner text from the clean-up**: the clean-up rules now name the words of thinking aloud to drop ("let me think", "so", "well", 我想想, 就是), say a repeated word or phrase once, drop a correction cue ("no, sorry", 不对) together with what it cancels, put a spelled-out character together from its parts, and write counts, money, dates and times in digits. On 150 AASR-Bench dictations that were not used to write them, Claude Haiku 5.5 scored 80.6 out of 100 instead of 74.7, Chinese and English alike, with no longer wait.
+
+### 中文
+
+#### 变更
+- **整理后的文字更干净**：整理规则里写明了要删的边想边说的话（“我想想”“就是”、"so"、"well"），重复说的词只留一次，改口时把“不对”“no, sorry”这类话和被否定的部分一起删掉，按说出的偏旁部件拼出对应的字，数量、金额、日期和时间都用阿拉伯数字。在没有用来写规则的 150 条 AASR-Bench 口述上，Claude Haiku 5.5 的得分从 74.7 提到 80.6（满分 100），中英文都一样，等待时间没有变长。
+
 ## [2.1.4] - 2026-11-25
 
 ### Added
