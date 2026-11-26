@@ -22,7 +22,8 @@ from benchmarks.tasks.asr import (
 )
 from benchmarks.tasks.tts import run_seedtts_transcribe
 
-SCORED_LANGUAGES = ("en", "zh")
+# Note (Jiaxin Deng): a request's language is whatever its model accepts, e.g. English for Qwen3-TTS, so both spellings map to the scorer's code.
+SCORED_LANGUAGES = {"en": "en", "english": "en", "zh": "zh", "chinese": "zh"}
 
 
 @dataclass(kw_only=True)
@@ -53,7 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--lang",
-        choices=SCORED_LANGUAGES,
+        choices=("en", "zh"),
         default="en",
         help="language of the requests whose corpus line and run set none",
     )
@@ -99,7 +100,7 @@ def split_by_language(audio_dir: Path, default_language: str) -> dict[str, Path]
                 f"only {', '.join(SCORED_LANGUAGES)} can be scored"
             )
         else:
-            entries_by_language.setdefault(language, []).append(entry)
+            entries_by_language.setdefault(SCORED_LANGUAGES[language], []).append(entry)
     output_dirs: dict[str, Path] = {}
     for language, entries in entries_by_language.items():
         output_dir = audio_dir / f"wer_{language}"

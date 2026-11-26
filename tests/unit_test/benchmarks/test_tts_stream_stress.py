@@ -886,7 +886,7 @@ class TestScoreWer:
             }
             for sample_id, target_text, language, is_success in (
                 ("run-req-000000", "hello world", "en", True),
-                ("run-req-000001", "你好世界", "zh", True),
+                ("run-req-000001", "你好世界", "Chinese", True),
                 ("run-req-000002", "never spoken", None, False),
                 ("run-req-000003", "good morning", None, True),
             )
