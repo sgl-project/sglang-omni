@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import Literal, NamedTuple, Protocol
 
 import torch
@@ -28,6 +29,8 @@ from dots_tts.modules.backbone.dit_inference import (
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_RESIDENT_SHAPES = 2
 
 
 class BucketResolver(Protocol):
@@ -137,13 +140,15 @@ class PersistentCacheDiTRunner(CachedDiTRunner):
             branch_multiplier=branch_multiplier,
         )
         self.step = TailBufferNextPatchStep(context, attn_backend=attn_backend).eval()
-        self.persistent_caches: dict[tuple[int, int], DiTKvCache] = {}
+        self.persistent_caches: OrderedDict[tuple[int, int], DiTKvCache] = OrderedDict()
         self.patch_graphs: dict[tuple[int, int], PatchSolveGraph] = {}
 
     def allocate_cache(self, *, batch_size: int, nfe: int) -> DiTKvCache:
         shape_key = (int(batch_size), int(nfe))
         cache = self.persistent_caches.get(shape_key)
         if cache is None:
+            while len(self.persistent_caches) >= MAX_RESIDENT_SHAPES:
+                self.evict(next(iter(self.persistent_caches)))
             cache_k = torch.zeros(
                 (
                     int(nfe),
@@ -165,6 +170,7 @@ class PersistentCacheDiTRunner(CachedDiTRunner):
             )
             self.persistent_caches[shape_key] = cache
         else:
+            self.persistent_caches.move_to_end(shape_key)
             cache.cache_k.zero_()
             cache.cache_v.zero_()
         return DiTKvCache(
@@ -173,6 +179,18 @@ class PersistentCacheDiTRunner(CachedDiTRunner):
             nfe=cache.nfe,
             cache_k=cache.cache_k,
             cache_v=cache.cache_v,
+        )
+
+    def evict(self, shape_key: tuple[int, int]) -> None:
+        del self.persistent_caches[shape_key]
+        captured = self.patch_graphs.pop(shape_key, None)
+        if captured is not None:
+            captured.graph.reset()
+        else:
+            pass
+        logger.info(
+            f"dots.tts DiT patch cache evicted: capacity_patches={self.capacity_patches} "
+            f"batch={shape_key[0]} ode_steps={shape_key[1]}"
         )
 
 
@@ -450,6 +468,7 @@ class GraphedDiTSolver(DiTSolver):
 __all__ = [
     "BucketResolver",
     "GraphedDiTSolver",
+    "MAX_RESIDENT_SHAPES",
     "PatchSolveGraph",
     "PersistentCacheDiTRunner",
     "TailBufferNextPatchStep",

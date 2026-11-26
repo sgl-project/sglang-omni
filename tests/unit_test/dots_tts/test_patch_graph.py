@@ -10,6 +10,7 @@ import torch
 from sglang_omni.models.dots_tts.compat import import_dots_tts
 from sglang_omni.models.dots_tts.flow_head import DotsTTSFlowHead
 from sglang_omni.models.dots_tts.patch_graph import (
+    MAX_RESIDENT_SHAPES,
     GraphedDiTSolver,
     PatchSolveGraph,
     PersistentCacheDiTRunner,
@@ -240,6 +241,46 @@ def test_a_reused_cache_starts_zeroed_like_a_fresh_one(tmp_path: Path) -> None:
     assert not second.cache_k.any() and not second.cache_v.any()
     other = runner.allocate_cache(batch_size=1, nfe=ODE_STEPS + 1)
     assert other.cache_k.data_ptr() != first.cache_k.data_ptr()
+
+
+class RecordingGraph:
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def replay(self) -> None:
+        raise AssertionError("an evicted patch graph replayed")
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+def test_the_runner_keeps_at_most_two_step_counts_resident(tmp_path: Path) -> None:
+    flow = flow_head(tmp_path, meanflow=False)
+    solver = graphed_solver(flow, object())
+    runner = solver._get_cached_runner(  # noqa: leading-underscore  # DiTSolver hook
+        capacity_patches=64, device=torch.device("cpu"), dtype=torch.float32
+    )
+    graphs: dict[int, RecordingGraph] = {}
+    caches: dict[int, DiTKvCache] = {}
+    for steps in (ODE_STEPS, ODE_STEPS + 1):
+        caches[steps] = runner.allocate_cache(batch_size=1, nfe=steps)
+        graphs[steps] = RecordingGraph()
+        runner.patch_graphs[(1, steps)] = PatchSolveGraph(
+            graphs[steps], {}, torch.zeros(1)
+        )
+
+    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS)
+    runner.allocate_cache(batch_size=1, nfe=ODE_STEPS + 2)
+
+    assert MAX_RESIDENT_SHAPES == 2
+    assert list(runner.persistent_caches) == [(1, ODE_STEPS), (1, ODE_STEPS + 2)]
+    assert list(runner.patch_graphs) == [(1, ODE_STEPS)]
+    assert graphs[ODE_STEPS + 1].resets == 1
+    assert graphs[ODE_STEPS].resets == 0
+    evicted = solver.patch_graph(
+        runner, caches[ODE_STEPS + 1], {}, ode_steps=ODE_STEPS + 1, batch_size=1
+    )
+    assert evicted is None
 
 
 @pytest.mark.parametrize("meanflow", [False, True], ids=["flow_matching", "meanflow"])
