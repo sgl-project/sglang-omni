@@ -6,6 +6,7 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -35,6 +36,11 @@ type snippetsLocalUI struct {
 	importOpen    bool
 	importExample bool
 	importErr     string
+	// notice is what an import did, shown in the middle of the page for
+	// noticeFor from noticeAt (set by the view as it first shows it).
+	notice    string
+	noticeAt  time.Time
+	noticeFor time.Duration
 }
 
 type snippetEdit struct{ id, trigger, text string }
@@ -68,39 +74,51 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 		})
 		snippetDialog(c, actions, local)
 		snippetsImportDialog(c, actions, local)
+		snippetsImportNotice(c, local, 0)
 		return
 	}
-	ui.Scroll(c.Key("snippets-scroll")).Grow(1).MinHeight(0).Children(func() {
-		pageColumn(c).Gap(px(t, sp3)).Children(func() {
-			ui.Text(c, i18n.T("Say a trigger and Voxt types the text you saved, as it is.")).TextColor(k.Text2)
-			if state.Error != "" {
-				warnLine(c, state.Error)
-			}
-			switch {
-			case !state.Ready && state.Error != "":
-				if ghostButton(c.Key("snippets-retry"), i18n.T("Try again")).Clicked() {
-					actions.loadSnippets()
+	// The body under the header holds the import's notice, centred in
+	// the part under the search (the list), as the last frame laid it out.
+	var toolbar ui.Element
+	body := ui.Column(c.Key("snippets-body")).Grow(1).MinHeight(0)
+	body.Children(func() {
+		ui.Scroll(c.Key("snippets-scroll")).Grow(1).MinHeight(0).Children(func() {
+			pageColumn(c).Gap(px(t, sp3)).Children(func() {
+				ui.Text(c, i18n.T("Say a trigger and Voxt types the text you saved, as it is.")).TextColor(k.Text2)
+				if state.Error != "" {
+					warnLine(c, state.Error)
 				}
-			case !state.Ready:
-			case state.Total == 0:
-				snippetExamples(c, state.Examples, local)
-			default:
-				snippetsToolbar(c, local)
-				if len(state.Rows) == 0 {
-					emptyState(c, icons.Magnifer, i18n.T("No snippet matches “%s”", strings.TrimSpace(local.query)), "", func() {
-						if ghostButton(c.Key("snippet-clear-search"), i18n.T("Clear search")).Clicked() {
-							local.query = ""
+				switch {
+				case !state.Ready && state.Error != "":
+					if ghostButton(c.Key("snippets-retry"), i18n.T("Try again")).Clicked() {
+						actions.loadSnippets()
+					}
+				case !state.Ready:
+				case state.Total == 0:
+					snippetExamples(c, state.Examples, local)
+				default:
+					toolbar = snippetsToolbar(c, local)
+					if len(state.Rows) == 0 {
+						emptyState(c, icons.Magnifer, i18n.T("No snippet matches “%s”", strings.TrimSpace(local.query)), "", func() {
+							if ghostButton(c.Key("snippet-clear-search"), i18n.T("Clear search")).Clicked() {
+								local.query = ""
+							}
+						})
+						break
+					}
+					card(c.Key("snippets")).Padding(px(t, sp1)).Gap(0).Children(func() {
+						for _, row := range state.Rows {
+							snippetRow(c, row, actions, local)
 						}
 					})
-					break
 				}
-				card(c.Key("snippets")).Padding(px(t, sp1)).Gap(0).Children(func() {
-					for _, row := range state.Rows {
-						snippetRow(c, row, actions, local)
-					}
-				})
-			}
+			})
 		})
+		var top float32
+		if tb, bb := toolbar.Bounds(), body.Bounds(); tb.H > 0 && bb.H > 0 {
+			top = max(0, tb.Y+tb.H-bb.Y)
+		}
+		snippetsImportNotice(c, local, top)
 	})
 	snippetDialog(c, actions, local)
 	snippetsImportDialog(c, actions, local)
@@ -108,9 +126,10 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 
 // snippetsToolbar is the search, and the sort menu at the end of its
 // line.
-func snippetsToolbar(c *ui.Context, local *snippetsLocalUI) {
+func snippetsToolbar(c *ui.Context, local *snippetsLocalUI) ui.Element {
 	t := c.Theme()
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+	row := ui.Row(c.Key("snippet-toolbar")).Gap(px(t, sp2)).AlignItems(ui.Center)
+	row.Children(func() {
 		searchField(c, "snippet-search", &local.query, i18n.T("Search snippets"), px(t, 320))
 		ui.Box(c.Key("snippet-toolbar-gap")).Grow(1)
 		iconButton(c.Key("snippet-sort"), icons.SortVertical, i18n.T("Sort")).Menu(func(m *ui.Menu) {
@@ -128,6 +147,7 @@ func snippetsToolbar(c *ui.Context, local *snippetsLocalUI) {
 			}
 		})
 	})
+	return row
 }
 
 // snippetRow is "trigger → text"; a click edits it, and Edit and Delete
