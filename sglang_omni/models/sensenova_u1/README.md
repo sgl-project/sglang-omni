@@ -22,7 +22,7 @@ The external package replaces the in-tree SenseNova pipeline registration while 
 
 ## Image editing
 
-Single-GPU CUDA editing accepts one or more reference images. Editing requests run individually; multiple outputs use the native runtime's sequential expansion. This path does not enable mask editing, think mode, TP or Cache-DiT.
+Single-GPU CUDA editing accepts one or more reference images. Editing requests run individually; multiple outputs use the native runtime's sequential expansion. This path does not enable mask editing, think mode or TP.
 
 HTTP editing uses `img_cfg_scale=1.0` and the reference preprocessing described below. Custom image guidance is not exposed through this HTTP endpoint.
 
@@ -73,3 +73,46 @@ The following model-side settings are available through SenseNovaU1SamplingParam
 Transparent references are composited onto white. An explicit `size` determines the output dimensions. Without it, the sampling defaults remain 2048×2048. Reference preprocessing follows the historical native model's pixel budget: a minimum of 512² and a maximum of min(2048², 4096² / reference count), with dimensions aligned to 32 pixels. Editing uses the default timestep shift and CFG controls; CFG normalization and think mode are not supported on this path.
 
 Editing accepts at most 64 references and rejects an edit whose estimated prefix memory exceeds the GPU's free memory plus the memory PyTorch has reserved but not allocated, before encoding its references. The SenseNova worker enables PyTorch expandable segments as it loads the model unless `PYTORCH_CUDA_ALLOC_CONF` or `PYTORCH_ALLOC_CONF` is set. On devices that share host memory, startup sets `PYTORCH_CUDA_ALLOC_CONF` to expandable segments when that variable is unset, and it takes precedence over `PYTORCH_ALLOC_CONF`, so opt out there through `PYTORCH_CUDA_ALLOC_CONF`.
+
+## Cache-DiT
+
+Cache-DiT reuses the output of the middle decoder layers on denoising steps where that output barely changes, trading some image quality for speed. It is off by default and covers both text-to-image and editing. Only the denoising steps go through the cache; the prompt and reference prefix pass always runs every layer.
+
+The server default comes from the same environment variables that SGLang's native image pipelines read. Set them in the shell, or for the generation stage in the Omni configuration:
+
+```yaml
+stages:
+  generation:
+    env:
+      SGLANG_CACHE_DIT_ENABLED: "true"
+      SGLANG_CACHE_DIT_RDT: "0.24"
+```
+
+| Variable | Default | Setting |
+|---|---|---|
+| `SGLANG_CACHE_DIT_ENABLED` | `false` | Server switch |
+| `SGLANG_CACHE_DIT_FN` | `1` | `Fn_compute_blocks`, the leading layers that always run |
+| `SGLANG_CACHE_DIT_BN` | `0` | `Bn_compute_blocks`, the trailing layers that always run |
+| `SGLANG_CACHE_DIT_WARMUP` | `4` | `max_warmup_steps`, the first steps that never reuse the cache |
+| `SGLANG_CACHE_DIT_RDT` | `0.24` | `residual_diff_threshold`, between 0 and 1; higher reuses more |
+| `SGLANG_CACHE_DIT_MC` | `3` | `max_continuous_cached_steps`; -1 means no limit |
+
+SenseNova runs plain DBCache only. TaylorSeer, step computation masks (SCM), DMD and secondary settings are not supported.
+
+A request overrides the server default with `enable_cache_dit` and `cache_dit_params`. Left out or null, `enable_cache_dit` keeps the server switch; true or false replaces it for that request; any other value, such as the JSON string `"false"`, is rejected. Each key in `cache_dit_params` replaces the matching variable, and the keys a request leaves out keep the server values. The keys are the five setting names in the table.
+
+```bash
+curl http://localhost:30000/v1/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "A red apple on a wooden table.", "size": "1024x1024",
+       "enable_cache_dit": true,
+       "cache_dit_params": {"residual_diff_threshold": 0.12, "max_warmup_steps": 8}}'
+```
+
+The edits endpoint takes the same fields as form fields, with `cache_dit_params` as a JSON object: `-F 'enable_cache_dit=true' -F 'cache_dit_params={"residual_diff_threshold": 0.12}'`.
+
+With Cache-DiT on, a request is rejected with status 400 when its settings use an unknown key, a TaylorSeer, SCM or DMD key or `secondary`, fall outside the ranges above, or set `Fn_compute_blocks` plus `Bn_compute_blocks` above the decoder layer count. The cache cannot follow two guidance configurations: editing with three guidance branches, where `img_cfg_scale` is neither 1 nor equal to `guidance_scale`, and text-to-image with `guidance_scale` above 1 and a `cfg_interval` other than `(0, 1)`. A request with either one runs without Cache-DiT when the switch comes from `SGLANG_CACHE_DIT_ENABLED`, though its `cache_dit_params` are still checked as above, and is rejected when it sets `enable_cache_dit` to true. Only SenseNovaU1SamplingParams, as with `sglang generate`, can set these; the HTTP image routes accept neither `img_cfg_scale` nor `cfg_interval`. A request with Cache-DiT off ignores its `cache_dit_params`. Startup fails for out-of-range variables, for `SGLANG_CACHE_DIT_DMD=true` or `SGLANG_CACHE_DIT_TAYLORSEER=true`, for an `SGLANG_CACHE_DIT_SCM_PRESET` other than `none`, for either SCM bins variable, and for `SGLANG_CACHE_DIT_FN` plus `SGLANG_CACHE_DIT_BN` above the decoder layer count.
+
+The cache stays mounted between requests. A request with the same settings and guidance branches refreshes it, a request with different ones mounts it again, and a request with Cache-DiT off removes it.
+
+With dynamic batching on (`--batching-max-size` above 1), text-to-image requests with the same Cache-DiT switch and settings can share a batch, as in SGLang's other image pipelines. The cache then decides for the whole batch at each step whether to reuse the middle layers, so a request's output can depend on the requests batched with it.

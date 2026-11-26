@@ -24,11 +24,9 @@ class Qwen3ASRModel : public asr_service::ServedModel {
 public:
   Qwen3ASRModel(const std::filesystem::path &model_directory,
                 qwen3_asr::RealtimeSettings realtime,
-                const std::filesystem::path &draft_directory,
-                int draft_quantization_bits,
+                const omni_common::DraftOptions &draft,
                 omni_common::DraftPolicy draft_policy)
-      : transcriber_(model_directory, draft_directory, draft_quantization_bits,
-                     draft_policy),
+      : transcriber_(model_directory, draft, draft_policy),
         realtime_(realtime) {
     mlx::core::set_cache_limit(asr_service::kDecodeBufferCacheLimitBytes);
   }
@@ -81,10 +79,33 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
-    const qwen3_asr::FinalReuse final_reuse = TakeFinalReuse(
-        asr_service::TextField(form, "realtime_session").value_or(""),
-        options.context);
+    // note (chenye): the caller opts in when the request covers the whole
+    // recording. Other requests retain their existing behavior, including
+    // explicit guessed_text.
+    const bool guess_auto_language =
+        omni_common::FormFlag(
+            asr_service::TextField(form, "guess_auto_language")) &&
+        !options.language.has_value() && !guessed_text.has_value() &&
+        options.repetition_penalty == 1.0f &&
+        !omni_common::FormFlag(asr_service::TextField(form, "preview"));
+    // note (XXXXRT666): a session holds one prompt's windows, and longer audio
+    // is decoded in chunks.
+    const qwen3_asr::FinalReuse final_reuse =
+        samples.size() <= qwen3_asr::kMaxChunkSamples
+            ? TakeFinalReuse(
+                  asr_service::TextField(form, "realtime_session").value_or(""),
+                  options.context, guess_auto_language)
+            : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
+      // note (chenye): auto-language decoding generates a language header
+      // before the transcript. Propose both from the session's preview and
+      // verify them through the existing guessed-token path. Leave
+      // options.language unset so the decoder still detects the language.
+      if (guess_auto_language && final_reuse.auto_language_guess.has_value()) {
+        const auto &guess = *final_reuse.auto_language_guess;
+        options.guessed_token_ids =
+            transcriber_.AutoLanguageGuesses(guess.language, guess.text);
+      }
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
         // note (XXXXRT666): a copy the refreshes keep using shares the
@@ -95,7 +116,7 @@ public:
                                             : *final_reuse.reuse;
         return transcriber_.Transcribe(samples, options, cancel, &reuse);
       };
-    } else if (transcriber_.CanBatch(options)) {
+    } else if (transcriber_.CanBatch(samples.size(), options)) {
       return qwen3_asr::BatchableTranscription{
           &transcriber_, std::move(samples), std::move(options)};
     } else {
@@ -126,13 +147,15 @@ private:
   // when it is not open.
   qwen3_asr::FinalReuse
   TakeFinalReuse(const std::string &session_id,
-                 const std::optional<std::string> &context) const {
+                 const std::optional<std::string> &context,
+                 bool guess_auto_language) const {
     std::lock_guard<std::mutex> lock(live_sessions_mutex_);
     const auto entry = live_sessions_.find(session_id);
     const std::shared_ptr<qwen3_asr::RealtimeSession> session =
         entry != live_sessions_.end() ? entry->second.lock() : nullptr;
-    return session != nullptr ? session->TakeFinalReuse(context)
-                              : qwen3_asr::FinalReuse();
+    return session != nullptr
+               ? session->TakeFinalReuse(context, guess_auto_language)
+               : qwen3_asr::FinalReuse();
   }
 
   qwen3_asr::Qwen3ASRTranscriber transcriber_;
@@ -203,12 +226,12 @@ int main(int argc, char **argv) {
   double max_segment_seconds = 30.0;
   long long cache_limit_mb = -1;
   int max_batch = 1;
-  std::filesystem::path draft_directory;
-  int draft_quantization_bits = 0;
+  omni_common::DraftOptions draft;
   omni_common::DraftPolicy draft_policy = omni_common::DraftPolicy::kAdaptive;
   asr_service::ServedKind qwen3_asr;
   qwen3_asr.model_kind = "qwen3_asr";
-  qwen3_asr.flags = {
+  qwen3_asr.flags = draft.Flags();
+  qwen3_asr.flags.insert({
       {"--decode-interval-ms",
        [&](const std::string &value) {
          decode_interval_ms = std::stoi(value);
@@ -223,17 +246,11 @@ int main(int argc, char **argv) {
        [&](const std::string &value) { cache_limit_mb = std::stoll(value); }},
       {"--max-batch",
        [&](const std::string &value) { max_batch = std::stoi(value); }},
-      {"--draft-model-path",
-       [&](const std::string &value) { draft_directory = value; }},
       {"--draft-policy",
        [&](const std::string &value) {
          draft_policy = omni_common::ParseDraftPolicy(value);
        }},
-      {"--draft-bits",
-       [&](const std::string &value) {
-         draft_quantization_bits = std::stoi(value);
-       }},
-  };
+  });
   qwen3_asr.check_flags = [&]() {
     const double max_segment_samples =
         max_segment_seconds * omni_common::kSampleRate;
@@ -250,13 +267,9 @@ int main(int argc, char **argv) {
           "--cache-limit-mb must be 0 to 1073741824, or -1 for MLX's limit");
     } else if (max_batch < 1) {
       throw std::invalid_argument("--max-batch must be at least 1");
-    } else if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
-               draft_quantization_bits != 6 && draft_quantization_bits != 8) {
-      throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
-    } else if (draft_quantization_bits != 0 && draft_directory.empty()) {
-      throw std::invalid_argument("--draft-bits needs --draft-model-path");
     } else {
     }
+    draft.Check();
   };
   qwen3_asr.max_batch = [&]() { return max_batch; };
   qwen3_asr.batch_runner = qwen3_asr::BatchableTranscriptionRunner();
@@ -265,7 +278,7 @@ int main(int argc, char **argv) {
         model_directory,
         qwen3_asr::MakeRealtimeSettings(decode_interval_ms, first_decode_ms,
                                         max_segment_seconds),
-        draft_directory, draft_quantization_bits, draft_policy);
+        draft, draft_policy);
     // Note (hehehai): within one long Final MLX keeps every freed buffer
     // for reuse (the growing KV cache, the encoder's activations), several
     // GB beside the weights; a client can bound it. Decoding reuses buffers

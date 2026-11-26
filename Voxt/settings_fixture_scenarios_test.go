@@ -303,10 +303,7 @@ func newSettingsFixtureScenario(name, section string) meetingFixtureScenario {
 }
 
 func settingsFixtureAudioInputs() (settingsAudioStateInput, settingsSoundsStateInput) {
-	catalog, err := sounds.Load(testSoundsFS(), "sounds")
-	if err != nil {
-		panic(err)
-	}
+	catalog := testSounds()
 	audio := settings.Defaults().Audio
 	audio.Devices = []string{"fixture-mic-primary", "fixture-mic-secondary"}
 	audio.DeviceNames = map[string]string{

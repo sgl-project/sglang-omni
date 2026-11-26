@@ -10,18 +10,18 @@
 #include <stdexcept>
 #include <utility>
 
+#include "common/kaldi_fbank.h"
+
 namespace omni_common {
 
 namespace mx = mlx::core;
 
 namespace {
 
-constexpr int kFbankSampleRate = 16000;
 constexpr int kFbankFrameSamples = 400;
 constexpr int kFbankShiftSamples = 160;
 constexpr int kFbankFftSize = 512;
 constexpr int kFbankBinCount = 80;
-constexpr double kFbankLowHz = 20.0;
 constexpr double kPreemphasis = 0.97;
 constexpr double kPoveyExponent = 0.85;
 constexpr float kBatchNormEps = 1e-5f;
@@ -114,43 +114,13 @@ std::vector<std::complex<double>> RealFft(const std::vector<double> &samples) {
   return spectrum;
 }
 
-// Kaldi's triangular mel filters on its 1127 ln(1 + f / 700) scale,
-// [mel_bins, fft_size / 2 + 1] with the Nyquist bin zero.
-std::vector<double> KaldiMelBanks() {
-  constexpr int frequency_bin_count = kFbankFftSize / 2 + 1;
-  const double nyquist_hz = 0.5 * kFbankSampleRate;
-  const double bin_width_hz =
-      static_cast<double>(kFbankSampleRate) / kFbankFftSize;
-  const double low_mel = 1127.0 * std::log(1.0 + kFbankLowHz / 700.0);
-  const double high_mel = 1127.0 * std::log(1.0 + nyquist_hz / 700.0);
-  const double mel_step = (high_mel - low_mel) / (kFbankBinCount + 1);
-  std::vector<double> banks(
-      static_cast<size_t>(kFbankBinCount) * frequency_bin_count, 0.0);
-  for (int mel_bin = 0; mel_bin < kFbankBinCount; ++mel_bin) {
-    const double left_mel = low_mel + mel_bin * mel_step;
-    const double center_mel = low_mel + (mel_bin + 1) * mel_step;
-    const double right_mel = low_mel + (mel_bin + 2) * mel_step;
-    for (int bin = 0; bin < kFbankFftSize / 2; ++bin) {
-      const double mel = 1127.0 * std::log(1.0 + bin_width_hz * bin / 700.0);
-      double weight = 0.0;
-      if (mel > left_mel && mel <= center_mel) {
-        weight = (mel - left_mel) / (center_mel - left_mel);
-      } else if (mel > center_mel && mel < right_mel) {
-        weight = (right_mel - mel) / (right_mel - center_mel);
-      } else {
-      }
-      banks[mel_bin * frequency_bin_count + bin] = weight;
-    }
-  }
-  return banks;
-}
-
 // Kaldi fbank of 16 kHz samples (snipped edges, per-frame DC removal,
 // pre-emphasis, Povey window, power spectrum), float32 [frames, 80]; one zero
 // frame when the audio is shorter than a frame.
 std::vector<float> FbankFeatures(const std::vector<float> &samples,
                                  int &frame_count) {
-  static const std::vector<double> banks = KaldiMelBanks();
+  static const std::vector<double> banks =
+      KaldiMelBanks(kFbankFftSize, kFbankBinCount);
   static const std::vector<double> window = [] {
     std::vector<double> values(kFbankFrameSamples);
     for (int i = 0; i < kFbankFrameSamples; ++i) {

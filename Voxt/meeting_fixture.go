@@ -54,14 +54,18 @@ type shellFixtureUI struct {
 }
 
 // snippetsFixtureUI seeds the Snippets page's local state in the demo:
-// its search, and the dialog with its fields and problem.
+// its search, the edit dialog with its fields and problem, and the import
+// dialog with its file format shown and the problem of its last file.
 type snippetsFixtureUI struct {
-	Query    string `json:"query,omitempty"`
-	EditOpen bool   `json:"edit_open,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Trigger  string `json:"trigger,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Query         string `json:"query,omitempty"`
+	EditOpen      bool   `json:"edit_open,omitempty"`
+	ID            string `json:"id,omitempty"`
+	Trigger       string `json:"trigger,omitempty"`
+	Text          string `json:"text,omitempty"`
+	Error         string `json:"error,omitempty"`
+	ImportOpen    bool   `json:"import_open,omitempty"`
+	ImportExample bool   `json:"import_example,omitempty"`
+	ImportError   string `json:"import_error,omitempty"`
 }
 
 type sessionOverlayFixtureUI struct {
@@ -83,6 +87,7 @@ func cloneSessionOverlayViewState(state sessionOverlayViewState) sessionOverlayV
 		card := *state.Card
 		card.Blocks = slices.Clone(state.Card.Blocks)
 		card.Inputs = slices.Clone(state.Card.Inputs)
+		card.Sessions = slices.Clone(state.Card.Sessions)
 		clone.Card = &card
 	}
 	clone.Menu = cloneSessionMenuViewState(state.Menu)

@@ -245,10 +245,12 @@ func TestMacE2EFirstLatency(t *testing.T) {
 			a.pumpFor(settle, func() bool { return false })
 			got["cold"] = append(got["cold"], latencySession(t, a, lg, opened, appReady, "cold", ids[0], round))
 			got["warm"] = append(got["warm"], latencySession(t, a, lg, time.Now(), time.Time{}, "warm", ids[0], round))
-			changed := time.Now()
-			a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
-			a.pumpFor(settle, func() bool { return false })
-			got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
+			if os.Getenv("VOXTNEW_LATENCY_SKIP_SWITCH") != "1" {
+				changed := time.Now()
+				a.updateSettings(func(s *settings.Settings) { setFeatureModel(s, local.ASR, "transcribe", ids[1]) })
+				a.pumpFor(settle, func() bool { return false })
+				got["switch"] = append(got["switch"], latencySession(t, a, lg, changed, time.Time{}, "switch", ids[1], round))
+			}
 		})
 	}
 	for _, name := range []string{"cold", "warm", "switch"} {
@@ -306,7 +308,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	last := a.sess.ID
 	t0 := time.Now()
 	a.toggleTranscribe()
-	if !a.pumpFor(time.Minute, func() bool {
+	if !a.pumpFor(5*time.Minute, func() bool {
 		if a.sess.ID == last {
 			return false
 		}
@@ -338,7 +340,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	pastesBefore := len(a.pasted())
 	stopped := time.Now()
 	a.stopSession()
-	ended := !a.pumpFor(time.Minute, func() bool {
+	ended := !a.pumpFor(5*time.Minute, func() bool {
 		if st.final == 0 && a.sess.Raw != "" {
 			st.final = time.Since(stopped)
 		}

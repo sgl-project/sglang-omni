@@ -11,6 +11,9 @@ package main
 // checks that nothing it started is left running. Lines starting
 // "smoke:" say what happened; the exit status is 0 when all of it worked.
 //
+// With VOXTNEW_SMOKE_LIBRARY it only runs one Mac's side of the library
+// transfer (smoke_library.go).
+//
 // With VOXTNEW_SMOKE_LEGACY=1 it only imports the previous Voxt's data
 // into that folder, as the import card does, and prints the terms and
 // history entries there (.github/workflows/voxt-upgrade-test.yaml).
@@ -24,6 +27,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/datadir"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -33,7 +37,12 @@ import (
 func runSmoke(dir string) int {
 	say := func(format string, args ...any) { fmt.Printf("smoke: "+format+"\n", args...) }
 	resources, _ := mygo.App.Path(mygo.PathResources)
-	lib, err := openLibrary(filepath.Join(dir, "data"))
+	data, err := datadir.Resolve(filepath.Join(dir, "data")) // as main does: a staged import lands here
+	if err != nil {
+		say("FAIL the data folder: %v", err)
+		return 1
+	}
+	lib, err := openLibrary(data)
 	if err != nil {
 		say("FAIL the library: %v", err)
 		return 1
@@ -68,6 +77,12 @@ func runSmoke(dir string) int {
 		pump(300*time.Millisecond, func() bool { return false })
 		say("quit")
 		return code
+	}
+	if mode := os.Getenv("VOXTNEW_SMOKE_LIBRARY"); mode != "" {
+		if !smokeLibrary(a, mode, os.Getenv("VOXTNEW_SMOKE_LIBRARY_FILE"), pump, say) {
+			return quit(1)
+		}
+		return quit(0)
 	}
 	if os.Getenv("VOXTNEW_SMOKE_LEGACY") == "1" {
 		legacy := legacyLibrary()

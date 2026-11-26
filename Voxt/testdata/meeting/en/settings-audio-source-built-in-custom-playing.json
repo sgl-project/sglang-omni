@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "Transcribe",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "Translate",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "Rewrite",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "Speech models",
         "english": "Speech models download delete install recognition"
@@ -55,6 +70,11 @@
         "id": "storage",
         "title": "Storage",
         "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
       },
       {
         "id": "about",
@@ -128,6 +148,36 @@
             "name": "Soft",
             "sounds": "Pebble → Nib",
             "play_label": "Play Soft",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-kalimba-start",
+            "stop": "soft-kalimba-stop",
+            "name": "Kalimba",
+            "sounds": "Thumb piano, plucked metal tines",
+            "play_label": "Play Kalimba",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-wood-start",
+            "stop": "soft-wood-stop",
+            "name": "Wood",
+            "sounds": "Soft mallets on wooden bars",
+            "play_label": "Play Wood",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-vibes-start",
+            "stop": "soft-vibes-stop",
+            "name": "Vibraphone",
+            "sounds": "Yarn mallets, a light shimmer",
+            "play_label": "Play Vibraphone",
             "chosen": false,
             "playing": false,
             "remaining": 0

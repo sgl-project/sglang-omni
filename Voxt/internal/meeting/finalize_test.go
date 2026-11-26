@@ -143,14 +143,14 @@ func TestFinalizeReplacesMicSegments(t *testing.T) {
 type countingVAD struct {
 	calls        int
 	sampleCounts []int
-	regions      []vad.Segment
+	regions      [][]vad.Segment
 }
 
 func (v *countingVAD) Speech(_ context.Context, pcm []byte, _ int) ([]vad.Segment, error) {
 	v.calls++
 	v.sampleCounts = append(v.sampleCounts, len(pcm)/2)
 	if v.regions != nil {
-		return v.regions, nil
+		return v.regions[v.calls-1], nil
 	}
 	return []vad.Segment{{Start: 0, End: len(pcm) / 2}}, nil
 }
@@ -180,7 +180,10 @@ func TestFinalizeReadsTwoTrackSegmentsInTimeOrder(t *testing.T) {
 	}
 	micASR := &seqFileASR{texts: []string{"mic-0", "mic-20"}}
 	sysASR := &seqFileASR{texts: []string{"sys-0", "sys-10"}}
-	detector := &countingVAD{}
+	detector := &countingVAD{regions: [][]vad.Segment{
+		{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(20 * time.Second), End: rateSamples(25 * time.Second)}},
+		{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(10 * time.Second), End: rateSamples(15 * time.Second)}},
+	}}
 	cfg := meeting.Config{
 		Store:    db.Meetings(),
 		Dir:      filepath.Join(root, "meetings"),
@@ -190,10 +193,8 @@ func TestFinalizeReadsTwoTrackSegmentsInTimeOrder(t *testing.T) {
 		ASR: func(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
 			switch src {
 			case meeting.SourceMic:
-				detector.regions = []vad.Segment{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(20 * time.Second), End: rateSamples(25 * time.Second)}}
 				return meeting.TrackASR{Caps: micASR.Caps(), File: micASR}, nil
 			case meeting.SourceSystem:
-				detector.regions = []vad.Segment{{Start: 0, End: rateSamples(5 * time.Second)}, {Start: rateSamples(10 * time.Second), End: rateSamples(15 * time.Second)}}
 				return meeting.TrackASR{Caps: sysASR.Caps(), File: sysASR}, nil
 			default:
 				return meeting.TrackASR{}, nil
@@ -509,7 +510,7 @@ func TestFinalizeFailureKeepsLiveAndRetry(t *testing.T) {
 	if err := os.MkdirAll(meetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	long := tonePCM(rateSamples(30 * time.Second))
+	long := tonePCM(rateSamples(70 * time.Second)) // two requests per track
 	writeWAV(t, meetDir, "mic.wav", long)
 	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
 		ID: "m2", CreatedAt: time.Now(), Status: store.MeetingInterrupted,
@@ -697,7 +698,7 @@ func TestFinalizeDropsMicEcho(t *testing.T) {
 	if err := os.MkdirAll(meetDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	long := tonePCM(rateSamples(30 * time.Second)) // two chunks per track
+	long := tonePCM(rateSamples(70 * time.Second)) // two chunks per track
 	writeWAV(t, meetDir, "mic.wav", long)
 	writeWAV(t, meetDir, "system.wav", long)
 	mt, _ := db.Meetings().CreateMeeting(ctx, store.Meeting{
