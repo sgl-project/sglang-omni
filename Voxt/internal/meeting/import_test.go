@@ -327,6 +327,58 @@ func TestReprocessImportWithoutDecodedWAVStaysInterrupted(t *testing.T) {
 	}
 }
 
+// Continue processing rejects a decoded WAV with no complete audio samples,
+// including a valid header-only file, and keeps the import interrupted.
+func TestReprocessImportRejectsUnusableDecodedWAV(t *testing.T) {
+	tests := []struct {
+		name      string
+		contents  []byte
+		directory bool
+	}{
+		{name: "header-only", contents: asr.WAV(nil, asr.SampleRate)},
+		{name: "truncated", contents: asr.WAV(importPCM(1), asr.SampleRate)[:20]},
+		{name: "unreadable", directory: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chat := &fixingChat{}
+			m, repo := importFixture(t, chat, &importDiarizer{}, &importFileASR{})
+			m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} }
+			ctx := context.Background()
+			mt, err := repo.CreateMeeting(ctx, store.Meeting{
+				ID: "unusable-wav", CreatedAt: time.Now(), Status: store.MeetingInterrupted,
+				Mode: store.MeetingModeImport, Audio: "unusable-wav",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			audioDir := filepath.Join(m.cfg.Dir, mt.Audio)
+			if err := os.MkdirAll(audioDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			wavPath := filepath.Join(audioDir, "system.wav")
+			if tt.directory {
+				err = os.Mkdir(wavPath, 0o755)
+			} else {
+				err = os.WriteFile(wavPath, tt.contents, 0o644)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Reprocess(ctx, mt.ID); err == nil {
+				t.Fatal("Continue processing accepted a WAV without usable audio")
+			}
+			mt, segs, err := repo.Meeting(ctx, mt.ID)
+			if err != nil || mt.Status != store.MeetingInterrupted || mt.Audio == "" || len(segs) != 0 {
+				t.Fatalf("status %s, audio %q, %d segments, err %v", mt.Status, mt.Audio, len(segs), err)
+			}
+			if len(chat.reqs) != 0 {
+				t.Fatal("the language model ran without a transcript")
+			}
+		})
+	}
+}
+
 // Cancelling during the summary leaves an interrupted import with its WAV,
 // so Continue processing can finish it instead of showing a done meeting
 // with no summary and no way to reprocess it.

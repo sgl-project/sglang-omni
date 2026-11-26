@@ -143,6 +143,9 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 			return nil, err
 		}
 	}
+	if mode == ModeImport && len(pcm) < 2 {
+		return nil, errors.New("meeting: decoded WAV has no audio samples")
+	}
 	speech, err := speechRegions(ctx, pcm, rate, cfg.VAD)
 	if err != nil {
 		return nil, err
