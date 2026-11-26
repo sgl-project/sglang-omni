@@ -145,9 +145,9 @@ public:
     return result;
   }
 
-  bool ExtendFinalPrefill(const RefreshReuse &, const std::vector<float> &, long,
-                          const TranscriptionOptions &, const std::atomic<bool> &,
-                          RefreshReuse &) const {
+  bool ExtendFinalPrefill(const RefreshReuse &, const std::vector<float> &,
+                          long, const TranscriptionOptions &,
+                          const std::atomic<bool> &, RefreshReuse &) const {
     return false;
   }
 
