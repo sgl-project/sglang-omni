@@ -437,6 +437,11 @@ func (a *app) overlayFadeOut() {
 		hide()
 		return
 	}
+	if a.ov.win != nil && !a.ov.passThrough {
+		// The last frame stays while it fades: its buttons no longer act.
+		a.ov.passThrough = true
+		a.ov.win.SetIgnoreMouseEvents(true)
+	}
 	dim := func(opacity float64) func() {
 		return func() {
 			if current() && a.ov.win != nil {

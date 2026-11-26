@@ -411,6 +411,12 @@ func (a *app) refreshSessionOverlay(now time.Time) {
 	projection := &a.ov.projection
 	locale := i18n.Locale()
 	mode := a.overlayModeNow()
+	if mode == ovHidden && a.ov.visible && projection.view.Mode != ovHidden {
+		// Fading out: the window keeps its last frame. The ended session's
+		// pill has no live text, and the face keeps its size, so it would
+		// flash the microphone row alone in the empty face.
+		return
+	}
 	if mode == ovNotice && a.notice != nil && !a.answer.ui.langOpen {
 		key := sessionOverlayStillKey{
 			sessionID: a.sess.ID, state: string(a.sess.State), revision: a.sess.Rev,

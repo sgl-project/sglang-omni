@@ -2,11 +2,10 @@
   "name": "session-problem-too-short",
   "kind": "session-overlay",
   "session": {
-    "revision": 2,
+    "revision": 1,
     "session_id": "session-problem",
-    "state": "cancelled",
-    "problem_code": "tooShort",
-    "mode": "hidden",
+    "state": "recording",
+    "mode": "recording",
     "pill": {
       "kind": "",
       "title": "转录",
