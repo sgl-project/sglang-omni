@@ -25,7 +25,6 @@ from sglang_omni.client import (
     GenerateRequest,
     SamplingParams,
 )
-from sglang_omni.scheduling.types import MAX_BEAM_WIDTH
 from sglang_omni.serve.openai_errors import generation_error_status_code
 from sglang_omni.serve.protocol import (
     SglExt,
@@ -82,7 +81,8 @@ async def parse_speech_to_text_form(
     max_new_tokens: int | None = Form(default=None, ge=1),
     stream: bool = Form(default=False),
     return_spec_tokens_details: bool = Form(default=False),
-    beam_width: int | None = Form(default=None, ge=1, le=MAX_BEAM_WIDTH),
+    # The upper bound is the endpoints' 400, not a form 422.
+    beam_width: int | None = Form(default=None, ge=1),
     beam_search_diversity_rate: float | None = Form(default=None, allow_inf_nan=False),
 ) -> SpeechToTextForm:
     return SpeechToTextForm(

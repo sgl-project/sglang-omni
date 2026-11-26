@@ -8,12 +8,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 from sglang.srt.beam_search.beam_group import BeamGroupState, BeamResult
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from transformers import GPT2Config, GPT2LMHeadModel
 
 from sglang_omni.scheduling import beam_search
 from sglang_omni.scheduling.beam_search import (
+    BeamPrefillAdder,
     OmniBeamCoordinator,
     OmniBeamGroup,
     append_encoder_beam_tail,
@@ -306,3 +308,98 @@ def test_attached_leader_samples_greedily_and_leaves_finishing_to_its_group(
     assert leader.sampling_params.max_new_tokens > group.max_new_tokens
     assert leader.custom_logit_processor is None
     assert leader.skip_radix_cache_insert
+
+
+def admission_candidate(beam_width: int | None) -> SimpleNamespace:
+    group = (
+        None
+        if beam_width is None
+        else SimpleNamespace(beam_width=beam_width, member_rows=None, retired=False)
+    )
+    return SimpleNamespace(
+        beam_group=group,
+        kv=SimpleNamespace(holds_kv=False),
+        finished=lambda: False,
+    )
+
+
+@pytest.mark.parametrize(
+    "free_rows,running_widths,candidate_widths,admitted",
+    [
+        # A leader and its four member rows fill five rows; the greedy request after it waits.
+        (5, [], [5, None], 1),
+        (6, [], [5, None], 2),
+        (6, [], [5, 2], 1),
+        # A running leader whose members have not spawned yet keeps its four rows.
+        (5, [5], [None, None], 1),
+    ],
+)
+def test_prefill_admission_keeps_rows_for_the_member_rows_of_admitted_leaders(
+    monkeypatch: pytest.MonkeyPatch,
+    free_rows: int,
+    running_widths: list[int],
+    candidate_widths: list[int | None],
+    admitted: int,
+) -> None:
+    def add_one_req(adder, req, has_chunked_req, truncation_align_size):
+        adder.can_run_list.append(req)
+        return AddReqResult.CONTINUE
+
+    monkeypatch.setattr(PrefillAdder, "add_one_req", add_one_req)
+    adder = object.__new__(BeamPrefillAdder)
+    adder.can_run_list = []
+    adder.running_batch = SimpleNamespace(
+        reqs=[admission_candidate(width) for width in running_widths]
+    )
+    adder.tree_cache = SimpleNamespace(
+        req_to_token_pool=SimpleNamespace(available_size=lambda: free_rows)
+    )
+    candidates = [admission_candidate(width) for width in candidate_widths]
+
+    for req in candidates:
+        if adder.add_one_req(req, False, None) != AddReqResult.CONTINUE:
+            break
+        else:
+            pass
+
+    assert [id(req) for req in adder.can_run_list] == [
+        id(req) for req in candidates[:admitted]
+    ]
+
+
+def test_aborting_a_group_frees_its_member_rows_before_the_leader_releases(
+    single_gpu_runtime: None,
+) -> None:
+    """An abort outside the commit path frees the member rows and the decode KV they share, and rewinds the leader to its prompt."""
+    freed_rows: list[int] = []
+    freed_slots: list[int] = []
+    coordinator = make_coordinator()
+    coordinator.req_to_token_pool = SimpleNamespace(
+        size=8,
+        device=torch.device("cpu"),
+        req_to_token=torch.arange(8 * 16).reshape(8, 16),
+        free_rows=freed_rows.extend,
+    )
+    coordinator.token_to_kv_pool_allocator = SimpleNamespace(
+        free=lambda slots: freed_slots.extend(slots.tolist())
+    )
+    leader = make_leader()
+    coordinator.attach_group(
+        leader, BeamSearchSettings(beam_width=3, diversity_rate=0.0, logit_rules=None)
+    )
+    group = leader.beam_group
+    leader.kv = SimpleNamespace(
+        req_pool_idx=0, kv_committed_len=13, kv_allocated_len=13
+    )
+    group.member_rows = torch.tensor([5, 6])
+    group.member_rows_cpu = torch.tensor([5, 6])
+    group.all_rows = torch.tensor([0, 5, 6])
+
+    coordinator.abort_group(leader)
+    coordinator.abort_group(leader)
+
+    decode_slots = coordinator.req_to_token_pool.req_to_token[[0, 5, 6], 10:13]
+    assert freed_rows == [5, 6]
+    assert sorted(freed_slots) == decode_slots.flatten().tolist()
+    assert leader.kv.kv_allocated_len == group.prompt_len == 10
+    assert group.retired and not coordinator.has_live_groups

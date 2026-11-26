@@ -4756,7 +4756,8 @@ class WhisperBeamTranscriptionClient(SuccessfulTranscriptionClient):
         )
 
 
-def test_transcription_returns_the_n_best_in_sglext() -> None:
+@pytest.mark.parametrize("beam_width", [2, 16])
+def test_transcription_returns_the_n_best_in_sglext(beam_width: int) -> None:
     transcription_client = WhisperBeamTranscriptionClient()
     client = TestClient(
         create_app(
@@ -4770,7 +4771,7 @@ def test_transcription_returns_the_n_best_in_sglext() -> None:
         "/v1/audio/transcriptions",
         data={
             "model": "openai/whisper-large-v3",
-            "beam_width": "2",
+            "beam_width": str(beam_width),
             "beam_search_diversity_rate": "0.3",
         },
         files={"file": ("sample.wav", b"RIFF", "audio/wav")},
@@ -4795,22 +4796,49 @@ def test_transcription_returns_the_n_best_in_sglext() -> None:
         ]
     }
     extra_params = transcription_client.requests[0].extra_params
-    assert extra_params["beam_width"] == 2
+    assert extra_params["beam_width"] == beam_width
     assert extra_params["beam_search_diversity_rate"] == 0.3
 
 
 @pytest.mark.parametrize(
-    "form,upload,message",
+    "form,upload,architectures,message",
     [
-        ({"stream": "true"}, b"RIFF", "final transcripts only"),
-        ({}, None, "split into chunks"),
+        (
+            {"stream": "true"},
+            b"RIFF",
+            ["WhisperForConditionalGeneration"],
+            "final transcripts only",
+        ),
+        ({}, None, ["WhisperForConditionalGeneration"], "split into chunks"),
+        (
+            {"beam_width": "17"},
+            b"RIFF",
+            ["WhisperForConditionalGeneration"],
+            "at most 16",
+        ),
+        (
+            {},
+            b"RIFF",
+            ["MossTranscribeDiarizeForConditionalGeneration"],
+            "beam-search capability",
+        ),
     ],
 )
-def test_transcription_rejects_beam_requests_without_one_final_n_best(
-    form: dict[str, str], upload: bytes | None, message: str
+def test_transcription_rejects_beam_requests_it_cannot_serve(
+    form: dict[str, str],
+    upload: bytes | None,
+    architectures: list[str],
+    message: str,
 ) -> None:
     transcription_client = WhisperBeamTranscriptionClient()
-    client = TestClient(chunking_app(transcription_client))
+    app = chunking_app(
+        transcription_client,
+        architectures=architectures,
+        max_concurrent_long_audio_requests=1,
+    )
+    # A full long-audio slot must not turn the 400 into a 503 that the caller retries.
+    app.state.long_audio_admission.active = app.state.long_audio_admission.limit
+    client = TestClient(app)
 
     response = client.post(
         "/v1/audio/transcriptions",

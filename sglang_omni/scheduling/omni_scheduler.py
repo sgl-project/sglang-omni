@@ -46,6 +46,7 @@ from sglang.srt.managers.schedule_batch import (
     ScheduleBatch,
     retract_all,
 )
+from sglang.srt.managers.schedule_policy import PrefillAdder
 from sglang.srt.managers.scheduler import (
     PAUSE_WINDOWS_MAX,
     TEST_RETRACT,
@@ -108,9 +109,11 @@ from sglang_omni.proto.admin import (
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.proto.session import find_session_operation
 from sglang_omni.scheduling.beam_search import (
+    BeamPrefillAdder,
     OmniBeamCoordinator,
     beam_hypotheses,
     install_encoder_beam_tail,
+    strip_encoder_beam_tail,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -2953,6 +2956,12 @@ class OmniScheduler(Generic[RequestDataT]):
         )
         return now_s - oldest_enqueue_s < self.prefill_coalesce_wait_s
 
+    def get_prefill_adder_class(self) -> type[PrefillAdder]:
+        if self.beam_coordinator is not None and self.beam_coordinator.has_live_groups:
+            return BeamPrefillAdder
+        else:
+            return _Upstream.get_prefill_adder_class(self)
+
     def get_new_batch_prefill(self, running_batch: ScheduleBatch) -> NextBatchPlan:
         if not self.enable_plain_fallback:
             return self.get_coalesced_batch_prefill(running_batch)
@@ -4043,6 +4052,10 @@ class OmniScheduler(Generic[RequestDataT]):
         self.prefill_end_done.discard(request_id)
         if not running_abort:
             for req in immediate_reqs:
+                if req.beam_group is not None:
+                    self.beam_coordinator.abort_group(req)
+                else:
+                    pass
                 self.release_request_kv_cache(req)
                 detach_request_data(req)
         else:
@@ -4563,7 +4576,8 @@ class OmniScheduler(Generic[RequestDataT]):
 
     def retract_running_requests(self) -> int:
         """Retract and requeue each unfinished request holding KV, including one cut
-        between chunked extends, which sits only in last_batch and chunked_req."""
+        between chunked extends, which sits only in last_batch and chunked_req.
+        Beam search requests end with an admin-dropped error instead."""
         candidate_requests = list(self.running_batch.reqs)
         for batch in self.pending_batches():
             candidate_requests.extend(batch.reqs)
@@ -4577,11 +4591,32 @@ class OmniScheduler(Generic[RequestDataT]):
         else:
             pass
         requests_by_identity = {id(request): request for request in candidate_requests}
-        retracted_requests = [
+        unfinished_requests = [
             request
             for request in requests_by_identity.values()
             if not request.finished()
         ]
+        # note (zhumengzhiren): a beam group cannot be requeued: its members alias the leader's prompt KV and its beams live in the group, not in output_ids. The pause ends it, as newer SGLang's retract_all does.
+        beam_request_ids = [
+            request.rid
+            for request in unfinished_requests
+            if request.beam_group is not None
+        ]
+        for request_id in beam_request_ids:
+            self.abort(request_id, defer_running_cleanup=False)
+            self.emit_request_error(request_id, AdminDroppedRequestError())
+        if beam_request_ids:
+            logger.warning(
+                f"pause_generation(mode='retract') ended {len(beam_request_ids)} beam search "
+                f"requests, which cannot be requeued: {beam_request_ids}"
+            )
+        else:
+            pass
+        retracted_requests = [
+            request for request in unfinished_requests if request.beam_group is None
+        ]
+        # Clearing reqs under an attached beam tail would fail the tail's row check at the next batch mutation.
+        strip_encoder_beam_tail(self.running_batch)
         retract_all(
             reqs=retracted_requests,
             req_to_token_pool=self.req_to_token_pool,

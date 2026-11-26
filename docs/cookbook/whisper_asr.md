@@ -267,7 +267,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 Greedy and beam requests share one server and one decode step. While a beam request is decoding, its decode steps run without the async-decode lookahead, as timestamped requests do.
 
-Beam search returns final transcripts only. These requests return HTTP 400 with `beam_width` above 1: `stream=true`, `temperature` above 0, audio long enough to be split into chunks, `/v1/audio/translations`, and servers running speculative decoding. `json` and `verbose_json` carry `sglext.n_best`; `srt`, `vtt` and `text` are plain text and return the best hypothesis only.
+Beam search returns final transcripts only. These requests return HTTP 400 with `beam_width` above 1: `stream=true`, `temperature` above 0, audio long enough to be split into chunks, `/v1/audio/translations`, and servers running speculative decoding. A `beam_width` above 16 also returns 400. `json` and `verbose_json` carry `sglext.n_best`; `srt`, `vtt` and `text` are plain text and return the best hypothesis only.
 
 ## Long Audio
 

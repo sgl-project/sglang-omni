@@ -56,21 +56,32 @@ Selection is a fixed-shape tensor function with no host sync, like sglang's `joi
 
 Omni's greedy path does not apply `begin_suppress_tokens` today, while HF and openai-whisper do. The beam path applies it for parity; fixing greedy is a separate change.
 
+## Admission, retraction and aborts
+
+- Request rows: a beam request takes `k` request rows, the leader's at admission and `k - 1` member rows right after its prefill. SGLang's per-candidate row check does not count the member rows of a leader admitted earlier in the same prefill pass, so a request admitted after it could leave too few rows for the spawn. While a beam group is live, omni admits through `BeamPrefillAdder`, which charges each candidate its own row plus its group's member rows.
+- Decode KV: the leader row runs with `ignore_eos`, because its group decides when to stop, so on every pass after admission SGLang's adder charges it its full remaining budget; a greedy row is charged its remaining budget times `new_token_ratio`, which decays to about 0.1. Member rows are not charged. At that ratio a beam-5 group on whisper-large-v3 (448 decoder positions) is charged about 400 tokens more than a greedy request, which covers its four extra rows for transcripts up to about 100 tokens. Charging `k` times the remaining budget would charge such a group about 2,240 tokens for at most 500 used.
+- When that estimate falls short, the decode memory check counts the member rows and retraction takes greedy rows first; they are requeued and prefill again. A beam group cannot be requeued, because its members alias the leader's prompt KV and its beams live in the group, not in `output_ids`, so it is aborted only when retracting every other row is not enough. This is SGLang's own rule.
+- Aborts that free KV at once (admin aborts, batch failures) free the member rows and their shared decode KV before the leader's KV. `pause_generation(mode="retract")` ends beam requests with an admin-dropped error instead of requeueing them, as newer SGLang's `retract_all` does.
+
 ## API
 
 - Whisper stage request params: `beam_width` (int, default 1) and `beam_search_diversity_rate` (float, default 0.0).
 - `/v1/audio/transcriptions` form fields: the same two names.
-- Validation (400): `beam_width` in `[1, 16]`; with `beam_width > 1` also reject `temperature > 0`, `stream=true`, `detect_language`, chunked long audio, `/v1/audio/translations`, and speculative servers.
+- Validation (400): `beam_width` above 16; with `beam_width > 1` also reject models whose transcription adapter has no beam-search capability (every model but Whisper), `temperature > 0`, `stream=true`, `detect_language`, chunked long audio, `/v1/audio/translations`, and speculative servers. A `beam_width` below 1 is a form validation error (422), like the other numeric form fields.
+- The HTTP checks run before the audio is decoded. The chunked-audio check uses the probed duration that decides chunking, so a beam request for long audio gets its 400 before it waits for a long-audio admission slot.
 - Response: OpenAI has no N-best field, so it is `sglext.n_best`, a list of `{text, cum_logprob, score, finish_reason}` in score order, present only when `beam_width > 1`. Top-level `text` stays the best hypothesis. `sglext` is the repo's existing home for fields outside the OpenAI schema.
 - `json` and `verbose_json` carry `sglext.n_best`. On HTTP, model timestamps come only with `srt` and `vtt`, which are plain text, so those return the best hypothesis only; a stage request with `segment_timestamps` and `beam_width` gets the timestamped N-best.
 
 ## Implementation map
 
-- `sglang_omni/models/whisper_asr/beam_search.py` (new): the selection function, the group state machine (HF finish rules), and per-beam logit processing (suppress, begin-suppress, timestamps).
-- `OmniBeamCoordinator` (subclass of sglang's `BeamCoordinator`): validation without the encoder-decoder refusal, group creation from the request builder's params, selection on processed log-probs, and encoder-aware `append_beam_tail` / `strip_beam_tail`.
-- `OmniScheduler`: install the subclass, validate and attach the group when a built request enters the queue, gate async lookahead and async prefill, suppress partial stream chunks for beam leaders, and copy the group's results into the request data at finish.
-- `ModelRunner`: capture and slice the member-row logits before sampling, and run selection plus the relay stash after sampling (the omni equivalents of sglang's two hooks).
-- Request builder, result adapter, `speech_to_text` form, and `protocol.py`: the params and the N-best.
+- `sglang_omni/scheduling/beam_search.py` (new): the selection function, the group state machine (`OmniBeamGroup`, HF finish rules), `OmniBeamCoordinator` (a subclass of SGLang's `BeamCoordinator`: validation without the encoder-decoder refusal, group creation, selection on masked log-probs, group teardown), `BeamPrefillAdder`, and the encoder-aware `append_beam_tail` / `strip_beam_tail`.
+- `sglang_omni/scheduling/types.py`: `BeamSearchSettings`, `BeamHypothesis` and the `BeamLogitRules` protocol, plus the request data fields.
+- `sglang_omni/models/whisper_asr/beam_rules.py` (new): per-beam suppress, begin-suppress and timestamp masks, with per-beam timestamp state.
+- `sglang_omni/scheduling/omni_scheduler.py`: install the coordinator, validate and attach the group when a built request enters the queue, admit through `BeamPrefillAdder` while a group is live, gate async lookahead and async prefill, tear groups down on immediate aborts and retracting pauses, and copy the group's results into the request data at finish.
+- `sglang_omni/model_runner/base.py` and `sglang_omni/model_runner/sglang_execution.py`: capture and slice the member-row logits before sampling, and run selection plus the relay stash after sampling (the omni equivalents of SGLang's two hooks).
+- `sglang_omni/models/whisper_asr/text_streaming.py`: no partial chunks for beam requests.
+- `sglang_omni/models/whisper_asr/request_builders.py`: the params, their validation, and the N-best in the result.
+- `sglang_omni/client/`, `sglang_omni/serve/speech_to_text.py`, `sglang_omni/serve/transcriptions.py`, `sglang_omni/serve/translations.py`, `sglang_omni/serve/protocol.py` and the `supports_beam_search` adapter capability in `sglang_omni/serve/transcription_adapters/`: the form fields, the HTTP checks, and `sglext.n_best`.
 
 ## Tests and parity
 

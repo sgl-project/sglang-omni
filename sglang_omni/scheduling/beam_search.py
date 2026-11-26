@@ -16,6 +16,7 @@ from sglang.srt.layers.dp_attention import is_dp_attention_enabled
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers import schedule_batch as schedule_batch_module
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
+from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.runtime_context import get_memory, get_parallel, get_schedule
 from sglang.srt.sampling.sampling_params import SamplingParams
 
@@ -249,6 +250,57 @@ def beam_hypotheses(group: BeamGroup) -> list[BeamHypothesis]:
     ]
 
 
+def unspawned_member_rows(req: Req) -> int:
+    """Member rows req's beam group spawns right after the leader's prefill; zero once they exist."""
+    group = req.beam_group
+    if group is None or group.member_rows is not None or group.retired:
+        return 0
+    else:
+        return group.beam_width - 1
+
+
+def admission_rows(req: Req) -> int:
+    """Request rows a prefill candidate takes: its own unless it already holds one, plus its group's member rows."""
+    return int(not req.kv.holds_kv) + unspawned_member_rows(req)
+
+
+class BeamPrefillAdder(PrefillAdder):
+    """Admit a request only when the free request rows also cover the member rows of the beam leaders admitted before it.
+
+    SGLang's per-candidate row check counts each admitted request's own row but not the member rows an admitted leader spawns after its prefill, so a request admitted after a leader can leave too few rows for that spawn.
+    """
+
+    free_request_rows: int | None = None
+
+    def add_one_req(
+        self, req: Req, has_chunked_req: bool, truncation_align_size: int | None
+    ) -> AddReqResult:
+        if self.free_request_rows is None:
+            running_reqs = [] if self.running_batch is None else self.running_batch.reqs
+            self.free_request_rows = (
+                self.tree_cache.req_to_token_pool.available_size()
+                - sum(
+                    unspawned_member_rows(running)
+                    for running in running_reqs
+                    if not running.finished()
+                )
+                - sum(admission_rows(admitted) for admitted in self.can_run_list)
+            )
+        else:
+            pass
+        rows = admission_rows(req)
+        if rows > self.free_request_rows:
+            return AddReqResult.OTHER
+        else:
+            pass
+        result = super().add_one_req(req, has_chunked_req, truncation_align_size)
+        if self.can_run_list and self.can_run_list[-1] is req:
+            self.free_request_rows -= rows
+        else:
+            pass
+        return result
+
+
 class OmniBeamCoordinator(BeamCoordinator):
     """Beam groups for omni runners, which sample and relay next tokens themselves."""
 
@@ -257,6 +309,21 @@ class OmniBeamCoordinator(BeamCoordinator):
         return (
             self._num_live_groups > 0
         )  # noqa: leading-underscore  # SGLang BeamCoordinator counter
+
+    def abort_group(self, req: Req) -> None:
+        """End req's group outside the commit path; call it before the leader's own KV is released.
+
+        It frees the member rows and the decode KV the rows share (both read the leader's KV lengths), then retires the group.
+        """
+        group = req.beam_group
+        if group is None or group.retired:
+            return
+        else:
+            pass
+        self._free_member_rows(  # noqa: leading-underscore  # SGLang BeamCoordinator helper
+            group
+        )
+        self.retire_group(req)
 
     def beam_request_error(self, req: Req, settings: BeamSearchSettings) -> str | None:
         """Why req cannot run as a beam request on this server, or None."""
@@ -513,10 +580,12 @@ def install_encoder_beam_tail() -> None:
 
 
 __all__ = [
+    "BeamPrefillAdder",
     "OmniBeamCoordinator",
     "OmniBeamGroup",
     "beam_hypotheses",
     "install_encoder_beam_tail",
     "select_beam_candidates",
     "select_final_beam_candidates",
+    "strip_encoder_beam_tail",
 ]

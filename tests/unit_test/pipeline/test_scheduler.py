@@ -50,6 +50,7 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.admission import (
+    AdminDroppedRequestError,
     ContextExhaustedError,
     QueueFullError,
     SessionCapacityExhaustedError,
@@ -868,6 +869,7 @@ def retractable_request(
         omni_data=SGLangARRequestData(),
         time_stats=SimpleNamespace(set_wait_queue_entry_time=lambda: None),
         finished=lambda: is_finished,
+        beam_group=None,
     )
 
 
@@ -882,6 +884,7 @@ class RunningBatchStub:
     batch_is_full: bool = True
     hisparse_coordinator: None = None
     forward_mode: ForwardMode = ForwardMode.DECODE
+    beam_tail: None = None
 
     def is_empty(self) -> bool:
         return not self.reqs
@@ -980,6 +983,45 @@ def test_retract_releases_and_requeues_each_unfinished_request_once(
     assert not scheduler.running_batch.batch_is_full
     assert scheduler.last_batch is None
     assert scheduler.chunked_req is None
+
+
+def test_retract_pause_ends_beam_requests_and_requeues_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A beam group cannot be requeued, so a retracting pause ends it as an admin drop."""
+    greedy_request = retractable_request("greedy")
+    beam_request = retractable_request("beam")
+    beam_request.beam_group = SimpleNamespace()
+    scheduler, released_batches = retract_scheduler(
+        monkeypatch,
+        running_requests=[greedy_request, beam_request],
+        last_batch=None,
+        chunked_request=None,
+    )
+    aborted: list[tuple[str, bool]] = []
+    errors: list[tuple[str, Exception]] = []
+    stripped: list[RunningBatchStub] = []
+    scheduler.abort = lambda request_id, *, defer_running_cleanup: aborted.append(
+        (request_id, defer_running_cleanup)
+    )
+    scheduler.emit_request_error = lambda request_id, error: errors.append(
+        (request_id, error)
+    )
+    monkeypatch.setattr(
+        omni_scheduler_module, "strip_encoder_beam_tail", stripped.append
+    )
+    running_batch = scheduler.running_batch
+
+    assert OmniScheduler.retract_running_requests(scheduler) == 1
+
+    assert aborted == [("beam", False)]
+    assert [(request_id, type(error)) for request_id, error in errors] == [
+        ("beam", AdminDroppedRequestError)
+    ]
+    assert released_batches == [[greedy_request]]
+    assert scheduler.waiting_queue == [greedy_request]
+    assert len(stripped) == 1 and stripped[0] is running_batch
+    assert running_batch.reqs == []
 
 
 def test_retract_takes_only_the_running_batch_after_a_decode_step(
@@ -1618,6 +1660,50 @@ def test_omni_scheduler_abort_propagates_immediate_kv_cleanup_failure(
         scheduler.abort("req-fail", defer_running_cleanup=False)
 
     assert batch.reqs == [req]
+    assert req.finished_reason.to_json()["type"] == "abort"
+
+
+def test_immediate_abort_frees_a_beam_group_before_the_leader_kv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Freeing the member rows reads the leader's KV lengths, so the group goes first."""
+    events: list[str] = []
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "release_kv_cache",
+        lambda req, _cache, *, checkpoint: events.append(f"release {req.rid}"),
+    )
+    scheduler = object.__new__(OmniScheduler)
+    scheduler.abort_callback = None
+    scheduler.aborted_request_ids = set()
+    scheduler.aborted_request_id_order = deque()
+    scheduler.pending_stream_ingress = {}
+    scheduler.deferred_request_payloads = {}
+    scheduler.dirty_deferred_request_ids = set()
+    scheduler.first_emit_done = set()
+    scheduler.prefill_start_done = set()
+    scheduler.prefill_end_done = set()
+    scheduler.inbox = Queue()
+    scheduler.waiting_queue = []
+    scheduler.tree_cache = object()
+    scheduler.beam_coordinator = SimpleNamespace(
+        abort_group=lambda req: events.append(f"abort group {req.rid}")
+    )
+    req = make_abortable_req(
+        "beam-req",
+        omni_data=SimpleNamespace(),
+        kv=ReqKvInfo(req_pool_idx=1),
+        beam_group=SimpleNamespace(),
+    )
+    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    init_sync_request_build_state(scheduler)
+
+    scheduler.abort("beam-req", defer_running_cleanup=False)
+
+    assert events == ["abort group beam-req", "release beam-req"]
     assert req.finished_reason.to_json()["type"] == "abort"
 
 
