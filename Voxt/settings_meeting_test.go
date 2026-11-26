@@ -130,6 +130,7 @@ func TestMeetingCorrectionStyleSettings(t *testing.T) {
 // choosing and removing one there wrote to Transcribe's shortcuts instead,
 // so a meeting never got one and a dictation shortcut changed. A second
 // Add a shortcut takes another free preset: the meeting's own count too.
+// Keys another of the meeting's shortcuts has are refused.
 func TestMeetingSettingsShortcuts(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
@@ -167,6 +168,31 @@ func TestMeetingSettingsShortcuts(t *testing.T) {
 		t.Fatalf("meeting shortcuts after choosing %s: %+v", chosen, hs)
 	}
 	keepsTranscribe("Choosing a preset")
+
+	// Shortcut 2's keys for shortcut 1, chosen or typed, are refused: only
+	// one of the two could work. The row shows its saved keys again.
+	before := saved().Meeting.Hotkeys
+	taken := before[1].Keys
+	for _, give := range []func(){
+		func() {
+			a.fui(hotkey.Meeting).rows[0].sel = uitext.HotkeyText(taken)
+			a.chooseFeatureShortcut(hotkey.Meeting, 0, taken)
+		},
+		func() { a.saveFeatureShortcutKeys(hotkey.Meeting, 0, taken) },
+	} {
+		a.toasts = nil
+		give()
+		if want := "Shortcut 2 already uses these keys."; !slices.Equal(a.toasts, []string{want}) {
+			t.Fatalf("notices %q, want %q", a.toasts, want)
+		}
+		frames(tt)
+		if hs := saved().Meeting.Hotkeys; !slices.Equal(hs, before) {
+			t.Fatalf("meeting shortcuts after giving shortcut 1 the keys of shortcut 2: %+v, want %+v", hs, before)
+		}
+		if got := a.fui(hotkey.Meeting).rows[0].sel; got != uitext.HotkeyText(chosen) {
+			t.Fatalf("shortcut 1's row shows %q, want its saved %q", got, uitext.HotkeyText(chosen))
+		}
+	}
 
 	click(t, tt, "Remove shortcut 1")
 	frames(tt)

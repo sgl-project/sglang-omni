@@ -161,7 +161,42 @@ func (a *app) addFeatureShortcut(feature string) {
 	})
 }
 
+// refuseSameKeys keeps feature's index-th shortcut as it is when keys are
+// another of its shortcuts' keys, whatever the trigger (Check's duplicate:
+// only one of the two could work): the row shows its saved keys again and
+// a notice names the shortcut that has them.
+func (a *app) refuseSameKeys(feature string, index int, keys string) bool {
+	other := sameKeysAs(hotkey.HotkeysOf(a.prefs.Features, feature), index, keys)
+	if other < 0 {
+		return false
+	}
+	a.fui(feature).seen = "" // featureSync rebuilds the rows from the settings
+	a.toast(i18n.T("Shortcut %d already uses these keys.", other+1))
+	return true
+}
+
+// sameKeysAs is the index of the first of hotkeys other than index whose
+// keys overlap keys, or -1.
+func sameKeysAs(hotkeys []settings.Hotkey, index int, keys string) int {
+	chord, err := hotkey.Parse(keys)
+	if err != nil {
+		return -1
+	}
+	for i, h := range hotkeys {
+		if i == index {
+			continue
+		}
+		if c, err := hotkey.Parse(h.Keys); err == nil && c.Overlaps(chord) {
+			return i
+		}
+	}
+	return -1
+}
+
 func (a *app) chooseFeatureShortcut(feature string, index int, keys string) {
+	if a.refuseSameKeys(feature, index, keys) {
+		return
+	}
 	local := a.fui(feature)
 	if index < len(local.rows) {
 		local.rows[index].custom, local.rows[index].text = false, keys
@@ -196,6 +231,9 @@ func (a *app) removeFeatureShortcut(feature string, index int) {
 }
 
 func (a *app) saveFeatureShortcutKeys(feature string, index int, keys string) {
+	if a.refuseSameKeys(feature, index, keys) {
+		return
+	}
 	a.setHotkeys(feature, false, func(hotkeys []settings.Hotkey) []settings.Hotkey {
 		if index < len(hotkeys) {
 			hotkeys[index].Keys = keys
