@@ -123,7 +123,7 @@ func hasUniqueColumn(ctx context.Context, db *sqlite.DB, table, column string) (
 		return false, err
 	}
 	for _, r := range indexes.Values {
-		if asInt(r[2]) != 1 { // 1 = unique
+		if asInt(r[2]) != 1 || asInt(r[4]) != 0 { // unique, not partial
 			continue
 		}
 		cols, err := db.Query(ctx, fmt.Sprintf("PRAGMA index_info(%q)", asString(r[1])))
