@@ -834,6 +834,32 @@ def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> Non
     reason="set NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST",
 )
 @pytest.mark.parametrize("draft_repo", [None, DRAFT_REPO], ids=["greedy", "dflash"])
+def test_prefixed_segment_final_preserves_output_with_rollback_guesses(
+    draft_repo: str | None,
+) -> None:
+    assert AUTO_LANGUAGE_TEST_BIN is not None
+    draft_directory = (
+        model_directory(draft_repo) if draft_repo is not None else Path("-")
+    )
+    subprocess.run(
+        [
+            AUTO_LANGUAGE_TEST_BIN,
+            str(model_directory()),
+            str(draft_directory),
+            str(clip_path("0098_en_mid")),
+            "rollback_guess_parity",
+            str(clip_path("0108_en_mid")),
+        ],
+        check=True,
+        timeout=MODEL_TEST_TIMEOUT_SECONDS,
+    )
+
+
+@pytest.mark.skipif(
+    not AUTO_LANGUAGE_TEST_BIN,
+    reason="set NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST",
+)
+@pytest.mark.parametrize("draft_repo", [None, DRAFT_REPO], ids=["greedy", "dflash"])
 def test_an_incorrect_auto_language_guess_does_not_replace_final_output(
     draft_repo: str | None,
 ) -> None:
