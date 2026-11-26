@@ -400,7 +400,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     def setup_model_resources(
         self,
         model: WhisperForConditionalGeneration | None,
-        server_args: object,
+        server_args: ServerArgs,
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
