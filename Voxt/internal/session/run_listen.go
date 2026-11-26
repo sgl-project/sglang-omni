@@ -117,7 +117,7 @@ func (r *run) listen() (string, bool) {
 	}
 	var (
 		word     string
-		heard    chan string
+		heard    chan heardText
 		said     string
 		endPause <-chan time.Time
 		quiet    bool // the user is silent
@@ -130,12 +130,12 @@ func (r *run) listen() (string, bool) {
 		}
 		r.startHead()
 		if word = r.endWord(); word != "" || r.head.enabled {
-			heard = make(chan string, 1)
+			heard = make(chan heardText, 1)
 			r.heard, r.silent = heard, make(chan bool, 1)
 		}
 		ch := make(chan openResult, 1)
 		go func() {
-			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult, EarlyPieces: r.earlyPieces()})
+			s, err := st.Open(r.ctx, asr.StreamRequest{SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), LiveResult: r.settings.Audio.LiveResult, EarlyPieces: r.earlyPieces(), LatePartials: r.head.enabled})
 			ch <- openResult{s, err}
 		}()
 		return ch
@@ -205,7 +205,11 @@ func (r *run) listen() (string, bool) {
 				return "", false
 			}
 			early = &e // a final before the end: kept for the end
-		case text := <-heard:
+		case update := <-heard:
+			if update.candidate {
+				continue
+			}
+			text := update.text
 			if text != said {
 				said, endPause = text, nil
 				if _, ends := withoutEndWord(text, word); ends {
@@ -229,7 +233,10 @@ func (r *run) listen() (string, bool) {
 			r.stopRecording()
 		case <-stopCh:
 			select {
-			case said = <-heard:
+			case update := <-heard:
+				if !update.candidate {
+					said = update.text
+				}
 			default:
 			}
 			r.head.ask(said)
@@ -335,16 +342,14 @@ func (r *run) listen() (string, bool) {
 				return "", false
 			}
 		}
-		silent := false
-		switch {
-		case early != nil:
+		var silent bool
+		if early != nil {
 			res, silent = early.res, early.silent
-		default:
-			select {
-			case e := <-finals:
-				res, err, silent = e.res, e.err, e.silent
-			case <-actx.Done():
-				err = r.ctxErr(actx)
+		} else {
+			end, waitErr := r.waitFinal(actx, finals, heard)
+			res, err, silent = end.res, end.err, end.silent
+			if waitErr != nil {
+				err = waitErr
 			}
 		}
 		if err != nil {

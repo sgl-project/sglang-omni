@@ -107,9 +107,8 @@ type run struct {
 	// typed is Rewrite's typed text: StartRequest.Text's, or the input
 	// box's (Config.BoxInput) when the answer is asked for.
 	typed string
-	// heard takes the stream's live texts to the recording loop while it
-	// listens for the end word (endword.go); nil otherwise.
-	heard chan string
+	// note (chenye): heard carries latest whole-text updates to the session owner; candidates are advisory and do not update the UI.
+	heard chan heardText
 	// svcResolved is closed when the session's services are resolved
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
 	svcResolved chan struct{}

@@ -65,6 +65,11 @@ func (s *live) finalPass(pcm []byte) {
 		}
 	}
 	took := time.Since(start)
+	if err != nil {
+		s.mu.Lock()
+		s.lateCandidates = false
+		s.mu.Unlock()
+	}
 	s.logFinal(pcm, done, len(texts), busy, took, err)
 	if err != nil {
 		if s.ctx.Err() != nil {

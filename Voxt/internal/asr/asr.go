@@ -110,6 +110,8 @@ type StreamRequest struct {
 	Lang       string // a language hint, "" detects
 	Hints      []string
 	Prompt     string
+	// note (chenye): LatePartials requests advisory whole-text candidates while an authoritative Final runs.
+	LatePartials bool
 	// LiveResult asks for the live text as the result, without a second
 	// pass over the whole recording at Finish, where the model makes one
 	// (settings.Audio.LiveResult); the others ignore it.
@@ -132,12 +134,13 @@ type Streamer interface {
 
 // Stream is one recognition session.
 //
-// Send and Finish are called from one goroutine (the session's); Close
-// from any. Events delivers EventPartial while audio comes in, then
-// exactly one EventFinal or EventError, then closes. A stream that
-// finalises stretches of the recording while it continues may deliver
-// EventPiece before them. ctx of Open bounds the whole
-// stream: cancelling it ends the stream with a KindCancelled Error.
+// note (chenye): Send and Finish are called from one goroutine (the session's);
+// Close may be called from any goroutine. Events delivers EventPartial while
+// audio comes in, then optionally EventCandidate while an opted-in authoritative
+// Final runs, followed by exactly one EventFinal or EventError, then closes. A
+// stream that finalises stretches of the recording while it continues may
+// deliver EventPiece before them. ctx of Open bounds the whole stream:
+// cancelling it ends the stream with a KindCancelled Error.
 type Stream interface {
 	// Send sends PCM16LE mono audio at the request's sample rate, any
 	// length (the stream frames it as its speech model wants). It may
@@ -175,6 +178,8 @@ const (
 	// prefix of the EventFinal's text), as EventPartial's is the whole
 	// hypothesis. Never the last event.
 	EventPiece
+	// note (chenye): EventCandidate is a whole provisional transcript for opted-in speculative work, never authoritative speech.
+	EventCandidate
 )
 
 func (k EventKind) String() string {
@@ -187,6 +192,8 @@ func (k EventKind) String() string {
 		return "error"
 	case EventPiece:
 		return "piece"
+	case EventCandidate:
+		return "candidate"
 	}
 	return "unknown"
 }
@@ -194,7 +201,8 @@ func (k EventKind) String() string {
 // Event is one event of a Stream.
 type Event struct {
 	Kind EventKind
-	Text string // EventPartial, EventFinal and EventPiece
+	// note (chenye): Text is the whole transcript for EventPartial, EventCandidate, EventFinal and EventPiece.
+	Text string
 	// Result is the final event's details (Text repeats there).
 	Result Result
 	Err    error // EventError

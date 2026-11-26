@@ -135,6 +135,49 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
+func TestLateCandidatesAreOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		request asr.StreamRequest
+		want    bool
+	}{
+		{"Qwen3-ASR opted in", kindQwen3ASR, asr.StreamRequest{LatePartials: true}, true},
+		{"Qwen3-ASR without opt-in", kindQwen3ASR, asr.StreamRequest{}, false},
+		{"other realtime model", kindNemotron, asr.StreamRequest{LatePartials: true}, false},
+		{"LiveResult", kindQwen3ASR, asr.StreamRequest{LatePartials: true, LiveResult: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := NewRuntime(Config{IdleTimeout: -1})
+			t.Cleanup(rt.Close)
+			proc := &process{}
+			server := newServer(rt, Spec{ID: "candidate-test"}, "", "")
+			server.proc, server.leases = proc, 1
+			stream := &live{
+				a: &ASR{spec: Spec{Kind: tc.kind}}, ctx: context.Background(), cancel: func() {},
+				l: &lease{s: server, p: proc}, events: make(chan asr.Event, eventBuffer), finished: true,
+				lateCandidates: wantsLateCandidates(tc.request, true, tc.kind),
+			}
+			if stream.lateCandidates != tc.want {
+				t.Fatalf("late candidate eligibility %v, want %v", stream.lateCandidates, tc.want)
+			}
+			stream.handleSegment(realtimeEvent{Index: 1, Segment: 0, Text: "late transcript"})
+			stream.end(asr.Event{Kind: asr.EventFinal, Text: "authoritative transcript"})
+			events := drain(t, stream)
+			if tc.want {
+				if len(events) != 2 || events[0].Kind != asr.EventCandidate || events[0].Text != "late transcript" {
+					t.Fatalf("candidate was not delivered before Final: %+v", events)
+				}
+			} else if len(events) != 1 {
+				t.Fatalf("ineligible candidate was emitted: %+v", events)
+			}
+			if last := events[len(events)-1]; last.Kind != asr.EventFinal || last.Text != "authoritative transcript" {
+				t.Fatalf("terminal event %+v", last)
+			}
+		})
+	}
+}
+
 // TestFinalPrior: the Final carries the preview's text and the session that
 // heard it. Without a language hint it carries no text (the model writes the
 // language first), and of a recording cut into chunks only the first carries
