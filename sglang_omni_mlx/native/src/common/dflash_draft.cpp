@@ -420,6 +420,8 @@ DraftStatistics DFlashDraft::Decode(
           ProposeBlock(target.EmbedTokens(mx::array(
                            block_ids.data(), {1, block_size_}, mx::int32)),
                        draft_caches);
+      // The draft runs while the target's verify pass is built.
+      mx::async_eval(proposed_ids);
       proposal_count = block_size_ - 1;
     }
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
