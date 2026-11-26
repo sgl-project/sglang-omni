@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
 
 ### Fixed
+- **Unlabeled diarized meeting transcripts no longer repeat a hallucinated phrase**: the final pass now collapses repetition loops when the speech model returns plain text without speaker segments, as it already does for plain and speaker-labeled results.
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
 
 ### 中文
@@ -20,6 +21,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Anthropic 列出当前的 Claude 模型，回答前不再先思考**（#4697）：模型菜单里的 Sonnet 4.6、Haiku 4.5 和 Opus 4.6 换成 Claude Haiku 5.5、Sonnet 5.5、Opus 5.5 和 Fable 5.2，默认用 Claude Haiku 5.5。Claude 的 5.5 系列不明确关掉就会在每次回答前思考，所以 Voxt 现在像对其他服务一样关掉思考：Sonnet 5.5 用它接受的写法关掉，Opus 5.5 和 Fable 5.2 始终会思考。沿用默认模型的设置会改用 Claude Haiku 5.5，自己选过的模型不变。
 
 #### 修复
+- **没有说话人标记的会议转写不再重复幻觉短语**：语音识别模型只返回纯文本、没有说话人片段时，最终转写现在也会折叠重复循环，与普通转写和带说话人标记的结果一致。
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
 
 ## [Unreleased]
