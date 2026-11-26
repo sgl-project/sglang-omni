@@ -99,7 +99,7 @@ func buildSettingsSoundsViewState(translator *i18n.Translator, input settingsSou
 			}
 			state.Pairs = append(state.Pairs, settingsSoundPairViewState{
 				Start: pair.start, Stop: pair.stop, Name: name,
-				Sounds:    translator.T("%s → %s", soundLabelWithTranslator(translator, input.Catalog, pair.start), soundLabelWithTranslator(translator, input.Catalog, pair.stop)),
+				Sounds:    pairSoundsWithTranslator(translator, input.Catalog, pair),
 				PlayLabel: playLabel, Chosen: chosen, Playing: playing, Remaining: remaining,
 			})
 		}
@@ -140,6 +140,18 @@ func buildSettingsSoundsViewState(translator *i18n.Translator, input settingsSou
 	selection := max(soundVolumes[len(soundVolumes)-1], sounds.NearestVolumeStep(input.Prefs.Volume))
 	state.VolumeSelection = fmt.Sprintf("%d%%", selection)
 	return state
+}
+
+// pairSoundsWithTranslator is the line beside a pair's name: what the two
+// sounds have in common when the catalogue says it (Voxt's cues: one
+// instrument, described once), else their names, start → stop.
+func pairSoundsWithTranslator(translator *i18n.Translator, catalog *sounds.Catalog, pair soundPair) string {
+	start, _ := catalog.Sound(pair.start)
+	stop, _ := catalog.Sound(pair.stop)
+	if desc := start.Desc.In(translator.Locale()); desc != "" && start.Desc == stop.Desc {
+		return desc
+	}
+	return translator.T("%s → %s", soundLabelWithTranslator(translator, catalog, pair.start), soundLabelWithTranslator(translator, catalog, pair.stop))
 }
 
 func soundSourceID(source soundSource) string {

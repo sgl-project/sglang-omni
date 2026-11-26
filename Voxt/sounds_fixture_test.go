@@ -5,6 +5,7 @@ import (
 	"testing/fstest"
 
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/cues"
 )
 
 // testSoundsFS is a catalogue of a few of the family's sounds (fake
@@ -29,14 +30,21 @@ func testSoundsFS() fstest.MapFS {
 	return fs
 }
 
+// testSounds is an official build's catalogue: Voxt's own cues and the
+// test's few family sounds.
+func testSounds() *sounds.Catalog {
+	cat, err := cues.Load(testSoundsFS(), "sounds")
+	if err != nil {
+		panic(err)
+	}
+	return cat
+}
+
 // useTestSounds gives a the test catalogue, a player that plays nothing
 // and macOS's system sounds.
 func useTestSounds(t testing.TB, a *app) {
 	t.Helper()
-	cat, err := sounds.Load(testSoundsFS(), "sounds")
-	if err != nil {
-		t.Fatal(err)
-	}
+	cat := testSounds()
 	a.soundCat = cat
 	a.cuePlayer = sounds.NewPlayer(cat, sounds.Silent{})
 	a.sysSounds, a.sysRead = sounds.KnownSystemSounds, true

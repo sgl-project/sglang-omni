@@ -23,13 +23,42 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// trTester is the test app on the Transcribe page, in a window tall
-// enough to show all of it.
+// featureViewTester renders the feature component on its own. Navigation
+// tests cover its Settings host; these tests cover every control at once.
+func featureViewTester(a *app) *ui.Tester {
+	var tt *ui.Tester
+	tt = ui.NewTester(func(c *ui.Context) {
+		a.mainUI = c.Services()
+		shellShortcuts(c, a.navModel(), a, &a.sheetOpen)
+		feature := strings.TrimPrefix(strings.TrimPrefix(a.shownPath(), "/settings/"), "/")
+		if feature == hotkey.Transcribe || feature == hotkey.Translate || feature == hotkey.Rewrite {
+			state, tryActions := a.featurePageModel(feature)
+			columnPageHeader(c, state.Title, nil)
+			ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
+				pageColumn(c).Gap(px(c.Theme(), sp3)).Children(func() {
+					featureSettings(c, &state, featurePackDownloads{a}, a.fui(feature), tryActions)
+				})
+			})
+			models := a.modelsPageModel()
+			modelDeleteDialogs(c, &models.Delete, a, &a.modelsLocalUI)
+		}
+		if a.keysHeard != a.keysListening {
+			a.keysListening = a.keysHeard
+			a.syncHotkeys()
+		}
+		a.keysHeard = false
+	}, windowWidth, 2400)
+	a.copyText = func(text string) error { tt.SetClipboard(text); return nil }
+	return tt
+}
+
+// trTester is the test app on Transcribe's Settings section, in a window
+// tall enough to show all of it.
 func trTester(t *testing.T) (*app, *ui.Tester) {
 	t.Helper()
-	a, _, tt := newTestApp(t)
-	tt.SetSize(windowWidth, 2400)
+	a, _, _ := newTestApp(t)
 	a.navigate("/transcribe")
+	tt := featureViewTester(a)
 	frames(tt)
 	return a, tt
 }
@@ -201,11 +230,12 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 // TestFeatureModelControls: each feature manages its speech model where it
 // picks one, from the first download through deletion and download progress.
 // System dictation does not hide the first download or replace installed or
-// configured models' controls.
+// configured models' controls. With no speech model installed the download
+// is the guide's recommendation, MOSS-Transcribe-Diarize (#4069).
 func TestFeatureModelControls(t *testing.T) {
 	a, tt := trTester(t)
 	a.local = onlyDictation{&fakeLocal{}}
-	const download = "Download Qwen3-ASR 1.7B (8bit)"
+	const download = "Download MOSS-Transcribe-Diarize"
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		a.navigate("/" + feature)
 		frames(tt)
@@ -224,10 +254,10 @@ func TestFeatureModelControls(t *testing.T) {
 	if a.models.Installed(models.ASRAccurate) || !slices.Contains(tt.AccessLabels(), download) {
 		t.Error("the deleted model does not offer its download again")
 	}
-	m, _ := models.Lookup(models.ASRAccurate)
+	m, _ := models.Lookup(models.ASRMoss)
 	a.modelStatus[m.ID] = models.Status{Downloading: true, Done: m.Size() / 2, Total: m.Size()}
 	frames(tt)
-	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
+	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading MOSS-Transcribe-Diarize") {
 		t.Errorf("download progress: %q", tt.Texts())
 	}
 
@@ -241,6 +271,61 @@ func TestFeatureModelControls(t *testing.T) {
 	})
 	if status := a.featureModelStatus(local.ASR, hotkey.Transcribe, "openai"); status.Model != nil || status.Service == nil {
 		t.Errorf("configured remote speech service lost its controls: %+v", status)
+	}
+}
+
+// TestFeatureModelRecommendedDownload: a fresh install (System dictation
+// only) sees the guide's recommendation beside Transcribe's and
+// Translate's pickers, and its inline Download fetches the recommended
+// model's catalogue draft too, so Faster transcription is on from the
+// first download (#4069).
+func TestFeatureModelRecommendedDownload(t *testing.T) {
+	countingHub(t)
+	a, tt := trTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	a.local = onlyDictation{&fakeLocal{}}
+	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate} {
+		a.navigate("/" + feature)
+		frames(tt)
+		if !slices.Contains(tt.AccessLabels(), "Download MOSS-Transcribe-Diarize") {
+			t.Fatalf("%s does not recommend MOSS-Transcribe-Diarize: %q", feature, tt.AccessLabels())
+		}
+		if !has(tt, "MOSS-Transcribe-Diarize · 2.1 GB download") {
+			t.Errorf("%s labels the pack's size, not the speech model's alone: %q", feature, tt.Texts())
+		}
+	}
+	click(t, tt, "Download MOSS-Transcribe-Diarize")
+	downloadAsked(t, a, drain, models.ASRMoss)
+	downloadAsked(t, a, drain, models.ASRMossDraft)
+	if s := a.models.Status(models.ASRAccurate); s.Err != nil || s.Downloading {
+		t.Errorf("Qwen3-ASR downloaded too: %+v", s)
+	}
+}
+
+// TestFeatureModelRecommendedUnsupported: a main language
+// MOSS-Transcribe-Diarize does not know keeps the Qwen3-ASR
+// recommendation, and its inline Download fetches Qwen's draft too.
+func TestFeatureModelRecommendedUnsupported(t *testing.T) {
+	countingHub(t)
+	a, tt := trTester(t)
+	drain := queuePosts(a)
+	reopenModels(a)
+	a.local = onlyDictation{&fakeLocal{}}
+	a.updateSettings(func(s *settings.Settings) { s.General.MainLanguage = "ja" })
+	a.navigate("/transcribe")
+	frames(tt)
+	if !slices.Contains(tt.AccessLabels(), "Download Qwen3-ASR 1.7B (8bit)") {
+		t.Fatalf("an unsupported main language does not keep Qwen3-ASR: %q", tt.AccessLabels())
+	}
+	if !has(tt, "Qwen3-ASR 1.7B (8bit) · 3.2 GB download") {
+		t.Errorf("the pack's size, not the speech model's alone: %q", tt.Texts())
+	}
+	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
+	downloadAsked(t, a, drain, models.ASRAccurate)
+	downloadAsked(t, a, drain, models.ASRAccurateDraft)
+	if s := a.models.Status(models.ASRMoss); s.Err != nil || s.Downloading {
+		t.Errorf("MOSS-Transcribe-Diarize downloaded too: %+v", s)
 	}
 }
 
@@ -353,19 +438,22 @@ func TestTranslateFallbackModel(t *testing.T) {
 // what is typed, the preview fills its variables, Reset clears it, a
 // change elsewhere shows, and long rules fill a tall field.
 func TestTranscribeRules(t *testing.T) {
-	a, tt := trTester(t)
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/transcribe")
+	frames(tt)
 	if has(tt, "{{USER_MAIN_LANGUAGE}}") || has(tt, "What the language model receives") {
 		t.Fatal("Your rules are open at first")
 	}
-	click(t, tt, "Your rules")
-	click(t, tt, "System prompt for Transcribe")
+	clickPrompt(t, tt, "Your rules")
+	clickPrompt(t, tt, "System prompt for Transcribe")
 	tt.Type("Write {{USER_MAIN_LANGUAGE}} numbers as digits.")
 	frames(tt)
 	if !a.fui(hotkey.Transcribe).promptDirty {
 		t.Fatal("not dirty after typing")
 	}
 	// Leaving the field saves it.
-	click(t, tt, "What the language model receives")
+	clickPrompt(t, tt, "What the language model receives")
 	if p := a.lib.settings.Get().Features.Transcribe.Prompt; !strings.Contains(p, "Write {{USER_MAIN_LANGUAGE}} numbers as digits.") {
 		t.Fatalf("prompt %q", p)
 	}
@@ -373,7 +461,7 @@ func TestTranscribeRules(t *testing.T) {
 	if !a.fui(hotkey.Transcribe).preview {
 		t.Errorf("preview not open")
 	}
-	click(t, tt, "Reset to default prompt")
+	clickPrompt(t, tt, "Reset to default prompt")
 	if p := a.lib.settings.Get().Features.Transcribe.Prompt; p != "" {
 		t.Fatalf("reset settings: %q", p)
 	}
@@ -395,11 +483,18 @@ func TestTranscribeRules(t *testing.T) {
 	}
 }
 
+func clickPrompt(t *testing.T, tt *ui.Tester, label string) {
+	t.Helper()
+	scrollSettingsToText(tt, label)
+	click(t, tt, label)
+}
+
 // clickSwitch clicks the switch of the setting row titled title: at
 // the row's right end (the switch has the title as its label too, and a
 // click on a label finds the title's text first).
 func clickSwitch(t *testing.T, tt *ui.Tester, title string) {
 	t.Helper()
+	scrollSettingsToText(tt, title)
 	frames(tt)
 	r, ok := tt.Find(title)
 	if !ok {
@@ -575,7 +670,9 @@ func TestTranscribeFullPage(t *testing.T) {
 func TestSectionTitleAdd(t *testing.T) {
 	for _, size := range [][2]int{{windowWidth, windowHeight}, {windowMinWidth, windowMinHeight}} {
 		for _, lang := range []string{"en", "zh-Hans"} {
-			a, _, tt := newTestApp(t)
+			a, _, _ := newTestApp(t)
+			a.navigate("/transcribe")
+			tt := featureViewTester(a)
 			tt.SetSize(size[0], size[1])
 			if lang != "en" {
 				a.updateSettings(func(s *settings.Settings) { s.General.Language = lang })
@@ -607,6 +704,10 @@ func TestSectionTitleAdd(t *testing.T) {
 				a.navigate(p)
 				check("Shortcuts", "Add a shortcut", i18n.T("Remove shortcut %d", 1))
 			}
+			a, _, tt = newTestApp(t)
+			if lang != "en" {
+				a.updateSettings(func(s *settings.Settings) { s.General.Language = lang })
+			}
 			a.setRules(sampleRules())
 			a.navigate("/app-enhancement")
 			a.aeUI.sel = "g-chat"
@@ -621,7 +722,9 @@ func TestSectionTitleAdd(t *testing.T) {
 // user did not want the two columns a wide window had, #3644 FB16).
 func TestFeaturePageColumns(t *testing.T) {
 	for _, c := range []struct{ w, h int }{{1600, 2400}, {windowWidth, 2400}} {
-		a, _, tt := newTestApp(t)
+		a, _, _ := newTestApp(t)
+		a.navigate("/transcribe")
+		tt := featureViewTester(a)
 		tt.SetSize(c.w, c.h)
 		for _, page := range []string{"/transcribe", "/translate", "/rewrite"} {
 			a.navigate(page)

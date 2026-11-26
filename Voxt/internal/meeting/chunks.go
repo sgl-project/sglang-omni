@@ -26,8 +26,11 @@ type ChunkParams struct {
 // DefaultChunkParams matches the approved design defaults.
 func DefaultChunkParams() ChunkParams {
 	return ChunkParams{
-		Rate:        asr.SampleRate,
-		MaxDur:      22 * time.Second,
+		Rate: asr.SampleRate,
+		// Every request carries a fixed latency floor, so a short cap taxes
+		// pause-poor meetings once per cap; 60 s stays under the runtime's
+		// own per-request limit while merging most capped chunks.
+		MaxDur:      60 * time.Second,
 		MinDur:      600 * time.Millisecond,
 		PauseMin:    850 * time.Millisecond,
 		Pad:         120 * time.Millisecond,

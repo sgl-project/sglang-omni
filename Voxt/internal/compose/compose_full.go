@@ -60,6 +60,7 @@ func buildFullPrompt(in Input, set string, vars, flags map[string]string, full s
 		if !strings.Contains(full, intro) && !strings.Contains(full, body) {
 			add("example", example)
 		}
+		add("custom-cleanup", render("cleanup-custom", nil))
 	}
 	out.System, out.Layers, out.Dictionary = strings.Join(parts, "\n\n"), layers, dictionary
 	if in.Task == Rewrite {

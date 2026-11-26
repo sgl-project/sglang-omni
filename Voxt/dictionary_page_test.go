@@ -57,6 +57,15 @@ func dictTester(t *testing.T) (*app, *ui.Tester) {
 	return a, tt
 }
 
+func chooseDictionaryMenuItem(t *testing.T, tester *ui.Tester, label string) {
+	t.Helper()
+	clickControl(t, tester, i18n.T("More actions"))
+	if err := tester.ChooseMenuItem(label); err != nil {
+		t.Fatal(err)
+	}
+	frames(tester)
+}
+
 func terms(t *testing.T, a *app) []store.Term {
 	t.Helper()
 	ts, err := a.lib.store.Dictionary().List(context.Background(), "")
@@ -150,6 +159,54 @@ func TestDictionarySettingsTips(t *testing.T) {
 		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms))
 }
 
+func TestDictionaryControlExplanations(t *testing.T) {
+	english := []string{
+		"Terms go to the speech model as words to expect.",
+		fmt.Sprintf("The language model writes terms as spelled here. With more than %d terms, it uses only those in the text, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms),
+		fmt.Sprintf("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds),
+	}
+	chinese := []string{
+		"让语音识别更容易认出这些词。",
+		fmt.Sprintf("语言模型会按这里的写法输出词条。词条超过 %d 个时，只用文中出现的，最多 %d 个。", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms),
+		fmt.Sprintf("插入后的 %d 秒内，Voxt 会读取插入处附近的文字。你改了某个词，它会建议加入词典。读到的内容不保存，也不发送。", learn.WatchSeconds),
+	}
+	for _, test := range []struct {
+		name          string
+		locale        string
+		dictionaryOff bool
+		want          []string
+	}{
+		{name: "English", locale: "en", want: english},
+		{name: "Chinese", locale: "zh-Hans", want: chinese},
+		{name: "available before enabling the dictionary", locale: "en", dictionaryOff: true, want: english},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, tt := dictTester(t)
+			i18n.SetLocale(test.locale)
+			frames(tt)
+			if test.dictionaryOff {
+				chooseDictionaryMenuItem(t, tt, i18n.T("Use the dictionary"))
+			}
+			helpLabel := ""
+			for _, label := range tt.AccessLabels() {
+				if strings.Contains(label, test.want[0]) {
+					helpLabel = label
+					break
+				}
+			}
+			if helpLabel == "" {
+				t.Fatalf("no Speech hints help in %q", tt.AccessLabels())
+			}
+			clickControl(t, tt, helpLabel)
+			for _, want := range test.want {
+				if !has(tt, want) {
+					t.Errorf("no %q in %q", want, firstTexts(tt))
+				}
+			}
+		})
+	}
+}
+
 func TestDictionarySearchAndSwitches(t *testing.T) {
 	a, tt := dictTester(t)
 	seedTerms(t, a)
@@ -169,14 +226,13 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if !has(tt, "No term matches “nothing”") {
 		t.Errorf("no empty search state %q", firstTexts(tt))
 	}
-	click(t, tt, "Dictionary settings")
-	clickControl(t, tt, "Speech hints")
-	clickControl(t, tt, "Glossary for the language model")
+	for _, label := range []string{"Speech hints", "Glossary for the language model"} {
+		chooseDictionaryMenuItem(t, tt, label)
+	}
 	if d := a.lib.settings.Get().Dictionary; d.ASRHints || d.Glossary || !d.Enabled {
 		t.Errorf("settings %+v", d)
 	}
-	clickControl(t, tt, "Use the dictionary")
-	click(t, tt, "Done")
+	chooseDictionaryMenuItem(t, tt, "Use the dictionary")
 	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off, so its terms are not used.") {
 		t.Error("dictionary still on")
 	}

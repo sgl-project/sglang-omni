@@ -88,6 +88,8 @@ func (m *Manager) Start(ctx context.Context, req StartRequest) (string, error) {
 		m.mu.Unlock()
 		return "", ErrBusy
 	}
+	// A timed-out track can outlive an interrupted meeting; it must not own the new archive or transcript.
+	m.tracks = map[Source]*track{}
 	started := m.cfg.Now()
 	id := core.NewID(started)
 	m.id = id
@@ -463,7 +465,10 @@ func (m *Manager) requireID(id string) error {
 }
 
 func (m *Manager) notify(s Snapshot) {
-	for _, fn := range m.subs {
+	m.mu.Lock()
+	subs := append([]func(Snapshot){}, m.subs...)
+	m.mu.Unlock()
+	for _, fn := range subs {
 		fn(s)
 	}
 }
