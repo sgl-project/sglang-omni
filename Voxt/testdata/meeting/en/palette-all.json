@@ -124,6 +124,11 @@
         "title": "Storage"
       },
       {
+        "id": "go/settings/experimental",
+        "group": "Settings",
+        "title": "Experimental"
+      },
+      {
         "id": "go/settings/about",
         "group": "Settings",
         "title": "About"

@@ -106,6 +106,9 @@ type sessionCardBlock struct {
 	Markdown bool `json:"markdown,omitempty"`
 	// Highlights are the dictionary words' byte ranges in Text (#4055).
 	Highlights []textHighlight `json:"highlights,omitempty"`
+	// Images: the pictures a user side sent, as indices into the card's
+	// input previews (the Rewrite card draws them over the bubble).
+	Images []int `json:"images,omitempty"`
 }
 
 // sessionCardProjectionInput contains the domain inputs used by the pure card builder.
@@ -128,6 +131,12 @@ type sessionCardProjectionInput struct {
 	SizeStep          int
 	BoxSessionID      string
 	BoxThumbnailCount int
+	// Chat lays a single answer out as a chat turn: the Rewrite card.
+	Chat bool
+	// LivePreviews are the pictures the live follow-up sends, after the card's.
+	LivePreviews []answerInputPreview
+	// Reveal is the part of the ended answer shown while it streams on.
+	Reveal string
 }
 
 func sessionCardAttachment(input sessionCardProjectionInput) (string, int) {
@@ -150,7 +159,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	}
 	if !card.open {
 		state := sessionCardViewState{SizeStep: input.SizeStep, Sessions: input.Sessions}
-		if input.Writing {
+		if input.Writing || input.Chat {
 			state.ID, state.Kind = snapshot.ID, string(snapshot.Kind)
 			state.Title = sessionCardTitleFor(translator, snapshot.Kind, snapshot.Title)
 			state.TargetName = snapshot.Target.Name
@@ -159,8 +168,8 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 			state.Busy, state.Writing, state.CanStopAnswer = true, true, snapshot.CanStop()
 			state.CanUseTranscript = snapshot.CanSkip
 			state.Attachment, state.ThumbnailCount = sessionCardAttachment(input)
-			state.Live[0] = sessionCardWritingBlock(input.ShownDraft, snapshot.Kind)
-			state.LiveCount = 1
+			state.Conversation = input.Chat
+			state.Live, state.LiveCount = buildSessionCardLiveTail(input, true)
 		} else if input.Empty {
 			// A session without a card: the session row and what to do next.
 			hint := translator.T("Nothing here yet. Start a Rewrite, Translate or Transcribe and it runs in this session.")
@@ -185,7 +194,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		Message:  card.msg, Why: card.why, TargetName: card.target.Name,
 		Language: lang, LanguageLabel: compose.LanguageName(lang, translator.Locale()),
 		Thinking: sessionThinkingValueOf(think), SizeStep: input.SizeStep,
-		Busy: input.Own, Conversation: card.conversation || follow, Failed: card.problem != nil,
+		Busy: input.Own, Conversation: card.conversation || follow || input.Chat, Failed: card.problem != nil,
 		Copied: card.copied, CanCopy: card.text != "",
 		CanInsert:   card.problem == nil && card.text != "" && !input.Own,
 		CanLanguage: card.kind == store.KindTranslate && card.problem == nil && !snapshot.State.Live(),
@@ -218,7 +227,7 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 		state.ProblemCode = card.problem.Code
 	}
 	thinkingLevels := thinkLevels(input.ThinkingProvider)
-	state.ShowThinking = card.problem == nil && !state.Conversation && len(card.turns) <= 1 && len(thinkingLevels) > 1
+	state.ShowThinking = card.problem == nil && !card.conversation && !follow && len(card.turns) <= 1 && len(thinkingLevels) > 1
 	state.CanThink = state.ShowThinking && !snapshot.State.Live()
 	if state.ShowThinking {
 		state.ThinkingLabel = thinkButtonTextFor(translator, think, input.Generation)
@@ -242,10 +251,13 @@ func buildSessionCardViewState(translator *i18n.Translator, input sessionCardPro
 	} else if !state.Conversation && !state.Writing {
 		state.Blocks = []sessionCardBlock{sessionCardBodyBlock(card)}
 	} else if input.Answer.kind != store.KindRewrite || !sessionCardRedoWriting(input) {
-		state.Blocks = sessionCardConversationBlocks(card)
+		state.Blocks = sessionCardConversationBlocks(card, input.Chat)
 		state.Recording = follow && snapshot.State == session.Recording
 		state.Heard = !snapshot.HeardAt.IsZero()
 		copySessionLevels(&state.Levels, snapshot.Levels)
+	}
+	if last := len(state.Blocks) - 1; input.Reveal != "" && last >= 0 && !state.Blocks[last].User {
+		state.Blocks[last].Text, state.Blocks[last].Live, state.Blocks[last].Selectable = strings.TrimSpace(input.Reveal), true, false
 	}
 	state.Live, state.LiveCount = buildSessionCardLiveTail(input, follow)
 	if state.Conversation && card.problem != nil && state.Message == "" {
@@ -294,71 +306,6 @@ func sessionCardFailureBlocks(translator *i18n.Translator, card answerCard) []se
 		blocks = append(blocks, sessionCardBlock{Key: "source-last", Kind: sessionCardSource, Text: strings.TrimSpace(source), Selectable: true})
 	}
 	return blocks
-}
-
-func sessionCardConversationBlocks(card answerCard) []sessionCardBlock {
-	blocks := make([]sessionCardBlock, 0, 2*len(card.turns)+1)
-	for turn, answer := range card.turns {
-		if user, ok := sessionCardUserBlock(card.ui.quotesOpen, turn, answer.Instruction, answer.Selection, false); ok {
-			blocks = append(blocks, user)
-		}
-		blocks = append(blocks, sessionCardAnswerBlock(sessionCardTurnKey(turn, "answer"), answer.Answer.Title, answer.Answer.Content, false))
-	}
-	if card.problem != nil {
-		if user, ok := sessionCardUserBlock(card.ui.quotesOpen, len(card.turns), card.input.Raw, card.input.Selection, false); ok {
-			blocks = append(blocks, user)
-		}
-	}
-	return blocks
-}
-
-func buildSessionCardLiveTail(input sessionCardProjectionInput, follow bool) ([2]sessionCardBlock, int) {
-	var live [2]sessionCardBlock
-	if !input.Answer.open {
-		if input.Writing {
-			live[0] = sessionCardWritingBlock(input.ShownDraft, input.Snapshot.Kind)
-			return live, 1
-		}
-		return live, 0
-	}
-	if sessionCardRedoWriting(input) {
-		live[0] = sessionCardWritingBlock(input.ShownDraft, input.Answer.kind)
-		return live, 1
-	}
-	if !follow {
-		return live, 0
-	}
-	snapshot := input.Snapshot
-	shownDraft := input.ShownDraft
-	if input.HideLiveText {
-		snapshot.Partial, snapshot.Draft, shownDraft = "", "", ""
-	}
-	count := 0
-	said := cmpOr(strings.TrimSpace(snapshot.Raw), strings.TrimSpace(snapshot.Partial))
-	if user, ok := sessionCardUserBlock(input.Answer.ui.quotesOpen, len(input.Answer.turns), said, snapshot.Selection, true); ok {
-		user.Preview = strings.TrimSpace(snapshot.Raw) == "" && strings.TrimSpace(snapshot.Partial) != ""
-		live[0], count = user, 1
-	}
-	if snapshot.State != session.Recording {
-		live[count] = sessionCardAnswerBlock(sessionCardLiveAnswerKey, snapshot.Title, shownDraft, true)
-		count++
-	}
-	return live, count
-}
-
-// sessionCardUserBlock is a turn's user side; it has no heading, its side and fill say whose it is.
-func sessionCardUserBlock(quotesOpen map[int]bool, turn int, said, selection string, live bool) (sessionCardBlock, bool) {
-	block := sessionCardBlock{Key: sessionCardTurnKey(turn, "user"), Kind: sessionCardBubble, Turn: turn,
-		Text: strings.TrimSpace(said), Live: live, User: true, Selectable: !live}
-	if turn > 0 {
-		block.FullQuote = strings.TrimSpace(selection)
-		block.Open = quotesOpen[turn]
-		block.Quote, block.Cut = quoteText(selection, block.Open)
-	}
-	if block.Text == "" {
-		block.Text = "…"
-	}
-	return block, strings.TrimSpace(said) != "" || block.Quote != ""
 }
 
 // sessionCardRedoWriting says whether an answer asked again (another
@@ -442,7 +389,8 @@ type sessionCardProjectionKey struct {
 	generationThinking, generationEffort  string
 	generationBudget, sizeStep, turnCount int
 	followKeys                            string
-	own, writing, hideLiveText            bool
+	own, writing, hideLiveText, chat      bool
+	reveal                                string
 	canFollowUp, copied, conversation     bool
 	copyKey, insertKey                    bool
 	sessions                              string
@@ -487,7 +435,7 @@ func sessionCardKeyFor(input sessionCardProjectionInput) sessionCardProjectionKe
 		canFollowUp: input.CanFollowUp, copied: card.copied, conversation: card.conversation, problemCode: problemCode,
 		copyKey: input.CopyKey, insertKey: input.InsertKey,
 		sessions: fmt.Sprint(input.Sessions), empty: input.Empty, keepsHistory: input.KeepsHistory,
-		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews), highlights: highlights,
+		redoWriting: sessionCardRedoWriting(input), attachment: attachment, thumbnailCount: thumbnailCount, inputCount: len(card.previews) + len(input.LivePreviews), highlights: highlights, chat: input.Chat, reveal: input.Reveal,
 	}
 }
 
@@ -512,8 +460,17 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 		SizeStep: a.prefs.Features.CardSize(string(kind)), BoxSessionID: a.boxSessionID(), BoxThumbnailCount: len(a.box.thumbs),
 	}
 	if !a.answer.open {
+		input.Chat = a.boxWriting() // the first turn, sent, above its answer
+		input.LivePreviews = a.boxLivePreviews(input)
 		return input
 	}
+	if a.box.open && a.box.shown && a.answer.kind == store.KindRewrite {
+		// The Rewrite card is a chat from its first answer on: the
+		// instruction above the answer, as every later turn shows.
+		input.Chat = true
+		input.LivePreviews = a.boxLivePreviews(input)
+	}
+	input.Reveal, _ = a.revealedAnswer()
 	input.FollowKeys = a.featureKeys(hotkey.Rewrite)
 	input.CanFollowUp = a.canFollowUp()
 	for _, binding := range hotkey.CardBindings(1, a.hotkeyPlan().Cancel) {
@@ -538,7 +495,7 @@ func (a *app) sessionCardProjectionInput() sessionCardProjectionInput {
 func (a *app) refreshSessionCardProjection(projection *sessionOverlayProjection, next *sessionOverlayViewState) {
 	input := a.sessionCardProjectionInput()
 	a.ov.ui.cardThumbs = input.Answer.ui.thumbs
-	a.ov.ui.cardPreviews = input.Answer.previews
+	a.ov.ui.cardPreviews = input.previews()
 	if !input.Answer.open && a.sess.ID == a.boxSessionID() {
 		a.ov.ui.cardThumbs = a.box.thumbs
 	}

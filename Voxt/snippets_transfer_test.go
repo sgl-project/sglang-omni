@@ -4,10 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 )
 
 // snippetsTester is the Snippets page, read.
@@ -33,9 +36,12 @@ func shownTriggers(a *app) []string {
 	return out
 }
 
-// TestSnippetsImport: Import reads a Wispr Flow export, skips what it
-// cannot use and says so; importing it again changes nothing, a file
-// that is not snippets says why.
+// TestSnippetsImport: Import… opens a dialog that shows what the file
+// looks like; choosing a Wispr Flow export there reads it, skips what it
+// cannot use, closes the dialog and says so in the middle of the page for
+// a moment; importing it again changes
+// nothing. A file that is not snippets, or has none Voxt can use, says why
+// in the dialog, which stays open.
 func TestSnippetsImport(t *testing.T) {
 	a, tt := snippetsTester(t)
 	dir := t.TempDir()
@@ -49,34 +55,111 @@ func TestSnippetsImport(t *testing.T) {
 	chooseSnippetsFile = func(a *app, then func(string)) { then(in) }
 
 	click(t, tt, "Import…")
+	if !has(tt, "Choose a .json file") || hasSubstring(tt, `"text": "zoom.us/j/123"`) {
+		t.Fatalf("the dialog, its format folded: %q", tt.Texts())
+	}
+	click(t, tt, "File format")
+	if !hasSubstring(tt, `"trigger": "my meeting link", "text": "zoom.us/j/123"`) {
+		t.Fatalf("the format opened: %q", tt.Texts())
+	}
+	click(t, tt, "Choose a .json file")
 	got := storedSnippets(t, a, tt, 3)
 	if got[0].Trigger != "my email address" || got[1].Text != "https://zoom.us/j/123" {
 		t.Errorf("stored %+v", got)
 	}
-	if want := "Imported snippets: 3 new, 0 updated, 1 skipped."; !slices.Contains(a.toasts, want) && !has(tt, want) {
-		t.Errorf("toasts %q", a.toasts)
+	want := "Imported snippets: 3 new, 0 updated, 1 skipped."
+	if !has(tt, want) || len(a.toasts) > 0 {
+		t.Errorf("the notice: shown %v, toasts %q", has(tt, want), a.toasts)
 	}
-	a.toasts = nil
-	click(t, tt, "Import…")
+	if a.snipUI.importOpen {
+		t.Error("the dialog stayed open after an import")
+	}
+	tt.Advance(snippetsImportNoticeFor + time.Second/2)
 	frames(tt)
-	if len(a.snip.list.Snippets) != 3 {
-		t.Errorf("a second import: %+v", a.snip.list.Snippets)
+	if !has(tt, want) {
+		t.Errorf("the notice of an import that skipped some went after %v", snippetsImportNoticeFor)
+	}
+	tt.Advance(snippetsImportNoticeSkippedFor - snippetsImportNoticeFor)
+	frames(tt)
+	if has(tt, want) || a.snipUI.notice != "" {
+		t.Errorf("the notice stayed after %v", snippetsImportNoticeSkippedFor)
+	}
+	click(t, tt, "Import…")
+	click(t, tt, "Choose a .json file")
+	frames(tt)
+	if want := "Imported snippets: 0 new, 0 updated, 1 skipped."; len(a.snip.list.Snippets) != 3 || !has(tt, want) {
+		t.Errorf("a second import: %+v, toasts %q", a.snip.list.Snippets, a.toasts)
 	}
 
-	// A file that is not snippets, on a page with no toast before.
+	// Files that are not snippets, on a page with no toast before.
 	a, tt = snippetsTester(t)
-	bad := filepath.Join(dir, "terms.json")
-	os.WriteFile(bad, []byte(`{"terms":[]}`), 0o644)
-	chooseSnippetsFile = func(a *app, then func(string)) { then(bad) }
-	click(t, tt, "Import…")
-	want := "Could not import terms.json: it is not a JSON list of snippets."
-	for deadline := time.Now().Add(5 * time.Second); !slices.Contains(a.toasts, want) && !has(tt, want); frames(tt) {
-		if time.Now().After(deadline) {
-			t.Fatalf("toasts %q; texts %q", a.toasts, tt.Texts())
+	for name, data := range map[string]string{
+		"terms.json": `{"terms":[]}`,
+		"words.json": `[{"phrase":"my email","replacement":"a@example.com"}]`,
+	} {
+		bad := filepath.Join(dir, name)
+		os.WriteFile(bad, []byte(data), 0o644)
+		chooseSnippetsFile = func(a *app, then func(string)) { then(bad) }
+		click(t, tt, "Import…")
+		click(t, tt, "Choose a .json file")
+		want := map[string]string{
+			"terms.json": "Could not import terms.json: it is not a JSON list of snippets.",
+			"words.json": "Found no snippets Voxt can use in words.json.",
+		}[name]
+		for deadline := time.Now().Add(5 * time.Second); !has(tt, want); frames(tt) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: texts %q", name, tt.Texts())
+			}
 		}
+		if !a.snipUI.importOpen || !hasSubstring(tt, `"trigger": "my work email"`) || len(a.toasts) > 0 || len(a.snip.list.Snippets) != 0 {
+			t.Errorf("%s: open %v, format shown %v, toasts %q, added %+v", name, a.snipUI.importOpen, a.snipUI.importExample, a.toasts, a.snip.list.Snippets)
+		}
+		click(t, tt, "Cancel")
 	}
-	if len(a.snip.list.Snippets) != 0 {
-		t.Errorf("a bad file added %+v", a.snip.list.Snippets)
+}
+
+// TestSnippetsImportExample: the example under "File format", saved as
+// a file in either language, imports through the dialog. The snippets
+// already there stay; the one with the example's trigger takes its text.
+func TestSnippetsImportExample(t *testing.T) {
+	previous := i18n.Locale()
+	t.Cleanup(func() { i18n.SetLocale(previous) })
+	saved := chooseSnippetsFile
+	t.Cleanup(func() { chooseSnippetsFile = saved })
+	for _, locale := range []string{"en", "zh-Hans"} {
+		a, tt := snippetsTester(t)
+		i18n.SetLocale(locale) // after the app, which sets its own
+		frames(tt)
+		email := i18n.T("my work email")
+		if (locale == "zh-Hans") != (email == "我的工作邮箱") {
+			t.Fatalf("%s: the example's trigger is %q", locale, email)
+		}
+		a.snip.list = snippet.List{Snippets: []snippet.Snippet{
+			{ID: "s1", Trigger: "sign off", Text: "Best, Alex"},
+			{ID: "s2", Trigger: email, Text: "old@company.com"},
+		}}
+		a.saveSnippets()
+		storedSnippets(t, a, tt, 2)
+		in := filepath.Join(t.TempDir(), "example.json")
+		os.WriteFile(in, []byte(snippetsImportExample()), 0o644)
+		chooseSnippetsFile = func(a *app, then func(string)) { then(in) }
+
+		click(t, tt, i18n.T("Import…"))
+		click(t, tt, i18n.T("Choose a .json file"))
+		got := storedSnippets(t, a, tt, 3)
+		if got[0].Text != "Best, Alex" || got[1].Trigger != email || got[1].Text != "name@company.com" ||
+			got[2].Trigger != i18n.T("my meeting link") || got[2].Text != "zoom.us/j/123" {
+			t.Errorf("%s: stored %+v", locale, got)
+		}
+		want := i18n.T("Imported snippets: %d new, %d updated.", 1, 1)
+		if !has(tt, want) {
+			t.Errorf("%s: no notice %q; texts %q", locale, want, tt.Texts())
+		}
+		tt.Advance(snippetsImportNoticeFor + time.Second/2)
+		frames(tt)
+		if has(tt, want) {
+			t.Errorf("%s: the notice stayed after %v", locale, snippetsImportNoticeFor)
+		}
 	}
 }
 
@@ -129,4 +212,15 @@ func TestSnippetsSearchSortEdit(t *testing.T) {
 	if !a.snipUI.editOpen || a.snipUI.edit.trigger != "my email" || a.snipUI.edit.id == "" {
 		t.Errorf("Edit opened %+v", a.snipUI)
 	}
+}
+
+// hasSubstring reports whether a text the view shows contains s.
+func hasSubstring(tt *ui.Tester, s string) bool {
+	frames(tt)
+	for _, text := range tt.Texts() {
+		if strings.Contains(text, s) {
+			return true
+		}
+	}
+	return false
 }

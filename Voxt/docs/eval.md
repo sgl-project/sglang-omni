@@ -209,6 +209,29 @@ Without its example, Transcribe's clean-up scores 6 to 7 points lower on the sma
 
 **Decision: Transcribe's example closes the built-in system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`). A custom prompt appends the custom-cleanup precedence layer after the example, so custom translation and reformatting rules override conflicting basic cleanup rules. The example's first line says it only illustrates the rules and is not to be output.
 
+### Fillers, repeats, corrections and numbers (11-26)
+
+Where the clean-up still lost points, and rules added for it.
+
+- **Set**: AASR-Bench as above, 150 clips stratified by language and scene (83 Chinese, 67 English; the E1 sample), and 150 other clips drawn the same way (seed 20261126) that were not looked at while writing the rules.
+- **Setup**: one Qwen3-ASR-1.7B Final per clip (M4 MacBook Air, no dictionary), cleaned up with compose's own requests (Transcribe's defaults, the clip's language as the main language, a 9-term glossary) by Claude Haiku 5.5 with thinking off, through Anthropic's OpenAI-compatible endpoint as Voxt sends it. Judge: the benchmark's scoring code with Claude Sonnet 5.5 (it refuses `temperature`, so none is sent). Two answers per clip and prompt; the scores average them. On the E1 products the same judge comes within 2 points of Gemma-4-31B-IT (Wispr Flow 75.1 against 75.7, VoxtNew with a local model 65.0 against 66.2).
+- **Where points were lost** (first 150 clips, current rules): fillers 54% of their points, self-corrections and rewording 64%, format 75%, content 92%. Fillers and corrections were 68% of all lost points: thinking aloud kept (我想想, 就是, "so", "like"), correction cues kept ("哦，不是", "Oh no, sorry", with both versions), repeats kept as emphasis, and spoken numbers left in words (七点, 五月份, "ten users").
+- **The rules**: nothing removed. Thinking aloud is named and dropped unless it carries meaning; a repeated word or phrase is said once; a correction cue goes with what it cancels; a spelled-out character is put together from its parts; counts, money, dates, months and times are written in digits. Every example in the new rules is made up: none of them occurs in the 150 clips.
+
+| clips | rules | score | fillers | corrections | format | content | first token | total |
+|---|---|---|---|---|---|---|---|---|
+| first 150 (rules written from them) | before | 75.8 | 53.6 | 64.5 | 74.7 | 92.3 | 519 ms | 782 ms |
+| first 150 (rules written from them) | **after** | **83.5** | 75.4 | 77.8 | 76.5 | 93.2 | 494 ms | 762 ms |
+| other 150 | before | 74.7 | 56.3 | 60.6 | 68.5 | 93.7 | 486 ms | 774 ms |
+| other 150 | **after** | **80.6** | 71.1 | 70.6 | 74.4 | 93.1 | 498 ms | 740 ms |
+
+- **On the other 150**: +5.9 (+3.6 to +8.3; 6,000 resamples of the clips), Chinese +6.1, English +5.7; fillers +14.8, corrections +10.0, format +5.8 (+0.2 to +11.2), content −0.7 (−1.6 to +0.1). The two answers of each prompt scored 74.5 and 74.9 before, 80.6 and 80.6 after. On the first 150 it was +7.8: those clips shaped the rules.
+- **Time**: the system prompt grows by about 250 tokens (English 3,144 → 3,693 characters, Chinese 1,254 → 1,494). On the other 150, sent in turns with the old prompt, the first token came 12 ms later and the whole answer 34 ms sooner (75 output tokens against 77).
+- One answer with the new rules changed a digit of a dictated card number; the content score did not move beyond noise, but that is the risk to watch.
+- **Not run**: Spoken Translate (it shares these rules), the Qwen models and GPT, a Gemma verdict, and the app itself.
+
+**Decision: the rules are in the clean-up rules, for every language model.**
+
 ### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 
 The two long clips by their words: `long-zh` (441 characters, Chinese with English words) and `long-all` (742 characters, whole sentences alternating between English and Chinese, starting in English). M3 found that `llm.balanced` translated all of `long-all` into English. M3b measured where that starts, and how to cut the text so that it does not.

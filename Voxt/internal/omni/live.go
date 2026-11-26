@@ -67,10 +67,12 @@ type live struct {
 	tick      chan struct{} // new audio for the batch preview (cap 1), nil with a socket
 	pc        *pieces       // a long recording's pieces (pieces.go), nil when the model has none
 	finished  bool
-	ended     bool // the last event was sent (or Close): events is closed
-	events    chan asr.Event
-	asm       assembler
-	once      sync.Once // release
+	// note (chenye): lateCandidates is on only while an opted-in Qwen3-ASR Final runs.
+	lateCandidates bool
+	ended          bool // the last event was sent (or Close): events is closed
+	events         chan asr.Event
+	asm            assembler
+	once           sync.Once // release
 	// wrapUpOnce runs the preview's wrap-up once (live_wrapup.go): a
 	// failed Final and a Salvage asked while the Final runs share it.
 	wrapUpOnce sync.Once
@@ -159,7 +161,7 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	}
 	// With LiveResult the socket's text is the result: no Final to shorten.
 	if a.spec.ASR.PiecesAfter > 0 && !(req.LiveResult && conn != nil) {
-		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{})}
+		s.pc = &pieces{wake: make(chan struct{}, 1), exited: make(chan struct{}), tuning: *a.spec.ASR}
 		go s.recognisePieces(s.language, s.bias)
 	}
 	go func() {
@@ -349,12 +351,7 @@ func (s *live) read() {
 			s.completed <- s.a.plainText(ev.Text)
 			return
 		case "transcription.segment":
-			s.mu.Lock()
-			text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
-			if ok && !s.finished {
-				s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
-			}
-			s.mu.Unlock()
+			s.handleSegment(ev)
 		case "error":
 			s.mu.Lock()
 			s.stopPreview("the server said " + ev.code())
@@ -362,6 +359,17 @@ func (s *live) read() {
 			s.conn.CloseNow()
 			return
 		}
+	}
+}
+
+func (s *live) handleSegment(ev realtimeEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	text, ok := s.asm.apply(ev.Index, ev.Segment, s.a.plainText(ev.Text), ev.Final)
+	if ok && !s.finished {
+		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+	} else if ok && text != "" && s.lateCandidates && s.ctx.Err() == nil {
+		s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
 	}
 }
 
@@ -388,9 +396,14 @@ func (s *live) Finish() error {
 	}
 	s.preview = false
 	s.finalOnly = true
+	s.lateCandidates = wantsLateCandidates(s.req, s.conn != nil, s.a.spec.Kind)
 	s.mu.Unlock()
 	go s.finalPass(pcm)
 	return nil
+}
+
+func wantsLateCandidates(req asr.StreamRequest, realtime bool, kind string) bool {
+	return req.LatePartials && realtime && kind == kindQwen3ASR && !req.LiveResult
 }
 
 // Salvage is the best text the stream has when its Final failed or took
@@ -402,6 +415,9 @@ func (s *live) Finish() error {
 func (s *live) Salvage() string {
 	s.mu.Lock()
 	finished := s.finished
+	if finished {
+		s.lateCandidates = false
+	}
 	s.mu.Unlock()
 	if finished {
 		s.wrapUpPreview()

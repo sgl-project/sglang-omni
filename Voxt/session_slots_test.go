@@ -18,7 +18,7 @@ import (
 // keeps its own answer card and conversation. The first card is from
 // Slack (rewriteSelecting); the user goes on in TextEdit.
 
-// sessionsOn turns Settings → Shortcuts' Sessions switch on.
+// sessionsOn turns Settings → Experimental's Sessions switch on.
 func sessionsOn(a *sessionApp) {
 	a.updateSettings(func(s *settings.Settings) { s.Features.SessionsOn = true })
 }
@@ -26,7 +26,11 @@ func sessionsOn(a *sessionApp) {
 // chipLine is the card's session row as text: "1 title*" is current.
 func chipLine(a *sessionApp) string {
 	var out []string
-	for i, chip := range a.cachedCard().Sessions {
+	chips := a.cachedCard().Sessions
+	if a.box.open { // the Rewrite card draws the row
+		chips = a.boxViewState().Sessions
+	}
+	for i, chip := range chips {
 		text := strings.TrimSpace(strconv.Itoa(i+1) + " " + chip.Title)
 		if chip.Current {
 			text += "*"
@@ -242,11 +246,12 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	_, off, _ := a.cardSize()
 	sessionsOn(a)
 	a.overlaySync()
-	// One session: the card is as it is with sessions off.
-	if _, on, _ := a.cardSize(); on != off || chipLine(a) != "" || a.boxViewState().Sessions != nil {
+	// One session: the row shows already, CardSessionsH taller, so its
+	// "+" can add the next one.
+	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH || len(a.cachedCard().Sessions) != 1 {
 		t.Fatalf("one session: card height %d, %d without sessions, row %q", on, off, chipLine(a))
 	}
-	// A second one brings the row, CardSessionsH taller, on both cards.
+	// A second one keeps the card's height.
 	a.slots = append(a.slots, parkedSlot{id: 9, title: "A long title here"})
 	a.overlaySync()
 	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH {
@@ -264,8 +269,8 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	}
 }
 
-// TestSessionListNewDeleteNext: "+" adds sessions without a limit and
-// shows the empty card, no notice; the next-session shortcut walks the
+// TestSessionListNewDeleteNext: "+" adds sessions without a limit and,
+// from the Rewrite card, opens each in that card, idle, with no notice; the next-session shortcut walks the
 // list and around; "×" deletes, the current one leaving for its
 // neighbour and the last one for a new empty session.
 func TestSessionListNewDeleteNext(t *testing.T) {
@@ -278,11 +283,10 @@ func TestSessionListNewDeleteNext(t *testing.T) {
 	if got := chipLine(a); got != "1 | 2 | 3 | 4 | 5*" {
 		t.Fatalf("five sessions: %q", got)
 	}
-	v := a.cachedCard()
-	if !v.Empty || a.overlayModeNow() != ovAnswer || a.notice != nil || len(v.Blocks) != 1 || !strings.Contains(v.Blocks[0].Text, "runs in this session") {
-		t.Fatalf("empty session: card %+v mode=%s notice=%+v", v, a.overlayModeNow(), a.notice)
+	if !a.boxIdle() || a.notice != nil {
+		t.Fatalf("empty session: Rewrite card open=%v idle=%v, notice=%+v", a.box.open, a.boxIdle(), a.notice)
 	}
-	// The empty card has nothing to copy or redo: c and r stay with the
+	// The idle card has nothing to copy or redo: c and r stay with the
 	// app in front.
 	if a.cardHotkeyGeneration() != 0 {
 		t.Fatal("the empty session card binds the card's letter keys")
@@ -310,20 +314,21 @@ func TestSessionListNewDeleteNext(t *testing.T) {
 	a.deleteSession(2)
 	a.deleteSession(4)
 	slackCardBack(t, a, "the one session left")
-	// The last session: its card goes, a new empty one takes its place.
+	// The last session: its answer goes, a new idle session takes its
+	// place in the Rewrite card.
 	a.deleteSession(0)
-	if len(a.slots) != 1 || a.answer.open || !a.cachedCard().Empty {
-		t.Fatalf("deleted the last one: %d sessions, card open=%v", len(a.slots), a.answer.open)
+	if len(a.slots) != 1 || a.answer.open || !a.boxIdle() {
+		t.Fatalf("deleted the last one: %d sessions, card open=%v, Rewrite card idle=%v", len(a.slots), a.answer.open, a.boxIdle())
 	}
 	only := a.slot
 	tap(a, "session-3", textEditApp) // no such session: nothing
 	if a.slot != only {
 		t.Fatalf("a shortcut for a session that is not there switched to %d", a.slot)
 	}
-	// Closing the empty card takes it off the screen.
+	// Closing the idle card takes it off the screen.
 	a.closeAnswer()
-	if a.overlayModeNow() == ovAnswer {
-		t.Fatal("the empty card stayed after its close")
+	if a.overlayModeNow() == ovAnswer || a.box.open {
+		t.Fatal("the idle card stayed after its close")
 	}
 }
 
@@ -400,17 +405,17 @@ func TestSessionTitleAndRename(t *testing.T) {
 		t.Fatalf("empty name: %q renaming=%v", got, a.renaming)
 	}
 	// The only session is renamed from the menu bar: its card comes on
-	// screen with the row for as long as the title is typed.
+	// screen with the row.
 	a.deleteSession(0)
-	if got := chipLine(a); got != "" {
-		t.Fatalf("one session has a row: %q", got)
+	if got := len(a.sessionChips()); got != 1 {
+		t.Fatalf("one session: %d chips", got)
 	}
 	a.renameCurrentSession()
 	if chips := a.sessionChips(); len(chips) != 1 || !chips[0].Renaming || !(a.answer.open || a.emptyCard) {
 		t.Fatalf("rename from the menu: %+v open=%v empty=%v", chips, a.answer.open, a.emptyCard)
 	}
 	a.nameSession(a.slot, "Only one")
-	if labels, _ := menuLabels(a); chipLine(a) != "" || labels[1] != "1 Only one*" {
+	if labels, _ := menuLabels(a); chipLine(a) != "1 Only one*" || labels[1] != "1 Only one*" {
 		t.Fatalf("named: row %q menu %q", chipLine(a), labels)
 	}
 	a.newSession()
@@ -420,7 +425,7 @@ func TestSessionTitleAndRename(t *testing.T) {
 	a.slots[1].titled = "x"
 	a.deleteSession(late)
 	a.setSessionTitle(late, "x", "Late")
-	if got := chipLine(a); got != "" || a.slots[0].title == "Late" {
+	if got := chipLine(a); strings.Contains(got, "Late") || len(a.sessionChips()) != 1 {
 		t.Fatalf("after the delete: %q", got)
 	}
 }
@@ -467,5 +472,43 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
 	if c := a.answer; !c.open || c.text != full {
 		t.Fatalf("session 1's card %+v", c)
+	}
+}
+
+// TestSessionSlotSwitchBackKeepsRewriteCard: a Rewrite answer comes back
+// in the Rewrite card, as in 2.1.3's single session: the input to type
+// or say the next change, not the answer card with Continue.
+func TestSessionSlotSwitchBackKeepsRewriteCard(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one", "two"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	if !a.boxHoldsCard(ovAnswer) {
+		t.Fatalf("the first answer is not in the Rewrite card: box %+v", a.box.open)
+	}
+	a.newSession()
+	rewriteSaid(t, a, tr, textEditApp, "write a haiku", "two")
+	tap(a, "session-1", textEditApp)
+	slackCardBack(t, a, "back in session 1")
+	if !a.boxHoldsCard(ovAnswer) {
+		t.Fatalf("back in session 1, the answer card stands in for the Rewrite card: box open %v, shown %v", a.box.open, a.box.shown)
+	}
+	// The Rewrite card has an input and its own Insert and Copy: c and r
+	// are letters typed there or in the app in front.
+	if a.cardHotkeyGeneration() != 0 {
+		t.Fatal("the Rewrite card binds the answer card's letter keys")
+	}
+}
+
+// TestSessionTitleOfAnswer: the model's title loses its markdown and
+// quotes, and a Chinese title is cut at half the letters of an English
+// one, as each character is twice as wide.
+func TestSessionTitleOfAnswer(t *testing.T) {
+	for answer, want := range map[string]string{
+		"**“我”与父亲之间的感情**\n这段话讲述了……": "“我”与父亲之间的感…",
+		"## `Autumn rain` haiku.": "Autumn rain haiku",
+		"这段话主要讲述了作者与父亲之间深厚的感情":    "这段话主要讲述了作…",
+	} {
+		if got := titleOfAnswer(answer); got != want {
+			t.Errorf("titleOfAnswer(%q) = %q, want %q", answer, got, want)
+		}
 	}
 }

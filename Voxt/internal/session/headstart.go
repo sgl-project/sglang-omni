@@ -5,32 +5,23 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/dict"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 const (
-	// headHangover is how long, in milliseconds, the user is silent before
-	// the text known so far is asked about. The answer then has a start on
-	// Stop, and changes of the live text while they stay silent are asked
-	// about at once.
-	headHangover = 500
 	// headKeep is how many texts are asked about at a time: the live text's
 	// end often changes once more, and the answer to the text before it may
 	// be the Final's.
 	headKeep = 3
 	// headAsks is the most texts a recording is asked about before Stop.
 	headAsks = 20
-	// rateRest is how long a service that limited the rate rests.
-	rateRest = 10 * time.Minute
 )
 
 // headStart asks the language model to clean a dictation up before its
@@ -52,17 +43,39 @@ const (
 // this is a remote service's (Model.Remote).
 type headStart struct {
 	r       *run
-	enabled bool
+	enabled atomic.Bool
 	service string // the language model's id
 	under   int    // its ThinkingOffUnder
 
 	// The session goroutine's.
-	text string // the text asked about last
-	asks int    // texts asked about while the user speaks
+	text      string // the text asked about last
+	asks      int    // texts asked about while the user speaks
+	lateAsked bool
 
 	mu    sync.Mutex
 	final string        // what the speech model finalised so far (asr.EventPiece)
 	gens  [][]*headCall // the requests of the texts asked about last, headKeep at most, the newest last
+}
+
+type headPart struct {
+	req   llm.Request
+	text  string
+	reuse *headCall
+}
+
+type headPlan struct {
+	heard string
+	rest  string
+	parts []headPart
+}
+
+func (p headPlan) hasFresh() bool {
+	for _, part := range p.parts {
+		if part.reuse == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // headCall is a request asked early. resp and err are there once done is
@@ -71,6 +84,7 @@ type headStart struct {
 type headCall struct {
 	req    llm.Request
 	text   string // the part's
+	late   bool
 	cancel context.CancelFunc
 	done   chan struct{}
 	resp   llm.Response
@@ -81,15 +95,55 @@ type headCall struct {
 	onDelta func(string)
 }
 
-// startHead readies the head start of a Transcribe whose clean-up a
-// remote service does. A picture of the window goes with one request
-// only: no head start.
-func (r *run) startHead() {
+// prepareHeadInputs allocates partial and pause channels before ASR workers
+// start when Head Start could become eligible later.
+func (r *run) prepareHeadInputs(endWord bool) bool {
 	r.head.r = r
-	r.head.service = r.svc.LLMInfo.ID
-	r.head.under = r.thinkOffUnder(r.head.service)
-	r.head.enabled = r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.svc.LLMInfo.Remote && r.svc.LLM != nil &&
-		r.shot == nil && r.transcribeCleanup() && !r.m.resting(r.svc.LLMInfo.ID)
+	possible := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.shot == nil && len(r.req.Images) == 0
+	if possible {
+		if r.init.split && !r.init.cleanupDecisionReady {
+			possible = r.settings.Features.Transcribe.Enhance || r.sc.cleanupPending
+		} else {
+			possible = r.transcribeCleanup()
+		}
+	}
+	if possible && (!r.init.split || r.init.llmReady) {
+		possible = r.svc.LLM != nil && r.svc.LLMInfo.Remote && !r.m.resting(r.svc.LLMInfo.ID)
+	}
+	if (endWord || possible) && r.heard == nil {
+		r.heard, r.silent = make(chan heardText, 1), make(chan bool, 1)
+	}
+	return possible
+}
+
+// startHead decides eligibility only after cleanup readiness is known.
+// The atomic store publishes the immutable service and Thinking policy to
+// stream and cleanup workers.
+func (r *run) startHead() {
+	if r.head.enabled.Load() {
+		return
+	}
+	if r.head.r == nil {
+		r.head.r = r
+	}
+	service := r.svc.LLMInfo.ID
+	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || r.shot != nil || len(r.req.Images) > 0 ||
+		!r.svc.LLMInfo.Remote || r.svc.LLM == nil || !r.transcribeCleanup() || r.m.resting(service) {
+		return
+	}
+	r.head.service = service
+	r.head.under = r.thinkOffUnder(service)
+	r.head.enabled.Store(true)
+}
+
+func (h *headStart) canAsk() bool {
+	r := h.r
+	if !h.enabled.Load() || r == nil || r.ctx.Err() != nil || r.cancelled.Load() || r.stopped.Load() || r.streamReaderOff.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.cleanupDecisionOpenLocked() && !r.skipped.Load()
 }
 
 // pause asks about the live text while the user is silent.
@@ -128,56 +182,131 @@ func (h *headStart) guess(live string) (string, bool) {
 // ask sends the requests of the text known so far, unless it has. It
 // reports whether it asked anything.
 func (h *headStart) ask(live string) bool {
-	r := h.r
-	if !h.enabled {
+	if !h.canAsk() {
 		return false
 	}
-	text, ok := h.guess(live)
+	heard, cleaned, ok := h.normalize(live)
 	if !ok {
 		return false
 	}
-	text, _ = withoutEndWord(text, r.endWord())
-	if text == "" || text == h.text {
+	if heard == h.text {
 		return false
 	}
-	h.text = text
-	if r.settings.Dictionary.Enabled {
-		text = dict.Replace(text, r.terms)
+	h.text = heard
+	return h.send(cleaned)
+}
+
+func (h *headStart) normalize(live string) (heard, cleaned string, ok bool) {
+	r := h.r
+	heard, ok = h.guess(live)
+	if !ok {
+		return "", "", false
 	}
-	return h.send(text)
+	heard, _ = withoutEndWord(heard, r.endWord())
+	if heard == "" {
+		return "", "", false
+	}
+	cleaned = heard
+	if r.settings.Dictionary.Enabled {
+		cleaned = dict.Replace(heard, r.terms)
+	}
+	return heard, cleaned, true
+}
+
+func (h *headStart) prepare(cleaned string) (headPlan, bool, bool) {
+	r := h.r
+	plan := headPlan{}
+	rest, ok := r.earlyCleanup().rest(cleaned)
+	if _, whole := snippet.Whole(cleaned, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
+		return plan, false, true
+	}
+	parts, err := compose.BuildParts(r.transcribeInput(rest))
+	if err != nil {
+		return plan, false, false
+	}
+	plan.rest = rest
+	for _, part := range parts[:min(len(parts), partsTogether)] {
+		req := r.partRequest(cleaned, part, nil, nil)
+		plan.parts = append(plan.parts, headPart{req: req, text: part.Text, reuse: h.find(req)})
+	}
+	return plan, true, false
+}
+
+func (h *headStart) prepareLate(live string) (headPlan, bool) {
+	if !h.lateAllowed() {
+		return headPlan{}, false
+	}
+	heard, cleaned, ok := h.normalize(live)
+	if !ok || heard == h.text {
+		return headPlan{}, false
+	}
+	plan, ok, _ := h.prepare(cleaned)
+	if !ok {
+		return headPlan{}, false
+	}
+	plan.heard = heard
+	if !plan.hasFresh() || !h.lateAllowed() {
+		return headPlan{}, false
+	}
+	return plan, true
+}
+
+func (h *headStart) lateAllowed() bool {
+	if !h.enabled.Load() || h.lateAsked || h.r.ctx.Err() != nil {
+		return false
+	}
+	ctx := h.r.currentLLMContext()
+	if ctx == nil || ctx.Err() != nil || !h.r.cleanupMayContinue() || h.r.m.resting(h.service) {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.gens) < headKeep
+}
+
+func (h *headStart) submitLate(plan headPlan) bool {
+	if !plan.hasFresh() || !h.lateAllowed() {
+		return false
+	}
+	h.submit(plan, true)
+	return true
+}
+
+func (h *headStart) submit(plan headPlan, late bool) {
+	calls := make([]*headCall, 0, len(plan.parts))
+	for _, part := range plan.parts {
+		call := part.reuse
+		if call == nil {
+			call = h.start(part.req, part.text, late)
+		}
+		calls = append(calls, call)
+	}
+	if late {
+		h.text = plan.heard
+		h.lateAsked = true
+	}
+	h.push(calls)
+	h.r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(plan.rest))
 }
 
 // send sends the requests of text, its dictionary's aliases replaced, and
 // gives up those of texts before the last headKeep.
 func (h *headStart) send(text string) bool {
-	r := h.r
-	rest, ok := r.earlyCleanup().rest(text)
-	if _, whole := snippet.Whole(text, r.snippets); whole || !ok || strings.TrimSpace(rest) == "" {
-		h.drop()
-		return false
-	}
-	parts, err := compose.BuildParts(r.transcribeInput(rest))
-	if err != nil {
-		return false
-	}
-	var gen []*headCall
-	for _, p := range parts[:min(len(parts), partsTogether)] {
-		req := r.partRequest(text, p, nil, nil)
-		c := h.find(req)
-		if c == nil {
-			c = h.start(req, p.Text)
+	plan, ok, discard := h.prepare(text)
+	if !ok {
+		if discard {
+			h.drop()
 		}
-		gen = append(gen, c)
+		return false
 	}
-	h.push(gen)
-	r.logf("debug", "asking the language model ahead about %d characters", utf8.RuneCountInString(rest))
+	h.submit(plan, false)
 	return true
 }
 
-func (h *headStart) start(req llm.Request, text string) *headCall {
+func (h *headStart) start(req llm.Request, text string, late bool) *headCall {
 	r := h.r
 	ctx, cancel := context.WithCancel(r.currentLLMContext())
-	c := &headCall{req: req, text: text, cancel: cancel, done: make(chan struct{})}
+	c := &headCall{req: req, text: text, late: late, cancel: cancel, done: make(chan struct{})}
 	req.OnDelta = c.add
 	go func() {
 		defer close(c.done)
@@ -244,33 +373,82 @@ func (h *headStart) drop() {
 // at most, and the words its answer must be put right for; nil for none.
 func (h *headStart) near(req llm.Request, text string) (*headCall, []spokenWord, []headChange) {
 	last := len(req.Messages) - 1
-	var near *headCall
-	var nearOld []spokenWord
-	var nearChanges []headChange
+	type match struct {
+		call    *headCall
+		old     []spokenWord
+		changes []headChange
+		done    bool
+		err     error
+	}
+	var exact, repaired []match
 	for _, c := range h.all() {
 		if len(c.req.Messages) != last+1 || last < 0 || !slices.Equal(c.req.Messages[:last], req.Messages[:last]) || !h.sameThinking(c.req, req) ||
 			strings.Replace(c.req.Messages[last].Content, c.text, text, 1) != req.Messages[last].Content {
 			continue
 		}
+		done, err := h.callError(c)
+		if c.late && done && err != nil {
+			continue
+		}
 		old := spokenWords(c.text)
 		changes, ok := headChanges(old, c.text, text)
-		if ok && len(changes) == 0 {
-			return c, old, changes // the newest text that needs no putting right
+		if !ok {
+			continue
 		}
-		if ok && near == nil {
-			near, nearOld, nearChanges = c, old, changes
+		m := match{call: c, old: old, changes: changes, done: done, err: err}
+		if len(changes) == 0 {
+			exact = append(exact, m)
+		} else {
+			repaired = append(repaired, m)
 		}
 	}
-	return near, nearOld, nearChanges
+	choose := func(matches []match) *match {
+		if len(matches) == 0 {
+			return nil
+		}
+		first := matches[0]
+		if first.call.late && !first.done {
+			for i := 1; i < len(matches); i++ {
+				if matches[i].done && matches[i].err == nil {
+					return &matches[i]
+				}
+			}
+		}
+		return &first
+	}
+	chosen := choose(exact)
+	if chosen == nil {
+		chosen = choose(repaired)
+	}
+	if chosen == nil {
+		return nil, nil, nil
+	}
+	return chosen.call, chosen.old, chosen.changes
 }
 
 // askPart asks for one part's clean-up, with the answer a head start has
 // under way when there is one for it. Goroutine-safe.
 func (r *run) askPart(ctx context.Context, req llm.Request, text string) (llm.Response, error) {
 	h := &r.head
-	if c := h.find(req); c != nil {
+	if c := h.find(req); c != nil && (!c.late || !h.failedLate(c)) {
 		r.logf("debug", "the language model was asked about this part ahead of the final text")
-		return c.join(req.OnDelta)
+		if !c.late {
+			return c.join(req.OnDelta)
+		}
+		resp, err := c.join(nil)
+		if err == nil {
+			c.mu.Lock()
+			deltas := c.held.String()
+			c.held.Reset()
+			c.mu.Unlock()
+			if deltas != "" && req.OnDelta != nil {
+				req.OnDelta(deltas)
+			}
+			return resp, nil
+		}
+		if ctx.Err() != nil || r.ctx.Err() != nil || !r.cleanupMayContinue() {
+			return resp, err
+		}
 	}
 	if c, old, changes := h.near(req, text); c != nil {
 		if resp, err, ok := h.reuse(c, old, changes, req, text); ok {
@@ -278,7 +456,7 @@ func (r *run) askPart(ctx context.Context, req llm.Request, text string) (llm.Re
 		}
 	}
 	resp, err := r.llmChatContext(ctx, req)
-	if h.enabled {
+	if h.enabled.Load() {
 		r.m.noteRate(h.service, resp, err)
 	}
 	return resp, err
@@ -310,7 +488,7 @@ func (h *headStart) reuse(c *headCall, old []spokenWord, changes []headChange, r
 		resp, ok := right()
 		return resp, nil, ok
 	}
-	fresh := h.start(req, text)
+	fresh := h.start(req, text, false)
 	defer fresh.cancel()
 	select {
 	case <-c.done:
@@ -321,6 +499,20 @@ func (h *headStart) reuse(c *headCall, old []spokenWord, changes []headChange, r
 	}
 	resp, err := fresh.join(req.OnDelta)
 	return resp, err, true
+}
+
+func (h *headStart) callError(c *headCall) (bool, error) {
+	select {
+	case <-c.done:
+		return true, c.err
+	default:
+		return false, nil
+	}
+}
+
+func (h *headStart) failedLate(c *headCall) bool {
+	done, err := h.callError(c)
+	return c.late && done && err != nil
 }
 
 // join streams the answer so far and the rest into onDelta, and returns
@@ -373,57 +565,4 @@ func (r *run) thinkOffUnder(service string) int {
 		}
 	}
 	return 0
-}
-
-// pauseWatch watches the recording for pauses: it tells r.silent when the
-// speech ends (true) and goes on (false); the newest wins.
-type pauseWatch struct {
-	r        *run
-	detector *vad.Detector
-	speaking bool
-}
-
-func (r *run) watchPauses() *pauseWatch {
-	if !r.head.enabled {
-		return nil
-	}
-	return &pauseWatch{r: r, detector: vad.NewDetector(asr.SampleRate, vad.Params{HangoverMS: headHangover})}
-}
-
-// hear takes the recording's next PCM.
-func (w *pauseWatch) hear(pcm []byte) {
-	if w == nil {
-		return
-	}
-	w.detector.Write(pcm)
-	if speaking := w.detector.Speaking(); speaking != w.speaking {
-		w.speaking = speaking
-		select {
-		case <-w.r.silent:
-		default:
-		}
-		w.r.silent <- !speaking
-	}
-}
-
-// noteRate notes that a service limited the rate: it refused the request,
-// or an attempt of it, for that.
-func (m *Manager) noteRate(service string, resp llm.Response, err error) {
-	if llm.Code(err) != llm.CodeRateLimited && !resp.RateLimited {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.restUntil == nil {
-		m.restUntil = map[string]time.Time{}
-	}
-	m.restUntil[service] = time.Now().Add(rateRest)
-}
-
-// resting says whether a service limited the rate lately (noteRate): it
-// is asked one part at a time, with no head start.
-func (m *Manager) resting(service string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return time.Now().Before(m.restUntil[service])
 }

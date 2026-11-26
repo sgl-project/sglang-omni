@@ -70,7 +70,8 @@ func TestRewriteFollowUpNewSelection(t *testing.T) {
 		t.Errorf("the system prompt does not say what the new selection is:\n%s", msgs[0][1])
 	}
 	v := a.cachedCard()
-	if len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].quote != "" || cardBubblesForTest(v)[2].text != "add the new messages" || cardBubblesForTest(v)[2].quote != chatB || cardBubblesForTest(v)[2].cut {
+	// The Rewrite card quotes each turn's selection, the first one's too.
+	if len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].quote != chatA || cardBubblesForTest(v)[2].text != "add the new messages" || cardBubblesForTest(v)[2].quote != chatB || cardBubblesForTest(v)[2].cut {
 		t.Errorf("bubbles %+v", cardBubblesForTest(v))
 	}
 	if len(a.answer.turns) != 2 || a.answer.turns[1].Selection != chatB {

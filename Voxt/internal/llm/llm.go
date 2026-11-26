@@ -181,3 +181,8 @@ type Prefiller interface {
 type Connector interface {
 	Connect(ctx context.Context) error
 }
+
+// PrefillCapability separates a client wrapper from a backend that can prefill.
+type PrefillCapability interface {
+	CanPrefill() bool
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
@@ -25,14 +26,22 @@ import (
 func TestRewriteBoxIsTheOnlyCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, session: "r1"}
-	for _, state := range []session.State{session.Recording, session.Recognizing, session.Composing} {
-		snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: state, Card: true, Spoken: "make it shorter"})
+	for _, state := range []session.State{session.Recording, session.Recognizing} {
+		snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: state, Card: true, Partial: "make it shorter"})
 		if !a.box.shown || a.overlayModeNow() != ovHidden {
 			t.Fatalf("%s: the input card shows %v, the overlay %q", state, a.box.shown, a.overlayModeNow())
 		}
 	}
-	if view := a.boxViewState(); view.VoiceLine != "make it shorter" || view.Subtitle == "" || view.Conversation {
+	if view := a.boxViewState(); view.VoiceLine != "make it shorter" || view.Conversation {
 		t.Errorf("the working card: %+v", view)
+	}
+	// Sent: the card shows the turn, its answer on the way, still alone.
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Spoken: "make it shorter"})
+	if !a.box.shown || !a.boxHoldsCard(a.overlayModeNow()) || !a.boxViewState().Conversation {
+		t.Fatalf("sent: the input card shows %v, the overlay %q", a.box.shown, a.overlayModeNow())
+	}
+	if card := a.boxCardView(); card == nil || sessionCardBlockCount(card) != 2 || sessionCardBlockAt(card, 0).Text != "make it shorter" {
+		t.Fatalf("sent: the card does not show what was asked: %+v", card)
 	}
 
 	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Draft: "Shorter."})
@@ -532,7 +541,7 @@ func TestRewriteCardOverAFullScreenApp(t *testing.T) {
 // TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,
 // Enter sends only with Settings → Shortcuts' Return switch on (it is
 // taken, no newline). Off, Enter is a newline there, as it reaches any app
-// then, and the card's foot does not say that Enter sends.
+// then, and Send's tooltip does not say that Enter sends.
 func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.prefs.Features.ReturnFinishes = false
@@ -542,7 +551,7 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	frames(tt)
 	tt.Type("some text")
 	frames(tt)
-	if hasExact(tt, "send") {
+	if a.boxViewState().EnterSends {
 		t.Error("Return off: the card says Enter sends")
 	}
 	tt.Key(0, ui.KeyEnter)
@@ -552,7 +561,7 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	}
 	a.prefs.Features.ReturnFinishes = true
 	frames(tt)
-	if !hasExact(tt, "send") {
+	if !a.boxViewState().EnterSends {
 		t.Error("Return on: the card does not say Enter sends")
 	}
 	tt.Key(0, ui.KeyEnter)
@@ -560,4 +569,30 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	if a.box.text != "some text\n" {
 		t.Errorf("Return on: text %q after Enter, want Enter taken", a.box.text)
 	}
+}
+
+// TestRewriteCardWaitsForTheCopiedSelection: Notion item 141's lost Slack
+// selection. The card opens right after the session starts, before its
+// first snapshot reaches the app; it took the front then, so the ⌘C that
+// copies the selection went to VoxtNew and nothing was read. It waits
+// until the selection is read, then takes the front.
+func TestRewriteCardWaitsForTheCopiedSelection(t *testing.T) {
+	native := &fakeBoxDropWindow{onTop: true}
+	previous, front := newBoxNativeWindow, frontmostPID
+	newBoxNativeWindow = func(mygo.WindowOptions) boxDropWindow { return native }
+	frontmostPID = func() int { return slackApp.PID }
+	t.Cleanup(func() { newBoxNativeWindow, frontmostPID = previous, front }) // registered first: it runs after the app's own cleanup, which still syncs the card
+	a := newBoxApp(t, helpertest.Opt("delay", "textio.selection:800"), &fakeChat{text: "A shorter text."})
+	focusedAtOpen := -1
+	a.postQueue(func() {
+		a.ov.native = true
+		a.box = rewriteBox{open: true, shown: true, winShown: true, area: ovTestArea} // already placed: no screen to ask in a test
+		a.openBox(slackApp, session.StartRequest{Kind: store.KindRewrite, Target: slackApp})
+		focusedAtOpen = native.focused
+	})
+	a.pump("the selection read", func() bool { return a.box.open && a.sess.Selection != "" })
+	if focusedAtOpen != 0 {
+		t.Fatalf("the card took the front while the selection was read (focused %d)", focusedAtOpen)
+	}
+	a.pump("the card in front", func() bool { return native.focused == 1 })
 }

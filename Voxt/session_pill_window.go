@@ -56,7 +56,7 @@ func (a *app) pillOverlaySync(main overlayMode) {
 		content := sessionOverlayContent(
 			func() *sessionOverlayViewState {
 				a.refreshPillOverlay(time.Now(), a.pill.mode)
-				return &a.pill.projection.view
+				return a.pill.projection.drawn()
 			},
 			func() sessionOverlayLayout { return a.currentPillOverlayLayout() },
 			a,
@@ -105,6 +105,7 @@ func pillWindowOptions(frame mygo.Rectangle, content mygo.Content) mygo.WindowOp
 // pill or the notice, never the card or its menus.
 func (a *app) refreshPillOverlay(now time.Time, mode overlayMode) {
 	projection := &a.pill.projection
+	projection.holdWhileFading(mode == ovHidden && a.pill.visible)
 	locale := i18n.Locale()
 	if projection.translator == nil || projection.locale != locale {
 		projection.locale = locale

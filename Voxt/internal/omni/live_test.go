@@ -135,14 +135,57 @@ func TestLive(t *testing.T) {
 	st.Close()
 }
 
-// TestFinalPrior: the Final carries the preview's text and the session that
-// heard it. Without a language hint it carries no text (the model writes the
-// language first), and of a recording cut into chunks only the first carries
-// the session and none the text (no chunk is all of it).
+func TestLateCandidatesAreOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		request asr.StreamRequest
+		want    bool
+	}{
+		{"Qwen3-ASR opted in", kindQwen3ASR, asr.StreamRequest{LatePartials: true}, true},
+		{"Qwen3-ASR without opt-in", kindQwen3ASR, asr.StreamRequest{}, false},
+		{"other realtime model", kindNemotron, asr.StreamRequest{LatePartials: true}, false},
+		{"LiveResult", kindQwen3ASR, asr.StreamRequest{LatePartials: true, LiveResult: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := NewRuntime(Config{IdleTimeout: -1})
+			t.Cleanup(rt.Close)
+			proc := &process{}
+			server := newServer(rt, Spec{ID: "candidate-test"}, "", "")
+			server.proc, server.leases = proc, 1
+			stream := &live{
+				a: &ASR{spec: Spec{Kind: tc.kind}}, ctx: context.Background(), cancel: func() {},
+				l: &lease{s: server, p: proc}, events: make(chan asr.Event, eventBuffer), finished: true,
+				lateCandidates: wantsLateCandidates(tc.request, true, tc.kind),
+			}
+			if stream.lateCandidates != tc.want {
+				t.Fatalf("late candidate eligibility %v, want %v", stream.lateCandidates, tc.want)
+			}
+			stream.handleSegment(realtimeEvent{Index: 1, Segment: 0, Text: "late transcript"})
+			stream.end(asr.Event{Kind: asr.EventFinal, Text: "authoritative transcript"})
+			events := drain(t, stream)
+			if tc.want {
+				if len(events) != 2 || events[0].Kind != asr.EventCandidate || events[0].Text != "late transcript" {
+					t.Fatalf("candidate was not delivered before Final: %+v", events)
+				}
+			} else if len(events) != 1 {
+				t.Fatalf("ineligible candidate was emitted: %+v", events)
+			}
+			if last := events[len(events)-1]; last.Kind != asr.EventFinal || last.Text != "authoritative transcript" {
+				t.Fatalf("terminal event %+v", last)
+			}
+		})
+	}
+}
+
+// note (chenye): TestFinalPrior checks that the Final carries the preview's
+// text and session. Without a language hint it asks the server to propose
+// the language header and text. A chunked recording carries the session only
+// on the first chunk and neither kind of guess on any chunk.
 func TestFinalPrior(t *testing.T) {
-	for _, tc := range []struct{ lang, text string }{
-		{"zh", "partial 5"},
-		{"", ""},
+	for _, tc := range []struct{ lang, text, autoGuess string }{
+		{"zh", "partial 5", ""},
+		{"", "", "true"},
 	} {
 		f := newFake(t, omnitest.Opts{}, nil)
 		st, err := f.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: 16000, Lang: tc.lang})
@@ -163,8 +206,9 @@ func TestFinalPrior(t *testing.T) {
 		}
 		drain(t, st)
 		finals := f.records("final")
-		if len(finals) != 1 || finals[0].Fields["guessed_text"] != tc.text || finals[0].Fields["realtime_session"] != "fake-session" {
-			t.Errorf("language %q: finals %+v, want the text %q and the session", tc.lang, finals, tc.text)
+		if len(finals) != 1 || finals[0].Fields["guessed_text"] != tc.text ||
+			finals[0].Fields["guess_auto_language"] != tc.autoGuess || finals[0].Fields["realtime_session"] != "fake-session" {
+			t.Errorf("language %q: finals %+v, want the text %q, auto guess %q and the session", tc.lang, finals, tc.text, tc.autoGuess)
 		}
 		f.rt.Close() // the server records its live sessions before it exits
 		// Without a dictionary the session still has the Final's (empty)
@@ -176,24 +220,33 @@ func TestFinalPrior(t *testing.T) {
 		}
 	}
 
-	f := newFake(t, omnitest.Opts{}, nil)
-	ctx := context.Background()
-	a := f.asr(t, ASRFast)
-	l, err := f.rt.acquire(ctx, a.spec, a.dir, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.release()
-	if _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), "zh", bias{}, prior{text: "text", session: "s"}); err != nil {
-		t.Fatal(err)
-	}
-	finals := f.records("final")
-	if len(finals) < 2 {
-		t.Fatalf("130 s of audio in %d requests", len(finals))
-	}
-	for i, r := range finals {
-		if r.Fields["guessed_text"] != "" || (r.Fields["realtime_session"] == "s") != (i == 0) {
-			t.Errorf("chunk %d: %v", i, r.Fields)
+	for _, tc := range []struct {
+		lang  string
+		known prior
+	}{
+		{"zh", prior{text: "text", session: "s"}},
+		{"", prior{session: "s", guessAutoLanguage: true}},
+	} {
+		f := newFake(t, omnitest.Opts{}, nil)
+		ctx := context.Background()
+		a := f.asr(t, ASRFast)
+		l, err := f.rt.acquire(ctx, a.spec, a.dir, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.release()
+		if _, _, err := a.final(ctx, l, tone(130*time.Second, 0.3), tc.lang, bias{}, tc.known); err != nil {
+			t.Fatal(err)
+		}
+		finals := f.records("final")
+		if len(finals) < 2 {
+			t.Fatalf("130 s of audio in %d requests", len(finals))
+		}
+		for i, r := range finals {
+			if r.Fields["guessed_text"] != "" || r.Fields["guess_auto_language"] != "" ||
+				(r.Fields["realtime_session"] == "s") != (i == 0) {
+				t.Errorf("language %q, chunk %d: %v", tc.lang, i, r.Fields)
+			}
 		}
 	}
 }
