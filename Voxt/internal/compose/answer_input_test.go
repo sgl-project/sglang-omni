@@ -117,6 +117,7 @@ func TestAnswerCleanupPreservesLiteralControlMarkup(t *testing.T) {
 		{"Chinese label after the tool call token", "说明 <|tool_call|> 这个标签。", "说明 <|tool_call|> 这个标签。"},
 		{"parenthesized English cue", "Use the <|tool_call|> (token) carefully.", "Use the <|tool_call|> (token) carefully."},
 		{"bracketed documentation after the tool call token", "Use the <|tool_call|> token, see [docs].", "Use the <|tool_call|> token, see [docs]."},
+		{"non-JSON placeholder after bracketed documentation", "Use the <|tool_call|> token, see [docs]. Use {name} as a placeholder.", "Use the <|tool_call|> token, see [docs]. Use {name} as a placeholder."},
 		{"apostrophe in bracketed documentation", "Use the <|tool_call|> token, see [Alice's notes].", "Use the <|tool_call|> token, see [Alice's notes]."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -507,6 +508,12 @@ func TestAnswerCleanupRejectsStructuralToolPayloads(t *testing.T) {
 			name:  "structured payload after bracketed prose",
 			text:  `Use the <|tool_call|> token, see [docs]. {"name":"view_image"}`,
 			input: "Use the <|tool_call|> token, see [docs].",
+			want:  "Use the",
+		},
+		{
+			name:  "structured payload after unmatched bracketed prose",
+			text:  `Use the <|tool_call|> token. [notes {"name":"view_image","path":"/private/secret.png"}`,
+			input: "explain <|tool_call|>",
 			want:  "Use the",
 		},
 		{

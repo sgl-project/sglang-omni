@@ -164,7 +164,12 @@ func toolPayload(rest string) bool {
 		}
 		index += searchFrom
 		if rest[index] == '{' {
-			return true
+			after := strings.TrimLeft(rest[index+1:], " \t\r\n")
+			if strings.HasPrefix(after, "\"") || strings.HasPrefix(after, "'") {
+				return true
+			}
+			searchFrom = index + 1
+			continue
 		}
 		end, depth := -1, 0
 		for i := index; i < len(rest) && end < 0; i++ {
@@ -184,7 +189,11 @@ func toolPayload(rest string) bool {
 				return true
 			}
 			last, _ := utf8.DecodeLastRuneInString(before)
-			return !strings.ContainsRune(".!?。！？", last)
+			if !strings.ContainsRune(".!?。！？", last) {
+				return true
+			}
+			searchFrom = index + 1
+			continue
 		}
 		candidate := rest[index : end+1]
 		if json.Valid([]byte(candidate)) || strings.ContainsAny(candidate, "\"{") {
