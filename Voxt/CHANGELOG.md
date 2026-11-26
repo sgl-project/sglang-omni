@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Dictated literal tool markers keep the rest of the sentence**: when the recognised text and the answer contain a literal `<|tool_call|>` token, clean-up no longer treats it as the start of a tool call and drops everything after it. Real tool-call payloads are still removed.
+
+### 中文
+
+#### 修复
+- **口述的字面工具标记不再截掉后半句**：识别原文和语言模型的答案里有字面 `<|tool_call|>` 标记时，整理不再把它当成工具调用的开头而删掉后面的文字；真正的工具调用内容仍会被去掉。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
@@ -56,7 +66,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **A preview's button no longer stays highlighted with its tooltip over the live text**: since cards and previews became ordinary windows, they followed the pointer only while Voxt was the app in front. While you dictated into another app, a button the pointer last rested on when Voxt was in front, such as Use transcript, stayed highlighted, and its tooltip ("Insert the recognised text without waiting for the language model") covered the first line of the live text although the pointer was elsewhere; hovering a button did nothing. They now follow the pointer whichever app is in front: the tooltip shows only while the pointer rests on the button.
 - **Pictures copied from more places paste into the Rewrite card**: an image file copied in Finder pasted its file name, because Finder also puts the name on the clipboard as text; it now pastes the picture (HEIC too), while another copied file still pastes its name. A clipboard holding only a JPEG, HEIC or WebP picture pasted nothing; it now pastes the picture. Text copied with a picture of itself, such as a spreadsheet range, still pastes as text.
 - **The answer card's scroll bar stays still while an answer streams** (#4320): the text stays centered, and the Markdown page matches the card's transparency instead of drawing a darker box.
-- **Dictated literal tool markers keep the rest of the sentence**: when the recognised text and the answer contain a literal `<|tool_call|>` token, clean-up no longer treats it as the start of a tool call and drops everything after it. Real tool-call payloads are still removed.
 - **Select all with ⌘A right before the shortcut is read as the selection** (#3835): pressing ⌘A and the Rewrite or Translate shortcut in one motion often sent no selected text, because Voxt read the selection before the app showed it to accessibility and concluded nothing was selected; it now keeps reading for a moment before giving up. And when the shortcut has Control, Option or Shift in it (such as Control+C), the helper's copy keystroke now waits for those keys to lift — and is not sent at all while they stay held — instead of reaching the app as a different key that copies nothing.
 - **Recording overlays open on the display you are working on**: with several displays, the recording pill and answer card now prefer the foreground app's focused-window display instead of following the pointer. Without Accessibility, Voxt reads the front window through the window server instead. If neither source has a focused window, they still use the pointer's display. A kept answer card on another display no longer pulls the recording pill away from the app you are dictating into. Pill show, hide and display choices are logged. A recording started while a Rewrite answer is kept now puts the pill beside that card instead of over it.
 - **Looking back shows its numbers whole** (#4570): in a narrow window the speed read "2… characters a min…". Numbers, units and labels are never cut now: the four cards stay on one row while they fit, then go two by two.
@@ -242,7 +251,6 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **从更多地方复制的图片可以粘贴进改写卡片**：在访达里复制的图片文件，粘贴进来的是文件名，因为访达会同时把文件名作为文字放到剪贴板上；现在粘贴的是图片（HEIC 也可以），复制别的文件仍然粘贴文件名。剪贴板上只有 JPEG、HEIC 或 WebP 图片时，原来什么都粘不进来；现在会粘贴图片。表格区域这类带着自己截图的文字，仍然按文字粘贴。
 - **剪贴板图片在解码前限制大小**：辅助进程会在生成缩略图前拒绝超过 32 MiB 或 4000 万像素的源图片，包括复制的文件和从选中内容复制时捕获的图片。系统剪贴板仍会先复制表示数据，再检查字节数。改写输入框会提示图片太大，不再静默丢弃，也会把超限图片与读不出来的文件或图片区分开。
 - **答案卡片流式输出时滚动条不再闪烁**（#4320）：文字保持左右居中，Markdown 页面与卡片使用相同的透明度，不再显示更深的底色块。
-- **口述的字面工具标记不再截掉后半句**：识别原文和语言模型的答案里有字面 `<|tool_call|>` 标记时，整理不再把它当成工具调用的开头而删掉后面的文字；真正的工具调用内容仍会被去掉。
 - **改写粘贴成功后清除旧错误，粘贴块保留边界**：之后粘贴有效内容会清除“这段文字太大了。”的旧错误；折叠粘贴块与前后输入文字在请求中分行。完成一次请求后，追问只保留这次输入，不会带回上一次请求里的文字。
 - **新安装也会在功能选模型的地方显示推荐语音识别模型的下载入口**：系统听写不再遮住转录、翻译和改写页的下载按钮。已安装的目录模型和已配置的远程服务保持原有操作。
 
