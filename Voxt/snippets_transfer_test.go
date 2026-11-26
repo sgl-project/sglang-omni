@@ -117,9 +117,13 @@ func TestSnippetsImportExample(t *testing.T) {
 	saved := chooseSnippetsFile
 	t.Cleanup(func() { chooseSnippetsFile = saved })
 	for _, locale := range []string{"en", "zh-Hans"} {
-		i18n.SetLocale(locale)
 		a, tt := snippetsTester(t)
+		i18n.SetLocale(locale) // after the app, which sets its own
+		frames(tt)
 		email := i18n.T("my work email")
+		if (locale == "zh-Hans") != (email == "我的工作邮箱") {
+			t.Fatalf("%s: the example's trigger is %q", locale, email)
+		}
 		a.snip.list = snippet.List{Snippets: []snippet.Snippet{
 			{ID: "s1", Trigger: "sign off", Text: "Best, Alex"},
 			{ID: "s2", Trigger: email, Text: "old@company.com"},
