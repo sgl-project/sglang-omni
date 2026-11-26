@@ -74,7 +74,6 @@ type rewriteBox struct {
 	// selection is the text selected when the shortcut fired (the
 	// session reads it; the box shows it).
 	selection         string
-	selectionVia      string
 	text              string
 	textSegments      []boxTextSegment
 	nextTextID        int
@@ -222,7 +221,7 @@ func (a *app) showBox(target proto.App, id string) {
 	}
 	a.box.open, a.box.shown, a.box.err, a.box.raise = true, true, "", true
 	a.box.target, a.box.session = target, id
-	a.box.sending, a.box.instruction, a.box.selection, a.box.selectionVia = "", "", "", ""
+	a.box.sending, a.box.instruction, a.box.selection = "", "", ""
 	a.box.selectionSuppressed, a.box.automaticImageSuppressed = false, false
 	a.box.typedFollowUp = false
 	a.box.focusText = true
@@ -402,7 +401,6 @@ func (a *app) boxEnded(s session.Snapshot) {
 		}
 		if s.Selection != "" {
 			a.box.selection = s.Selection
-			a.box.selectionVia = s.SelectionVia
 		}
 		a.box.shown = true
 	default: // cancelled: as Esc always did; a follow-up's leaves the answer

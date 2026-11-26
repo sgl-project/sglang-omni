@@ -57,14 +57,9 @@ func (a *app) boxSubtitle(selection string) string {
 
 func (a *app) boxViewState() rewriteBoxViewState {
 	box := &a.box
+	// A selection read through the copy fallback is still the selection,
+	// not the clipboard's content: one label for both.
 	selectionSource := i18n.T("Selected text")
-	selectionVia := box.selectionVia
-	if box.session != "" && a.sess.ID == box.session {
-		selectionVia = a.sess.SelectionVia
-	}
-	if selectionVia == "copy" {
-		selectionSource = i18n.T("Copied text")
-	}
 	thumbnails := slices.Clone(box.thumbs)
 	imageInfo := slices.Clone(box.imageInfo)
 	if !box.automaticImageSuppressed && len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {

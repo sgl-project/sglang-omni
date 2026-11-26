@@ -96,7 +96,7 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection, SelectionVia: "copy"})
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if !hasExact(tt, "Copied text · 45 chars") || !has(tt, "Show all") || has(tt, "third line") || has(tt, "fourth line") {
+	if !hasExact(tt, "Selected text · 45 chars") || !has(tt, "Show all") || has(tt, "third line") || has(tt, "fourth line") {
 		t.Fatalf("collapsed selection texts %q", firstTexts(tt))
 	}
 	click(t, tt, "Show all")
@@ -212,7 +212,7 @@ func TestAnswerCardInputChipsOpenOriginals(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	click(t, tt, "Copied text")
+	click(t, tt, "Selected text")
 	frames(tt)
 	if !has(tt, "fourth line") || !has(tt, "Back to answer") {
 		t.Fatalf("text original did not open: %q", firstTexts(tt))
