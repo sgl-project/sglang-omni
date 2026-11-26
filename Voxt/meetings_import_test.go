@@ -361,14 +361,16 @@ func TestMeetingImportTimeoutKeepsInterruptedMeeting(t *testing.T) {
 	}
 }
 
-// Continue processing an interrupted import refreshes the open detail when
-// it reaches done: the final status write left the Continue button showing
-// until the app restarted, and clicking it again repeated the model pass.
-func TestMeetingImportContinueRefreshesOpenDetail(t *testing.T) {
-	a, _, tt := newTestApp(t)
-	a.prefs.General.MainLanguage = "en"
-	a.prefs.Features.Meeting.NoAutoSummary = true
-	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+// interruptedImport imports a recording whose decoder stops after writing
+// audio, leaving an interrupted import that Continue processing can finish.
+func interruptedImport(t *testing.T, a *app) string {
+	t.Helper()
+	before := map[string]bool{}
+	if list, err := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{}); err == nil {
+		for _, stored := range list {
+			before[stored.ID] = true
+		}
+	}
 	saved := decodeRecording
 	t.Cleanup(func() { decodeRecording = saved })
 	pcm := make([]byte, 2*asr.SampleRate)
@@ -381,17 +383,34 @@ func TestMeetingImportContinueRefreshesOpenDetail(t *testing.T) {
 		}
 		return nil, context.Canceled // an interrupted import keeps its decoded audio
 	}
-	tt.SetSize(windowWidth, 900)
-	a.navigate("/meetings")
 	a.importRecording("interrupted.m4a")
 	list, err := a.lib.store.Meetings().ListMeetings(context.Background(), store.MeetingQuery{})
-	if err != nil || len(list) != 1 {
-		t.Fatalf("meetings %+v, err %v", list, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	id := list[0].ID
-	if list[0].Status != store.MeetingInterrupted {
-		t.Fatalf("status %s, want interrupted", list[0].Status)
+	for _, stored := range list {
+		if before[stored.ID] {
+			continue
+		}
+		if stored.Status != store.MeetingInterrupted {
+			t.Fatalf("status %s, want interrupted", stored.Status)
+		}
+		return stored.ID
 	}
+	t.Fatal("the interrupted import was not stored")
+	return ""
+}
+
+// Continue processing an interrupted import refreshes the open detail when
+// it reaches done: the final status write left the Continue button showing
+// until the app restarted, and clicking it again repeated the model pass.
+func TestMeetingImportContinueRefreshesOpenDetail(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.prefs.General.MainLanguage = "en"
+	a.prefs.Features.Meeting.NoAutoSummary = true
+	a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+	tt.SetSize(windowWidth, 900)
+	id := interruptedImport(t, a)
 	a.openMeetingDetail(id)
 	frames(tt)
 	if a.mv.detailView == nil || !a.mv.detailView.CanContinue {
@@ -408,4 +427,71 @@ func TestMeetingImportContinueRefreshesOpenDetail(t *testing.T) {
 	if tt.HasText("Continue processing") {
 		t.Fatal("the page still shows the Continue processing button after done")
 	}
+}
+
+// The reported case: automatic correction and summary run after the pass,
+// so the detail first refreshes while the meeting is finishing and needs
+// the final done write's refresh to drop the button.
+func TestMeetingImportContinueRefreshesOpenDetailWithSummary(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.prefs.General.MainLanguage = "en"
+	a.prefs.Features.Meeting.NoAutoSummary = false
+	chat := &fakeChat{texts: []string{
+		"[]",
+		`{"transcript_summary": {"title": "Weekly sync", "content": "Two speakers met."}, "todo_list": []}`,
+	}}
+	a.local = &importLocal{fakeLocal: withChat(&fakeLocal{ASRP: &fakeTranscriptions{}}, chat), mtd: &importDiarizeFake{}}
+	tt.SetSize(windowWidth, 900)
+	id := interruptedImport(t, a)
+	a.openMeetingDetail(id)
+	frames(tt)
+	if a.mv.detailView == nil || !a.mv.detailView.CanContinue {
+		t.Fatalf("the interrupted import's detail has no Continue (%+v)", a.mv.detailView)
+	}
+	a.meetingReprocess(id)
+	frames(tt)
+	if a.mv.detailView == nil || a.mv.detailView.CanContinue {
+		t.Fatalf("Continue processing is still shown after the summary finished (%+v)", a.mv.detailView)
+	}
+	if n := len(chat.requests()); n != 2 {
+		t.Fatalf("language model requests %d, want one correction and one summary", n)
+	}
+}
+
+// The final update names only its own meeting: another open detail stays,
+// and with no detail open the update opens none.
+func TestMeetingImportContinueLeavesOtherUIAlone(t *testing.T) {
+	t.Run("another detail stays", func(t *testing.T) {
+		a, _, tt := newTestApp(t)
+		a.prefs.General.MainLanguage = "en"
+		a.prefs.Features.Meeting.NoAutoSummary = true
+		a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+		id := interruptedImport(t, a)
+		if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+			ID: "other", CreatedAt: time.Now(), Status: store.MeetingDone, Mode: store.MeetingModeMeeting, Title: "Other",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		tt.SetSize(windowWidth, 900)
+		a.openMeetingDetail("other")
+		frames(tt)
+		a.meetingReprocess(id)
+		frames(tt)
+		if a.mv.detail == nil || a.mv.detail.id != "other" {
+			t.Fatalf("the open detail changed to %+v", a.mv.detail)
+		}
+	})
+	t.Run("no detail opens", func(t *testing.T) {
+		a, _, tt := newTestApp(t)
+		a.prefs.General.MainLanguage = "en"
+		a.prefs.Features.Meeting.NoAutoSummary = true
+		a.local = &importLocal{fakeLocal: &fakeLocal{ASRP: &fakeTranscriptions{}}, mtd: &importDiarizeFake{}}
+		id := interruptedImport(t, a)
+		tt.SetSize(windowWidth, 900)
+		a.meetingReprocess(id)
+		frames(tt)
+		if a.mv.detail != nil {
+			t.Fatalf("Continue processing opened a detail: %+v", a.mv.detail)
+		}
+	})
 }
