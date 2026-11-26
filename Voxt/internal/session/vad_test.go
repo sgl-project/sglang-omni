@@ -17,9 +17,9 @@ func speech(n int) bool { return n >= 20 && n < 30 || n >= 50 && n < 55 }
 
 const speechFrames = 75
 
-// TestNoSpeechNotSent: a recording without speech goes to no speech model
-// (a file transcriber gets no request, a stream no audio and no Finish)
-// and ends as "nothing was heard", which the overlay says.
+// TestNoSpeechNotSent: a recording without speech ends with "nothing
+// was heard". A file transcriber gets no request. A stream gets no
+// Finish, even if it started receiving audio after the hold.
 func TestNoSpeechNotSent(t *testing.T) {
 	t.Run("file", func(t *testing.T) {
 		file := &fakeFile{text: "never"}
@@ -62,6 +62,47 @@ func TestNoSpeechNotSent(t *testing.T) {
 		s.mu.Unlock()
 		if sends != 0 || done || !closed || len(llm.requests()) != 0 {
 			t.Errorf("stream: %d sends, finished %v, closed %v, %d chats", sends, done, closed, len(llm.requests()))
+		}
+	})
+	// A hold-only gate sent audio but heard no speech: no Finish, no answer.
+	t.Run("stream past the hold", func(t *testing.T) {
+		st := &fakeStreamer{final: "the speech context"}
+		llm := &fakeLLM{text: "never"}
+		h := newHarness(t, st, llm, nil)
+		h.audio.quiet = true
+		id := h.start()
+		h.speak(id, 70)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem == nil || end.Problem.Code != ProblemNoSpeech || end.Result != "" || end.Inserted {
+			t.Fatalf("end %+v", end)
+		}
+		s := st.streams[0]
+		s.mu.Lock()
+		sent, done, closed := pcmDuration(s.bytes), s.done, s.closed
+		s.mu.Unlock()
+		if done || !closed || len(llm.requests()) != 0 || len(h.text.pasted) != 0 {
+			t.Errorf("stream: finished %v, closed %v, %d chats, pasted %q", done, closed, len(llm.requests()), h.text.pasted)
+		}
+		if sent <= 0 || end.Timings.Sent != sent {
+			t.Errorf("sent %v, snapshot records %v", sent, end.Timings.Sent)
+		}
+		if entries := h.hist.all(); len(entries) != 1 || entries[0].SentMS != sent.Milliseconds() {
+			t.Errorf("history %+v, sent %v", entries, sent)
+		}
+		if !h.logged("no speech") {
+			t.Errorf("logs %q", h.logs)
+		}
+	})
+	// Speech that starts after the hold opened the gate is still heard.
+	t.Run("stream speech after the hold", func(t *testing.T) {
+		st := &fakeStreamer{final: "hello aura link"}
+		h := newHarness(t, st, nil, nil)
+		h.audio.speaks = func(n int) bool { return n >= 60 && n < 70 }
+		id := h.start()
+		h.speak(id, 75)
+		end := h.rec.wait(t)
+		if end.State != Done || end.Problem != nil || end.Result != "hello VoxtNew" || !end.Inserted {
+			t.Fatalf("end %+v", end)
 		}
 	})
 }

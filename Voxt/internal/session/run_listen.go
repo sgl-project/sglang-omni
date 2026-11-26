@@ -487,10 +487,8 @@ func (r *run) listen() (string, bool) {
 			return "", true
 		}
 		if silent {
-			// The gate held the whole recording: no speech, nothing sent.
-			r.logf("info", "no speech in %v: nothing sent to %s", audioLen.Round(time.Millisecond), r.svc.ASRInfo.ID)
+			r.logf("info", "no speech in %v: stopped %s without a final result", audioLen.Round(time.Millisecond), r.svc.ASRInfo.ID)
 			r.recognitionFailed = true
-			r.m.update(r, func(s *Snapshot) { s.Timings.Sent = 0 })
 			r.finish(Done, &Problem{Code: ProblemNoSpeech}, "", finishOpts{})
 			return "", false
 		}
