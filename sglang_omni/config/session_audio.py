@@ -16,8 +16,15 @@ from sglang_omni.models.turn_detection.node import (
 )
 from sglang_omni.models.vad.node import SESSION_PORTS as VAD_PORTS
 from sglang_omni.models.vad.node import VAD_STAGE, VADStageConfig, vad_stage
-from sglang_omni.proto.session import SessionLimits
-from sglang_omni.proto.streams import SESSION_UNIT_MS, SessionPorts
+from sglang_omni.proto.session import SessionGraph, SessionLimits
+from sglang_omni.proto.streams import (
+    PCM16,
+    SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
+    SESSION_UNIT_MS,
+    SessionPorts,
+    published_audio_port,
+)
 
 REALTIME_OPERATION_TIMEOUT_S = 300
 REALTIME_IDLE_TIMEOUT_S = 6 * 3600
@@ -25,6 +32,46 @@ REALTIME_MAX_PENDING_CHUNKS = 64
 MAX_PENDING_OUTPUT_CHUNKS = 1024
 MAX_PENDING_OUTPUT_BYTES = 32 * 1024 * 1024
 MODEL_PIPELINE_FIELDS = ("placement", "terminal_stages_fn", "env_defaults")
+
+
+def validate_fused_endpoint_graph(graph: SessionGraph) -> None:
+    """Reject split endpoint ownership and competing raw consumer edges."""
+    endpoint_names = {
+        name
+        for name, node in graph.nodes.items()
+        if TURN_DETECTION_STAGE in node.stages
+    }
+    vad_names = {name for name, node in graph.nodes.items() if VAD_STAGE in node.stages}
+    for endpoint_name in endpoint_names:
+        if vad_names & graph.nodes[endpoint_name].edges().keys():
+            raise ValueError(
+                "split VAD -> turn_detection is unsupported; route input directly "
+                "to turn_detection"
+            )
+        else:
+            pass
+    for name, consumer in graph.nodes.items():
+        edges = consumer.edges()
+        raw_formats = edges.get("input", frozenset())
+        for endpoint_name in endpoint_names & edges.keys():
+            endpoint_formats = edges[endpoint_name]
+            if (raw_formats is None or PCM16 in raw_formats) and (
+                endpoint_formats is None
+                or {SESSION_CONTROL, SESSION_CONTROL_INTERNAL} & endpoint_formats
+            ):
+                raise ValueError(
+                    f"node {name!r} combines input PCM with {endpoint_name} controls; "
+                    f"route PCM through {endpoint_name}:pcm16"
+                )
+            elif (raw_formats is None or SESSION_CONTROL in raw_formats) and (
+                endpoint_formats is None or SESSION_CONTROL_INTERNAL in endpoint_formats
+            ):
+                raise ValueError(
+                    f"node {name!r} combines input session controls with "
+                    f"{endpoint_name}:session_internal"
+                )
+            else:
+                pass
 
 
 @dataclass(frozen=True)
@@ -128,7 +175,11 @@ class AudioSessionPipelineConfig(PipelineConfig):
 
     @model_validator(mode="after")
     def check_graph(self) -> "AudioSessionPipelineConfig":
-        self.session_graph()
+        graph = self.session_graph()
+        if graph is not None:
+            validate_fused_endpoint_graph(graph)
+        else:
+            pass
         return self
 
     def model_configs(self) -> list[PipelineConfig]:
@@ -176,10 +227,32 @@ class AudioSessionPipelineConfig(PipelineConfig):
             name: self.node_ports(name, node)
             for name, node in self.session_nodes.items()
         }
-        first, *others = [ports for ports in by_node.values() if ports is not None]
+        first, *others = [
+            replace(
+                ports,
+                output=(
+                    ports.output
+                    if ports.output is not None
+                    and ports.output.format in self.session_publish.get(name, ())
+                    else None
+                ),
+            )
+            for name, ports in by_node.items()
+            if ports is not None
+        ]
         for ports in others:
             first = first.with_node(ports)
-        return replace(first, unit_ms=self.unit_ms)
+        return replace(
+            first,
+            output=published_audio_port(
+                ports.output
+                for name, ports in by_node.items()
+                if ports is not None
+                and ports.output is not None
+                and ports.output.format in self.session_publish.get(name, ())
+            ),
+            unit_ms=self.unit_ms,
+        )
 
     def session_limits(self) -> SessionLimits:
         return SessionLimits(

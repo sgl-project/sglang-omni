@@ -305,15 +305,15 @@ class LoudnessDetector:
         self.config = config
         self.is_speech = False
         self.last_speech_offset = 0
-        self.samples = 0
+        self.samples_consumed = 0
 
     def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]:
         loud = any(pcm)
-        found = [] if loud == self.is_speech else [(loud, self.samples)]
+        found = [] if loud == self.is_speech else [(loud, self.samples_consumed)]
         self.is_speech = loud
-        self.samples += len(pcm) // 2
+        self.samples_consumed += len(pcm) // 2
         if loud:
-            self.last_speech_offset = self.samples
+            self.last_speech_offset = self.samples_consumed
         else:
             pass
         return found
@@ -321,7 +321,7 @@ class LoudnessDetector:
     def reset(self) -> None:
         self.is_speech = False
         self.last_speech_offset = 0
-        self.samples = 0
+        self.samples_consumed = 0
 
 
 def make_vad_scheduler(name: str, events: Queue[StageEvent]) -> SessionScheduler:

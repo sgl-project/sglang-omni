@@ -16,6 +16,7 @@ from sglang_omni.audio.vad import (
     VAD_FRAME_SAMPLES,
     VAD_SAMPLE_RATE,
     Emit,
+    StreamingVAD,
     VADEvent,
     offsets_to_ms,
 )
@@ -174,8 +175,16 @@ async def test_adjacent_turn_retains_suffix_and_second_commit():
     await stop(session)
 
 
+@pytest.fixture
+def deterministic_vad_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep real frame accounting and boundaries; do not classify synthetic tones."""
+    monkeypatch.setattr(
+        StreamingVAD, "infer", lambda self, frame: float(np.any(frame))
+    )
+
+
 @pytest.mark.asyncio
-async def test_silero_silence_threshold_across_appends():
+async def test_silero_silence_threshold_across_appends(deterministic_vad_frames):
     """Silence threshold can accumulate across client appends (network streaming)."""
     first = speechish(5, seed=0)
     second = speechish(5, seed=1)
@@ -221,7 +230,9 @@ def test_tail_zero_returns_empty_bytes():
 
 
 @pytest.mark.asyncio
-async def test_empty_append_does_not_advance_after_partial_commit():
+async def test_empty_append_does_not_advance_after_partial_commit(
+    deterministic_vad_frames,
+):
     """Empty append must not re-feed retained suffix through VAD."""
     second = speechish(5, seed=1)
     session, sent, commits = make_session()

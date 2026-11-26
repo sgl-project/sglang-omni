@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The VAD stage: one silero detector per Session, speech boundaries on the input timeline."""
+"""VAD session state and its standalone Session stage."""
 
 from __future__ import annotations
 
@@ -34,11 +34,12 @@ from sglang_omni.scheduling.session import (
 
 
 class SpeechDetector(Protocol):
-    """Frame-level speech detection over 16 kHz pcm16; offsets are samples since the last reset."""
+    """Frame-level detection over 16 kHz PCM; sample offsets reset with the detector."""
 
     config: VADConfig
     is_speech: bool
     last_speech_offset: int
+    samples_consumed: int
 
     def boundaries(self, pcm: bytes) -> list[tuple[bool, int]]: ...
 
@@ -59,7 +60,7 @@ DetectorFactory = Callable[[VADConfig], SpeechDetector]
 def turn_detection_config(
     config: VADConfig, settings: Mapping[str, object]
 ) -> VADConfig:
-    """`config` with the `turn_detection` fields `settings` sets; `silence_duration_ms` applies only to `server_vad`."""
+    """Apply VAD options from a realtime turn_detection setting."""
     turn_detection = settings.get("turn_detection")
     if turn_detection is None:
         return config
@@ -95,12 +96,101 @@ def boundary_chunk(started: bool, t_ms: float) -> TimedChunk:
 class DetectorSession:
     detector: SpeechDetector
     is_enabled: bool = True
-    # Note (Junnan Li): Input time of the first audio sample since the last reset; None until audio arrives.
     origin_ms: float | None = None
 
-    def boundary_ms(self, offset: int) -> float:
+    @property
+    def completed_frame_end_ms(self) -> float | None:
+        if self.origin_ms is None:
+            return None
+        else:
+            return self.boundary_ms(self.detector.samples_consumed)
+
+    def boundary_ms(self, sample_offset: int) -> float:
         assert self.origin_ms is not None
-        return self.origin_ms + offset * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+        return self.origin_ms + sample_offset * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+
+    def process_audio(
+        self,
+        chunk: TimedChunk,
+        *,
+        expected_start_sample: int | None = None,
+        require_duration_match: bool = False,
+    ) -> list[tuple[bool, float]]:
+        self.validate_audio_chunk(
+            chunk,
+            expected_start_sample=expected_start_sample,
+            require_duration_match=require_duration_match,
+        )
+        if not chunk.payload or not self.is_enabled:
+            return []
+        else:
+            assert isinstance(chunk.payload, bytes)
+            return self.process_pcm(chunk.payload)
+
+    def validate_audio_chunk(
+        self,
+        chunk: TimedChunk,
+        *,
+        expected_start_sample: int | None = None,
+        require_duration_match: bool = False,
+    ) -> int:
+        if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
+            raise ValueError("audio must be 16 kHz mono pcm16 bytes")
+        elif len(chunk.payload) % 2:
+            raise ValueError("pcm16 audio must contain whole samples")
+        else:
+            sample_count = len(chunk.payload) // 2
+        if (
+            require_duration_match
+            and chunk.duration_ms != sample_count * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+        ):
+            raise ValueError("audio duration must match its pcm16 sample count")
+        else:
+            pass
+        if (
+            self.is_enabled
+            and sample_count
+            and self.origin_ms is not None
+            and expected_start_sample is not None
+        ):
+            actual_start_sample = round(
+                (chunk.t_start_ms - self.origin_ms)
+                * SESSION_INPUT_SAMPLE_RATE_HZ
+                / 1000
+            )
+            if actual_start_sample != expected_start_sample:
+                expected_start_ms = self.origin_ms + (
+                    expected_start_sample * 1000 / SESSION_INPUT_SAMPLE_RATE_HZ
+                )
+                raise ValueError(
+                    "fused turn_detection requires contiguous PCM within an enabled "
+                    "detector epoch; expected the next sample at "
+                    f"{expected_start_ms:g} ms, got {chunk.t_start_ms:g} ms"
+                )
+            else:
+                pass
+        else:
+            pass
+        if not chunk.payload or not self.is_enabled:
+            return sample_count
+        elif self.origin_ms is None:
+            self.origin_ms = chunk.t_start_ms
+        else:
+            pass
+        return sample_count
+
+    def process_pcm(self, pcm: bytes) -> list[tuple[bool, float]]:
+        if not pcm or not self.is_enabled:
+            return []
+        else:
+            return [
+                (started, self.boundary_ms(sample_offset))
+                for started, sample_offset in self.detector.boundaries(pcm)
+            ]
+
+    def reset(self) -> None:
+        self.detector.reset()
+        self.origin_ms = None
 
 
 class VADHooks(SessionHooks):
@@ -128,17 +218,16 @@ class VADHooks(SessionHooks):
         session = self.sessions[context.session_identity]
         chunk_control_type = control_type(chunk)
         if chunk.modality == AUDIO:
-            self.append_audio(session, chunk, context)
+            for started, boundary_time_ms in session.process_audio(chunk):
+                context.emit(boundary_chunk(started, boundary_time_ms))
         elif chunk_control_type == COMMIT:
-            session.detector.reset()
-            session.origin_ms = None
+            session.reset()
         elif chunk_control_type == CONFIGURE:
             if "turn_detection" not in chunk.payload:
                 pass
             elif chunk.payload["turn_detection"] is None:
+                session.reset()
                 session.is_enabled = False
-                session.detector.reset()
-                session.origin_ms = None
             else:
                 session.detector.config = turn_detection_config(
                     replace(
@@ -162,22 +251,6 @@ class VADHooks(SessionHooks):
             pass
         payload.data = {"accepted": True}
         return payload
-
-    def append_audio(
-        self, session: DetectorSession, chunk: TimedChunk, context: SessionContext
-    ) -> None:
-        if chunk.format != PCM16 or not isinstance(chunk.payload, bytes):
-            raise ValueError("audio must be 16 kHz mono pcm16 bytes")
-        elif not chunk.payload or not session.is_enabled:
-            return
-        else:
-            pass
-        if session.origin_ms is None:
-            session.origin_ms = chunk.t_start_ms
-        else:
-            pass
-        for started, offset in session.detector.boundaries(chunk.payload):
-            context.emit(boundary_chunk(started, session.boundary_ms(offset)))
 
 
 def create_scheduler(

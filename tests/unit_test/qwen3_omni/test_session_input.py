@@ -16,7 +16,9 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16,
     REPLY_DELIVERED,
+    SEGMENTATION_MODE,
     SESSION_CONTROL,
+    SESSION_CONTROL_INTERNAL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
     TRUNCATE,
@@ -255,3 +257,40 @@ def test_an_utterance_takes_only_its_newest_frames(dialog) -> None:
         b"frame 600",
         b"frame 800",
     ]
+
+
+def test_resumed_qwen_utterance_slices_held_pcm_at_the_speech_start_sample(dialog):
+    hooks, outputs, context = dialog
+    append(
+        hooks,
+        context,
+        TimedChunk(
+            "control",
+            0,
+            0,
+            0,
+            {"type": SEGMENTATION_MODE, "enabled": True},
+            format=SESSION_CONTROL_INTERNAL,
+        ),
+    )
+
+    held = b"".join(sample.to_bytes(2, "little") for sample in range(1600))
+    held_chunk = TimedChunk("audio", 20, 100, 1, held, format=PCM16)
+    append(hooks, context, held_chunk)
+    append(hooks, context, control_chunk(SPEECH_STARTED, t_ms=70))
+    append(
+        hooks,
+        context,
+        TimedChunk(
+            "control",
+            120,
+            0,
+            0,
+            {"type": COMMIT},
+            format=SESSION_CONTROL_INTERNAL,
+        ),
+    )
+
+    unit = outputs[-1]
+    assert unit.format == UNIT_FORMAT and unit.turn == 1
+    assert unit.payload["pcm"] == held[800 * 2 :]
