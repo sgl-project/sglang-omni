@@ -474,6 +474,7 @@ def test_replay_decodes_the_loaded_batch_as_the_step_runs_eagerly(
     reference_tolerance: dict[str, float],
 ) -> None:
     torch.manual_seed(0)
+    monkeypatch.setattr(decode_graph, "REQUESTS_PER_ATTENTION_CALL", 2)
     runner = decoder_runner(monkeypatch, "xpu", dtype)
     pool = runner.token_to_kv_pool
     graphs = graph_runner(runner, (1, 4))
