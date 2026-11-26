@@ -79,15 +79,33 @@ public:
       throw std::invalid_argument(
           "audio_layout must be reference or voxt_swift");
     }
+    // note (chenye): the caller opts in when the request covers the whole
+    // recording. Other requests retain their existing behavior, including
+    // explicit guessed_text.
+    const bool guess_auto_language =
+        omni_common::FormFlag(
+            asr_service::TextField(form, "guess_auto_language")) &&
+        !options.language.has_value() && !guessed_text.has_value() &&
+        options.repetition_penalty == 1.0f &&
+        !omni_common::FormFlag(asr_service::TextField(form, "preview"));
     // note (XXXXRT666): a session holds one prompt's windows, and longer audio
     // is decoded in chunks.
     const qwen3_asr::FinalReuse final_reuse =
         samples.size() <= qwen3_asr::kMaxChunkSamples
             ? TakeFinalReuse(
                   asr_service::TextField(form, "realtime_session").value_or(""),
-                  options.context)
+                  options.context, guess_auto_language)
             : qwen3_asr::FinalReuse();
     if (final_reuse.reuse != nullptr) {
+      // note (chenye): auto-language decoding generates a language header
+      // before the transcript. Propose both from the session's preview and
+      // verify them through the existing guessed-token path. Leave
+      // options.language unset so the decoder still detects the language.
+      if (guess_auto_language && final_reuse.auto_language_guess.has_value()) {
+        const auto &guess = *final_reuse.auto_language_guess;
+        options.guessed_token_ids =
+            transcriber_.AutoLanguageGuesses(guess.language, guess.text);
+      }
       return [this, final_reuse, samples = std::move(samples),
               options = std::move(options)](const std::atomic<bool> &cancel) {
         // note (XXXXRT666): a copy the refreshes keep using shares the
@@ -129,13 +147,15 @@ private:
   // when it is not open.
   qwen3_asr::FinalReuse
   TakeFinalReuse(const std::string &session_id,
-                 const std::optional<std::string> &context) const {
+                 const std::optional<std::string> &context,
+                 bool guess_auto_language) const {
     std::lock_guard<std::mutex> lock(live_sessions_mutex_);
     const auto entry = live_sessions_.find(session_id);
     const std::shared_ptr<qwen3_asr::RealtimeSession> session =
         entry != live_sessions_.end() ? entry->second.lock() : nullptr;
-    return session != nullptr ? session->TakeFinalReuse(context)
-                              : qwen3_asr::FinalReuse();
+    return session != nullptr
+               ? session->TakeFinalReuse(context, guess_auto_language)
+               : qwen3_asr::FinalReuse();
   }
 
   qwen3_asr::Qwen3ASRTranscriber transcriber_;

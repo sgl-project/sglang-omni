@@ -206,6 +206,13 @@ jobs:
           set -euo pipefail
           ccache --zero-stats >/dev/null
           sglang_omni_mlx/native/scripts/build_runtime.sh "${RUNNER_TEMP}/runtime" "${MLX_BUILD_WORK}"
+          if [[ "${TEST_SUITE}" == "all" || "${TEST_SUITE}" == "core" || "${TEST_SUITE}" == "api" ]]; then
+            "${MLX_BUILD_WORK}/venv/bin/cmake" \
+              --build "${MLX_BUILD_WORK}/cmake" \
+              --target qwen3_asr_auto_language_test
+          else
+            echo "Core API suite is not selected; skipping the auto-language test executable."
+          fi
           ccache --show-stats
 
       - name: Set up CI Python environment
@@ -232,6 +239,13 @@ jobs:
         run: |
           set -euo pipefail
           export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          export NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST="${MLX_BUILD_WORK}/cmake/qwen3_asr_auto_language_test"
+          if [[ ! -x "${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}" ]]; then
+            echo "::error::Auto-language regression executable is missing or not executable: ${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}"
+            exit 1
+          else
+            echo "Using auto-language regression executable: ${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}"
+          fi
           "${TEST_VENV}/bin/python" -m pytest -v \
             --junitxml="${MAC_METAL_REPORT_DIR}/core-api-junit.xml" \
             sglang_omni_mlx/native/ci/test_check_golden.py \
