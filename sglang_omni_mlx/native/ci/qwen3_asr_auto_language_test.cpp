@@ -30,9 +30,13 @@ using qwen3_asr::FinalReuse;
 using qwen3_asr::MakeRealtimeSettings;
 using qwen3_asr::Qwen3ASRTranscriber;
 using qwen3_asr::RealtimeSession;
+using qwen3_asr::RefreshReuse;
+using qwen3_asr::RetainedText;
 using qwen3_asr::TranscriptionOptions;
 
 constexpr size_t kPreviewAudioSampleCount = 9 * omni_common::kSampleRate;
+constexpr size_t kFollowupAudioSampleCount = 2 * omni_common::kSampleRate;
+constexpr int kPrefixedTokenSlack = 8;
 constexpr auto kSessionEventTimeout = std::chrono::seconds(180);
 
 void Require(bool condition, const std::string &message) {
@@ -62,6 +66,32 @@ TranscriptionResult DecodeFinalTranscription(
         return transcriber.Transcribe(audio_samples, options, cancel);
       },
       NewCancelFlag());
+}
+
+TranscriptionResult DecodeWithReuse(TranscriptionWorker &worker,
+                                    const Qwen3ASRTranscriber &transcriber,
+                                    const std::vector<float> &audio_samples,
+                                    TranscriptionOptions options,
+                                    RefreshReuse reuse) {
+  return worker.Transcribe(
+      [&transcriber, &audio_samples, options = std::move(options),
+       reuse = std::move(reuse)](const std::atomic<bool> &cancel) mutable {
+        return transcriber.Transcribe(audio_samples, options, cancel, &reuse);
+      },
+      NewCancelFlag());
+}
+
+void RequireSameFinalOutput(const TranscriptionResult &expected,
+                            const TranscriptionResult &actual,
+                            const std::string &guess_kind) {
+  Require(actual.text == expected.text,
+          guess_kind + " changed the prefixed Final text");
+  Require(actual.language == expected.language,
+          guess_kind + " changed detected language");
+  Require(actual.finish_reason == expected.finish_reason,
+          guess_kind + " changed finish reason");
+  Require(actual.generated_token_count == expected.generated_token_count,
+          guess_kind + " changed generated token count");
 }
 
 struct SessionEventLog {
@@ -134,10 +164,10 @@ void AppendAudio(RealtimeSession &session,
   Require(handled, "realtime session closed during audio append");
 }
 
-void TestWrongGuess(TranscriptionWorker &worker,
-                    const Qwen3ASRTranscriber &transcriber,
-                    const std::vector<float> &final_audio_samples,
-                    bool uses_draft) {
+void TestWrongAutoLanguageGuess(TranscriptionWorker &worker,
+                                const Qwen3ASRTranscriber &transcriber,
+                                const std::vector<float> &final_audio_samples,
+                                bool uses_draft) {
   const std::string guessed_language = "Chinese";
   const std::string guessed_text = "这是故意错误的转录内容。";
   TranscriptionOptions baseline_options;
@@ -183,6 +213,12 @@ void TestWrongGuess(TranscriptionWorker &worker,
       candidate_result.generated_token_count ==
           baseline_result.generated_token_count,
       "incorrect guessed language or transcript changed generated token count");
+  Require(candidate_result.verified_guess_token_count ==
+              static_cast<int>(candidate_options.guessed_token_ids.size()),
+          "the target did not verify every token in the wrong guess");
+  Require(candidate_result.accepted_guess_token_count <
+              candidate_result.verified_guess_token_count,
+          "the target accepted the deliberately incorrect guess in full");
   Require(candidate_result.finish_reason == baseline_result.finish_reason,
           "incorrect guessed language or transcript changed finish reason");
   if (uses_draft) {
@@ -191,6 +227,156 @@ void TestWrongGuess(TranscriptionWorker &worker,
             "DFlash comparison did not verify draft proposals");
   } else {
   }
+}
+
+void TestRollbackGuessParity(TranscriptionWorker &worker,
+                             const Qwen3ASRTranscriber &transcriber,
+                             const std::vector<float> &first_audio_samples,
+                             const std::vector<float> &followup_audio_samples) {
+  Require(first_audio_samples.size() >= kPreviewAudioSampleCount,
+          "rollback parity clip is shorter than the preview input");
+  Require(followup_audio_samples.size() >= kFollowupAudioSampleCount,
+          "rollback parity follow-up clip is too short");
+
+  const std::vector<float> first_preview_samples(first_audio_samples.begin(),
+                                                 first_audio_samples.begin() +
+                                                     kPreviewAudioSampleCount);
+  const std::vector<float> followup_preview_samples(
+      followup_audio_samples.begin(),
+      followup_audio_samples.begin() + kFollowupAudioSampleCount);
+  std::vector<float> final_input_samples = first_preview_samples;
+  final_input_samples.insert(final_input_samples.end(),
+                             followup_preview_samples.begin(),
+                             followup_preview_samples.end());
+  // note (chenye): Preserve the session's PCM16 samples for cache reuse.
+  const std::vector<float> final_audio_samples = omni_common::DecodeWav(
+      omni_common::WavBytes(omni_common::Pcm16Bytes(final_input_samples),
+                            omni_common::kSampleRate));
+
+  const std::shared_ptr<SessionEventLog> event_log =
+      std::make_shared<SessionEventLog>();
+  const std::shared_ptr<RealtimeSession> session =
+      CreateRealtimeSession(worker, transcriber, event_log);
+  RealtimeSessionCloseGuard close_session(session);
+  const bool handled = session->Handle({{"type", "session.update"},
+                                        {"session",
+                                         {{"turn_detection", nullptr},
+                                          {"language", "en"},
+                                          {"final_prompt", ""}}}});
+  Require(handled, "realtime session closed during its update");
+  AppendAudio(session, first_preview_samples);
+  const nlohmann::json first_preview = WaitForSegment(event_log, 0, false);
+  AppendAudio(session, followup_preview_samples);
+  const int first_preview_index = first_preview.at("event_index").get<int>();
+  const nlohmann::json last_preview =
+      WaitForSegment(event_log, first_preview_index, false);
+  const std::string preview_text = last_preview.at("text").get<std::string>();
+  Require(!preview_text.empty(), "rollback parity preview was empty");
+
+  const FinalReuse final_reuse = session->TakeFinalReuse(std::string(), false);
+  Require(final_reuse.reuse != nullptr && !final_reuse.is_taken,
+          "rollback parity did not capture the segment refresh cache");
+  // note (chenye): Each decode gets this unchanged cache state by value.
+  const RefreshReuse initial_reuse = *final_reuse.reuse;
+
+  const RetainedText retained = transcriber.RetainedPrefix(preview_text, 5);
+  Require(!retained.prefix_ids.empty() && !retained.rest_ids.empty(),
+          "rollback parity preview did not produce a retained prefix and tail");
+
+  TranscriptionOptions baseline_options;
+  baseline_options.language = "English";
+  baseline_options.max_new_tokens =
+      static_cast<int>(retained.rest_ids.size()) + kPrefixedTokenSlack;
+  baseline_options.stop_on_token_loop = true;
+  baseline_options.layout = AudioLayout::kReference;
+  baseline_options.prefix_token_ids = retained.prefix_ids;
+  baseline_options.prefix_text = retained.prefix_text;
+
+  TranscriptionOptions preview_guess_options = baseline_options;
+  preview_guess_options.guessed_token_ids = retained.rest_ids;
+  const TranscriptionResult baseline_result =
+      DecodeWithReuse(worker, transcriber, final_audio_samples,
+                      baseline_options, initial_reuse);
+  const TranscriptionResult preview_guess_result =
+      DecodeWithReuse(worker, transcriber, final_audio_samples,
+                      preview_guess_options, initial_reuse);
+  Require(!baseline_result.text.empty() && baseline_result.language.has_value(),
+          "no-guess prefixed Final did not produce text and language");
+  Require(baseline_result.reused_audio_token_count > 0 &&
+              preview_guess_result.reused_audio_token_count > 0,
+          "rollback parity did not reuse cached audio rows");
+  RequireSameFinalOutput(baseline_result, preview_guess_result,
+                         "valid rollback guesses");
+  Require(preview_guess_result.verified_guess_token_count ==
+              static_cast<int>(retained.rest_ids.size()),
+          "the target did not verify every rollback guess");
+  Require(preview_guess_result.accepted_guess_token_count >= 0 &&
+              preview_guess_result.accepted_guess_token_count <=
+                  preview_guess_result.verified_guess_token_count,
+          "invalid rollback guess acceptance count");
+
+  std::vector<int> incorrect_guess_ids;
+  for (const std::string &incorrect_text :
+       {"A deliberately unrelated transcript.",
+        "The stale rollback prediction is incorrect."}) {
+    std::vector<int> candidate_ids =
+        transcriber.RetainedPrefix(incorrect_text, 0).prefix_ids;
+    if (!candidate_ids.empty() &&
+        candidate_ids.front() != retained.rest_ids.front()) {
+      incorrect_guess_ids = std::move(candidate_ids);
+      break;
+    } else {
+    }
+  }
+  Require(!incorrect_guess_ids.empty(),
+          "could not construct a wrong rollback guess");
+  incorrect_guess_ids.resize(retained.rest_ids.size(),
+                             incorrect_guess_ids.back());
+  TranscriptionOptions incorrect_guess_options = baseline_options;
+  incorrect_guess_options.guessed_token_ids = incorrect_guess_ids;
+  const TranscriptionResult incorrect_guess_result =
+      DecodeWithReuse(worker, transcriber, final_audio_samples,
+                      incorrect_guess_options, initial_reuse);
+  RequireSameFinalOutput(baseline_result, incorrect_guess_result,
+                         "a rejected rollback guess");
+  Require(incorrect_guess_result.verified_guess_token_count ==
+              static_cast<int>(incorrect_guess_ids.size()),
+          "the target did not verify every deliberately wrong guess");
+  Require(incorrect_guess_result.accepted_guess_token_count <
+              incorrect_guess_result.verified_guess_token_count,
+          "the target accepted the deliberately wrong rollback guess in full");
+
+  TranscriptionResult expected_final_result = preview_guess_result;
+  if (preview_guess_result.finish_reason ==
+      omni_common::FinishReason::kLength) {
+    TranscriptionOptions retry_options = baseline_options;
+    retry_options.prefix_token_ids.clear();
+    retry_options.prefix_text.clear();
+    retry_options.guessed_token_ids.clear();
+    retry_options.max_new_tokens.reset();
+    expected_final_result = DecodeWithReuse(
+        worker, transcriber, final_audio_samples, retry_options, initial_reuse);
+  } else {
+  }
+
+  const bool finalized =
+      session->Handle({{"type", "input_audio_buffer.commit"}});
+  Require(finalized, "realtime session closed during Segment Final");
+  const nlohmann::json final_event = WaitForSegment(
+      event_log, last_preview.at("event_index").get<int>(), true);
+  Require(final_event.at("text").get<std::string>() ==
+              expected_final_result.text,
+          "Segment Final changed the expected prefixed or retry output");
+  const nlohmann::json generation_metadata =
+      final_event.at("generation_metadata");
+  Require(generation_metadata.at("reused_audio_token_count").get<int>() > 0,
+          "Segment Final did not reuse cached audio rows");
+  Require(generation_metadata.at("verified_guess_token_count").get<int>() ==
+              expected_final_result.verified_guess_token_count,
+          "Segment Final verified a different number of rollback guesses");
+  Require(generation_metadata.at("accepted_guess_token_count").get<int>() ==
+              expected_final_result.accepted_guess_token_count,
+          "Segment Final accepted a different number of rollback guesses");
 }
 
 void TestPositiveEligibilityControl(
@@ -277,9 +463,9 @@ void TestEligibility(TranscriptionWorker &worker,
 
 int main(int argc, char **argv) {
   try {
-    if (argc != 5) {
-      throw std::invalid_argument(
-          "usage: qwen3_asr_auto_language_test TARGET DRAFT WAV MODE");
+    if (argc != 5 && argc != 6) {
+      throw std::invalid_argument("usage: qwen3_asr_auto_language_test TARGET "
+                                  "DRAFT WAV MODE [FOLLOWUP_WAV]");
     } else {
     }
     const std::filesystem::path model_directory(argv[1]);
@@ -297,9 +483,29 @@ int main(int argc, char **argv) {
         [] {});
     Require(transcriber != nullptr, "Qwen3-ASR transcriber did not load");
     if (test_mode == "wrong_guess") {
-      TestWrongGuess(worker, *transcriber, audio_samples,
-                     !draft_directory.empty());
+      if (argc != 5) {
+        throw std::invalid_argument(
+            "wrong_guess does not accept a follow-up WAV");
+      } else {
+      }
+      TestWrongAutoLanguageGuess(worker, *transcriber, audio_samples,
+                                 !draft_directory.empty());
+    } else if (test_mode == "rollback_guess_parity") {
+      if (argc != 6) {
+        throw std::invalid_argument(
+            "rollback_guess_parity requires a follow-up WAV");
+      } else {
+      }
+      const std::vector<float> followup_audio_samples =
+          ReadAudioSamples(argv[5]);
+      TestRollbackGuessParity(worker, *transcriber, audio_samples,
+                              followup_audio_samples);
     } else if (test_mode == "eligibility") {
+      if (argc != 5) {
+        throw std::invalid_argument(
+            "eligibility does not accept a follow-up WAV");
+      } else {
+      }
       TestEligibility(worker, *transcriber, audio_samples);
     } else {
       throw std::invalid_argument("unknown auto-language test mode");

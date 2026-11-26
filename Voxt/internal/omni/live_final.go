@@ -25,11 +25,12 @@ func (s *live) finalPass(pcm []byte) {
 	var texts []string
 	done, busy := 0, time.Duration(0)
 	if pc := s.pc; pc != nil {
-		select {
-		case pc.wake <- struct{}{}:
-		default:
+		s.mu.Lock()
+		activePieceDone := pc.activePieceDone
+		s.mu.Unlock()
+		if activePieceDone != nil {
+			<-activePieceDone
 		}
-		<-pc.exited
 		s.mu.Lock()
 		done, texts, busy = pc.done, slices.Clone(pc.texts), pc.busy
 		if pc.language != "" {
