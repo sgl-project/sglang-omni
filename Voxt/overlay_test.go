@@ -647,9 +647,9 @@ func TestOverlayGoesAway(t *testing.T) {
 	gone("card closed")
 }
 
-// TestNoSpeechNoticeShort: Nothing was heard leaves after noSpeechTime,
-// through the fade; other notices keep noticeTime.
-func TestNoSpeechNoticeShort(t *testing.T) {
+// TestShortNotices: Nothing was heard leaves after noSpeechTime, through
+// the fade, a green check after okTime; other notices keep noticeTime.
+func TestShortNotices(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	ft := new(fakeTimers).install(a)
 	snap(a, session.Snapshot{ID: "s1", State: session.Recording})
@@ -668,8 +668,22 @@ func TestNoSpeechNoticeShort(t *testing.T) {
 	if a.ov.visible {
 		t.Error("no speech still on screen after the fade")
 	}
-	snap(a, session.Snapshot{ID: "s2", State: session.Recording})
-	snap(a, session.Snapshot{ID: "s2", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
+	snap(a, session.Snapshot{ID: "s2", State: session.Recording, Note: true})
+	snap(a, session.Snapshot{ID: "s2", State: session.Done, Note: true, Result: "A note."})
+	if a.notice == nil || !a.notice.ok {
+		t.Fatalf("saved: %+v", a.notice)
+	}
+	ft.advance(okTime - time.Millisecond)
+	if a.notice == nil {
+		t.Fatal("saved left early")
+	}
+	ft.advance(time.Millisecond)
+	if a.notice != nil {
+		t.Fatalf("saved stays after %v", okTime)
+	}
+	ft.advance(ovGone)
+	snap(a, session.Snapshot{ID: "s3", State: session.Recording})
+	snap(a, session.Snapshot{ID: "s3", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
 	ft.advance(noticeTime - time.Millisecond)
 	if a.notice == nil {
 		t.Fatal("another notice left before noticeTime")

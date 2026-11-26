@@ -203,16 +203,18 @@ type sessionNotice struct {
 	ok         bool          // done as asked (a term added, a note saved), not a problem
 	seq        int           // which notice: its timer hides only itself
 	over       bool          // shows before the card that came back as its session ended (#4013)
-	hold       time.Duration // how long it shows; 0 is noticeTime
+	hold       time.Duration // how long it shows; 0 is okTime or noticeTime
 	// then runs when its time is up (not when a click or the next
 	// session hides it): the notice that follows it.
 	then func()
 }
 
-// noticeTime is how long a notice shows; noSpeechTime is Nothing was
-// heard's: there is nothing to read in it, so it leaves sooner.
+// noticeTime is how long a notice shows. Shorter ones have nothing more
+// to read: okTime a green check (added, saved), noSpeechTime Nothing was
+// heard.
 const (
 	noticeTime   = 5 * time.Second
+	okTime       = 2 * time.Second
 	noSpeechTime = 1500 * time.Millisecond
 )
 
@@ -542,7 +544,11 @@ func (a *app) showNotice(n sessionNotice) {
 	a.notice = &n
 	a.overlaySync()
 	hold := n.hold
-	if hold == 0 {
+	switch {
+	case hold > 0:
+	case n.ok:
+		hold = okTime
+	default:
 		hold = noticeTime
 	}
 	a.later(hold, func() {
