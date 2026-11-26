@@ -140,6 +140,13 @@ add_executable(qwen3_asr_server src/qwen3_asr/qwen3_asr_server.cpp src/silero_va
   src/sortformer/sortformer_service.cpp)
 target_link_libraries(qwen3_asr_server PRIVATE qwen3_asr asr_service silero_vad sortformer)
 
+add_executable(qwen3_asr_auto_language_test EXCLUDE_FROM_ALL
+  ci/qwen3_asr_auto_language_test.cpp)
+target_link_libraries(qwen3_asr_auto_language_test PRIVATE qwen3_asr omni_service)
+target_compile_options(qwen3_asr_auto_language_test PRIVATE -Wall -Wextra)
+set_target_properties(qwen3_asr_auto_language_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
 add_executable(silero_vad_probe tools/silero_vad_probe.cpp)
 target_link_libraries(silero_vad_probe PRIVATE silero_vad)
 

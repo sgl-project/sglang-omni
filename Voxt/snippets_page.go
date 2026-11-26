@@ -1,8 +1,8 @@
 package main
 
 // The Snippets page: each snippet as "trigger → text", found by a search
-// and sorted, a dialog to add or change one, an import from a JSON file,
-// and on an empty page a few triggers to start from.
+// and sorted, a dialog to add or change one, one to import a JSON file
+// (snippets_import.go), and on an empty page a few triggers to start from.
 
 import (
 	"strings"
@@ -16,19 +16,25 @@ type snippetsActions interface {
 	saveSnippet(id, trigger, text string) string
 	deleteSnippet(id string)
 	importSnippets()
+	importSnippetsFile(path string)
 	loadSnippets()
 }
 
-// snippetsLocalUI is the page's search and sort, and its dialog: open,
-// the snippet it edits (id "" for a new one), its fields as they were
-// opened (was) and the problem a save gave.
+// snippetsLocalUI is the page's search and sort, and its dialogs: the
+// edit dialog open, the snippet it edits (id "" for a new one), its fields
+// as they were opened (was) and the problem a save gave; the import dialog
+// open, its file format shown, and the problem its last file had (set by
+// importSnippetsFile, which also shows the format).
 type snippetsLocalUI struct {
-	query    string
-	order    snippetOrder
-	editOpen bool
-	edit     snippetEdit
-	was      snippetEdit
-	err      string
+	query         string
+	order         snippetOrder
+	editOpen      bool
+	edit          snippetEdit
+	was           snippetEdit
+	err           string
+	importOpen    bool
+	importExample bool
+	importErr     string
 }
 
 type snippetEdit struct{ id, trigger, text string }
@@ -45,7 +51,7 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 			return
 		}
 		if ui.Button(c.Key("snippet-import"), i18n.T("Import…")).Label(i18n.T("Import snippets")).Clicked() {
-			actions.importSnippets()
+			local.importOpen, local.importErr = true, ""
 		}
 		if primaryButton(c.Key("snippet-add"), i18n.T("Add snippet")).Clicked() {
 			local.open(snippetEdit{})
@@ -61,6 +67,7 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 			snippetExamples(c, state.Examples, local)
 		})
 		snippetDialog(c, actions, local)
+		snippetsImportDialog(c, actions, local)
 		return
 	}
 	ui.Scroll(c.Key("snippets-scroll")).Grow(1).MinHeight(0).Children(func() {
@@ -96,6 +103,7 @@ func snippetsPage(c *ui.Context, state *snippetsViewState, actions snippetsActio
 		})
 	})
 	snippetDialog(c, actions, local)
+	snippetsImportDialog(c, actions, local)
 }
 
 // snippetsToolbar is the search, and the sort menu at the end of its

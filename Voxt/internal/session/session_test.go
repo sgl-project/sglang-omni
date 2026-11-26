@@ -28,11 +28,12 @@ type harness struct {
 	hist  *memHistory
 	rec   *recorder
 
-	mu         sync.Mutex
-	asr        asr.Provider
-	llm        LLM
-	fallback   LLM // Translate's fallback model (nil: none)
-	resolveErr error
+	mu          sync.Mutex
+	asr         asr.Provider
+	llm         LLM
+	resolveGate <-chan struct{}
+	fallback    LLM // Translate's fallback model (nil: none)
+	resolveErr  error
 	// speech is Resolve's speech argument, call by call.
 	speech []bool
 	logs   []string
@@ -50,6 +51,13 @@ func newHarness(t *testing.T, prov asr.Provider, model LLM, cfgFn func(*Config, 
 	cfg := Config{
 		Audio: h.audio, Text: h.text, History: h.hist,
 		Resolve: func(ctx context.Context, kind Kind, _ settings.Settings, speech bool) (Services, error) {
+			if h.resolveGate != nil {
+				select {
+				case <-h.resolveGate:
+				case <-ctx.Done():
+					return Services{}, ctx.Err()
+				}
+			}
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			h.speech = append(h.speech, speech)
