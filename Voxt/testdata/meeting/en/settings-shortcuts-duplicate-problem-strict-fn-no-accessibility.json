@@ -72,6 +72,11 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "About",
         "english": "Diagnostics about version bug report"
@@ -215,71 +220,6 @@
           "trigger_text": "Tap",
           "has_shortcut": true,
           "needs_accessibility": true,
-          "problems": null
-        }
-      ],
-      "sessions": [
-        {
-          "title": "Session 1",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "Session 2",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
-          "problems": null
-        },
-        {
-          "title": "Session 3",
-          "recorder": {
-            "helper_records_keys": false,
-            "displayed_keys": "—",
-            "typed": {
-              "valid": false,
-              "canonical_keys": "",
-              "formatted_keys": "",
-              "error_text": "Type the keys, as in Control+Option+Space."
-            },
-            "raw_keys": "",
-            "custom": false,
-            "typing": false,
-            "edited": false,
-            "unknown": false,
-            "record_denied": false,
-            "focused": false
-          },
           "problems": null
         }
       ]

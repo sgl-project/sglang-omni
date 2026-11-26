@@ -124,6 +124,11 @@
         "title": "存储"
       },
       {
+        "id": "go/settings/experimental",
+        "group": "设置",
+        "title": "实验功能"
+      },
+      {
         "id": "go/settings/about",
         "group": "设置",
         "title": "诊断与关于"

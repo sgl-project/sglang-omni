@@ -1,6 +1,6 @@
 package main
 
-// Tests of the settings sections: Overlay style, Shortcuts, General's
+// Tests of the settings sections: Overlay style, Shortcuts, Experimental, General's
 // other languages, and the dialog's size (Audio: settings_audio_test.go;
 // the sidebar's automatic rail: shell_nav_test.go; the menu bar:
 // tray_test.go).
@@ -424,15 +424,26 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 	}
 }
 
-// TestSessionShortcutsSettings: Settings → Shortcuts' Sessions section
-// lists the three session shortcuts (Control+Option+1 … by default,
-// #4005), in English and Chinese; Change… opens the recorder, whose
-// pressed keys save at once.
-func TestSessionShortcutsSettings(t *testing.T) {
+func TestShortcutsOmitSessions(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.navigate("/settings/shortcuts")
+	if has(tt, "Sessions (experimental)") {
+		t.Fatalf("Shortcuts still shows the Sessions switch: %q", firstTexts(tt))
+	}
+}
+
+// TestExperimentalSessionsSettings: Settings → Experimental lists the
+// session switch and four shortcut rows (#4005), in English and Chinese;
+// Change… opens the recorder, whose pressed keys save.
+func TestExperimentalSessionsSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/experimental")
+	const description = "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart."
+	if !has(tt, description) {
+		t.Errorf("no feature description: %q", firstTexts(tt))
+	}
 	scrollToText(tt, "Sessions (experimental)")
-	if has(tt, "Session 1") || a.settings.Get().Features.SessionsOn {
+	if has(tt, "Go to session 1") || a.settings.Get().Features.SessionsOn {
 		t.Fatalf("sessions are off by default: %q", firstTexts(tt))
 	}
 	if err := tt.ClickControl("Sessions (experimental)"); err != nil {
@@ -442,16 +453,16 @@ func TestSessionShortcutsSettings(t *testing.T) {
 	if !a.settings.Get().Features.SessionsOn {
 		t.Fatal("the switch did not turn sessions on")
 	}
-	for _, s := range []string{"Session 1", "Session 2", "Session 3", "Next session", "⌥Tab"} {
-		if !has(tt, s) {
-			t.Errorf("no %q: %q", s, firstTexts(tt))
-		}
+	// Only Next session: the card's row and the menu bar go to a given
+	// session, and its number shifts as sessions come and go. No use counts.
+	scrollToText(tt, "Next session")
+	if !has(tt, "Next session") || !has(tt, "⌥Tab") || has(tt, "Go to session 1") || has(tt, "Switched sessions") {
+		t.Errorf("the session rows: %q", firstTexts(tt))
 	}
-	scrollToText(tt, "Session 1")
-	click(t, tt, "Change…") // Session 1's, the first
+	click(t, tt, "Change…")
 	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
 	frames(tt)
-	if got := a.settings.Get().Features.Sessions[0].Keys; got != "Control+Option+4" {
+	if got := a.settings.Get().Features.Sessions[3].Keys; got != "Control+Option+4" {
 		t.Fatalf("the recorder saved %q", got)
 	}
 	if !hasExact(tt, "⌃⌥4") {
@@ -459,7 +470,7 @@ func TestSessionShortcutsSettings(t *testing.T) {
 	}
 	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
 	frames(tt)
-	if !has(tt, "会话 1") {
+	if !has(tt, "下一个会话") {
 		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }

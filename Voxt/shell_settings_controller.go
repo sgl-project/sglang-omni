@@ -300,6 +300,10 @@ func (a *app) settingsDialogModel(now time.Time) (settingsDialogViewState, tryCa
 		a.lastSettings = "storage"
 		section := a.storageSettingsModel()
 		state.Storage = &section
+	case "experimental":
+		a.lastSettings = "experimental"
+		section := a.experimentalSettingsModel()
+		state.Experimental = &section
 	case "about":
 		a.lastSettings = "about"
 		section := a.aboutSettingsModel()

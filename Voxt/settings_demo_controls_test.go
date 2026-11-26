@@ -91,6 +91,7 @@ func settingsDemoControlCases() []settingsDemoCase {
 		{name: "shortcut preset", fixture: "en/settings-shortcuts-normal", steps: settingsDemoSelect("Shortcut preset", ui.KeyDown), want: []string{"applyShortcutPreset fn"}},
 		{name: "strict shortcuts", fixture: "en/settings-shortcuts-normal", steps: historySteps("Strict shortcuts"), want: []string{"setStrictShortcuts true"}},
 		{name: "return finishes", fixture: "en/settings-shortcuts-normal", scroll: "Return finishes a recording", steps: historySteps("Return finishes a recording"), want: []string{"setReturnFinishes false"}},
+		{name: "experimental sessions", fixture: "en/settings-experimental-normal", steps: historySteps("Sessions (experimental)"), want: []string{"setSessionsOn true"}},
 		{name: "transcribe shortcut", fixture: "en/settings-shortcuts-normal", scroll: "Transcribe Right ⌥", steps: historySteps("Transcribe Right ⌥"), want: []string{"openShortcutFeature /transcribe"}},
 		{name: "translate shortcut", fixture: "en/settings-shortcuts-normal", scroll: "Translate Right ⌥ ⇧", steps: historySteps("Translate Right ⌥ ⇧"), want: []string{"openShortcutFeature /translate"}},
 		{name: "rewrite shortcut", fixture: "en/settings-shortcuts-normal", scroll: "Rewrite ⌃ Right ⌥", steps: historySteps("Rewrite ⌃ Right ⌥"), want: []string{"openShortcutFeature /rewrite"}},

@@ -226,7 +226,7 @@
   "While recording, only the shortcut that started it stops it. Off: any feature's shortcut stops.": "录音时，只有开始录音的那个快捷键能停止它。关闭时，任何功能的快捷键都能停止录音。",
   "Return finishes a recording": "按回车结束录音",
   "While Transcribe, Translate or Rewrite records, Return stops recording, and the key goes nowhere else. Off: Return reaches the app as usual.": "转录、翻译、改写录音时，按回车结束录音，这个回车不会再交给别的 App。关闭时，回车照常交给前台 App。",
-  "Each session keeps its own answer card and conversation. Switch, add, rename and delete sessions on the card. They come back after a restart, with their titles, while Privacy keeps a history.": "每个会话有自己的回答卡片和对话。在卡片上切换、新建、改名、删除会话。隐私里开着「保存历史」时，重启后会话和标题都还在。",
+  "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart.": "每个会话有自己的卡片和对话。卡片（包括改写卡片）上的会话行可以切换会话，用 + 新建，用 × 删除当前会话，双击改名；菜单栏也列出全部会话。隐私里开着「保存历史」时，重启后会话和标题都还在。",
   "History is off, so sessions end when Voxt quits. Turn on Keep a history in Privacy to keep them.": "历史已关闭，退出 Voxt 后会话不保留。要保留会话，请在隐私里打开「保存历史」。",
   "Open Privacy": "打开隐私页",
   "Results": "结果",
@@ -295,6 +295,6 @@
   "Voxt restarts with the file's settings, history, meetings, dictionary and snippets in place of this Mac's. This Mac's library is kept in the data folder as %s.": "Voxt 会重启，用文件里的设置、历史、会议、词典和片段替换这台 Mac 的。原来的资料库留在数据文件夹里，文件名是 %s。",
   "Voxt library": "Voxt 资料库",
   "Exported the library to %s": "资料库已导出到 %s",
-  "Sessions (experimental)": "会话（实验功能）",
-  "Switched sessions %d times, %d of them back to a session with a card. Counted on this Mac only.": "已切换会话 %d 次，其中 %d 次回到有卡片的会话。只在这台 Mac 上统计。"
+  "Experimental": "实验功能",
+  "Sessions (experimental)": "会话（实验功能）"
 }

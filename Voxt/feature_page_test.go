@@ -231,11 +231,11 @@ func TestTranscribeServicesAndSwitches(t *testing.T) {
 // picks one, from the first download through deletion and download progress.
 // System dictation does not hide the first download or replace installed or
 // configured models' controls. With no speech model installed the download
-// is the guide's recommendation, MOSS-Transcribe-Diarize (#4069).
+// is the guide's recommendation, Qwen3-ASR 1.7B (8bit) (#4069).
 func TestFeatureModelControls(t *testing.T) {
 	a, tt := trTester(t)
 	a.local = onlyDictation{&fakeLocal{}}
-	const download = "Download MOSS-Transcribe-Diarize"
+	const download = "Download Qwen3-ASR 1.7B (8bit)"
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		a.navigate("/" + feature)
 		frames(tt)
@@ -254,10 +254,10 @@ func TestFeatureModelControls(t *testing.T) {
 	if a.models.Installed(models.ASRAccurate) || !slices.Contains(tt.AccessLabels(), download) {
 		t.Error("the deleted model does not offer its download again")
 	}
-	m, _ := models.Lookup(models.ASRMoss)
+	m, _ := models.Lookup(models.ASRAccurate)
 	a.modelStatus[m.ID] = models.Status{Downloading: true, Done: m.Size() / 2, Total: m.Size()}
 	frames(tt)
-	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading MOSS-Transcribe-Diarize") {
+	if !has(tt, "Downloading: ") || !slices.Contains(tt.AccessLabels(), "Cancel downloading Qwen3-ASR 1.7B (8bit)") {
 		t.Errorf("download progress: %q", tt.Texts())
 	}
 
@@ -288,38 +288,12 @@ func TestFeatureModelRecommendedDownload(t *testing.T) {
 	for _, feature := range []string{hotkey.Transcribe, hotkey.Translate} {
 		a.navigate("/" + feature)
 		frames(tt)
-		if !slices.Contains(tt.AccessLabels(), "Download MOSS-Transcribe-Diarize") {
-			t.Fatalf("%s does not recommend MOSS-Transcribe-Diarize: %q", feature, tt.AccessLabels())
+		if !slices.Contains(tt.AccessLabels(), "Download Qwen3-ASR 1.7B (8bit)") {
+			t.Fatalf("%s does not recommend Qwen3-ASR 1.7B (8bit): %q", feature, tt.AccessLabels())
 		}
-		if !has(tt, "MOSS-Transcribe-Diarize · 2.1 GB download") {
+		if !has(tt, "Qwen3-ASR 1.7B (8bit) · 3.2 GB download") {
 			t.Errorf("%s labels the pack's size, not the speech model's alone: %q", feature, tt.Texts())
 		}
-	}
-	click(t, tt, "Download MOSS-Transcribe-Diarize")
-	downloadAsked(t, a, drain, models.ASRMoss)
-	downloadAsked(t, a, drain, models.ASRMossDraft)
-	if s := a.models.Status(models.ASRAccurate); s.Err != nil || s.Downloading {
-		t.Errorf("Qwen3-ASR downloaded too: %+v", s)
-	}
-}
-
-// TestFeatureModelRecommendedUnsupported: a main language
-// MOSS-Transcribe-Diarize does not know keeps the Qwen3-ASR
-// recommendation, and its inline Download fetches Qwen's draft too.
-func TestFeatureModelRecommendedUnsupported(t *testing.T) {
-	countingHub(t)
-	a, tt := trTester(t)
-	drain := queuePosts(a)
-	reopenModels(a)
-	a.local = onlyDictation{&fakeLocal{}}
-	a.updateSettings(func(s *settings.Settings) { s.General.MainLanguage = "ja" })
-	a.navigate("/transcribe")
-	frames(tt)
-	if !slices.Contains(tt.AccessLabels(), "Download Qwen3-ASR 1.7B (8bit)") {
-		t.Fatalf("an unsupported main language does not keep Qwen3-ASR: %q", tt.AccessLabels())
-	}
-	if !has(tt, "Qwen3-ASR 1.7B (8bit) · 3.2 GB download") {
-		t.Errorf("the pack's size, not the speech model's alone: %q", tt.Texts())
 	}
 	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	downloadAsked(t, a, drain, models.ASRAccurate)

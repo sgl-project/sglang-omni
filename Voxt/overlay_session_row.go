@@ -1,11 +1,11 @@
 package main
 
-// The card's session row (#4005), with two sessions or more: one chip
-// per session, its number and title (cut short on the others); the
-// current one stands out and has "×" to delete it. A click switches,
-// "+" adds a session, a double click renames. It is a thin line where
-// the card's rule is, and carries the rule after "+". One session: no
-// row, the card is as it is with sessions off.
+// The card's session row (#4005): one chip per session, its number and
+// title (cut short on the others); the current one stands out and has
+// "×" to delete it (the only one too: a new empty session takes its
+// place). A click switches, "+" adds a session, a double click renames.
+// It is a thin line where the card's rule is, and carries the rule
+// after "+".
 
 import (
 	"strconv"
@@ -50,7 +50,7 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 		ui.ScrollHorizontal(context.Key("ov-sessions")).Height(sessionChipH + sessionBarH).AlignItems(ui.Start).Shrink(1).MinWidth(0).Label(i18n.T("Sessions")).Children(func() {
 			ui.Row(context).Height(sessionChipH).Gap(4).AlignItems(ui.Center).Children(func() {
 				for index, chip := range chips {
-					sessionChip(context.Key(chip.ID), index+1, chip, len(chips) > 1, actions, local)
+					sessionChip(context.Key(chip.ID), index+1, chip, actions, local)
 				}
 				if sessionChipButton(context.Key("ov-session-new"), i18n.T("New session"), icons.Add) {
 					actions.newSession()
@@ -62,8 +62,8 @@ func sessionRow(context *ui.Context, chips []sessionChipViewState, top float32, 
 	return true
 }
 
-// sessionChip draws one session; removable is false for the only one.
-func sessionChip(context *ui.Context, number int, chip sessionChipViewState, removable bool, actions sessionOverlayActions, local *answerCardUI) {
+// sessionChip draws one session.
+func sessionChip(context *ui.Context, number int, chip sessionChipViewState, actions sessionOverlayActions, local *answerCardUI) {
 	title := chip.Title
 	if title == "" {
 		title = i18n.T("New session")
@@ -90,7 +90,7 @@ func sessionChip(context *ui.Context, number int, chip sessionChipViewState, rem
 	}
 	// Only the current chip has the delete button: the others stay
 	// narrow, and no chip changes its width under the pointer.
-	removable = removable && chip.Current
+	removable := chip.Current
 	row := ui.Row(context).Height(sessionChipH).Radius(sessionChipH/2).Background(background).Border(1, line).AlignItems(ui.Center).Shrink(0)
 	if chip.Current && local.sessionShown != chip.ID {
 		// Once, when the session becomes the current one: in every

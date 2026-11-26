@@ -66,6 +66,7 @@ add_library(common STATIC
   src/common/dflash_draft.cpp
   src/common/fastconformer.cpp
   src/common/form.cpp
+  src/common/kaldi_fbank.cpp
   src/common/kv_cache.cpp
   src/common/layers.cpp
   src/common/nemo_features.cpp
@@ -73,6 +74,7 @@ add_library(common STATIC
   src/common/qwen3_decoder.cpp
   src/common/realtime_connection.cpp
   src/common/reference_audio.cpp
+  src/common/sanm_encoder.cpp
   src/common/text.cpp
   src/common/tokenizer.cpp
   src/common/transcription.cpp
@@ -89,6 +91,10 @@ set_source_files_properties(src/common/npz.cpp src/common/reference_audio.cpp
 # Note (XXXXRT666): campplus keeps the rounding it was built with as part of
 # cosyvoice3.
 set_source_files_properties(src/common/campplus.cpp
+  PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
+# Note (wilsonzheng0327): the Kaldi mel filters and the Hamming window keep the
+# rounding they had in campplus and sensevoice_asr.
+set_source_files_properties(src/common/kaldi_fbank.cpp
   PROPERTIES COMPILE_OPTIONS -ffp-contract=off)
 # Note (Mengwei Liu): energy cuts retain Cohere's and MOSS's separate float
 # operations.
@@ -305,6 +311,21 @@ set_target_properties(arkasr_server arkasr_transcribe PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS arkasr_server arkasr_transcribe RUNTIME DESTINATION bin)
+
+# Note (wilsonzheng0327): Fun-ASR-Nano: funasr_server, with qwen3_asr_server's
+# API without realtime, and its parity tool; the encoder is SenseVoice's
+# shared SAN-M encoder and the decoder the shared Qwen3 decoder.
+add_library(funasr_asr STATIC src/funasr/funasr_model.cpp src/funasr/funasr_transcriber.cpp)
+target_link_libraries(funasr_asr PUBLIC common)
+target_compile_options(funasr_asr PRIVATE -Wall -Wextra)
+add_executable(funasr_server src/funasr/funasr_server.cpp)
+target_link_libraries(funasr_server PRIVATE funasr_asr asr_service)
+add_executable(funasr_transcribe tools/funasr_transcribe.cpp)
+target_link_libraries(funasr_transcribe PRIVATE funasr_asr)
+set_target_properties(funasr_server funasr_transcribe PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
+  INSTALL_RPATH "@loader_path")
+install(TARGETS funasr_server funasr_transcribe RUNTIME DESTINATION bin)
 
 # AuK's reference front end uses the same SoX resampler revision as python-soxr.
 FetchContent_Declare(

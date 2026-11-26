@@ -73,7 +73,7 @@ Every shortcut can be changed in its feature's section in Settings, and Settings
 
 1. **Download** [`Voxt-2.1.4-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
-2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (MOSS-Transcribe-Diarize with its Faster transcription draft, 2.1 GB), and set up a language model for clean-up, Translate and Rewrite.
+2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit) with its Faster transcription draft, 3.2 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
 
 Step by step: [Install Voxt][install-guide].
@@ -98,7 +98,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 ### Requirements
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
-- About 280 MB for the app, and 2.1 GB for the recommended speech model and its draft.
+- About 280 MB for the app, and 3.2 GB for the recommended speech model and its draft.
 - Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About). Builds with an update feed can also install updates automatically. Builds without one only check GitHub Releases; install newer versions of those builds from a disk image.
 
 ## Your models, your data
@@ -109,9 +109,9 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 | Model | Good at | Download |
 |---|---|---|
-| **MOSS-Transcribe-Diarize**, recommended | Chinese and English, made for conversations between several people. Live text, with Faster transcription on. Takes no dictionary or Speech context: your dictionary still guides the language model's clean-up. | 2.1 GB with its draft |
-| **Qwen3-ASR 1.7B (8bit)** | The most accurate: accents, dialects, names, several languages in one sentence. Live text. | 2.5 GB |
+| **Qwen3-ASR 1.7B (8bit)**, recommended | The most accurate: accents, dialects, names, several languages in one sentence. Live text, with Faster transcription on. | 3.2 GB with its draft |
 | **Qwen3-ASR 0.6B (4bit)** | Quicker and lighter, for clear speech in a quiet place. Live text. | 713 MB |
+| **MOSS-Transcribe-Diarize** | Chinese and English, made for conversations between several people. Live text. Takes no dictionary or Speech context: your dictionary still guides the language model's clean-up. | 1.8 GB |
 
 - **More local models**: Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.

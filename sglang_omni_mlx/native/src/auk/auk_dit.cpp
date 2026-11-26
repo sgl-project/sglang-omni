@@ -11,22 +11,13 @@
 namespace auk {
 namespace mx = mlx::core;
 using omni_common::Checkpoint;
+using omni_common::ModulatedLayerNorm;
 using omni_common::Silu;
 
 namespace {
 
 constexpr float kRmsEpsilon = std::numeric_limits<float>::epsilon();
 constexpr float kLayerNormEpsilon = 1e-6f;
-
-// LayerNorm(x) * (1 + scale) + shift as one fused norm, scale and shift [1, 1,
-// width] shared by every row.
-mx::array ModulatedNormalize(const mx::array &hidden_states,
-                             const mx::array &shift, const mx::array &scale) {
-  return mx::fast::layer_norm(
-      hidden_states,
-      mx::reshape(mx::array(1.0f, hidden_states.dtype()) + scale, {-1}),
-      mx::reshape(shift, {-1}), kLayerNormEpsilon);
-}
 
 mx::array ApplyRotary(const mx::array &hidden_states,
                       const mx::array &rotary_periods) {
@@ -132,15 +123,16 @@ mx::array StepRow(const mx::array &modulations, int step) {
 Modulation Modulate(const mx::array &hidden_states,
                     const mx::array &modulations, int step) {
   auto modulation = mx::split(StepRow(modulations, step), 6, -1);
-  return {ModulatedNormalize(hidden_states, modulation[0], modulation[1]),
+  return {ModulatedLayerNorm(hidden_states, modulation[0], modulation[1],
+                             kLayerNormEpsilon),
           modulation[2], modulation[3], modulation[4], modulation[5]};
 }
 
 mx::array FeedForward(const Checkpoint &checkpoint,
                       const mx::array &hidden_states,
                       const Modulation &modulation, const std::string &prefix) {
-  const mx::array normalized =
-      ModulatedNormalize(hidden_states, modulation.shift, modulation.scale);
+  const mx::array normalized = ModulatedLayerNorm(
+      hidden_states, modulation.shift, modulation.scale, kLayerNormEpsilon);
   const auto gates =
       mx::split(checkpoint.Linear(normalized, prefix + ".linear_in"), 2, -1);
   return hidden_states +
@@ -184,13 +176,6 @@ mx::array DiT::EmbedAudio(const mx::array &latents,
                             ? mx::where(mx::expand_dims(*valid_frames, -1),
                                         projected, mx::zeros_like(projected))
                             : projected;
-  static const auto mish = mx::compile(
-      [](const std::vector<mx::array> &inputs) {
-        const auto &x = inputs[0];
-        return std::vector<mx::array>{
-            x * mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype())))};
-      },
-      true);
   for (int layer : {0, 2}) {
     const std::string prefix =
         "transformer.audio_embed.conv_pos_embed.conv1d." +
@@ -204,7 +189,7 @@ mx::array DiT::EmbedAudio(const mx::array &latents,
                             mx::zeros_like(positions));
     } else {
     }
-    positions = mish({positions})[0];
+    positions = omni_common::Mish(positions);
   }
   return projected + positions;
 }
@@ -357,9 +342,10 @@ mx::array DiT::Predict(const mx::array &latents,
                     audio.shape());
   const auto final_modulation =
       mx::split(StepRow(modulations.at("transformer.norm_out"), step), 2, -1);
-  return checkpoint_.Linear(
-      ModulatedNormalize(audio, final_modulation[1], final_modulation[0]),
-      "transformer.proj_out");
+  return checkpoint_.Linear(ModulatedLayerNorm(audio, final_modulation[1],
+                                               final_modulation[0],
+                                               kLayerNormEpsilon),
+                            "transformer.proj_out");
 }
 
 mx::array DiT::Sample(const mx::array &conditioning,
