@@ -297,6 +297,5 @@
   "Exported the library to %s": "资料库已导出到 %s",
   "Experimental": "实验功能",
   "Sessions (experimental)": "会话（实验功能）",
-  "Go to session %d": "切换到会话 %d",
   "Switched sessions %d times, %d of them back to a session with a card. Counted on this Mac only.": "已切换会话 %d 次，其中 %d 次回到有卡片的会话。只在这台 Mac 上统计。"
 }

@@ -41,12 +41,8 @@ func buildSettingsExperimentalViewState(translator *i18n.Translator, input setti
 		if input.Features.Sessions[i].Keys == "" {
 			recorder.DisplayedKeys = uitext.HotkeyGlyphs("")
 		}
-		title := uitext.FeatureTitleFor(translator, id)
-		if slot, ok := hotkey.SessionSlot(id); ok && id != hotkey.SessionNext {
-			title = translator.T("Go to session %d", slot+1)
-		}
 		state.Sessions = append(state.Sessions, sessionSlotViewState{
-			Title:    title,
+			Title:    uitext.FeatureTitleFor(translator, id),
 			Recorder: recorder,
 			Problems: uitext.HotkeyProblemsFor(translator, input.Features, id)[0],
 		})
