@@ -27,8 +27,15 @@ func runCommand(_ arguments: [String]) throws -> Int32 {
     case "hold":
         trigger = .hold
     case "toggle":
-        trigger = .toggle(presses: try args.int("--presses", default: 1), holdMs: try args.int("--press-ms", default: 40),
-                          gapMs: try args.int("--press-gap-ms", default: 80))
+        let presses = try args.int("--presses", default: 1)
+        let holdMs = try args.int("--press-ms", default: 40)
+        let gapMs = try args.int("--press-gap-ms", default: 80)
+        // note (luojiaxuan): tap() sleeps these as useconds_t between key-down and key-up, so they are checked
+        // here, before any key is posted.
+        guard (1...10).contains(presses), (1...2000).contains(holdMs), (1...2000).contains(gapMs) else {
+            throw ReplayError("--presses must be 1 to 10, and --press-ms and --press-gap-ms 1 to 2000")
+        }
+        trigger = .toggle(presses: presses, holdMs: holdMs, gapMs: gapMs)
     case let other:
         throw ReplayError("--trigger must be hold or toggle, not \(other)")
     }

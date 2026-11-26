@@ -9,6 +9,7 @@ The replay harness measures dictation apps on a Mac the way a user meets them. I
 | `Sources/Driver/` | `replay-driver`: `run` (one segment after another), `mem` (memory alone) and `list-devices` |
 | `Sources/Common/` | The clock, JSON lines and the Unix socket both programs share |
 | `run_cells.py` | Runs a plan of cells unattended; `--check` checks the plan and the Mac without pressing a key |
+| `app_settings.py` | Saves, resets and sets the settings of the apps under test for `run_cells.py` |
 | `plan.example.json` | A plan template |
 | `aasr_sample.py` | Draws a stratified sample of AASR-Bench and writes the driver's manifest for it |
 | `score.py` | Error rates per language and median waits of one run |
@@ -46,13 +47,13 @@ Some Command Line Tools installs keep a stale `usr/include/swift/module.modulema
    `--trigger toggle --presses 2` double-taps to start and stop (also `--press-ms` and `--press-gap-ms`); the default holds the key while the audio plays. `--modifiers` holds modifier keys around `--key`, which also takes a virtual key code. `--settle-s 10` ends a segment's observation once the field holds text that has not changed for 10 seconds and the stop key is 10 seconds past; the default observes to the deadline. It must be 0 or more than 2 s, since a row whose text changed within 2 s of the end of observation is a timeout.
 5. Score: `python3 score.py --manifest run/manifest.jsonl --results run/results.jsonl [--keep-fillers] [--json out.json]`.
 
-A driver fault ends the run with exit code 2 after writing the segment's row. Running the same command again skips the segments that already have a fault-free row.
+A driver fault ends the run with exit code 2 after writing the segment's row. When the fault comes between the start and the stop gesture, the driver first stops that dictation (with `toggle`, it sends the stop gesture) and waits until the field has been still for 3 s, so the next segment does not inherit the recording. Running the same command again skips the segments that already have a fault-free row.
 
 ## A plan of cells
 
-A cell is one system (an app in one configuration) and one language block: `en` holds the English segments, `zh` the Chinese and mixed ones. For each cell, `run_cells.py` quits every app in the plan, sets what the cell changes, launches the app and a fresh sink, plays three warm-up segments that are not scored, then runs the block. Each cell records the app's version, executable hash and the settings in effect (`cells.jsonl`). A cell interrupted by a driver fault resumes; finished cells are skipped, so the plan can be started again after any interruption.
+A cell is one system (an app in one configuration) and one language block: `en` holds the English segments, `zh` the Chinese and mixed ones. For each cell, `run_cells.py` quits every app in the plan, puts back the settings saved before the plan and sets what the cell changes, so a field the cell does not name keeps the user's value whatever ran before. For Voxt it also sets BlackHole 2ch as the microphone (`audio.devices` in 2.x, `activeInputDeviceUID` in 1.x), since a preferred microphone would win over the system's default input. It then launches the app and a fresh sink, plays three warm-up segments that are not scored, and runs the block once the warm-up has finished. Each cell records the app's version, executable hash and the settings in effect (`cells.jsonl`). A cell interrupted by a driver fault resumes; finished cells are skipped, so the plan can be started again after any interruption. Rows left in a run directory are reused only for the same plan: a cell whose saved manifest, system or `settle_s` differs is refused, and so is a `plan.json` that differs in anything but `cells`. The plan exits with status 1 when a cell is left incomplete.
 
-Before the first cell, `run_cells.py` copies the settings it is about to change into `RUN_DIR/settings-backup/`: the settings document (`settings:app`) of each Voxt 2.x database, and Voxt 1.x's defaults with `defaults export`. After the last cell, or when the run stops on an error or Ctrl-C, it quits the apps, puts the copies back and deletes them; the history the apps recorded during the run stays. A copy left by a killed run is kept, and the next start restores it. Relative `wav` paths in the plan's manifest are read against the manifest's directory.
+Before the first cell, `run_cells.py` copies the settings it is about to change into `RUN_DIR/settings-backup/`, writing each copy to a temporary file and renaming it once complete: the settings document (`settings:app`) of each Voxt 2.x database, and Voxt 1.x's defaults with `defaults export`. After the last cell, or when the run stops on an error or Ctrl-C, it quits the apps, puts the copies back and deletes them; the history the apps recorded during the run stays. A copy left by a killed run is checked and kept, and the next start restores it; a copy that does not parse stops the run. Relative `wav` paths in the plan's manifest are read against the manifest's directory.
 
 ```bash
 python3 run_cells.py --plan plan.json --check
@@ -87,7 +88,7 @@ Every timestamp is `mach_continuous_time` in nanoseconds, shared by the driver a
 
 Insertion latency is `t_last − t_stop`; `score.py` reports its median over `complete` segments, and calls a segment whose last edit came before the stop key `early`. An app that finishes while the key is held makes early segments, so the report prints their count next to each median.
 
-A write that arrives after a segment's observation ended is logged in the next segment: before its clear (`late_changes_prev`) or between its clear and key-down (`n_changes_before_keydown`). The earlier segment then misses that write, and the later one may keep it as its final text. `score.py` marks both rows, and any row that lost focus, as `contaminated`, leaves them out of error rates and waits, and prints how many there are and why.
+A write that arrives after a segment's observation ended is logged in the next segment: before its clear (`late_changes_prev`) or between its clear and key-down (`n_changes_before_keydown`). The earlier segment then misses that write, and the later one may keep it as its final text. A segment that ended as a `timeout` can still be written to after the next key-down, where neither counter sees it. `score.py` marks as `contaminated` both rows of a late write, the row after a timeout and any row that lost focus, leaves them out of error rates and waits, and prints how many there are and why.
 
 ## Error rates
 

@@ -235,6 +235,18 @@ class ContaminationTest(unittest.TestCase):
             score.format_report(report),
         )
 
+    def test_the_row_after_a_timeout_is_set_aside(self):
+        rows = score.mark_contamination(
+            [
+                {"id": "c", "status": "timeout"},
+                {"id": "d", "status": "complete"},
+                {"id": "e", "status": "complete"},
+            ]
+        )
+        self.assertEqual(
+            [r["contamination"] for r in rows], [[], ["after_timeout"], []]
+        )
+
     def test_rows_without_the_newer_fields_are_clean(self):
         rows = score.mark_contamination([{"id": "a"}, {"id": "b"}])
         self.assertEqual([r["contamination"] for r in rows], [[], []])

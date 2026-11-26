@@ -73,6 +73,7 @@ final class Runner {
     private var out: LineAppender!
     private var meta: LineAppender!
     private var previousID: String?
+    private var dictationOpen = false
 
     init(options: RunOptions) {
         self.options = options
@@ -161,8 +162,36 @@ final class Runner {
             poster?.releaseAll()
             row["driver_fault"] = true
             row["driver_fault_reason"] = "\(error)"
+            if dictationOpen {
+                row["fault_stopped_dictation"] = stopOpenDictation()
+            }
         }
         return row
+    }
+
+    /// note (luojiaxuan): A fault between the start and the stop gesture leaves the app recording: with a
+    /// toggle trigger the next segment's first tap would stop this recording instead of starting its own.
+    /// This sends the stop gesture (a hold trigger already stopped with releaseAll), then waits until the
+    /// sink's log has been still for max(settle, 3) s, at most the deadline base, so the app's text for
+    /// the broken recording lands before the next segment clears the field.
+    private func stopOpenDictation() -> Bool {
+        dictationOpen = false
+        if case .toggle = options.trigger {
+            guard (try? stopDictation()) != nil else { return false }
+        }
+        let quiet = MachClock.seconds(max(options.settleSeconds, 3))
+        let giveUp = MachClock.now() + MachClock.seconds(options.deadlineBaseSeconds)
+        var seen = sink.events.count
+        var lastChange = MachClock.now()
+        while MachClock.now() < giveUp && MachClock.now() < lastChange + quiet {
+            usleep(50_000)
+            sink.poll()
+            if sink.events.count != seen {
+                seen = sink.events.count
+                lastChange = MachClock.now()
+            }
+        }
+        return true
     }
 
     private func measure(_ segment: Segment, into row: inout [String: Any]) throws {
@@ -175,10 +204,6 @@ final class Runner {
             row["audio_file"] = url.path
         }
 
-        // note (luojiaxuan): Text changes logged after the previous segment's observation ended are late writes.
-        sink.poll()
-        var late = sink.events.filter { $0.kind == .text }.count
-
         var focused = try sink.send("clear \(segment.id)").hasSuffix("key=1")
         if !focused && !options.dryRun {
             focused = try focusSink()
@@ -188,17 +213,20 @@ final class Runner {
             throw ReplayError("replay-sink's text field is not focused; bring its window to the front")
         }
         let clearIndex = try waitForClear(label: segment.id)
-        late += sink.events[..<clearIndex].filter { $0.kind == .text }.count
+        // note (luojiaxuan): Every text change still in the log before this segment's clear came after the
+        // previous segment's observation ended (that observation consumed the rest): a late write.
         row["t_clear"] = sink.events[clearIndex].t
-        row["late_changes_prev"] = late
+        row["late_changes_prev"] = sink.events[..<clearIndex].filter { $0.kind == .text }.count
         sink.consume(through: clearIndex)
 
         let tKeydown = try startDictation()
+        dictationOpen = true
         row["t_keydown"] = tKeydown
         let (tAudioStart, tAudioEnd) = try play(audio)
         row["t_audio_start"] = tAudioStart
         row["t_audio_end"] = tAudioEnd
         let (tStop, tEndKeydown) = try stopDictation()
+        dictationOpen = false
         row["t_stop"] = tStop
         row["t_end_keydown"] = tEndKeydown.map { $0 as Any } ?? NSNull()
         try sink.send("mark \(segment.id) keyup")

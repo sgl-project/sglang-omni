@@ -20,8 +20,9 @@ counts early rows next to each median.
 
 A row is "contaminated" when its text or timing may belong to another segment:
 the next segment logged a late write (late_changes_prev or
-n_changes_before_keydown), or the row itself saw changes between its clear and
-key-down or lost focus. Contaminated rows count in neither the error rate nor the
+n_changes_before_keydown), the row itself saw changes between its clear and
+key-down or lost focus, or the row before it was still being written at the end
+of its observation (a timeout, whose writer can go on after this row's key-down). Contaminated rows count in neither the error rate nor the
 latency, and the report prints how many there are and why.
 
 Rows with driver_fault=true are ignored; when an id has several fault-free rows,
@@ -322,6 +323,8 @@ def mark_contamination(results):
             row["contamination"].append("changes_before_keydown")
         if row.get("focus_lost"):
             row["contamination"].append("focus_lost")
+        if prev is not None and prev.get("status") == "timeout":
+            row["contamination"].append("after_timeout")
         # note (luojiaxuan): A write that comes after a segment's observation ended is logged in the
         # next segment, before its clear (late_changes_prev) or between its clear and key-down. The
         # earlier row then misses that write, and the later one may keep it as its final text.

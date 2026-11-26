@@ -28,6 +28,9 @@ import wave
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
+import score  # noqa: E402
+
 SINK = os.path.join(HERE, "build/ReplaySink.app/Contents/MacOS/replay-sink")
 DRIVER = os.path.join(HERE, "build/replay-driver")
 RATE = 16000
@@ -268,6 +271,13 @@ def main():
         )
         c = rows["c_timeout"]
         check(c["status"] == "timeout", f"c_timeout: {c['status']}", failures)
+        results = list(map(json.loads, Path("results.jsonl").read_text().splitlines()))
+        marked = {r["id"]: r for r in score.mark_contamination(results)}
+        check(
+            "after_timeout" in marked["d_after_late"]["contamination"],
+            f"d_after_late is set aside after the timeout: {marked['d_after_late']['contamination']}",
+            failures,
+        )
         d = rows["d_after_late"]
         check(
             d["n_changes_before_stop"] >= 1
