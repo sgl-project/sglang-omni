@@ -158,7 +158,9 @@ class ShortOpenGateTests(unittest.TestCase):
         bad = self.observation()
         bad["rows"][1]["text_sha256"] = "b" * 64
         assert not loop.short_open_attempt_kept(0, [], "normal", bad["rows"])
-        assert not loop.short_open_group_complete([bad, self.observation(), self.observation()])
+        assert not loop.short_open_group_complete(
+            [bad, self.observation(), self.observation()]
+        )
 
     def test_group_complete_rejects_cross_attempt_drift(self):
         observations = []
