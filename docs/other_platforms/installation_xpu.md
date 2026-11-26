@@ -493,8 +493,14 @@ For base, use the same command with
 The `disable_cuda_graph` and `cuda_graph_max_bs` config names also control
 SGLang backbone decode graphs on XPU. The configs enable them; use
 `--latent_engine.engine.disable_cuda_graph true` for eager backbone decode.
-The batched acoustic tail runs eager on XPU. Its memory admission precheck
-queries free XPU memory and rejects oversized pools before allocation.
+On XPU, Base and SOAR replay each patch's DiT solve as one device graph per
+KV-cache length bucket, captured on first use (about 0.5 s per bucket); at
+most 2 GiB of patch KV cache stays resident, and a longer bucket solves eagerly.
+MF's batched acoustic tail captures device graphs at startup for 1, 2, 3, 4, 8
+and 16 concurrent requests, up to the configured slots (32 graphs in about 6 s
+at 4 slots). A bucket whose capture fails runs eagerly. The tail's memory
+admission precheck queries free XPU memory and rejects oversized pools before
+allocation.
 Lower `max_running_requests` and/or
 `max_generate_length` explicitly; `mem_fraction_static` only budgets
 the backbone KV cache.
