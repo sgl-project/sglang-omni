@@ -11,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 import whisper
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, Json, JsonValue
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from sglang_omni.modules.ming_audio.audio_encoder import AudioEncoderConfig
@@ -54,9 +54,21 @@ class ContentPart(BaseModel):
     audio_url: AudioURL | None = None
 
 
+class CalledFunction(BaseModel):
+    name: str
+    arguments: Json[dict[str, JsonValue]]
+
+
+class AssistantCall(BaseModel):
+    id: str
+    function: CalledFunction
+
+
 class ChatMessage(BaseModel):
-    role: Literal["system", "user", "assistant"]
-    content: str | list[ContentPart]
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str | list[ContentPart] | None = None
+    tool_calls: list[AssistantCall] | None = None
+    tool_call_id: str | None = None
 
 
 class AudioChatInputs(BaseModel):
@@ -158,22 +170,31 @@ class Ming3AudioPreprocessor:
         ]
         prompt = self.tokenizer.apply_chat_template(
             [message.model_dump(exclude_none=True) for message in messages],
+            tools=payload.request.metadata.get("tools"),
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False,
         )
         if features and AUDIO_PLACEHOLDER not in prompt:
             # note (Codex): the HTTP adapter separates audio from message content.
-            content = messages[-1].content
+            user_message = next(
+                (message for message in reversed(messages) if message.role == "user"),
+                None,
+            )
+            if user_message is None:
+                raise ValueError("Request audio requires a user message")
+            else:
+                content = user_message.content or []
             if isinstance(content, str):
                 content = [ContentPart(type="text", text=content)]
             else:
                 pass
-            messages[-1].content = content + [
+            user_message.content = content + [
                 ContentPart(type="audio") for _ in features
             ]
             prompt = self.tokenizer.apply_chat_template(
                 [message.model_dump(exclude_none=True) for message in messages],
+                tools=payload.request.metadata.get("tools"),
                 tokenize=False,
                 add_generation_prompt=True,
                 enable_thinking=False,

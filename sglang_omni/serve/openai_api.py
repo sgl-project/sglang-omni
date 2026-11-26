@@ -1050,6 +1050,22 @@ def register_chat_completions(app: FastAPI) -> None:
         created = int(time.time())
         model = req.model or default_model
 
+        if req.tools and req.tool_choice != "none":
+            if (
+                "BailingMoeV3AudioForConditionalGeneration"
+                not in app.state.architectures
+            ):
+                raise HTTPException(
+                    status_code=400, detail="This model does not support chat tools"
+                )
+            elif req.modalities and req.modalities != ["text"]:
+                raise HTTPException(
+                    status_code=400, detail="Tool calling requires text output"
+                )
+            else:
+                pass
+        else:
+            pass
         gen_req = build_chat_generate_request(req)
 
         # Determine audio format from request
@@ -1136,6 +1152,11 @@ async def chat_non_stream(
             "data": result.audio.data,
             "transcript": result.audio.transcript,
         }
+    else:
+        pass
+
+    if result.tool_calls:
+        message["tool_calls"] = result.tool_calls
     else:
         pass
 
@@ -1238,6 +1259,7 @@ async def chat_stream_events(
 ) -> AsyncIterator[str]:
     """Streaming chat completion generator (yields SSE events)."""
     role_sent = False
+    next_call_index = 0
     requested_modalities = req.modalities or ["text"]
     finish_reason: str | None = None
     final_usage: UsageResponse | None = None
@@ -1276,7 +1298,7 @@ async def chat_stream_events(
                     and chunk.audio_b64 is not None
                     and "audio" in requested_modalities
                 )
-                if not has_payload:
+                if not has_payload and not chunk.tool_calls:
                     continue
                 else:
                     pass
@@ -1304,6 +1326,16 @@ async def chat_stream_events(
                 and "text" in requested_modalities
             ):
                 delta.content = chunk.text
+                emit = True
+            else:
+                pass
+
+            if chunk.tool_calls:
+                delta.tool_calls = [
+                    dict(call, index=i)
+                    for i, call in enumerate(chunk.tool_calls, start=next_call_index)
+                ]
+                next_call_index += len(chunk.tool_calls)
                 emit = True
             else:
                 pass
@@ -1408,7 +1440,15 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
     )
 
     # Convert messages
-    messages = [Message(role=m.role, content=m.content) for m in req.messages]
+    messages = [
+        Message(
+            role=m.role,
+            content=m.content,
+            tool_calls=m.tool_calls,
+            tool_call_id=m.tool_call_id,
+        )
+        for m in req.messages
+    ]
 
     # Determine output modalities
     output_modalities = req.modalities or ["text"]  # e.g. ["text", "audio"]
@@ -1443,6 +1483,10 @@ def build_chat_generate_request(req: ChatCompletionRequest) -> GenerateRequest:
 
     # Merge audio config, audios, images, and videos into metadata
     metadata: dict[str, object] = {}
+    if req.tools and req.tool_choice != "none":
+        metadata["tools"] = [tool.model_dump(exclude_none=True) for tool in req.tools]
+    else:
+        pass
     if req.audio:
         metadata["audio_config"] = req.audio
     else:

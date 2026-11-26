@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     SerializerFunctionWrapHandler,
     field_validator,
     model_serializer,
@@ -132,6 +133,17 @@ class ImageGenerationParams(BaseModel):
         return self
 
 
+class ChatFunctionDefinition(BaseModel):
+    name: str = Field(min_length=1)
+    description: str | None = None
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ChatFunctionTool(BaseModel):
+    type: Literal["function"]
+    function: ChatFunctionDefinition
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request."""
 
@@ -139,6 +151,8 @@ class ChatCompletionRequest(BaseModel):
 
     model: str | None = None
     messages: list[ChatMessage]
+    tools: list[ChatFunctionTool] | None = None
+    tool_choice: Literal["auto", "none"] | None = None
 
     # Sampling parameters
     temperature: float | None = None
@@ -246,6 +260,7 @@ class ChatCompletionStreamDelta(BaseModel):
     role: str | None = None
     content: str | None = None
     audio: ChatCompletionAudio | None = None
+    tool_calls: list[dict[str, JsonValue]] | None = None
 
 
 class ChatCompletionStreamChoice(BaseModel):

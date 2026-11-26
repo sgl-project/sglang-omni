@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage routing for speech synthesis and audio understanding."""
 
+import json
 from unittest.mock import Mock
 
 import pytest
 import torch
+from sglang.srt.entrypoints.openai.protocol import Tool
 
 from sglang_omni.client.client import Client
 from sglang_omni.models.ming3_audio import stages
@@ -13,6 +15,34 @@ from sglang_omni.proto.request import OmniRequest, StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
 from sglang_omni.serve.protocol import build_sglext
+
+
+def test_ming_tools_keep_ids_distinct_and_argument_types_from_schema() -> None:
+    tools = [
+        Tool.model_validate(
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"order": {"type": "string"}},
+                    },
+                },
+            }
+        )
+    ]
+    first = "<tool_call>lookup\n<arg_key>order</arg_key>\n<arg_value>AB01</arg_value>\n</tool_call>"
+    second = first.replace("AB01", "订单二")
+    _, buffered = stages.parse_tool_reply(first + second, tools, "request", 0)
+    _, first_calls = stages.parse_tool_reply(first, tools, "request", 0)
+    _, second_calls = stages.parse_tool_reply(second, tools, "request", 1)
+    assert buffered == [*first_calls, *second_calls]
+    assert buffered[0]["id"] != buffered[1]["id"]
+    assert [json.loads(call["function"]["arguments"]) for call in buffered] == [
+        {"order": "AB01"},
+        {"order": "订单二"},
+    ]
 
 
 def test_preprocessing_sends_synthesis_to_talker() -> None:
@@ -131,7 +161,7 @@ def test_thinker_statistics_reach_the_client_with_text_and_speech(
         payload = talker.fn(payload)
     else:
         pass
-    payload = stages.create_decode_executor("unused").fn(payload)
+    payload = stages.create_decode_executor("unused").compute_fn(payload)
     chunk = Client.default_result_builder(payload.request_id, payload.data)
     assert chunk.text == "hi"
     assert chunk.spec_tokens_details == speculative_details
