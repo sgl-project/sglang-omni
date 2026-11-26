@@ -32,8 +32,6 @@ These defaults describe the SGLang-Omni Python server. The [native Apple Silicon
 | `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
 | `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
 
-For greedy speech generation, send `"temperature": 0` and `"repetition_penalty": 1` to `/v1/audio/speech`. This disables random sampling in both predictors and repetition scaling in the Talker. Explicit `subtalker_dosample` and `subtalker_temperature` values in request parameters or `stage_params.tts_engine` take precedence over temperature inheritance. Without a request temperature, checkpoint Subtalker defaults are preserved unless the Talker is greedy.
-
 ## Precomputed Speaker Embedding
 
 A Base reference can be given as its speaker embedding, `references[0].speaker_embedding`, instead of its clip. The server then loads and encodes no audio, and every replica serves every voice without stored voice state.
