@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -194,21 +195,21 @@ Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
       LoadJson(
           nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json")));
       return;
-    } catch (const std::exception &) {
-      // A corrupt or unsupported tokenizer.json (Whisper's among them) must
-      // not poison the legacy vocab/merges path: LoadJson may have partially
-      // filled every container before throwing, so all of them are reset
-      // before falling through.
+    } catch (const std::exception &error) {
+      if (!std::filesystem::exists(model_directory / "vocab.json") ||
+          !std::filesystem::exists(model_directory / "merges.txt")) {
+        throw;
+      } else {
+      }
+      std::cerr << "tokenizer.json not loaded (" << error.what()
+                << "); using vocab.json and merges.txt\n";
+      // LoadJson may have filled any container before throwing.
       vocabulary_.clear();
       merge_ranks_.clear();
       added_token_index_by_id_.clear();
       added_tokens_.clear();
       tokens_by_id_.clear();
       split_pattern_ = std::make_unique<Pcre2Regex>();
-      if (!std::filesystem::exists(model_directory / "vocab.json") ||
-          !std::filesystem::exists(model_directory / "merges.txt")) {
-        throw;
-      }
     }
   } else {
   }
