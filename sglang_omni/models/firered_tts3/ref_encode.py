@@ -141,9 +141,8 @@ class FireRedReferenceBundle:
                 except Exception as exc:
                     if len(group) > 1:
                         logger.warning(
-                            "FireRedTTS3 batched reference forward of %d clips failed (%s); retrying them one at a time",
-                            len(group),
-                            exc,
+                            f"FireRedTTS3 batched reference forward of {len(group)} "
+                            f"clips failed ({exc}); retrying them one at a time"
                         )
                         pending[0:0] = [[index] for index in group]
                     else:

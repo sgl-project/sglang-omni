@@ -390,6 +390,25 @@ def test_reference_hook_splits_a_drained_batch_by_the_padded_sample_budget(
     assert hook.batch_groups(prepared) == [[1, 3], [0], [2]]
 
 
+@pytest.mark.parametrize(
+    ("extra_patches", "expected_groups"),
+    [(0, [[0, 1]]), (1, [[0], [1]])],
+    ids=["exactly_half_shares", "one_patch_over_half_runs_alone"],
+)
+def test_two_references_share_a_forward_only_up_to_half_the_budget(
+    reference_bundle: FireRedReferenceBundle,
+    extra_patches: int,
+    expected_groups: list[list[int]],
+) -> None:
+    """A clip longer than half the padded budget always runs alone."""
+    pad_multiple = reference_bundle.pad_multiple
+    longer_samples = (
+        reference_bundle.batch_sample_budget // 2 + extra_patches * pad_multiple
+    )
+    clips = [torch.zeros(1, pad_multiple), torch.zeros(1, longer_samples)]
+    assert reference_bundle.batch_groups(clips) == expected_groups
+
+
 @pytest.mark.usefixtures("fp32_encoder", "decoded_audio")
 def test_failed_forward_fails_only_its_own_group(
     reference_bundle: FireRedReferenceBundle,
@@ -527,6 +546,61 @@ def test_normalize_runs_in_caller_threads_and_never_for_cache_hits(
         assert stats["batched_items"] == 3
         assert len(decoded_audio) == 3
         assert all(thread.startswith("caller") for _, thread in decoded_audio)
+    finally:
+        reference_encoder.close()
+
+
+@pytest.mark.usefixtures("fp32_encoder", "decoded_audio", "batch_only")
+def test_payloads_encoded_in_one_forward_keep_their_own_reference(
+    reference_bundle: FireRedReferenceBundle,
+) -> None:
+    """Each payload of one batched forward keeps its own conditioning."""
+    tokenizer = make_speaker_tokenizer()
+    names = ("long", "short", "mid")
+    payloads = []
+    for name in names:
+        payload = make_preprocessing_payload(
+            inputs={
+                "text": "hello",
+                "references": [{"audio_path": name, "text": "source text"}],
+            }
+        )
+        preprocess_payload(payload, config=reference_bundle.config, tokenizer=tokenizer)
+        payloads.append(payload)
+    reference_encoder = FireRedReferenceEncoder(
+        reference_bundle,
+        model_id="stub",
+        max_batch_size=len(names),
+        # The forward starts once all three are queued, not after this wait.
+        max_batch_wait_ms=5000.0,
+        cache_enabled=False,
+    )
+    try:
+        with patch.object(
+            reference_bundle, "encode", wraps=reference_bundle.encode
+        ) as per_clip_encode:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(names)) as pool:
+                states = [
+                    load_firered_tts3_state(encoded_payload)
+                    for encoded_payload in pool.map(
+                        reference_encoder.encode_payload, payloads
+                    )
+                ]
+            assert per_clip_encode.call_count == 0
+        stats = reference_encoder.service.stats()
+        assert (stats["batches"], stats["batched_items"]) == (1, len(names))
+        for name, state in zip(names, states):
+            per_clip = reference_bundle.encode(name)
+            assert state.prompt_latents is not None
+            assert state.speaker_embedding is not None
+            assert_matches_per_clip(
+                {
+                    "prompt_latents": state.prompt_latents,
+                    "speaker_embedding": state.speaker_embedding,
+                },
+                per_clip,
+            )
+            assert state.left_context_size == per_clip["prompt_latents"].shape[1]
     finally:
         reference_encoder.close()
 

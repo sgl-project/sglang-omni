@@ -278,14 +278,15 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                 and self.encodes_in_flight == 0
                 and (self.solo_future is None or self.solo_future.done())
             )
-            self.encodes_in_flight += 1
             if is_solo:
                 assert self.solo_executor is not None
-                self.solo_encodes += 1
                 solo_future = self.solo_executor.submit(self.hook.encode_one, item)
                 self.solo_future = solo_future
+                self.solo_encodes += 1
             else:
                 pass
+            # note (yucheng): After submit, so a raising submit leaks no count.
+            self.encodes_in_flight += 1
         try:
             if solo_future is not None:
                 # note (yucheng): A kept future's traceback can pin tensors.
@@ -381,8 +382,8 @@ class ReferenceEncodeService(Generic[InputT, ArtifactT, StoredT, RawInputT]):
                         pass
                 except Exception:
                     logger.exception(
-                        "%s batch_groups failed; encoding the drained batch as one group",
-                        self.log_prefix or "reference encode",
+                        f"{self.log_prefix or 'reference encode'} batch_groups failed; "
+                        "encoding the drained batch as one group"
                     )
                     groups = [list(range(len(items)))]
                 for group in groups:

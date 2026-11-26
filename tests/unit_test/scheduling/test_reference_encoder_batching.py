@@ -468,6 +468,28 @@ def test_close_stops_the_solo_thread() -> None:
     assert not solo_threads[0].is_alive()
 
 
+def test_close_lets_a_running_solo_encode_finish_before_the_hook_closes() -> None:
+    """A close during a solo encode waits for it, then closes the hook."""
+    hook = SoloHook()
+    hook.single_gate = threading.Event()
+    encodes_done_at_hook_close: list[list[str]] = []
+    hook.close = lambda: encodes_done_at_hook_close.append(list(hook.single_calls))
+    service = make_service(hook, timeout_s=30.0)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        lone = pool.submit(service.get_or_encode, "a")
+        assert hook.single_entered.wait(timeout=5)
+        close_thread = threading.Thread(target=service.close)
+        close_thread.start()
+        # A close that skipped the wait would finish here and close the hook.
+        close_thread.join(timeout=0.2)
+        assert close_thread.is_alive()
+        hook.single_gate.set()
+        assert tuple(lone.result(timeout=5).tolist()) == (1, ord("a"))
+    close_thread.join(timeout=5)
+    assert not close_thread.is_alive()
+    assert encodes_done_at_hook_close == [["a"]]
+
+
 def test_a_lone_request_skips_a_solo_thread_held_by_a_timed_out_encode() -> None:
     """An orphaned solo encode must not make the next lone request wait."""
     hook = SoloHook()
@@ -479,14 +501,39 @@ def test_a_lone_request_skips_a_solo_thread_held_by_a_timed_out_encode() -> None
         # "a" still holds the solo thread, so lone "b" goes to the batch worker.
         assert tuple(service.get_or_encode("b").tolist()) == (1, ord("b"))
         assert hook.batch_sizes == [1]
+        # Read it first: the done callback clears solo_future once "a" ends.
+        orphan = service.solo_future
+        assert orphan is not None
         hook.single_gate.set()
-        assert service.solo_future is not None
-        service.solo_future.result(timeout=5)
+        orphan.result(timeout=5)
         # Once the solo thread is idle again, the next lone request takes it.
         service.get_or_encode("cc")
         assert hook.single_calls == ["a", "cc"]
         assert len(set(hook.single_threads)) == 1
         assert service.stats()["solo_encodes"] == 2
+    finally:
+        service.close()
+
+
+def test_a_solo_submit_that_raises_leaves_the_solo_path_on() -> None:
+    """After a solo submit raises, the next lone request still runs solo."""
+    hook = SoloHook()
+    service = make_service(hook, max_batch_wait_ms=0.0)
+    try:
+        assert service.solo_executor is not None
+        submit = service.solo_executor.submit
+
+        def refuse_once(encode_one: object, item: str) -> None:
+            service.solo_executor.submit = submit
+            raise RuntimeError("can't start new thread")
+
+        service.solo_executor.submit = refuse_once
+        with pytest.raises(RuntimeError, match="start new thread"):
+            service.get_or_encode("a")
+        assert tuple(service.get_or_encode("bb").tolist()) == (2, ord("b"))
+        assert hook.single_calls == ["bb"]
+        assert hook.batch_sizes == []
+        assert service.stats()["solo_encodes"] == 1
     finally:
         service.close()
 

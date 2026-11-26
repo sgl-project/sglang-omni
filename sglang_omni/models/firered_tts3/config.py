@@ -294,7 +294,7 @@ class FireRedTTS3PipelineConfig(PipelineConfig):
             is_base = self.variant == "base"
             return {
                 "max_concurrency": 8,
-                # note (yucheng): batching is unmeasured on Instruct, whose stop head sits near its threshold.
+                # note (yucheng): Instruct batching is unmeasured.
                 "max_batch_size": 8 if is_base else 1,
                 "max_batch_wait_ms": 4.0,
                 "warmup_on_init": True,
