@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,6 +61,22 @@ func TestSelectionToDictionary(t *testing.T) {
 	}
 	if recorded || a.sess.ID != "" || len(a.history()) != 0 {
 		t.Errorf("recorded: session %+v", a.sess)
+	}
+}
+
+// TestSelectionProbeNoSettle: the dictionary's selection probe sends an
+// explicit caretSettleMs of 0 on the wire (the fake helper logs the
+// params it decoded): the read must answer inside selectionWait, and an
+// omitted field is the helper's 600 ms default (#4469 review).
+func TestSelectionProbeNoSettle(t *testing.T) {
+	set, keys, _ := fileSetup(t, "hello", &fakeChat{text: "Hello."})
+	log := filepath.Join(t.TempDir(), "selection.jsonl")
+	ev := script(t, hotkeyLine(0, "transcribe/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection-log", log)+","+ev, set, keys)
+	a.pump("the recording", func() bool { return a.sess.State == session.Recording })
+	b, err := os.ReadFile(log)
+	if err != nil || !strings.Contains(string(b), `"caretSettleMs":0`) {
+		t.Errorf("selection params on the wire %q, %v", b, err)
 	}
 }
 

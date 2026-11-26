@@ -252,6 +252,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 					continue
 				}
 			}
+			text = collapseLoops(text)
 			speaker := mtdSpeaker(part.Speaker)
 			if anchored, ok := anchors[part.Speaker]; ok {
 				speaker = anchored
@@ -387,6 +388,7 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 		if i > 0 {
 			text = DedupeOverlapText(prevText, text)
 		}
+		text = collapseLoops(text)
 		prevText = text
 		if text == "" {
 			continue

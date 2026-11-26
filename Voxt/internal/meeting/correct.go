@@ -24,10 +24,13 @@ type TranscriptContext struct {
 	Speech string
 }
 
-// A correction request holds at most this many lines and runes of text.
-const (
-	correctBatchLines = 30
-	correctBatchRunes = 3000
+// A correction request holds at most this many lines and runes of text. A
+// whole meeting's transcript usually fits one request: every extra request
+// is another full round trip of queueing on the language model. Variables
+// only so a test can batch a small transcript the way a long one is.
+var (
+	correctBatchLines = 250
+	correctBatchRunes = 20000
 )
 
 const correctionRequest = `You proofread a meeting transcript that speech recognition wrote. The user message is a JSON array of its lines: [{"i": number, "text": "..."}].`
@@ -40,6 +43,13 @@ const DefaultCorrectionStyle = `1. Fix what recognition got wrong, from the cont
 const correctionResponse = `Answer with only a JSON array, one item for each line, with its i: [{"i": number, "text": "the corrected line"}].`
 
 const correctPrompt = correctionRequest + "\n\n" + DefaultCorrectionStyle + "\n\n" + correctionResponse
+
+// correctionThinking bounds the reasoning a reasoning model does before
+// proofreading: the full budget costs tens of seconds per batch and can
+// exhaust the service's output limit on degenerate text. Services without
+// such a field see no change (applyThinking), and a service that rejects
+// the field gets the request retried without it (OpenAI.chat's relax).
+var correctionThinking = &llm.Thinking{Mode: llm.ThinkEffort, Effort: "low"}
 
 // CorrectTranscript has the language model correct a stored meeting's
 // lines in place: their times, speakers and order stay. A line the
@@ -172,7 +182,7 @@ func correctBatch(ctx context.Context, chat SummaryChat, tc TranscriptContext, s
 		return nil, err
 	}
 	zero := 0.0
-	resp, err := chat.Chat(ctx, llm.Request{Temperature: &zero, Messages: []llm.Message{
+	resp, err := chat.Chat(ctx, llm.Request{Temperature: &zero, Thinking: correctionThinking, Messages: []llm.Message{
 		{Role: llm.System, Content: correctSystem(tc, text.String(), style)},
 		{Role: llm.User, Content: string(user)},
 	}})

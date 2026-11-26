@@ -64,7 +64,10 @@ func (a *app) strictFeature() string {
 // event acts only on the card that was visible when the helper read its id.
 func (a *app) cardHotkeyGeneration() uint64 {
 	identity := ""
-	if a.overlayModeNow() == ovAnswer {
+	// A title being typed takes c and r, a session's empty card has
+	// nothing for them to act on, and the Rewrite card's input takes them.
+	mode := a.overlayModeNow()
+	if mode == ovAnswer && !a.renaming && (a.answer.open || !a.emptyCard) && !a.boxHoldsCard(mode) {
 		identity = a.sess.ID + "/draft"
 		if a.answer.open {
 			identity = a.answer.id + "/open"
@@ -98,11 +101,15 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	if a.pressDuringSelection(e) { // dictionary_selection.go
 		return
 	}
+	if e.Binding == proto.HotkeyCancel && a.renaming {
+		a.endRename() // the cancel shortcut ends the typing first, then closes the card
+		return
+	}
 	if e.Binding == proto.HotkeyCancel && a.answer.ui.langOpen {
 		a.closeLangMenu() // the cancel shortcut closes the menu first, then the card
 		return
 	}
-	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgID != "" && a.bgSess.State.Live() {
+	if e.Binding == proto.HotkeyCancel && !a.sess.State.Live() && a.bgVisible() && a.bgSess.State.Live() {
 		// The backgrounded answer still streams (the session beside it
 		// ended): stop a partial answer, cancel one with no text yet.
 		if a.cardSnapshot().CanStop() {
@@ -156,12 +163,29 @@ func (a *app) hotkeyFired(e proto.HotkeyEventParams) {
 	d := hotkey.Route(e, phase, a.sess.HoldBinding, a.strictFeature(), finish)
 	switch d.Action {
 	case hotkey.Start:
+		if n, ok := hotkey.SessionSlot(d.Feature); ok {
+			// Session 1, 2 or 3 of the list, or the next one, around (#4005).
+			list := a.sessions()
+			if d.Feature == hotkey.SessionNext {
+				n = (a.slotIndex(a.slot) + 1) % len(list)
+			}
+			if n < len(list) {
+				a.showSession(list[n].id)
+			}
+			return
+		}
 		if phase == hotkey.Composing && d.Feature != hotkey.Transcribe {
 			return // only Transcribe starts beside a streaming answer (wall 116)
 		}
 		hold := ""
 		if d.Hold {
 			hold = e.Binding
+		}
+		// In the Rewrite card holding an answer, the dictation shortcuts
+		// speak the next instruction too, as the Rewrite shortcut does:
+		// they used to dictate into its input, which then waited for Enter.
+		if (d.Feature == hotkey.Transcribe || d.Feature == hotkey.Note) && isSelf(target) && a.boxAnswered() && a.followUpAnswer(hold) {
+			return
 		}
 		// In another app than the card's, the Rewrite shortcut begins a new
 		// conversation (the card waits under it, setAside); the card's

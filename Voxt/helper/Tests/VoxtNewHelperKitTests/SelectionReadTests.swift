@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import VoxtNewHelperKit
 
@@ -33,5 +34,28 @@ final class SelectionReadTests: XCTestCase {
         // AX reported a blank selected text (a Lark block selection):
         // something is selected, so the caret rule must not stop the ⌘C.
         XCTAssertFalse(SelectionRead.endsAtCaret(range: caret, editable: true, blankSelection: true), "a blank AX selection is a selection: ⌘C")
+    }
+
+    /// A caret-only answer waits for a selection made with ⌘A in the same
+    /// motion as the shortcut to settle (#4467), then concludes. The app
+    /// sets the budget in textio.selection's params.
+    func testCaretPending() {
+        let settle = SelectionRead.defaultCaretSettleMs
+        XCTAssertTrue(SelectionRead.caretPending(elapsedMs: 0, settleMs: settle), "the first reading can predate the ⌘A")
+        XCTAssertTrue(SelectionRead.caretPending(elapsedMs: settle - 1, settleMs: settle))
+        XCTAssertFalse(SelectionRead.caretPending(elapsedMs: settle, settleMs: settle), "a caret that stays a caret is the answer")
+        XCTAssertFalse(SelectionRead.caretPending(elapsedMs: settle * 2, settleMs: settle))
+        XCTAssertFalse(SelectionRead.caretPending(elapsedMs: 10, settleMs: 10), "the app's budget, not the helper's")
+    }
+
+    /// The ⌘C waits for a modifier still held from the shortcut: the app
+    /// reads Control+⌘C as no copy (#3835).
+    func testBlocksCopy() {
+        XCTAssertTrue(SelectionRead.blocksCopy(.maskControl), "Control of a Control+C shortcut")
+        XCTAssertTrue(SelectionRead.blocksCopy([.maskControl, .maskCommand]))
+        XCTAssertTrue(SelectionRead.blocksCopy(.maskShift))
+        XCTAssertTrue(SelectionRead.blocksCopy(.maskAlternate))
+        XCTAssertFalse(SelectionRead.blocksCopy(.maskCommand), "⌘ is ⌘C's own modifier: a Command+C shortcut posts at once")
+        XCTAssertFalse(SelectionRead.blocksCopy([]))
     }
 }

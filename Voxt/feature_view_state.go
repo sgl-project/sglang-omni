@@ -82,6 +82,11 @@ type featureModelStatusInput struct {
 	Model   *models.Model
 	Status  models.Status
 	Service *remoteServiceStateInput
+	// PackLeft is what the recommended pack still has to download, set
+	// when the row is the guide's recommendation: the click downloads the
+	// speech model and its draft, so the label counts both, as the
+	// guide's and Home's do.
+	PackLeft string
 }
 
 type featureModelsStateInput struct {
@@ -170,9 +175,13 @@ func buildFeatureModelsViewState(translator *i18n.Translator, input featureModel
 func buildFeatureModelStatus(translator *i18n.Translator, key string, input featureModelStatusInput, deciding string) *featureModelStatusViewState {
 	if model := input.Model; model != nil {
 		status := input.Status
+		sizeText := modelSizeTextFor(translator, *model, status)
+		if input.PackLeft != "" && !status.Downloading && !status.Installed && !status.OnDisk && status.Done == 0 {
+			sizeText = translator.T("%s download", input.PackLeft)
+		}
 		state := &featureModelStatusViewState{
 			Key: key + "-model", ModelID: model.ID,
-			Text:     uitext.ModelNameFor(translator, model.ID) + " · " + modelSizeTextFor(translator, *model, status),
+			Text:     uitext.ModelNameFor(translator, model.ID) + " · " + sizeText,
 			Actions:  buildModelActions(translator, modelsViewStateInput{ModelDeciding: deciding}, *model, status),
 			Progress: buildModelProgress(translator, *model, status),
 		}

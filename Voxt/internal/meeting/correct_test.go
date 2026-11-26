@@ -116,7 +116,7 @@ func TestCorrectSystemBlankStyleUsesDefault(t *testing.T) {
 // keeps its own prompt and the JSON correction contract stays intact.
 func TestCorrectTranscriptCustomStyle(t *testing.T) {
 	var segs []store.MeetingSegment
-	for i := range 35 {
+	for i := range 260 {
 		segs = append(segs, store.MeetingSegment{Idx: i, Source: store.SegmentMic, Text: "Box"})
 	}
 	m, _, chat := correctFixture(t, segs...)
@@ -170,10 +170,10 @@ func TestSummaryReadsCorrectedTranscript(t *testing.T) {
 // Long transcripts go in several requests, each within its limits.
 func TestCorrectionBatches(t *testing.T) {
 	var segs []store.MeetingSegment
-	for i := range 70 {
+	for i := range 300 {
 		segs = append(segs, store.MeetingSegment{Idx: i, Text: strings.Repeat("字", 100)})
 	}
-	segs = append(segs, store.MeetingSegment{Idx: 70, Text: "  "})
+	segs = append(segs, store.MeetingSegment{Idx: 300, Text: "  "})
 	b := correctionBatches(segs)
 	n := 0
 	for _, batch := range b {
@@ -186,8 +186,20 @@ func TestCorrectionBatches(t *testing.T) {
 		}
 		n += len(batch)
 	}
-	if n != 70 || len(b) != 3 {
+	if n != 300 || len(b) != 2 {
 		t.Fatalf("%d lines in %d batches", n, len(b))
+	}
+}
+
+// A whole meeting's transcript fits one request: the proofread finishes
+// after one language-model round trip instead of several queued ones.
+func TestCorrectionBatchesMeetingFitsOneRequest(t *testing.T) {
+	var segs []store.MeetingSegment
+	for i := range 170 {
+		segs = append(segs, store.MeetingSegment{Idx: i, Text: "The meeting goes over the plan."})
+	}
+	if b := correctionBatches(segs); len(b) != 1 {
+		t.Fatalf("a 170-line meeting became %d requests", len(b))
 	}
 }
 
@@ -226,8 +238,8 @@ func TestCorrectAndSummarizeWarns(t *testing.T) {
 // every line and the others' under none).
 func TestLiveTranslationFindsItsLine(t *testing.T) {
 	m, _, _ := correctFixture(t)
-	m.commitSegment(Segment{Source: SourceSystem, Text: "one"})
-	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"})
+	m.commitSegment(Segment{Source: SourceSystem, Text: "one"}, nil)
+	m.commitSegment(Segment{Source: SourceSystem, Start: time.Second, Text: "two"}, nil)
 	m.segWrites.Wait()
 	m.applyTranslation(1, "二")
 	segs := m.Current().Segments
@@ -312,5 +324,24 @@ func TestCorrectTranscriptBatchFailureKeepsOtherBatches(t *testing.T) {
 		if s.Text != want {
 			t.Fatalf("line %d: %q, want %q", s.Idx, s.Text, want)
 		}
+	}
+}
+
+// TestCorrectTranscriptBoundsReasoning: the proofreading request carries
+// the low-effort thinking bound (revert: it goes out with no Thinking).
+func TestCorrectTranscriptBoundsReasoning(t *testing.T) {
+	m, _, chat := correctFixture(t,
+		store.MeetingSegment{Idx: 0, Source: store.SegmentMic, Text: "Box one"},
+		store.MeetingSegment{Idx: 1, Source: store.SegmentMic, Text: "Box two"},
+	)
+	if err := m.CorrectTranscript(context.Background(), "m"); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.reqs) != 1 {
+		t.Fatalf("requests %d", len(chat.reqs))
+	}
+	th := chat.reqs[0].Thinking
+	if th == nil || th.Mode != llm.ThinkEffort || th.Effort != "low" {
+		t.Fatalf("correction request thinking %+v", th)
 	}
 }

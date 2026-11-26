@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Model-independent text helpers: UTF-8 code points, Unicode whitespace,
-// greedy token-loop detection and collapse, and base64.
+// transcript joining, greedy token-loop detection and collapse, and base64.
 #pragma once
 
 #include <cstdint>
@@ -18,6 +18,9 @@ void AppendUtf8(uint32_t code_point, std::string &out);
 size_t CodePointCount(const std::string &text);
 // Strips every Unicode space from both ends.
 std::string StripUnicodeWhitespace(const std::string &text);
+// Joins the texts of consecutive audio, with a space only between two spaced
+// scripts.
+std::string JoinTranscriptParts(const std::vector<std::string> &parts);
 // Whether text contains needle.
 bool Contains(const std::string &text, const char *needle);
 // Whether text has a space no combining mark attaches to, as Swift's

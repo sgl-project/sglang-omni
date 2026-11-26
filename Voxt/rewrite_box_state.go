@@ -20,8 +20,8 @@ func (a *app) boxVoiceLine() string {
 	b := &a.box
 	if b.session != "" && a.sess.ID == b.session && a.sess.State.Live() {
 		switch {
-		case a.sess.State == session.Recording:
-			return a.sess.Partial
+		case a.sess.State == session.Recording, a.sess.State == session.Recognizing && a.sess.Partial != "":
+			return a.sess.Partial // the live text stays while the last of it is recognised (VX-141)
 		case a.sess.State == session.Recognizing:
 			return i18n.T("Recognising…")
 		case a.sess.Spoken != "":
@@ -34,6 +34,9 @@ func (a *app) boxVoiceLine() string {
 func (a *app) boxSubtitle(selection string) string {
 	if a.box.err != "" {
 		return a.box.err
+	}
+	if a.boxIdle() {
+		return i18n.T("Say or type what to write")
 	}
 	if a.sess.ID == "" || a.sess.ID != a.boxSessionID() || !a.sess.State.Live() {
 		return ""
@@ -57,14 +60,9 @@ func (a *app) boxSubtitle(selection string) string {
 
 func (a *app) boxViewState() rewriteBoxViewState {
 	box := &a.box
+	// A selection read through the copy fallback is still the selection,
+	// not the clipboard's content: one label for both.
 	selectionSource := i18n.T("Selected text")
-	selectionVia := box.selectionVia
-	if box.session != "" && a.sess.ID == box.session {
-		selectionVia = a.sess.SelectionVia
-	}
-	if selectionVia == "copy" {
-		selectionSource = i18n.T("Copied text")
-	}
 	thumbnails := slices.Clone(box.thumbs)
 	imageInfo := slices.Clone(box.imageInfo)
 	if !box.automaticImageSuppressed && len(thumbnails) == 0 && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && len(a.sess.ImagePreview) > 0 {
@@ -85,6 +83,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	resendReview := box.sending != "" && box.shown && a.sess.ID == box.sending && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0
 	recording := box.session != "" && a.sess.ID == box.session && a.sess.State == session.Recording
 	state := rewriteBoxViewState{
+		Sessions:  a.sessionChips(),
 		Selection: selection, Conversation: a.boxConversing(), SizeStep: a.prefs.Features.CardSize(string(store.KindRewrite)), SelectionBlock: newBoxTextSegment(selection, selectionSource, true), Text: box.text, TextSegments: slices.Clone(box.textSegments),
 		Thumbnails: thumbnails, ImageInfo: imageInfo, ManualImages: len(box.images), VoiceLine: a.boxVoiceLine(), EditorPlaceholder: i18n.T("Or type here"), Subtitle: a.boxSubtitle(selection), SubtitleError: box.err != "",
 		CanSend: resendReview || box.sending == "" && (box.session != "" && a.sess.ID == box.session && (a.sess.State == session.Recording || a.sess.State == session.Recognizing && a.sess.ImagePreviewKind == "window" && len(a.sess.ImagePreview) > 0) || box.session == "" && box.instruction != ""),
@@ -95,8 +94,17 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if state.Conversation {
 		state.Card, state.CardSessionID, state.CardWidth = a.boxCardView(), a.ov.projection.view.SessionID, a.boxFaceW()
 	}
-	if a.boxAnswered() && box.instruction == "" && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
-		state.CanSend = true // a typed follow-up
+	if a.boxWriting() { // the sent turn shows them: the composer is empty again
+		state.Thumbnails, state.ImageInfo, state.Selection, state.SelectionBlock, state.Text, state.TextSegments, state.VoiceLine = nil, nil, "", boxTextSegment{}, "", nil, ""
+	}
+	if (a.boxAnswered() && box.instruction == "" || a.boxIdle()) && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
+		state.CanSend = true // a typed follow-up, or a new session's first instruction
+	}
+	// The microphone asks for the next instruction by voice as the first
+	// one was asked; the Rewrite shortcut does the same.
+	state.CanSpeak = (a.boxAnswered() || a.boxIdle()) && !a.sess.State.Live()
+	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
+		state.SpeakKeys = chordLabel(keys[0].Keys)
 	}
 	if state.Subtitle == "" && a.boxAnswered() {
 		state.Subtitle = a.answer.msg // "Copied", why Insert did not work
@@ -110,7 +118,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSend, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSendNow, speak: a.boxSpeak, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
 		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		dismissTip: a.dismissBoxTip,
@@ -152,8 +160,7 @@ func (a *app) boxSync() {
 		return // tests: the state is enough
 	}
 	if a.box.win == nil {
-		a.box.win = newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil))
-		a.box.win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on, over a full-screen app too
+		a.box.win, a.box.panel = a.newBoxWin(false), false
 	}
 	style := floatingVibrancyStyle(faceRadius(a.prefs.Overlay, ovAnswer, boxWinH))
 	if style != a.box.style {
@@ -170,17 +177,48 @@ func (a *app) boxSync() {
 	}
 	if !a.box.winShown || a.box.raise {
 		// The shortcut that opens the card or sends from it is a click on
-		// it: above every window at once (cardFront).
+		// it: above every window at once (cardFront), on the user's Space.
+		a.boxPanel()
 		a.box.front.raise(a.box.win)
 		a.box.winShown, a.box.raise = true, false
 	}
 	a.box.front.settle(a.box.win, func() cardMay { return a.cardMayTake(a.box.target.PID) })
 }
 
+// newBoxWin creates the card's window: an ordinary one, or a panel.
+func (a *app) newBoxWin(panel bool) boxWindow {
+	options := cardWindowOptions(i18n.T("Rewrite"), boxWinW, boxWinH, nil)
+	options.Panel = panel
+	win := newBoxWindow(a.boxViewState, a.boxActions(), &a.box.ui, options)
+	win.SetVisibleOnAllWorkspaces(true) // on the Space the user is on
+	return win
+}
+
+// boxPanel makes the card a panel when its ordinary window is not on the
+// user's Space: the user is in another app's full screen, where macOS
+// shows no ordinary window of an app with a Dock icon, and VoxtNew taking
+// the front with it (cardFront) would switch the user to a desktop. A
+// panel shows over the full-screen app and takes the keyboard without
+// activating VoxtNew, as the card did before it took the front (#4417).
+// It floats: VoxtNew never comes in front with it, and at the windows'
+// level the app in front would cover it. It stays a panel until the card
+// closes. Main thread.
+func (a *app) boxPanel() {
+	if a.box.panel || a.box.win.IsOnActiveSpace() {
+		return
+	}
+	a.box.win.Destroy()
+	a.box.win, a.box.panel = a.newBoxWin(true), true
+	a.box.front = cardFront{floats: true} // a new window starts above every window
+	a.box.focusText = true                // its text box takes the typing
+	a.box.win.SetVibrancyStyle(a.box.style)
+	a.box.win.SetContentBounds(a.box.frame)
+}
+
 // boxConversing says whether the card shows the answer card's content:
 // it holds an answer, or its session writes one.
 func (a *app) boxConversing() bool {
-	return a.boxAnswered() || a.box.open && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && a.writingAnswer()
+	return a.boxAnswered() || a.boxWriting() || a.box.open && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && a.writingAnswer()
 }
 
 // boxHoldsCard says whether the Rewrite card stands in for the answer
@@ -229,9 +267,8 @@ const (
 // it and kept on the screen, as the answer card is (overlayFrame).
 func (a *app) boxFrame() mygo.Rectangle {
 	frame, area := layout.Frame(a.box.area, a.prefs.Overlay, a.boxFaceW(), boxFaceH), a.box.area
-	frame.X = min(max(frame.X+a.box.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
-	frame.Y = min(max(frame.Y+a.box.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
-	return frame
+	frame.X, frame.Y = frame.X+a.box.dragged.x, frame.Y+a.box.dragged.y
+	return a.pinnedFrame(frame, area)
 }
 
 // boxDragged keeps where the user dragged the card to (its face drags
@@ -253,7 +290,7 @@ func (a *app) boxDraggedTo(bounds mygo.Rectangle) {
 		area = mygo.Screen.DisplayMatching(bounds).WorkArea
 	}
 	display := area != a.box.area
-	a.box.area = area
+	a.box.area, a.slotPin = area, nil
 	anchor := layout.Frame(area, a.prefs.Overlay, a.boxFaceW(), boxFaceH)
 	a.box.dragged.x, a.box.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 	a.box.frame.X, a.box.frame.Y = bounds.X, bounds.Y
@@ -275,4 +312,30 @@ func (a *app) closeBoxWindow() {
 		a.box.win.Destroy()
 		a.box.win = nil
 	}
+}
+
+// boxIdle: the Rewrite card waits for a new session's first instruction,
+// with nothing asked or answered yet.
+func (a *app) boxIdle() bool {
+	b := &a.box
+	return b.open && b.session == "" && b.sending == "" && b.instruction == "" && !a.boxAnswered()
+}
+
+// boxSpeak records the next instruction: the answer's follow-up, or an
+// idle card's first.
+func (a *app) boxSpeak() {
+	if a.boxIdle() {
+		a.openBox(a.box.target, session.StartRequest{Kind: store.KindRewrite})
+		return
+	}
+	a.followUpAnswer("")
+}
+
+// boxSendNow is Send: what is typed in an idle card is its first
+// instruction.
+func (a *app) boxSendNow() {
+	if typed := strings.TrimSpace(a.boxTextContent()); a.boxIdle() && typed != "" {
+		a.box.instruction, a.box.text, a.box.textSegments = typed, "", nil
+	}
+	a.boxSend()
 }

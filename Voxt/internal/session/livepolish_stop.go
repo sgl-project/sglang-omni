@@ -126,7 +126,7 @@ func (lp *livePolish) adopt(text string, flight *liveFlight, request cleanupRequ
 		results := slices.Clone(blocks)
 		if len(parts) > 0 {
 			if partIndex < len(parts) && delta != "" {
-				partial := compose.PartialOutput(delta, parts[partIndex].Text)
+				partial := compose.PartialOutput(delta, parts[partIndex].Text, parts[partIndex].Custom())
 				if partial != "" {
 					answers = append(answers, partial)
 				}

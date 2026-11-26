@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -10,15 +11,16 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/dictation"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/permission"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // homeTester is the test app on Home, in a window tall enough to show all
@@ -56,7 +58,6 @@ func TestHomeReadiness(t *testing.T) {
 		"No speech model is installed. Install one to transcribe, translate and rewrite by voice.",
 		"No language model is set up. Translate and Rewrite need one, and Transcribe types the text as recognised.",
 		"Without Accessibility access, results are copied for you to paste, and shortcuts such as Right ⌥ do not work.",
-		"Try it", "Today", "Recent results", "Results appear here after you use a shortcut.",
 	} {
 		if !has(tt, s) {
 			t.Errorf("no %q in %q", s, tt.Texts())
@@ -77,7 +78,7 @@ func TestHomeReadiness(t *testing.T) {
 	a.perms.access = false
 	// The whole line is the way to fix it: speech models are local,
 	// language models are set up on their page.
-	if _, ok := tt.Find("Speech recognition: Download (2.5 GB)"); !ok {
+	if _, ok := tt.Find("Speech recognition: Download (" + a.obDownloadLeft() + ")"); !ok {
 		t.Fatalf("no download on the speech line: %q", tt.Texts())
 	}
 	click(t, tt, "Language model: Open Language models")
@@ -116,8 +117,8 @@ func TestHomeReadiness(t *testing.T) {
 		t.Errorf("not ready, no ready line: %q", tt.Texts())
 	}
 	click(t, tt, "Shortcut: Open Transcribe")
-	if a.router.Path() != "/transcribe" {
-		t.Errorf("went to %s", a.router.Path())
+	if a.shownPath() != "/settings/transcribe" {
+		t.Errorf("went to %s", a.shownPath())
 	}
 }
 
@@ -158,78 +159,6 @@ func TestHomeReadinessLive(t *testing.T) {
 	a.host.sup.(*fakeSupervisor).set(helper.Status{State: helper.Starting})
 	if !has(tt, "1 step to go") {
 		t.Errorf("helper starting: %q", tt.Texts())
-	}
-}
-
-// TestHomeTryFirstUse: Home offers Try it until VoxtNew has given a
-// result once; then never again, the history cleared or not.
-func TestHomeTryFirstUse(t *testing.T) {
-	a, tt := homeTester(t)
-	readyModels(a)
-	allowAll(a)
-	if !hasExact(tt, "Try it") || a.prefs.Setup.Tried {
-		t.Fatalf("first use, no Try it: %q", tt.Texts())
-	}
-	// A try that is done keeps its result in view on this visit.
-	a.sessionChanged(trySnapshot(a, session.Done))
-	frames(tt)
-	if !a.prefs.Setup.Tried {
-		t.Error("a try's result did not mark Tried")
-	}
-	if !hasExact(tt, "Try it") || !has(tt, "The meeting moves to Thursday at four.") {
-		t.Errorf("the try's result went: %q", tt.Texts())
-	}
-	// Another visit: no Try it.
-	a.navigate("/history")
-	a.navigate("/home")
-	if hasExact(tt, "Try it") {
-		t.Errorf("tried, Try it on the next visit: %q", tt.Texts())
-	}
-	// The history cleared: still none.
-	a.clearHistory()
-	frames(tt)
-	if hasExact(tt, "Try it") {
-		t.Errorf("history cleared, Try it again: %q", tt.Texts())
-	}
-}
-
-// TestHomeTryGoesAfterASession: a real session's result (any feature)
-// counts as the first use too; a failure or nothing heard does not.
-func TestHomeTryGoesAfterASession(t *testing.T) {
-	a, tt := homeTester(t)
-	readyModels(a)
-	allowAll(a)
-	rev := func() uint64 { return a.sess.Rev + 1 }
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s1", Kind: store.KindTranslate, State: session.Recording})
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s1", Kind: store.KindTranslate, State: session.Done, Result: "  "})
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s2", Kind: store.KindRewrite, State: session.Recording})
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s2", Kind: store.KindRewrite, State: session.Failed})
-	if a.prefs.Setup.Tried || !hasExact(tt, "Try it") {
-		t.Fatalf("no result yet, but tried: %v %q", a.prefs.Setup.Tried, tt.Texts())
-	}
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s3", Kind: store.KindTranslate, State: session.Recording})
-	a.sessionChanged(session.Snapshot{Rev: rev(), ID: "s3", Kind: store.KindTranslate, State: session.Done, Result: "Hello."})
-	frames(tt)
-	if !a.prefs.Setup.Tried {
-		t.Error("a translation's result did not mark Tried")
-	}
-	// Not Home's try: the area goes at once.
-	if hasExact(tt, "Try it") {
-		t.Errorf("Try it after a session's result: %q", tt.Texts())
-	}
-}
-
-// TestHomeTryHistoryBeforeTheFlag: a history from before Tried existed
-// (an upgrade) hides Try it and sets the flag.
-func TestHomeTryHistoryBeforeTheFlag(t *testing.T) {
-	a, tt := homeTester(t)
-	readyModels(a)
-	allowAll(a)
-	seedHistory(t, a)
-	a.historyChanged()
-	frames(tt)
-	if hasExact(tt, "Try it") || !a.prefs.Setup.Tried {
-		t.Errorf("history, Try it %v tried %v: %q", hasExact(tt, "Try it"), a.prefs.Setup.Tried, tt.Texts())
 	}
 }
 
@@ -280,118 +209,243 @@ func TestHomeSlogan(t *testing.T) {
 		t.Errorf("no shortcut: %q", tt.Texts())
 	}
 	click(t, tt, "Add a shortcut to start")
-	if a.router.Path() != "/transcribe" {
-		t.Errorf("went to %s", a.router.Path())
+	if a.shownPath() != "/settings/transcribe" {
+		t.Errorf("went to %s", a.shownPath())
 	}
 }
 
-func TestReadHome(t *testing.T) {
+func TestHomeLastSpeechModel(t *testing.T) {
+	a, tt := homeTester(t)
+	if err := a.lib.store.History().Put(context.Background(), store.Entry{
+		ID: "spoken", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone,
+		Result: "Hello.", ASRModel: "fixture-speech-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.historyChanged()
+	if !hasExact(tt, "fixture-speech-model") {
+		t.Fatalf("the last speech model is missing: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.Hotkeys = nil })
+	if !hasExact(tt, "fixture-speech-model") {
+		t.Fatalf("no shortcut hid the last speech model: %q", tt.Texts())
+	}
+}
+
+type homeUsageLocal struct {
+	fakeLocal
+	remoteName string
+}
+
+func (localServices homeUsageLocal) Installed(kind local.Kind) []local.Model {
+	installed := localServices.fakeLocal.Installed(kind)
+	if kind == local.ASR {
+		name := localServices.remoteName
+		if name == "" {
+			name = "OpenAI Transcribe"
+		}
+		return append(installed, local.Model{Kind: local.ASR, ID: "openai", Name: name})
+	}
+	return installed
+}
+
+func TestHomeRemoteSpeechModel(t *testing.T) {
+	a, tester := homeTester(t)
+	a.local = &homeUsageLocal{fakeLocal: fakeLocal{ASRP: &fakeTranscriptions{}}, remoteName: "OpenAI Transcribe · gpt-4o-mini-transcribe"}
+	entry := store.Entry{ID: "remote", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone, Result: "hello", ASRProvider: "openai", ASRModel: "gpt-4o-mini-transcribe"}
+	if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	a.historyChanged()
+	if !hasExact(tester, "OpenAI Transcribe · gpt-4o-mini-transcribe") {
+		t.Fatalf("remote speech model: %q", tester.Texts())
+	}
+	a.local.(*homeUsageLocal).remoteName = "OpenAI Transcribe · gpt-new"
+	if !hasExact(tester, "OpenAI Transcribe · gpt-new · gpt-4o-mini-transcribe") {
+		t.Fatalf("updated remote speech model: %q", tester.Texts())
+	}
+}
+
+func TestHomeModelNameLocale(t *testing.T) {
+	i18n.SetLocale("en")
+	t.Cleanup(func() { i18n.SetLocale("en") })
+	a, tester := homeTester(t)
+	entry := store.Entry{ID: "dictation", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone, Result: "hello", ASRModel: dictation.ModelID}
+	if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+		t.Fatal(err)
+	}
+	a.historyChanged()
+	if !has(tester, "System dictation") {
+		t.Fatalf("English model name: %q", tester.Texts())
+	}
+	i18n.SetLocale("zh-Hans")
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	if !has(tester, "系统听写") {
+		t.Fatalf("Chinese model name: %q", tester.Texts())
+	}
+}
+
+func TestReadHomeUsageModelIdentity(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
+	for _, test := range []struct {
+		name         string
+		entries      []store.Entry
+		wantProvider string
+		wantModel    string
+		wantASRCount int
+	}{
+		{name: "empty new entry keeps looking", entries: []store.Entry{
+			{ID: "empty", Kind: store.KindTranscribe, CreatedAt: now, Status: store.StatusDone, Result: "new"},
+			{ID: "old", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "old", ASRProvider: "openai", ASRModel: "gpt-old"},
+		}, wantProvider: "openai", wantModel: "gpt-old"},
+		{name: "provider-only is not overwritten", entries: []store.Entry{
+			{ID: "provider", Kind: store.KindTranscribe, CreatedAt: now, Status: store.StatusDone, Result: "new", ASRProvider: "openai"},
+			{ID: "model", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -10), Status: store.StatusDone, Result: "old", ASRModel: "local-model"},
+		}, wantProvider: "openai"},
+		{name: "provider outside the window", entries: []store.Entry{
+			{ID: "old", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "old", ASRProvider: "openai", ASRMS: 9000},
+		}, wantProvider: "openai"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			for _, entry := range test.entries {
+				if err := a.lib.store.History().Put(context.Background(), entry); err != nil {
+					t.Fatal(err)
+				}
+			}
+			usage, err := readHomeUsage(context.Background(), a.lib.store.History(), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usage.lastProvider != test.wantProvider || usage.lastModel != test.wantModel || usage.asrCount != test.wantASRCount {
+				t.Fatalf("usage %+v, want provider %q model %q and %d timed results", usage, test.wantProvider, test.wantModel, test.wantASRCount)
+			}
+		})
+	}
+}
+
+func TestHomeHistoryReadError(t *testing.T) {
+	a, tt := homeTester(t)
+	a.hm.err = "fixture read failed"
+	a.hm.gen++
+	frames(tt)
+	if !hasExact(tt, "Could not read the history.") {
+		t.Fatalf("the history read error is missing: %q", tt.Texts())
+	}
+}
+
+func TestReadHomeUsage(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
 	a, _, _ := newTestApp(t)
 	h := a.lib.store.History()
-	now := time.Date(2026, 10, 15, 15, 0, 0, 0, time.Local)
-	put := func(id string, kind store.Kind, at time.Time, status store.Status, result string) {
-		t.Helper()
-		if err := h.Put(context.Background(), store.Entry{ID: id, Kind: kind, CreatedAt: at, Status: status, Result: result}); err != nil {
+	for _, entry := range []store.Entry{
+		{ID: "failed", CreatedAt: now, Status: store.StatusFailed, Result: "", ASRModel: "failed-model"},
+		{ID: "blank", CreatedAt: now.Add(-time.Hour), Status: store.StatusDone, Result: "  ", ASRModel: "blank-model"},
+		{ID: "new", CreatedAt: now.Add(-2 * time.Hour), Status: store.StatusDone, Result: "new", ASRModel: "new-model", ASRMS: 1500},
+		{ID: "older", CreatedAt: now.AddDate(0, 0, -10), Status: store.StatusDone, Result: "older", ASRMS: 2500},
+		{ID: "ancient", CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "ancient", ASRModel: "ancient-model", ASRMS: 9000},
+	} {
+		entry.Kind = store.KindTranscribe
+		if err := h.Put(context.Background(), entry); err != nil {
 			t.Fatal(err)
 		}
 	}
-	put("01A", store.KindTranscribe, now.Add(-time.Hour), store.StatusDone, "Hello world.")
-	put("01B", store.KindTranslate, now.Add(-2*time.Hour), store.StatusDone, "你好，世界。")
-	put("01C", store.KindRewrite, now.Add(-3*time.Hour), store.StatusFailed, "")
-	put("01D", store.KindTranscribe, now.Add(-16*time.Hour), store.StatusDone, "Late yesterday.")
-	put("01E", store.KindRewrite, now.Add(-30*time.Hour), store.StatusDone, "Older.")
-	st, recent, err := readHome(context.Background(), h, now)
+	usage, err := readHomeUsage(context.Background(), h, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.count != 2 || st.chars != len("Helloworld.")+6 || st.byKind[store.KindTranscribe] != 1 || st.byKind[store.KindTranslate] != 1 {
-		t.Errorf("today %+v", st)
+	if usage.lastModel != "new-model" || usage.asrMS != 4000 || usage.asrCount != 2 {
+		t.Fatalf("usage %+v, want new-model and 2 results averaging 2 seconds", usage)
 	}
-	var ids []string
-	for _, e := range recent {
-		ids = append(ids, e.ID)
+
+	empty, _, _ := newTestApp(t)
+	usage, err = readHomeUsage(context.Background(), empty.lib.store.History(), now)
+	if err != nil || usage != (homeUsage{}) {
+		t.Fatalf("empty history: %+v, %v", usage, err)
 	}
-	if strings.Join(ids, ",") != "01A,01B,01D,01E" {
-		t.Errorf("recent %v", ids)
+
+	old, _, _ := newTestApp(t)
+	if err := old.lib.store.History().Put(context.Background(), store.Entry{
+		ID: "old", Kind: store.KindTranscribe, CreatedAt: now.AddDate(0, 0, -200), Status: store.StatusDone, Result: "old", ASRModel: "old-model", ASRMS: 9000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	usage, err = readHomeUsage(context.Background(), old.lib.store.History(), now)
+	if err != nil || usage.lastModel != "old-model" || usage.asrCount != 0 {
+		t.Fatalf("old history: %+v, %v", usage, err)
 	}
 	if groupDigits(1234567) != "1,234,567" || groupDigits(999) != "999" {
 		t.Errorf("groupDigits %s %s", groupDigits(1234567), groupDigits(999))
 	}
 }
 
-func TestHomeRecent(t *testing.T) {
-	a, tt := homeTester(t)
-	seedHistory(t, a)
-	seedWriteHistory(t, a)
-	a.historyChanged()
-	frames(tt)
-	if !has(tt, "Let's move the design review to Thursday afternoon.") || !has(tt, "By feature") {
-		t.Fatalf("recent: %q", tt.Texts())
-	}
-	// The newest seeded entry is 5 minutes old: just after midnight it is yesterday's.
-	if now := time.Now(); a.hm.today.count == 0 && sameDay(now, now.Add(-5*time.Minute)) {
-		t.Errorf("nothing today: %+v", a.hm.today)
-	}
-	if len(a.hm.recent) != homeRecent {
-		t.Errorf("%d recent", len(a.hm.recent))
-	}
-	e := a.hm.recent[0]
-	click(t, tt, "Copy: "+uitext.FirstLine(e.Result))
-	if tt.Clipboard() != e.Result {
-		t.Errorf("clipboard %q", tt.Clipboard())
-	}
-	title, _ := uitext.EntryTitle(e)
-	click(t, tt, title)
-	if a.router.Path() != "/history" || a.histUI.sel != e.ID || a.histUI.kind() != e.Kind {
-		t.Errorf("opened %s sel %q tab %s", a.router.Path(), a.histUI.sel, a.histUI.kind())
-	}
-	// History off: nothing is counted.
-	a.navigate("/home")
-	a.updateSettings(func(s *settings.Settings) { s.Privacy.KeepHistory = false })
-	if !has(tt, "History is off, so nothing is counted.") {
-		t.Errorf("history off: %q", tt.Texts())
-	}
+type countingHistory struct {
+	store.History
+	listCalls int
 }
 
-func TestHomeRecentActionsUseVisibleEntry(t *testing.T) {
-	a, tt := homeTester(t)
-	fresh := store.Entry{
-		ID: "same", Kind: store.KindTranscribe, Status: store.StatusDone,
-		CreatedAt: time.Now(), Result: "  fresh text  \n", RawText: "fresh raw",
+func (h *countingHistory) List(ctx context.Context, query store.HistoryQuery) ([]store.Entry, error) {
+	h.listCalls++
+	return h.History.List(ctx, query)
+}
+
+func TestReadHomeUsagePagesAndMidnight(t *testing.T) {
+	now := time.Date(2026, 11, 20, 15, 0, 0, 0, time.Local)
+	a, _, _ := newTestApp(t)
+	history := &countingHistory{History: a.lib.store.History()}
+	put := func(id, model string, at time.Time, asrMS int64) {
+		t.Helper()
+		if err := history.Put(context.Background(), store.Entry{
+			ID: id, Kind: store.KindTranscribe, CreatedAt: at, Status: store.StatusDone,
+			Result: "spoken", ASRModel: model, ASRMS: asrMS,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	stale := fresh
-	stale.Kind, stale.Result, stale.RawText = store.KindRewrite, "stale text", "stale raw"
-	if err := a.lib.store.History().Put(context.Background(), fresh); err != nil {
+	for index := range 500 {
+		put(fmt.Sprintf("recent-%03d", index), "new-model", now, 1000)
+	}
+	for index := range 501 {
+		put(fmt.Sprintf("old-%03d", index), "old-model", now.AddDate(0, 0, -200), 9000)
+	}
+	usage, err := readHomeUsage(context.Background(), history, now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	a.hist.stale = true
-	a.hist.list = []store.Entry{stale}
-	a.hm.recent = []store.Entry{fresh}
-	frames(tt)
-
-	click(t, tt, "Copy: fresh text")
-	if got := tt.Clipboard(); got != fresh.Result {
-		t.Fatalf("inline Copy = %q, want original result %q", got, fresh.Result)
-	}
-	openMenu(t, tt, "fresh text")
-	choose(t, tt, "Copy")
-	if got := tt.Clipboard(); got != "fresh text" {
-		t.Fatalf("menu Copy = %q, want trimmed result", got)
+	if history.listCalls != 2 || usage.lastModel != "new-model" || usage.asrCount != 500 {
+		t.Fatalf("paged read made %d calls and returned %+v, want 2 calls and the recent window", history.listCalls, usage)
 	}
 
-	click(t, tt, "fresh text")
-	frames(tt)
-	if a.router.Path() != "/history" || a.histUI.sel != fresh.ID || a.histUI.kind() != fresh.Kind {
-		t.Fatalf("opened %s selection %q kind %q", a.router.Path(), a.histUI.sel, a.histUI.kind())
+	boundary, _, tt := newTestApp(t)
+	boundaryTime := now.AddDate(0, 0, -182)
+	if err := boundary.lib.store.History().Put(context.Background(), store.Entry{
+		ID: "boundary", Kind: store.KindTranscribe, CreatedAt: boundaryTime, Status: store.StatusDone,
+		Result: "boundary", ASRModel: "boundary-model", ASRMS: 1000,
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !has(tt, "fresh text") || hasExact(tt, "stale text") {
-		t.Fatalf("opened the stale entry: %q", tt.Texts())
+	usage, err = readHomeUsage(context.Background(), boundary.lib.store.History(), now)
+	if err != nil || usage.asrCount != 1 {
+		t.Fatalf("the window's first day is excluded: %+v, %v", usage, err)
+	}
+	usage, err = readHomeUsage(context.Background(), boundary.lib.store.History(), now.AddDate(0, 0, 1))
+	if err != nil || usage.asrCount != 0 || usage.lastModel != "boundary-model" {
+		t.Fatalf("the window did not move at midnight: %+v, %v", usage, err)
+	}
+	boundary.navigate("/home")
+	frames(tt)
+	tt.Advance(time.Second) // finish the calendar's entrance animation first
+	boundary.hm.read, boundary.hm.usageDay = true, "2000-01-01"
+	gen := boundary.hm.gen
+	tt.Advance(time.Minute)
+	if boundary.hm.gen <= gen || boundary.hm.usageDay != time.Now().Format("2006-01-02") {
+		t.Fatalf("Home did not refresh on its minute frame: gen %d -> %d, day %q", gen, boundary.hm.gen, boundary.hm.usageDay)
 	}
 }
 
-// selfFront is VoxtNew as the app in front.
+// selfFront is Voxt as the app in front.
 func selfFront() *proto.App {
-	return &proto.App{PID: os.Getpid(), BundleID: "dev.hehehai.voxtnew", Name: "VoxtNew"}
+	return &proto.App{PID: os.Getpid(), BundleID: "dev.hehehai.voxtnew", Name: "Voxt"}
 }
 
 func TestTryPlace(t *testing.T) {
@@ -403,8 +457,8 @@ func TestTryPlace(t *testing.T) {
 		kind   store.Kind
 		want   tryPlace
 	}{
-		{"/home", *selfFront(), store.KindTranscribe, placeHome},
-		{"/home", *selfFront(), store.KindRewrite, placeHome},
+		{"/home", *selfFront(), store.KindTranscribe, placeNone},
+		{"/home", *selfFront(), store.KindRewrite, placeNone},
 		{"/home", other, store.KindTranscribe, placeNone},
 		{"/translate", *selfFront(), store.KindTranslate, placeFeature},
 		{"/translate", *selfFront(), store.KindTranscribe, placeNone},
@@ -420,15 +474,9 @@ func TestTryPlace(t *testing.T) {
 	if a.tryPlace(store.KindTranscribe, *selfFront()) != placeNone {
 		t.Error("a try under the settings")
 	}
-	// After the first result Home has no Try area: a session (#4199).
-	a.updateSettings(func(s *settings.Settings) { s.Setup.Tried = true })
-	a.navigate("/home")
-	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
-		t.Errorf("Home after the first result: %v, want no try", got)
-	}
 	a.navigate("/translate")
 	if got := a.tryPlace(store.KindTranslate, *selfFront()); got != placeFeature {
-		t.Errorf("feature page after the first result: %v, want its try", got)
+		t.Errorf("Translate's page: %v, want its try", got)
 	}
 	a.openOnboarding()
 	a.ob.step = obTranslate
@@ -442,78 +490,54 @@ func TestTryPlace(t *testing.T) {
 	_ = tt
 }
 
-// TestHomeTryByShortcut: the shortcut pressed while Home shows (VoxtNew
-// in front) runs a try on the page; in another app, a session as usual.
-func TestHomeTryByShortcut(t *testing.T) {
-	a, tt := homeTester(t)
-	drain := queuePosts(a)
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
-	frames(tt)
-	if a.sess.State.Live() || a.homeUI.block == nil || !has(tt, "No speech model is installed.") {
-		t.Fatalf("blocked try: %+v %v %q", a.sess, a.homeUI.block, tt.Texts())
-	}
-	if a.notice != nil {
-		t.Error("a try's problem went to the overlay")
-	}
-	readyModels(a)
-	drain()
-	a.hotkeyFired(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: selfFront()})
-	drain()
-	frames(tt)
-	if a.sess.ID == "" || !a.sess.Try || a.sess.Kind != store.KindTranscribe {
-		t.Fatalf("no try: %+v", a.sess)
-	}
-	a.cancelSession()
-	drain()
-	frames(tt)
-	// Done: the result shows on Home.
-	s := trySnapshot(a, session.Done)
-	a.sessionChanged(s)
-	if !has(tt, "The meeting moves to Thursday at four.") {
-		t.Errorf("result: %q", tt.Texts())
-	}
-}
-
-// TestHomeShortcutAfterFirstResult (#4199): once Home no longer offers
-// its Try area, a shortcut pressed while Home shows is a session as in
-// another app: its result shows and the history keeps it. It was a try
-// that kept nothing and showed its result nowhere.
-func TestHomeShortcutAfterFirstResult(t *testing.T) {
-	set, keys, _ := fileSetup(t, "hello aura link", &fakeChat{text: "Hello, Voxt."})
-	self := func(afterMS int) string {
-		b, _ := json.Marshal(helpertest.Script{AfterMS: afterMS, Method: proto.MethodHotkeyEvent,
-			Params: mustJSON(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, T: 1, Front: selfFront()})})
-		return string(b)
-	}
-	a := newSessionApp(t, script(t, self(500), self(400)), func(s *settings.Settings) {
-		set(s)
-		s.Setup.Tried = true
-	}, keys)
-	a.navigate("/home")
-	a.pump("the end", func() bool { return a.sess.State.Ended() })
-	if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
-		t.Fatalf("end %+v", a.sess)
-	}
-	shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
-	if !shown {
-		t.Errorf("result shown nowhere: inserted %v, card %v, notice %+v", a.sess.Inserted, a.answer.open, a.notice)
-	}
-	if es := a.history(); len(es) != 1 || es[0].Result != "Hello, Voxt." {
-		t.Errorf("history %+v", es)
+// TestHomeShortcutStartsNormalSession (#4199): Home has no Try area, so a
+// shortcut there always starts a normal, visible, persisted session.
+func TestHomeShortcutStartsNormalSession(t *testing.T) {
+	for _, tried := range []bool{false, true} {
+		t.Run(map[bool]string{false: "first use", true: "returning"}[tried], func(t *testing.T) {
+			set, keys, _ := fileSetup(t, "hello aura link", &fakeChat{text: "Hello, Voxt."})
+			self := func(afterMS int) string {
+				b, _ := json.Marshal(helpertest.Script{AfterMS: afterMS, Method: proto.MethodHotkeyEvent,
+					Params: mustJSON(proto.HotkeyEventParams{Binding: "transcribe/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, T: 1, Front: selfFront()})})
+				return string(b)
+			}
+			a := newSessionApp(t, script(t, self(500), self(400)), func(s *settings.Settings) {
+				set(s)
+				s.Setup.Tried = tried
+			}, keys)
+			a.navigate("/home")
+			a.pump("the end", func() bool { return a.sess.State.Ended() })
+			if a.sess.Try || a.sess.State != session.Done || a.sess.Result != "Hello, Voxt." {
+				t.Fatalf("end %+v", a.sess)
+			}
+			shown := a.sess.Inserted || a.answer.open || a.notice != nil && a.notice.text == copiedNotice
+			if !shown {
+				t.Errorf("result shown nowhere: inserted %v, card %v, notice %+v", a.sess.Inserted, a.answer.open, a.notice)
+			}
+			if es := a.history(); len(es) != 1 || es[0].Result != "Hello, Voxt." {
+				t.Errorf("history %+v", es)
+			}
+		})
 	}
 }
 
 // TestShortcutInOwnField (FB10): the shortcut pressed while a field of
-// the window has the focus (a feature's rules being edited) starts a
-// session, with the overlay, that types into the field as in another
-// app; it is not a try on the page. With a button focused, a try as
-// before.
+// the window has the focus starts a session, with the overlay, that types
+// into the field as in another app. With a button focused, a try as before.
 func TestShortcutInOwnField(t *testing.T) {
-	a, tt := pageTester(t, "/transcribe")
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/transcribe")
+	frames(tt)
 	readyModels(a)
 	drain := queuePosts(a)
+	scrollSettingsToText(tt, "Your rules")
 	click(t, tt, "Your rules")
+	scrollSettingsToText(tt, "System prompt for Transcribe")
 	click(t, tt, "System prompt for Transcribe")
+	if !tt.Focused("System prompt for Transcribe") {
+		t.Fatal("the prompt field did not take the focus")
+	}
 	if got := a.tryPlace(store.KindTranscribe, *selfFront()); got != placeNone {
 		t.Fatalf("rules field focused: %v, want no try", got)
 	}
@@ -526,6 +550,7 @@ func TestShortcutInOwnField(t *testing.T) {
 	a.cancelSession()
 	drain()
 	frames(tt)
+	scrollSettingsToText(tt, "What the language model receives")
 	click(t, tt, "What the language model receives")
 	if !tt.Focused("What the language model receives") {
 		t.Fatal("the button did not take the focus")
@@ -535,16 +560,15 @@ func TestShortcutInOwnField(t *testing.T) {
 	}
 }
 
-// homeShots saves Home with everything ready, the history seeded, and a
-// try that is done (TestSnapshots), at the top and scrolled to its end.
+// homeShots saves Home with its usage populated, at the top and scrolled
+// to its end.
 func homeShots(a *app, tt *ui.Tester, save func(string)) {
-	a.host.sup.Start(context.Background()) // ready again (the shots before stopped it)
+	a.host.sup.Start(context.Background())
 	readyModels(a)
 	allowAll(a)
-	a.clearNotices() // the earlier shots' cards
+	a.clearNotices()
 	a.navigate("/home")
 	a.historyChanged()
-	a.sessionChanged(trySnapshot(a, session.Done))
 	frames(tt)
 	save("page-home-ready")
 	w, h := snapshotSize()
@@ -556,38 +580,35 @@ func homeShots(a *app, tt *ui.Tester, save func(string)) {
 	a.sessionChanged(session.Snapshot{Rev: a.sess.Rev + 1})
 }
 
-// sameDay reports whether a and b fall on the same local calendar day.
-func sameDay(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.Date()
-	return ay == by && am == bm && ad == bd
-}
-
 // TestWidePageCentered: in a window much wider than a page's column (full
 // screen), the column sits in the middle of the page and the header's
-// title and action line up with it; a page of lists keeps a wider body in
-// the middle in the same way. The column hugged the left with the
-// header's action at the window's far edge, a wide empty band between
-// (#3644, full screen).
+// title and action line up with it too.
 func TestWidePageCentered(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	const w = 1700
 	tt.SetSize(w, 1100)
+	if err := a.lib.store.History().Put(context.Background(), store.Entry{
+		ID: "wide", Kind: store.KindTranscribe, CreatedAt: time.Now(), Status: store.StatusDone,
+		Result: "wide", ASRModel: "fixture-speech-model",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	a.navigate("/home")
+	a.historyChanged()
 	frames(tt)
 	slogan, ok1 := tt.Find("Speak anywhere and Voxt types at your cursor")
 	guide, ok2 := tt.Find("Setup guide")
-	history, ok3 := tt.Find("Open History")
+	model, ok3 := tt.Find("fixture-speech-model")
 	if !ok1 || !ok2 || !ok3 {
-		t.Fatalf("found slogan %v, Setup guide %v, Open History %v", ok1, ok2, ok3)
+		t.Fatalf("found slogan %v, Setup guide %v, model %v", ok1, ok2, ok3)
 	}
 	left := slogan.X - sidebarWidth
-	right := w - (history.X + history.W)
+	right := w - (model.X + model.W)
 	if math.Abs(float64(left-right)) > 20 || left < 300 {
 		t.Errorf("the column: %.0f from the sidebar, %.0f from the window's edge", left, right)
 	}
-	if math.Abs(float64(guide.X+guide.W-(history.X+history.W))) > 1 {
-		t.Errorf("Setup guide ends at %.0f, the column's Open History at %.0f", guide.X+guide.W, history.X+history.W)
+	if math.Abs(float64(guide.X+guide.W-(model.X+model.W))) > 20 {
+		t.Errorf("Setup guide ends at %.0f, the column's model at %.0f", guide.X+guide.W, model.X+model.W)
 	}
 	// Dictionary is one column too: its views and search sit in the
 	// middle, and the header's Add term ends where the search does.

@@ -14,13 +14,19 @@ type overlayState struct {
 	overlayTranscript transcriptPreview
 	bubbleTranscripts []*transcriptPreview
 	ov                struct {
-		win     *mygo.Window
-		shown   bool
-		visible bool
-		mode    overlayMode
-		w, h    int
-		frame   mygo.Rectangle
-		live    struct {
+		win *mygo.Window
+		// other is the window kept hidden: the ordinary one while win is
+		// the panel shown over another app's full screen, or that panel
+		// (overlayOnSpace); otherFront is its overlayFront.
+		other      *mygo.Window
+		otherFront overlayFront
+		panel      bool // win is the panel
+		shown      bool
+		visible    bool
+		mode       overlayMode
+		w, h       int
+		frame      mygo.Rectangle
+		live       struct {
 			id string
 			w  int
 		}
@@ -96,14 +102,15 @@ func (a *app) overlayModeNow() overlayMode {
 	live := snapshot.State.Live() && !snapshot.Try
 	// A Transcribe leaves the card on screen (wall 116): the card keeps
 	// the overlay window, the session's pill gets its own (pillModeNow).
-	haveCard := a.answer.open || a.bgID != ""
-	card := haveCard && (!live || a.cardSessionLive() || a.bgID != "" || snapshot.Kind == store.KindTranscribe)
+	// A session without a card keeps the empty card, for its session row.
+	haveCard := a.answer.open || a.bgVisible() || a.emptyCard && !a.box.open
+	card := haveCard && (!live || a.cardSessionLive() || a.bgVisible() || snapshot.Kind == store.KindTranscribe)
 	switch {
 	case a.notice != nil && a.notice.over:
 		return ovNotice
 	case card && a.answer.inserting:
 		return ovHidden
-	case card, live && a.writingAnswer():
+	case card, live && (a.writingAnswer() || a.boxWriting()): // the Rewrite card draws the sent turn
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden
@@ -152,6 +159,81 @@ func sessionOverlayWindowOptions(frame mygo.Rectangle, content mygo.Content) myg
 	return opts
 }
 
+// newOverlayWin creates the overlay window at frame: an ordinary one, or
+// a panel (overlayOnSpace).
+func (a *app) newOverlayWin(frame mygo.Rectangle, panel bool) *mygo.Window {
+	content := sessionOverlayContent(
+		func() *sessionOverlayViewState {
+			a.refreshSessionOverlay(time.Now())
+			return a.ov.projection.drawn()
+		},
+		func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
+		a,
+		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
+		func() sessionOverlayAnimation {
+			return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave()}
+		},
+		a.postSessionOverlayMeasurements,
+		func() { a.ov.reveal = false; a.post(a.revealOverlay) },
+	)
+	opts := sessionOverlayWindowOptions(frame, hudContent(content))
+	opts.Panel = panel
+	win := mygo.NewWindow(opts)
+	win.OnMove(func() { a.post(a.overlayDragged) })
+	return win
+}
+
+// overlayOnSpace makes the overlay window, about to show, one that shows
+// on the user's Space (spaceSwap): over another app's full screen, where
+// macOS shows no ordinary window of an app with a Dock icon, a panel, as
+// the Rewrite card's (boxPanel). It reports whether it changed windows.
+// Main thread.
+func (a *app) overlayOnSpace(frame mygo.Rectangle) bool {
+	show, keep, panel := spaceSwap(a.ov.win, a.ov.other, a.ov.panel, func() *mygo.Window {
+		win := a.newOverlayWin(frame, true)
+		win.SetIgnoreMouseEvents(a.ov.passThrough)
+		return win
+	})
+	if show == a.ov.win {
+		return false
+	}
+	a.closeOverlayPreviews() // they are the hidden window's
+	a.overlayTranscript, a.bubbleTranscripts = transcriptPreview{}, nil
+	a.ov.win, a.ov.other, a.ov.panel = show, keep, panel
+	a.ov.front, a.ov.otherFront = a.ov.otherFront, a.ov.front
+	if panel {
+		a.ov.front.front.floats = true // VoxtNew never comes in front with it
+	}
+	show.SetIgnoreMouseEvents(a.ov.passThrough)
+	if a.ov.style != (mygo.VibrancyStyle{}) {
+		show.SetVibrancyStyle(a.ov.style)
+	}
+	return true
+}
+
+// spaceSwap picks the window to show on the user's Space: the ordinary
+// one, or, off it (another app's full screen), the panel, which newPanel
+// creates the first time. cur is shown last, other kept hidden, and
+// panel says cur is the panel. It returns them for this show.
+func spaceSwap[W interface {
+	comparable
+	IsOnActiveSpace() bool
+}](cur, other W, panel bool, newPanel func() W) (show, keep W, isPanel bool) {
+	ordinary := cur
+	if panel {
+		ordinary = other // a panel is on every Space: ask the ordinary one
+	}
+	want := !ordinary.IsOnActiveSpace()
+	if want == panel {
+		return cur, other, panel
+	}
+	var none W
+	if other == none {
+		other = newPanel()
+	}
+	return other, cur, want
+}
+
 func (a *app) saveCardDrag() {
 	a.ov.cardDragged = a.ov.dragged
 	a.ov.cardDraggedSet = true
@@ -159,6 +241,7 @@ func (a *app) saveCardDrag() {
 
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
+	a.keepSessions() // session_keep.go: every change of the sessions ends here
 	if a.box.open {
 		defer a.boxSync() // the Rewrite card draws the answer card's state
 	}
@@ -176,6 +259,9 @@ func (a *app) overlaySync() {
 		a.saveCardDrag()
 	}
 	if mode == ovHidden {
+		if !a.box.open {
+			a.slotPin = nil // no card left to keep in place
+		}
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
 		a.ov.dragged.x, a.ov.dragged.y = 0, 0
@@ -189,7 +275,20 @@ func (a *app) overlaySync() {
 		a.ov.area = a.overlayArea()
 	}
 	width, height := a.overlayFace(mode)
-	frame := a.overlayFrame(width, height)
+	frame := a.overlayFrame(mode, width, height)
+	defer a.syncLangMenu()
+	if a.overlayNative() && a.boxHoldsCard(mode) {
+		// Rewrite's card draws its answer itself: one window from the
+		// shortcut to the last follow-up (wall 122). The window is not
+		// shown or resized here, so its fade and frame stay as they are:
+		// a bump would cancel a running fade-out's hide.
+		a.ov.mode, a.ov.w, a.ov.h = mode, width, height
+		a.ov.shown = false
+		if was {
+			a.overlayFadeOut()
+		}
+		return
+	}
 	moved := frame != a.ov.frame
 	a.ov.mode, a.ov.w, a.ov.h, a.ov.frame = mode, width, height, frame
 	a.ov.shown = true
@@ -198,42 +297,19 @@ func (a *app) overlaySync() {
 	if a.ov.epoch.IsZero() {
 		a.ov.epoch = time.Now()
 	}
-	defer a.syncLangMenu()
 	if !a.overlayNative() {
 		a.syncPassThrough()
 		return
 	}
-	if a.boxHoldsCard(mode) {
-		// Rewrite's card draws its answer itself: one window from the
-		// shortcut to the last follow-up (wall 122).
-		a.ov.shown = false
-		if was {
-			a.overlayFadeOut()
-		}
-		return
-	}
 	if a.ov.win == nil {
-		content := sessionOverlayContent(
-			func() *sessionOverlayViewState {
-				a.refreshSessionOverlay(time.Now())
-				return &a.ov.projection.view
-			},
-			func() sessionOverlayLayout { return a.currentSessionOverlayLayout() },
-			a,
-			sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
-			func() sessionOverlayAnimation {
-				return sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase(), Wave: a.overlayWave()}
-			},
-			a.postSessionOverlayMeasurements,
-			func() { a.ov.reveal = false; a.post(a.revealOverlay) },
-		)
-		opts := sessionOverlayWindowOptions(frame, hudContent(content))
-		a.ov.win = mygo.NewWindow(opts)
-		a.ov.win.OnMove(func() { a.post(a.overlayDragged) })
+		a.ov.win = a.newOverlayWin(frame, false)
 		a.ov.passThrough = false
 		a.overlayDraggedAt(a.ov.win.ContentBounds())
-		frame = a.overlayFrame(width, height)
+		frame = a.overlayFrame(mode, width, height)
 		a.ov.frame = frame
+		moved = true
+	}
+	if !was && a.overlayOnSpace(frame) {
 		moved = true
 	}
 	a.syncPassThrough()
@@ -270,10 +346,27 @@ func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
 	return model
 }
 
-func (a *app) overlayFrame(width, height int) mygo.Rectangle {
+func (a *app) overlayFrame(mode overlayMode, width, height int) mygo.Rectangle {
 	frame, area := layout.Frame(a.ov.area, a.prefs.Overlay, width, height), a.ov.area
-	frame.X = min(max(frame.X+a.ov.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
-	frame.Y = min(max(frame.Y+a.ov.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
+	frame.X, frame.Y = frame.X+a.ov.dragged.x, frame.Y+a.ov.dragged.y
+	if mode != ovAnswer {
+		return a.onScreen(frame, area) // the pill keeps its own place
+	}
+	return a.pinnedFrame(frame, area)
+}
+
+// pinnedFrame is frame at slotPin's top-left when a session switch set
+// one, kept on the screen.
+func (a *app) pinnedFrame(frame, area mygo.Rectangle) mygo.Rectangle {
+	if a.slotPin != nil {
+		frame.X, frame.Y = a.slotPin.X, a.slotPin.Y
+	}
+	return a.onScreen(frame, area)
+}
+
+func (a *app) onScreen(frame, area mygo.Rectangle) mygo.Rectangle {
+	frame.X = min(max(frame.X, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
+	frame.Y = min(max(frame.Y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
 	return frame
 }
 
@@ -286,6 +379,7 @@ func (a *app) overlayDragged() {
 }
 
 func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
+	a.slotPin = nil
 	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
 	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
 	area := ovTestArea
@@ -367,6 +461,11 @@ func (a *app) overlayFadeOut() {
 		hide()
 		return
 	}
+	if a.ov.win != nil && !a.ov.passThrough {
+		// The last frame stays while it fades: its buttons no longer act.
+		a.ov.passThrough = true
+		a.ov.win.SetIgnoreMouseEvents(true)
+	}
 	dim := func(opacity float64) func() {
 		return func() {
 			if current() && a.ov.win != nil {
@@ -393,7 +492,7 @@ func (a *app) overlayRestyle() {
 	}
 	a.refreshSessionOverlay(time.Now())
 	width, height := a.overlayFace(a.ov.mode)
-	frame := a.overlayFrame(width, height)
+	frame := a.overlayFrame(a.ov.mode, width, height)
 	moved := frame != a.ov.frame
 	a.ov.w, a.ov.h, a.ov.frame = width, height, frame
 	a.syncLangMenu()
@@ -430,6 +529,11 @@ func (a *app) closeOverlay() {
 		a.ov.win = nil
 		a.ov.front = overlayFront{} // a new window starts above the others
 	}
+	if a.ov.other != nil {
+		a.ov.other.Destroy()
+		a.ov.other, a.ov.otherFront = nil, overlayFront{}
+	}
+	a.ov.panel = false
 	a.overlayTranscript = transcriptPreview{}
 	a.bubbleTranscripts = nil
 	a.ov.shown, a.ov.visible = false, false

@@ -19,23 +19,35 @@ hf download FunAudioLLM/Fun-ASR-Nano-2512-hf
 
 ## Apple Silicon
 
-Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md)
-and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec
-needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
-
-Use the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized
-BF16 weights; no converted artifact is needed.
-Inference runs one request at a time and additional requests queue. Use
-`temperature=0` and upload audio segments no longer than 30 seconds. JSON and
-SSE transcription are supported; quantized checkpoints are not.
+Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path or the native MLX runtime. Both load the official `FunAudioLLM/Fun-ASR-Nano-2512-hf` checkpoint with unquantized BF16 weights; no converted artifact is needed.
 
 ### Torch/MPS
+
+Install with the [Apple Silicon installer](../other_platforms/installation_apple_silicon.md) and follow its environment-activation and `DYLD_LIBRARY_PATH` steps; TorchCodec needs Homebrew's keg-only FFmpeg libraries on the path before the server starts.
+
+Inference runs one request at a time and additional requests queue. Use `temperature=0` and upload audio segments no longer than 30 seconds. JSON and SSE transcription are supported; quantized checkpoints are not.
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
 ```
+
+### Native MLX runtime
+
+`funasr_server` from the native MLX runtime (`sglang_omni_mlx/native`) serves the same `/v1/audio/transcriptions` API as one C++ process without PyTorch or Python. It decodes greedily, cuts audio longer than 30 seconds into windows at quiet points and joins their text, and leaves the checkpoint's `/sil` pause marker out of the transcript.
+
+```bash
+sglang_omni_mlx/native/scripts/build_runtime.sh ~/omni-runtime
+
+hf download FunAudioLLM/Fun-ASR-Nano-2512-hf config.json model.safetensors \
+  processor_config.json tokenizer.json \
+  --revision 7ef6cafdc445b5beff0b730cbeb51952c793ca6e --local-dir fun-asr-nano
+
+~/omni-runtime/bin/funasr_server --model-path fun-asr-nano \
+  --model-name FunAudioLLM/Fun-ASR-Nano-2512-hf --port 8000
+```
+
+Requests take `language`, `prompt` as comma-separated hotwords, `max_new_tokens` as one budget for the whole request, `repetition_penalty`, `stream` and `include_generation_metadata`. There is no realtime API.
 
 ## Server Configuration
 

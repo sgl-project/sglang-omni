@@ -125,6 +125,10 @@ func (c *recordingChat) requested() []string {
 // pass one more second than the number of texts.
 func overlapFixture(t *testing.T, micSeconds, systemSeconds int, micTexts, sysTexts []string) (context.Context, Config, store.Meetings, store.Meeting, *recordingChat) {
 	t.Helper()
+	// Small batches exercise chunk boundaries after the production limits grew.
+	lines, runes := correctBatchLines, correctBatchRunes
+	correctBatchLines, correctBatchRunes = 30, 3000
+	t.Cleanup(func() { correctBatchLines, correctBatchRunes = lines, runes })
 	ctx := context.Background()
 	root := t.TempDir()
 	db, err := sqlitestore.Open(ctx, filepath.Join(root, "db"))
@@ -240,10 +244,16 @@ func TestMeetingCorrectionOverlapCoversBothTracks(t *testing.T) {
 	for i := 0; i < 31; i++ {
 		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d", i))
 	}
+	// 80 different characters: a repeated one is a recognition loop the
+	// final pass collapses, and the stored line would no longer match.
+	var filler []rune
+	for r := '一'; len(filler) < 80; r++ {
+		filler = append(filler, r)
+	}
 	for i := 0; i < 30; i++ {
 		// The words must not form a shared three-word run with the mic
 		// lines, or the final pass drops them as echoes (#3982).
-		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, strings.Repeat("字", 80)))
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(filler)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 31, micTexts, sysTexts)
 	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}
@@ -410,6 +420,7 @@ func TestSystemCorrectionOverlapStartsBeforeSecondMTDChunk(t *testing.T) {
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
+	cfg.correctOverlap.wg.Wait()
 	if got := len(chat.batches); got != 1 {
 		t.Fatalf("%d early system requests, want 1", got)
 	}
@@ -440,6 +451,7 @@ func TestSystemCorrectionOverlapDoesNotSplitBatchAtChunk(t *testing.T) {
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
+	cfg.correctOverlap.wg.Wait()
 	if got := len(chat.batches); got != 1 || len(chat.batches[0]) != 30 {
 		t.Fatalf("early batches %+v, want one 30-line batch", chat.batches)
 	}
@@ -487,6 +499,7 @@ func TestSystemCorrectionOverlapRoundRobinSingleFlight(t *testing.T) {
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
+	cfg.correctOverlap.wg.Wait()
 	if len(chat.batches) < 3 {
 		t.Fatalf("only %d batches, want at least 3", len(chat.batches))
 	}
@@ -622,6 +635,7 @@ func TestSystemCorrectionOverlapKeepsCrossTrackBatch(t *testing.T) {
 	if err := FinalizePass(ctx, cfg, mt, nil); err != nil {
 		t.Fatal(err)
 	}
+	cfg.correctOverlap.wg.Wait()
 	first := chat.batches[0]
 	if len(first) != 30 || first[0] != micTexts[0] || first[1] != micTexts[1] || first[2] != sysTexts[0] || first[29] != sysTexts[27] {
 		t.Fatalf("cross-track batch changed: first=%q last=%q", first[:3], first[29])
@@ -642,9 +656,16 @@ func TestSystemCorrectionOverlapEchoInvalidatesOnlyItsBatches(t *testing.T) {
 	echo := "the quick brown fox jumps over"
 	micTexts := []string{echo}
 	sysTexts := []string{echo}
+	var micFiller, systemFiller []rune
+	for r := '一'; len(micFiller) < 90; r++ {
+		micFiller = append(micFiller, r)
+	}
+	for r := '言'; len(systemFiller) < 90; r++ {
+		systemFiller = append(systemFiller, r)
+	}
 	for i := 0; i < 30; i++ {
-		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d %s", i, strings.Repeat("言", 90)))
-		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, strings.Repeat("字", 90)))
+		micTexts = append(micTexts, fmt.Sprintf("mic Box line %02d %s", i, string(micFiller)))
+		sysTexts = append(sysTexts, fmt.Sprintf("system Box utterance %02d %s", i, string(systemFiller)))
 	}
 	ctx, cfg, repo, mt, chat := overlapFixture(t, 32, 32, micTexts, sysTexts)
 	cfg.correctOverlap = &correctionOverlap{meeting: mt.ID, fixed: map[string]string{}}

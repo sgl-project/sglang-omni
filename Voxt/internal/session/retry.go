@@ -195,7 +195,7 @@ func (r *run) retry(e store.Entry, pcm []byte, stage func(State)) (store.Entry, 
 	e.Result = text
 	if e.Kind == store.KindTranscribe {
 		if s, ok := snippet.Whole(text, r.snippets); ok { // as a session: the snippet, without the model
-			e.Result = s.Text
+			e.Result = snippet.Alone(s.Text)
 			return e, nil
 		}
 		if !r.transcribeCleanup() || svc.LLM == nil {

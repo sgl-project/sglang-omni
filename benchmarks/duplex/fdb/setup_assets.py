@@ -5,6 +5,7 @@ and model checkpoints. Safe to rerun; finished steps are skipped."""
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from benchmarks.duplex.fdb.common import (
     PARAKEET_REPO_ID,
     PARAKEET_REVISION,
     PARAKEET_SHA256,
+    REPO_ROOT,
     Settings,
     log,
 )
@@ -85,6 +87,9 @@ ALIGNER_PACKAGES = [
     "regex==2026.9.29",
     "websockets==17.3",
 ]
+INKLING_CHAT_SERVICE = (
+    REPO_ROOT / "examples" / "streaming_cascade" / "inkling_chat_service.sh"
+)
 SERVING_DISTRIBUTION = "sglang-omni"
 MODEL_EXTRA = "minicpm-o"
 
@@ -329,6 +334,15 @@ def setup_aligner_venv(settings: Settings) -> None:
     )
 
 
+def setup_inkling_venv(settings: Settings) -> None:
+    log(f"   Inkling chat service venv at {settings.inkling_venv}")
+    subprocess.run(
+        ["bash", str(INKLING_CHAT_SERVICE), "install"],
+        env={**os.environ, "INKLING_VENV": str(settings.inkling_venv)},
+        check=True,
+    )
+
+
 def setup_models(settings: Settings) -> None:
     engine = settings.engine
     if engine.launch_config is None:
@@ -344,9 +358,19 @@ def setup_models(settings: Settings) -> None:
     else:
         log(f"== [7/9] Models of {engine.name} in the Hugging Face cache")
         for model_id in engine.hf_model_ids:
-            snapshot_download(model_id)
+            # The model under test at the revision its launch config serves, the others at their latest.
+            snapshot_download(
+                model_id,
+                revision=(
+                    settings.model_revision if model_id == engine.model_id else None
+                ),
+            )
     if engine.needs_aligner:
         setup_aligner_venv(settings)
+    else:
+        pass
+    if engine.needs_inkling_venv:
+        setup_inkling_venv(settings)
     else:
         pass
     log(f"== [8/9] Judge model at {settings.judge_model_path} (JUDGE={settings.judge})")

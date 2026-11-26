@@ -123,6 +123,16 @@ func (r *run) hearLive(text string) {
 	if r.liveOff {
 		return
 	}
+	if r.ctx.Err() != nil || r.cancelled.Load() {
+		return
+	}
+	if r.init.split {
+		select {
+		case <-r.svcResolved:
+		default:
+			return
+		}
+	}
 	r.liveOnce.Do(func() { r.live = newLivePolish(r) })
 	if r.live == nil {
 		return
@@ -152,7 +162,13 @@ func (r *run) endLive() {
 // speaks); or the language model is served on this Mac, where its requests
 // would share the GPU with the speech model while the user speaks and
 // beside the Final after Stop.
+//
+// Nor where the head start asks the whole text at every pause (headstart.go):
+// it is ahead of the sentences this would clean one by one.
 func newLivePolish(r *run) *livePolish {
+	if r.head.enabled.Load() {
+		return nil
+	}
 	r.m.mu.Lock()
 	client, llmInfo, llmCtx := r.svc.LLM, r.svc.LLMInfo, r.llmCtx
 	r.m.mu.Unlock()
@@ -409,7 +425,7 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, 
 		if err != nil {
 			return job, err
 		}
-		answer := compose.CleanOutput(resp.Text, p.Text)
+		answer := compose.CleanOutput(resp.Text, p.Text, p.Custom())
 		job.answers = append(job.answers, answer)
 		job.usage = job.usage.Add(resp.Usage)
 		lp.mu.Lock()

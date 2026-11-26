@@ -38,7 +38,7 @@ func TestExpand(t *testing.T) {
 	}{
 		{"Send it to my email address, thanks.", "Send it to ruiling@example.com, thanks."},
 		{"Here is My Linked-In: take a look", "Here is https://www.linkedin.com/in/john-doe/: take a look"},
-		{"请发到我的邮箱，谢谢", "请发到ruiling@example.com，谢谢"},
+		{"请发到我的邮箱，谢谢", "请发到 ruiling@example.com，谢谢"},
 		// The longest trigger at a place wins over a shorter one it holds.
 		{"my email address and my email", "ruiling@example.com and short@example.com"},
 		// A Latin trigger does not cut a word.
@@ -119,15 +119,15 @@ func TestRestore(t *testing.T) {
 	for _, tc := range []struct {
 		name, cleaned, want string
 	}{
-		{"kept", "请发到⟦我的邮箱⟧，或者 ⟦my linked in⟧。", "请发到ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
-		{"kept, written differently", "请发到⟦我的邮箱⟧，或者 ⟦My LinkedIn⟧。", "请发到ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
+		{"kept", "请发到⟦我的邮箱⟧，或者 ⟦my linked in⟧。", "请发到 ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
+		{"kept, written differently", "请发到⟦我的邮箱⟧，或者 ⟦My LinkedIn⟧。", "请发到 ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
 		// The model changed what the marks hold: their place tells.
-		{"changed inside", "请发到⟦我的电子邮箱⟧，或者 ⟦领英⟧。", "请发到ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
+		{"changed inside", "请发到⟦我的电子邮箱⟧，或者 ⟦领英⟧。", "请发到 ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
 		// The model dropped the marks but kept the words.
-		{"unmarked", "请发到我的邮箱，或者 my LinkedIn。", "请发到ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
+		{"unmarked", "请发到我的邮箱，或者 my LinkedIn。", "请发到 ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
 		// One mark lost and one changed: the changed one cannot be placed.
 		{"lost one", "请发到我的电子邮箱，或者 ⟦领英⟧。", "请发到我的电子邮箱，或者 领英。"},
-		{"stray mark", "请发到⟦我的邮箱，或者 my LinkedIn。", "请发到ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
+		{"stray mark", "请发到⟦我的邮箱，或者 my LinkedIn。", "请发到 ruiling@example.com，或者 https://www.linkedin.com/in/john-doe/。"},
 	} {
 		if got := Restore(tc.cleaned, marked, list); got != tc.want {
 			t.Errorf("%s: Restore(%q) = %q, want %q", tc.name, tc.cleaned, got, tc.want)
@@ -135,7 +135,7 @@ func TestRestore(t *testing.T) {
 	}
 	// Only the snippets said are restored: a trigger the model wrote
 	// itself stays as written.
-	if got := Restore("请发到⟦我的邮箱⟧，my email address 也行", marked, marked); got != "请发到ruiling@example.com，my email address 也行" {
+	if got := Restore("请发到⟦我的邮箱⟧，my email address 也行", marked, marked); got != "请发到 ruiling@example.com，my email address 也行" {
 		t.Errorf("Restore of a trigger not said = %q", got)
 	}
 	// A snippet's text is not searched for triggers again.
@@ -238,16 +238,16 @@ func TestSentenceEnd(t *testing.T) {
 // Dictation is written in the script the user reads (lang.ChineseScript),
 // so a trigger saved in the other one still matches, both ways.
 func TestChineseScripts(t *testing.T) {
-	simplified := []Snippet{{ID: "s", Trigger: "我的邮箱地址", Text: "S"}}
-	traditional := []Snippet{{ID: "t", Trigger: "我的郵箱地址", Text: "T"}}
+	simplified := []Snippet{{ID: "s", Trigger: "我的邮箱地址", Text: "简"}}
+	traditional := []Snippet{{ID: "t", Trigger: "我的郵箱地址", Text: "繁"}}
 	for _, tc := range []struct {
 		text string
 		list []Snippet
 		want string
 	}{
-		{"發到我的郵箱地址。", simplified, "發到S。"},
-		{"发到我的邮箱地址。", traditional, "发到T。"},
-		{"发到我的邮箱地址。", simplified, "发到S。"},
+		{"發到我的郵箱地址。", simplified, "發到简。"},
+		{"发到我的邮箱地址。", traditional, "发到繁。"},
+		{"发到我的邮箱地址。", simplified, "发到简。"},
 	} {
 		if got := Expand(tc.text, tc.list); got != tc.want {
 			t.Errorf("Expand(%q, %s) = %q; want %q", tc.text, tc.list[0].Trigger, got, tc.want)
@@ -255,5 +255,40 @@ func TestChineseScripts(t *testing.T) {
 	}
 	if s, ok := Whole("我的郵箱地址", simplified); !ok || s.ID != "s" {
 		t.Errorf("Whole in Traditional = %q, %v", s.ID, ok)
+	}
+}
+
+// TestPlace: a snippet keeps its words; where it meets the text it loses
+// the spaces at its ends and gets one between Chinese and Latin text,
+// as the clean-up writes it. Japanese gets none.
+func TestPlace(t *testing.T) {
+	saved := []Snippet{
+		{ID: "e", Trigger: "我的邮箱", Text: "  zhao@example.com "},
+		{ID: "s", Trigger: "签名档", Text: "高睿临 Ruilin\n"},
+		{ID: "n", Trigger: "my name", Text: "高睿临"},
+		{ID: "h", Trigger: "我的推特", Text: "@zhao"},
+		{ID: "j", Trigger: "メール", Text: "zhao@example.com"},
+	}
+	for _, tc := range []struct{ text, want string }{
+		{"请发到我的邮箱，谢谢", "请发到 zhao@example.com，谢谢"},
+		{"我的邮箱就行", "zhao@example.com 就行"},
+		{"发到 我的邮箱 就行", "发到 zhao@example.com 就行"},
+		{"Send it to 我的邮箱.", "Send it to zhao@example.com."},
+		{"回复我的邮箱", "回复 zhao@example.com"},
+		{"关注我的推特吧", "关注 @zhao 吧"},
+		{"I am my name, hi", "I am 高睿临, hi"},
+		{"最后加签名档谢谢", "最后加高睿临 Ruilin\n谢谢"},
+		{"メールに送って", "zhao@example.comに送って"},
+	} {
+		if got := Expand(tc.text, saved); got != tc.want {
+			t.Errorf("Expand(%q) = %q; want %q", tc.text, got, tc.want)
+		}
+	}
+	_, said := Mark("请发到我的邮箱", saved)
+	if got := Restore("请发到⟦我的邮箱⟧。", said, said); got != "请发到 zhao@example.com。" {
+		t.Errorf("Restore = %q", got)
+	}
+	if got := Alone("  zhao@example.com \n"); got != "zhao@example.com" {
+		t.Errorf("Alone = %q", got)
 	}
 }
