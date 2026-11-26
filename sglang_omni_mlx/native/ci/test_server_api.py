@@ -706,7 +706,7 @@ def test_a_short_segment_final_encodes_audio_without_a_complete_cache(
                 }
             )
         )
-        json.loads(socket.recv())
+        json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
         socket.send(
             json.dumps(
                 {
@@ -717,8 +717,11 @@ def test_a_short_segment_final_encodes_audio_without_a_complete_cache(
         )
         socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
         events: list[dict[str, object]] = []
+        deadline = time.monotonic() + REALTIME_EVENT_TIMEOUT_SECONDS
         while not events or not events[-1].get("is_final", False):
-            events.append(json.loads(socket.recv()))
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "timed out waiting for the segment Final"
+            events.append(json.loads(socket.recv(timeout=remaining)))
     finalized = events[-1]
     assert finalized["type"] == "transcription.segment"
     assert finalized["generation_metadata"]["reused_audio_token_count"] == 0
@@ -1088,7 +1091,10 @@ def test_a_long_final_reuses_the_windows_after_the_first_segment(
             )
         )
         # note (XXXXRT666): the first segment's final and the second's preview.
-        initial_segments = [json.loads(socket.recv()) for _ in range(2)]
+        initial_segments = [
+            json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+            for _ in range(2)
+        ]
         assert [event["type"] for event in initial_segments] == [
             "transcription.segment",
             "transcription.segment",
@@ -1099,8 +1105,8 @@ def test_a_long_final_reuses_the_windows_after_the_first_segment(
         wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
         reused = final({"realtime_session": session_id})
         socket.send(json.dumps({"type": "transcription.done"}))
-        second_final = json.loads(socket.recv())
-        completed = json.loads(socket.recv())
+        second_final = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        completed = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
         assert second_final["type"] == "transcription.segment"
         assert second_final["segment_id"] == 1
         assert second_final["is_final"] is True

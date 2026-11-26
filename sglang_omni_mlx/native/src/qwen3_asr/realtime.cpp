@@ -498,9 +498,18 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
         std::lock_guard<std::mutex> lock(mutex_);
         options = DecodeOptions(segment, cut_sample);
       }
+      const bool segment_cache_reuse_eligible =
+          samples.size() <= kMaxChunkSamples;
+      const auto reuse = segment_cache_reuse_eligible ? segment.reuse : nullptr;
+      if (!segment_cache_reuse_eligible && !options.prefix_token_ids.empty()) {
+        // note (chenye): Long prefixed Finals keep the original path without
+        // rollback guesses.
+        options.guessed_token_ids.clear();
+      } else {
+      }
       try {
-        result = worker_.Transcribe(
-            Decode(samples, options, segment.reuse, true), cancel_);
+        result =
+            worker_.Transcribe(Decode(samples, options, reuse, true), cancel_);
         // A final that ran out of tokens on the prefix decodes the segment
         // again without it, as the next refresh would have.
         if (result->finish_reason == FinishReason::kLength &&
@@ -509,10 +518,9 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
           options.prefix_text.clear();
           options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
-          result =
-              worker_.Transcribe(Decode(std::move(samples), std::move(options),
-                                        segment.reuse, true),
-                                 cancel_);
+          result = worker_.Transcribe(
+              Decode(std::move(samples), std::move(options), reuse, true),
+              cancel_);
         } else {
         }
         ApplyResult(segment, *result, cut_sample);
