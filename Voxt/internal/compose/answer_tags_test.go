@@ -76,6 +76,8 @@ func TestAnswerDropsRewriteTags(t *testing.T) {
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "Could you describe an instruction template?")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "你能解释一下 instruction 模板吗？")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "你能描述一下 instruction 模板吗？")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "Could you define an instruction template?")
+	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "你能定义一下 instruction 模板吗？")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "No need to use <instruction> tags")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "能不能不用 instruction 模板？")
 	checkAnswer(t, "<instruction>{task}</instruction>", "{task}", "", "Use <instruction> tags, then do not use <instruction> tags")
