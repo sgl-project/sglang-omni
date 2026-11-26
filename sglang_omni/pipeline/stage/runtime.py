@@ -1373,6 +1373,13 @@ class Stage:
     async def run_admin_operation(self, operation: AdminOperation) -> AdminResult:
         try:
             if operation.action == ADMIN_PD_KV_LAYOUT and self.comm.kv_pools:
+                if len(self.comm.kv_pools) != 1:
+                    raise ValueError(
+                        "PD stage must register exactly one KV pool, "
+                        f"got {sorted(self.comm.kv_pools)}"
+                    )
+                else:
+                    pass
                 (pool,) = self.comm.kv_pools.values()
                 layout = PDStageKVLayout(
                     role=(

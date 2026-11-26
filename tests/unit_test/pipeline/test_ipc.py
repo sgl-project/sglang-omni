@@ -8,6 +8,7 @@ import signal
 import threading
 import weakref
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import replace
 from pathlib import Path
 from traceback import format_exception
 from types import FrameType, SimpleNamespace
@@ -36,8 +37,7 @@ from sglang_omni.config.topology import compile_logical_processes
 from sglang_omni.pipeline.stage_workers import StageLaunchConfig, StageWorkerProcessSpec
 from sglang_omni.profiler.event_recorder import get_recorder
 from sglang_omni.proto.admin import ADMIN_PD_KV_LAYOUT
-from sglang_omni.proto.kv_transfer import KVBufferSpec, KVPoolLayout, PDStageKVLayout
-from sglang_omni.scheduling.omni_scheduler import AdminActionResult
+from sglang_omni.proto.kv_transfer import PDStageKVLayout
 from sglang_omni.serve import launcher
 from sglang_omni.serve.openai_api import ServerStatus
 from sglang_omni.serve.protocol import (
@@ -57,6 +57,7 @@ from tests.unit_test.fixtures.pipeline_fakes import (
     FakeRelay,
     FakeScheduler,
 )
+from tests.unit_test.pipeline.test_kv_transfer import Receiver, make_pool
 
 
 def noop_factory():
@@ -69,23 +70,21 @@ def failing_factory():
 
 class PDKVLayoutProbe(FakeScheduler):
     def __init__(
-        self, pd_role: Literal["prefill", "decode"], page_size: int, pool_id: str
+        self,
+        pd_role: Literal["prefill", "decode"],
+        page_size: int,
+        pool_id: str,
+        extra_pool_id: str | None = None,
     ) -> None:
         super().__init__()
-        self.layout = PDStageKVLayout(
-            role=pd_role,
-            pool_id=pool_id,
-            layout=KVPoolLayout("model", page_size, (KVBufferSpec("key", 64),)),
-            partner_stage="decode" if pd_role == "prefill" else None,
-        )
-
-    def admin(self, action: str, payload: dict[str, object]) -> AdminActionResult:
-        assert action == ADMIN_PD_KV_LAYOUT
-        return {
-            "success": True,
-            "message": "ok",
-            "data": msgspec.to_builtins(self.layout),
-        }
+        self.pd_partner_stage = "decode" if pd_role == "prefill" else None
+        pool = replace(make_pool(pool_id), page_size=page_size)
+        receiver = Receiver((0,)) if pd_role == "decode" else None
+        self.kv_registrations = ((pool, receiver),)
+        if extra_pool_id is not None:
+            self.kv_registrations += ((make_pool(extra_pool_id), receiver),)
+        else:
+            pass
 
 
 class FakeControlPlane:
@@ -375,16 +374,30 @@ async def test_mp_runner_startup_failure_includes_child_factory_traceback(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("decode_replicas", "decode_page_size", "decode_pool_id", "startup_error"),
+    (
+        "decode_replicas",
+        "decode_page_size",
+        "decode_pool_id",
+        "extra_pool_id",
+        "startup_error",
+    ),
     [
-        (1, 2, "decode:kv", "KV layouts do not match between 'prefill' and 'decode'"),
-        (2, 1, "decode:kv", None),
+        (
+            1,
+            2,
+            "decode:kv",
+            None,
+            "KV layouts do not match between 'prefill' and 'decode'",
+        ),
+        (2, 1, "decode:kv", None, None),
         (
             2,
             1,
             "decode@r0:kv",
+            None,
             "Decode stage 'decode@r0' registered KV pool 'decode@r0:kv', expected 'decode:kv'",
         ),
+        (1, 1, "decode:kv", "extra:kv", "PD stage must register exactly one KV pool"),
     ],
 )
 async def test_mp_runner_validates_pd_pair_at_startup(
@@ -392,6 +405,7 @@ async def test_mp_runner_validates_pd_pair_at_startup(
     decode_replicas: int,
     decode_page_size: int,
     decode_pool_id: str,
+    extra_pool_id: str | None,
     startup_error: str | None,
 ) -> None:
     config = PipelineConfig(
@@ -412,7 +426,10 @@ async def test_mp_runner_validates_pd_pair_at_startup(
                 process="decode",
                 factory_path=f"{__name__}.PDKVLayoutProbe",
                 factory=FactoryArgs(
-                    pd_role="decode", page_size=decode_page_size, pool_id=decode_pool_id
+                    pd_role="decode",
+                    page_size=decode_page_size,
+                    pool_id=decode_pool_id,
+                    extra_pool_id=extra_pool_id,
                 ),
                 terminal=True,
             ),
@@ -429,6 +446,25 @@ async def test_mp_runner_validates_pd_pair_at_startup(
                 "prefill",
                 "decode@r0",
                 "decode@r1",
+            }
+            response = await runner.coordinator.admin(ADMIN_PD_KV_LAYOUT)
+            assert response["success"]
+            reports = {
+                result["stage"]: msgspec.convert(result["data"], type=PDStageKVLayout)
+                for result in response["results"]
+            }
+            decode = PDStageKVLayout(
+                role="decode", pool_id="decode:kv", layout=make_pool("decode:kv").layout
+            )
+            assert reports == {
+                "prefill": PDStageKVLayout(
+                    role="prefill",
+                    pool_id="prefill:kv",
+                    layout=make_pool("prefill:kv").layout,
+                    partner_stage="decode",
+                ),
+                "decode@r0": decode,
+                "decode@r1": decode,
             }
         else:
             with pytest.raises(RuntimeError, match=startup_error):
