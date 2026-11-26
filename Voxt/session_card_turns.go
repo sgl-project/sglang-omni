@@ -117,7 +117,7 @@ func sessionCardTurnImages(previews []answerInputPreview, turn int) []int {
 // its answer on the way: the card shows the turn at once, the answer
 // under it. A window picture still waiting for review keeps the composer.
 func (a *app) boxWriting() bool {
-	s := a.sess
+	s := a.cardSnapshot() // a Transcribe sends the streaming answer to the background
 	return a.box.open && a.box.shown && !a.answer.open && s.ID != "" && s.ID == a.boxSessionID() && s.Kind == store.KindRewrite &&
 		s.State == session.Composing && s.Card && !s.Try && !(s.ImagePreviewKind == "window" && len(s.ImagePreview) > 0 && strings.TrimSpace(s.Draft) == "")
 }
