@@ -173,7 +173,9 @@ class ShortOpenGateTests(unittest.TestCase):
 
 
 class ShortOpenRunnerTests(unittest.TestCase):
-    def run_latency_shell(self, drift=False, rounds=None, pressure_after=False):
+    def run_latency_shell(
+        self, drift=False, rounds=None, pressure_after=False, fail_before_rows=False
+    ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             scripts = root / "scripts"
@@ -201,7 +203,12 @@ class ShortOpenRunnerTests(unittest.TestCase):
                 """#!/usr/bin/env python3
 import json
 import os
+import sys
 from pathlib import Path
+
+if os.environ.get("LATENCY_FAKE_FAIL_BEFORE_ROWS") == "1":
+    print("panic: fake latency setup failed", file=sys.stderr)
+    sys.exit(1)
 
 rounds = int(os.environ["VOXTNEW_LATENCY_ROUNDS"])
 rows = []
@@ -234,6 +241,9 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
             environment["VOXTNEW_HUB"] = str(root / "empty-hub")
             environment["LATENCY_FAKE_DRIFT"] = "1" if drift else "0"
             environment["LATENCY_FAKE_PRESSURE_AFTER"] = "2" if pressure_after else "1"
+            environment["LATENCY_FAKE_FAIL_BEFORE_ROWS"] = (
+                "1" if fail_before_rows else "0"
+            )
             arguments = [str(scripts / "mac-latency.sh"), "accurate", "fast"]
             if rounds is not None:
                 arguments.append(str(rounds))
@@ -285,6 +295,23 @@ print("    mac_e2e_latency_test.go:257: MEASURE latency cold n=3 valid")
         self.assertNotIn("MEASURE latency", result["process"].stdout)
         observations = json.loads(result["observations"])
         self.assertEqual(observations[0]["peak_memory_pressure"], "warn")
+
+    def test_shell_preserves_empty_evidence_and_log_when_go_fails(self):
+        result = self.run_latency_shell(fail_before_rows=True)
+        output = result["process"].stdout + result["process"].stderr
+        self.assertEqual(result["process"].returncode, 1)
+        self.assertIn("panic: fake latency setup failed", output)
+        self.assertIn('"complete": false', output)
+        self.assertNotIn("Traceback", output)
+        self.assertNotIn("FileNotFoundError", output)
+        self.assertNotIn("MEASURE latency", output)
+        self.assertEqual(result["attempt"], "")
+        observations = json.loads(result["observations"])
+        self.assertEqual(len(observations), 3)
+        for observation in observations:
+            self.assertEqual(observation["returncode"], 1)
+            self.assertFalse(observation["kept"])
+            self.assertEqual(observation["rows"], [])
 
     def test_shell_rejects_non_three_rounds(self):
         result = self.run_latency_shell(rounds=1)

@@ -33,9 +33,15 @@ def main(argv):
         return 2
     rows_path, preflight_path, rounds = Path(argv[1]), Path(argv[2]), int(argv[3])
     preflight = json.loads(preflight_path.read_text())
-    rows = [
-        json.loads(line) for line in rows_path.read_text().splitlines() if line.strip()
-    ]
+    rows = (
+        [
+            json.loads(line)
+            for line in rows_path.read_text().splitlines()
+            if line.strip()
+        ]
+        if rows_path.exists()
+        else []
+    )
     by_attempt: dict[int, list[dict]] = {}
     for row in rows:
         by_attempt.setdefault(int(row.get("attempt", row.get("round", 0))), []).append(

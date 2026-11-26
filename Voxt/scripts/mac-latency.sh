@@ -72,6 +72,7 @@ PY
 if python3 scripts/short_open_gate.py build/latency.jsonl "$preflight" "$rounds"; then
   grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //' || true
 else
+  tail -30 build/latency.log | grep -v 'MEASURE latency' || true
   echo "short-open group incomplete: no median (see build/latency-preflight.json and build/latency.jsonl)" >&2
   exit 1
 fi
