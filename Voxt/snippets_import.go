@@ -5,6 +5,8 @@ package main
 // import before the file chooser opens.
 
 import (
+	"time"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
@@ -89,4 +91,38 @@ func snippetsImportExample() string {
 	return "[\n" +
 		`  { "trigger": "` + i18n.T("my work email") + `", "text": "name@company.com" },` + "\n" +
 		`  { "trigger": "` + i18n.T("my meeting link") + `", "text": "zoom.us/j/123" }` + "\n]"
+}
+
+// How long an import's notice shows: longer when it skipped some, the
+// part worth reading.
+const (
+	snippetsImportNoticeFor        = 2 * time.Second
+	snippetsImportNoticeSkippedFor = 3 * time.Second
+)
+
+// snippetsImportNotice shows what an import did on a slightly
+// see-through ink card that lets the pointer through, centred in its
+// parent below top (the list, under the search), and fades it out after
+// a moment. A toast at the top would cover Import….
+func snippetsImportNotice(c *ui.Context, local *snippetsLocalUI, top float32) {
+	if local.notice == "" {
+		return
+	}
+	if local.noticeAt.IsZero() {
+		local.noticeAt = c.Now()
+	}
+	left := local.noticeAt.Add(local.noticeFor).Sub(c.Now())
+	if left <= 0 {
+		local.notice, local.noticeAt = "", time.Time{}
+		return
+	}
+	c.After(left)
+	t := c.Theme()
+	k := tok(t)
+	ui.Box(c.Key("snippet-import-notice-layer")).Absolute().Left(0).Right(0).Top(top).Bottom(0).PassThrough().Justify(ui.Center).AlignItems(ui.Center).Children(func() {
+		ui.Box(c.Key("snippet-import-notice")).Padding(px(t, 10), px(t, 16)).Radius(px(t, radiusControl)).
+			MaxWidth(px(t, 420)).Background(k.Ink.Alpha(0.82)).TextColor(k.OnInk).Shadow(0, 6, 20, 0, ui.RGBA(0, 0, 0, 0.18)).
+			Transition(ui.ElementTransition{Duration: 200 * time.Millisecond, Enter: &ui.Motion{Scale: 0.96}, Exit: &ui.Motion{}}).
+			Children(func() { ui.Text(c, local.notice).Wrap() })
+	})
 }

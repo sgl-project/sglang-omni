@@ -201,7 +201,16 @@ var frontmostPID = func() int { return macx.Frontmost().PID }
 // the front now: not while a live session reads the selection, and only
 // while the user is still in target (or VoxtNew). Main thread.
 func (a *app) cardMayTake(target int) cardMay {
-	if a.sess.State.Live() && a.sess.ReadingSelection {
+	s := a.sess
+	if a.mgr != nil {
+		// The card opens right after Start, before the new session's first
+		// snapshot reaches a.sess: taking the front then sent the ⌘C copy
+		// of the selection to VoxtNew instead of the app (Slack, Notion).
+		if c := a.mgr.Current(); c.Rev > s.Rev {
+			s = c
+		}
+	}
+	if s.State.Live() && s.ReadingSelection {
 		return cardWait
 	}
 	if front := frontmostPID(); target == 0 || front == target || front == os.Getpid() {

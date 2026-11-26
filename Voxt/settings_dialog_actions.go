@@ -10,6 +10,7 @@ type settingsDialogActions interface {
 	settingsAudioActions
 	settingsOverlayActions
 	settingsShortcutsActions
+	settingsExperimentalActions
 	settingsAppearanceActions
 	settingsPrivacyActions
 	settingsStorageActions

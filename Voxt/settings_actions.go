@@ -79,6 +79,11 @@ type settingsShortcutsActions interface {
 	openShortcutFeature(path string)
 	setStrictShortcuts(on bool)
 	setReturnFinishes(on bool)
+}
+
+type settingsExperimentalActions interface {
+	keyRecorderActions
+	openShortcutFeature(path string)
 	setSessionKeys(slot int, keys string)
 	setSessionsOn(on bool)
 }

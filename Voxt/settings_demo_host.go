@@ -48,7 +48,9 @@ func (host *meetingDemoHost) resetSettingsDemo(fixture meetingDemoFixture) {
 		}
 		if shortcuts := state.Shortcuts; shortcuts != nil {
 			host.settingsForm.strictShortcuts, host.settingsForm.returnFinishes = shortcuts.StrictShortcuts, shortcuts.ReturnFinishes
-			host.settingsForm.sessionsOn = shortcuts.SessionsOn
+		}
+		if experimental := state.Experimental; experimental != nil {
+			host.settingsForm.sessionsOn = experimental.SessionsOn
 		}
 		if overlay := state.Overlay; overlay != nil {
 			host.settingsForm.ovStyle = overlayForm{

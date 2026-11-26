@@ -100,7 +100,7 @@ func BenchmarkW0Pages(b *testing.B) {
 				"transcribe": "Models", "translate": "Models", "rewrite": "Models",
 				"general": "Languages", "permissions": "Microphone", "audio": "Recognition",
 				"overlay": "Preview", "shortcuts": "Transcribe", "appearance": "Sidebar",
-				"privacy": "What leaves this Mac", "storage": "Data folder", "about": "Self-check",
+				"privacy": "What leaves this Mac", "storage": "Data folder", "experimental": "Sessions (experimental)", "about": "Self-check",
 			}[section.id]
 			benchmarkRenderFrames(b, tt, sentinel)
 		})

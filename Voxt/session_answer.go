@@ -32,6 +32,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
 	card.previews = answerInputPreviews(s, &a.box)
+	fresh := len(card.previews) // this turn's: the earlier turns' follow below
 	if s.State == session.Failed {
 		card.problem = s.Problem
 	}
@@ -74,6 +75,9 @@ func (a *app) openAnswer(s session.Snapshot) {
 		} else if card.problem != nil && len(card.turns) > 0 {
 			card.input.Raw, card.input.Typed = s.Raw, s.Typed // Try again asks the same follow-up
 		}
+	}
+	for index := range fresh {
+		card.previews[index].Turn = max(len(card.turns)-1, 0)
 	}
 	a.followUp = ""
 	if card.target.PID == 0 && a.answer.open {
