@@ -235,7 +235,7 @@ func stripControlMarkup(s string, inputs ...string) string {
 				if onlyControlMarkup(s[after:], input, previous...) {
 					s = s[:j]
 				} else {
-					s = s[after:]
+					s = strings.TrimLeft(s[after:], " \t\r\n")
 				}
 				openSearchFrom, closeSearchFrom, literalOpen = 0, 0, -1
 				continue

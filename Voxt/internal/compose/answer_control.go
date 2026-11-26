@@ -157,28 +157,36 @@ func turnEndLeak(after string) bool {
 }
 
 func toolPayload(rest string) bool {
-	index := strings.IndexAny(rest, "{[")
-	if index < 0 {
-		return false
-	}
-	if rest[index] == '{' {
-		return true
-	}
-	end, depth := -1, 0
-	for i := index; i < len(rest) && end < 0; i++ {
-		switch rest[i] {
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				end = i
+	for searchFrom := 0; searchFrom < len(rest); {
+		index := strings.IndexAny(rest[searchFrom:], "{[")
+		if index < 0 {
+			return false
+		}
+		index += searchFrom
+		if rest[index] == '{' {
+			return true
+		}
+		end, depth := -1, 0
+		for i := index; i < len(rest) && end < 0; i++ {
+			switch rest[i] {
+			case '[':
+				depth++
+			case ']':
+				depth--
+				if depth == 0 {
+					end = i
+				}
 			}
 		}
-	}
-	candidate := ""
-	if end >= 0 {
-		candidate = rest[index : end+1]
+		if end < 0 {
+			before := strings.TrimSpace(rest[:index])
+			if before == "" {
+				return true
+			}
+			last, _ := utf8.DecodeLastRuneInString(before)
+			return !strings.ContainsRune(".!?。！？", last)
+		}
+		candidate := rest[index : end+1]
 		if json.Valid([]byte(candidate)) || strings.ContainsAny(candidate, "\"{") {
 			return true
 		}
@@ -191,17 +199,9 @@ func toolPayload(rest string) bool {
 				return true
 			}
 		}
+		searchFrom = end + 1
 	}
-	before := strings.TrimSpace(rest[:index])
-	if before == "" {
-		return true
-	}
-	last, _ := utf8.DecodeLastRuneInString(before)
-	if strings.ContainsRune(".!?。！？", last) {
-		return false
-	}
-	// A closed, non-JSON bracket such as [docs] is prose; an unclosed one may be a payload.
-	return end < 0
+	return false
 }
 
 func controlMarkerCue(field string) bool {

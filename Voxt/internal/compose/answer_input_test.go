@@ -501,6 +501,58 @@ func TestAnswerCleanupStripsStructuralMarkupFromLiteralInput(t *testing.T) {
 	}
 }
 
+func TestAnswerCleanupRejectsStructuralToolPayloads(t *testing.T) {
+	for _, tc := range []struct{ name, text, input, want string }{
+		{
+			name:  "structured payload after bracketed prose",
+			text:  `Use the <|tool_call|> token, see [docs]. {"name":"view_image"}`,
+			input: "Use the <|tool_call|> token, see [docs].",
+			want:  "Use the",
+		},
+		{
+			name:  "structured array after two bracketed prose references",
+			text:  `Use the <|tool_call|> token, see [docs] and [notes]. ["/private/secret.png"]`,
+			input: "Use the <|tool_call|> token, see [docs] and [notes].",
+			want:  "Use the",
+		},
+		{
+			name:  "structural marker after an orphan close and space",
+			text:  "reasoning</think> <|tool_call|> tag",
+			input: "explain <|tool_call|>",
+			want:  "",
+		},
+		{
+			name:  "structural marker after an orphan close and newline",
+			text:  "reasoning</think>\n<|tool_call|> tag",
+			input: "explain <|tool_call|>",
+			want:  "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Clean(tc.text, tc.input); got != tc.want {
+				t.Errorf("Clean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			if got := PartialClean(tc.text, tc.input); got != tc.want {
+				t.Errorf("PartialClean(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			structured := `{"title":"T","content":` + strconv.Quote(tc.text) + `}`
+			wantAnswer := Answer{Title: "T", Content: tc.want}
+			if got, ok := ParseAnswer(structured, tc.input); !ok || got != wantAnswer {
+				t.Errorf("ParseAnswer(%q) = %+v, %v, want %+v", structured, got, ok, wantAnswer)
+			}
+			if got := PartialAnswer(structured, tc.input); got.Title != "T" || strings.TrimSpace(got.Content) != tc.want {
+				t.Errorf("PartialAnswer(%q) = %+v, want %+v", structured, got, wantAnswer)
+			}
+			if got := CleanOutput(tc.text, tc.input, false); got != tc.want {
+				t.Errorf("CleanOutput(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+			if got := PartialOutput(tc.text, tc.input, false); got != tc.want && got != tc.want+" " {
+				t.Errorf("PartialOutput(%q) = %q, want %q or %q", tc.text, got, tc.want, tc.want+" ")
+			}
+		})
+	}
+}
+
 func TestPartialAnswerStripsLeadingThinkingWithLiteralInput(t *testing.T) {
 	plain := "<think>secret plan</think>Visible"
 	for index := 1; index <= len(plain); index++ {
