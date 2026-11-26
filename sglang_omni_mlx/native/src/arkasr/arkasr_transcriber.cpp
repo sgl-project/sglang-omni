@@ -164,6 +164,9 @@ ArkTranscriber::Transcribe(const std::vector<float> &samples,
           return TranscribeWindow(window_samples, max_new_tokens, cancel);
         }
       });
+  // Note (AzizbekMuminoff): window_texts lists only the windows with text, so
+  // a skipped padding window adds no entry.
+  std::erase(combined.window_texts, std::string());
   combined.language = options.language;
   return combined;
 }

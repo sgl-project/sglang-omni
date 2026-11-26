@@ -40,8 +40,7 @@ struct TranscriptionResult {
   int verify_round_count = 0;
   int proposed_draft_token_count = 0;
   int accepted_draft_token_count = 0;
-  // Ordered text of every window of a request cut into several, empty for a
-  // window with no text.
+  // Ordered text of the windows of a request cut into several.
   std::vector<std::string> window_texts;
   // Audio tokens a live session had already encoded.
   int reused_audio_token_count = 0;
