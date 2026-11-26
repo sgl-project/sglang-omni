@@ -21,6 +21,14 @@
 
 namespace qwen3_asr {
 
+// The longest audio decoded as one prompt, above the longest corpus clip: on
+// 10 to 15 minutes the model can repeat a sentence until its tokens run out,
+// or drop speech.
+inline constexpr size_t kMaxChunkSamples = 120 * omni_common::kSampleRate;
+// A realtime segment or a chunk of longer audio whose peak is below this is not
+// decoded, as the model writes words for silence.
+inline constexpr float kSilentPeak = 1e-3f;
+
 struct TranscriptionOptions {
   std::optional<std::string> language;
   std::optional<std::string> context;
@@ -93,21 +101,25 @@ class Qwen3ASRTranscriber {
 public:
   // With a DFlash draft directory, decoding verifies the draft's proposals
   // instead of one token per step; the transcript stays greedy.
-  explicit Qwen3ASRTranscriber(
-      const std::filesystem::path &model_directory,
-      const std::filesystem::path &draft_directory = {},
-      int draft_quantization_bits = 0,
-      omni_common::DraftPolicy draft_policy =
-          omni_common::DraftPolicy::kAdaptive);
+  Qwen3ASRTranscriber(const std::filesystem::path &model_directory,
+                      const omni_common::DraftOptions &draft,
+                      omni_common::DraftPolicy draft_policy);
 
   std::vector<int> PromptIds(int audio_token_count,
                              const TranscriptionOptions &options) const;
   // Text already shown minus its last tokens, cut back to whole characters.
   RetainedText RetainedPrefix(const std::string &text,
                               int rollback_token_count) const;
-  // With reuse, a realtime refresh or a Final over its audio: the audio windows
-  // reuse holds are not encoded or prefilled again, and reuse then holds this
-  // decode's for the next.
+  // note (chenye): an auto-language decode generates the language header
+  // as well as the transcript. Propose both without adding them to the prompt.
+  std::vector<int> AutoLanguageGuesses(const std::string &language,
+                                       const std::string &text) const;
+  // Audio over kMaxChunkSamples is cut at quiet points into chunks decoded one
+  // by one, the silent ones left out; their texts are joined, they share
+  // max_new_tokens, and the guesses go unused. Audio with reuse or a prefix is
+  // decoded whole. With reuse, a realtime refresh or a Final over its audio:
+  // the audio windows reuse holds are not encoded or prefilled again, and reuse
+  // then holds this decode's for the next.
   omni_common::TranscriptionResult Transcribe(
       const std::vector<float> &samples, const TranscriptionOptions &options,
       const std::atomic<bool> &cancel, RefreshReuse *reuse = nullptr) const;
@@ -124,9 +136,12 @@ public:
                           const std::atomic<bool> &cancel,
                           RefreshReuse &final_reuse) const;
   // Whether the request can decode together with others: the batched loop
-  // has neither the draft nor the repetition penalty.
-  bool CanBatch(const TranscriptionOptions &options) const {
-    return !draft_.has_value() && options.repetition_penalty == 1.0f;
+  // has neither the draft nor the repetition penalty, and decodes a request's
+  // audio whole.
+  bool CanBatch(size_t sample_count,
+                const TranscriptionOptions &options) const {
+    return sample_count <= kMaxChunkSamples && !draft_.has_value() &&
+           options.repetition_penalty == 1.0f;
   }
   // Transcribes several requests, decoding them together. Greedy output
   // matches Transcribe's. on_finished gets each request's index and outcome as
@@ -136,6 +151,11 @@ public:
                        const BatchFinished &on_finished) const;
 
 private:
+  // Decodes samples as one prompt.
+  omni_common::TranscriptionResult
+  TranscribeChunk(const std::vector<float> &samples,
+                  const TranscriptionOptions &options,
+                  const std::atomic<bool> &cancel, RefreshReuse *reuse) const;
   struct Prompt {
     mlx::core::array embeddings;
     int max_new_tokens;

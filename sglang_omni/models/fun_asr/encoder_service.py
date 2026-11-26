@@ -124,6 +124,7 @@ class FunASRPreLMEncoderService(
             max_bytes=cache_max_bytes,
             cache_device="cpu",
         )
+        self.cache_enabled = cache_max_entries != 0 and cache_max_bytes != 0
         self.namespace = cache_namespace
         self.max_batch_size = max(int(max_batch_size), 1)
         self.max_batch_wait_s = max(float(max_batch_wait_ms), 0.0) / 1000.0
@@ -195,22 +196,10 @@ class FunASRPreLMEncoderService(
         else:
             pass
 
-        cached = self.cache.get(key)
+        cached = self.get_cached_embedding(item.audio_fingerprint, expected_tokens)
         if cached is not None:
-            if self.is_valid(cached, expected_tokens):
-                with self.lock:
-                    self.hits += 1
-                self.attach_embedding(item, cached)
-                return
-            else:
-                pass
-            logger.warning(
-                f"Fun-ASR pre-LM cache entry {key} failed validation "
-                f"(shape={tuple(cached.shape)}, dtype={cached.dtype}); "
-                f"discarding it if unchanged before re-encoding"
-            )
-            self.cache.remove_if_same(key, cached)
-            cached = None
+            self.attach_embedding(item, cached, cache_hit=True)
+            return
         else:
             pass
 
@@ -220,11 +209,10 @@ class FunASRPreLMEncoderService(
             if future is None:
                 # Note (Akazaakane): Re-check under the single-flight lock so a
                 # stale miss cannot start work after the prior leader cached.
-                cached = self.cache.get(key)
-                if cached is not None and self.is_valid(cached, expected_tokens):
-                    self.hits += 1
-                else:
-                    cached = None
+                cached = self.get_cached_embedding(
+                    item.audio_fingerprint, expected_tokens
+                )
+                if cached is None:
                     future = concurrent.futures.Future()
                     self.inflight[key] = future
                     leader = True
@@ -234,10 +222,12 @@ class FunASRPreLMEncoderService(
                     except Exception:
                         del self.inflight[key]
                         raise
+                else:
+                    pass
             else:
                 self.merged += 1
         if cached is not None:
-            self.attach_embedding(item, cached)
+            self.attach_embedding(item, cached, cache_hit=True)
             return
         else:
             pass
@@ -313,14 +303,47 @@ class FunASRPreLMEncoderService(
             and embedding.dtype == self.dtype
         )
 
+    def get_cached_embedding(
+        self, audio_fingerprint: str, expected_tokens: int
+    ) -> torch.Tensor | None:
+        """Return a validated embedding from the completed cache."""
+        if not self.cache_enabled:
+            return None
+        else:
+            pass
+        cache_key = f"{self.namespace}:{audio_fingerprint}"
+        embedding = self.cache.get(cache_key)
+        if embedding is None:
+            return None
+        elif self.is_valid(embedding, expected_tokens):
+            return embedding
+        else:
+            logger.warning(
+                f"Fun-ASR pre-LM cache entry {cache_key} failed validation "
+                f"(shape={tuple(getattr(embedding, 'shape', ()))}, "
+                f"dtype={getattr(embedding, 'dtype', None)}); "
+                f"discarding it if unchanged before re-encoding"
+            )
+            self.cache.remove_if_same(cache_key, embedding)
+            return None
+
     def attach_embedding(
-        self, item: MultimodalDataItem, embedding: torch.Tensor
+        self,
+        item: MultimodalDataItem,
+        embedding: torch.Tensor,
+        *,
+        cache_hit: bool = False,
     ) -> None:
         item.precomputed_embeddings = embedding.to(
             self.device, non_blocking=self.device.type != "npu"
         )
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
+        if cache_hit:
+            with self.lock:
+                self.hits += 1
+        else:
+            pass
 
     def drain_batch(
         self,
@@ -420,7 +443,7 @@ class FunASRPreLMEncoderService(
     ) -> None:
         del host_copy
         key = self.cache_key(item)
-        if key is not None:
+        if self.cache_enabled and key is not None:
             self.cache.put(key, embedding)
         else:
             pass

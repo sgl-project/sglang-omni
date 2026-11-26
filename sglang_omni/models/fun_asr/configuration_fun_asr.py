@@ -42,8 +42,8 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         self,
         feature_size: int = 80,
         sampling_rate: int = 16000,
-        frame_length: int = 25,
-        frame_shift: int = 10,
+        frame_length: float = 25,
+        frame_shift: float = 10,
         num_frames_lfr: int = 7,
         stride_lfr: int = 6,
         window: str = "hamming",
@@ -87,6 +87,25 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         max_mel = int(round(30.0 * self.sampling_rate / self.hop_length))
         return (max_mel + self.stride_lfr - 1) // self.stride_lfr
 
+    def effective_frame_length_ms(self, num_samples: int) -> float:
+        return min(self.frame_length, num_samples / self.sampling_rate * 1000)
+
+    def num_lfr_frames(self, num_samples: int) -> int | None:
+        """Predict valid LFR frames, leaving invalid windows to the extractor."""
+        frame_length_ms = self.effective_frame_length_ms(num_samples)
+        window_samples = int(self.sampling_rate * frame_length_ms * 0.001)
+        shift_samples = int(self.sampling_rate * self.frame_shift * 0.001)
+        if (
+            window_samples < 2
+            or window_samples > num_samples
+            or shift_samples <= 0
+            or self.stride_lfr <= 0
+        ):
+            return None
+        else:
+            mel_frames = 1 + (num_samples - window_samples) // shift_samples
+            return (mel_frames + self.stride_lfr - 1) // self.stride_lfr
+
     def extract_fbank(self, waveform: np.ndarray) -> tuple[torch.Tensor, int]:
         """Compute 80-mel log-mel fbank via Kaldi compliance (matches funasr WavFrontend).
 
@@ -105,7 +124,7 @@ class FunAsrNanoFeatureExtractor(SequenceFeatureExtractor):
         # encoder/adaptor produce embeddings the LLM cannot decode (→ /sil).
         wav_t = torch.from_numpy(wav).unsqueeze(0) * (1 << 15)
         # Cap frame_length for very short audio (funasr WavFrontend does this).
-        frame_length = min(self.frame_length, wav.shape[0] / self.sampling_rate * 1000)
+        frame_length = self.effective_frame_length_ms(wav.shape[0])
         mat = cached_fbank(
             wav_t,
             num_mel_bins=self.n_mels,

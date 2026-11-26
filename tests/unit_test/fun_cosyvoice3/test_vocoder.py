@@ -1345,6 +1345,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
         def load_weights(self, weights) -> None:
             del weights
 
+    monkeypatch.setattr(engine_builder.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(engine_builder, "SpeechTokenizerV3", fake_tokenizer)
     monkeypatch.setattr(engine_builder, "SpeakerEncoder", fake_encoder)
     monkeypatch.setattr(engine_builder, "CosyVoice3Tokenizer", lambda path: object())

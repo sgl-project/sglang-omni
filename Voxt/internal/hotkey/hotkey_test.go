@@ -99,8 +99,12 @@ func TestOverlaps(t *testing.T) {
 
 func TestBuildDefaults(t *testing.T) {
 	f := settings.Defaults().Features
+	if off := Build(f, []string{Transcribe}); len(off.Bindings) != 3 || len(off.Carbon) != 1 || HotkeysOf(f, Sessions[0]) != nil {
+		t.Fatalf("sessions are off by default: %+v", off.Bindings)
+	}
+	f.SessionsOn = true
 	p := Build(f, []string{Transcribe})
-	if len(p.Bindings) != 3 {
+	if len(p.Bindings) != 4 {
 		t.Fatalf("bindings %+v", p.Bindings)
 	}
 	ropt, paste, note := p.Bindings[0], p.Bindings[1], p.Bindings[2]
@@ -117,17 +121,28 @@ func TestBuildDefaults(t *testing.T) {
 	if note.ID != Note || note.Key != nil || note.Behavior != proto.BehaviorTap || note.Modifiers[proto.ModCommand] != proto.SideRight || len(note.Modifiers) != 1 {
 		t.Errorf("note %+v", note)
 	}
-	if len(p.Carbon) != 1 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
+	// Of the session shortcuts only "Next session" is bound by default:
+	// two keys, Option+Tab, tapped (#4005).
+	if b := p.Bindings[3]; b.ID != SessionNext || b.Key == nil || b.Behavior != proto.BehaviorTap || len(b.Modifiers) != 1 ||
+		b.Modifiers[proto.ModOption] != proto.SideAny {
+		t.Errorf("next session %+v", b)
+	}
+	if len(p.Carbon) != 2 || p.Carbon[0] != (Carbon{ID: PasteLast, Accelerator: "Control+Option+V"}) {
 		t.Errorf("carbon %+v", p.Carbon)
 	}
 	// No fn in the defaults: fn and 🌐 are left alone (Auralink's).
 	cfg := p.Configure(true)
-	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 3 || cfg.DoubleTapMS != 0 {
+	if cfg.SwallowFn || !cfg.Active || len(cfg.Bindings) != 4 || cfg.DoubleTapMS != 0 {
 		t.Errorf("configure %+v", cfg)
 	}
 	all := Build(f, Features)
-	if len(all.Bindings) != 5 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
-		all.Bindings[4].ID != Note {
+	if len(all.Bindings) != 6 || all.Bindings[1].ID != "translate/0" || all.Bindings[2].ID != "rewrite/0" || all.Bindings[3].ID != PasteLast ||
+		all.Bindings[4].ID != Note || all.Bindings[5].ID != SessionNext {
+		t.Errorf("all %+v", all.Bindings)
+	}
+	// A session's own shortcut binds once the user gives it keys.
+	f.Sessions[1] = settings.Hotkey{Keys: "F6", Trigger: settings.TriggerTap}
+	if all = Build(f, Features); len(all.Bindings) != 7 || all.Bindings[5].ID != Session2 {
 		t.Errorf("all %+v", all.Bindings)
 	}
 	if got := Build(settings.Features{}, Features).Configure(false); got.Bindings == nil || len(got.Bindings) != 0 || got.SwallowFn {
@@ -351,9 +366,11 @@ func TestCheck(t *testing.T) {
 		Rewrite: settings.Rewrite{Feature: settings.Feature{Hotkeys: []settings.Hotkey{
 			hk("Control+Command+V", ""),
 		}}},
-		PasteLast: hk("Command+Control+V", ""),
-		Note:      hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
-		Cancel:    hk("Fn", ""),
+		PasteLast:  hk("Command+Control+V", ""),
+		Note:       hk("Fn", settings.TriggerDouble), // always a tap: Transcribe's fn tap has it
+		Cancel:     hk("Fn", ""),
+		Sessions:   [4]settings.Hotkey{hk("Fn", settings.TriggerDouble)}, // a tap, as Cancel's
+		SessionsOn: true,
 	}
 	got := map[string]Problem{}
 	for _, p := range Check(f) {
@@ -368,6 +385,7 @@ func TestCheck(t *testing.T) {
 		"translate/1 duplicate":  func(p Problem) bool { return p.Other == Translate && p.OtherIndex == 0 },
 		"paste-last/0 conflict":  func(p Problem) bool { return p.Other == Rewrite },
 		"note/0 conflict":        func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
+		"session-1/0 conflict":   func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 		"cancel/0 conflict":      func(p Problem) bool { return p.Other == Transcribe && p.OtherIndex == 0 },
 	} {
 		p, ok := got[key]
@@ -439,6 +457,11 @@ func TestRoute(t *testing.T) {
 		{"paste last waits without the finish", ev(PasteLast, proto.PhaseTrigger), Recording, "", Decision{}},
 		{"note starts", ev(Note, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Note}},
 		{"note stops", ev(Note, proto.PhaseTrigger), Recording, "", Decision{Action: Stop}},
+		{"session slot switches", ev(Session2, proto.PhaseTrigger), Idle, "", Decision{Action: Start, Feature: Session2}},
+		{"session slot waits while recording", ev(Session2, proto.PhaseTrigger), Recording, "", Decision{}},
+		{"session slot waits while busy", ev(Session2, proto.PhaseTrigger), Busy, "", Decision{}},
+		{"session slot switches while composing", ev(Session2, proto.PhaseTrigger), Composing, "", Decision{Action: Start, Feature: Session2}},
+		{"session slot down does nothing", ev(Session2, proto.PhaseDown), Idle, "", Decision{}},
 		{"unknown binding", ev("try/x", proto.PhaseTrigger), Idle, "", Decision{}},
 	} {
 		if got := Route(tc.e, tc.phase, tc.hold, "", false); got != tc.want {

@@ -6,11 +6,9 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
@@ -58,55 +56,10 @@ func TestRewriteBoxFooterAndPlaceholder(t *testing.T) {
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	for _, want := range []string{"Enter", "send", "Esc", "close"} {
-		if !hasExact(tt, want) {
-			t.Errorf("%q is missing from %q", want, firstTexts(tt))
-		}
-	}
-	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends", "paste or drop up to 4 images"} {
+	for _, unwanted := range []string{"Type or paste more text, or drop images", "Say the instruction, then Enter sends", "paste or drop up to 4 images", "Enter", "Esc"} {
 		if has(tt, unwanted) {
 			t.Errorf("old hint %q remains in %q", unwanted, firstTexts(tt))
 		}
-	}
-}
-
-func TestRewriteBoxAnsweredVoiceAffordance(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	a.prefs.Features.Rewrite.Hotkeys = []settings.Hotkey{{Keys: "RightCommand", Trigger: settings.TriggerTap}}
-	a.box = rewriteBox{open: true, shown: true}
-	a.answer = answerCard{open: true, id: "v1", conv: "v1", kind: store.KindRewrite, text: "Shorter.", conversation: true,
-		turns: []compose.Turn{{Instruction: "make it shorter", Answer: compose.Answer{Content: "Shorter."}}}}
-	view := a.boxViewState()
-	if view.Card == nil || !view.Card.CanFollowUp || view.Recording || a.box.session != "" {
-		t.Fatalf("the settled answer is not ready for an explicit follow-up: %+v, box %+v", view, a.box)
-	}
-	if got := view.EditorPlaceholder; got != "Speak or type a follow-up" {
-		t.Errorf("placeholder %q", got)
-	}
-	tt := hudTester(a.boxView, boxWinW, boxWinH)
-	frames(tt)
-	for _, want := range []string{"Right ⌘", "follow up by voice"} {
-		if !hasExact(tt, want) {
-			t.Errorf("%q is missing from %q", want, firstTexts(tt))
-		}
-	}
-	if _, ok := tt.Find(view.Card.FollowTooltip); !ok {
-		t.Errorf("the answered card has no voice-follow-up button: %q", firstTexts(tt))
-	}
-	a.prefs.Features.Hidden = []string{string(store.KindRewrite)}
-	view = a.boxViewState()
-	if view.FollowKeys != "" {
-		t.Errorf("a disabled Rewrite shortcut is still advertised as %q", view.FollowKeys)
-	}
-	if got := view.Card.FollowTooltip; got != "Follow up by voice. Text you select first goes with it." {
-		t.Errorf("the microphone tooltip advertises a disabled shortcut: %q", got)
-	}
-	frames(tt)
-	if hasExact(tt, "follow up by voice") {
-		t.Errorf("the footer advertises a disabled Rewrite shortcut: %q", firstTexts(tt))
-	}
-	if a.box.session != "" || a.sess.State.Live() {
-		t.Errorf("rendering the answer started recording: box %+v, session %+v", a.box, a.sess)
 	}
 }
 

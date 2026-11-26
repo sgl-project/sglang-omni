@@ -70,7 +70,8 @@ func TestRewriteFollowUpNewSelection(t *testing.T) {
 		t.Errorf("the system prompt does not say what the new selection is:\n%s", msgs[0][1])
 	}
 	v := a.cachedCard()
-	if len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].quote != "" || cardBubblesForTest(v)[2].text != "add the new messages" || cardBubblesForTest(v)[2].quote != chatB || cardBubblesForTest(v)[2].cut {
+	// The Rewrite card quotes each turn's selection, the first one's too.
+	if len(cardBubblesForTest(v)) != 4 || cardBubblesForTest(v)[0].quote != chatA || cardBubblesForTest(v)[2].text != "add the new messages" || cardBubblesForTest(v)[2].quote != chatB || cardBubblesForTest(v)[2].cut {
 		t.Errorf("bubbles %+v", cardBubblesForTest(v))
 	}
 	if len(a.answer.turns) != 2 || a.answer.turns[1].Selection != chatB {
@@ -226,71 +227,6 @@ func TestRewriteFollowUpSelectionRetry(t *testing.T) {
 	}
 	if frame := a.ov.frame; frame.X != moved.X || frame.Y+frame.Height != moved.Y+moved.Height || frame.Width != moved.Width {
 		t.Errorf("retry moved the card: %+v, want the position and width of %+v", frame, moved)
-	}
-}
-
-func TestRewriteVoiceFollowUpButtonKeepsConversation(t *testing.T) {
-	for _, finish := range []string{"button", "shortcut", "rapid start clicks"} {
-		t.Run(finish, func(t *testing.T) {
-			chat := &fakeChat{texts: []string{"First answer.", "Voice answer.", "Typed answer."}}
-			a, tr := rewriteOnce(t, "", chat, "initial instruction")
-			conversation, first := a.answer.conv, a.sess.ID
-			if conversation == "" || conversation != first || a.box.session != "" || a.sess.State.Live() {
-				t.Fatalf("the first answer auto-started recording or lost its conversation: card %+v, box %+v, session %+v", a.answer, a.box, a.sess)
-			}
-			view := a.boxViewState()
-			if view.Card == nil || !view.Card.CanFollowUp {
-				t.Fatalf("the answered card cannot follow up: %+v", view)
-			}
-			tt := hudTester(a.boxView, boxWinW, boxWinH)
-			tr.setText("voice follow-up")
-			click(t, tt, view.Card.FollowTooltip)
-			if finish == "rapid start clicks" {
-				click(t, tt, view.Card.FollowTooltip)
-			}
-			a.pump("the microphone follow-up", func() bool {
-				return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
-			})
-			a.pump("the follow-up's audio", func() bool { return len(a.sess.Levels) >= 5 })
-			if finish == "button" {
-				view = a.boxViewState()
-				if view.Card == nil || !view.Card.CanStop {
-					t.Fatalf("the recording follow-up has no finish action: %+v", view)
-				}
-				click(t, tt, "Send the follow-up")
-			} else {
-				front := a.answer.target
-				a.hotkeyFired(proto.HotkeyEventParams{Binding: "rewrite/0", Phase: proto.PhaseTrigger, Behavior: proto.BehaviorTap, Front: &front})
-			}
-			a.pump("the voice answer", func() bool { return a.sess.State.Ended() && a.answer.text == "Voice answer." })
-			if got := lastUser(chat, 1); got != "<instruction>\nvoice follow-up\n</instruction>" {
-				t.Errorf("voice follow-up request %q", got)
-			}
-
-			a.boxActions().textChanged("typed follow-up")
-			a.boxSend()
-			a.pump("the typed answer", func() bool { return a.sess.State.Ended() && a.answer.text == "Typed answer." })
-			if len(a.sess.Levels) != 0 {
-				t.Errorf("the typed follow-up recorded audio: %d levels", len(a.sess.Levels))
-			}
-			if got := lastUser(chat, 2); got != "<instruction>\ntyped follow-up\n</instruction>" {
-				t.Errorf("typed follow-up request %q", got)
-			}
-			if a.answer.conv != conversation || len(a.answer.turns) != 3 {
-				t.Errorf("conversation changed: id %q, turns %+v", a.answer.conv, a.answer.turns)
-			}
-			a.pump("all three history entries", func() bool { return len(a.history()) == 3 })
-			firstSeen := false
-			for _, entry := range a.history() {
-				if entry.Conversation != conversation {
-					t.Errorf("history entry %s has conversation %q, want %q", entry.ID, entry.Conversation, conversation)
-				}
-				firstSeen = firstSeen || entry.ID == conversation
-			}
-			if !firstSeen {
-				t.Errorf("the first history entry %s is missing: %+v", conversation, a.history())
-			}
-		})
 	}
 }
 

@@ -7,6 +7,9 @@
 namespace cosyvoice3 {
 
 namespace mx = mlx::core;
+using omni_common::LeakyRelu;
+using omni_common::Mish;
+using omni_common::ModulatedLayerNorm;
 
 namespace {
 
@@ -43,24 +46,6 @@ const std::string kEstimator = "flow.decoder.estimator.";
 // A Python float operand of an MLX op: it takes the other operand's dtype.
 mx::array Scalar(double value, mx::Dtype dtype) {
   return mx::array(static_cast<float>(value), dtype);
-}
-
-// LayerNorm(x) * (1 + scale) + shift as one fused norm, scale and shift [1,
-// width] shared by every row.
-mx::array ModulatedLayerNorm(const mx::array &x, const mx::array &shift,
-                             const mx::array &scale) {
-  return mx::fast::layer_norm(
-      x, mx::reshape(mx::add(Scalar(1.0, x.dtype()), scale), {-1}),
-      mx::reshape(shift, {-1}), kNormEps);
-}
-
-mx::array LeakyRelu(const mx::array &x, double slope) {
-  return mx::maximum(mx::multiply(Scalar(slope, x.dtype()), x), x);
-}
-
-mx::array Mish(const mx::array &x) {
-  return mx::multiply(x,
-                      mx::tanh(mx::logaddexp(x, mx::array(0.0f, x.dtype()))));
 }
 
 // The periodic Hann window torch.stft uses.
@@ -140,7 +125,7 @@ mx::array Flow::Decode(const std::vector<int> &speech_tokens,
                  checkpoint_.Weight("flow.pre_lookahead_layer.conv1.weight")),
       checkpoint_.Weight("flow.pre_lookahead_layer.conv1.bias"));
   lookahead = mx::add(
-      mx::conv1d(mx::pad(LeakyRelu(lookahead, 0.01), {{0, 0}, {2, 0}, {0, 0}}),
+      mx::conv1d(mx::pad(LeakyRelu(lookahead, 0.01f), {{0, 0}, {2, 0}, {0, 0}}),
                  checkpoint_.Weight("flow.pre_lookahead_layer.conv2.weight")),
       checkpoint_.Weight("flow.pre_lookahead_layer.conv2.bias"));
   const mx::array mu =
@@ -268,7 +253,7 @@ mx::array Flow::Velocity(const mx::array &x, const mx::array &mu,
   const std::vector<mx::array> modulation =
       mx::split(step_row(modulations.back()), 2, -1);
   return checkpoint_.Linear(
-      ModulatedLayerNorm(hidden, modulation[1], modulation[0]),
+      ModulatedLayerNorm(hidden, modulation[1], modulation[0], kNormEps),
       kEstimator + "proj_out");
 }
 
@@ -283,7 +268,8 @@ mx::array Flow::Block(const mx::array &x, const mx::array &step_modulation,
   // width].
   const std::vector<mx::array> modulation = mx::split(step_modulation, 6, -1);
   const auto modulate = [&](const mx::array &input, int shift, int scale) {
-    return ModulatedLayerNorm(input, modulation[shift], modulation[scale]);
+    return ModulatedLayerNorm(input, modulation[shift], modulation[scale],
+                              kNormEps);
   };
   const mx::array normed = modulate(x, 0, 1);
   // Note (XXXXRT666): the DiT rotates adjacent pairs of the first head's
@@ -451,7 +437,7 @@ mx::array Hift::Decode(const mx::array &mel) const {
   int resblock = 0;
   for (int stage = 0; stage < 3; ++stage) {
     const std::string index = std::to_string(stage);
-    hidden = mx::repeat(LeakyRelu(hidden, 0.1), kUpsampleRates[stage], 1);
+    hidden = mx::repeat(LeakyRelu(hidden, 0.1f), kUpsampleRates[stage], 1);
     hidden =
         Conv(hidden, "hifigan.ups." + index, kUpsampleKernels[stage] - 1, 0);
     if (stage == 2) {
@@ -475,7 +461,7 @@ mx::array Hift::Decode(const mx::array &mel) const {
     }
     hidden = mx::mean(mx::stack(branches, 0), 0);
   }
-  hidden = mx::astype(Conv(LeakyRelu(hidden, 0.01), "hifigan.conv_post", 6, 0),
+  hidden = mx::astype(Conv(LeakyRelu(hidden, 0.01f), "hifigan.conv_post", 6, 0),
                       mx::float32);
   hidden = mx::squeeze(hidden, 0);
   const int count = hidden.shape(0);

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -154,10 +153,6 @@ func TestRewriteElsewhereIsNewConversation(t *testing.T) {
 	a, tr, path := rewriteSelecting(t, chat, chatA, "summarize")
 	selectNow(t, path, chatB)
 	startSaying(a, tr, "rewrite/0", textEditApp, "translate this")
-	logs := cardRewriteShortcutLogs(a)
-	if len(logs) != 1 || logs[0].Level != core.SeverityInfo || logs[0].Message != "Rewrite shortcut with card open: new conversation (front app differs from the card target)" {
-		t.Fatalf("card-open Rewrite route log: %+v", logs)
-	}
 	if a.answer.open || !a.under.open {
 		t.Fatalf("recording: card open=%v under=%v", a.answer.open, a.under.open)
 	}

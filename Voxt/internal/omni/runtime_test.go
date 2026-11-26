@@ -142,7 +142,7 @@ func waitUnloaded(t *testing.T, unloaded <-chan string, id string) {
 	}
 }
 
-// fakeClock stands for the idle timers' clock: tests move it on by hand,
+// fakeClock stands for the runtime timers' clock: tests move it on by hand,
 // and the timers due run in the caller, in order.
 type fakeClock struct {
 	mu     sync.Mutex
@@ -156,7 +156,7 @@ type fakeTimer struct {
 	done bool // stopped or run
 }
 
-// install makes rt's idle timers run on c.
+// install makes rt's timers run on c.
 func (c *fakeClock) install(rt *Runtime) *fakeClock {
 	rt.afterFunc = func(d time.Duration, fn func()) func() {
 		c.mu.Lock()

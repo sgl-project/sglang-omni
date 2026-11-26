@@ -195,7 +195,7 @@ func TestModelAssignmentBehaviorDoc(t *testing.T) {
 	if row == "" {
 		t.Fatal("docs/behavior.md does not record model assignment")
 	}
-	for _, want := range []string{"models_assignment.go", "转录、翻译、改写和会议", "其他提示词、开关、翻译备用模型和未选功能不变", "“用于”包含会议", "不能隐藏", "TestModelAssignmentPreservesOtherSettings"} {
+	for _, want := range []string{"models_assignment.go", "转录、翻译、改写和会议", "其他提示词、开关、翻译备用模型和未选功能不变", "使用关系判断包含会议", "不能隐藏", "TestModelAssignmentPreservesOtherSettings"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("model assignment behavior row lacks %q", want)
 		}

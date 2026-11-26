@@ -103,6 +103,7 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3-tts-vivian-dflash",
+    "qwen3-asr-inkling-2-mini-vivian-tts-tool",
     "qwen3-asr-qwen3.8-27b-vivian-screen",
     "qwen3-asr-qwen3.8-27b-vivian-styles",
     "qwen3-asr-qwen3.8-27b-vivian-tts-tool",
@@ -2811,6 +2812,7 @@ async def test_the_dialog_keeps_the_heard_sentences_and_the_heard_prefix_of_the_
     [
         "qwen3-asr-qwen3-tts-vivian",
         "qwen3-asr-qwen3-tts-vivian-dflash",
+        "qwen3-asr-inkling-2-mini-vivian-tts-tool",
         "qwen3-asr-qwen3.8-27b-vivian-screen",
         "qwen3-asr-qwen3.8-27b-vivian-styles",
         "qwen3-asr-qwen3.8-27b-vivian-tts-tool",

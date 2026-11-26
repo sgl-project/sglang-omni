@@ -518,7 +518,7 @@ def build_condition_metrics(
                 counts["silence_ok"], counts["silence_n"], counts["silence_pending"]
             ),
             "answering_window_yield": None,
-            "response_presence": format_ratio(counts["responded"], counts["scenarios"]),
+            "response_presence": None,
             "window_response": format_ratio(counts["window_hits"], counts["windows"]),
         }
     else:
@@ -955,8 +955,8 @@ def format_markdown_score_table(
         lines.append(
             f"> **Unscored Turn-Based Probe** (`interaction={interaction_protocol}`, "
             f"`turn_detection={turn_detection_summary}`): Duplex-MPE Section 3.4 "
-            "restricts scored evaluation to native full-duplex systems; `TR` and `AY` "
-            "are undefined under server turn segmentation and omitted below.\n"
+            "restricts scored evaluation to native full-duplex systems; `TR`, `AY`, and "
+            "`RP` are undefined under server turn segmentation and omitted below.\n"
         )
     else:
         lines.append(
@@ -986,7 +986,7 @@ def format_markdown_score_table(
             f"{format_percent_cell(row['unconditional_answer_accuracy'])} | "
             f"{format_percent_cell(row['silence_preservation'])} | "
             f"{format_percent_cell(row['answering_window_yield'], is_probe_na=is_probe)} | "
-            f"{format_percent_cell(row['response_presence'])} | "
+            f"{format_percent_cell(row['response_presence'], is_probe_na=is_probe)} | "
             f"{format_percent_cell(row['window_response'])} |"
         )
     return "\n".join(lines) + "\n"

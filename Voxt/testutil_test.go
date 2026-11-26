@@ -453,7 +453,7 @@ func recordingPillFaceW(snapshot session.Snapshot, showTime bool) int {
 	if name := uitext.SceneShort(snapshot); name != "" {
 		scene = float32(textWidth(name, float64(layout.SceneSize)))
 	}
-	row, _ := recordingPillRow(&pill, true, showTime, scene, func(key ovSized) (float32, bool) {
+	row, _ := recordingPillRow(&pill, false, showTime, scene, func(key ovSized) (float32, bool) {
 		return float32(textWidth(key.text, float64(key.size))), true
 	})
 	return row + 2*layout.PillPadX
@@ -525,7 +525,7 @@ func (a *app) overlayView(context *ui.Context) {
 // timed path matches the production content closure.
 func (a *app) overlayBenchmarkView(context *ui.Context) {
 	a.refreshSessionOverlay(time.Now())
-	sessionOverlayView(context, &a.ov.projection.view, a.currentSessionOverlayLayout(), a,
+	sessionOverlayView(context, a.ov.projection.drawn(), a.currentSessionOverlayLayout(), a,
 		sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui},
 		sessionOverlayAnimation{Motion: a.overlayMotion(), Phase: a.overlayPhase()},
 		a.postSessionOverlayMeasurements, func() { a.ov.reveal = false; a.post(a.revealOverlay) })

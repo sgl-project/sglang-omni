@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "Transcribe",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "Translate",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "Rewrite",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "Speech models",
         "english": "Speech models download delete install recognition"
@@ -57,12 +72,18 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "About",
         "english": "Diagnostics about version bug report"
       }
     ],
     "storage": {
+      "ImportKeptName": "voxtnew.db.before-import",
       "data_directory": "testdata/fixture-home/data",
       "data_path": "~/data",
       "recordings_path": "~/recordings",
