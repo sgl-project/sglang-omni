@@ -92,16 +92,32 @@ class EndpointGateTests(unittest.TestCase):
                 self.assertFalse(loop.latency_rows_valid([row(**{key: bad})]))
         self.assertTrue(loop.latency_rows_valid([row()]))
 
+    def test_null_endpoint_with_reason_is_not_evidence(self):
+        rows = [
+            row(
+                stop_to_final_ms=None,
+                stop_to_final_unavailable_reason="no ASR Final was observed after Stop",
+            ),
+            row(
+                stop_to_insert_ms=None,
+                stop_to_insert_unavailable_reason="no helper paste was observed after the ASR Final",
+            ),
+        ]
+        for candidate in rows:
+            self.assertFalse(loop.latency_rows_valid([candidate]))
+
 
 class NoPartialBranchKeptTests(unittest.TestCase):
-    def test_partial_without_final_insert_or_text_is_not_kept(self):
-        # The diagnostic switch can record a short-open row with a partial
-        # but no Final, insert or text; that is no measurement, so the
-        # attempt must be rejected instead of keeping the empty hash.
+    def test_reported_no_partial_row_is_not_kept(self):
+        # The report's no-partial branch wrote its wait as
+        # first_partial_ms=60000 with zero Final/insert, empty text and the
+        # hash of the empty string. That row is no measurement and cannot
+        # be kept, even though the old gate accepted it.
         empty_hash = hashlib.sha256(b"").hexdigest()
         rows = [
             row(
                 scenario="cold",
+                first_partial_ms=60000.0,
                 text="",
                 text_sha256=empty_hash,
                 stop_to_final_ms=0.0,
@@ -109,6 +125,7 @@ class NoPartialBranchKeptTests(unittest.TestCase):
             ),
             row(
                 scenario="warm",
+                first_partial_ms=60000.0,
                 text="",
                 text_sha256=empty_hash,
                 stop_to_final_ms=0.0,

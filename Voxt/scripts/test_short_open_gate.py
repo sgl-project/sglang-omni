@@ -74,11 +74,13 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
         proc = self.run_gate(self.full_rows(bad_attempt=3, text_sha256=None))
         self.assertEqual(proc.returncode, 1)
 
-    def test_empty_transcript_and_endpoints_attempt_rejected(self):
-        # A diagnostic row can keep a partial but deliver no Final, insert
-        # or text; the shell runner must reject it before printing medians.
+    def test_reported_no_partial_group_rejected(self):
+        # The report's no-partial rows carry first_partial_ms=60000 with
+        # zero Final/insert, empty text and the empty-string hash; the
+        # shell runner must reject them before printing medians.
         empty_hash = hashlib.sha256(b"").hexdigest()
         bad = {
+            "first_partial_ms": 60000.0,
             "text": "",
             "text_sha256": empty_hash,
             "stop_to_final_ms": 0.0,

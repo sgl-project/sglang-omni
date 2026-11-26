@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -79,8 +80,10 @@ type latencyResult struct {
 	ModelLoadMS                        float64  `json:"model_load_ms"`
 	FirstPartialMS                     *float64 `json:"first_partial_ms"`
 	FirstPartialUnavailableReason      string   `json:"first_partial_unavailable_reason,omitempty"`
-	StopToFinalMS                      float64  `json:"stop_to_final_ms"`
-	StopToInsertMS                     float64  `json:"stop_to_insert_ms"`
+	StopToFinalMS                      *float64 `json:"stop_to_final_ms"`
+	StopToFinalUnavailableReason       string   `json:"stop_to_final_unavailable_reason,omitempty"`
+	StopToInsertMS                     *float64 `json:"stop_to_insert_ms"`
+	StopToInsertUnavailableReason      string   `json:"stop_to_insert_unavailable_reason,omitempty"`
 	StopToDoneMS                       float64  `json:"stop_to_done_ms"`
 	LiveUpdates                        int      `json:"live_updates"`
 	LongestUpdateGapMS                 float64  `json:"longest_update_gap_ms"`
@@ -89,12 +92,11 @@ type latencyResult struct {
 	TextUnavailableReason              string   `json:"text_unavailable_reason,omitempty"`
 }
 
-// firstPartialEvidence is the first partial's wait when one was
-// observed, else nil: the row then carries the unavailable reason and no
-// wait time can be read as a partial that never came.
-func firstPartialEvidence(partial time.Duration) *float64 {
-	if partial > 0 {
-		ms := float64(partial.Microseconds()) / 1000
+// durationEvidence is the wait when the event was observed, else nil: the
+// row then carries the unavailable reason, never a 0 read as a measurement.
+func durationEvidence(d time.Duration) *float64 {
+	if d > 0 {
+		ms := float64(d.Microseconds()) / 1000
 		return &ms
 	}
 	return nil
@@ -419,13 +421,19 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 		ASRCold: name != "warm", VADCold: name == "cold",
 		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
-		FirstPartialMS: firstPartialEvidence(st.partial), StopToFinalMS: milliseconds(st.final),
-		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
+		FirstPartialMS: durationEvidence(st.partial), StopToFinalMS: durationEvidence(st.final),
+		StopToInsertMS: durationEvidence(st.insert), StopToDoneMS: milliseconds(st.done),
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
 		TextSHA256: textSHA256Evidence(text),
 	}
 	if result.FirstPartialMS == nil {
 		result.FirstPartialUnavailableReason = "no live partial was observed in the window"
+	}
+	if result.StopToFinalMS == nil {
+		result.StopToFinalUnavailableReason = "no ASR Final was observed after Stop"
+	}
+	if result.StopToInsertMS == nil {
+		result.StopToInsertUnavailableReason = "no helper paste was observed after the ASR Final"
 	}
 	if result.TextSHA256 == nil {
 		result.TextUnavailableReason = "no transcript text was produced"
@@ -479,8 +487,11 @@ func TestLatencyResultJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.AppReadyMS != 1500 || got.StopToFinalMS != 1200 || got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
+	if got.AppReadyMS != 1500 || got.StopToFinalMS == nil || *got.StopToFinalMS != 1200 || got.StopToInsertMS == nil || *got.StopToInsertMS != 1250 || got.StopToDoneMS != 1300 {
 		t.Fatalf("app readiness or the three endpoints collapsed: %+v", got)
+	}
+	if got.StopToFinalUnavailableReason != "" || got.StopToInsertUnavailableReason != "" {
+		t.Fatalf("observed endpoints marked unavailable: %+v", got)
 	}
 	if !got.ASRCold || !got.VADCold || got.Round != 2 || got.LiveUpdates != 4 || got.LongestUpdateGapMS != 275 {
 		t.Fatalf("scenario metadata: %+v", got)
@@ -525,7 +536,7 @@ func TestLatencyResultWritesNullPreviewWithReason(t *testing.T) {
 	}
 }
 
-func TestLatencyResultWritesNullTextHashWithReason(t *testing.T) {
+func TestLatencyResultWritesUnavailableEvidenceAsNull(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", path)
 	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
@@ -538,12 +549,50 @@ func TestLatencyResultWritesNullTextHashWithReason(t *testing.T) {
 	if err := json.Unmarshal(data, &row); err != nil {
 		t.Fatal(err)
 	}
-	value, present := row["text_sha256"]
-	if !present || value != nil {
-		t.Fatalf("an empty transcript must write a null text_sha256, not the hash of nothing: %v", row)
+	assertUnavailable := func(field, reasonField string) {
+		t.Helper()
+		value, present := row[field]
+		if !present || value != nil {
+			t.Fatalf("%s must be null when the event never arrived: %v", field, row)
+		}
+		if reason, _ := row[reasonField].(string); reason == "" {
+			t.Fatalf("a null %s needs its unavailable reason: %v", field, row)
+		}
 	}
-	if reason, _ := row["text_unavailable_reason"].(string); reason == "" {
-		t.Fatalf("a null text_sha256 needs its unavailable_reason: %v", row)
+	assertUnavailable("first_partial_ms", "first_partial_unavailable_reason")
+	assertUnavailable("stop_to_final_ms", "stop_to_final_unavailable_reason")
+	assertUnavailable("stop_to_insert_ms", "stop_to_insert_unavailable_reason")
+	assertUnavailable("text_sha256", "text_unavailable_reason")
+}
+
+func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skipf("the short-open gate is a Python script and python3 is not on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	rowsPath := filepath.Join(dir, "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", rowsPath)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	// The reported no-partial branch wrote its wait as first_partial_ms
+	// while producing no Final, insert or text; the serialized rows must
+	// still be rejected by the real gate.
+	st := latencyStages{partial: 60 * time.Second, minPreviewSamples: 20000}
+	for attempt := 1; attempt <= 3; attempt++ {
+		writeLatencyResult(t, "cold", "asr.test", attempt, st, 0, 0, "")
+		writeLatencyResult(t, "warm", "asr.test", attempt, st, 0, 0, "")
+	}
+	preflight := filepath.Join(dir, "preflight.json")
+	body := `{"returncode":0,"environment_reasons":[],"peak_pressure":"normal"}`
+	if err := os.WriteFile(preflight, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(python, "scripts/short_open_gate.py", rowsPath, preflight, "3").CombinedOutput()
+	if err == nil {
+		t.Fatalf("the gate kept rows with no Final, insert or text: %s", out)
+	}
+	if strings.Contains(string(out), "median") {
+		t.Fatalf("the gate printed medians for a rejected group: %s", out)
 	}
 }
 
