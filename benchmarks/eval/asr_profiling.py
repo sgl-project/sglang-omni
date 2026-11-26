@@ -53,7 +53,7 @@ async def wait_for_profile_flush(
     *,
     timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 ) -> bool:
-    """Wait until each event JSONL writer publishes its run_status sidecar."""
+    """Wait until every events file present so far has its run_status sidecar; processes that have not yet created an events file are not awaited."""
     directory = Path(event_dir).expanduser()
     if not directory.is_dir():
         return True
