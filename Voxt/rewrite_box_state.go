@@ -94,6 +94,9 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if state.Conversation {
 		state.Card, state.CardSessionID, state.CardWidth = a.boxCardView(), a.ov.projection.view.SessionID, a.boxFaceW()
 	}
+	if a.boxWriting() { // the sent turn shows them: the composer is empty again
+		state.Thumbnails, state.ImageInfo, state.Selection, state.SelectionBlock, state.Text, state.TextSegments = nil, nil, "", boxTextSegment{}, "", nil
+	}
 	if (a.boxAnswered() && box.instruction == "" || a.boxIdle()) && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
 		state.CanSend = true // a typed follow-up, or a new session's first instruction
 	}
@@ -215,7 +218,7 @@ func (a *app) boxPanel() {
 // boxConversing says whether the card shows the answer card's content:
 // it holds an answer, or its session writes one.
 func (a *app) boxConversing() bool {
-	return a.boxAnswered() || a.box.open && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && a.writingAnswer()
+	return a.boxAnswered() || a.boxWriting() || a.box.open && a.sess.ID != "" && a.sess.ID == a.boxSessionID() && a.writingAnswer()
 }
 
 // boxHoldsCard says whether the Rewrite card stands in for the answer

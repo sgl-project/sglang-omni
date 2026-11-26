@@ -437,7 +437,7 @@ func boxThumbView(context *ui.Context, bitmap *ui.Bitmap, info boxImageInfo, rem
 // height.
 func boxConversation(context *ui.Context, state rewriteBoxViewState, actions rewriteBoxActions, local *rewriteBoxLocalUI) {
 	card, count := state.Card, sessionCardBlockCount(state.Card)
-	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || card.Writing && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
+	if key := card.ID + "/" + strconv.Itoa(count); key != local.turnsKey || (card.Writing || count > 0 && sessionCardBlockAt(card, count-1).Live) && local.turnScroll.Y >= local.turnScroll.MaxY-2 {
 		local.turnsKey, local.turnScroll.Y = key, math.MaxFloat32 // the newest turn is in view
 	}
 	overlayLocal := actions.cardLocal()

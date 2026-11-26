@@ -110,7 +110,7 @@ func (a *app) overlayModeNow() overlayMode {
 		return ovNotice
 	case card && a.answer.inserting:
 		return ovHidden
-	case card, live && a.writingAnswer():
+	case card, live && (a.writingAnswer() || a.boxWriting()): // the Rewrite card draws the sent turn
 		return ovAnswer
 	case live && snapshot.State == session.Delivering:
 		return ovHidden

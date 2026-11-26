@@ -25,14 +25,22 @@ import (
 func TestRewriteBoxIsTheOnlyCard(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.box = rewriteBox{open: true, shown: true, session: "r1"}
-	for _, state := range []session.State{session.Recording, session.Recognizing, session.Composing} {
-		snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: state, Card: true, Spoken: "make it shorter"})
+	for _, state := range []session.State{session.Recording, session.Recognizing} {
+		snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: state, Card: true, Partial: "make it shorter"})
 		if !a.box.shown || a.overlayModeNow() != ovHidden {
 			t.Fatalf("%s: the input card shows %v, the overlay %q", state, a.box.shown, a.overlayModeNow())
 		}
 	}
-	if view := a.boxViewState(); view.VoiceLine != "make it shorter" || view.Subtitle == "" || view.Conversation {
+	if view := a.boxViewState(); view.VoiceLine != "make it shorter" || view.Conversation {
 		t.Errorf("the working card: %+v", view)
+	}
+	// Sent: the card shows the turn, its answer on the way, still alone.
+	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Spoken: "make it shorter"})
+	if !a.box.shown || !a.boxHoldsCard(a.overlayModeNow()) || !a.boxViewState().Conversation {
+		t.Fatalf("sent: the input card shows %v, the overlay %q", a.box.shown, a.overlayModeNow())
+	}
+	if card := a.boxCardView(); card == nil || sessionCardBlockCount(card) != 2 || sessionCardBlockAt(card, 0).Text != "make it shorter" {
+		t.Fatalf("sent: the card does not show what was asked: %+v", card)
 	}
 
 	snap(a, session.Snapshot{ID: "r1", Kind: store.KindRewrite, State: session.Composing, Card: true, Draft: "Shorter."})

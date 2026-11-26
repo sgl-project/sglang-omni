@@ -422,6 +422,10 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		quoteWidth, _ := context.MeasureText(0, quote.span())
 		text.wrap = layout.BubbleTextWidth(textWidth, titleWidth, quoteWidth, text.wrap)
 	}
+	if block.User && len(block.Images) > 0 {
+		bubbleImages(context, block.Images, local, gap)
+		gap = bubbleImageGap
+	}
 	row := ui.Row(context).Justify(justify).AlignItems(ui.Start).Gap(bubbleCopyGap).Margin(gap, 0, 0, 0)
 	// The whole row, so the pointer can move from the answer to its Copy.
 	hover := !block.User && !block.Live && row.Hovered()
@@ -459,6 +463,21 @@ func cardBubbleView(context *ui.Context, sessionID string, card *sessionCardView
 		}
 	})
 }
+
+// bubbleImages are the pictures a turn sent, over its bubble, as a chat
+// shows them: the user sees what went before the answer comes.
+func bubbleImages(context *ui.Context, images []int, local sessionOverlayLocal, gap float32) {
+	ui.Row(context.Key("bubble-images")).Justify(ui.End).Gap(bubbleImageGap).Margin(gap, 0, 0, 0).Children(func() {
+		for _, index := range images {
+			if index < len(local.Overlay.cardPreviews) {
+				preview := local.Overlay.cardPreviews[index]
+				ui.Image(context.Key(index), preview.Image).Size(bubbleImageSize, bubbleImageSize).Fit(ui.Cover).Radius(6).Shrink(0).Label(preview.Label)
+			}
+		}
+	})
+}
+
+const bubbleImageSize, bubbleImageGap = 56, 6
 
 // bubbleCopyGap is the room between an answer bubble and its Copy icon.
 const bubbleCopyGap = 6

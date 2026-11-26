@@ -15,6 +15,7 @@ type answerInputPreview struct {
 	Height int
 	Chars  int
 	Lines  int
+	Turn   int // the conversation turn it went with
 }
 
 func answerTextPreview(text, label string) answerInputPreview {
