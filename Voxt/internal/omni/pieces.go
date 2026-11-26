@@ -103,6 +103,10 @@ func (s *live) recognisePieces(language string, b bias) {
 	}
 }
 
+// earlyPieces is Qwen3-ASR's policy when the session works on the pieces
+// while it records (asr.StreamRequest.EarlyPieces): the first at 20 s.
+var earlyPieces = Pieces{After: 20 * time.Second, Min: 10 * time.Second, Target: 15 * time.Second, Max: 25 * time.Second}
+
 // startFinalAt tells the server the sample the Final starts from once the
 // piece before it is recognised: it prefills the audio from there on while
 // the recording goes on.

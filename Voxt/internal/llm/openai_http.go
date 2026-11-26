@@ -81,6 +81,32 @@ func (o *OpenAI) send(ctx context.Context, url string, body any, model string, t
 	}
 }
 
+// Connect opens a connection to the server, which the client keeps for
+// the next chat: a HEAD request for the root, without the key. Whatever
+// the server answers, the connection is open. Nothing is sent to a service
+// one signs in to, whose API is not a public one.
+func (o *OpenAI) Connect(ctx context.Context) error {
+	if o.preset.SignIn {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, o.preset.BaseURL, nil)
+	if err != nil {
+		e := newErr(CodeConfig, "provider", o.preset.ID, "field", "baseURL")
+		e.Err = err
+		return e
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	client := *o.client // the same connections
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
+	if err != nil {
+		return o.scrub(ctxErr(ctx, o.preset.ID, err, ProbeTimeout))
+	}
+	return resp.Body.Close()
+}
+
 // Models lists the IDs of the models the server has (GET {root}/models,
 // which Ollama, LM Studio and oMLX answer as OpenAI does), in its order.
 func (o *OpenAI) Models(ctx context.Context) ([]string, error) {

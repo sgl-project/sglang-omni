@@ -1,5 +1,5 @@
 # profile: custom:cleanup+scene+glossary
-# layers: custom cleanup scene glossary example
+# layers: custom cleanup scene glossary example custom-cleanup
 
 Write English with full-width punctuation. Keep {{UNKNOWN}} as is.
 
@@ -31,6 +31,9 @@ You answer:
 <output>
 Can you send the weekly report to Anna before 5? I really need it before 5.
 </output>
+
+Custom rules and basic cleanup:
+- The custom rules above take precedence over basic cleanup when they request translation or reformatting.
 
 ---- user ----
 <input>

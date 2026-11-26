@@ -444,3 +444,22 @@ func TestReleaseVerifyChecksTheAppsFeed(t *testing.T) {
 		}
 	}
 }
+
+// The step that updates the previous beta skips a build without the headless
+// check. It tells by a field of the check's report, which a build keeps as
+// text; it does not keep the flag names, so looking for those skipped every beta.
+func TestPreviousBetaIsToldByItsReport(t *testing.T) {
+	const field = `json:"notPublished"`
+	for file, want := range map[string]string{
+		"scripts/mac-update-feed-e2e.sh": "grep -aqF '" + field + "' \"$bin\"",
+		"update_check.go":                field,
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s has no %s", file, want)
+		}
+	}
+}

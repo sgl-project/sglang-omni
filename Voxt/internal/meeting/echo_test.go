@@ -74,15 +74,15 @@ func TestCommitSegmentDropsLiveEcho(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	m := NewManager(Config{Store: db.Meetings()})
-	m.updateLive(SourceSystem, "我想问一下，那个你说那个插件，它就是因为我其实对那个Fox的理解是")
+	m.updateLive(SourceSystem, "我想问一下，那个你说那个插件，它就是因为我其实对那个Fox的理解是", nil)
 	m.commitSegment(Segment{Source: SourceMic, Start: 0, End: 8 * time.Second,
-		Text: "我想问一下，那个你说那个插件，它就是因为我其实对那个box的理解是"})
+		Text: "我想问一下，那个你说那个插件，它就是因为我其实对那个box的理解是"}, nil)
 	m.commitSegment(Segment{Source: SourceSystem, Start: 8 * time.Second, End: 16 * time.Second,
-		Text: "然后一下出来，就是那整整齐齐的这个感觉。"})
+		Text: "然后一下出来，就是那整整齐齐的这个感觉。"}, nil)
 	m.commitSegment(Segment{Source: SourceMic, Start: 9 * time.Second, End: 17 * time.Second,
-		Text: "然后一下出来，就是那整整齐的这个感觉。"})
+		Text: "然后一下出来，就是那整整齐的这个感觉。"}, nil)
 	m.commitSegment(Segment{Source: SourceMic, Start: 17 * time.Second, End: 20 * time.Second,
-		Text: "我自己不是做app这个背景的，所以觉得有点抽象。"})
+		Text: "我自己不是做app这个背景的，所以觉得有点抽象。"}, nil)
 	m.segWrites.Wait()
 	var got []string
 	for _, s := range m.Current().Segments {

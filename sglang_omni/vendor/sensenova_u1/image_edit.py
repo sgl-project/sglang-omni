@@ -66,6 +66,16 @@ def load_image_native(
     return flattened_pixels, grid_shape
 
 
+def it2i_guidance_branch_count(cfg_scale: float, img_cfg_scale: float) -> int:
+    """Count the model passes each editing step runs for its guidance."""
+    if cfg_scale == 1 and img_cfg_scale == 1:
+        return 1
+    elif img_cfg_scale == 1 or cfg_scale == img_cfg_scale:
+        return 2
+    else:
+        return 3
+
+
 def build_it2i_queries(
     model: NEOChatModel,
     prompt: str,
@@ -94,21 +104,19 @@ def build_it2i_queries(
             append_text="<think>\n\n</think>\n\n<img>",
         )
     ]
-    if img_cfg_scale == 1 and cfg_scale == 1:
+    image_only_query = model._build_t2i_query(
+        "<image>" * len(reference_sizes), append_text="<img>"
+    )
+    unconditioned_query = model._build_t2i_query("", append_text="<img>")
+    branch_count = it2i_guidance_branch_count(cfg_scale, img_cfg_scale)
+    if branch_count == 1:
         pass
+    elif branch_count == 2 and img_cfg_scale == 1:
+        queries.append(image_only_query)
+    elif branch_count == 2:
+        queries.append(unconditioned_query)
     else:
-        if img_cfg_scale == 1 or cfg_scale != img_cfg_scale:
-            queries.append(
-                model._build_t2i_query(
-                    "<image>" * len(reference_sizes), append_text="<img>"
-                )
-            )
-        else:
-            pass
-        if img_cfg_scale != 1:
-            queries.append(model._build_t2i_query("", append_text="<img>"))
-        else:
-            pass
+        queries.extend([image_only_query, unconditioned_query])
     for width_pixels, height_pixels in reference_sizes:
         image_token_count = int(
             (height_pixels // model.patch_size)

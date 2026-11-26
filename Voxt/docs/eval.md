@@ -207,7 +207,7 @@ Without its example, Transcribe's clean-up scores 6 to 7 points lower on the sma
 - **Short dictations kept as said**: 440 and 410 of 480 answers, against 421 and 334 without an example. The rest are mostly the instruction carried out (翻译成英文 written as "translate into English") or an empty answer.
 - The example makes the system prompt 393 characters longer in English (2,570 → 2,963) and 168 characters longer in Chinese (968 → 1,136).
 
-**Decision: Transcribe's example closes the system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`), in the built-in and custom prompt paths. Its first line says it only illustrates the rules and is not to be output.
+**Decision: Transcribe's example closes the built-in system prompt, in the request's own `<input>`/`<output>` form, with Cleanup on** (`templates/<set>/example-transcribe.txt`). A custom prompt appends the custom-cleanup precedence layer after the example, so custom translation and reformatting rules override conflicting basic cleanup rules. The example's first line says it only illustrates the rules and is not to be output.
 
 ### Long dictation (two clips, 95–104 s; M3b, TestEvalLong)
 
@@ -233,7 +233,7 @@ The trigger is sentences that switch language, not length: Chinese with English 
 | 300-character pieces, the English template (main language "en") | 3 | translated, fillers kept | 42.0% |
 | **where whole sentences change language (and at most 300 characters)** | 10 | one self-correction at a sentence's end kept (周五…不对，周四, as on the short clip) | **6.3–7.7%** |
 
-**Decision: Transcribe's clean-up is cut where the language changes, at any length, and by length over 400 characters** (`compose.LanguagePieces`, `BuildParts`; behavior.md 5.31). Since 10-17 the length cut starts at 300 characters (below, "Long clean-ups under memory pressure").
+**Decision: Transcribe's clean-up is cut where the language changes, at any length, and by length over 400 characters** (`compose.LanguagePieces`, `BuildParts`; behavior.md 5.31). Since 10-17 the length cut starts at 300 characters (below, "Long clean-ups under memory pressure"); since 11-25 it counts words (a Chinese character is one, an English word is one), so English is cut after 300 words instead of about 55.
 - A sentence counts as Chinese when most of its words are Chinese characters, so "我们的服务用 Kubernetes 部署" stays with the Chinese.
 - A dictation in one language under 400 characters is one request, the same as before: all 20 short clips, as said and as heard, are one piece.
 - On `long-zh` (one language, 441 characters: two pieces) `llm.balanced` scores the same whole and in pieces: no fault, 7.3%.

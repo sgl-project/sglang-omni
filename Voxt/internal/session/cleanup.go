@@ -223,6 +223,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 	if r.cleanupMayContinue() && request.ctx.Err() == nil {
 		output = r.cleanUpFirstContext(text, request)
 	}
+	r.head.drop() // what is asked again is asked anew
 	for {
 		if nextRequest, ok := r.takeRethink(); ok {
 			request = nextRequest
@@ -264,6 +265,10 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 // end of the cleaned text before it (liveContext), after the last sentences
 // of that text that are asked again (redo).
 func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOutput {
+	if r.head.enabled && r.earlyCleanup().working() {
+		// The tail does not wait for the stretch under way.
+		r.head.send(text)
+	}
 	parts, answers, tail, failed, completedAt, ok := r.earlyCleanup().drain(text)
 	before := ""
 	livePath := false
@@ -387,6 +392,9 @@ func (r *run) cleanParts(text string, parts []compose.Part, answers []string, th
 }
 
 func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
+	if len(parts)-len(answers) > 1 && r.svc.LLMInfo.Remote && !r.m.resting(r.svc.LLMInfo.ID) {
+		return r.cleanPartsTogether(text, parts, answers, think, ctx)
+	}
 	var failed error
 	for i := len(answers); i < len(parts); i++ {
 		p := parts[i]
@@ -394,8 +402,7 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			return text, p.Profile(), context.DeadlineExceeded
 		}
 		draft := newDrafter(r, ctx, parts[:i+1], answers)
-		req := llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, Thinking: think, InputChars: utf8.RuneCountInString(text), OnDelta: draft.add}
-		resp, err := r.llmChatContext(ctx, r.m.cfg.llmDeadlines(req, utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout)))
+		resp, err := r.askPart(ctx, r.partRequest(text, p, think, draft.add), p.Text)
 		switch {
 		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
 			return text, p.Profile(), err
@@ -409,7 +416,7 @@ func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []str
 			}
 			answers = append(answers, p.Text)
 		default:
-			answers = append(answers, compose.CleanOutput(resp.Text, p.Text))
+			answers = append(answers, compose.CleanOutput(resp.Text, p.Text, p.Custom()))
 			if u := resp.Usage; u.PromptTokens > 0 && !u.Estimated {
 				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
 			}
@@ -462,7 +469,7 @@ func (d *drafter) publish() {
 		return
 	}
 	part := d.parts[len(d.parts)-1]
-	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text)))
+	draft := compose.JoinParts(d.parts, append(d.answers, compose.PartialOutput(d.buf.String(), part.Text, part.Custom())))
 	draft = d.r.draftSnippets(draft, d.parts)
 	d.r.m.update(d.r, func(s *Snapshot) {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.r.cleanupDecisionOpenLocked() {

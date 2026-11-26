@@ -21,6 +21,9 @@ import (
 
 type settingsShortcutsLocalUI struct {
 	strictShortcuts, returnFinishes bool
+	sessionsOn                      bool
+	sessions                        [4]keyRow
+	sessionEditing                  [4]bool
 }
 
 // shortcutsSettings is the Shortcuts section of the settings dialog.
@@ -59,6 +62,48 @@ func shortcutsSettings(c *ui.Context, state settingsShortcutsViewState, actions 
 			shortcutRow(c, row, actions, state.AccessibilityInstalled, keysWidth)
 		}
 	})
+	settingRow(c, "sc-sessions", i18n.T("Sessions (experimental)"), i18n.T("Each session keeps its own answer card and conversation. Switch, add, rename and delete sessions on the card. They come back after a restart, with their titles, while Privacy keeps a history."), func() {
+		if ui.Switch(c.Key("sc-sessions-switch"), &local.sessionsOn).Label(i18n.T("Sessions (experimental)")).Changed() {
+			actions.setSessionsOn(local.sessionsOn)
+		}
+	})
+	if state.SessionsUnsaved {
+		notice(c, "sc-sessions-unsaved", noticeWarn,
+			i18n.T("History is off, so sessions end when Voxt quits. Turn on Keep a history in Privacy to keep them."),
+			"", func() {
+				if ui.Button(c.Key("sc-open-privacy"), i18n.T("Open Privacy")).Clicked() {
+					actions.openShortcutFeature("/settings/privacy")
+				}
+			}, nil)
+	}
+	if state.SessionUse != "" {
+		caption(c, state.SessionUse)
+	}
+	for i := range state.Sessions {
+		if !state.SessionsOn {
+			break
+		}
+		slot := &state.Sessions[i]
+		settingRowUnder(c, "sc-session-"+strconv.Itoa(i+1), slot.Title, "", func() {
+			if local.sessionEditing[i] {
+				keysField(c, &local.sessions[i], slot.Title, func(keys string) {
+					actions.setSessionKeys(i, keys)
+					local.sessionEditing[i] = false
+				}, slot.Recorder, actions)
+				return
+			}
+			ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Children(func() {
+				kbd(c, slot.Recorder.DisplayedKeys)
+				if ghostButton(c.Key("change"), i18n.T("Change…")).Clicked() {
+					local.sessionEditing[i] = true
+					local.sessions[i] = keyRow{}
+				}
+			})
+		})
+		if len(slot.Problems) > 0 {
+			problemLines(c, slot.Problems)
+		}
+	}
 	settingRow(c, "sc-return", i18n.T("Return finishes a recording"), i18n.T("While Transcribe, Translate or Rewrite records, Return stops recording, and the key goes nowhere else. Off: Return reaches the app as usual."), func() {
 		if ui.Switch(c.Key("sc-return-switch"), &local.returnFinishes).Label(i18n.T("Return finishes a recording")).Changed() {
 			actions.setReturnFinishes(local.returnFinishes)

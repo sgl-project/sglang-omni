@@ -51,15 +51,22 @@ func (v *VAD) Hold(ctx context.Context) (func(), error) {
 // Speech finds the speech in a recording (/v1/vad/speech_timestamps, with
 // the tuned threshold, minimum speech and silence, and padding).
 func (v *VAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, error) {
+	return v.speechTimed(ctx, 0, pcm, rate)
+}
+
+func (v *VAD) speechTimed(ctx context.Context, requestID uint64, pcm []byte, rate int) ([]vad.Segment, error) {
 	if rate != 0 && rate != sampleRate {
 		return nil, fmt.Errorf("omni: the voice activity model takes 16 kHz, not %d Hz", rate)
 	}
+	started := time.Now()
 	l, err := v.rt.acquire(ctx, v.spec, v.dir, "")
+	logRequestStage(v.rt, requestID, "vad", "acquire", started, len(pcm), 0)
 	if err != nil {
 		return nil, err
 	}
 	defer l.release()
 	t := v.spec.VAD
+	started = time.Now()
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 	_ = w.WriteField("threshold", strconv.FormatFloat(t.Threshold, 'g', -1, 64))
@@ -69,17 +76,24 @@ func (v *VAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, 
 	fw, _ := w.CreateFormFile("file", "audio.wav")
 	_, _ = fw.Write(asr.WAV(pcm, sampleRate))
 	_ = w.Close()
+	logRequestStage(v.rt, requestID, "vad", "multipart", started, len(pcm), b.Len())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/vad/speech_timestamps", &b)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	started = time.Now()
 	resp, err := loopback.Do(req)
+	logRequestStage(v.rt, requestID, "vad", "http_headers", started, b.Len(), 0)
 	if err != nil {
 		return nil, asr.NetError(ctx, Provider, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	started = time.Now()
+	var raw []byte
+	var segs []vad.Segment
+	defer func() { logRequestStage(v.rt, requestID, "vad", "read_parse", started, len(raw), len(segs)) }()
+	raw, err = io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return nil, asr.NetError(ctx, Provider, err)
 	}
@@ -95,7 +109,7 @@ func (v *VAD) Speech(ctx context.Context, pcm []byte, rate int) ([]vad.Segment, 
 	if json.Unmarshal(raw, &out) != nil || out.Timestamps == nil {
 		return nil, fmt.Errorf("omni: an unreadable voice activity answer")
 	}
-	segs := make([]vad.Segment, 0, len(*out.Timestamps))
+	segs = make([]vad.Segment, 0, len(*out.Timestamps))
 	for _, ts := range *out.Timestamps {
 		if ts.Start == nil || ts.End == nil || *ts.Start > *ts.End {
 			return nil, fmt.Errorf("omni: an unreadable voice activity range")

@@ -1,5 +1,5 @@
 # profile: custom:cleanup+dictionary+scene+glossary
-# layers: custom cleanup dictionary scene glossary example
+# layers: custom cleanup dictionary scene glossary example custom-cleanup
 
 My own prompt for English.
 
@@ -37,6 +37,9 @@ You answer:
 <output>
 Can you send the weekly report to Anna before 5? I really need it before 5.
 </output>
+
+Custom rules and basic cleanup:
+- The custom rules above take precedence over basic cleanup when they request translation or reformatting.
 
 ---- user ----
 <input>

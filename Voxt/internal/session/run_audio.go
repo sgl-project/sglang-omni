@@ -116,6 +116,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 		// here, not on the session's loop (the recording waits meanwhile).
 		gate, closeGate := r.gate()
 		defer closeGate()
+		pauses := r.watchPauses()
 		off, sent := 0, 0
 		for {
 			chunk, closed, err := r.pcm.next(r.ctx, off)
@@ -126,6 +127,7 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 				off += len(chunk)
 				// The recording is kept as it came; the stages make copies.
 				raw := chunk
+				pauses.hear(raw)
 				if hp != nil {
 					chunk = hp.Process(chunk)
 				}
@@ -200,6 +202,8 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 					r.m.update(r, func(s *Snapshot) { s.Partial = text })
 					r.hearPartial(text)
 					r.hearLive(text)
+				case asr.EventCandidate:
+					r.hearCandidate(r.inScript(ev.Text, ""))
 				case asr.EventPiece:
 					r.hearPiece(r.inScript(ev.Text, ""))
 				case asr.EventFinal:
