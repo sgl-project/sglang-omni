@@ -94,13 +94,11 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if a.boxAnswered() && box.instruction == "" && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
 		state.CanSend = true // a typed follow-up
 	}
-	if a.boxAnswered() && !a.sess.State.Live() {
-		// The card asks for the next instruction by voice as the first
-		// one was asked: a button, and the shortcut that does the same.
-		state.CanSpeak = true
-		if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
-			state.SpeakKeys = chordLabel(keys[0].Keys)
-		}
+	// The microphone asks for the next instruction by voice as the first
+	// one was asked; the Rewrite shortcut does the same.
+	state.CanSpeak = a.boxAnswered() && !a.sess.State.Live()
+	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
+		state.SpeakKeys = chordLabel(keys[0].Keys)
 	}
 	if state.Subtitle == "" && a.boxAnswered() {
 		state.Subtitle = a.answer.msg // "Copied", why Insert did not work

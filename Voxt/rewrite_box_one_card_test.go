@@ -532,7 +532,7 @@ func TestRewriteCardOverAFullScreenApp(t *testing.T) {
 // TestRewriteCardEnterFollowsTheReturnSwitch: while the card records,
 // Enter sends only with Settings → Shortcuts' Return switch on (it is
 // taken, no newline). Off, Enter is a newline there, as it reaches any app
-// then, and the card's foot does not say that Enter sends.
+// then, and Send's tooltip does not say that Enter sends.
 func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.prefs.Features.ReturnFinishes = false
@@ -542,7 +542,7 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	frames(tt)
 	tt.Type("some text")
 	frames(tt)
-	if hasExact(tt, "send") {
+	if a.boxViewState().EnterSends {
 		t.Error("Return off: the card says Enter sends")
 	}
 	tt.Key(0, ui.KeyEnter)
@@ -552,7 +552,7 @@ func TestRewriteCardEnterFollowsTheReturnSwitch(t *testing.T) {
 	}
 	a.prefs.Features.ReturnFinishes = true
 	frames(tt)
-	if !hasExact(tt, "send") {
+	if !a.boxViewState().EnterSends {
 		t.Error("Return on: the card does not say Enter sends")
 	}
 	tt.Key(0, ui.KeyEnter)

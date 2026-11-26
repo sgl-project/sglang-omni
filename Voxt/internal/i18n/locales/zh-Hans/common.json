@@ -413,13 +413,12 @@
   "More text for the rewrite": "为改写补充的文字",
   "Or type here": "也可以在这里输入",
   "Speak": "说话",
+  "Stop and send": "停止并发送",
   "Listening… say how to change the selected text": "正在听…说出要怎么改选中的文字",
   "Listening… say what to write": "正在听…说出要写什么",
   "Speak or type what to do. Paste or drop images to go with it.": "说或者打字都行，也可以粘贴、拖入图片。",
   "Listening… say what to change in the answer": "正在听…说出要怎么改这个回答",
   "Got it": "知道了",
-  "send": "发送",
-  "close": "关闭",
   "Pasted text": "粘贴的文字",
   "Selected text": "选中的文字",
   "Pasted image": "粘贴的图片",
@@ -459,5 +458,6 @@
   "Export…": "导出…",
   "Next session": "下一个会话",
   "Sessions": "会话",
-  "New session": "新会话"
+  "New session": "新会话",
+  "Insert": "插入"
 }

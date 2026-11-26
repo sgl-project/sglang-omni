@@ -3,7 +3,9 @@ package main
 import (
 	"testing"
 
+	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -58,5 +60,60 @@ func TestRewriteCardSpeakButton(t *testing.T) {
 	a.pump("the answer", func() bool { return a.sess.State.Ended() && a.answer.text == "two" })
 	if n := len(a.answer.turns); n != 2 || a.answer.turns[1].Instruction != "shorter" {
 		t.Fatalf("turns %+v", a.answer.turns)
+	}
+}
+
+// TestRewriteCardKeepsOneLayout: the Rewrite card is one chat face from
+// the first instruction to the last. The header always holds Insert, Copy
+// and Close, and the composer at the foot always holds Add, the
+// microphone and Send, each in the same place, inside the card. Send and
+// the live wave used to move into the header while it listened, Insert
+// and Copy came and went, and the foot's key hints and Speak overflowed.
+func TestRewriteCardKeepsOneLayout(t *testing.T) {
+	type place struct{ add, mic, send, insert, copy, close ui.Rect }
+	measure := func(t *testing.T, view func(*ui.Context), mic string) place {
+		t.Helper()
+		tt := hudTester(view, boxWinW, boxWinH)
+		frames(tt)
+		var p place
+		for _, f := range []struct {
+			label string
+			at    *ui.Rect
+		}{{"Add", &p.add}, {mic, &p.mic}, {"Send", &p.send}, {"Insert", &p.insert}, {"Copy", &p.copy}, {"Close", &p.close}} {
+			r, ok := tt.Find(f.label)
+			if !ok {
+				t.Fatalf("%q is missing from %q", f.label, firstTexts(tt))
+			}
+			if r.X+r.W > boxWinW-layout.Pad {
+				t.Fatalf("%q runs out of the card: %+v", f.label, r)
+			}
+			*f.at = r
+		}
+		for _, gone := range []string{"Enter", "Esc"} {
+			if hasExact(tt, gone) {
+				t.Fatalf("the foot still spells out %q: %q", gone, firstTexts(tt))
+			}
+		}
+		return p
+	}
+
+	first, _, _ := newTestApp(t)
+	first.box = rewriteBox{open: true, shown: true, focusText: true, session: "v1"}
+	snap(first, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: "source"})
+	listening := measure(t, first.boxView, "Stop and send")
+
+	chat := &fakeChat{texts: []string{"one", "two"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	answered := measure(t, a.boxView, "Speak")
+	tr.setText("shorter")
+	a.boxActions().speak()
+	a.pump("recording", func() bool { return a.sess.State == session.Recording })
+	again := measure(t, a.boxView, "Stop and send")
+
+	for name, p := range map[string]place{"with an answer": answered, "listening again": again} {
+		if p.add.X != listening.add.X || p.mic.X != listening.mic.X || p.send.X != listening.send.X ||
+			p.insert.X != listening.insert.X || p.copy.X != listening.copy.X || p.close.X != listening.close.X {
+			t.Errorf("%s the controls moved: %+v, first instruction %+v", name, p, listening)
+		}
 	}
 }
