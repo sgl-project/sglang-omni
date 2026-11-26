@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import subprocess
 import sys
@@ -13,6 +14,7 @@ def row(attempt, scenario, **overrides):
     base = {
         "scenario": scenario,
         "attempt": attempt,
+        "text": "fixed text",
         "text_sha256": "a" * 64,
         "min_preview_samples": 20000,
         "first_partial_ms": 1200.0,
@@ -71,6 +73,25 @@ class ShortOpenGateRunnerTests(unittest.TestCase):
     def test_null_hash_attempt_rejected(self):
         proc = self.run_gate(self.full_rows(bad_attempt=3, text_sha256=None))
         self.assertEqual(proc.returncode, 1)
+
+    def test_empty_transcript_and_endpoints_attempt_rejected(self):
+        # A diagnostic row can keep a partial but deliver no Final, insert
+        # or text; the shell runner must reject it before printing medians.
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        bad = {
+            "text": "",
+            "text_sha256": empty_hash,
+            "stop_to_final_ms": 0.0,
+            "stop_to_insert_ms": 0.0,
+        }
+        rows = []
+        for attempt in (1, 2, 3):
+            for scenario in ("cold", "warm"):
+                rows.append(row(attempt, scenario, **bad))
+        proc = self.run_gate(rows)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertNotIn("median", proc.stdout)
+        self.assertIn('"kept": false', proc.stdout)
 
     def test_environment_reason_rejected(self):
         proc = self.run_gate(

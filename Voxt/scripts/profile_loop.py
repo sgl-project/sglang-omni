@@ -444,10 +444,34 @@ def first_partial_valid(row: dict[str, object]) -> bool:
     return isinstance(value, (int, float)) and value > 0
 
 
+def endpoint_observed(row: dict[str, object], key: str) -> bool:
+    """A kept row observed this after-stop endpoint: a positive
+    millisecond number. A zero means the endpoint never arrived and is
+    not a measurement."""
+    value = row.get(key)
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, (int, float)) and value > 0
+
+
+def text_observed(row: dict[str, object]) -> bool:
+    """A kept row delivered actual transcript text. A hash alone can be
+    the hash of an empty string, which is no transcript at all."""
+    value = row.get("text")
+    return isinstance(value, str) and value.strip() != ""
+
+
 def latency_rows_valid(rows: list[dict[str, object]]) -> bool:
-    """Every latency row in a kept group passes the evidence gates."""
+    """Every latency row in a kept group passes the evidence gates: the
+    preview value, a real transcript and the ASR Final and helper-paste
+    endpoints the short-open decision is written against."""
     return bool(rows) and all(
-        min_preview_samples_valid(row) and text_hash(row) != "" for row in rows
+        min_preview_samples_valid(row)
+        and text_observed(row)
+        and text_hash(row) != ""
+        and endpoint_observed(row, "stop_to_final_ms")
+        and endpoint_observed(row, "stop_to_insert_ms")
+        for row in rows
     )
 
 

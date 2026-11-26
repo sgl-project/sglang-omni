@@ -9,6 +9,7 @@ text hashes the kept decision was written against.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 import unittest
@@ -22,9 +23,13 @@ import profile_loop as loop  # noqa: E402
 def row(**overrides) -> dict[str, object]:
     base: dict[str, object] = {
         "scenario": "cold",
+        "text": "fixed text",
         "text_sha256": "a" * 64,
         "min_preview_samples": 20000,
         "first_partial_ms": 1200.0,
+        "stop_to_final_ms": 900.0,
+        "stop_to_insert_ms": 1000.0,
+        "stop_to_done_ms": 1100.0,
     }
     base.update(overrides)
     return base
@@ -68,6 +73,49 @@ class TextHashGateTests(unittest.TestCase):
     def test_rows_gate_requires_hashes(self):
         self.assertFalse(loop.latency_rows_valid([row(text_sha256="")]))
         self.assertTrue(loop.latency_rows_valid([row()]))
+
+
+class TextGateTests(unittest.TestCase):
+    def test_empty_transcript_is_not_evidence(self):
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        self.assertFalse(
+            loop.latency_rows_valid([row(text="", text_sha256=empty_hash)])
+        )
+        self.assertFalse(loop.latency_rows_valid([row(text="   ")]))
+        self.assertTrue(loop.latency_rows_valid([row()]))
+
+
+class EndpointGateTests(unittest.TestCase):
+    def test_zero_final_or_insert_is_not_evidence(self):
+        for key in ("stop_to_final_ms", "stop_to_insert_ms"):
+            for bad in (0, 0.0, None, True):
+                self.assertFalse(loop.latency_rows_valid([row(**{key: bad})]))
+        self.assertTrue(loop.latency_rows_valid([row()]))
+
+
+class NoPartialBranchKeptTests(unittest.TestCase):
+    def test_partial_without_final_insert_or_text_is_not_kept(self):
+        # The diagnostic switch can record a short-open row with a partial
+        # but no Final, insert or text; that is no measurement, so the
+        # attempt must be rejected instead of keeping the empty hash.
+        empty_hash = hashlib.sha256(b"").hexdigest()
+        rows = [
+            row(
+                scenario="cold",
+                text="",
+                text_sha256=empty_hash,
+                stop_to_final_ms=0.0,
+                stop_to_insert_ms=0.0,
+            ),
+            row(
+                scenario="warm",
+                text="",
+                text_sha256=empty_hash,
+                stop_to_final_ms=0.0,
+                stop_to_insert_ms=0.0,
+            ),
+        ]
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows))
 
 
 class TextHashValueTests(unittest.TestCase):

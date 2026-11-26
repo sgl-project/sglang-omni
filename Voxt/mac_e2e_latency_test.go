@@ -85,7 +85,8 @@ type latencyResult struct {
 	LiveUpdates                        int      `json:"live_updates"`
 	LongestUpdateGapMS                 float64  `json:"longest_update_gap_ms"`
 	Text                               string   `json:"text"`
-	TextSHA256                         string   `json:"text_sha256"`
+	TextSHA256                         *string  `json:"text_sha256"`
+	TextUnavailableReason              string   `json:"text_unavailable_reason,omitempty"`
 }
 
 // firstPartialEvidence is the first partial's wait when one was
@@ -106,6 +107,17 @@ func minPreviewEvidence(samples int) *int {
 		return &samples
 	}
 	return nil
+}
+
+// textSHA256Evidence is the transcript's hash when there is text, else
+// nil: the hash of an empty string is not a transcript and must never
+// pass the kept gate as if one had been delivered.
+func textSHA256Evidence(text string) *string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(text)))
+	return &hash
 }
 
 // readyLine is the runtime's line about a server that became ready.
@@ -410,10 +422,13 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 		FirstPartialMS: firstPartialEvidence(st.partial), StopToFinalMS: milliseconds(st.final),
 		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
-		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
+		TextSHA256: textSHA256Evidence(text),
 	}
 	if result.FirstPartialMS == nil {
 		result.FirstPartialUnavailableReason = "no live partial was observed in the window"
+	}
+	if result.TextSHA256 == nil {
+		result.TextUnavailableReason = "no transcript text was produced"
 	}
 	if result.MinPreviewSamples == nil {
 		result.MinPreviewSamplesUnavailableReason = "no native moss_preview_timing event for this model or runtime"
@@ -473,8 +488,11 @@ func TestLatencyResultJSON(t *testing.T) {
 	if got.MainSHA != "49f60636411e24ce4f7441878c9333d68e649a83" || got.Attempt != 2 || got.Arm != "A" || got.MinPreviewSamples == nil || *got.MinPreviewSamples != 20000 {
 		t.Fatalf("run identity: %+v", got)
 	}
-	if got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
+	if got.TextSHA256 == nil || *got.TextSHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte("fixed text"))) {
 		t.Fatalf("text hash: %+v", got)
+	}
+	if got.TextUnavailableReason != "" {
+		t.Fatalf("text present but marked unavailable: %+v", got)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -504,6 +522,28 @@ func TestLatencyResultWritesNullPreviewWithReason(t *testing.T) {
 	}
 	if reason, _ := row["min_preview_samples_unavailable_reason"].(string); reason == "" {
 		t.Fatalf("a null min_preview_samples needs its unavailable_reason: %v", row)
+	}
+}
+
+func TestLatencyResultWritesNullTextHashWithReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "latency.jsonl")
+	t.Setenv("VOXTNEW_LATENCY_OUT", path)
+	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
+	writeLatencyResult(t, "cold", "asr.test", 1, latencyStages{minPreviewSamples: 20000}, 0, 0, "  ")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(data, &row); err != nil {
+		t.Fatal(err)
+	}
+	value, present := row["text_sha256"]
+	if !present || value != nil {
+		t.Fatalf("an empty transcript must write a null text_sha256, not the hash of nothing: %v", row)
+	}
+	if reason, _ := row["text_unavailable_reason"].(string); reason == "" {
+		t.Fatalf("a null text_sha256 needs its unavailable_reason: %v", row)
 	}
 }
 
