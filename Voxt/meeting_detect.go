@@ -10,7 +10,9 @@ package main
 
 import (
 	"errors"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
@@ -28,6 +30,9 @@ import (
 const (
 	meetingAskRest  = 8 * time.Second
 	meetingAskLater = 2 * time.Minute
+	// meetingTabAgain is how often the tab of a browser that records is
+	// read again while it is no meeting's (readMeetingTabNow).
+	meetingTabAgain = 4 * time.Second
 )
 
 // meetingDetectState is the detection as the main thread knows it.
@@ -40,8 +45,11 @@ type meetingDetectState struct {
 	// that records and needs its page tree turned on for that
 	// (appenhance.go: syncTrees), "" for none.
 	reading, tree string
-	ask           meetingAsk
-	recorded      meetingRecorded // meeting_detect_end.go
+	// tabAgain has the browsers that record whose tab was no meeting's
+	// (or could not be read), each read again from its time on.
+	tabAgain map[string]time.Time
+	ask      meetingAsk
+	recorded meetingRecorded // meeting_detect_end.go
 }
 
 // meetingAsk is the card on screen: the app it asks about (key is the
@@ -99,7 +107,11 @@ func (a *app) syncMicWatch() {
 			return
 		}
 	}
-	helperCall(a, proto.MethodMicWatch, proto.MicWatchParams{On: want}, 5*time.Second, func(users proto.MicUsers, err error) {
+	params := proto.MicWatchParams{On: want}
+	if want {
+		params.Hosts = meetdetect.HostNames() // Zoom's meeting processes
+	}
+	helperCall(a, proto.MethodMicWatch, params, 5*time.Second, func(users proto.MicUsers, err error) {
 		switch {
 		case err != nil && want:
 			// Not watching after all: the next change of the helper or of
@@ -125,7 +137,16 @@ func (a *app) micHelperChanged(st helper.Status) {
 func (a *app) micChanged(users proto.MicUsers) {
 	a.micUsers = make([]meetdetect.User, 0, len(users.Apps)) // not nil: the helper answered
 	for _, u := range users.Apps {
-		a.micUsers = append(a.micUsers, meetdetect.User{PID: u.PID, BundleID: u.BundleID})
+		user := meetdetect.User{PID: u.PID, BundleID: u.BundleID}
+		if users.Hosts != nil {
+			user.Hosts = []string{} // the helper looked: none, or these
+			for _, h := range users.Hosts {
+				if h.App == u.PID || h.PID == u.PID {
+					user.Hosts = append(user.Hosts, h.Name)
+				}
+			}
+		}
+		a.micUsers = append(a.micUsers, user)
 	}
 	a.syncMeetingDetect()
 }
@@ -148,6 +169,9 @@ func (a *app) syncMeetingDetect() {
 		a.tree = ""
 		a.syncTrees() // appenhance.go: the browser no longer records
 	}
+	maps.DeleteFunc(a.tabAgain, func(key string, _ time.Time) bool {
+		return !a.detect.Recording(key) // read again only while it records
+	})
 	if wait > 0 {
 		// An app took the microphone a moment ago: a test of it is over
 		// before meetdetect.Hold, a meeting is not.
@@ -174,7 +198,12 @@ func (a *app) syncMeetingDetect() {
 			return
 		}
 	}
-	a.readMeetingTab(found[0])
+	for _, c := range found {
+		if next, ok := a.tabAgain[c.Key]; !ok || !a.now().Before(next) {
+			a.readMeetingTab(c) // a browser not read yet, or whose time came
+			return
+		}
+	}
 }
 
 // readMeetingTab reads the front tab of a browser that records: it is a
@@ -197,16 +226,50 @@ func (a *app) readMeetingTabNow(c meetdetect.Candidate) {
 		a.reading = ""
 		app, ok := meetdetect.Web(tab.URL)
 		switch {
-		case err != nil || !ok || !a.detect.Recording(c.Key):
-			a.detect.Settle(c.Key) // not a meeting: this use asks nothing
+		case !a.detect.Recording(c.Key):
+			delete(a.tabAgain, c.Key) // it let go of the microphone
+		case err != nil || !ok:
+			// Not a meeting's page now, or none read (no Accessibility
+			// yet): read again while it records, when it comes to the
+			// front and every meetingTabAgain. Settled, it was never asked
+			// again (11-25: the meeting tab came to the front later).
+			if a.tabAgain == nil {
+				a.tabAgain = map[string]time.Time{}
+			}
+			a.tabAgain[c.Key] = a.now().Add(meetingTabAgain)
+			a.later(meetingTabAgain, func() { a.readMeetingTabAgain(c.Key) })
+			// Another browser that records may be read meanwhile.
 		case a.sess.State.Live() || a.meetingActive() || a.ob.open:
 			// Held back meanwhile: syncMeetingDetect decides again.
 		default:
+			delete(a.tabAgain, c.Key)
 			a.askMeeting(c.Key, app)
 			return
 		}
 		a.syncMeetingDetect()
 	})
+}
+
+// readMeetingTabAgain reads the tab of the browser with key again, if its
+// tab was no meeting's: on its timer, or as it came to the front
+// (meetingTabFront).
+func (a *app) readMeetingTabAgain(key string) {
+	if _, ok := a.tabAgain[key]; !ok {
+		return
+	}
+	a.tabAgain[key] = time.Time{}
+	a.syncMeetingDetect()
+}
+
+// meetingTabFront follows the app in front (appenhance.go: frontChanged):
+// a browser that records, its tab no meeting's, may show its meeting now.
+func (a *app) meetingTabFront(front proto.App) {
+	for key := range a.tabAgain {
+		if strings.EqualFold(front.BundleID, key) {
+			a.readMeetingTabAgain(key)
+			return
+		}
+	}
 }
 
 // meetingAfterDictation runs when a dictation ended (events.go): the

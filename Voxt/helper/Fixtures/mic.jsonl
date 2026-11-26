@@ -5,3 +5,6 @@
 {"to":"app","msg":{"method":"mic.changed","params":{"apps":[]}}}
 {"to":"helper","msg":{"id":"c2","method":"mic.watch","params":{"on":false}}}
 {"to":"app","msg":{"id":"c2","result":{"apps":[]}}}
+{"to":"helper","msg":{"id":"c3","method":"mic.watch","params":{"on":true,"hosts":["CptHost","aomhost"]}}}
+{"to":"app","msg":{"id":"c3","result":{"apps":[{"pid":758,"bundleId":"us.zoom.xos"}],"hosts":[]}}}
+{"to":"app","msg":{"method":"mic.changed","params":{"apps":[{"pid":758,"bundleId":"us.zoom.xos"}],"hosts":[{"pid":37502,"name":"aomhost","app":758}]}}}

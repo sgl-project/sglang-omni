@@ -62,6 +62,30 @@ var web = []struct{ host, app string }{
 	{"webex.com", Webex},
 }
 
+// meetingHosts are the processes a meeting app runs only in a meeting:
+// with none of them it records for something else, as Zoom does for the
+// microphone test in its settings (11-25: the user found it brought the
+// card). Zoom starts aomhost and CptHost for a meeting, with "-pid" its own.
+var meetingHosts = map[string][]string{Zoom: {"aomhost", "CptHost"}}
+
+// HostNames are the names of all meetingHosts, for mic.watch to look for.
+func HostNames() []string {
+	var names []string
+	for _, list := range meetingHosts {
+		names = append(names, list...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// inMeeting reports whether u, which records for candidate c, does so for
+// a meeting: its app needs no meeting process, or one of them runs for it
+// (Hosts nil: the helper does not say, so it counts).
+func inMeeting(c Candidate, u User) bool {
+	need := meetingHosts[c.App]
+	return len(need) == 0 || u.Hosts == nil || slices.ContainsFunc(u.Hosts, func(h string) bool { return slices.Contains(need, h) })
+}
+
 // webKit records for Safari's pages (and other WebKit views): its bundle
 // id names no browser, so Safari's front tab is read.
 const (
@@ -80,10 +104,13 @@ const Quiet = 2 * time.Minute
 // found the card slow: one second still passes over a probe.
 const Hold = time.Second
 
-// User is a process recording from an input (the helper's mic.watch).
+// User is a process recording from an input (the helper's mic.watch), and
+// the names of the meeting processes that run for it (meetingHosts; nil
+// when the helper does not say).
 type User struct {
 	PID      int
 	BundleID string
+	Hosts    []string
 }
 
 // Candidate is an app recording now that the user was not asked about:
@@ -173,8 +200,8 @@ func (d *Detector) Update(users []User, browsers []string, now time.Time) (found
 	d.present = d.present[:0]
 	for _, u := range users {
 		c, ok := classify(u.BundleID, browsers)
-		if !ok || slices.Contains(d.present, c.Key) {
-			continue
+		if !ok || slices.Contains(d.present, c.Key) || !inMeeting(c, u) {
+			continue // a meeting app outside a meeting records for no meeting
 		}
 		d.present = append(d.present, c.Key)
 		found = append(found, c)

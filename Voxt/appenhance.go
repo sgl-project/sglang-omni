@@ -260,6 +260,7 @@ func (a *app) frontChanged(front proto.App) {
 		return
 	}
 	a.lastOther = front
+	a.meetingTabFront(front) // meeting_detect.go
 	if a.currentPage() == "app-enhancement" {
 		a.refreshPreview(false)
 	}

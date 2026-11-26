@@ -28,3 +28,30 @@ final class MicWatchTests: XCTestCase {
         XCTAssertNil(w.changed(zoom))
     }
 }
+
+final class MicHostTests: XCTestCase {
+    /// A KERN_PROCARGS2 buffer as Zoom's meeting process has it.
+    func testServedPIDFromTheArguments() {
+        var raw = withUnsafeBytes(of: Int32(5)) { Array($0) }
+        raw += Array("/Applications/zoom.us.app/Contents/Frameworks/aomhost.app/Contents/MacOS/aomhost".utf8) + [0, 0, 0]
+        for arg in ["aomhost", "-pid", "758", "-evtname", "aomhost758"] {
+            raw += Array(arg.utf8) + [0]
+        }
+        raw += Array("HOME=/Users/someone".utf8) + [0]
+        let args = procArgs(raw)
+        XCTAssertEqual(args, ["aomhost", "-pid", "758", "-evtname", "aomhost758"])
+        XCTAssertEqual(servedPID(args), 758)
+        XCTAssertNil(servedPID(["caphost", "-evtname", "x"]))
+        XCTAssertEqual(procArgs([1, 0]), [])
+    }
+
+    /// A meeting process that starts or stops is a change to send.
+    func testHostsAreAChange() {
+        let w = MicWatch()
+        let zoom = [App(pid: 758, bundleId: "us.zoom.xos", name: nil)]
+        w.set(true, at: MicUsers(apps: zoom, hosts: []))
+        let meeting = MicUsers(apps: zoom, hosts: [MicHost(pid: 37502, name: "aomhost", app: 758)])
+        XCTAssertEqual(w.changed(meeting), meeting)
+        XCTAssertNil(w.changed(meeting))
+    }
+}

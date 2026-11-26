@@ -192,3 +192,29 @@ func TestMeetingDetectOff(t *testing.T) {
 		t.Fatalf("by default the detection asks: %+v", state)
 	}
 }
+
+// A browser read on another tab is read again while it records: every
+// meetingTabAgain, and as it comes to the front. Its meeting tab, shown
+// later, asks (11-25: it was never read again).
+func TestMeetingDetectReadsTheTabAgain(t *testing.T) {
+	a, fs, _ := newTestApp(t)
+	browserURLs(fs, map[string]string{"com.google.Chrome": "https://mail.google.com/"})
+	micUsers(t, a, "com.google.Chrome.helper")
+	if a.ask.view.Visible {
+		t.Fatalf("mail asked: %+v", a.ask.view)
+	}
+	browserURLs(fs, map[string]string{"com.google.Chrome": "https://meet.google.com/abc-defg-hij"})
+	detectClock(t, a).advance(meetingTabAgain)
+	if !a.ask.view.Visible || a.ask.view.App != "Google Meet" {
+		t.Fatalf("its meeting tab, read again: %+v", a.ask.view)
+	}
+
+	b, fsb, _ := newTestApp(t)
+	browserURLs(fsb, map[string]string{"com.google.Chrome": "https://mail.google.com/"})
+	micUsers(t, b, "com.google.Chrome.helper")
+	browserURLs(fsb, map[string]string{"com.google.Chrome": "https://meet.google.com/abc-defg-hij"})
+	b.frontChanged(proto.App{PID: 900, BundleID: "com.google.Chrome"})
+	if !b.ask.view.Visible {
+		t.Fatalf("Chrome in front with its meeting: %+v", b.ask.view)
+	}
+}

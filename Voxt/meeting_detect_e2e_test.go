@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,10 +20,14 @@ import (
 )
 
 // detectApp is the app over the fake helper process (the real supervisor,
-// real pipes), where the helper's mic.watch names Zoom as recording, with
-// the speech model svc (nil: none installed). Its cues are silent.
+// real pipes), where the helper's mic.watch names Zoom as recording in a
+// meeting (its aomhost runs, unless opts say hosts=), with the speech model
+// svc (nil: none installed). Its cues are silent.
 func detectApp(t *testing.T, opts string, set func(*settings.Settings), svc local.Services) *sessionApp {
 	t.Helper()
+	if !strings.Contains(opts, "hosts=") {
+		opts = "hosts=aomhost," + opts
+	}
 	s := newSessionApp(t, "recording=us.zoom.xos,"+opts, func(st *settings.Settings) {
 		st.Features.Meeting.NoFinalPass, st.Features.Meeting.NoAutoSummary = true, true
 		if set != nil {
@@ -78,6 +83,23 @@ func TestMeetingDetectEndToEnd(t *testing.T) {
 	}
 	if s.ask.view.Visible || s.notice != nil && !s.notice.ok { // a done notice ("Meeting saved") may show
 		t.Fatalf("after the meeting, Zoom still recording: card %+v, notice %+v", s.ask.view, s.notice)
+	}
+}
+
+// Zoom on the microphone outside a meeting (its settings' microphone test)
+// brings no card; the card comes with its meeting process (11-25).
+func TestMeetingDetectZoomNeedsItsMeetingEndToEnd(t *testing.T) {
+	joined := proto.MicUsers{Apps: []proto.App{{PID: 7000, BundleID: "us.zoom.xos"}}, Hosts: []proto.MicHost{{PID: 8000, Name: "aomhost", App: 7000}}}
+	line := string(mustJSON(helpertest.Script{AfterMS: 600, Method: proto.MethodMicChanged, Params: mustJSON(joined)}))
+	s := detectApp(t, "hosts=,"+script(t, line), nil, nil)
+	s.pump("Zoom's microphone test", func() bool { return len(s.micUsers) == 1 && s.micUsers[0].Hosts != nil })
+	s.drain(150 * time.Millisecond) // well past the test's Hold
+	if s.ask.view.Visible {
+		t.Fatalf("a card for Zoom's microphone test: %+v", s.ask.view)
+	}
+	s.pump("the card, Zoom in a meeting", func() bool { return s.ask.view.Visible })
+	if s.ask.view.App != "Zoom" {
+		t.Fatalf("the card %+v", s.ask.view)
 	}
 }
 

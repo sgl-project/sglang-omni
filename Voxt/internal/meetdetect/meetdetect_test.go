@@ -161,3 +161,31 @@ func TestWeb(t *testing.T) {
 		}
 	}
 }
+
+// Zoom records for a meeting only while one of its meeting processes runs
+// for it: its settings' microphone test brings no card (11-25), and the
+// meeting's Hold counts from when the meeting process came. A helper that
+// does not say (Hosts nil) leaves Zoom a meeting.
+func TestZoomNeedsItsMeetingProcess(t *testing.T) {
+	var d Detector
+	start := time.Unix(0, 0)
+	test := []User{{PID: 758, BundleID: "us.zoom.xos", Hosts: []string{}}}
+	if found := held(&d, test, nil, start); len(found) != 0 || d.Recording("us.zoom.xos") {
+		t.Fatalf("Zoom's microphone test: %+v", found)
+	}
+	meeting := []User{{PID: 758, BundleID: "us.zoom.xos", Hosts: []string{"aomhost"}}}
+	later := start.Add(time.Minute)
+	if found, wait := d.Update(meeting, nil, later); len(found) != 0 || wait != Hold {
+		t.Fatalf("its meeting at once: %+v, wait %v, want a wait of Hold", found, wait)
+	}
+	if found, _ := d.Update(meeting, nil, later.Add(Hold)); len(found) != 1 || found[0].App != Zoom {
+		t.Fatalf("its meeting after Hold: %+v", found)
+	}
+	var old Detector
+	if found := held(&old, []User{{PID: 758, BundleID: "us.zoom.xos"}}, nil, start); len(found) != 1 {
+		t.Fatalf("a helper that does not say: %+v", found)
+	}
+	if got := HostNames(); len(got) != 2 || got[0] != "CptHost" || got[1] != "aomhost" {
+		t.Errorf("HostNames = %q", got)
+	}
+}
