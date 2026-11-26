@@ -49,6 +49,24 @@ func TestCardFirstOverlay(t *testing.T) {
 	}
 }
 
+// TestCardFirstOverlayWithBackgroundAnswerInAnotherSession keeps a background
+// answer in its own slot from hiding the current session's speech card.
+func TestCardFirstOverlayWithBackgroundAnswerInAnotherSession(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	a.prefs.Features.SessionsOn = true
+	a.bgID = "rewrite-in-session-1"
+	a.bgSlot = a.slot
+	a.bgSess = session.Snapshot{ID: a.bgID, Kind: store.KindRewrite, State: session.Composing, Card: true}
+	a.newSession()
+	if a.slot != 1 || a.bgVisible() {
+		t.Fatalf("background answer setup: slot %d, visible %v", a.slot, a.bgVisible())
+	}
+	snap(a, session.Snapshot{ID: "card-first", Kind: store.KindTranscribe, State: session.Recording, Card: true, Levels: wave(), HeardAt: time.Now()})
+	if !a.liveCard() || a.ov.mode != ovAnswer || a.pill.shown || a.cachedCard().Empty || !a.cachedCard().Speech {
+		t.Fatalf("live %v, mode %s, pill %v, card %+v", a.liveCard(), a.ov.mode, a.pill.shown, a.cachedCard())
+	}
+}
+
 // TestCardFirstFailureOffersRetry: a card-first Transcribe whose speech
 // model fails ends with Card off (session.run.endFailed): no card opens,
 // and the overlay's notice retries the kept recording.
