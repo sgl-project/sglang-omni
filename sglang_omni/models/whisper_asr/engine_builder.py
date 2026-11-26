@@ -376,13 +376,14 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             return
         else:
             pass
-        batch_sizes, _ = get_batch_sizes_to_capture(self.sglang_runner)
+        request_counts, _ = get_batch_sizes_to_capture(self.sglang_runner)
         decode_graph_runner = WhisperDecodeGraphRunner(
             model,
-            req_to_token=self.sglang_runner.req_to_token_pool.req_to_token,
+            request_token_slots=self.sglang_runner.req_to_token_pool.req_to_token,
             token_to_kv_pool=self.sglang_runner.token_to_kv_pool,
             graph_backend=graph_backend,
-            batch_sizes=tuple(batch_sizes),
+            captured_request_counts=tuple(request_counts),
+            allow_padding=not server_args.disable_cuda_graph_padding,
             encoder_token_count=self.encoder_token_count,
             decoder_token_count=self.decoder_context_len,
         )
@@ -392,8 +393,8 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         free_bytes_after, _ = device_module.mem_get_info(decoder_device)
         model.decode_graph_runner = decode_graph_runner
         logger.info(
-            f"Captured Whisper decode graphs for batch sizes "
-            f"{decode_graph_runner.batch_sizes} in "
+            f"Captured Whisper decode graphs for request counts "
+            f"{decode_graph_runner.captured_request_counts} in "
             f"{(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
         )
 

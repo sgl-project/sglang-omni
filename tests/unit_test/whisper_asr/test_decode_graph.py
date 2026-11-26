@@ -49,14 +49,20 @@ class LastTokenLogits(nn.Module):
 
 class KVBuffers:
 
-    def __init__(self, num_layers: int, config: WhisperConfig, device: str) -> None:
+    def __init__(
+        self,
+        num_layers: int,
+        config: WhisperConfig,
+        device: str,
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
         heads = config.decoder_attention_heads
         shape = (NUM_KV_SLOTS, heads, config.d_model // heads)
         self.key_buffers = [
-            torch.randn(shape, device=device) for _ in range(num_layers)
+            torch.randn(shape, device=device, dtype=dtype) for _ in range(num_layers)
         ]
         self.value_buffers = [
-            torch.randn(shape, device=device) for _ in range(num_layers)
+            torch.randn(shape, device=device, dtype=dtype) for _ in range(num_layers)
         ]
 
     def get_kv_buffer(self, layer_id: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -122,7 +128,9 @@ class RequestSlotAttention(AttentionBackend):
         return torch.stack(attention_outputs).reshape(q.shape[0], -1)
 
 
-def decoder_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamespace:
+def decoder_runner(
+    monkeypatch: pytest.MonkeyPatch, device: str, dtype: torch.dtype = torch.float32
+) -> SimpleNamespace:
     monkeypatch.setattr(
         sglang_model, "LogitsProcessor", lambda config: LastTokenLogits()
     )
@@ -138,7 +146,11 @@ def decoder_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamesp
         max_target_positions=DECODER_TOKENS,
         max_source_positions=ENCODER_TOKENS,
     )
-    model = sglang_model.WhisperForConditionalGeneration(config).to(device).eval()
+    model = (
+        sglang_model.WhisperForConditionalGeneration(config)
+        .to(device=device, dtype=dtype)
+        .eval()
+    )
     num_rows = 5
     row_width = ENCODER_TOKENS + DECODER_TOKENS
     req_to_token = torch.zeros(num_rows, row_width, dtype=torch.int32, device=device)
@@ -147,7 +159,7 @@ def decoder_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamesp
         req_to_token[row] = request_slots[(row - 1) * row_width : row * row_width]
     return SimpleNamespace(
         model=model,
-        token_to_kv_pool=KVBuffers(2 * config.decoder_layers, config, device),
+        token_to_kv_pool=KVBuffers(2 * config.decoder_layers, config, device, dtype),
         req_to_token=req_to_token,
     )
 
@@ -176,14 +188,17 @@ def decode_batch(
 
 
 def graph_runner(
-    runner: SimpleNamespace, batch_sizes: tuple[int, ...]
+    runner: SimpleNamespace,
+    captured_request_counts: tuple[int, ...],
+    allow_padding: bool = True,
 ) -> WhisperDecodeGraphRunner:
     return WhisperDecodeGraphRunner(
         runner.model,
-        req_to_token=runner.req_to_token,
+        request_token_slots=runner.req_to_token,
         token_to_kv_pool=runner.token_to_kv_pool,
         graph_backend=XpuDeviceGraphBackend(),
-        batch_sizes=batch_sizes,
+        captured_request_counts=captured_request_counts,
+        allow_padding=allow_padding,
         encoder_token_count=ENCODER_TOKENS,
         decoder_token_count=DECODER_TOKENS,
     )
@@ -236,6 +251,50 @@ def test_a_padded_batch_decodes_each_request_through_its_own_slots_only(
         torch.testing.assert_close(
             replayed_buffer[1:], expected_buffer[1:], equal_nan=True
         )
+
+
+@torch.no_grad()
+def test_a_shrunken_batch_leaves_the_finished_requests_last_slot_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(0)
+    monkeypatch.setattr(decode_graph, "REQUESTS_PER_ATTENTION_CALL", 2)
+    runner = decoder_runner(monkeypatch, "cpu")
+    pool = runner.token_to_kv_pool
+    graphs = graph_runner(runner, (1, 4))
+    graphs.logits[4] = torch.empty(4, VOCAB_SIZE)
+    graphs.graphs[4] = SimpleNamespace(
+        replay=lambda: graphs.logits[4].copy_(graphs.decode_step(4))
+    )
+    graphs.replay(decode_batch([1, 2, 3, 4], [3, 9, 1, 5], runner))
+    before = pool.snapshot()
+
+    graphs.replay(decode_batch([1, 2, 3], [4, 10, 2], runner))
+
+    finished_slot = int(runner.req_to_token[4, ENCODER_TOKENS + 5 - 1])
+    for buffer, saved in zip(pool.snapshot(), before, strict=True):
+        assert torch.equal(buffer[finished_slot], saved[finished_slot])
+
+
+@pytest.mark.parametrize(
+    ("batch_size", "can_run"),
+    [(1, True), (3, False), (4, True)],
+    ids=["captured_one", "would_pad", "captured_four"],
+)
+def test_without_padding_only_a_captured_request_count_replays(
+    monkeypatch: pytest.MonkeyPatch, batch_size: int, can_run: bool
+) -> None:
+    graphs = graph_runner(
+        decoder_runner(monkeypatch, "cpu"), (1, 4), allow_padding=False
+    )
+    forward_batch = SimpleNamespace(
+        forward_mode=ForwardMode.DECODE,
+        batch_size=batch_size,
+        spec_info=None,
+        capture_hidden_mode=CaptureHiddenMode.NULL,
+        encoder_lens_cpu=[ENCODER_TOKENS] * batch_size,
+    )
+    assert graphs.can_run(forward_batch) is can_run
 
 
 @pytest.mark.parametrize(
@@ -322,6 +381,7 @@ def test_only_an_ordinary_decode_the_graphs_can_hold_replays(
             torch.float16,
             True,
         ),
+        (XPUOmniPlatform(), {"disable_cuda_graph_padding": True}, torch.float16, True),
         (XPUOmniPlatform(), {}, torch.float8_e4m3fn, False),
         (CUDAOmniPlatform(), {}, torch.float16, False),
     ],
@@ -333,6 +393,7 @@ def test_only_an_ordinary_decode_the_graphs_can_hold_replays(
         "structured_decode_disabled",
         "structured_config_object_disabled",
         "structured_backend_outranks_the_flag",
+        "padding_disabled",
         "quantized_kv_cache",
         "cuda",
     ],
@@ -382,24 +443,43 @@ def test_the_decode_graphs_follow_sglangs_decode_batch_sizes_where_the_platform_
 
     if captured:
         assert captures == [runner.model.decode_graph_runner]
-        assert runner.model.decode_graph_runner.batch_sizes == (1, 2, 4, 12)
+        assert runner.model.decode_graph_runner.captured_request_counts == (
+            1,
+            2,
+            4,
+            12,
+        )
+        assert runner.model.decode_graph_runner.allow_padding is not selectors.get(
+            "disable_cuda_graph_padding", False
+        )
     else:
         assert captures == []
         assert runner.model.decode_graph_runner is None
 
 
 @pytest.mark.skipif(not current_platform.is_xpu(), reason="captures an XPU graph")
+@pytest.mark.parametrize(
+    ("dtype", "reference_tolerance"),
+    [
+        (torch.float32, {}),
+        (torch.float16, {"atol": 6e-2, "rtol": 3e-2}),
+        (torch.bfloat16, {"atol": 6e-2, "rtol": 3e-2}),
+    ],
+    ids=["float32", "float16", "bfloat16"],
+)
 @torch.no_grad()
 def test_replay_decodes_the_loaded_batch_as_the_step_runs_eagerly(
     monkeypatch: pytest.MonkeyPatch,
+    dtype: torch.dtype,
+    reference_tolerance: dict[str, float],
 ) -> None:
     torch.manual_seed(0)
-    runner = decoder_runner(monkeypatch, "xpu")
+    runner = decoder_runner(monkeypatch, "xpu", dtype)
     pool = runner.token_to_kv_pool
     graphs = graph_runner(runner, (1, 4))
     graphs.capture()
 
-    for rows, decoder_lengths, graph_batch_size in (
+    for rows, decoder_lengths, graph_request_count in (
         ([1, 2, 3], [4, 9, 2], 4),
         ([3], [5], 1),
         ([2, 4], [12, 1], 4),
@@ -410,10 +490,18 @@ def test_replay_decodes_the_loaded_batch_as_the_step_runs_eagerly(
         replayed_logits = graphs.replay(forward_batch).next_token_logits
         replayed_buffers = pool.snapshot()
         pool.restore(start)
-        eager_step_logits = graphs.decode_step(graph_batch_size)[: len(rows)]
+        eager_step_logits = graphs.decode_step(graph_request_count)[: len(rows)]
+        eager_buffers = pool.snapshot()
+        pool.restore(start)
+        reference_logits = eager_logits(runner, forward_batch)
+        pool.restore(start)
 
+        assert replayed_logits.dtype == dtype
         torch.testing.assert_close(replayed_logits, eager_step_logits)
         for replayed_buffer, eager_buffer in zip(
-            replayed_buffers, pool.snapshot(), strict=True
+            replayed_buffers, eager_buffers, strict=True
         ):
             torch.testing.assert_close(replayed_buffer[1:], eager_buffer[1:])
+        torch.testing.assert_close(
+            replayed_logits, reference_logits.to(dtype), **reference_tolerance
+        )

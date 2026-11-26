@@ -13,6 +13,7 @@ def cuda_graph_server_args(**selectors: object) -> SimpleNamespace:
             "disable_cuda_graph": False,
             "disable_decode_cuda_graph": False,
             "disable_prefill_cuda_graph": False,
+            "disable_cuda_graph_padding": False,
             "cuda_graph_backend_decode": Backend.FULL,
             "cuda_graph_backend_prefill": Backend.BREAKABLE,
             "cuda_graph_config": None,
