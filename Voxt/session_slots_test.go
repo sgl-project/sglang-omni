@@ -469,3 +469,21 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 		t.Fatalf("session 1's card %+v", c)
 	}
 }
+
+// TestSessionSlotSwitchBackKeepsRewriteCard: a Rewrite answer comes back
+// in the Rewrite card, as in 2.1.3's single session: the input to type
+// or say the next change, not the answer card with Continue.
+func TestSessionSlotSwitchBackKeepsRewriteCard(t *testing.T) {
+	chat := &fakeChat{texts: []string{"one", "two"}}
+	a, tr, _ := rewriteSelecting(t, chat, chatA, "summarize")
+	if !a.boxHoldsCard(ovAnswer) {
+		t.Fatalf("the first answer is not in the Rewrite card: box %+v", a.box.open)
+	}
+	a.newSession()
+	rewriteSaid(t, a, tr, textEditApp, "write a haiku", "two")
+	tap(a, "session-1", textEditApp)
+	slackCardBack(t, a, "back in session 1")
+	if !a.boxHoldsCard(ovAnswer) {
+		t.Fatalf("back in session 1, the answer card stands in for the Rewrite card: box open %v, shown %v", a.box.open, a.box.shown)
+	}
+}

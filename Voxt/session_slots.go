@@ -98,6 +98,7 @@ func (a *app) switchSlot(id int) {
 	a.notice, a.renaming = nil, false
 	a.resurface()
 	a.emptyCard = a.prefs.Features.SessionsOn && !a.answer.open && !a.bgVisible()
+	a.boxForAnswer()
 	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()

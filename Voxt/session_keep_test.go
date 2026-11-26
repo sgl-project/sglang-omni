@@ -110,6 +110,9 @@ func TestSessionsSurviveRestart(t *testing.T) {
 	if !a.answer.open || a.answer.text != "one" {
 		t.Fatalf("session 1 from the menu: %+v", a.answer)
 	}
+	if !a.boxHoldsCard(ovAnswer) {
+		t.Fatal("the restored Rewrite answer is not in the Rewrite card")
+	}
 	items[2].Click(nil, nil)
 	if a.slot != 1 || !a.answer.open || a.answer.text != "two" {
 		t.Fatalf("session 2 from the menu: slot %d, %+v", a.slot, a.answer)
