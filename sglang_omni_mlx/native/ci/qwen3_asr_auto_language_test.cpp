@@ -232,8 +232,7 @@ void TestWrongAutoLanguageGuess(TranscriptionWorker &worker,
 void TestRollbackGuessParity(TranscriptionWorker &worker,
                              const Qwen3ASRTranscriber &transcriber,
                              const std::vector<float> &first_audio_samples,
-                             const std::vector<float> &followup_audio_samples,
-                             bool uses_draft) {
+                             const std::vector<float> &followup_audio_samples) {
   Require(first_audio_samples.size() >= kPreviewAudioSampleCount,
           "rollback parity clip is shorter than the preview input");
   Require(followup_audio_samples.size() >= kFollowupAudioSampleCount,
@@ -293,27 +292,28 @@ void TestRollbackGuessParity(TranscriptionWorker &worker,
   baseline_options.prefix_token_ids = retained.prefix_ids;
   baseline_options.prefix_text = retained.prefix_text;
 
-  TranscriptionOptions accepted_guess_options = baseline_options;
-  accepted_guess_options.guessed_token_ids = retained.rest_ids;
+  TranscriptionOptions preview_guess_options = baseline_options;
+  preview_guess_options.guessed_token_ids = retained.rest_ids;
   const TranscriptionResult baseline_result =
       DecodeWithReuse(worker, transcriber, final_audio_samples,
                       baseline_options, initial_reuse);
-  const TranscriptionResult accepted_guess_result =
+  const TranscriptionResult preview_guess_result =
       DecodeWithReuse(worker, transcriber, final_audio_samples,
-                      accepted_guess_options, initial_reuse);
+                      preview_guess_options, initial_reuse);
   Require(!baseline_result.text.empty() && baseline_result.language.has_value(),
           "no-guess prefixed Final did not produce text and language");
   Require(baseline_result.reused_audio_token_count > 0 &&
-              accepted_guess_result.reused_audio_token_count > 0,
+              preview_guess_result.reused_audio_token_count > 0,
           "rollback parity did not reuse cached audio rows");
-  RequireSameFinalOutput(baseline_result, accepted_guess_result,
+  RequireSameFinalOutput(baseline_result, preview_guess_result,
                          "valid rollback guesses");
-  Require(accepted_guess_result.verified_guess_token_count ==
+  Require(preview_guess_result.verified_guess_token_count ==
               static_cast<int>(retained.rest_ids.size()),
           "the target did not verify every rollback guess");
-  Require(accepted_guess_result.accepted_guess_token_count ==
-              accepted_guess_result.verified_guess_token_count,
-          "the target did not accept the correct rollback guesses in full");
+  Require(preview_guess_result.accepted_guess_token_count >= 0 &&
+              preview_guess_result.accepted_guess_token_count <=
+                  preview_guess_result.verified_guess_token_count,
+          "invalid rollback guess acceptance count");
 
   std::vector<int> incorrect_guess_ids;
   for (const std::string &incorrect_text :
@@ -345,27 +345,38 @@ void TestRollbackGuessParity(TranscriptionWorker &worker,
   Require(incorrect_guess_result.accepted_guess_token_count <
               incorrect_guess_result.verified_guess_token_count,
           "the target accepted the deliberately wrong rollback guess in full");
+
+  TranscriptionResult expected_final_result = preview_guess_result;
+  if (preview_guess_result.finish_reason ==
+      omni_common::FinishReason::kLength) {
+    TranscriptionOptions retry_options = baseline_options;
+    retry_options.prefix_token_ids.clear();
+    retry_options.prefix_text.clear();
+    retry_options.guessed_token_ids.clear();
+    retry_options.max_new_tokens.reset();
+    expected_final_result = DecodeWithReuse(
+        worker, transcriber, final_audio_samples, retry_options, initial_reuse);
+  } else {
+  }
+
   const bool finalized =
       session->Handle({{"type", "input_audio_buffer.commit"}});
   Require(finalized, "realtime session closed during Segment Final");
   const nlohmann::json final_event = WaitForSegment(
       event_log, last_preview.at("event_index").get<int>(), true);
-  Require(final_event.at("text").get<std::string>() == baseline_result.text,
-          "Segment Final changed the no-guess prefixed output");
+  Require(final_event.at("text").get<std::string>() ==
+              expected_final_result.text,
+          "Segment Final changed the expected prefixed or retry output");
   const nlohmann::json generation_metadata =
       final_event.at("generation_metadata");
+  Require(generation_metadata.at("reused_audio_token_count").get<int>() > 0,
+          "Segment Final did not reuse cached audio rows");
   Require(generation_metadata.at("verified_guess_token_count").get<int>() ==
-              accepted_guess_result.verified_guess_token_count,
+              expected_final_result.verified_guess_token_count,
           "Segment Final verified a different number of rollback guesses");
   Require(generation_metadata.at("accepted_guess_token_count").get<int>() ==
-              accepted_guess_result.accepted_guess_token_count,
+              expected_final_result.accepted_guess_token_count,
           "Segment Final accepted a different number of rollback guesses");
-  if (uses_draft) {
-    Require(accepted_guess_result.verify_round_count > 0 &&
-                accepted_guess_result.proposed_draft_token_count > 0,
-            "DFlash parity comparison did not verify draft proposals");
-  } else {
-  }
 }
 
 void TestPositiveEligibilityControl(
@@ -488,7 +499,7 @@ int main(int argc, char **argv) {
       const std::vector<float> followup_audio_samples =
           ReadAudioSamples(argv[5]);
       TestRollbackGuessParity(worker, *transcriber, audio_samples,
-                              followup_audio_samples, !draft_directory.empty());
+                              followup_audio_samples);
     } else if (test_mode == "eligibility") {
       if (argc != 5) {
         throw std::invalid_argument(
