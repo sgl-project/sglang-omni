@@ -328,8 +328,15 @@ def test_narrowed_lm_head_keeps_the_c0_rows_in_logit_order() -> None:
     narrow_lm_head_to_c0(model)
 
     c0_logit_ids = model.c0_logit_ids
-    assert torch.equal(model.lm_head.weight, full_weight.index_select(0, c0_logit_ids))
+    head_weight = model.lm_head.weight
+    assert head_weight.shape[0] == 16392
+    assert head_weight.shape[0] * torch.bfloat16.itemsize % 16 == 0
+    assert torch.equal(
+        head_weight[: c0_logit_ids.numel()], full_weight.index_select(0, c0_logit_ids)
+    )
+    assert not head_weight[c0_logit_ids.numel() :].any()
     logits = select_c0_logits(model, model.lm_head(hidden_states))
+    assert logits.shape == (2, c0_logit_ids.numel())
     assert logits.dtype == torch.float32
     torch.testing.assert_close(
         logits, (hidden_states @ full_weight.T).index_select(1, c0_logit_ids)
@@ -345,9 +352,13 @@ def test_narrowed_lm_head_reloads_a_full_vocabulary_checkpoint_in_place() -> Non
 
     Qwen3ForCausalLM.load_weights(model, [("lm_head.weight", checkpoint)])
 
+    c0_rows = model.c0_logit_ids.numel()
     assert model.lm_head.weight is head_weight
     assert head_weight.data_ptr() == address
-    assert torch.equal(head_weight, checkpoint.index_select(0, model.c0_logit_ids))
+    assert torch.equal(
+        head_weight[:c0_rows], checkpoint.index_select(0, model.c0_logit_ids)
+    )
+    assert not head_weight[c0_rows:].any()
 
 
 def test_select_c0_logits_rejects_full_vocabulary_logits() -> None:

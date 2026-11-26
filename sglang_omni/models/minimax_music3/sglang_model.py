@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _AUDIO_EMBEDDING_KEY = "model.audio_extra_embedding.weight"
 _C0_VOCAB_SIZE = 16384
+C0_HEAD_ROW_MULTIPLE = 8
 
 
 def attach_minimax_modules(model: "Qwen3ForCausalLM", checkpoint_root: str) -> None:
@@ -152,18 +153,29 @@ def apply_batch_invariant_policy() -> None:
         pass
 
 
+def c0_head_rows(c0_rows: int) -> int:
+    return (
+        (c0_rows + C0_HEAD_ROW_MULTIPLE - 1)
+        // C0_HEAD_ROW_MULTIPLE
+        * C0_HEAD_ROW_MULTIPLE
+    )
+
+
 def narrow_lm_head_to_c0(model: "Qwen3ForCausalLM") -> None:
+    c0_rows = model.c0_logit_ids.numel()
+    head_rows = c0_head_rows(c0_rows)
+
     def load_c0_head_weight(
         parameter: nn.Parameter, loaded_weight: torch.Tensor
     ) -> None:
         logit_ids = model.c0_logit_ids.to(device=loaded_weight.device)
-        parameter.data.copy_(loaded_weight.index_select(0, logit_ids))
+        parameter.data[:c0_rows].copy_(loaded_weight.index_select(0, logit_ids))
+        parameter.data[c0_rows:].zero_()
 
     head = model.lm_head
-    head.weight = nn.Parameter(
-        head.weight.data.index_select(0, model.c0_logit_ids),
-        requires_grad=False,
-    )
+    weight = head.weight.data.new_zeros((head_rows, head.weight.shape[1]))
+    weight[:c0_rows].copy_(head.weight.data.index_select(0, model.c0_logit_ids))
+    head.weight = nn.Parameter(weight, requires_grad=False)
     head.weight.weight_loader = load_c0_head_weight
 
 
@@ -174,14 +186,16 @@ def select_c0_logits(model: "Qwen3ForCausalLM", logits: torch.Tensor) -> torch.T
     then the c0 code range. Column 0 therefore means stop and column code+1
     means code.
     """
-    if logits.shape[1] != model.c0_logit_ids.numel():
+    c0_rows = model.c0_logit_ids.numel()
+    head_rows = c0_head_rows(c0_rows)
+    if logits.shape[1] != head_rows:
         raise RuntimeError(
             "MiniMax Music 3 expects backbone logits over the narrowed c0 head: "
-            f"got {logits.shape[1]} columns, expected {model.c0_logit_ids.numel()}"
+            f"got {logits.shape[1]} columns, expected {head_rows}"
         )
     else:
         pass
-    return logits.float()
+    return logits[:, :c0_rows].float()
 
 
 def enable_rvq_depth_cuda_graph(model: "Qwen3ForCausalLM", buckets: list[int]) -> None:
@@ -380,6 +394,8 @@ __all__ = [
     "enable_rvq_depth_cuda_graph",
     "depth_decode",
     "embed_audio_frames",
+    "C0_HEAD_ROW_MULTIPLE",
+    "c0_head_rows",
     "narrow_lm_head_to_c0",
     "select_c0_logits",
 ]
