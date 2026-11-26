@@ -47,10 +47,10 @@ Per step, for each group with `k = beam_width` rows (one row at the leader's pre
 
 1. `logprob = log_softmax(raw_logits)`, then mask with `suppress_tokens`, `begin_suppress_tokens` (first generated position only) and the timestamp rules. Masked tokens get `-inf`; the rest are not renormalized. This is the order HF uses (log-softmax, then logits processors).
 2. Each row contributes its top `2k` tokens. Ranking key: `cum_logprob[parent] + logprob + rate * (rank_within_parent % k)`. With `rate = 0` this is exactly HF's top-`2k` over `k x vocab`.
-3. Survivors: the first `k` non-EOS candidates in ranking order. They carry the raw cumulative log-prob (no bonus).
+3. Survivors: the first `k` non-EOS candidates in ranking order. They carry the raw cumulative log-prob (no bonus). A masked candidate, whose cumulative log-prob is `-inf`, neither survives nor finishes. When fewer than `k` candidates survive, as on the first step with timestamps when `max_initial_timestamp_index + 1 < k`, the empty slots repeat the first survivor at `-inf`: their rows keep decoding but never rank, as HF's `-1e9` initial beams do.
 4. Finished: EOS candidates among the top `k` ranks. Score = `raw_cum / len ** length_penalty`, with `len` counting the EOS and `length_penalty = 1.0` (HF default). The best `k` finished are kept.
 5. Stop when `k` hypotheses are finished and the best running beam's `raw_cum / len ** length_penalty` is not above the worst finished score (HF `early_stopping=False`), or at `max_new_tokens`, where the top `k` candidates are finished as `length`.
-6. Output: all `k` hypotheses, sorted by score; each has text, `cum_logprob` (raw), `score` (length-normalized), and `finish_reason`.
+6. Output: the best `k` finished hypotheses, sorted by score; each has text, `cum_logprob` (raw), `score` (length-normalized), and `finish_reason`. When the masks leave fewer than `k` hypotheses within `max_new_tokens`, the N-best is shorter, where HF pads it with `-1e9` placeholders.
 
 Selection is a fixed-shape tensor function with no host sync, like sglang's `joint_select`; the group state machine commits on the host after the step's D2H, where early stopping is decided.
 
@@ -62,10 +62,11 @@ Omni's greedy path does not apply `begin_suppress_tokens` today, while HF and op
 - Decode KV: the leader row runs with `ignore_eos`, because its group decides when to stop, so on every pass after admission SGLang's adder charges it its full remaining budget; a greedy row is charged its remaining budget times `new_token_ratio`, which decays to about 0.1. Member rows are not charged. At that ratio a beam-5 group on whisper-large-v3 (448 decoder positions) is charged about 400 tokens more than a greedy request, which covers its four extra rows for transcripts up to about 100 tokens. Charging `k` times the remaining budget would charge such a group about 2,240 tokens for at most 500 used.
 - When that estimate falls short, the decode memory check counts the member rows and retraction takes greedy rows first; they are requeued and prefill again. A beam group cannot be requeued, because its members alias the leader's prompt KV and its beams live in the group, not in `output_ids`, so it is aborted only when retracting every other row is not enough. This is SGLang's own rule.
 - Aborts that free KV at once (admin aborts, batch failures) free the member rows and their shared decode KV before the leader's KV. `pause_generation(mode="retract")` ends beam requests with an admin-dropped error instead of requeueing them, as newer SGLang's `retract_all` does.
+- Priority preemption (`--enable-priority-scheduling`) never picks a beam leader, as in newer SGLang. SGLang 0.5.23 would release the leader like any request, leaving its member rows held, and requeue a group it cannot rebuild.
 
 ## API
 
-- Whisper stage request params: `beam_width` (int, default 1) and `beam_search_diversity_rate` (float, default 0.0).
+- Whisper stage request params: `beam_width` (int, default 1) and `beam_search_diversity_rate` (float, default 0.0). Stage params are untyped, so a `beam_width` that is not an integer (such as `1.5` or `true`) or a diversity rate that is not a number gets 400 instead of being converted.
 - `/v1/audio/transcriptions` form fields: the same two names.
 - Validation (400): `beam_width` above 16; with `beam_width > 1` also reject models whose transcription adapter has no beam-search capability (every model but Whisper), `temperature > 0`, `stream=true`, `detect_language`, chunked long audio, `/v1/audio/translations`, and speculative servers. A `beam_width` below 1 is a form validation error (422), like the other numeric form fields.
 - The HTTP checks run before the audio is decoded. The chunked-audio check uses the probed duration that decides chunking, so a beam request for long audio gets its 400 before it waits for a long-audio admission slot.
@@ -85,6 +86,6 @@ Omni's greedy path does not apply `begin_suppress_tokens` today, while HF and op
 
 ## Tests and parity
 
-- CPU unit tests: the selection function against a direct port of HF's beam step on small vocabularies (with EOS ties, diversity, max length), the group's finish rules, per-beam timestamp state, encoder-aware tail append and strip, parameter validation, and the response schema.
+- CPU unit tests: the N-best against HF `generate` on a tiny GPT-2 (early stopping, the length limit, and timestamp rules that allow fewer first tokens than beams), the diversity bonus, the top-`k` finish rule, per-beam timestamp state, encoder-aware tail append and strip, request rows at admission, aborts, retracting pauses and priority preemption, parameter validation, and the response schema.
 - GPU parity on one RTX 4090 D: whisper-large-v3 against HF `generate(num_beams=5, num_return_sequences=5)` with the same processors and `max_new_tokens`, on a few clips, with and without timestamps. Compare token sequences and order of all 5 hypotheses, and cumulative log-probs within a tolerance. Also run greedy and beam requests together on one server.
 - Performance numbers for Baseten are a later step on B200.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import numbers
 import time
 from dataclasses import dataclass
 from threading import Lock
@@ -246,9 +247,26 @@ def make_whisper_scheduler_adapters(
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
         raw_beam_width = params.get("beam_width")
+        raw_diversity_rate = params.get("beam_search_diversity_rate")
+        # note (zhumengzhiren): stage params are untyped, and int() would quietly turn a beam_width of 1.5 into a greedy request.
+        if raw_beam_width is not None and (
+            isinstance(raw_beam_width, bool)
+            or not isinstance(raw_beam_width, numbers.Integral)
+        ):
+            raise ValueError(f"beam_width must be an integer, got {raw_beam_width!r}")
+        elif raw_diversity_rate is not None and (
+            isinstance(raw_diversity_rate, bool)
+            or not isinstance(raw_diversity_rate, numbers.Real)
+        ):
+            raise ValueError(
+                "beam_search_diversity_rate must be a number, "
+                f"got {raw_diversity_rate!r}"
+            )
+        else:
+            pass
         beam_width = 1 if raw_beam_width is None else int(raw_beam_width)
-        beam_search_diversity_rate = float(
-            params.get("beam_search_diversity_rate") or 0.0
+        beam_search_diversity_rate = (
+            0.0 if raw_diversity_rate is None else float(raw_diversity_rate)
         )
         if beam_width < 1:
             raise ValueError(f"beam_width must be at least 1, got {beam_width}")

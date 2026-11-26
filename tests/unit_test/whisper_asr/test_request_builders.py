@@ -545,6 +545,14 @@ def test_request_builder_pre_lm_cache_hit_skips_mel(monkeypatch) -> None:
     "params,message",
     [
         ({"beam_width": 0}, "beam_width must be at least 1"),
+        # Stage params are untyped: 1.5 and True used to decode greedily, and a string was a 500.
+        ({"beam_width": 1.5}, "beam_width must be an integer, got 1.5"),
+        ({"beam_width": True}, "beam_width must be an integer, got True"),
+        ({"beam_width": "five"}, "beam_width must be an integer, got 'five'"),
+        (
+            {"beam_width": 5, "beam_search_diversity_rate": "wide"},
+            "beam_search_diversity_rate must be a number, got 'wide'",
+        ),
         ({"beam_width": 5, "temperature": 0.7}, "needs temperature 0"),
         ({"beam_width": 5, "detect_language": True}, "detect_language"),
         ({"beam_width": 5, "stream": True}, "final transcripts only"),

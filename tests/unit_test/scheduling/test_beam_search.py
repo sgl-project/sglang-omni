@@ -8,11 +8,19 @@ from types import SimpleNamespace
 import pytest
 import torch
 from sglang.srt.beam_search.beam_group import BeamGroupState, BeamResult
+from sglang.srt.managers import schedule_policy
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import (
+    GPT2Config,
+    GPT2LMHeadModel,
+    LogitsProcessorList,
+    SuppressTokensAtBeginLogitsProcessor,
+    WhisperTimeStampLogitsProcessor,
+)
 
+from sglang_omni.models.whisper_asr.beam_rules import WhisperBeamLogitRules
 from sglang_omni.scheduling import beam_search
 from sglang_omni.scheduling.beam_search import (
     BeamPrefillAdder,
@@ -22,11 +30,15 @@ from sglang_omni.scheduling.beam_search import (
     select_beam_candidates,
     strip_encoder_beam_tail,
 )
-from sglang_omni.scheduling.types import BeamSearchSettings
+from sglang_omni.scheduling.types import BeamLogitRules, BeamSearchSettings
 from sglang_omni.serve.openai_errors import generation_error_status_code
 
 EOS_TOKEN_ID = 3
 PROMPT = [5, 7, 9]
+NO_TIMESTAMPS_TOKEN_ID = 5
+TIMESTAMP_BEGIN_ID = NO_TIMESTAMPS_TOKEN_ID + 1
+# Hugging Face fills N-best slots that no hypothesis reached with entries scored near -1e9.
+HUGGING_FACE_UNREACHED_SCORE = -1e8
 
 
 def make_coordinator(
@@ -68,7 +80,11 @@ def make_model(seed: int) -> GPT2LMHeadModel:
 
 
 def run_beam_search(
-    model: GPT2LMHeadModel, *, beam_width: int, max_new_tokens: int
+    model: GPT2LMHeadModel,
+    *,
+    beam_width: int,
+    max_new_tokens: int,
+    logit_rules: BeamLogitRules | None = None,
 ) -> tuple[OmniBeamGroup, list[BeamResult]]:
     coordinator = make_coordinator()
     group = OmniBeamGroup(
@@ -76,7 +92,7 @@ def run_beam_search(
         stop_token_ids=[EOS_TOKEN_ID],
         max_new_tokens=max_new_tokens,
         diversity_rate=0.0,
-        logit_rules=None,
+        logit_rules=logit_rules,
         device=torch.device("cpu"),
     )
     frontier = [list(PROMPT)]
@@ -102,7 +118,11 @@ def run_beam_search(
 
 
 def hugging_face_n_best(
-    model: GPT2LMHeadModel, *, beam_width: int, max_new_tokens: int
+    model: GPT2LMHeadModel,
+    *,
+    beam_width: int,
+    max_new_tokens: int,
+    logits_processor: LogitsProcessorList | None = None,
 ) -> list[tuple[list[int], float]]:
     input_ids = torch.tensor([PROMPT])
     output = model.generate(
@@ -117,6 +137,7 @@ def hugging_face_n_best(
         output_scores=True,
         return_dict_in_generate=True,
         use_cache=False,
+        logits_processor=logits_processor,
     )
     hypotheses = []
     for sequence, score in zip(
@@ -155,6 +176,63 @@ def test_beam_search_matches_hugging_face_generate() -> None:
         else:
             hit_length_limit += 1
     assert stopped_early > 0 and hit_length_limit > 0
+
+
+@pytest.mark.parametrize("max_new_tokens", [1, 6])
+def test_masked_candidates_never_become_hypotheses(max_new_tokens: int) -> None:
+    """With max_initial_timestamp_index=0 the timestamp rules allow one first token for five beams; the N-best held masked tokens scored -inf.
+
+    Past the masked step the N-best equals Hugging Face's, without the placeholders Hugging Face fills unreached slots with.
+    """
+    config = SimpleNamespace(
+        eos_token_id=EOS_TOKEN_ID,
+        bos_token_id=0,
+        no_timestamps_token_id=NO_TIMESTAMPS_TOKEN_ID,
+        max_initial_timestamp_index=0,
+    )
+    for seed in range(3):
+        model = make_model(seed)
+        rules = WhisperBeamLogitRules(
+            suppress_token_ids=[],
+            begin_suppress_token_ids=[EOS_TOKEN_ID],
+            timestamp_params={
+                "segment_timestamps": True,
+                "timestamp_begin_id": TIMESTAMP_BEGIN_ID,
+                "no_timestamps_token_id": NO_TIMESTAMPS_TOKEN_ID,
+                "eos_token_id": EOS_TOKEN_ID,
+                "max_initial_timestamp_index": 0,
+                "__req__": SimpleNamespace(output_ids=[]),
+            },
+        )
+        _, results = run_beam_search(
+            model, beam_width=5, max_new_tokens=max_new_tokens, logit_rules=rules
+        )
+        expected = [
+            (tokens, score)
+            for tokens, score in hugging_face_n_best(
+                model,
+                beam_width=5,
+                max_new_tokens=max_new_tokens,
+                logits_processor=LogitsProcessorList(
+                    [
+                        SuppressTokensAtBeginLogitsProcessor(
+                            [EOS_TOKEN_ID], begin_index=len(PROMPT)
+                        ),
+                        WhisperTimeStampLogitsProcessor(
+                            config, begin_index=len(PROMPT)
+                        ),
+                    ]
+                ),
+            )
+            if score > HUGGING_FACE_UNREACHED_SCORE
+        ]
+
+        assert [result.tokens for result in results] == [
+            tokens for tokens, _ in expected
+        ], seed
+        assert [result.beam_score for result in results] == pytest.approx(
+            [score for _, score in expected], abs=1e-5
+        ), seed
 
 
 def test_diversity_rate_reorders_candidates_but_returns_raw_logprobs() -> None:
@@ -365,6 +443,98 @@ def test_prefill_admission_keeps_rows_for_the_member_rows_of_admitted_leaders(
     assert [id(req) for req in adder.can_run_list] == [
         id(req) for req in candidates[:admitted]
     ]
+
+
+class RunningRequest:
+    """A stand-in for a running Req, compared and hashed by identity like one."""
+
+    def __init__(self, **fields: object) -> None:
+        self.__dict__.update(fields)
+
+
+def running_request(
+    *, beam_group: SimpleNamespace | None, wait_queue_entry_time: float
+) -> RunningRequest:
+    return RunningRequest(
+        beam_group=beam_group,
+        priority=0,
+        time_stats=SimpleNamespace(wait_queue_entry_time=wait_queue_entry_time),
+        sampling_params=SimpleNamespace(
+            ignore_eos=beam_group is not None, max_new_tokens=100
+        ),
+        output_ids=[],
+        kv=SimpleNamespace(holds_kv=True),
+        finished=lambda: False,
+    )
+
+
+def test_priority_preemption_skips_beam_leaders_and_admits_the_preempting_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Priority preemption released a running beam leader like any request, which left its member rows held and requeued a group that cannot be rebuilt."""
+
+    def add_one_req(adder, req, has_chunked_req, truncation_align_size):
+        adder.can_run_list.append(req)
+        return AddReqResult.CONTINUE
+
+    monkeypatch.setattr(PrefillAdder, "add_one_req", add_one_req)
+    monkeypatch.setattr(
+        schedule_policy,
+        "get_schedule",
+        lambda: SimpleNamespace(schedule_low_priority_values_first=False),
+    )
+    free_rows = [1]
+    released_indices: list[int] = []
+    # The newest request is preempted first, so the leader would be the first pick.
+    leader = running_request(
+        beam_group=SimpleNamespace(
+            beam_width=5, member_rows=torch.tensor([4, 5, 6, 7]), retired=False
+        ),
+        wait_queue_entry_time=2.0,
+    )
+    greedy = running_request(beam_group=None, wait_queue_entry_time=1.0)
+
+    def release_req(index: int, remaining: int) -> None:
+        released_indices.append(index)
+        free_rows[0] += 1
+
+    def filter_batch(keep_indices: list[int]) -> None:
+        running_batch.reqs = [running_batch.reqs[index] for index in keep_indices]
+
+    running_batch = SimpleNamespace(
+        reqs=[leader, greedy], release_req=release_req, filter_batch=filter_batch
+    )
+    adder = object.__new__(BeamPrefillAdder)
+    adder.can_run_list = []
+    adder.preempt_list = []
+    adder.running_batch = running_batch
+    adder.tree_cache = SimpleNamespace(
+        req_to_token_pool=SimpleNamespace(available_size=lambda: free_rows[0])
+    )
+    adder.token_to_kv_pool_allocator = SimpleNamespace(
+        request_slot_reserve=lambda **kwargs: 0
+    )
+    adder.memory_budget = SimpleNamespace(remaining_total=0, total_offset=0)
+    adder.new_token_ratio = 1.0
+    adder.priority_scheduling_preemption_threshold = 0
+    queued = admission_candidate(None)
+    urgent = SimpleNamespace(
+        beam_group=None,
+        priority=10,
+        full_untruncated_fill_ids=[0] * 8,
+        prefix_len=0,
+        sampling_params=SimpleNamespace(max_new_tokens=8),
+        kv=SimpleNamespace(holds_kv=False, req_pool_idx=None),
+    )
+
+    assert adder.add_one_req(queued, False, None) == AddReqResult.CONTINUE
+    assert adder.preempt_to_schedule(urgent)
+    assert adder.add_one_req(urgent, False, None) == AddReqResult.CONTINUE
+
+    assert released_indices == [1]
+    assert running_batch.reqs == [leader]
+    assert adder.preempt_list == [greedy]
+    assert adder.can_run_list == [queued, urgent]
 
 
 def test_aborting_a_group_frees_its_member_rows_before_the_leader_releases(

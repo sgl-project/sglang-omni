@@ -10,6 +10,7 @@ from sglang_omni.admission import QueueFullError
 _BAD_REQUEST_MARKERS = (
     "Unsupported language:",
     "beam_width",
+    "beam_search_diversity_rate",
     "longer than the model's context length",
     "Requested token count exceeds the model's maximum context length",
     "Request has no prompt tokens",

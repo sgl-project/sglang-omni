@@ -73,7 +73,10 @@ def select_beam_candidates(
     beam_width: int,
     diversity_rate: float,
 ) -> SelectResult:
-    """One beam step with Hugging Face generate's rules: the first beam_width non-stop candidates survive, and a stop candidate finishes only within the top beam_width ranks."""
+    """One beam step with Hugging Face generate's rules: the first beam_width non-stop candidates survive, and a stop candidate finishes only within the top beam_width ranks.
+
+    A candidate the logit rules masked to -inf neither survives nor finishes. Slots left without a survivor repeat the first survivor at -inf, so their rows keep decoding but never rank.
+    """
     token_ids, parent_rows, cumulative = rank_beam_candidates(
         cumulative_logprobs,
         candidate_logprobs,
@@ -81,21 +84,32 @@ def select_beam_candidates(
         beam_width,
         diversity_rate,
     )
+    is_allowed = cumulative > -math.inf
+    # note (zhumengzhiren): if the rules masked every candidate, all of them count, so the group still ends with a hypothesis.
+    is_allowed = is_allowed | ~is_allowed.any()
     is_stop = torch.isin(token_ids, stop_token_ids)
-    is_live = ~is_stop
+    is_live = is_allowed & ~is_stop
     live_rank = is_live.long().cumsum(0)
     is_survivor = is_live & (live_rank <= beam_width)
-    is_finished = is_stop & (
-        torch.arange(token_ids.shape[0], device=token_ids.device) < beam_width
+    is_finished = (
+        is_allowed
+        & is_stop
+        & (torch.arange(token_ids.shape[0], device=token_ids.device) < beam_width)
     )
     finished_rank = is_finished.long().cumsum(0)
     survivor_slots = torch.where(is_survivor, live_rank - 1, beam_width)
     finished_slots = torch.where(is_finished, finished_rank - 1, beam_width)
+    num_survivors = is_survivor.long().sum()
+    is_padding = torch.arange(beam_width, device=token_ids.device) >= num_survivors
+    next_tokens = compact_by_slot(token_ids, survivor_slots, beam_width)
+    parent_idx = compact_by_slot(parent_rows, survivor_slots, beam_width)
     return SelectResult(
-        next_tokens=compact_by_slot(token_ids, survivor_slots, beam_width),
-        parent_idx=compact_by_slot(parent_rows, survivor_slots, beam_width),
-        new_cum_logprobs=compact_by_slot(cumulative, survivor_slots, beam_width),
-        num_survivors=is_survivor.long().sum(),
+        next_tokens=torch.where(is_padding, next_tokens[:1], next_tokens),
+        parent_idx=torch.where(is_padding, parent_idx[:1], parent_idx),
+        new_cum_logprobs=compact_by_slot(
+            cumulative, survivor_slots, beam_width
+        ).masked_fill(is_padding, -math.inf),
+        num_survivors=num_survivors,
         fin_tokens=compact_by_slot(token_ids, finished_slots, beam_width),
         fin_parent_idx=compact_by_slot(parent_rows, finished_slots, beam_width),
         fin_cum_logprobs=compact_by_slot(cumulative, finished_slots, beam_width),
@@ -110,7 +124,7 @@ def select_final_beam_candidates(
     beam_width: int,
     diversity_rate: float,
 ) -> FinalSelect:
-    """The step that reaches max_new_tokens: the top beam_width candidates all finish."""
+    """The step that reaches max_new_tokens: the top beam_width candidates finish, and the group's commit drops the masked ones."""
     token_ids, parent_rows, cumulative = rank_beam_candidates(
         cumulative_logprobs,
         candidate_logprobs,
@@ -176,24 +190,15 @@ class OmniBeamGroup(BeamGroup):
             )
         self.keep_best_completed()
         survivor_cumulative_logprobs = sel.new_cum_logprobs[:num_survivors].tolist()
+        # The next step's parent indices name rows, so every row stays a leaf, the -inf repeats included.
         self.leaves = [
             BeamNode(token_id, self.leaves[parent_row])
             for token_id, parent_row in zip(
-                sel.next_tokens[:num_survivors].tolist(),
-                sel.parent_idx[:num_survivors].tolist(),
+                sel.next_tokens.tolist(), sel.parent_idx.tolist()
             )
         ]
         self.num_committed = generated_length
-        if num_survivors < self.beam_width:
-            for leaf, cumulative_logprob in zip(
-                self.leaves, survivor_cumulative_logprobs
-            ):
-                self.completed.append(
-                    CompletedBeam(
-                        leaf, cumulative_logprob, generated_length, matched_token=None
-                    )
-                )
-            self.keep_best_completed()
+        if num_survivors == 0:
             self.leaves = []
             self.state = BeamGroupState.FINISHED
             return True
@@ -217,8 +222,17 @@ class OmniBeamGroup(BeamGroup):
         assert not parent_rows or max(parent_rows) < len(
             self.leaves
         ), "beam commit consumed an unsynced or misordered step"
-        for token_id, parent_row, cumulative_logprob in zip(
-            sel.tokens.tolist(), parent_rows, sel.cum_logprobs.tolist()
+        candidates = list(
+            zip(sel.tokens.tolist(), parent_rows, sel.cum_logprobs.tolist())
+        )
+        allowed_candidates = [
+            (token_id, parent_row, cumulative_logprob)
+            for token_id, parent_row, cumulative_logprob in candidates
+            if cumulative_logprob > -math.inf
+        ]
+        # As in select_beam_candidates, masked candidates count only when the rules masked every one.
+        for token_id, parent_row, cumulative_logprob in (
+            allowed_candidates or candidates
         ):
             self.completed.append(
                 CompletedBeam(
@@ -299,6 +313,27 @@ class BeamPrefillAdder(PrefillAdder):
         else:
             pass
         return result
+
+    def preempt_to_schedule(self, req: Req) -> bool:
+        """Priority preemption that never picks a beam leader: its group can be neither released like one request nor requeued."""
+        beam_leaders = [
+            running
+            for running in self.running_batch.reqs
+            if running.beam_group is not None and running not in self.preempt_list
+        ]
+        # note (zhumengzhiren): SGLang 0.5.23 preempts any running request outside preempt_list, so the leaders sit there for the call.
+        self.preempt_list.extend(beam_leaders)
+        try:
+            preempted = super().preempt_to_schedule(req)
+        finally:
+            for leader in beam_leaders:
+                self.preempt_list.remove(leader)
+        if preempted:
+            # The preempted requests gave their rows back.
+            self.free_request_rows = None
+        else:
+            pass
+        return preempted
 
 
 class OmniBeamCoordinator(BeamCoordinator):
