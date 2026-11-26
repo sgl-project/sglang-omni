@@ -1347,6 +1347,7 @@ class DotsTtsAcousticTail:
                 graph.reset()
             else:
                 pass
+            self.graph_pool = self.graph_backend.graph_pool_handle()
             logger.warning(
                 "dots.tts %s device graph capture failed for batch=%d capacity=%d: "
                 "%s; using eager fallback",

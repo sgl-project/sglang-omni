@@ -631,6 +631,50 @@ def test_batched_tail_xpu_graph_matches_eager(active: list[int]) -> None:
     assert not graph.graph_misses
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(not current_platform.is_xpu(), reason="requires XPU")
+def test_a_failed_tail_capture_leaves_later_captures_and_eager_noise_working(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device = torch.device(current_platform.device_type)
+    dtype = torch.bfloat16
+    sample_core = tail.DotsTtsAcousticTail.sample_patches_core
+    calls = {"count": 0}
+
+    def fail_inside_the_first_capture(
+        self: tail.DotsTtsAcousticTail, *args, **kwargs
+    ) -> torch.Tensor:
+        calls["count"] += 1
+        if calls["count"] == 3:
+            raise RuntimeError("capture refused")
+        else:
+            pass
+        return sample_core(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        tail.DotsTtsAcousticTail, "sample_patches_core", fail_inside_the_first_capture
+    )
+    torch.manual_seed(1234)
+    model = TailModel().eval().to(device=device, dtype=dtype)
+    acoustic_tail = build_tail(
+        model, slots=4, device=device, dtype=dtype, patch_capacity=33, optimize=True
+    )
+    monkeypatch.setattr(tail.DotsTtsAcousticTail, "sample_patches_core", sample_core)
+
+    assert len(acoustic_tail.meanflow_graphs) == 7
+    assert len(acoustic_tail.encoder_graphs) == 8
+    for slot in range(4):
+        acoustic_tail._fm_seq_len[slot] = (
+            15  # noqa: leading-underscore  # production name
+        )
+        acoustic_tail.encoder_seq_len[slot] = 4
+    hidden = torch.randn(1, FM_HIDDEN, device=device, dtype=dtype)
+    unseeded = acoustic_tail.sample_patches([1], fm_hidden_rows=hidden)
+    acoustic_tail.initialize_slot_rng(2, 7)
+    seeded = acoustic_tail.sample_patches([2], fm_hidden_rows=hidden)
+    assert torch.isfinite(unseeded).all() and torch.isfinite(seeded).all()
+
+
 def test_validate_acoustic_pool_memory_gates_xpu_through_xpu_memory_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
