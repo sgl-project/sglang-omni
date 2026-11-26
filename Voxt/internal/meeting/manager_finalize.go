@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -24,6 +26,13 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	}
 	if mt.Status == store.MeetingDone && mt.Audio == "" {
 		return ErrNoRecording // its transcript stays as it is
+	}
+	// Unlike a recorded meeting, an interrupted import has no live transcript
+	// to finish from when its decoded WAV is gone.
+	if mt.Status == store.MeetingInterrupted && fromStoreMode(mt.Mode) == ModeImport {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, mt.Audio, string(SourceSystem)+".wav")); err != nil {
+			return err
+		}
 	}
 	mt.Status = store.MeetingFinishing
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {

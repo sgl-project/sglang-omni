@@ -284,6 +284,49 @@ func TestImportCancelStopsTheWork(t *testing.T) {
 	}
 }
 
+// Continue processing cannot finish an import whose cancelled decoder
+// produced no WAV: there is no recording to transcribe or audio to keep.
+func TestReprocessImportWithoutDecodedWAVStaysInterrupted(t *testing.T) {
+	chat := &fixingChat{}
+	m, repo := importFixture(t, chat, &importDiarizer{}, &importFileASR{})
+	m.cfg.Settings = func() settings.Meeting { return settings.Meeting{NoAutoSummary: true} }
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	var id string
+	go func() {
+		var err error
+		id, err = m.Import(ctx, ImportRequest{
+			Name: "no-output", CreatedAt: time.Now(),
+			Decode: func(ctx context.Context, _ string) ([]byte, error) {
+				close(started)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}, nil)
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("decode cancellation: %v", err)
+	}
+	wavPath := filepath.Join(m.cfg.Dir, id, "system.wav")
+	if _, err := os.Stat(wavPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the decoder unexpectedly left a WAV: %v", err)
+	}
+	if err := m.Reprocess(context.Background(), id); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Continue processing without a WAV: %v", err)
+	}
+	mt, segs, err := repo.Meeting(context.Background(), id)
+	if err != nil || mt.Status != store.MeetingInterrupted || mt.Audio == "" || len(segs) != 0 {
+		t.Fatalf("status %s, audio %q, %d segments, err %v", mt.Status, mt.Audio, len(segs), err)
+	}
+	if len(chat.reqs) != 0 {
+		t.Fatal("the language model ran without a transcript")
+	}
+}
+
 // Cancelling during the summary leaves an interrupted import with its WAV,
 // so Continue processing can finish it instead of showing a done meeting
 // with no summary and no way to reprocess it.
