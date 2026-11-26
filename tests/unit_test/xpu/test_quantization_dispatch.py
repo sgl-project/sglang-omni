@@ -6,8 +6,10 @@ from __future__ import annotations
 import copy
 
 import pytest
+from sglang.srt.layers.linear import LinearBase
 from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
 from sglang.srt.layers.quantization import get_quantization_config
+from sglang.srt.layers.quantization.awq.schemes.awq_linear import AWQXPULinearScheme
 from sglang.srt.utils import is_xpu
 
 pytestmark = pytest.mark.skipif(
@@ -40,15 +42,15 @@ def test_int4_methods_resolve_to_the_xpu_config(method: str, expected: str) -> N
     assert get_quantization_config(method).__name__ == expected
 
 
-def test_minicpm_o_awq_config_keeps_every_exclusion() -> None:
-    expected_exclusions = copy.deepcopy(MINICPM_O_AWQ["modules_to_not_convert"])
-
+def test_minicpm_o_thinker_linear_takes_the_xpu_int4_scheme() -> None:
     config = get_quantization_config("awq").from_config(copy.deepcopy(MINICPM_O_AWQ))
+    layer = LinearBase.__new__(LinearBase)
+
+    config.get_quant_method(layer, prefix="model.layers.0.self_attn.qkv_proj")
 
     assert config.weight_bits == 4
     assert config.group_size == 128
-    assert config.zero_point
-    assert config.modules_to_not_convert == expected_exclusions
+    assert isinstance(layer.scheme, AWQXPULinearScheme)
 
 
 def test_awq_moe_is_refused_rather_than_mis_applied() -> None:
@@ -56,4 +58,4 @@ def test_awq_moe_is_refused_rather_than_mis_applied() -> None:
     layer = FusedMoE.__new__(FusedMoE)
 
     with pytest.raises(NotImplementedError, match="AWQ MoE is not yet supported"):
-        config.get_quant_method(layer, prefix="llm.model.layers.0.mlp.experts")
+        config.get_quant_method(layer, prefix="model.layers.0.mlp.experts")
