@@ -219,6 +219,9 @@ type onboardingModelStateInput struct {
 	InstalledASR  []local.Model
 	Language      local.Model
 	LanguageReady bool
+	// PackLeft is what the pack's speech model and its catalogue draft
+	// still have to download, formatted (the pack counts both, #4067).
+	PackLeft string
 }
 
 type onboardingWelcomeCacheKey struct {
@@ -350,7 +353,7 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Subtitle = translator.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.")
 	default:
 		state.Title = translator.T("More to explore")
-		state.Subtitle = translator.T("Voxt is ready. Two more things make it yours.")
+		state.Subtitle = translator.T("Go try Voxt. Two more things make it yours.")
 	}
 	if input.Step == obWelcome {
 		state.Welcome = &onboardingWelcomeViewState{LegacyAvailable: input.LegacyAvailable}
@@ -431,6 +434,7 @@ func (a *app) onboardingModelsInput() onboardingModelStateInput {
 	return onboardingModelStateInput{
 		SpeechID: a.obSpeech(), PackIDs: a.obPack(), Status: a.modelStatus, Found: a.ob.found,
 		InstalledASR: a.installed(local.ASR), Language: language, LanguageReady: languageReady,
+		PackLeft: a.obDownloadLeft(),
 	}
 }
 

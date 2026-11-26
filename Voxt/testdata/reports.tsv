@@ -23,6 +23,7 @@ report	fix	symptom	level	check
 #3918	#3928	With Show in the Dock off, Voxt can enter the Dock before the launch-time setting is applied	L	TestMainAppliesDockBeforeReady
 #3950	#3952	A local server's Model menu does not list the models the server has	L	TestOllamaModelMenuListsServer
 #3981	#3992	The live meeting transcript repeats a phrase in a loop	L	TestCollapseLoops
+#3981	#4544	The final meeting transcript repeats a hallucinated phrase in a loop	L	TestFinalPassCollapsesRepeatedText
 #3982	#3994	A meeting's microphone track repeats speech from the system track in the saved transcript	L	TestFinalizeDropsMicEcho
 #3982	#3994	A meeting's microphone track repeats speech from the system track in the live transcript	L	TestCommitSegmentDropsLiveEcho
 #3983	#3995	A meeting stream's rotation sends the first ten minutes again	L	TestLiveRotateFinalDoesNotRepeat
@@ -38,11 +39,20 @@ report	fix	symptom	level	check
 #4022	#4023	Meetings are missing from release builds	L	TestMeetingsInReleaseBuild
 #4024	#4025	Translate does not switch back to the main language for languages that share a script	L	TestTranslateBack
 #4086	#4088	Transcribe inserts commentary outside <output> tags along with the tagged cleaned text	L	TestOnlyTheCleanedText
+#4086	#4604	Transcribe inserts the model's tag-less deliberation about its edits along with the cleaned text	L	TestCleanedTextWithoutCommentary
 #4120	#4129	Dictation hangs on Starting the microphone after a microphone is added in Settings	L	testSecondSilentEngineGoesToTheDefaultInputThirdEnds
 #4121	#4128	A non-permission meeting capture failure shows missing-permission guidance	L	TestMeetingStartCaptureFailureNotice
+#4409	#4414	A blocked microphone stop after a system-audio failure leaves meeting startup stuck	L	TestSystemStartFailureBoundsMicStop
+#4409	#4414	A late Final from a replaced track appears in the next meeting	L	TestLateFinalDoesNotCommitIntoNextMeeting
+#4409	#4414	Queued PCM from a replaced track reaches the next meeting's transcriber and WAV	L	TestOldPCMDoesNotEnterNextMeeting
+#4409	#4414	An interrupted final pass lets a timed-out track write its queued PCM and Final into the next meeting	L	TestOldPCMDoesNotEnterNextMeetingAfterFinalFailure
 #4154	#4401	An image-only block selection reaches the language model as the single character U+FFFC with no content	L	testHasText
 #4224	#4326	Hidden Meetings still offer Start meeting in the menu-bar and app menus	L	TestHiddenMeetingsLeaveStartMenus
 #4100	#4341	The answer card can be enlarged only from a small, faint corner icon users do not see	L	TestCardSizeButtonVisible
+#4416	#4418	MOSS meeting Finals ignore the personal dictionary's hotwords	L	TestMossTranscribeHotwords
+#4067	#4069	A meeting on Automatic opens MOSS-Transcribe-Diarize for a main language it cannot recognise	L	TestMeetingTrackASRLanguageGate
+#4067	#4069	The setup guide offers no download when only the recommended pack's draft is missing, so Faster transcription never starts	L	TestGuidePackDraftLeft
+#4067	#4069	A fresh install's Transcribe and Translate pages recommend Qwen3-ASR instead of MOSS-Transcribe-Diarize, and the inline download leaves Faster transcription without its draft	L	TestFeatureModelRecommendedDownload
 #4061	#4400	The opt-in model switch skips every configured external API when the primary model fails	L	TestResolverSwitchUsesRemoteAPI
 #4421	#4422	Resetting the look or all settings leaves the History details showing the resized width until a restart	L	TestResetRestoresHistoryDetailWidth
 #4421	#4422	A History width save still in flight when the reset starts commits after it and restores the resized width	L	TestResetInvalidatesHistoryWidthSaves
@@ -52,10 +62,20 @@ report	fix	symptom	level	check
 #4320	#4330	The Rewrite answer card's scroll bar flickers while the answer streams	L	TestStreamedAnswerNoScrollWhileGrowing
 #4429	#4430	The release pre-flight reports no English entry in a long valid CHANGELOG section	L	TestReleasePreflight
 #4450	#4451	A shortcut tap while recording is sometimes ignored and the recording goes on until the next tap	L	TestStopShortcutAfterOverlaySync
+#3835	#4469	The helper's copy keystroke reaches the app as Control-plus-C while the shortcut's Control is still held	L	testCopyWaitsForModifierRelease
+#4467	#4469	A selection made with Command-A in the same motion as the hotkey reads as nothing	L	testCaretSettleReadsLateSelection
 #4195	#4102	System audio silence padding drops level events, so the meeting waveform stays stale and the silence warning cannot start	L	testIdleSystemCaptureEmitsSilenceLevels
 #4394	#4420	Meeting settings do not say that speaker labels need MOSS-Transcribe-Diarize and an explicit Chinese or English spoken language	L	TestMeetingSpeechSettings
 #4470	#4488	TestSoundPairs fails in CI when a frame takes longer than the 230 ms sound preview	L	TestSoundPairs
 #3875	#4498	The setup guide does not explain language model service choices, API key entry, or connection testing	L	TestOnboardingSteps
 #3875	#4498	Transcribe does not explain that a language model prompt can translate or reformat dictation	L	TestTranscribePageRenders
+#3875	#4545	Transcribe custom rules to translate or reformat conflict with Basic clean-up's preservation rules	L	TestTranscribeCustomPromptOverridesBasicCleanup
 #4365	#4399	Check again in the Permissions step shows this process's permission read before the helper's answer, so the rows flash	L	TestPermissionsSettings
 #4364	#4452	System audio recording's Ask showed no change after it ran, so a granted permission looked unknown	L	TestPermissionsMeetingSystemAudio
+#4375	#4515	A refused start erases a typed Rewrite follow-up	L	TestRewriteTypedFollowUpSurvivesStartRefusal
+#4375	#4515	Text typed during a Rewrite follow-up is erased when it finishes or is cancelled	L	TestRewriteTypingDuringFollowUpSurvivesItsEnd
+#4375	#4515	An early missing-model failure erases a typed Rewrite follow-up	L	TestRewriteTypedFollowUpSurvivesNoLLM
+#4605	#4607	The recording overlay follows the pointer to another display instead of the foreground app's focused-window display	L	TestOverlayDisplayPrefersFocusedWindow
+#4605	#4607	A kept answer card on another display pulls the recording pill away from the foreground app	L	TestPillAnchorKeepsFocusedDisplayBesideKeptCard
+#4605	#4607	Without Accessibility, the recording overlay still follows the pointer instead of the window server's front window	L	TestFocusedWindowFrameFallsBackToWindowServer
+#4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut

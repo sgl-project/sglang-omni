@@ -1,15 +1,17 @@
 name: Omni CI
 
 # DAG:
+#   preflight -> unit-test-cpu (8 GitHub-hosted Ubuntu VMs, parallel with H100 work)
 #   preflight -> setup -> pr-test -> {asr-ci, tts-ci, qwen3-omni-ci, duplex-ci, mps-ci}
-#   setup + unit/model suites -> cleanup (dispatch only)
+#   setup + H100 unit/model suites -> cleanup (dispatch only)
 #
 # preflight resolves the CI labels with .github/scripts/resolve_ci_labels.py:
 # any stage label except run-mac-ci, including run-unit-test-ci-only, runs
-# pr-test, and each model suite runs only when its stage is selected.
-# run-lint-only and run-mac-ci alone pass the gate and skip setup. Model
-# suites, including MPS, start after pr-test and use always() so a failed or
-# skipped suite never skips another one. Only setup blocks all downstream
+# unit-test-cpu on GitHub-hosted VMs and pr-test on H100, and each model suite
+# runs only when its stage is selected.
+# run-lint-only and run-mac-ci alone pass the gate and skip setup and unit tests.
+# Model suites, including MPS, start after pr-test and use always() so a failed
+# or skipped suite never skips another one. Only setup blocks all downstream
 # model CI.
 #
 # MPS has no result dependency on other model suites and uses the same
@@ -206,7 +208,7 @@ jobs:
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
         run: |
-          # Qwen3-ASR-1.7B, MOSS-TD and Fun-ASR-Nano serve their DFlash drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
+          # Qwen3-ASR-1.7B, MOSS-TD, Fun-ASR-Nano and Fun-CosyVoice3 serve their drafts by default, at the revisions sglang_omni/speculative/draft_registry.py pins.
           bash .github/scripts/ensure_hf_models.sh omni \
             Qwen/Qwen3-Omni-30B-A3B-Instruct \
             marksverdhei/Qwen3-Omni-30B-A3B-FP8 \
@@ -218,6 +220,7 @@ jobs:
             "${MOSS_TTS_MODEL_PATH}" \
             "${QWEN3_TTS_MODEL_PATH}" \
             "${COSYVOICE3_MODEL_PATH}" \
+            wilsonzheng0327/Fun-CosyVoice3-0.5B-2512-dspark@695fbc9d88a99389cbe70a26b81c5fc404dcc83a \
             "${QWEN3_TTS_CUSTOM_VOICE_MODEL_PATH}" \
             "${FUN_ASR_MODEL_PATH}" \
             wilsonzheng0327/Fun-ASR-Nano-dflash@b3cb091f554c88274378d549d7e7d3c5a13052e6 \
@@ -337,6 +340,108 @@ jobs:
             && format('/data/omni-ci/pr-{0}', github.event.pull_request.number)
             || format('/data/omni-ci/run-{0}', github.run_id) }}
     secrets: inherit
+
+  unit-test-cpu:
+    name: unit-test-cpu-${{ matrix.partition }}
+    needs: preflight
+    if: needs.preflight.result == 'success' && needs.preflight.outputs.run_self_hosted == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      CUDA_VISIBLE_DEVICES: ""
+      UV_TORCH_BACKEND: cpu
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      SGLANG_OMNI_TORCH_COMPILE_DEFAULT: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+
+      - name: Install CPU test dependencies
+        timeout-minutes: 10
+        run: |
+          # note (0xtoward): rank Ubuntu mirrors with priority:N so apt uses the fastest healthy mirror without load-balancing onto degraded regional EC2 mirrors.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            default_mirror=$(awk 'NF {print $1; exit}' /etc/apt/apt-mirrors.txt)
+            best_mirror=""
+            best_speed=0
+            candidates=()
+            while IFS= read -r m; do
+              if [ -n "$m" ]; then
+                candidates+=("$m")
+              fi
+            done < <(
+              printf '%s\n' \
+                "$default_mirror" \
+                http://azure.archive.ubuntu.com/ubuntu/ \
+                http://archive.ubuntu.com/ubuntu/ \
+                | awk 'NF {sub(/\/+$/, ""); print $0 "/"}' \
+                | awk '!seen[$0]++'
+            )
+            for mirror in "${candidates[@]}"; do
+              speed=$(curl -4 -fsS --max-time 3 -o /dev/null -w '%{speed_download}' "${mirror}dists/noble/main/binary-amd64/Packages.xz" 2>/dev/null) || speed=0
+              speed_int=${speed%%.*}
+              speed_int=${speed_int:-0}
+              echo "Ubuntu mirror probe: ${mirror} -> ${speed_int} B/s"
+              if [ "$speed_int" -gt "$best_speed" ]; then
+                best_speed=$speed_int
+                best_mirror=$mirror
+              fi
+              if [ "$speed_int" -ge 5000000 ]; then
+                break
+              fi
+            done
+            if [ -n "$best_mirror" ]; then
+              printf '%s\n' "$best_mirror" "${candidates[@]}" \
+                | awk 'NF && !seen[$0]++ {printf "%s\tpriority:%d\n", $0, ++n}' \
+                | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              echo "Using Ubuntu apt mirror: ${best_mirror} (${best_speed} B/s)"
+            fi
+          fi
+          sudo apt-get -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::ForceIPv4=true -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 \
+            install -y --no-install-recommends ffmpeg sox
+          uv venv --python 3.12
+          python3 -c 'import tomllib; print("\n".join(tomllib.load(open("pyproject.toml", "rb"))["tool"]["uv"]["override-dependencies"]))' > "$RUNNER_TEMP/omni-overrides.txt"
+          uv pip install --overrides "$RUNNER_TEMP/omni-overrides.txt" --find-links https://abetlen.github.io/llama-cpp-python/whl/cpu/llama-cpp-python/ \
+            -e '.[audar-tts,fishaudio,fun-cosyvoice3,minicpm-o]'
+          uv pip install --no-deps qwen-tts==0.1.1
+          bash .github/scripts/install_ci_cosyvoice.sh .venv
+
+      - name: Run CPU partition
+        timeout-minutes: 30
+        env:
+          OMNI_CI_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          OMNI_CI_STAGE_LABEL: unit-test-cpu-${{ matrix.partition }}
+          PARTITION: ${{ matrix.partition }}
+          PARTITIONS: ${{ strategy.job-total }}
+        run: |
+          source .venv/bin/activate
+          export PYTHONPATH="$PWD"
+          bash .github/scripts/run_flaky_pytest.sh \
+            pytest tests/ -v -m "not benchmark and not accelerator" -x \
+            -p scripts.ci.utils.pytest_partition --auto-partition-id "$PARTITION" \
+            --auto-partition-size "$PARTITIONS" --partition-model-file .github/unit_test_durations.json \
+            --junitxml="$RUNNER_TEMP/unit-test.xml"
+
+      - name: Upload partition results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-partition-${{ matrix.partition }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit-test.xml
+            ${{ runner.temp }}/omni-ci-retry/
 
   pr-test:
     name: PR Test

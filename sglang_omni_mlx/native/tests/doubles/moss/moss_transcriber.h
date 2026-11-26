@@ -12,6 +12,7 @@
 #include <thread>
 #include <vector>
 
+#include "common/dflash_draft.h"
 #include "common/transcription.h"
 
 namespace moss {
@@ -30,8 +31,8 @@ struct MossOptions {
 
 class MossTranscriber {
 public:
-  MossTranscriber(const std::filesystem::path &, const std::filesystem::path &,
-                  int) {}
+  MossTranscriber(const std::filesystem::path &,
+                  const omni_common::DraftOptions &) {}
 
   omni_common::TranscriptionResult Transcribe(const std::vector<float> &,
                                               const MossOptions &,

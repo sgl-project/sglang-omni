@@ -1,0 +1,329 @@
+name: Mac Metal CI
+
+# Builds the native MLX runtime (sglang_omni_mlx/native) on a self-hosted Apple
+# Silicon runner with Metal GPU access, then runs the real-model API suites and
+# golden accuracy checks in sglang_omni_mlx/native/ci.
+#
+# Pull requests must opt in via the `run-mac-metal-ci` label (resolved through
+# .github/scripts/resolve_ci_labels.py) and pass lint + mergeability before any
+# code executes on the self-hosted runner. Model checkpoints, the frozen 392-clip
+# corpus, ccache, and the pinned MLX build are persisted in a host cache
+# directory ($MLX_CI_CACHE_ROOT, defaulting to $HOME/.cache/sglang-omni-mlx-ci).
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, reopened, ready_for_review]
+    paths:
+      - "sglang_omni_mlx/**"
+      - ".github/workflows/mac-metal-ci.yaml"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Which Metal test suite to run
+        type: choice
+        default: all
+        options:
+          - all
+          - core
+          - api
+          - golden
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: read
+
+jobs:
+  preflight:
+    name: mac-metal-ci-gate
+    concurrency:
+      group: mac-metal-ci-preflight-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      exact_sha: ${{ github.event_name == 'pull_request' && steps.pr.outputs.exact_sha || github.sha }}
+      run_mac_metal: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.plan.outputs.run_mac_metal }}
+      has_mlx_changes: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.pr.outputs.has_mlx_changes }}
+    steps:
+      - name: Fetch latest PR gate state
+        if: ${{ github.event_name == 'pull_request' }}
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const labels = pr.data.labels.map((label) => label.name);
+            core.setOutput("labels", JSON.stringify(labels));
+            core.setOutput("draft", pr.data.draft ? "true" : "false");
+            core.setOutput("is_selected", labels.includes("run-mac-metal-ci"));
+            core.setOutput("exact_sha", pr.data.head.sha);
+
+            const changedFiles = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+            const changedPaths = changedFiles.flatMap((file) =>
+              file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]
+            );
+            const hasWorkflowChanges = changedPaths.includes(".github/workflows/mac-metal-ci.yaml");
+            const hasMlxChanges =
+              hasWorkflowChanges ||
+              changedPaths.some((path) => path.startsWith("sglang_omni_mlx/") && !path.endsWith(".md"));
+            core.setOutput("has_mlx_changes", hasMlxChanges ? "true" : "false");
+
+      - name: Block draft PR
+        if: ${{ steps.pr.outputs.is_selected == 'true' && fromJson(steps.pr.outputs.draft) }}
+        run: |
+          echo "PR is draft. Blocking Mac Metal CI."
+          exit 1
+
+      - name: Checkout CI label rules
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve CI stages
+        if: ${{ github.event_name == 'pull_request' }}
+        id: plan
+        env:
+          LABELS_JSON: ${{ steps.pr.outputs.labels }}
+          HAS_MLX_CHANGES: ${{ steps.pr.outputs.has_mlx_changes }}
+        run: |
+          if resolved=$(python .github/scripts/resolve_ci_labels.py resolve \
+            --labels-json "${LABELS_JSON}" \
+            --seed "${GITHUB_RUN_ID}" \
+            --github-output "${GITHUB_OUTPUT}"); then
+            echo "${resolved}"
+            exit 0
+          fi
+          if [ "${HAS_MLX_CHANGES}" != "true" ]; then
+            echo "::notice::Only Markdown changed under sglang_omni_mlx/: skipping Mac Metal CI."
+            echo "run_mac_metal=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "${resolved}"
+          exit 1
+
+      - name: Check PR lint and mergeability
+        if: ${{ github.event_name == 'pull_request' && steps.plan.outputs.run_mac_metal == 'true' && steps.pr.outputs.has_mlx_changes == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .github/scripts/pr_ci_gate.py
+
+  mac-metal:
+    name: native MLX Metal (API + golden)
+    needs: [preflight]
+    if: needs.preflight.outputs.run_mac_metal == 'true' && needs.preflight.outputs.has_mlx_changes == 'true'
+    # Serialize GPU runs on the Apple Silicon host so concurrent PRs do not contend for unified memory.
+    concurrency:
+      group: mac-metal-runner-serial
+      cancel-in-progress: false
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      TEST_SUITE: ${{ github.event.inputs.suite || 'all' }}
+    steps:
+      - name: Checkout exact SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.exact_sha }}
+          persist-credentials: false
+
+      - name: Verify Metal toolchain and prepare cache directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:$PATH"
+          echo "/opt/homebrew/bin" >> "${GITHUB_PATH}"
+
+          developer_dir="$(xcode-select -p 2>/dev/null || true)"
+          echo "Active developer dir: ${developer_dir:-<unset>}"
+          if ! metal_version="$(xcrun -sdk macosx metal --version 2>&1)"; then
+            echo "::error::Metal shader compiler (xcrun -sdk macosx metal) is unavailable (developer dir: ${developer_dir:-unset}). Install Xcode and the Metal Toolchain on this runner."
+            echo "${metal_version}"
+            exit 1
+          fi
+          sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+          echo "macOS SDK version: ${sdk_version}"
+          echo "Metal compiler:"
+          echo "${metal_version}"
+
+          command -v uv >/dev/null || { echo "::error::uv is required on the runner"; exit 1; }
+          command -v ccache >/dev/null || { echo "::error::ccache is required on the runner"; exit 1; }
+
+          cache_root="${MLX_CI_CACHE_ROOT:-$HOME/.cache/sglang-omni-mlx-ci}"
+          build_work="${cache_root}/runtime-build"
+          mkdir -p \
+            "${cache_root}/data" \
+            "${cache_root}/ccache" \
+            "${build_work}" \
+            "${RUNNER_TEMP}/runtime" \
+            "${RUNNER_TEMP}/mac-metal-reports"
+
+          # Invalidate the persisted MLX build cache whenever Xcode, SDK, or Metal compiler changes.
+          toolchain_stamp="$(printf '%s\n%s\n%s\n' "${developer_dir}" "${sdk_version}" "${metal_version}")"
+          stamp_file="${build_work}/.toolchain-stamp"
+          if [ ! -f "${stamp_file}" ] || [ "$(cat "${stamp_file}")" != "${toolchain_stamp}" ]; then
+            echo "Metal toolchain changed; resetting ${build_work}"
+            rm -rf "${build_work}"
+            mkdir -p "${build_work}"
+            printf '%s\n' "${toolchain_stamp}" > "${stamp_file}"
+          fi
+
+          # Reset only the runtime's own CMake tree per run; keep the cached MLX install and ccache.
+          rm -rf "${build_work}/cmake"
+
+          {
+            echo "CI_DATA_ROOT=${cache_root}/data"
+            echo "CCACHE_DIR=${cache_root}/ccache"
+            echo "MLX_BUILD_WORK=${build_work}"
+            echo "NATIVE_RUNTIME_BIN=${RUNNER_TEMP}/runtime/bin"
+            echo "TEST_VENV=${cache_root}/ci-venv"
+            echo "MAC_METAL_REPORT_DIR=${RUNNER_TEMP}/mac-metal-reports"
+          } >> "${GITHUB_ENV}"
+
+          echo "Host chip: $(sysctl -n machdep.cpu.brand_string)"
+          echo "Cache root: ${cache_root}"
+          echo "Selected suite: ${TEST_SUITE}"
+
+      - name: Build native MLX runtime
+        shell: bash
+        env:
+          CMAKE_C_COMPILER_LAUNCHER: ccache
+          CMAKE_CXX_COMPILER_LAUNCHER: ccache
+        run: |
+          set -euo pipefail
+          ccache --zero-stats >/dev/null
+          sglang_omni_mlx/native/scripts/build_runtime.sh "${RUNNER_TEMP}/runtime" "${MLX_BUILD_WORK}"
+          if [[ "${TEST_SUITE}" == "all" || "${TEST_SUITE}" == "core" || "${TEST_SUITE}" == "api" ]]; then
+            "${MLX_BUILD_WORK}/venv/bin/cmake" \
+              --build "${MLX_BUILD_WORK}/cmake" \
+              --target qwen3_asr_auto_language_test
+          else
+            echo "Core API suite is not selected; skipping the auto-language test executable."
+          fi
+          ccache --show-stats
+
+      - name: Set up CI Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv -q -p 3.12 --allow-existing "${TEST_VENV}"
+          VIRTUAL_ENV="${TEST_VENV}" uv pip install -q -r sglang_omni_mlx/native/ci/requirements.lock
+
+      - name: Provision pinned checkpoints and frozen corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/provision.py "${CI_DATA_ROOT}"
+          if [ "${TEST_SUITE}" != "core" ]; then
+            "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/provision_models.py "${CI_DATA_ROOT}"
+            "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/fishaudio_drama3_voice.py "${CI_DATA_ROOT}"
+          fi
+
+      - name: Run core real-model API tests
+        if: ${{ env.TEST_SUITE == 'all' || env.TEST_SUITE == 'core' || env.TEST_SUITE == 'api' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          export NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST="${MLX_BUILD_WORK}/cmake/qwen3_asr_auto_language_test"
+          if [[ ! -x "${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}" ]]; then
+            echo "::error::Auto-language regression executable is missing or not executable: ${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}"
+            exit 1
+          else
+            echo "Using auto-language regression executable: ${NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST}"
+          fi
+          "${TEST_VENV}/bin/python" -m pytest -v \
+            --junitxml="${MAC_METAL_REPORT_DIR}/core-api-junit.xml" \
+            sglang_omni_mlx/native/ci/test_check_golden.py \
+            sglang_omni_mlx/native/ci/test_server_api.py \
+            sglang_omni_mlx/native/ci/test_vad_api.py \
+            sglang_omni_mlx/native/ci/test_sortformer_api.py
+
+      - name: Run extended real-model API tests
+        if: ${{ env.TEST_SUITE == 'all' || env.TEST_SUITE == 'api' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          "${TEST_VENV}/bin/python" -m pytest -v \
+            --junitxml="${MAC_METAL_REPORT_DIR}/extended-api-junit.xml" \
+            sglang_omni_mlx/native/ci/test_model_servers.py \
+            sglang_omni_mlx/native/ci/test_parakeet_api.py \
+            sglang_omni_mlx/native/ci/test_cosyvoice3_api.py \
+            sglang_omni_mlx/native/ci/test_qwen3_tts_api.py \
+            sglang_omni_mlx/native/ci/test_voxtral_tts_api.py \
+            sglang_omni_mlx/native/ci/test_ming_tts_api.py \
+            sglang_omni_mlx/native/ci/test_ming3_audio_api.py \
+            sglang_omni_mlx/native/ci/test_fish_s2_pro_api.py \
+            sglang_omni_mlx/native/ci/test_fishaudio_drama3_api.py \
+            sglang_omni_mlx/native/ci/test_auk_api.py
+
+      - name: Run core golden checks
+        if: ${{ env.TEST_SUITE == 'all' || env.TEST_SUITE == 'core' || env.TEST_SUITE == 'golden' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          goldens=(sglang_omni_mlx/native/ci/golden/*.json)
+          if [ "${#goldens[@]}" -eq 0 ]; then
+            echo "::error::No core golden files found under sglang_omni_mlx/native/ci/golden/"
+            exit 1
+          fi
+          export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          for golden in "${goldens[@]}"; do
+            echo "=== Checking ${golden} ==="
+            "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/check_golden.py \
+              --runtime-bin "${NATIVE_RUNTIME_BIN}" \
+              --data-root "${CI_DATA_ROOT}" \
+              --golden "${golden}"
+          done 2>&1 | tee "${MAC_METAL_REPORT_DIR}/core-golden.log"
+
+      - name: Run extended model golden checks
+        if: ${{ env.TEST_SUITE == 'all' || env.TEST_SUITE == 'golden' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          goldens=(sglang_omni_mlx/native/ci/model_golden/*.json)
+          if [ "${#goldens[@]}" -eq 0 ]; then
+            echo "::error::No model golden files found under sglang_omni_mlx/native/ci/model_golden/"
+            exit 1
+          fi
+          export PYTHONPATH="${PWD}:${PWD}/sglang_omni_mlx/native/ci"
+          for golden in "${goldens[@]}"; do
+            echo "=== Checking ${golden} ==="
+            if [ "$(basename "${golden}")" = "ming3-audio-tiny.json" ]; then
+              "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/ming3_audio_golden.py \
+                --runtime-bin "${NATIVE_RUNTIME_BIN}" \
+                --data-root "${CI_DATA_ROOT}" \
+                --golden "${golden}"
+            else
+              "${TEST_VENV}/bin/python" sglang_omni_mlx/native/ci/check_model_golden.py \
+                --runtime-bin "${NATIVE_RUNTIME_BIN}" \
+                --data-root "${CI_DATA_ROOT}" \
+                --golden "${golden}"
+            fi
+          done 2>&1 | tee "${MAC_METAL_REPORT_DIR}/extended-golden.log"
+
+      - name: Upload Mac Metal CI reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-metal-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mac-metal-reports
+          if-no-files-found: warn
+          retention-days: 7

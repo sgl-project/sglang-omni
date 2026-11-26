@@ -13,14 +13,7 @@
             "default": false,
             "installed": false,
             "size_text": "Downloading: 178.2 MB of 712.8 MB (25%)",
-            "about": "Quicker and lighter on memory, for clear speech in a quiet place.",
             "languages": "30 languages and 22 Chinese dialects, including Chinese, English, Cantonese, Japanese and Korean",
-            "tags": [
-              "Local",
-              "Fast",
-              "Realtime",
-              "Supports your main language"
-            ],
             "actions": [
               {
                 "kind": "hide",
@@ -84,14 +77,13 @@
     "network": {
       "open": false,
       "proxy_mode": 0,
-      "proxy_caption": "The proxy in this Mac's network settings, or one set by an environment variable.",
       "source": 0,
       "source_labels": [
         "Automatic",
         "Hugging Face only",
         "hf-mirror.com only"
       ],
-      "source_caption": "Whichever answers first. Every file is checked.",
+      "source_caption": "",
       "proxy_family": {
         "key": "network.proxy",
         "kind": "",
@@ -103,6 +95,7 @@
         "text": ""
       }
     },
-    "speech_context": ""
+    "speech_context": "",
+    "speech_context_unused": false
   }
 }

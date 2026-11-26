@@ -30,7 +30,7 @@ import (
 //	historyState      history_controller.go the History page
 //	appEnhanceState   appenhance.go   App enhancement: the groups, address reads, the page
 //	dictionaryState   dictionary_controller.go  the Dictionary page
-//	homeState         home_controller.go Home: readiness, today, recent results
+//	homeState         home_controller.go Home: usage, the last speech model, the activity calendar
 //	onboardingState   onboarding.go   the setup guide
 //	scPromptState     settings_shortcuts_family_controller.go  a shortcut another ActNow app uses too: the prompt
 //	audioState        settings_audio.go   Settings → Audio, the recording's sounds
@@ -78,7 +78,9 @@ type app struct {
 	appEnhanceState
 	appIconsState
 	dictionaryState
+	snippetsState
 	homeState
+	shareState // share_controller.go: the share card and its hat studio
 	onboardingState
 	scPromptState
 	audioState

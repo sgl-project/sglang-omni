@@ -339,11 +339,8 @@ int SpeechStream::ChunkFrames() const {
 }
 
 std::vector<float> SpeechStream::Push(const mx::array &frame_codes) {
+  // Codec ID 0 is a valid codebook entry.
   frames_.push_back(frame_codes);
-  if (frame_codes.data<int32_t>()[0] > 0) {
-    ++voiced_frames_;
-  } else {
-  }
   const int chunk_frames = ChunkFrames();
   if (static_cast<int>(frames_.size()) - emitted_frames_ < chunk_frames) {
     return {};
@@ -363,14 +360,6 @@ std::vector<float> SpeechStream::Finish() {
     const std::vector<float> chunk = DecodeChunk(std::min(
         static_cast<int>(frames_.size()), emitted_frames_ + ChunkFrames()));
     samples.insert(samples.end(), chunk.begin(), chunk.end());
-  }
-  // Note (Jiaxin Deng): as the CUDA vocoder's whole-request decode, the audio
-  // keeps one frame of samples per frame whose first code is not 0.
-  const size_t kept_samples =
-      static_cast<size_t>(voiced_frames_) * decoder_.samples_per_frame();
-  if (!streamed_ && kept_samples < samples.size()) {
-    samples.resize(kept_samples);
-  } else {
   }
   return samples;
 }

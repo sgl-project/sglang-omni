@@ -11,6 +11,7 @@
 namespace auk {
 
 namespace mx = mlx::core;
+using omni_common::LeakyRelu;
 
 namespace {
 
@@ -75,13 +76,6 @@ ConvertVAEWeights(const omni_common::WeightMap &stored,
     weights.emplace(std::move(name), mx::astype(weight, kDtype));
   }
   return weights;
-}
-
-mx::array LeakyRelu(const mx::array &hidden_states, float negative_slope) {
-  return mx::maximum(
-      hidden_states,
-      mx::multiply(hidden_states,
-                   omni_common::Scalar(negative_slope, hidden_states)));
 }
 
 } // namespace

@@ -30,15 +30,13 @@ var navGroups = []navGroup{
 		{"/history", "History", historyIcon},
 	}},
 	{"Features", []navPage{
-		{"/transcribe", "Transcribe", transcribeIcon},
-		{"/translate", "Translate", translateIcon},
-		{"/rewrite", "Rewrite", rewriteIcon},
 		{"/notes", "Notes", notesIcon},
 		{"/meetings", "Meetings", meetingIcon},
 		{"/app-enhancement", "App enhancement", appEnhancementIcon},
 	}},
 	{"Resources", []navPage{
 		{"/dictionary", "Dictionary", dictionaryIcon},
+		{"/snippets", "Snippets", snippetsIcon},
 	}},
 	{"System", []navPage{
 		{"/logs", "Logs", logsIcon},
@@ -131,6 +129,8 @@ func pageTitleFor(translator *i18n.Translator, path string) string {
 		return translator.T("Language models")
 	case "/dictionary":
 		return translator.T("Dictionary")
+	case "/snippets":
+		return translator.T("Snippets")
 	case "/logs":
 		return translator.T("Logs")
 	case settingsPath:
@@ -143,6 +143,9 @@ func pageTitleFor(translator *i18n.Translator, path string) string {
 // notifications and old settings may still name them.
 var movedPaths = map[string]string{
 	"/permissions":     "/settings/permissions", // a page of the sidebar until 10-2026
+	"/transcribe":      "/settings/transcribe",
+	"/translate":       "/settings/translate",
+	"/rewrite":         "/settings/rewrite",
 	"/models":          modelsPath,
 	"/models/network":  networkPath,
 	"/language-models": remotePath,
@@ -159,6 +162,7 @@ var (
 	modelsIcon         = icons.Soundwave
 	remoteIcon         = icons.Cloud
 	dictionaryIcon     = icons.NotebookBookmark
+	snippetsIcon       = icons.TextSquare
 	notesIcon          = icons.Notes
 	meetingIcon        = icons.Dialog
 	permissionsIcon    = icons.ShieldKeyhole

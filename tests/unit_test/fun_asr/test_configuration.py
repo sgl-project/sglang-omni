@@ -2,7 +2,76 @@
 
 from __future__ import annotations
 
-from sglang_omni.models.fun_asr.configuration_fun_asr import FunAsrNanoConfig
+import numpy as np
+import pytest
+
+from sglang_omni.models.fun_asr.configuration_fun_asr import (
+    FunAsrNanoConfig,
+    FunAsrNanoFeatureExtractor,
+)
+
+
+@pytest.mark.parametrize(
+    "num_samples",
+    [
+        2,
+        3,
+        159,
+        160,
+        399,
+        400,
+        401,
+        559,
+        560,
+        561,
+        1359,
+        1360,
+        1361,
+        8079,
+        8080,
+        8081,
+        479999,
+        480000,
+    ],
+)
+@pytest.mark.parametrize(
+    "sampling_rate,frame_length,frame_shift,stride_lfr",
+    [(16000, 25, 10, 6), (22050, 25.1, 7.5, 3)],
+)
+def test_predicted_lfr_frames_match_real_frontend(
+    num_samples: int,
+    sampling_rate: int,
+    frame_length: float,
+    frame_shift: float,
+    stride_lfr: int,
+) -> None:
+    """Early cache validation must use the same length as actual fbank/LFR."""
+    extractor = FunAsrNanoFeatureExtractor(
+        sampling_rate=sampling_rate,
+        frame_length=frame_length,
+        frame_shift=frame_shift,
+        stride_lfr=stride_lfr,
+    )
+    audio = np.random.default_rng(7).normal(0, 0.01, num_samples).astype(np.float32)
+    extracted = extractor(
+        audio,
+        sampling_rate=sampling_rate,
+        return_tensors="pt",
+        return_attention_mask=True,
+        padding="longest",
+    )
+    assert extractor.num_lfr_frames(num_samples) == int(
+        extracted["attention_mask"].sum()
+    )
+
+
+@pytest.mark.parametrize("num_samples", [0, 1])
+def test_invalid_window_cannot_hit_early_cache(num_samples: int) -> None:
+    """Invalid short inputs must still reach the original frontend error."""
+    extractor = FunAsrNanoFeatureExtractor()
+    assert extractor.num_lfr_frames(num_samples) is None
+    with pytest.raises(AssertionError):
+        extractor(np.zeros(num_samples, dtype=np.float32), return_tensors="pt")
 
 
 def test_fun_asr_config_uses_current_checkpoint_field_names() -> None:

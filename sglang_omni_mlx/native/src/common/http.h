@@ -30,6 +30,7 @@ std::string ReadBody(mg_connection *connection);
 std::optional<std::string> ReadBody(mg_connection *connection,
                                     size_t max_bytes);
 bool IsPost(mg_connection *connection);
+std::string EncodeBase64(const std::string &bytes);
 
 // As often as the CUDA server checks whether a speech client disconnected.
 constexpr auto kClientPollInterval = std::chrono::milliseconds(50);

@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -55,6 +70,11 @@
         "id": "storage",
         "title": "存储",
         "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
       },
       {
         "id": "about",
@@ -162,7 +182,7 @@
                 "id": "anthropic",
                 "account": "llm.anthropic",
                 "name": "Anthropic",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-haiku-5-5",
                 "where": "",
                 "configured": false,
                 "missing": "key",

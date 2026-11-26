@@ -9,12 +9,14 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Side = Literal["baseline", "draft"]
-AccuracyMetric = Literal["WER", "CER", "DER"]
+AccuracyMetric = Literal["WER", "CER", "DER", "Accuracy"]
 # The roadmap's k: the highest concurrency where the draft gains at least this much.
 K_GAIN = 1.2
 # note (wilsonzheng0327): the roadmap's never-worse gate; at every load the draft keeps at least this share of the throughput, and at most this multiple of the p95 latency and of the p95 first-output latency.
 NEVER_WORSE_THROUGHPUT_RATIO = 0.97
 NEVER_WORSE_LATENCY_RATIO = 1.05
+# note (daii-0818): first output also gets the roadmap's 5 ms absolute allowance.
+FIRST_OUTPUT_LATENCY_SLACK_S = 0.005
 # note (wilsonzheng0327): the first allocation is the target's pool; a draft then allocates its own with the same token count.
 KV_POOL_PATTERN = re.compile(r"KV Cache is allocated\..*?#tokens: (\d+)")
 TOKEN_USAGE_PATTERN = re.compile(r"token usage: ([0-9.]+)")
@@ -336,6 +338,9 @@ def compare(legs: list[Leg], *, k_gain: float) -> Comparison:
             or (
                 row.first_output_latency_ratio is not None
                 and row.first_output_latency_ratio > NEVER_WORSE_LATENCY_RATIO
+                and statistics.mean(row.draft.first_output_latencies_p95_s)
+                > statistics.mean(row.baseline.first_output_latencies_p95_s)
+                + FIRST_OUTPUT_LATENCY_SLACK_S
             )
         ],
         incomplete_concurrencies=[
@@ -446,7 +451,7 @@ def render(comparison: Comparison, legs: list[Leg], *, title: str) -> str:
     lines += [
         "",
         f"- k, the highest complete concurrency with at least {K_GAIN}x: {comparison.k if comparison.k is not None else 'none'}",
-        f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x, or p95 or first-output p95 over {NEVER_WORSE_LATENCY_RATIO}x): "
+        f"- Worse than no draft (throughput under {NEVER_WORSE_THROUGHPUT_RATIO}x, p95 over {NEVER_WORSE_LATENCY_RATIO}x, or first-output p95 over both {NEVER_WORSE_LATENCY_RATIO}x and +{FIRST_OUTPUT_LATENCY_SLACK_S * 1000:g} ms): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.worse_concurrencies) or 'none'}",
         "- Incomplete, so left out of k, the never-worse check and accuracy summaries (failed requests, missing numbers or incomplete evaluation): "
         f"{', '.join(f'c{concurrency}' for concurrency in comparison.incomplete_concurrencies) or 'none'}",

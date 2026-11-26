@@ -45,6 +45,13 @@ class JointRopeInplaceKernel(Protocol):
     ) -> None: ...
 
 
+# Optional platform overlap-add for one windowed [B, win_length, T] tensor; the
+# window length is frames.shape[1]. The output covers (T - 1) * hop_length +
+# win_length samples. Callers pass the signal and its window envelope separately.
+class OverlapAddImpl(Protocol):
+    def __call__(self, frames: torch.Tensor, *, hop_length: int) -> torch.Tensor: ...
+
+
 class RMSNormKernel(Protocol):
     def __call__(
         self,
@@ -52,6 +59,37 @@ class RMSNormKernel(Protocol):
         weight: torch.Tensor,
         variance_epsilon: float,
     ) -> torch.Tensor: ...
+
+
+class RMSNormCall(Protocol):
+    """A norm call with the ``F.rms_norm`` signature.
+
+    Model code calls this shape, so the plain path is ``F.rms_norm`` itself.
+    """
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        normalized_shape: tuple[int, ...],
+        weight: torch.Tensor | None,
+        variance_epsilon: float,
+    ) -> torch.Tensor: ...
+
+
+class RMSNormAddKernel(Protocol):
+    """Fused ``residual += hidden_states`` plus RMSNorm.
+
+    Returns the normalized tensor and the updated residual sum, so the caller
+    does not issue a separate add.
+    """
+
+    def __call__(
+        self,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor,
+        weight: torch.Tensor,
+        variance_epsilon: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
 
 def reference_rmsnorm(
@@ -164,6 +202,11 @@ class OmniPlatform(DeviceMixin):
         """The RMS normalization kernel for a bare norm call on this device."""
         return reference_rmsnorm
 
+    def get_add_rmsnorm(self) -> RMSNormAddKernel | None:
+        """The fused residual-add RMSNorm kernel, or ``None`` when the device has
+        none; callers then add the residual before normalizing."""
+        return None
+
     def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
         # Note(yzxiao): None means this platform has no implementation. The
         # model decides whether this capability is required or optional.
@@ -252,6 +295,10 @@ class OmniPlatform(DeviceMixin):
 
     def supports_graph_captured_fft(self) -> bool:
         return True
+
+    def get_overlap_add_impl(self) -> "OverlapAddImpl | None":
+        """Optional platform overlap-add; None keeps the built-in fold path."""
+        return None
 
     def supports_graph_captured_host_read(self) -> bool:
         """Whether a capture tolerates a body that reads a tensor on the host."""
