@@ -114,8 +114,9 @@ mx::array FunAsrTranscriber::PromptEmbeddings(const std::string &text) const {
 }
 
 TranscriptionResult FunAsrTranscriber::TranscribeWindow(
-    const std::vector<float> &samples, const FunAsrOptions &options,
-    int max_new_tokens, const std::atomic<bool> &cancel) const {
+    const std::vector<float> &samples, const mx::array &prompt_embeddings,
+    int max_new_tokens, float repetition_penalty,
+    const std::atomic<bool> &cancel) const {
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
@@ -130,8 +131,8 @@ TranscriptionResult FunAsrTranscriber::TranscribeWindow(
   } else {
   }
   const mx::array embeddings = mx::concatenate(
-      {PromptEmbeddings(kPromptPrefix + PromptText(options)),
-       mx::expand_dims(model_.EncodeAudio(features), 0), suffix_embeddings_},
+      {prompt_embeddings, mx::expand_dims(model_.EncodeAudio(features), 0),
+       suffix_embeddings_},
       1);
   mx::eval(embeddings);
   if (cancel.load()) {
@@ -153,8 +154,8 @@ TranscriptionResult FunAsrTranscriber::TranscribeWindow(
   mx::array next_token = mx::argmax(model_.decoder().LastLogits(
       model_.decoder().Forward(embeddings, caches)));
   mx::async_eval({next_token});
-  model_.decoder().DecodePlain(next_token, caches, options.repetition_penalty,
-                               commit, cancel);
+  model_.decoder().DecodePlain(next_token, caches, repetition_penalty, commit,
+                               cancel);
   const std::string decoded = tokenizer_.Decode(output_ids, true);
   std::vector<std::string> spoken_parts;
   for (size_t begin = 0;;) {
@@ -186,6 +187,8 @@ FunAsrTranscriber::Transcribe(const std::vector<float> &samples,
   // Note (wilsonzheng0327): an explicit budget is one for the whole request,
   // as on the other ASR servers; the default is the reference's per window.
   const bool has_request_budget = options.max_new_tokens.value_or(0) != 0;
+  const mx::array prompt_embeddings =
+      PromptEmbeddings(kPromptPrefix + PromptText(options));
   int remaining_tokens = options.max_new_tokens.value_or(0);
   std::vector<std::string> parts;
   TranscriptionResult combined;
@@ -198,10 +201,10 @@ FunAsrTranscriber::Transcribe(const std::vector<float> &samples,
     } else {
     }
     const TranscriptionResult window = TranscribeWindow(
-        {samples.begin() + start, samples.begin() + end}, options,
+        {samples.begin() + start, samples.begin() + end}, prompt_embeddings,
         has_request_budget ? remaining_tokens
                            : DefaultMaxNewTokens(end - start),
-        cancel);
+        options.repetition_penalty, cancel);
     parts.push_back(window.text);
     combined.generated_token_count += window.generated_token_count;
     remaining_tokens -= window.generated_token_count;

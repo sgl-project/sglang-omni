@@ -39,9 +39,12 @@ public:
              const std::atomic<bool> &cancel) const;
 
 private:
+  // One window decoded after prompt_embeddings [1, tokens, hidden], the
+  // prompt before the audio.
   omni_common::TranscriptionResult
   TranscribeWindow(const std::vector<float> &samples,
-                   const FunAsrOptions &options, int max_new_tokens,
+                   const mlx::core::array &prompt_embeddings,
+                   int max_new_tokens, float repetition_penalty,
                    const std::atomic<bool> &cancel) const;
   // text's token ids as embeddings [1, tokens, hidden].
   mlx::core::array PromptEmbeddings(const std::string &text) const;
