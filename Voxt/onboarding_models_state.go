@@ -75,14 +75,19 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 	// needs no download (installed or already on this Mac) but the draft
 	// does: offer it, or Faster transcription never starts (#4067).
 	draftLeft := ""
+	var draftError error
 	if m, ok := models.Lookup(modelInput.SpeechID); ok && m.Draft != "" {
 		draft, dk := models.Lookup(m.Draft)
 		_, speechOnDisk := onboardingModelFound(modelInput, modelInput.SpeechID)
 		_, draftOnDisk := onboardingModelFound(modelInput, m.Draft)
 		if st := modelInput.Status[m.Draft]; dk && (modelInput.Status[modelInput.SpeechID].Installed || speechOnDisk) && !draftOnDisk && !st.Installed && !st.Downloading {
 			draftLeft = uitext.HumanBytes(draft.Size() - st.Done)
+			draftError = st.Err
 		}
 	}
+	// The draft-only state shows the draft's error, not a speech model's
+	// error left over from an earlier attempt (#4069).
+	draftNotice := onboardingNotice(translator, onboardingDownloadErrorNotice(translator, draftError))
 	state := onboardingModelsViewState{
 		ReuseShown: len(reuse) > 0, LanguageReady: modelInput.LanguageReady,
 		LanguageName: modelInput.Language.Name, NeedsDownload: len(ready) == 0 && !hasAlternative && !speechStatus.Downloading && !speechStatus.OnDisk,
@@ -98,7 +103,7 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 			state.DownloadLeft = draftLeft
 			state.Speech.ShowDownload = true
 			state.Speech.DownloadLabel = translator.T("Download (%s)", draftLeft)
-			state.Speech.Error = onboardingNotice(translator, input.SpeechError)
+			state.Speech.Error = draftNotice
 		}
 	} else {
 		state.Speech.Downloading = speechStatus.Downloading
@@ -140,7 +145,12 @@ func buildOnboardingModels(translator *i18n.Translator, input onboardingViewStat
 			}
 			state.Speech.Alternative = alternativeState
 		}
-		state.Speech.Error = onboardingNotice(translator, input.SpeechError)
+		switch {
+		case draftLeft != "":
+			state.Speech.Error = draftNotice
+		case !onDisk:
+			state.Speech.Error = onboardingNotice(translator, input.SpeechError)
+		}
 	}
 	var size int64
 	var names []string

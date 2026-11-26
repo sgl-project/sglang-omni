@@ -486,12 +486,8 @@ func localizeOnboardingViewStateInput(translator *i18n.Translator, input *onboar
 		if alternative, ok := onboardingModelAlternative(input.Models); ok {
 			input.AlternativeUseLabel = translator.X("alternative", "Use %s", onboardingModelName(alternative.ID))
 		}
-		if err := input.Models.Status[input.Models.SpeechID].Err; err != nil {
-			input.SpeechError = onboardingDownloadErrorNotice(translator, err)
-		} else if model, ok := models.Lookup(input.Models.SpeechID); ok && model.Draft != "" {
-			// The draft alone is on offer in the ready and reuse states, so
-			// its failure is the download the user sees (#4069).
-			input.SpeechError = onboardingDownloadErrorNotice(translator, input.Models.Status[model.Draft].Err)
+		if input.Models.Status[input.Models.SpeechID].Err != nil {
+			input.SpeechError = onboardingDownloadErrorNotice(translator, input.Models.Status[input.Models.SpeechID].Err)
 		}
 	}
 	if input.Session.Problem != nil {
