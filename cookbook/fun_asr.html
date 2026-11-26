@@ -608,6 +608,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-mps">Torch/MPS</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-mlx-runtime">Native MLX runtime</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -650,21 +651,30 @@ hf<span class="w"> </span>download<span class="w"> </span>FunAudioLLM/Fun-ASR-Na
 </section>
 <section id="apple-silicon">
 <h2>Apple Silicon<a class="headerlink" href="#apple-silicon" title="Link to this heading">#</a></h2>
-<p>Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path. Install
-with the <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installer</span></a>
-and follow its environment-activation and <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> steps; TorchCodec
-needs Homebrew’s keg-only FFmpeg libraries on the path before the server starts.</p>
-<p>Use the official <code class="docutils literal notranslate"><span class="pre">FunAudioLLM/Fun-ASR-Nano-2512-hf</span></code> checkpoint with unquantized
-BF16 weights; no converted artifact is needed.
-Inference runs one request at a time and additional requests queue. Use
-<code class="docutils literal notranslate"><span class="pre">temperature=0</span></code> and upload audio segments no longer than 30 seconds. JSON and
-SSE transcription are supported; quantized checkpoints are not.</p>
+<p>Fun-ASR runs on Apple Silicon through a Torch/MPS compatibility path or the native MLX runtime. Both load the official <code class="docutils literal notranslate"><span class="pre">FunAudioLLM/Fun-ASR-Nano-2512-hf</span></code> checkpoint with unquantized BF16 weights; no converted artifact is needed.</p>
 <section id="torch-mps">
 <span id="torchmps"></span><h3>Torch/MPS<a class="headerlink" href="#torch-mps" title="Link to this heading">#</a></h3>
+<p>Install with the <a class="reference internal" href="../other_platforms/installation_apple_silicon.html"><span class="std std-doc">Apple Silicon installer</span></a> and follow its environment-activation and <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> steps; TorchCodec needs Homebrew’s keg-only FFmpeg libraries on the path before the server starts.</p>
+<p>Inference runs one request at a time and additional requests queue. Use <code class="docutils literal notranslate"><span class="pre">temperature=0</span></code> and upload audio segments no longer than 30 seconds. JSON and SSE transcription are supported; quantized checkpoints are not.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-ASR-Nano-2512-hf<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+</section>
+<section id="native-mlx-runtime">
+<h3>Native MLX runtime<a class="headerlink" href="#native-mlx-runtime" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">funasr_server</span></code> from the native MLX runtime (<code class="docutils literal notranslate"><span class="pre">sglang_omni_mlx/native</span></code>) serves the same <code class="docutils literal notranslate"><span class="pre">/v1/audio/transcriptions</span></code> API as one C++ process without PyTorch or Python. It decodes greedily, cuts audio longer than 30 seconds into windows at quiet points and joins their text, and leaves the checkpoint’s <code class="docutils literal notranslate"><span class="pre">/sil</span></code> pause marker out of the transcript.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sglang_omni_mlx/native/scripts/build_runtime.sh<span class="w"> </span>~/omni-runtime
+
+hf<span class="w"> </span>download<span class="w"> </span>FunAudioLLM/Fun-ASR-Nano-2512-hf<span class="w"> </span>config.json<span class="w"> </span>model.safetensors<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>processor_config.json<span class="w"> </span>tokenizer.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--revision<span class="w"> </span>7ef6cafdc445b5beff0b730cbeb51952c793ca6e<span class="w"> </span>--local-dir<span class="w"> </span>fun-asr-nano
+
+~/omni-runtime/bin/funasr_server<span class="w"> </span>--model-path<span class="w"> </span>fun-asr-nano<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model-name<span class="w"> </span>FunAudioLLM/Fun-ASR-Nano-2512-hf<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
+</pre></div>
+</div>
+<p>Requests take <code class="docutils literal notranslate"><span class="pre">language</span></code>, <code class="docutils literal notranslate"><span class="pre">prompt</span></code> as comma-separated hotwords, <code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code> as one budget for the whole request, <code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code>, <code class="docutils literal notranslate"><span class="pre">stream</span></code> and <code class="docutils literal notranslate"><span class="pre">include_generation_metadata</span></code>. There is no realtime API.</p>
 </section>
 </section>
 <section id="server-configuration">
@@ -1086,6 +1096,7 @@ request builder; explicit <code class="docutils literal notranslate"><span class
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apple-silicon">Apple Silicon</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-mps">Torch/MPS</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-mlx-runtime">Native MLX runtime</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
