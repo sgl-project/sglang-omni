@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/gpu_clock.h"
 #include "common/realtime_connection.h"
 #include "common/transcription.h"
 #include "common/worker.h"
@@ -145,6 +146,7 @@ private:
   std::vector<std::pair<int, std::string>> committed_;
   bool refreshing_ = false;
   bool finalizing_ = false;
+  omni_common::GpuClockHold gpu_clock_;
 };
 
 } // namespace qwen3_asr

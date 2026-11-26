@@ -81,6 +81,7 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
     }
     return true;
   } else if (type == "input_audio_buffer.append") {
+    gpu_clock_.Touch();
     Append(message.value("audio", nlohmann::json()));
     return true;
   } else if (type == "input_audio_buffer.final_start") {
