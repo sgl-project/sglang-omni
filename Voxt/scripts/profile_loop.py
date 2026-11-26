@@ -285,7 +285,7 @@ def short_open_attempt_kept(
 
 
 def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]:
-    """The transcript hashes by scenario and whether the group shares one."""
+    """The hashes by scenario and whether cold and warm share one."""
     per_scenario: dict[str, list[str]] = {}
     for obs in observations:
         for row in obs.get("rows", []):
@@ -294,9 +294,16 @@ def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]
                 hash_value for hash_value in distinct_text_hashes([row]) if hash_value
             ]
             per_scenario.setdefault(scenario, []).extend(hashes)
+    short_open_rows = [
+        row
+        for obs in observations
+        for row in obs.get("rows", [])
+        if str(row.get("scenario")) in SHORT_OPEN_SCENARIOS
+    ]
     shared = (
-        len({hash_value for hashes in per_scenario.values() for hash_value in hashes})
-        == 1
+        bool(short_open_rows)
+        and all(row.get("text_sha256") for row in short_open_rows)
+        and len({str(row.get("text_sha256")) for row in short_open_rows}) == 1
     )
     return {"scenarios": per_scenario, "shared_text_hash": shared}
 
@@ -313,7 +320,12 @@ def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
     """A group is complete only with three kept attempts sharing one text."""
     if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
-    rows = [row for obs in observations for row in obs.get("rows", [])]
+    rows = [
+        row
+        for obs in observations
+        for row in obs.get("rows", [])
+        if str(row.get("scenario")) in SHORT_OPEN_SCENARIOS
+    ]
     return (
         bool(rows)
         and "" not in distinct_text_hashes(rows)
