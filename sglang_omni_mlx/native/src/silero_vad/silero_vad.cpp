@@ -16,6 +16,10 @@ namespace mx = mlx::core;
 namespace {
 
 constexpr int kLstmHidden = 128;
+constexpr int kWarmupChunks = 8;
+// Chunks per graph on the file path: each block batches its front end, and the
+// LSTM graph stays bounded however long the recording is.
+constexpr int kFileBlockChunks = 250;
 constexpr const char *kBranchPrefix = "vad_16k.";
 
 mx::array Relu(const mx::array &x) {
@@ -74,18 +78,19 @@ SileroVAD::SileroVAD(const std::filesystem::path &model_directory)
         "final_conv.bias"}) {
     checkpoint_.Weight(name);
   }
-  // Prime every Metal kernel the feed uses with a throwaway stream: a
-  // fresh process otherwise compiles them on the first real feed, which
-  // lands on the user's first dictation. The warmup state and its
-  // probabilities are discarded, so later streams are unaffected.
+  // A throwaway stream compiles the feed's Metal kernels here rather than on
+  // the first dictation's feed; its state and probabilities are discarded.
   StreamState warmup;
-  const std::vector<float> quiet(8 * kChunkSamples, 0.0f);
-  Feed(quiet.data(), 8, warmup);
-  warmed_up_ = true;
+  const std::vector<float> quiet(kWarmupChunks * kChunkSamples, 0.0f);
+  Feed(quiet.data(), kWarmupChunks, warmup);
 }
 
-mx::array SileroVAD::FeedLazy(const float *samples, int chunk_count,
-                              StreamState &state) const {
+std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
+                                   StreamState &state) const {
+  if (chunk_count == 0) {
+    return {};
+  } else {
+  }
   // Note (XXXXRT666): every chunk's window goes through the front end at once;
   // only the LSTM runs chunk by chunk, and the probabilities are read back
   // together.
@@ -144,31 +149,15 @@ mx::array SileroVAD::FeedLazy(const float *samples, int chunk_count,
   mx::array out = mx::reshape(Relu(mx::concatenate(hidden_steps, 0)),
                               {chunk_count, steps_per_chunk, kLstmHidden});
   out = mx::sigmoid(checkpoint_.Conv1d(out, "final_conv", 1, 0));
+  const mx::array probabilities = mx::mean(mx::squeeze(out, -1), 1);
+  mx::eval({probabilities, lstm->hidden, lstm->cell});
   state.hidden = lstm->hidden;
   state.cell = lstm->cell;
   const float *last_chunk_end = samples + chunk_count * kChunkSamples;
   state.context.assign(last_chunk_end - kContextSamples, last_chunk_end);
-  return mx::mean(mx::squeeze(out, -1), 1);
-}
-
-std::vector<float> SileroVAD::Feed(const float *samples, int chunk_count,
-                                   StreamState &state) const {
-  if (chunk_count == 0) {
-    return {};
-  } else {
-  }
-  const mx::array probabilities = FeedLazy(samples, chunk_count, state);
-  mx::eval({probabilities, *state.hidden, *state.cell});
   return {probabilities.data<float>(),
           probabilities.data<float>() + chunk_count};
 }
-
-namespace {
-
-// Chunks per GPU round trip on the file path; bounds the lazy graph.
-constexpr size_t kProbabilitySyncChunks = 250;
-
-} // namespace
 
 std::vector<float>
 SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
@@ -176,24 +165,16 @@ SileroVAD::PredictProbabilities(const std::vector<float> &samples) const {
   padded.resize((samples.size() + kChunkSamples - 1) / kChunkSamples *
                     kChunkSamples,
                 0.0f);
+  const int chunk_count = static_cast<int>(padded.size() / kChunkSamples);
   StreamState state;
   std::vector<float> probabilities;
-  file_path_syncs_ = 0;
-  // One chunk per graph keeps the result bit-identical to Feed(chunk, 1): a
-  // front end batched over many chunks rounds differently. Syncs once a block.
-  std::vector<mx::array> pending;
-  for (size_t offset = 0; offset < padded.size(); offset += kChunkSamples) {
-    pending.push_back(FeedLazy(padded.data() + offset, 1, state));
-    if (pending.size() == kProbabilitySyncChunks ||
-        offset + kChunkSamples == padded.size()) {
-      const mx::array block = mx::concatenate(pending, 0);
-      mx::eval(block);
-      probabilities.insert(probabilities.end(), block.data<float>(),
-                           block.data<float>() + pending.size());
-      pending.clear();
-      ++file_path_syncs_;
-    } else {
-    }
+  probabilities.reserve(chunk_count);
+  for (int first_chunk = 0; first_chunk < chunk_count;
+       first_chunk += kFileBlockChunks) {
+    const std::vector<float> block =
+        Feed(padded.data() + static_cast<size_t>(first_chunk) * kChunkSamples,
+             std::min(kFileBlockChunks, chunk_count - first_chunk), state);
+    probabilities.insert(probabilities.end(), block.begin(), block.end());
   }
   return probabilities;
 }

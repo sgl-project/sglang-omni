@@ -54,27 +54,14 @@ public:
   PredictProbabilities(const std::vector<float> &samples) const;
 
   const TimestampOptions &defaults() const { return defaults_; }
-  // Whether the constructor primed the Metal kernels with its throwaway
-  // warmup stream (silero_vad_warmup_test's revert check).
-  bool WarmedUp() const { return warmed_up_; }
-
-  // GPU round trips the last PredictProbabilities call made; the streaming
-  // Feed path does not touch this.
-  size_t FilePathSyncs() const { return file_path_syncs_; }
 
 private:
-  // Feed without the GPU round trip: the probabilities and state stay lazy.
-  mlx::core::array FeedLazy(const float *samples, int chunk_count,
-                            StreamState &state) const;
-
   omni_common::Checkpoint checkpoint_;
-  mutable size_t file_path_syncs_ = 0;
   int filter_length_ = 256;
   int hop_length_ = 128;
   int pad_ = 64;
   int cutoff_ = 129;
   TimestampOptions defaults_;
-  bool warmed_up_ = false;
 };
 
 // Speech segments from per-chunk probabilities, as Swift probsToTimestamps.
