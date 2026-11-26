@@ -1,9 +1,6 @@
 package compose
 
-import (
-	"strings"
-	"unicode"
-)
+import "strings"
 
 // CleanRewrite is the clean for a Rewrite answer: it also drops echoed
 // input tags, and any unclosed pair or tag fragment a stopped stream left.
@@ -67,8 +64,6 @@ func requestFromInput(input []string) string {
 	return request
 }
 
-// inputTemplateIntent uses tag shape and direct clause scope rather than
-// intent inferred from the answer or an expanding list of explanation verbs.
 func inputTemplateIntent(request, name string) (bool, bool) {
 	splitWords := func(text string) []string {
 		return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
@@ -85,6 +80,8 @@ func inputTemplateIntent(request, name string) (bool, bool) {
 		}
 		return false
 	}
+	requestWords := splitWords(request)
+	requestNamesFormat := hasWord(requestWords, "tag", "tags", "template", "templates") || strings.Contains(request, "标签") || strings.Contains(request, "模板")
 	clauseRequest := strings.NewReplacer(" and ", ", ", " but ", ", ", " so ", ", ", "?", "?\n", "？", "？\n").Replace(strings.ToLower(request))
 	clauses := strings.FieldsFunc(clauseRequest, func(r rune) bool {
 		return r == ',' || r == '，' || r == '.' || r == '。' || r == ';' || r == '；' || r == '!' || r == '！' || r == '\n'
@@ -102,66 +99,46 @@ func inputTemplateIntent(request, name string) (bool, bool) {
 		if nameIndex < 0 {
 			continue
 		}
+		namesFormat := hasWord(clauseWords, "tag", "tags", "template", "templates") || strings.Contains(clause, "标签") || strings.Contains(clause, "模板") || strings.Contains(clause, "<"+name+">") || strings.Contains(clause, "</"+name+">")
+		namesFormat = namesFormat || len(clauseWords) == 1 && requestNamesFormat
+		namesIndefinitePrompt := nameIndex > 0 && (clauseWords[nameIndex-1] == "a" || clauseWords[nameIndex-1] == "an") && hasWord(clauseWords, "prompt", "prompts")
 		nameAt := strings.Index(clause, name)
-		literalTag := strings.Contains(clause, "<"+name+">") || strings.Contains(clause, "</"+name+">")
-		adjacentFormat := nameIndex+1 < len(clauseWords) && hasWord(clauseWords[nameIndex+1:nameIndex+2], "tag", "tags", "template", "templates")
-		indefinitePrompt := nameIndex > 0 && (clauseWords[nameIndex-1] == "a" || clauseWords[nameIndex-1] == "an") && hasWord(clauseWords, "prompt", "prompts")
-		suffix := strings.TrimSpace(clause[nameAt+len(name):])
-		adjacentFormat = adjacentFormat || strings.HasPrefix(suffix, "模板") || strings.HasPrefix(suffix, "标签")
-		transformedPrompt := strings.Contains(clause[:nameAt], "改成") && strings.HasPrefix(suffix, "提示词")
-		namedTags := 0
-		for _, tagName := range []string{"instruction", "selected_text", "typed_text"} {
-			if strings.Contains(clause, tagName) {
-				namedTags++
-			}
+		namesTransformedPrompt := nameAt >= 0 && strings.Contains(clause[:nameAt], "改成") && strings.Contains(clause, "提示词")
+		if !namesFormat && !namesIndefinitePrompt && !namesTransformedPrompt {
+			continue
 		}
-		sharedFormat := namedTags > 1 && (hasWord(clauseWords, "tag", "tags", "template", "templates", "prompt", "prompts") || strings.Contains(clause, "模板") || strings.Contains(clause, "标签") || strings.Contains(clause, "提示词"))
-		if !literalTag && !adjacentFormat && !indefinitePrompt && !sharedFormat && !transformedPrompt {
+		if nameAt < 0 {
 			continue
 		}
 		prefix := clause[:nameAt]
-		englishPrefix := strings.NewReplacer("not forget to", "", "n't forget to", "", "not hesitate to", "", "n't hesitate to", "", "not just", "", "n't just", "").Replace(prefix)
-		negated := hasWord(splitWords(englishPrefix), "not", "never", "no") || strings.Contains(englishPrefix, "n't")
-		for _, denial := range []string{"不要", "不用", "不需要", "不必", "无需", "无须", "没必要", "勿"} {
-			negated = negated || strings.Contains(prefix, denial)
-		}
-		previous := rune(0)
-		for _, r := range prefix {
-			if (r == '不' || r == '别') && (previous == 0 || unicode.IsSpace(previous) || strings.ContainsRune("我你您他她它，。！？；,.!?;", previous)) {
-				negated = true
-			}
-			previous = r
-		}
-		predicate := suffix
-		for _, formatWord := range []string{"template", "tag", "prompt", "模板", "标签", "提示词"} {
-			predicate = strings.TrimSpace(strings.TrimPrefix(predicate, formatWord))
-		}
-		negated = negated || strings.HasPrefix(predicate, "is not ") || strings.HasPrefix(predicate, "isn't ") || strings.HasPrefix(predicate, "is no ") || strings.HasPrefix(predicate, "不需要")
+		suffix := clause[nameAt+len(name):]
 		question := strings.ContainsAny(clause, "?？")
 		positiveQuestion := question && (strings.Contains(prefix, "can't you") || strings.Contains(prefix, "couldn't you") || strings.Contains(prefix, "cannot you") || strings.Contains(prefix, "不") && strings.Contains(clause, "吗") && (strings.Contains(clause, "你") || strings.Contains(clause, "您")))
-		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您") || strings.Contains(clause, "能不能")
-		actionRequest := false
-		for _, word := range clauseWords {
-			switch word {
-			case "write", "use", "draft", "create", "generate", "make", "turn", "convert", "rewrite", "want", "need":
-				actionRequest = true
+		chineseDenials := []string{"不要", "不用", "不需要", "不必", "无需", "无须", "没必要", "勿"}
+		negated := strings.Contains(suffix, " is not what i want") || strings.Contains(suffix, " isn't what i want") || strings.Contains(suffix, " is not necessary") || strings.Contains(suffix, " isn't necessary") || strings.Contains(suffix, " is no longer needed") || strings.Contains(suffix, " is not required") || strings.Contains(suffix, " isn't required") || strings.Contains(suffix, " is not needed") || strings.Contains(suffix, " isn't needed")
+		suffixPredicate := strings.TrimRight(suffix, " \t\r\n?？。")
+		for _, denial := range chineseDenials {
+			negated = negated || strings.HasSuffix(suffixPredicate, "模板"+denial)
+		}
+		if !positiveQuestion {
+			englishPrefix := strings.NewReplacer("not forget to", "", "n't forget to", "", "not hesitate to", "", "n't hesitate to", "", "not just", "", "n't just", "").Replace(prefix)
+			negated = negated || hasWord(splitWords(englishPrefix), "not", "never", "no") || strings.Contains(englishPrefix, "n't")
+			chinesePrefix := strings.NewReplacer("能不能", "", "分别", "", "不错", "", "告别", "", "特别", "").Replace(prefix)
+			for _, denial := range chineseDenials {
+				negated = negated || strings.Contains(chinesePrefix, denial)
 			}
+			negated = negated || strings.Contains(chinesePrefix, "不") || strings.Contains(chinesePrefix, "别")
 		}
-		for _, action := range []string{"写", "用", "起草", "改成", "生成", "制作", "创建", "想要", "需要"} {
-			actionRequest = actionRequest || strings.Contains(clause, action)
-		}
-		switch {
-		case positiveQuestion:
-			positiveMention, negatedMention = true, false
-		case negated:
+		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您") || strings.Contains(clause, "能不能")
+		modalPrefix := strings.TrimSpace(prefix)
+		politeModal := strings.HasPrefix(modalPrefix, "can you") || strings.HasPrefix(modalPrefix, "could you") || strings.HasPrefix(modalPrefix, "你能") || strings.HasPrefix(modalPrefix, "你可以") || strings.HasPrefix(modalPrefix, "您能") || strings.HasPrefix(modalPrefix, "您可以") || strings.HasPrefix(modalPrefix, "能不能")
+		informationQuestion := question && (hasWord(clauseWords, "explain", "describe") || strings.Contains(clause, "tell me") || strings.Contains(clause, "解释") || strings.Contains(clause, "描述"))
+		questionIsNotARequest := question && !positiveQuestion && (informationQuestion || !politeModal && (!secondPerson || hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要")))
+		if negated || questionIsNotARequest {
 			positiveMention, negatedMention = false, true
-		case question && secondPerson && actionRequest:
-			positiveMention, negatedMention = true, false
-		case question:
-			positiveMention, negatedMention = false, true
-		default:
-			positiveMention, negatedMention = true, false
+			continue
 		}
+		positiveMention, negatedMention = true, false
 	}
 	return positiveMention, negatedMention
 }
