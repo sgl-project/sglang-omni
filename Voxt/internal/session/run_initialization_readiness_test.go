@@ -80,7 +80,7 @@ func TestSceneReadinessStartsLLMWhileASRFinalIsPending(t *testing.T) {
 		config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
 	})
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()
@@ -157,7 +157,7 @@ func TestSceneReadinessStartsLLMWhileASRResolverOrOpenIsPending(t *testing.T) {
 			config.Scene = readinessScene(urlStarted, urlRelease, appctx.CleanupOn, appctx.CleanupOff)
 		})
 		drained := readinessRecording(h.audio, 4)
-		signals := observeInitializationTimings(h)
+		signals := observeSessionSignals(h)
 		llmStarted := make(chan struct{}, 1)
 		useReadinessResolvers(h, provider, model, llmStarted)
 		id := h.start()
@@ -266,7 +266,7 @@ func TestSceneReadinessUsesOriginalStopDeadline(t *testing.T) {
 			drained := readinessRecording(h.audio, 4)
 			llmStarted := make(chan struct{}, 1)
 			useReadinessResolvers(h, provider, model, llmStarted)
-			signals := observeInitializationTimings(h)
+			signals := observeSessionSignals(h)
 			id := h.start()
 			waitInitializationSignal(t, urlStarted, "browser URL lookup")
 			waitInitializationSignal(t, signals.firstPartial, "ASR partial")
@@ -374,7 +374,7 @@ func TestSceneReadinessStartsLLMWhileDictionaryIsPendingAfterASRFinal(t *testing
 	}
 	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()
@@ -426,7 +426,7 @@ func TestSceneReadinessStartsLLMWhileSnippetsArePendingAfterASRFinal(t *testing.
 		return []snippet.Snippet{{ID: "email", Trigger: "my email address", Text: "ruiling@example.com"}}, nil
 	}
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()
@@ -475,7 +475,7 @@ func TestSceneCleanupOffOverrideSkipsLLMWhileDictionaryIsPendingAfterASRFinal(t 
 	}
 	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()
@@ -526,7 +526,7 @@ func TestCancelFencesSceneWhileTranscribeDataIsPending(t *testing.T) {
 		return nil, nil
 	}
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()
@@ -570,7 +570,7 @@ func TestSceneReadinessAfterOriginalStopDeadlineSkipsCleanupChat(t *testing.T) {
 	}
 	h.m.cfg.Snippets = func(context.Context) ([]snippet.Snippet, error) { return nil, nil }
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	llmStarted := make(chan struct{}, 1)
 	llmCalls := useReadinessResolvers(h, provider, model, llmStarted)
 	id := h.start()

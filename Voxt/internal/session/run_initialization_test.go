@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,84 +18,31 @@ import (
 )
 
 type initializationSignals struct {
-	sessionStarted   chan time.Time
-	asrResolveDone   chan time.Time
-	llmResolveStart  chan time.Time
-	llmResolveDone   chan time.Time
-	asrOpenStarted   chan time.Time
-	asrOpenDone      chan time.Time
-	firstPCMCaptured chan time.Time
-	firstPCM         chan time.Time
-	firstPartial     chan time.Time
-	asrFinal         chan time.Time
-	llmRequest       chan time.Time
-	cleanedDraft     chan time.Time
-	cleanedResult    chan time.Time
-	cleanedPublished chan time.Time
-	cleanupReady     chan time.Time
-	cleanupComplete  chan time.Time
-	deliveryComplete chan time.Time
-	pasteComplete    chan time.Time
+	asrOpenStarted   <-chan struct{}
+	asrOpenDone      <-chan struct{}
+	firstPCMCaptured <-chan struct{}
+	firstPCM         <-chan struct{}
+	firstPartial     <-chan struct{}
+	asrFinal         <-chan struct{}
+	llmRequest       <-chan struct{}
 }
 
-func observeInitializationTimings(h *harness) initializationSignals {
-	signals := initializationSignals{
-		sessionStarted: make(chan time.Time, 1), asrResolveDone: make(chan time.Time, 1),
-		llmResolveStart: make(chan time.Time, 1), llmResolveDone: make(chan time.Time, 1),
-		asrOpenStarted: make(chan time.Time, 1), asrOpenDone: make(chan time.Time, 1),
-		firstPCMCaptured: make(chan time.Time, 1), firstPCM: make(chan time.Time, 1),
-		firstPartial: make(chan time.Time, 1), asrFinal: make(chan time.Time, 1),
-		llmRequest: make(chan time.Time, 1), cleanedDraft: make(chan time.Time, 1),
-		cleanedResult: make(chan time.Time, 1), cleanedPublished: make(chan time.Time, 1),
-		cleanupReady: make(chan time.Time, 1), cleanupComplete: make(chan time.Time, 1),
-		deliveryComplete: make(chan time.Time, 1), pasteComplete: make(chan time.Time, 1),
+func observeSessionSignals(h *harness) initializationSignals {
+	h.mu.Lock()
+	provider, model := h.asr, h.llm
+	h.mu.Unlock()
+	var signals initializationSignals
+	if streamer, ok := provider.(*fakeStreamer); ok {
+		streamer.ensureSignals()
+		signals.asrOpenStarted, signals.asrOpenDone = streamer.openStarted, streamer.openDone
+		signals.firstPCM, signals.firstPartial, signals.asrFinal = streamer.firstSend, streamer.firstPartial, streamer.finalEvent
 	}
-	channels := map[string]chan time.Time{
-		"session_started":                signals.sessionStarted,
-		"asr_resolve_completed":          signals.asrResolveDone,
-		"llm_resolve_started":            signals.llmResolveStart,
-		"llm_resolve_completed":          signals.llmResolveDone,
-		"asr_open_started":               signals.asrOpenStarted,
-		"asr_open_completed":             signals.asrOpenDone,
-		"first_pcm_captured":             signals.firstPCMCaptured,
-		"first_pcm_sent":                 signals.firstPCM,
-		"first_asr_partial":              signals.firstPartial,
-		"asr_final_completed":            signals.asrFinal,
-		"llm_request_started":            signals.llmRequest,
-		"first_cleaned_draft_published":  signals.cleanedDraft,
-		"first_cleaned_result_published": signals.cleanedResult,
-		"first_cleaned_publication":      signals.cleanedPublished,
-		"cleanup_context_ready":          signals.cleanupReady,
-		"cleanup_completed":              signals.cleanupComplete,
-		"delivery_completed":             signals.deliveryComplete,
-		"paste_completed":                signals.pasteComplete,
-	}
-	previous := h.m.cfg.Log
-	h.m.cfg.Log = func(level, message string) {
-		previous(level, message)
-		for event, signal := range channels {
-			if strings.Contains(message, "timing event="+event+" ") {
-				at := initializationTimingAt(message)
-				select {
-				case signal <- at:
-				default:
-				}
-			}
-		}
+	signals.firstPCMCaptured = h.audio.firstPCM
+	if fake, ok := model.(*fakeLLM); ok {
+		fake.ensureSignals()
+		signals.llmRequest = fake.firstRequest
 	}
 	return signals
-}
-
-func initializationTimingAt(message string) time.Time {
-	for _, field := range strings.Fields(message) {
-		if value, ok := strings.CutPrefix(field, "at_unix_nano="); ok {
-			nanos, err := strconv.ParseInt(value, 10, 64)
-			if err == nil {
-				return time.Unix(0, nanos)
-			}
-		}
-	}
-	return time.Now()
 }
 
 func waitInitializationSignal[T any](t testing.TB, signal <-chan T, what string) {
@@ -163,7 +109,7 @@ func TestIndependentInitializationOpensASRBeforeLLMAndUsesResolvedLLM(t *testing
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, gatedLLMResolver(model, started, release, nil))
@@ -184,9 +130,6 @@ func TestIndependentInitializationOpensASRBeforeLLMAndUsesResolvedLLM(t *testing
 	if end.State != Done || end.Result != "Hello, VoxtNew." || len(model.requests()) != 1 {
 		t.Fatalf("end %+v, LLM requests %d", end, len(model.requests()))
 	}
-	if !h.logged("timing event=cleanup_context_ready") {
-		t.Fatal("cleanup readiness timing was not logged")
-	}
 }
 
 func TestCleanupDisabledSkipsBlockedLLMResolver(t *testing.T) {
@@ -203,7 +146,7 @@ func TestCleanupDisabledSkipsBlockedLLMResolver(t *testing.T) {
 		<-release // It would remain blocked if cleanup-off started this resolver.
 		return LLMReadiness{Outcome: LLMUnavailable}
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	id := h.start()
 	waitInitializationSignal(t, signals.asrOpenDone, "ASR to open with cleanup disabled")
 	h.speak(id, 5)
@@ -219,7 +162,7 @@ func TestASRFinalCompletesBeforePendingLLMInitialization(t *testing.T) {
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, gatedLLMResolver(model, started, release, nil))
@@ -260,7 +203,7 @@ func TestPendingLLMInitializationConsumesStopRelativeFallbackBudget(t *testing.T
 			return stop
 		}
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	returned := make(chan struct{}, 1)
@@ -300,7 +243,7 @@ func TestSlowDictionaryAndSnippetsDoNotBlockASRWhenHintsAreOff(t *testing.T) {
 		s.Features.Transcribe.Enhance = true
 		s.Dictionary.ASRHints = false
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	noLLM := func(context.Context, Kind, settings.Settings) LLMReadiness {
 		started <- struct{}{}
@@ -350,7 +293,7 @@ func TestRequiredDictionaryHintsGateASROpen(t *testing.T) {
 		s.Features.Transcribe.Enhance = true
 		s.Dictionary.ASRHints = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started, termsStarted := make(chan struct{}, 1), make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
@@ -366,7 +309,7 @@ func TestRequiredDictionaryHintsGateASROpen(t *testing.T) {
 	id := h.start()
 	waitInitializationSignal(t, started, "LLM resolver")
 	waitInitializationSignal(t, termsStarted, "dictionary load")
-	waitInitializationSignal(t, signals.asrResolveDone, "ASR resolver")
+	h.rec.waitFor(t, "ASR resolver readiness", func(snapshot Snapshot) bool { return snapshot.ASR.ID == "fake-asr" })
 	select {
 	case <-signals.asrOpenStarted:
 		t.Fatal("ASR Open started before required dictionary hints were ready")
@@ -418,7 +361,7 @@ func TestLLMPrefillStartsAfterASROpenAndDoesNotBlockPCM(t *testing.T) {
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
 		return LLMReadiness{LLM: model, LLMInfo: Model{ID: "fake-llm"}, Outcome: LLMAvailable}
 	})
@@ -444,7 +387,7 @@ func TestCancelReturnsWhileLLMInitializationIgnoresContext(t *testing.T) {
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, gatedLLMResolver(model, started, release, nil))
@@ -465,7 +408,6 @@ func TestCancelWhileASRResolutionIsPendingDropsLateProvider(t *testing.T) {
 	h := newHarness(t, provider, nil, func(_ *Config, s *settings.Settings) {
 		s.Dictionary.ASRHints = false
 	})
-	signals := observeInitializationTimings(h)
 	started, returned := make(chan struct{}, 1), make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
@@ -487,7 +429,6 @@ func TestCancelWhileASRResolutionIsPendingDropsLateProvider(t *testing.T) {
 	before := h.m.Current()
 	openRelease()
 	waitInitializationSignal(t, returned, "late ASR resolver to return")
-	waitInitializationSignal(t, signals.asrResolveDone, "late ASR resolution to complete")
 	after := h.m.Current()
 	provider.mu.Lock()
 	streamCount := len(provider.streams)
@@ -583,7 +524,7 @@ func TestLateDictionaryAndSnippetResultsAfterCancelAreIgnored(t *testing.T) {
 			return []snippet.Snippet{{Trigger: "sig", Text: "late"}}, nil
 		}
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
 		return LLMReadiness{Outcome: LLMUnavailable}
 	})
@@ -612,7 +553,6 @@ func TestSupersededLLMInitializationCannotMutateNextSession(t *testing.T) {
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
 	firstStarted := make(chan struct{}, 1)
 	firstRelease, releaseFirst := controlledRelease(t)
 	var calls atomic.Int32
@@ -642,11 +582,10 @@ func TestSupersededLLMInitializationCannotMutateNextSession(t *testing.T) {
 	current := h.rec.waitFor(t, "second session ASR and LLM readiness", func(snapshot Snapshot) bool {
 		return snapshot.ID == second && snapshot.Partial != "" && snapshot.LLM.ID == "current-llm"
 	})
-	waitInitializationSignal(t, signals.llmResolveDone, "second LLM resolver to complete")
+	secondReady := h.rec.waitFor(t, "second LLM resolver readiness", func(snapshot Snapshot) bool { return snapshot.ID == second && snapshot.LLM.ID == "current-llm" })
 	releaseFirst()
-	waitInitializationSignal(t, signals.llmResolveDone, "late first LLM resolver to complete")
 	after := h.m.Current()
-	if after.ID != second || after.LLM.ID != "current-llm" {
+	if after.ID != second || after.LLM.ID != "current-llm" || secondReady.ID != second {
 		t.Fatalf("stale LLM result mutated the next session: before %+v, after %+v", current, after)
 	}
 	h.speak(second, 3)
@@ -664,7 +603,7 @@ func TestEarlyPieceBeforeCleanupReadinessDoesNotBlockASREvents(t *testing.T) {
 	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.Features.Transcribe.Enhance = true
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
 	setIndependentResolvers(h, provider, gatedLLMResolver(model, started, release, nil))
@@ -707,7 +646,7 @@ func TestPendingBrowserURLDoesNotBlockASRAndKeepsCleanupOverride(t *testing.T) {
 			IsBrowser: func(string) bool { return true }, URLTimeout: time.Hour,
 		}
 	})
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	urlStarted, releaseURL := make(chan struct{}, 1), make(chan struct{})
 	var releaseURLOnce sync.Once
 	openURL := func() { releaseURLOnce.Do(func() { close(releaseURL) }) }
@@ -734,11 +673,6 @@ func TestPendingBrowserURLDoesNotBlockASRAndKeepsCleanupOverride(t *testing.T) {
 	waitInitializationSignal(t, signals.firstPartial, "ASR partial while browser URL is pending")
 	h.speak(id, 5)
 	waitInitializationSignal(t, signals.asrFinal, "ASR Final while browser URL is pending")
-	select {
-	case <-signals.llmResolveStart:
-		t.Fatal("LLM initialization started before the URL cleanup override was known")
-	default:
-	}
 	select {
 	case <-effectiveCleanup:
 		t.Fatal("Cleanup override was resolved before the URL lookup completed")

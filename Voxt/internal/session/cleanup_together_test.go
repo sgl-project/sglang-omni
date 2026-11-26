@@ -203,3 +203,176 @@ func TestConnectLLM(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitTranscribeConnectsBeforeBlockedASROpenReturns(t *testing.T) {
+	openRelease, releaseOpen := controlledRelease(t)
+	provider := &fakeStreamer{final: "hello aura link", openGate: openRelease}
+	model := &connectLLM{fakeLLM: &fakeLLM{text: "Cleaned."}, connected: make(chan struct{}, 2)}
+	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	signals := observeSessionSignals(h)
+	h.m.cfg.ResolveASR = func(context.Context, Kind, settings.Settings) ASRReadiness {
+		return ASRReadiness{ASR: provider, ASRInfo: Model{ID: "fake-asr"}}
+	}
+	h.m.cfg.ResolveLLM = func(context.Context, Kind, settings.Settings) LLMReadiness {
+		return LLMReadiness{LLM: model, LLMInfo: Model{ID: "remote-llm", Remote: true}, Outcome: LLMAvailable}
+	}
+	id := h.start()
+	waitInitializationSignal(t, signals.asrOpenStarted, "split ASR Open to start")
+	select {
+	case <-model.connected:
+	case <-time.After(5 * time.Second):
+		t.Fatal("remote connection warmup waited for ASR Open to return")
+	}
+	select {
+	case <-signals.asrOpenDone:
+		t.Fatal("ASR Open returned while its gate was still closed")
+	default:
+	}
+	releaseOpen()
+	waitInitializationSignal(t, signals.asrOpenDone, "split ASR Open to complete")
+	h.speak(id, 4)
+	if end := h.rec.wait(t); end.State != Done || end.Result != "Cleaned." {
+		t.Fatalf("end %+v", end)
+	}
+	if len(model.connected) != 0 {
+		t.Fatal("remote connection warmup ran more than once")
+	}
+}
+
+type tagGateLLM struct {
+	started chan struct{}
+	release <-chan struct{}
+}
+
+func (m *tagGateLLM) Chat(ctx context.Context, request llm.Request) (llm.Response, error) {
+	request.OnDelta("<output>")
+	close(m.started)
+	select {
+	case <-m.release:
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+	request.OnDelta("cleaned output</output>")
+	return llm.Response{Text: "<output>cleaned output</output>"}, nil
+}
+
+type controlledCleanupLLM struct {
+	started  chan llm.Request
+	finish   <-chan struct{}
+	response string
+	err      error
+}
+
+func (m *controlledCleanupLLM) Chat(ctx context.Context, request llm.Request) (llm.Response, error) {
+	m.started <- request
+	select {
+	case <-m.finish:
+		return llm.Response{Text: m.response}, m.err
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
+func TestCleanupTagOnlyDeltaDoesNotPublishDraft(t *testing.T) {
+	release, releaseLLM := controlledRelease(t)
+	model := &tagGateLLM{started: make(chan struct{}), release: release}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, nil)
+	id := h.start()
+	h.speak(id, 4)
+	select {
+	case <-model.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Cleanup did not emit its tag-only prefix")
+	}
+	if draft := h.m.Current().Draft; draft != "" {
+		t.Fatalf("tag-only delta published a draft: %q", draft)
+	}
+	releaseLLM()
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "cleaned output" || len(h.text.pastes()) != 1 {
+		t.Fatalf("end=%+v deliveries=%q", end, h.text.pastes())
+	}
+}
+
+func TestFailedCleanupKeepsRawTextAndDeliversOnce(t *testing.T) {
+	text := strings.Repeat("First sentence should be cleaned. Second sentence should also be cleaned. ", 30)
+	model := &fakeLLM{
+		texts: []string{"<output>First sentence cleaned.</output>", "<output>Second sentence cleaned.</output>"},
+		err:   errors.New("second piece failed"), failOn: 2,
+	}
+	h := newHarness(t, &fakeFile{text: text}, model, nil)
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Problem == nil || end.Problem.Code != ProblemLLM || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("failed Cleanup result=%+v deliveries=%q", end, h.text.pastes())
+	}
+}
+
+func TestFallbackCleanupFencesLatePrimaryDraft(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	primaryFinish, fallbackFinish := make(chan struct{}), make(chan struct{})
+	primary := &controlledCleanupLLM{
+		started: make(chan llm.Request, 1), finish: primaryFinish,
+		response: "primary answer", err: errors.New("primary failed after streaming"),
+	}
+	fallback := &controlledCleanupLLM{started: make(chan llm.Request, 1), finish: fallbackFinish, response: "Fallback result."}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, primary, cleanupLatencyConfig(clock, false))
+	h.fallback = fallback
+	id := h.start()
+	h.speak(id, 4)
+	primaryRequest := <-primary.started
+	clock.Advance(200 * time.Millisecond)
+	primaryRequest.OnDelta("Primary draft.")
+	if snapshot := h.m.Current(); snapshot.Draft != "Primary draft." {
+		t.Fatalf("primary draft was not published: %q", snapshot.Draft)
+	}
+	close(primaryFinish)
+	fallbackRequest := <-fallback.started
+	if snapshot := h.m.Current(); snapshot.Draft != "" {
+		t.Fatalf("fallback did not clear the failed attempt's draft: %q", snapshot.Draft)
+	}
+	primaryRequest.OnDelta(" stale primary callback")
+	if snapshot := h.m.Current(); snapshot.Draft != "" {
+		t.Fatalf("late primary callback modified the snapshot: %q", snapshot.Draft)
+	}
+	fallbackRequest.OnDelta("Fallback cleaned text.")
+	close(fallbackFinish)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Fallback result." || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("end=%+v deliveries=%q", end, h.text.pastes())
+	}
+	if snapshot := h.m.Current(); snapshot.Result != "Fallback result." || snapshot.Draft != "Fallback result." {
+		t.Fatalf("late primary callback changed final output: %+v", snapshot)
+	}
+}
+
+func TestSuccessfulUnchangedLLMOutputIsDelivered(t *testing.T) {
+	const raw = "spoken words"
+	h := newHarness(t, &fakeFile{text: raw}, &fakeLLM{text: raw}, nil)
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != raw || len(h.text.pastes()) != 1 || h.text.pastes()[0] != raw {
+		t.Fatalf("unchanged Cleanup output end=%+v deliveries=%q", end, h.text.pastes())
+	}
+}
+
+func TestSoftDeadlineRawFallbackWinsOverLateCleanup(t *testing.T) {
+	clock := newSoftDeadlineClock()
+	model := newCleanupGateLLM("partial model output", "late output", "cleaned result")
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, cleanupLatencyConfig(clock, true))
+	id := h.start()
+	h.speak(id, 4)
+	waitCleanupRequest(t, model, "cleanup request before soft deadline")
+	clock.Advance(cleanupSoftDeadlineTestDuration)
+	clock.Fire(t, 0)
+	end := h.rec.waitFor(t, "soft-deadline Raw result", func(snapshot Snapshot) bool { return snapshot.ID == id && snapshot.State.Ended() })
+	if end.Result != "spoken words" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("soft-deadline result=%+v deliveries=%q", end, h.text.pastes())
+	}
+	model.Release()
+	waitCleanupSignal(t, model.returned, "late cleanup response after Raw selection")
+}

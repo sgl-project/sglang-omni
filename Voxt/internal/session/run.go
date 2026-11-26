@@ -38,13 +38,12 @@ type run struct {
 	// Rethink cancel it (llmStop, under m.mu: the run replaces both to ask
 	// again), and skipped, stopped or rethink says which; the session goes
 	// on.
-	llmCtx                context.Context
-	llmStop               context.CancelFunc
-	firstCleanPublication atomic.Bool
-	skipped               atomic.Bool
-	stopped               atomic.Bool
-	rethink               atomic.Bool
-	cleanupWake           chan struct{}
+	llmCtx      context.Context
+	llmStop     context.CancelFunc
+	skipped     atomic.Bool
+	stopped     atomic.Bool
+	rethink     atomic.Bool
+	cleanupWake chan struct{}
 	// Cleanup arbitration is guarded by m.mu. Workers publish candidates
 	// here before waking the session owner; only the owner delivers one.
 	cleanupChoice           cleanupChoice
@@ -56,9 +55,6 @@ type run struct {
 	cleanupWorkerRunning    bool
 	cleanupCandidate        *cleanupOutput
 	cleanupOutput           cleanupOutput
-	cleanDraftGeneration    uint64
-	cleanDraftAttempt       uint64
-	cleanDraftAt            time.Time
 	// think is the level the requests ask with: StartRequest.Thinking,
 	// then Rethink's (guarded by m.mu).
 	think    *llm.Thinking
@@ -102,7 +98,6 @@ type run struct {
 	// opening: the speech model is still starting (wait.go); waitDue:
 	// Config.WaitNote has passed since the start.
 	opening, waitDue atomic.Bool
-	firstPCMCaptured atomic.Bool
 	// dsp and gainDB are what the sound processing did (noteDSP), for a
 	// retry's entry.
 	dsp    string
@@ -122,6 +117,10 @@ type run struct {
 	// (useServices): the early clean-up's worker waits for it (and r.ctx).
 	svcResolved      chan struct{}
 	streamReaderDone chan struct{}
+	streamReaderStop context.CancelFunc
+	streamReaderMu   sync.RWMutex
+	streamReaderOff  atomic.Bool
+	stream           asr.Stream // the session owner's current stream
 	// early cleans finalized speech stretches before Stop (earlyclean.go).
 	earlyMu sync.Mutex
 	early   *earlyClean
@@ -135,8 +134,9 @@ type run struct {
 	liveOff  bool
 	// head asks the language model about the live text ahead of the Final
 	// (headstart.go); silent tells the recording loop of the user's pauses.
-	head   headStart
-	silent chan bool
+	head       headStart
+	silent     chan bool
+	pauseWatch *pauseWatch // written before feed workers start; read by the owner
 }
 
 type capResult struct {
@@ -237,7 +237,6 @@ func (r *run) main() {
 		return
 	}
 	r.logf("info", "start %s in %s", kind, r.req.Target.BundleID)
-	r.logTiming("session_started")
 	// Rewrite's window picture waits for the clipboard's: the copied
 	// picture wins, and a picture that will not be sent is never taken.
 	if kind != store.KindRewrite {
@@ -355,9 +354,7 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		noted = true
 	case o.card != "":
 		dres.Reason = o.card
-		if r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true }) {
-			r.noteVisibleCleanupResult(result)
-		}
+		r.m.update(r, func(s *Snapshot) { s.Result, s.Card = result, true })
 	default:
 		if r.req.Kind == store.KindTranscribe {
 			if !r.m.beginTranscribeDelivery(r, result) {
@@ -366,7 +363,6 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 				r.endCancelled(nil)
 				return
 			}
-			r.noteVisibleCleanupResult(result)
 		} else {
 			r.m.update(r, func(s *Snapshot) { s.State, s.Result = Delivering, result })
 		}
@@ -375,9 +371,6 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 		dres = deliver.Insert(ctx, cfg.Text, deliver.Request{Text: result, Target: r.req.Target, Press: press, Self: cfg.Self, Activate: cfg.Activate,
 			Replace: o.replace, VerifyMS: deliver.DefaultVerifyMS, Stop: r.ctx, KeepClipboard: r.settings.General.CopyResult})
 		cancel()
-		if dres.Inserted {
-			r.logTiming("paste_completed")
-		}
 		if r.cancelled.Load() && errors.Is(dres.Err, context.Canceled) {
 			// Cancelled before the paste was sent: nothing went in.
 			r.endCancelled(nil)
@@ -404,7 +397,6 @@ func (r *run) finish(st State, problem *Problem, result string, o finishOpts) {
 	if r.asrDegraded != nil && (problem == nil || problem.Degraded) {
 		problem = r.asrDegraded
 	}
-	r.logTiming("delivery_completed")
 	snap := r.m.snapshot(r)
 	total := r.now().Sub(snap.StartedAt)
 	var highlights []dict.Span
@@ -439,9 +431,7 @@ func (r *run) fail(p *Problem) {
 // endFailed ends the session failed after it recorded: the entry keeps
 // the recording when the settings say so.
 func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) {
-	if stream != nil {
-		stream.Close()
-	}
+	r.stopStreamReader(stream)
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
@@ -462,9 +452,7 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 }
 
 func (r *run) endCancelled(stream asr.Stream) {
-	if stream != nil {
-		stream.Close()
-	}
+	r.stopStreamReader(stream)
 	r.cancel()
 	r.logf("info", "cancelled")
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)

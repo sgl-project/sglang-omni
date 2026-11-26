@@ -328,7 +328,6 @@ func (r *run) swapFallback(err error) bool {
 		r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, fallback, nil
 		if r.req.Kind == store.KindTranscribe {
 			r.cleanupAttempt++
-			r.cleanDraftAt = time.Time{}
 		}
 		s.LLM, s.Draft, s.Title = fallback, "", ""
 		return true

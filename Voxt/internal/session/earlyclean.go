@@ -132,7 +132,7 @@ func (r *run) hearPiece(stable string) {
 		return
 	}
 	r.head.hearFinal(stable)
-	if r.head.enabled && asr.Duration(r.pcm.bytes(), asr.SampleRate) < earlyCleanAfter {
+	if r.head.enabled.Load() && asr.Duration(r.pcm.bytes(), asr.SampleRate) < earlyCleanAfter {
 		return // not yet long: the whole text goes in one request, which knows what is said later
 	}
 	r.earlyCleanup().add(stable)
@@ -147,7 +147,19 @@ const earlyCleanAfter = 60 * time.Second
 // Each stretch costs the speech model its dictionary, so only a short
 // one.
 func (r *run) earlyPieces() bool {
-	return r.head.enabled && r.head.under == 0 && len(r.glossary()) <= compose.GlossaryAllUpTo && len(r.hints()) <= compose.GlossaryAllUpTo
+	return r.head.enabled.Load() && r.head.under == 0 && !r.settings.Audio.LiveResult &&
+		len(r.glossary()) <= compose.GlossaryAllUpTo && len(r.hints()) <= compose.GlossaryAllUpTo
+}
+
+// enableEarlyPieces applies the finalized eligibility decision to an
+// already-open stream when it could not be known at Open time.
+func (r *run) enableEarlyPieces() {
+	if r.stream == nil || r.init.split && !r.init.cleanupReady || !r.earlyPieces() {
+		return
+	}
+	if stream, ok := r.stream.(asr.EarlyPiecesEnabler); ok {
+		stream.EnableEarlyPieces()
+	}
 }
 
 // working says whether stretches are still being cleaned.

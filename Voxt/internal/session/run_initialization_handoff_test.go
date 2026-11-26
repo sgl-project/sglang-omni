@@ -18,7 +18,7 @@ func startGatedStream(t *testing.T, provider *fakeStreamer, model LLM, configure
 	h.audio.drained = make(chan struct{})
 	started := make(chan struct{}, 1)
 	release, openRelease := controlledRelease(t)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
 		started <- struct{}{}
 		<-release

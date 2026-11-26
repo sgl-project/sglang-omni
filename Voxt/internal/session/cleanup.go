@@ -217,7 +217,6 @@ func (r *run) transcribe(text string) {
 			r.logf("info", "composed %s in %v", r.logText(result), llmTime.Round(time.Millisecond))
 		}
 	}
-	r.logTiming("cleanup_completed")
 	r.finish(Done, problem, r.expandSnippets(text, result), r.transcribeOpts())
 }
 
@@ -239,7 +238,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 	for {
 		if nextRequest, ok := r.takeRethink(); ok {
 			request = nextRequest
-			output = r.cleanUpOutputContextGeneration(text, request.thinking, request.ctx, request.generation)
+			output = r.cleanUpOutput(text, request)
 			output.generation = request.generation
 			continue
 		}
@@ -262,7 +261,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 			continue
 		}
 		request = nextRequest
-		output = r.cleanUpOutputContextGeneration(text, request.thinking, request.ctx, request.generation)
+		output = r.cleanUpOutput(text, request)
 		output.generation = request.generation
 	}
 }
@@ -277,7 +276,7 @@ func (r *run) cleanTranscribe(text string, request cleanupRequest) cleanupOutput
 // end of the cleaned text before it (liveContext), after the last sentences
 // of that text that are asked again (redo).
 func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOutput {
-	if r.head.enabled && r.earlyCleanup().working() {
+	if r.head.enabled.Load() && r.earlyCleanup().working() {
 		// The tail does not wait for the stretch under way.
 		r.head.send(text)
 	}
@@ -310,7 +309,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 			if livePath && !r.publishCleanupDraft(request, "") {
 				return cleanupOutput{text: text, completedAt: r.now()}
 			}
-			return r.cleanUpOutputContextGeneration(text, nil, request.ctx, request.generation)
+			return r.cleanUpOutput(text, cleanupRequest{generation: request.generation, ctx: request.ctx})
 		}
 		before = liveContext(compose.JoinParts(parts, answers))
 		tail = joinRedo(redo, tail)
@@ -335,7 +334,7 @@ func (r *run) cleanUpFirstContext(text string, request cleanupRequest) cleanupOu
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
 	}
-	result, profile, err := r.cleanPartsContextGeneration(text, append(parts, tailParts...), answers, nil, request.ctx, request.generation)
+	result, profile, err := r.cleanParts(text, append(parts, tailParts...), answers, cleanupRequest{generation: request.generation, ctx: request.ctx})
 	if err == nil {
 		err = failed
 	}
@@ -367,25 +366,15 @@ func joinRedo(redo, tail string) string {
 	return redo + tail
 }
 
-// cleanUp runs the language model over text, a request per part, each
-// answer streaming into the snapshot's Draft after those before it. A
-// part that fails keeps its text as recognised; err is the first
-// failure (the text itself when the request could not be composed).
-// think overrides the service's thinking (nil: its setting).
+// cleanUpOutput runs the language model over text, one request per part.
+// Request state travels together so a Rethink cannot borrow another
+// generation's context or Thinking level.
 func (r *run) cleanUp(text string, think *llm.Thinking) (string, string, error) {
-	output := r.cleanUpOutput(text, think)
+	output := r.cleanUpOutput(text, cleanupRequest{ctx: r.currentLLMContext(), thinking: think})
 	return output.text, output.profile, output.err
 }
 
-func (r *run) cleanUpOutput(text string, think *llm.Thinking) cleanupOutput {
-	return r.cleanUpOutputContext(text, think, r.currentLLMContext())
-}
-
-func (r *run) cleanUpOutputContext(text string, think *llm.Thinking, ctx context.Context) cleanupOutput {
-	return r.cleanUpOutputContextGeneration(text, think, ctx, 0)
-}
-
-func (r *run) cleanUpOutputContextGeneration(text string, think *llm.Thinking, ctx context.Context, generation uint64) cleanupOutput {
+func (r *run) cleanUpOutput(text string, request cleanupRequest) cleanupOutput {
 	parts, err := compose.BuildParts(r.transcribeInput(text))
 	if err != nil {
 		return cleanupOutput{text: text, err: err, completedAt: r.now()}
@@ -393,7 +382,7 @@ func (r *run) cleanUpOutputContextGeneration(text string, think *llm.Thinking, c
 	if len(parts) > 1 {
 		r.logf("info", "cleaning up %d characters in %d pieces", len([]rune(text)), len(parts))
 	}
-	result, profile, err := r.cleanPartsContextGeneration(text, parts, nil, think, ctx, generation)
+	result, profile, err := r.cleanParts(text, parts, nil, request)
 	return cleanupOutput{text: result, profile: profile, err: err, completedAt: r.now()}
 }
 
@@ -403,17 +392,9 @@ func (r *run) cleanUpOutputContextGeneration(text string, think *llm.Thinking, c
 // them all. err is the first failure (the text itself when the request
 // could not be composed). think overrides the service's thinking (nil:
 // its setting).
-func (r *run) cleanParts(text string, parts []compose.Part, answers []string, think *llm.Thinking) (string, string, error) {
-	return r.cleanPartsContext(text, parts, answers, think, r.currentLLMContext())
-}
-
-func (r *run) cleanPartsContext(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
-	return r.cleanPartsContextGeneration(text, parts, answers, think, ctx, 0)
-}
-
-func (r *run) cleanPartsContextGeneration(text string, parts []compose.Part, answers []string, think *llm.Thinking, ctx context.Context, generation uint64) (string, string, error) {
+func (r *run) cleanParts(text string, parts []compose.Part, answers []string, request cleanupRequest) (string, string, error) {
 	if len(parts)-len(answers) > 1 && r.svc.LLMInfo.Remote && !r.m.resting(r.svc.LLMInfo.ID) {
-		return r.cleanPartsTogetherGeneration(text, parts, answers, think, ctx, generation)
+		return r.cleanPartsTogether(text, parts, answers, request)
 	}
 	var failed error
 	for i := len(answers); i < len(parts); i++ {
@@ -421,10 +402,10 @@ func (r *run) cleanPartsContextGeneration(text string, parts []compose.Part, ans
 		if !r.cleanupMayContinue() {
 			return text, p.Profile(), context.DeadlineExceeded
 		}
-		draft := newDrafter(r, ctx, parts[:i+1], answers, generation)
-		resp, err := r.askPart(ctx, r.partRequest(text, p, think, draft.add), p.Text)
+		draft := newDrafter(r, request.ctx, parts[:i+1], answers, request.generation)
+		resp, err := r.askPart(request.ctx, r.partRequest(text, p, request.thinking, draft.add), p.Text)
 		switch {
-		case r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
+		case r.ctx.Err() != nil || request.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load():
 			return text, p.Profile(), err
 		case err != nil:
 			if len(parts) > 1 {
@@ -441,7 +422,7 @@ func (r *run) cleanPartsContextGeneration(text string, parts []compose.Part, ans
 				r.logf("info", "piece %d of %d: %d prompt tokens, %d cached", i+1, len(parts), u.PromptTokens, u.CachedTokens)
 			}
 		}
-		draft.done(answers, err == nil)
+		draft.done(answers)
 	}
 	return compose.JoinParts(parts, answers), parts[0].Profile(), failed
 }
@@ -499,22 +480,17 @@ func (d *drafter) publish() {
 	if strings.TrimSpace(draft) == "" {
 		return
 	}
-	var publishedAt time.Time
-	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
+	d.r.m.updateIf(d.r, func(s *Snapshot) bool {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.generation == d.r.cleanupGeneration && d.attempt == d.r.cleanupAttempt && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
-			publishedAt = d.r.now()
 			return true
 		}
 		return false
 	})
-	if visible {
-		d.r.noteCleanDraftPublication(d.generation, d.attempt, publishedAt, draft)
-	}
 }
 
 // done puts the answers of the parts so far in the snapshot.
-func (d *drafter) done(answers []string, eligible bool) {
+func (d *drafter) done(answers []string) {
 	if d.ctx.Err() != nil || d.r.ctx.Err() != nil || d.r.skipped.Load() {
 		return
 	}
@@ -523,18 +499,13 @@ func (d *drafter) done(answers []string, eligible bool) {
 	if strings.TrimSpace(draft) == "" {
 		return
 	}
-	var publishedAt time.Time
-	visible := d.r.m.updateIf(d.r, func(s *Snapshot) bool {
+	d.r.m.updateIf(d.r, func(s *Snapshot) bool {
 		if d.ctx.Err() == nil && d.r.ctx.Err() == nil && !d.r.skipped.Load() && d.generation == d.r.cleanupGeneration && d.attempt == d.r.cleanupAttempt && d.r.cleanupDecisionOpenLocked() {
 			s.Draft = draft
-			publishedAt = d.r.now()
 			return true
 		}
 		return false
 	})
-	if visible && eligible {
-		d.r.noteCleanDraftPublication(d.generation, d.attempt, publishedAt, draft)
-	}
 }
 
 func (r *run) currentCleanupRequest() (cleanupRequest, bool) {

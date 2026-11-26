@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -11,71 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/lang"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
-
-// awaitServices waits for the services; false when the session ended
-// (cancelled, or the services failed).
-func (r *run) awaitServices() bool {
-	if r.resolved {
-		return true
-	}
-	select {
-	case s := <-r.svcDone:
-		if s.err != nil {
-			r.fail(ProblemOf(s.err))
-			return false
-		}
-		r.useServices(s)
-		return true
-	case <-r.ctx.Done():
-		r.endCancelled(nil)
-		return false
-	}
-}
-
-// useServices keeps the resolved services.
-func (r *run) useServices(s svcResult) {
-	r.resolved = true
-	r.svc.ASR, r.svc.ASRInfo, r.svc.VAD = s.svc.ASR, s.svc.ASRInfo, s.svc.VAD
-	r.svc.LLM, r.svc.LLMInfo = s.svc.LLM, s.svc.LLMInfo
-	r.svc.Fallback, r.svc.FallbackInfo = s.svc.Fallback, s.svc.FallbackInfo
-	r.terms, r.snippets = s.terms, s.snippets
-	if r.needsSpeechHints() {
-		r.speechHints = SpeechHints(r.settings, s.terms)
-	}
-	close(r.svcResolved)
-	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
-	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
-}
-
-// uploadLen is how much recording fits in one upload to p, under the
-// user's limit of userMB when it is the smaller (0: p splits no uploads).
-func uploadLen(p asr.Provider, userMB int) time.Duration {
-	if p == nil {
-		return 0
-	}
-	most := p.Caps().MaxBytes
-	if u := int64(userMB) << 20; u > 0 && u < most {
-		most = u
-	}
-	if most <= 44 {
-		return 0
-	}
-	return time.Duration(most-44) * time.Second / (2 * asr.SampleRate) // 44: the WAV header
-}
-
-// needs reports what the services lack for the session: a speech
-// model, or the language model Translate and Rewrite need.
-func (r *run) lacks() *Problem {
-	if r.svc.ASR == nil {
-		return ProblemOf(fmt.Errorf("%s: %w", r.req.Kind, ErrNoASR))
-	}
-	if r.svc.LLM == nil && r.req.Kind != store.KindTranscribe {
-		return &Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}
-	}
-	return nil
-}
 
 // selectionSettleMS, selectionPollMS and selectionModifierWaitMS: the
 // helper's waits around a selection read. A caret-only reading waits out
@@ -120,52 +55,82 @@ func (r *run) listen() (string, bool) {
 		svcDone = nil
 	}
 	var (
-		word     string
-		heard    chan heardText
-		said     string
-		endPause <-chan time.Time
-		quiet    bool // the user is silent
+		word         string
+		heard        chan heardText
+		said         string
+		endPause     <-chan time.Time
+		quiet        bool // the user is silent
 		openDone     chan openResult
 		stream       asr.Stream
 		openStarted  bool
 		openReturned bool
-		warmed       bool
+		connected    bool
+		prefilled    bool
 		stopCh       = r.stop
 		sceneDone    <-chan struct{}
 	)
 	sceneDone = r.sceneReadySignal()
-	maybeWarm := func() {
-		cleanupReady := !r.init.split || r.init.cleanupReady
-		if warmed || !openReturned || openDone != nil || !cleanupReady || r.sceneReadySignal() != nil || r.init.split && !r.init.cleanupRequested || r.svc.LLM == nil {
+	refreshHead := func() {
+		if !r.head.enabled.Load() {
 			return
 		}
-		warmed = true
-		go r.warmLLM()
+		for {
+			select {
+			case text := <-heard:
+				said = text
+			default:
+				if stopCh == nil {
+					r.head.ask(said)
+				} else if r.pauseWatch != nil && r.pauseWatch.quiet.Load() {
+					quiet = true
+					r.head.pause(said)
+				}
+				return
+			}
+		}
+	}
+	maybeWarm := func() {
+		cleanupReady := !r.init.split || r.init.cleanupReady
+		if r.head.enabled.Load() && (cleanupReady || !r.init.split) {
+			refreshHead()
+		}
+		if r.svc.LLM == nil {
+			return
+		}
+		remote := r.svc.LLMInfo.Remote
+		if r.init.split && (!r.init.cleanupRequested || !r.init.llmReady) {
+			return
+		}
+		if !connected && remote {
+			connected = true
+			r.warmConnect()
+		}
+		if r.sceneReadySignal() != nil || prefilled || r.init.split && (!r.init.cleanupReady || !remote && (!openReturned || openDone != nil)) {
+			return
+		}
+		prefilled = true
+		r.warmPrefill()
 	}
 	open := func() chan openResult {
 		st, ok := r.streamer()
 		if !ok {
 			return nil
 		}
-		r.startHead()
-		if word = r.endWord(); word != "" || r.head.enabled {
-			heard = make(chan heardText, 1)
-			r.heard, r.silent = heard, make(chan bool, 1)
-		}
+		word = r.endWord()
+		latePartials := r.prepareHeadInputs(word != "")
+		heard = r.heard
 		ch := make(chan openResult)
 		request := asr.StreamRequest{
-			SampleRate: asr.SampleRate,
-			Lang:       r.speechLang(),
-			Hints:      append([]string(nil), r.hints()...),
-			Prompt:     r.speechContext(),
-			LiveResult: r.settings.Audio.LiveResult,
+			SampleRate:   asr.SampleRate,
+			Lang:         r.speechLang(),
+			Hints:        append([]string(nil), r.hints()...),
+			Prompt:       r.speechContext(),
+			LiveResult:   r.settings.Audio.LiveResult,
 			EarlyPieces:  r.earlyPieces(),
-			LatePartials: r.head.enabled,
+			LatePartials: latePartials,
 		}
 		go func() {
-			r.logTiming("asr_open_started")
 			s, err := st.Open(r.ctx, request)
-			r.logTiming("asr_open_completed")
 			if r.ctx.Err() != nil {
 				if s != nil {
 					s.Close()
@@ -186,6 +151,7 @@ func (r *run) listen() (string, bool) {
 		if openStarted || !r.resolved || r.init.split && r.needsSpeechHints() && !r.init.termsReady {
 			return
 		}
+		maybeWarm()
 		openStarted = true
 		openDone = open()
 		if openDone == nil {
@@ -307,6 +273,8 @@ func (r *run) listen() (string, bool) {
 			}
 			r.setOpening(false)
 			stream = o.st
+			r.stream = stream
+			r.enableEarlyPieces()
 			finals = r.feed(stream)
 			maybeWarm()
 		case <-waitNote:
@@ -404,7 +372,7 @@ func (r *run) listen() (string, bool) {
 	}
 	if audioLen < cfg.MinRecording {
 		if stream != nil {
-			stream.Close()
+			r.stopStreamReader(stream)
 		}
 		if r.typedOnly() {
 			return "", true
@@ -461,6 +429,8 @@ func (r *run) listen() (string, bool) {
 				}
 				r.setOpening(false)
 				stream = o.st
+				r.stream = stream
+				r.enableEarlyPieces()
 				finals = r.feed(stream)
 				maybeWarm()
 			case <-waitNote:
@@ -490,10 +460,10 @@ func (r *run) listen() (string, bool) {
 		if err != nil {
 			salvaged = r.salvage(stream)
 		}
-		stream.Close()
-		if r.streamReaderDone != nil {
-			<-r.streamReaderDone
-			r.streamReaderDone = nil
+		if !r.stopStreamReader(stream) {
+			r.recognitionFailed = true
+			r.endFailed(&Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}, nil)
+			return "", false
 		}
 		if silent && r.typedOnly() {
 			return "", true
@@ -537,7 +507,6 @@ func (r *run) listen() (string, bool) {
 		return "", false
 	}
 	asrTime := r.now().Sub(asrStart)
-	r.logTiming("asr_final_completed")
 	if err != nil {
 		r.recognitionFailed = true
 		// The error itself follows in endFailed's line (or the notice's).

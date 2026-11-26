@@ -1,8 +1,11 @@
 package session
 
 import (
+	"errors"
+	"fmt"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/snippet"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -54,13 +57,8 @@ func (r *run) resolveIndependent() {
 	}
 	r.resolveCleanupChoice()
 	r.svcDone = nil
-	r.logTiming("asr_resolve_started")
-	if !r.needsSpeechHints() {
-		r.logTiming("asr_hints_ready")
-	}
 	go func() {
 		result := cfg.ResolveASR(r.ctx, r.req.Kind, r.settings)
-		r.logTiming("asr_resolve_completed")
 		if r.ctx.Err() == nil {
 			select {
 			case asrDone <- result:
@@ -111,12 +109,10 @@ func (r *run) resolveCleanupChoice() {
 	}
 	r.init.llmStarted = true
 	resultChannel := r.init.llmDone
-	r.logTiming("llm_resolve_started")
 	go func() {
 		effective := r.settings
 		effective.Features.Transcribe.Enhance = true
 		result := r.m.cfg.ResolveLLM(r.ctx, r.req.Kind, effective)
-		r.logTiming("llm_resolve_completed")
 		if r.ctx.Err() == nil {
 			select {
 			case resultChannel <- result:
@@ -204,10 +200,6 @@ func (r *run) useTerms(terms []store.Term) {
 		r.speechHints = SpeechHints(r.settings, terms)
 	}
 	r.init.termsReady = true
-	r.logTiming("dictionary_ready")
-	if r.needsSpeechHints() {
-		r.logTiming("asr_hints_ready")
-	}
 	r.maybeCleanupReady()
 }
 
@@ -222,8 +214,9 @@ func (r *run) maybeCleanupReady() {
 		return
 	}
 	r.init.cleanupReady = true
+	r.startHead()
+	r.enableEarlyPieces()
 	close(r.svcResolved)
-	r.logTiming("cleanup_context_ready")
 }
 
 func (r *run) awaitTranscribeData() bool {
@@ -319,7 +312,6 @@ func (r *run) awaitCleanupReadiness() bool {
 			if deadlineActive {
 				choice, _ := r.m.chooseCleanup(r)
 				if choice == cleanupRaw {
-					r.logTiming("cleanup_completed")
 					return false
 				}
 				if choice == cleanupCancelled {
@@ -335,7 +327,6 @@ func (r *run) awaitCleanupReadiness() bool {
 			r.m.notifyCleanupDeadline(r)
 			choice, _ := r.m.chooseCleanup(r)
 			if choice == cleanupRaw {
-				r.logTiming("cleanup_completed")
 				return false
 			}
 			if choice == cleanupCancelled {
@@ -345,4 +336,68 @@ func (r *run) awaitCleanupReadiness() bool {
 		}
 	}
 	return true
+}
+
+// awaitServices waits for the services; false when the session ended
+// (cancelled, or the services failed).
+func (r *run) awaitServices() bool {
+	if r.resolved {
+		return true
+	}
+	select {
+	case s := <-r.svcDone:
+		if s.err != nil {
+			r.fail(ProblemOf(s.err))
+			return false
+		}
+		r.useServices(s)
+		return true
+	case <-r.ctx.Done():
+		r.endCancelled(nil)
+		return false
+	}
+}
+
+// useServices keeps the resolved services.
+func (r *run) useServices(s svcResult) {
+	r.resolved = true
+	r.svc.ASR, r.svc.ASRInfo, r.svc.VAD = s.svc.ASR, s.svc.ASRInfo, s.svc.VAD
+	r.svc.LLM, r.svc.LLMInfo = s.svc.LLM, s.svc.LLMInfo
+	r.svc.Fallback, r.svc.FallbackInfo = s.svc.Fallback, s.svc.FallbackInfo
+	r.terms, r.snippets = s.terms, s.snippets
+	if r.needsSpeechHints() {
+		r.speechHints = SpeechHints(r.settings, s.terms)
+	}
+	r.startHead()
+	close(r.svcResolved)
+	up := uploadLen(s.svc.ASR, r.settings.Audio.UploadMB)
+	r.m.update(r, func(sn *Snapshot) { sn.ASR, sn.LLM, sn.UploadLen = s.svc.ASRInfo, s.svc.LLMInfo, up })
+}
+
+// uploadLen is how much recording fits in one upload to p, under the
+// user's limit of userMB when it is the smaller (0: p splits no uploads).
+func uploadLen(p asr.Provider, userMB int) time.Duration {
+	if p == nil {
+		return 0
+	}
+	most := p.Caps().MaxBytes
+	if u := int64(userMB) << 20; u > 0 && u < most {
+		most = u
+	}
+	if most <= 44 {
+		return 0
+	}
+	return time.Duration(most-44) * time.Second / (2 * asr.SampleRate) // 44: the WAV header
+}
+
+// lacks reports what the services lack for the session: a speech
+// model, or the language model Translate and Rewrite need.
+func (r *run) lacks() *Problem {
+	if r.svc.ASR == nil {
+		return ProblemOf(fmt.Errorf("%s: %w", r.req.Kind, ErrNoASR))
+	}
+	if r.svc.LLM == nil && r.req.Kind != store.KindTranscribe {
+		return &Problem{Code: ProblemNoLLM, Err: errors.New("no language model is ready")}
+	}
+	return nil
 }

@@ -166,7 +166,7 @@ func (r *run) endLive() {
 // Nor where the head start asks the whole text at every pause (headstart.go):
 // it is ahead of the sentences this would clean one by one.
 func newLivePolish(r *run) *livePolish {
-	if r.head.enabled {
+	if r.head.enabled.Load() {
 		return nil
 	}
 	r.m.mu.Lock()

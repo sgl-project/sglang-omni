@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -52,7 +53,7 @@ const (
 // this is a remote service's (Model.Remote).
 type headStart struct {
 	r       *run
-	enabled bool
+	enabled atomic.Bool
 	service string // the language model's id
 	under   int    // its ThinkingOffUnder
 
@@ -104,15 +105,52 @@ type headCall struct {
 	onDelta func(string)
 }
 
-// startHead readies the head start of a Transcribe whose clean-up a
-// remote service does. A picture of the window goes with one request
-// only: no head start.
-func (r *run) startHead() {
+// prepareHeadInputs allocates partial and pause channels before ASR workers
+// start when Head Start could become eligible later.
+func (r *run) prepareHeadInputs(endWord bool) bool {
 	r.head.r = r
-	r.head.service = r.svc.LLMInfo.ID
-	r.head.under = r.thinkOffUnder(r.head.service)
-	r.head.enabled = r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.svc.LLMInfo.Remote && r.svc.LLM != nil &&
-		r.shot == nil && r.transcribeCleanup() && !r.m.resting(r.svc.LLMInfo.ID)
+	possible := r.req.Kind == store.KindTranscribe && !r.settings.Features.Transcribe.CleanAfterStop && r.shot == nil && len(r.req.Images) == 0
+	if possible {
+		if r.init.split && !r.init.cleanupDecisionReady {
+			possible = r.settings.Features.Transcribe.Enhance || r.sc.cleanupPending
+		} else {
+			possible = r.transcribeCleanup()
+		}
+	}
+	if (endWord || possible) && r.heard == nil {
+		r.heard, r.silent = make(chan heardText, 1), make(chan bool, 1)
+	}
+	return possible
+}
+
+// startHead decides eligibility only after cleanup readiness is known.
+// The atomic store publishes the immutable service and Thinking policy to
+// stream and cleanup workers.
+func (r *run) startHead() {
+	if r.head.enabled.Load() {
+		return
+	}
+	if r.head.r == nil {
+		r.head.r = r
+	}
+	service := r.svc.LLMInfo.ID
+	if r.req.Kind != store.KindTranscribe || r.settings.Features.Transcribe.CleanAfterStop || r.shot != nil || len(r.req.Images) > 0 ||
+		!r.svc.LLMInfo.Remote || r.svc.LLM == nil || !r.transcribeCleanup() || r.m.resting(service) {
+		return
+	}
+	r.head.service = service
+	r.head.under = r.thinkOffUnder(service)
+	r.head.enabled.Store(true)
+}
+
+func (h *headStart) canAsk() bool {
+	r := h.r
+	if !h.enabled.Load() || r == nil || r.ctx.Err() != nil || r.cancelled.Load() || r.stopped.Load() || r.streamReaderOff.Load() {
+		return false
+	}
+	r.m.mu.Lock()
+	defer r.m.mu.Unlock()
+	return r.cleanupDecisionOpenLocked() && !r.skipped.Load()
 }
 
 // pause asks about the live text while the user is silent.
@@ -151,7 +189,7 @@ func (h *headStart) guess(live string) (string, bool) {
 // ask sends the requests of the text known so far, unless it has. It
 // reports whether it asked anything.
 func (h *headStart) ask(live string) bool {
-	if !h.enabled {
+	if !h.canAsk() {
 		return false
 	}
 	heard, cleaned, ok := h.normalize(live)
@@ -425,7 +463,7 @@ func (r *run) askPart(ctx context.Context, req llm.Request, text string) (llm.Re
 		}
 	}
 	resp, err := r.llmChatContext(ctx, req)
-	if h.enabled {
+	if h.enabled.Load() {
 		r.m.noteRate(h.service, resp, err)
 	}
 	return resp, err
@@ -542,10 +580,11 @@ type pauseWatch struct {
 	r        *run
 	detector *vad.Detector
 	speaking bool
+	quiet    atomic.Bool
 }
 
 func (r *run) watchPauses() *pauseWatch {
-	if !r.head.enabled {
+	if r.silent == nil {
 		return nil
 	}
 	return &pauseWatch{r: r, detector: vad.NewDetector(asr.SampleRate, vad.Params{HangoverMS: headHangover})}
@@ -559,6 +598,7 @@ func (w *pauseWatch) hear(pcm []byte) {
 	w.detector.Write(pcm)
 	if speaking := w.detector.Speaking(); speaking != w.speaking {
 		w.speaking = speaking
+		w.quiet.Store(!speaking)
 		select {
 		case <-w.r.silent:
 		default:

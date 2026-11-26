@@ -616,6 +616,14 @@ type prefillLLM struct {
 	prefills []llm.Request
 }
 
+type unavailablePrefillLLM struct{ *fakeLLM }
+
+func (m *unavailablePrefillLLM) CanPrefill() bool { return false }
+
+func (m *unavailablePrefillLLM) Prefill(context.Context, llm.Request) error {
+	panic("session submitted Prefill to a backend that does not support it")
+}
+
 func (p *prefillLLM) Prefill(_ context.Context, req llm.Request) error {
 	p.mu.Lock()
 	p.prefills = append(p.prefills, req)
@@ -693,28 +701,52 @@ func TestWarmLLM(t *testing.T) {
 	}
 }
 
+func TestLLMWithoutPrefillCapabilityStillCleans(t *testing.T) {
+	model := &unavailablePrefillLLM{fakeLLM: &fakeLLM{text: "Cleaned."}}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Cleaned." || len(model.requests()) != 1 || len(h.text.pastes()) != 1 {
+		t.Fatalf("end=%+v requests=%d deliveries=%q", end, len(model.requests()), h.text.pastes())
+	}
+}
+
 func TestTranslateAutoTargetWarmupDoesNotBlockRecognition(t *testing.T) {
 	release, releasePrefill := controlledRelease(t)
+	openRelease, releaseOpen := controlledRelease(t)
 	model := &blockingPrefillLLM{
 		fakeLLM: &fakeLLM{text: "早上好。"}, started: make(chan llm.Request, 1),
 		release: release, returned: make(chan struct{}, 1),
 	}
-	h := newHarness(t, &fakeStreamer{final: "おはようございます"}, model, func(_ *Config, s *settings.Settings) {
+	provider := &fakeStreamer{final: "おはようございます", openGate: openRelease}
+	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
 		s.General.MainLanguage, s.Features.Translate.Target = "zh", "ja"
 	})
 	drained := readinessRecording(h.audio, 4)
-	signals := observeInitializationTimings(h)
+	signals := observeSessionSignals(h)
 	id, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack})
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitInitializationSignal(t, signals.asrOpenDone, "Translate ASR Open")
+	waitInitializationSignal(t, signals.asrOpenStarted, "Translate ASR Open to start")
 	var warmup llm.Request
 	select {
 	case warmup = <-model.started:
 	case <-time.After(5 * time.Second):
 		t.Fatal("Translate warmup did not start")
 	}
+	select {
+	case <-signals.asrOpenDone:
+		t.Fatal("Translate ASR Open returned before the Prefill request was prepared")
+	default:
+	}
+	releaseOpen()
+	waitInitializationSignal(t, signals.asrOpenDone, "Translate ASR Open to complete")
+	waitInitializationSignal(t, signals.firstPCM, "PCM send while Prefill is blocked")
+	waitInitializationSignal(t, signals.firstPartial, "ASR partial while Prefill is blocked")
 	waitInitializationSignal(t, drained, "fixed recording to drain")
 	h.m.Stop(id)
 	end := h.rec.wait(t)

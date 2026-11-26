@@ -128,7 +128,7 @@ func TestTooShortCaptureEndsBeforeBlockedASRReadiness(t *testing.T) {
 				h.audio.maxFrame = testCase.maxFrames
 				h.audio.maxDone = make(chan struct{})
 			}
-			signals := observeInitializationTimings(h)
+			signals := observeSessionSignals(h)
 			setIndependentResolvers(h, provider, func(context.Context, Kind, settings.Settings) LLMReadiness {
 				return LLMReadiness{Outcome: LLMNotRequested}
 			})

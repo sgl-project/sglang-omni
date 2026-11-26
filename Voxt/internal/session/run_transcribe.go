@@ -11,27 +11,38 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-func (r *run) warmLLM() {
-	if r.req.Kind == store.KindTranscribe && !r.transcribeCleanup() {
+func (r *run) warmConnect() {
+	if r.ctx.Err() != nil || r.req.Kind == store.KindTranscribe &&
+		(r.init.split && !r.init.cleanupRequested || !r.init.split && !r.transcribeCleanup()) {
 		return
 	}
 	r.m.mu.Lock()
-	client, llmContext, remote := r.svc.LLM, r.llmCtx, r.svc.LLMInfo.Remote
+	client, ctx, remote := r.svc.LLM, r.llmCtx, r.svc.LLMInfo.Remote
 	r.m.mu.Unlock()
-	if client == nil || llmContext == nil {
+	if client == nil || ctx == nil || !remote {
 		return
 	}
-	if connector, ok := client.(llm.Connector); ok && remote {
-		go func() {
-			start := r.now()
-			if err := connector.Connect(llmContext); err != nil {
-				if llmContext.Err() == nil {
-					r.logf("info", "warming the language model up: %v", err)
-				}
-				return
+	connector, ok := client.(llm.Connector)
+	if !ok {
+		return
+	}
+	go func() {
+		start := r.now()
+		if err := connector.Connect(ctx); err != nil {
+			if ctx.Err() == nil {
+				r.logf("info", "warming the language model up: %v", err)
 			}
-			r.logf("debug", "connected to the language model in %v", r.now().Sub(start).Round(time.Millisecond))
-		}()
+			return
+		}
+		r.logf("debug", "connected to the language model in %v", r.now().Sub(start).Round(time.Millisecond))
+	}()
+}
+
+// warmPrefill builds the request on the session goroutine. Only the model
+// call runs in the background.
+func (r *run) warmPrefill() {
+	if r.ctx.Err() != nil {
+		return
 	}
 	prefiller, prefillContext, request, ok := r.prepareWarmup()
 	if !ok {
@@ -50,6 +61,9 @@ func (r *run) warmLLM() {
 }
 
 func (r *run) prepareWarmup() (llm.Prefiller, context.Context, llm.Request, bool) {
+	if r.ctx.Err() != nil {
+		return nil, nil, llm.Request{}, false
+	}
 	r.m.mu.Lock()
 	client, ctx := r.svc.LLM, r.llmCtx
 	r.m.mu.Unlock()

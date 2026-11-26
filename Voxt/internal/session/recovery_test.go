@@ -308,3 +308,89 @@ func TestRetry(t *testing.T) {
 func containsText(req llm.Request, text string) bool {
 	return len(req.Messages) > 0 && strings.Contains(req.Messages[len(req.Messages)-1].Content, text)
 }
+
+func openFakeSessionStream(t *testing.T, h *harness, provider *fakeStreamer) (*run, *fakeStream, <-chan struct{}) {
+	t.Helper()
+	signals := observeSessionSignals(h)
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, signals.firstPCM, "PCM send")
+	r := sessionRun(t, h)
+	provider.mu.Lock()
+	stream := provider.streams[len(provider.streams)-1]
+	provider.mu.Unlock()
+	if r.streamReaderDone == nil {
+		t.Fatal("ASR event reader did not start")
+	}
+	return r, stream, r.streamReaderDone
+}
+
+func TestStreamReaderShutdownOnTimeoutWithAndWithoutSalvage(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		salvage string
+		want    State
+	}{
+		{name: "salvaged", salvage: "live transcript", want: Done},
+		{name: "no salvage", want: Failed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &fakeStreamer{hang: true, salvage: tc.salvage, silent: tc.salvage == "", closeLeavesEventsOpen: true}
+			h := newHarness(t, provider, &fakeLLM{text: "Cleaned transcript."}, func(c *Config, s *settings.Settings) {
+				c.ASRTimeout, c.ASRPerSecond = 100*time.Millisecond, time.Nanosecond
+				s.Features.Transcribe.Enhance = tc.salvage != ""
+			})
+			id := h.start()
+			_, stream, readerDone := openFakeSessionStream(t, h, provider)
+			h.speak(id, 4)
+			end := h.rec.wait(t)
+			if end.State != tc.want {
+				t.Fatalf("end %+v, want %s", end, tc.want)
+			}
+			select {
+			case <-readerDone:
+			default:
+				t.Fatal("event reader remained blocked on the open Events channel")
+			}
+			stream.mu.Lock()
+			closed := stream.closed
+			stream.mu.Unlock()
+			if !closed {
+				t.Fatal("timed out ASR stream was not closed")
+			}
+			if tc.salvage != "" && (end.Result != "Cleaned transcript." || len(h.text.pastes()) != 1) {
+				t.Fatalf("salvaged result %+v deliveries=%q", end, h.text.pastes())
+			}
+			if tc.salvage == "" && len(h.text.pastes()) != 0 {
+				t.Fatalf("failed ASR unexpectedly delivered %q", h.text.pastes())
+			}
+		})
+	}
+}
+
+func TestStreamReaderShutdownOnCancellationIgnoresLateEvents(t *testing.T) {
+	provider := &fakeStreamer{hang: true, closeLeavesEventsOpen: true}
+	h := newHarness(t, provider, &fakeLLM{text: "unused"}, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+	})
+	id := h.start()
+	r, stream, readerDone := openFakeSessionStream(t, h, provider)
+	h.m.Cancel(id)
+	end := h.rec.wait(t)
+	if end.State != Cancelled {
+		t.Fatalf("end %+v, want cancelled", end)
+	}
+	select {
+	case <-readerDone:
+	default:
+		t.Fatal("cancelled event reader remained blocked on the open Events channel")
+	}
+	before := h.m.Current()
+	stream.events <- asr.Event{Kind: asr.EventPartial, Text: "stale partial"}
+	stream.events <- asr.Event{Kind: asr.EventPiece, Text: "stale stable text"}
+	if after := h.m.Current(); after.Rev != before.Rev || after.Partial != before.Partial || after.Draft != before.Draft {
+		t.Fatalf("late events mutated the cancelled snapshot: before %+v, after %+v", before, after)
+	}
+	if len(h.text.pastes()) != 0 || r.streamReaderDone != nil {
+		t.Fatalf("cancellation delivered text or retained reader ownership: deliveries=%q done=%v", h.text.pastes(), r.streamReaderDone)
+	}
+}

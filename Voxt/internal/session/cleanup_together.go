@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 )
 
 // partsTogether is how many of a long dictation's parts a remote service
@@ -17,13 +16,9 @@ import (
 // the client waits out; it is asked one by one afterwards (resting).
 const partsTogether = 4
 
-// cleanPartsTogether is cleanParts with the requests side by side: the
-// draft shows the answers in order, up to the first part not answered yet.
-func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []string, think *llm.Thinking, ctx context.Context) (string, string, error) {
-	return r.cleanPartsTogetherGeneration(text, parts, answered, think, ctx, 0)
-}
-
-func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, answered []string, think *llm.Thinking, ctx context.Context, generation uint64) (string, string, error) {
+// cleanPartsTogether runs the remaining parts side by side. Drafts publish
+// in order up to the first part not answered yet.
+func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []string, request cleanupRequest) (string, string, error) {
 	r.m.mu.Lock()
 	attempt := r.cleanupAttempt
 	r.m.mu.Unlock()
@@ -51,18 +46,13 @@ func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, an
 			so = append(so, compose.PartialOutput(drafts[n].String(), parts[n].Text, parts[n].Custom()))
 		}
 		draft := r.draftSnippets(compose.JoinParts(parts[:min(n+1, len(parts))], so), parts[:min(n+1, len(parts))])
-		var publishedAt time.Time
-		visible := r.m.updateIf(r, func(s *Snapshot) bool {
-			if ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupGeneration == generation && r.cleanupAttempt == attempt && r.cleanupDecisionOpenLocked() {
+		r.m.updateIf(r, func(s *Snapshot) bool {
+			if request.ctx.Err() == nil && r.ctx.Err() == nil && !r.skipped.Load() && r.cleanupGeneration == request.generation && r.cleanupAttempt == attempt && r.cleanupDecisionOpenLocked() {
 				s.Draft = draft
-				publishedAt = r.now()
 				return true
 			}
 			return false
 		})
-		if visible {
-			r.noteCleanDraftPublication(generation, attempt, publishedAt, draft)
-		}
 	}
 	slots := make(chan struct{}, partsTogether)
 	var wg sync.WaitGroup
@@ -74,7 +64,7 @@ func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, an
 				return
 			}
 			p := parts[i]
-			resp, err := r.askPart(ctx, r.partRequest(text, p, think, func(delta string) {
+			resp, err := r.askPart(request.ctx, r.partRequest(text, p, request.thinking, func(delta string) {
 				mu.Lock()
 				defer mu.Unlock()
 				drafts[i].WriteString(delta)
@@ -83,7 +73,7 @@ func (r *run) cleanPartsTogetherGeneration(text string, parts []compose.Part, an
 					publish()
 				}
 			}), p.Text)
-			if ctx.Err() != nil || r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load() {
+			if request.ctx.Err() != nil || r.ctx.Err() != nil || r.skipped.Load() || r.rethink.Load() {
 				return
 			}
 			mu.Lock()

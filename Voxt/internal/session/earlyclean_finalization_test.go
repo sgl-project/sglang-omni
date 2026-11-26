@@ -51,7 +51,6 @@ func TestEarlyCleanTranscriptCoveredByCompletedSegment(t *testing.T) {
 func TestEarlyCleanMatchingPrefixWaitsForInFlightRequest(t *testing.T) {
 	model := newEarlyOrderedLLM()
 	h := newHarness(t, &fakeStreamer{final: "one", pieces: []string{"one"}}, model, nil)
-	signals := observeInitializationTimings(h)
 	h.audio.notifyAt, h.audio.notified = 3, make(chan struct{})
 	id := h.start()
 	model.waitStarted(t, 0)
@@ -66,11 +65,6 @@ func TestEarlyCleanMatchingPrefixWaitsForInFlightRequest(t *testing.T) {
 	end := h.rec.wait(t)
 	if end.State != Done || end.Result != "整理一。" || end.Raw != "one" || end.Problem != nil {
 		t.Fatalf("end %+v, want the normal cleaned result without degradation", end)
-	}
-	waitInitializationSignal(t, signals.cleanedResult, "reused Early Cleanup result publication")
-	waitInitializationSignal(t, signals.cleanedPublished, "reused Early Cleanup publication")
-	if _, ok := optionalBenchmarkTime(signals.cleanedDraft); ok {
-		t.Fatal("reused Early Cleanup result was reported as a new session draft publication")
 	}
 }
 

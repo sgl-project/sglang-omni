@@ -63,8 +63,10 @@ type fakeAudio struct {
 	fileTick time.Duration
 	drained  chan struct{}
 	// notified closes once notifyAt frames were sent (0: never).
-	notifyAt int
-	notified chan struct{}
+	notifyAt     int
+	notified     chan struct{}
+	firstPCM     chan struct{}
+	firstPCMOnce sync.Once
 
 	mu      sync.Mutex
 	stops   map[string]chan struct{}
@@ -76,7 +78,7 @@ type fakeAudio struct {
 }
 
 func newFakeAudio() *fakeAudio {
-	return &fakeAudio{tick: time.Millisecond, stops: map[string]chan struct{}{}, late: map[string]func(AudioEvent){}}
+	return &fakeAudio{tick: time.Millisecond, stops: map[string]chan struct{}{}, late: map[string]func(AudioEvent){}, firstPCM: make(chan struct{})}
 }
 
 func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams, fn func(AudioEvent)) (proto.CaptureResult, error) {
@@ -157,6 +159,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.quiet || f.speaks != nil && !f.speaks(n) {
 				data = quietFrame
 			}
+			f.firstPCMOnce.Do(func() { close(f.firstPCM) })
 			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: data}})
 			n++
 			f.mu.Lock()
@@ -230,215 +233,6 @@ func (f *fakeAudio) lateEvents(id string) {
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "late"}})
 }
 
-// fakeStreamer streams: a partial per frame, the final on Finish.
-type fakeStreamer struct {
-	final             string
-	openErr           error
-	finalErr          error         // the stream fails instead of answering
-	errAfter          int           // the stream fails after this many sends
-	hang              bool          // no final after Finish
-	openWait          time.Duration // Open takes this long
-	openGate          chan struct{} // Open waits for it to close (nil: no wait)
-	openStarted       chan struct{}
-	finishGate        <-chan struct{} // Finish waits for it to close (nil: no wait)
-	finishStarted     chan struct{}   // signalled once Finish begins
-	finishEmitted     chan bool       // whether Finish emitted its Final event
-	partialGate       <-chan struct{}
-	partialReturnGate <-chan struct{}
-	silent            bool // no partials
-	// partials are what its partials say, one per send, the last one
-	// repeated (nil: "partial").
-	partials []string
-	// pieces are the cumulative "final so far" texts it reports while
-	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
-	pieces     []string
-	candidates []string
-	salvage    string    // the text its streams salvage (asr.Salvager), "" for none
-	onSend     func(int) // called after the i-th send (nil: not)
-
-	mu      sync.Mutex
-	streams []*fakeStream
-	hints   []string
-	prompt  string // the last stream's prompt
-	// liveResult is the last stream's StreamRequest.LiveResult.
-	liveResult bool
-}
-
-func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
-
-func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
-	if f.openStarted != nil {
-		select {
-		case f.openStarted <- struct{}{}:
-		default:
-		}
-	}
-	if f.openWait > 0 {
-		select {
-		case <-time.After(f.openWait):
-		case <-ctx.Done():
-			return nil, &asr.Error{Kind: asr.KindCancelled}
-		}
-	}
-	if f.openGate != nil {
-		select {
-		case <-f.openGate:
-		case <-ctx.Done():
-			return nil, &asr.Error{Kind: asr.KindCancelled}
-		}
-	}
-	if f.openErr != nil {
-		return nil, f.openErr
-	}
-	s := &fakeStream{
-		f: f, ctx: ctx, events: make(chan asr.Event, 1024),
-		latePartials: req.LatePartials, candidates: f.candidates,
-		partialGate: f.partialGate, partialReturnGate: f.partialReturnGate,
-	}
-	f.mu.Lock()
-	f.streams = append(f.streams, s)
-	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
-	f.mu.Unlock()
-	return s, nil
-}
-
-func (f *fakeStreamer) latePartialsRequested() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.streams) > 0 && f.streams[len(f.streams)-1].latePartials
-}
-
-type fakeStream struct {
-	f                 *fakeStreamer
-	ctx               context.Context
-	mu                sync.Mutex
-	bytes             int
-	data              []byte // what was sent
-	sends             int
-	closed            bool
-	done              bool
-	events            chan asr.Event
-	latePartials      bool
-	candidates        []string
-	partialGate       <-chan struct{}
-	partialReturnGate <-chan struct{}
-}
-
-func (s *fakeStream) emit(ev asr.Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.done {
-		return
-	}
-	if ev.Kind == asr.EventFinal || ev.Kind == asr.EventError {
-		s.done = true
-	}
-	s.events <- ev
-	if s.done {
-		close(s.events)
-	}
-}
-
-func (s *fakeStream) Send(pcm []byte) error {
-	s.mu.Lock()
-	if s.done || s.closed {
-		s.mu.Unlock()
-		return &asr.Error{Kind: asr.KindProtocol, Detail: "the stream has ended"}
-	}
-	s.bytes += len(pcm)
-	s.data = append(s.data, pcm...)
-	s.sends++
-	n := s.sends
-	s.mu.Unlock()
-	if s.f.errAfter > 0 && n >= s.f.errAfter {
-		s.emit(asr.Event{Kind: asr.EventError, Err: &asr.Error{Kind: asr.KindNetwork, Detail: "connection reset"}})
-		return nil
-	}
-	if !s.f.silent {
-		if n == 1 && s.partialGate != nil {
-			select {
-			case <-s.partialGate:
-			case <-s.ctx.Done():
-				return &asr.Error{Kind: asr.KindCancelled}
-			}
-		}
-		text := "partial"
-		if len(s.f.partials) > 0 {
-			text = s.f.partials[min(n, len(s.f.partials))-1]
-		}
-		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
-		if n == 1 && s.partialReturnGate != nil {
-			select {
-			case <-s.partialReturnGate:
-			case <-s.ctx.Done():
-				return &asr.Error{Kind: asr.KindCancelled}
-			}
-		}
-	}
-	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
-		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
-	}
-	if s.f.onSend != nil {
-		s.f.onSend(n)
-	}
-	return nil
-}
-
-func (s *fakeStream) Salvage() string { return s.f.salvage }
-
-func (s *fakeStream) Finish() error {
-	defer func() {
-		if s.f.finishEmitted != nil {
-			s.mu.Lock()
-			emitted := s.done
-			s.mu.Unlock()
-			select {
-			case s.f.finishEmitted <- emitted:
-			default:
-			}
-		}
-	}()
-	if s.f.finishStarted != nil {
-		select {
-		case s.f.finishStarted <- struct{}{}:
-		default:
-		}
-	}
-	if s.latePartials {
-		for _, text := range s.candidates {
-			s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
-		}
-	}
-	if s.f.finishGate != nil {
-		select {
-		case <-s.f.finishGate:
-		case <-s.ctx.Done():
-			return &asr.Error{Kind: asr.KindCancelled, Detail: s.ctx.Err().Error()}
-		}
-	}
-	switch {
-	case s.f.hang:
-	case s.f.finalErr != nil:
-		s.emit(asr.Event{Kind: asr.EventError, Err: s.f.finalErr})
-	default:
-		s.emit(asr.Event{Kind: asr.EventFinal, Text: s.f.final, Result: asr.Result{Text: s.f.final, Model: "fake-stream"}})
-	}
-	return nil
-}
-
-func (s *fakeStream) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.closed {
-		s.closed = true
-		if !s.done {
-			close(s.events)
-		}
-	}
-}
-
-func (s *fakeStream) Events() <-chan asr.Event { return s.events }
-
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
 	text              string
@@ -506,15 +300,26 @@ type fakeLLM struct {
 	// one, as a model that repeats the prompt's example does.
 	copyExample bool
 
-	mu       sync.Mutex
-	reqs     []llm.Request
-	answered int           // the requests answered so far
-	answerCh chan struct{} // closed on the next answer; see answerSignal
+	mu               sync.Mutex
+	reqs             []llm.Request
+	answered         int           // the requests answered so far
+	answerCh         chan struct{} // closed on the next answer; see answerSignal
+	firstRequest     chan struct{}
+	firstRequestOnce sync.Once
+}
+
+func (f *fakeLLM) ensureSignals() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.firstRequest == nil {
+		f.firstRequest = make(chan struct{})
+	}
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, req)
+	firstRequest := f.firstRequest
 	text := f.text
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
@@ -530,6 +335,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 	failDelta := f.failDelta
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
+	if firstRequest != nil {
+		f.firstRequestOnce.Do(func() { close(firstRequest) })
+	}
 	if hang {
 		if req.OnDelta != nil {
 			req.OnDelta(cmp.Or(f.hangDelta, "Half an ans"))
