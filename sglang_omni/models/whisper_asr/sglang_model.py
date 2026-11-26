@@ -196,8 +196,8 @@ class WhisperEncoderLayer(nn.Module):
         super().__init__()
         self.self_attn = WhisperEncoderAttention(config)
         self.self_attn_layer_norm = nn.LayerNorm(config.d_model)
-        self.fc1 = whisper_linear(config.d_model, config.decoder_ffn_dim)
-        self.fc2 = whisper_linear(config.decoder_ffn_dim, config.d_model)
+        self.fc1 = whisper_linear(config.d_model, config.encoder_ffn_dim)
+        self.fc2 = whisper_linear(config.encoder_ffn_dim, config.d_model)
         self.final_layer_norm = nn.LayerNorm(config.d_model)
         self.activation_fn = ACT2FN[config.activation_function]
 
@@ -451,6 +451,13 @@ class WhisperDecoderModel(nn.Module):
         super().__init__()
         self.decoder = WhisperDecoder(config, quant_config=quant_config)
 
+    def pack_amx_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, WhisperAMXLinear):
+                module.pack_amx_weights()
+            else:
+                pass
+
     @property
     def layers(self) -> nn.ModuleList:
         return self.decoder.layers
@@ -486,13 +493,6 @@ class WhisperModel(WhisperDecoderModel):
     ) -> None:
         super().__init__(config, quant_config=quant_config)
         self.encoder = WhisperEncoder(config)
-
-    def pack_amx_weights(self) -> None:
-        for module in self.modules():
-            if isinstance(module, WhisperAMXLinear):
-                module.pack_amx_weights()
-            else:
-                pass
 
 
 class WhisperForConditionalGeneration(nn.Module):
