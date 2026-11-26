@@ -26,14 +26,24 @@ func Silence(d time.Duration) []byte {
 
 // WAV wraps PCM16 mono at rate Hz (0: SampleRate) in a WAV header.
 func WAV(pcm []byte, rate int) []byte {
+	header := WAVHeader(len(pcm), rate)
+	wav := make([]byte, len(header)+len(pcm))
+	copy(wav, header)
+	copy(wav[len(header):], pcm)
+	return wav
+}
+
+// WAVHeader is the header for pcmBytes of PCM16 mono at rate Hz
+// (0: SampleRate), for callers that stream the samples without a WAV copy.
+func WAVHeader(pcmBytes, rate int) []byte {
 	if rate <= 0 {
 		rate = SampleRate
 	}
 	var b bytes.Buffer
-	b.Grow(44 + len(pcm))
+	b.Grow(44)
 	w := func(v any) { binary.Write(&b, binary.LittleEndian, v) }
 	b.WriteString("RIFF")
-	w(uint32(36 + len(pcm)))
+	w(uint32(36 + pcmBytes))
 	b.WriteString("WAVEfmt ")
 	w(uint32(16))
 	w(uint16(1)) // PCM
@@ -43,8 +53,7 @@ func WAV(pcm []byte, rate int) []byte {
 	w(uint16(2))
 	w(uint16(16))
 	b.WriteString("data")
-	w(uint32(len(pcm)))
-	b.Write(pcm)
+	w(uint32(pcmBytes))
 	return b.Bytes()
 }
 

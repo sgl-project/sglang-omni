@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -36,7 +37,7 @@ func runTranscribeCLI(args []string) int {
 	return transcribeCLI(args, os.Stdout, os.Stderr, filepath.Join(filepath.Dir(historySocketPath()), fileasr.SocketName), decodeAudio)
 }
 
-func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decode func(string) ([]byte, error)) int {
+func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decode func(context.Context, string) ([]byte, error)) int {
 	fs := flag.NewFlagSet("transcribe", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	format := fs.String("format", fileasr.FormatSRT, "")
@@ -63,7 +64,7 @@ func transcribeCLI(args []string, stdout, stderr io.Writer, socket string, decod
 		return exitUsage
 	}
 	in := files[0]
-	pcm, err := decode(in)
+	pcm, err := decode(context.Background(), in)
 	if err != nil {
 		fmt.Fprintf(stderr, "Cannot read the sound of %s: %v\n", in, err)
 		return exitUnreadable
@@ -110,7 +111,19 @@ func hms(d time.Duration) string {
 
 // decodeAudio is the file's sound as Voxt's PCM (16-bit, mono, 16 kHz),
 // by macOS's afconvert, which reads the sound of mp4 and mov videos too.
-func decodeAudio(path string) ([]byte, error) {
+// A cancelled ctx kills the conversion.
+func decodeAudio(ctx context.Context, path string) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "voxt-transcribe-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	return decodeAudioToWAV(ctx, path, filepath.Join(dir, "audio.wav"))
+}
+
+// decodeAudioToWAV leaves afconvert's output at wavPath, including the
+// decoded prefix when a meeting import is cancelled.
+func decodeAudioToWAV(ctx context.Context, path, wavPath string) ([]byte, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
@@ -118,20 +131,17 @@ func decodeAudio(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "voxt-transcribe-")
-	if err != nil {
-		return nil, err
+	msg, err := exec.CommandContext(ctx, "/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wavPath).CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
-	defer os.RemoveAll(dir)
-	wav := filepath.Join(dir, "audio.wav")
-	msg, err := exec.Command("/usr/bin/afconvert", "-f", "WAVE", "-d", fmt.Sprintf("LEI16@%d", asr.SampleRate), "-c", "1", path, wav).CombinedOutput()
 	if err != nil {
 		if m := strings.TrimSpace(string(msg)); m != "" {
 			return nil, fmt.Errorf("not an audio or video file macOS can read (%s)", m)
 		}
 		return nil, err
 	}
-	data, err := os.ReadFile(wav)
+	data, err := os.ReadFile(wavPath)
 	if err != nil {
 		return nil, err
 	}

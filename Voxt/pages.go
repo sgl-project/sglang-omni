@@ -101,6 +101,7 @@ func (a *app) page(c *uiContext, p navPage) {
 		meetingsPage(c, &model, a, &a.mvUI, a.pageWidth(c))
 		a.meetingSettingsDialog(c)
 		meetingDeleteDialog(c, &a.mvUI, a)
+		meetingImportDialog(c, a, &a.mvUI)
 		return
 	case "/notes":
 		a.prepareNotesPage()

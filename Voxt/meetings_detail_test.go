@@ -371,3 +371,29 @@ func TestMeetingDetailClosesWithAskShown(t *testing.T) {
 		t.Fatal("the detail is still open")
 	}
 }
+
+// Close in the loading header also clears local state before the loading
+// notice finishes its frame.
+func TestMeetingDetailClosesWhileLoading(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	if _, err := a.lib.store.Meetings().CreateMeeting(context.Background(), store.Meeting{
+		ID: "m-loading", CreatedAt: time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC),
+		Status: store.MeetingDone, Mode: store.MeetingModeMeeting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tt.SetSize(windowWidth, 900)
+	a.navigate("/meetings")
+	a.openMeetingDetail("m-loading")
+	a.mv.detail.loading = true
+	a.mv.detail.audioProbe++
+	a.rebuildMeetingDetail()
+	frames(tt)
+	if err := tt.ClickControl("Close"); err != nil {
+		t.Fatalf("%v (%q)", err, firstTexts(tt))
+	}
+	frames(tt)
+	if a.mv.detail != nil {
+		t.Fatal("the loading detail is still open")
+	}
+}

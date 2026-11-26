@@ -17,7 +17,7 @@ var meetingStatuses = []store.MeetingStatus{
 	store.MeetingRecording, store.MeetingInterrupted, store.MeetingAsking,
 	store.MeetingFinishing, store.MeetingDone, store.MeetingFailed,
 }
-var meetingModes = []store.MeetingMode{store.MeetingModeMeeting, store.MeetingModeSubtitles, store.MeetingModeRecording}
+var meetingModes = []store.MeetingMode{store.MeetingModeMeeting, store.MeetingModeSubtitles, store.MeetingModeRecording, store.MeetingModeImport}
 var segmentSources = []store.SegmentSource{store.SegmentMic, store.SegmentSystem}
 
 type meetingsRepo struct{ db *sqlite.DB }

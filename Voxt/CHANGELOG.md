@@ -9,10 +9,20 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
 - **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
 
+### Added
+- **Import a meeting recording**: the Meetings page can turn an audio file, or the sound of a video, into a meeting. MOSS-Transcribe-Diarize transcribes the mixed track in two-minute requests and labels every voice Speaker 1–N, then the usual correction and summary run. The import keeps the file's name, date and duration, reports progress, and leaves an interrupted meeting with its audio for Continue processing if it is cancelled.
+
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **Closing a meeting's details no longer crashes**: with a language model set up, opening a completed meeting and clicking Close could panic while the page still drew the follow-up question field.
+- **Long meeting imports use bounded memory and time**: a one-hour import sends MTD and voice-activity requests in bounded batches without making a whole-track WAV copy or reading the new WAV back, and import processing stops after 30 minutes. Cancelling decoding or processing keeps an interrupted meeting and its decoded audio for Continue processing. An import and a live meeting cannot run at the same time, and preview databases with dictionary profiles migrate and reopen correctly.
+- **Continue processing refuses an import without usable decoded audio**: a missing, truncated, unreadable, or zero-sample WAV no longer lets Continue processing finish an empty meeting; it stays interrupted and reports the recording error.
+- **Continue processing refreshes an open meeting's details when it finishes**: after Continue processing an interrupted import, the details kept showing Continue processing until Voxt restarted, so clicking it again repeated the model pass. The open details now reload when the import reaches done.
 
 ### 中文
+
+#### 新增
+- **导入会议录音**：会议页可以把音频文件或视频中的声音导入成会议。MOSS-Transcribe-Diarize 按两分钟一段转写混合音轨，并把每个声音标为说话人 1–N，然后照常校对和生成摘要。导入保留文件名、日期和时长，显示处理进度；取消后会议和音频保留为已中断，可以继续整理。
 
 #### 变更
 - **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
@@ -21,6 +31,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **关闭会议详情不再崩溃**：设置语言模型后，打开已完成的会议并点击「关闭」时，页面绘制追问输入框可能崩溃。
+- **长会议导入限制内存和等待时间**：导入一小时录音时，MTD 和人声检测请求都分批处理，不再复制整段 WAV 或重新读回新 WAV；导入处理最多等待 30 分钟。解码或处理中途取消会保留已中断的会议和已解码音频，可以继续整理。导入和现场会议不能同时进行；带词典配置的旧预览数据库也能正确迁移和重新打开。
+- **没有可用解码音频的导入不会完成**：WAV 缺失、截断、不可读或没有任何音频样本时，「继续整理」会报告录音错误并保持已中断，不再把空会议标为完成。
+- **继续整理完成后刷新打开的会议详情**：中断的导入点「继续整理」完成后，详情一直显示「继续整理」直到重启 Voxt，再点一次会重复跑模型。现在导入完成后，打开的详情会自动刷新。
 
 ## [Unreleased]
 

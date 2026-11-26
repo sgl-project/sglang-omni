@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
@@ -25,6 +27,13 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	if mt.Status == store.MeetingDone && mt.Audio == "" {
 		return ErrNoRecording // its transcript stays as it is
 	}
+	// Unlike a recorded meeting, an interrupted import has no live transcript
+	// to finish from when its decoded WAV is gone.
+	if mt.Status == store.MeetingInterrupted && fromStoreMode(mt.Mode) == ModeImport {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, mt.Audio, string(SourceSystem)+".wav")); err != nil {
+			return err
+		}
+	}
 	mt.Status = store.MeetingFinishing
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
 		return err
@@ -37,9 +46,21 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 		m.mu.Unlock()
 		m.notify(m.Current())
 	}
-	err = FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(id))
+	cfg := m.cfg
+	if fromStoreMode(mt.Mode) == ModeImport {
+		cfg = importPassConfig(cfg)
+	}
+	err = FinalizePass(ctx, cfg, mt, m.finalizeProgress(id))
 	if err != nil {
 		return err
+	}
+	if fromStoreMode(mt.Mode) == ModeImport {
+		return m.finishImport(ctx, mt, !m.cfg.Settings().NoAutoSummary)
+	}
+	// Recorded meetings keep their warning-only correction and summary;
+	// imports return those failures from finishImport above.
+	if !m.cfg.Settings().NoAutoSummary {
+		_ = m.correctAndSummarize(ctx, id)
 	}
 	if m.id == id {
 		m.mu.Lock()
@@ -128,18 +149,25 @@ func (m *Manager) finalizeProgress(id string) func(float64) {
 }
 
 // correctAndSummarize corrects the transcript, then summarizes it; a
-// correction that fails leaves the summary to the recognised text.
-func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
+// correction that fails leaves the summary to the recognised text, and
+// the caller hears of it.
+func (m *Manager) correctAndSummarize(ctx context.Context, id string) error {
+	var first error
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
+		first = err
 	}
 	m.dropCorrectOverlap()
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
+		if first == nil {
+			first = err
+		}
 	}
 	if m.cfg.Updated != nil {
 		m.cfg.Updated(id)
 	}
+	return first
 }
 
 func (m *Manager) warn(msg string) {

@@ -38,12 +38,18 @@ func TestDiarizeTrackChunksAndCarriesSpeakers(t *testing.T) {
 	rate := asr.SampleRate
 	pcm := make([]byte, rate*200*2) // 200 s
 	speech := []vad.Segment{{Start: 0, End: rate * 200}}
-	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, nil)
+	var progress []float64
+	segs, err := diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, pcm, speech, func(p float64) {
+		progress = append(progress, p)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(d.requests) != 2 {
 		t.Fatalf("%d requests, want one per chunk", len(d.requests))
+	}
+	if len(progress) != 3 || progress[0] != 0 || progress[1] != 0.5 || progress[2] != 1 {
+		t.Fatalf("progress calls %v, want 0, 0.5, 1", progress)
 	}
 	first, second := d.requests[0], d.requests[1]
 	if first.Prompt != mossPrompt {
