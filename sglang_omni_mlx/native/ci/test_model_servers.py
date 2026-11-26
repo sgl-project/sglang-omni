@@ -969,8 +969,7 @@ def test_funasr_leaves_the_silence_marker_out_of_the_text(
 ) -> None:
     """The checkpoint writes the /sil marker at this clip's pauses between sentences, and the transcript kept it."""
     status, body = funasr_server.post_form(
-        {"stream": "true", "language": "zh", "include_generation_metadata": "true"},
-        clip("0360_zh_long"),
+        {"stream": "true", "language": "zh"}, clip("0360_zh_long")
     )
     assert status == 200
     done = sse_events(body)[0]
