@@ -148,11 +148,11 @@ func finalizeTrack(ctx context.Context, cfg Config, dir string, src Source, mode
 	if cfg.ASR != nil {
 		ta, aerr := cfg.ASR(ctx, src)
 		req := asr.FileRequest{SampleRate: rate, Format: "pcm"}
+		req.Lang, req.Prompt, req.Hints = ta.Lang, ta.Prompt, ta.Hints
 		if aerr == nil {
 			if ta.Caps.MaxDuration > 0 {
 				chunkP.CapMaxDur = ta.Caps.MaxDuration
 			}
-			req.Lang, req.Prompt, req.Hints = ta.Lang, ta.Prompt, ta.Hints
 		}
 		if diarize && src == SourceSystem {
 			var d asr.Diarizer

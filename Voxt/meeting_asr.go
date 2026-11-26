@@ -87,23 +87,6 @@ func (a *app) meetingLang() string {
 }
 
 func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.TrackASR, error) {
-	id := strings.TrimSpace(a.prefs.Features.Meeting.ASR)
-	if id == "" {
-		// Automatic follows the features' rule (session_link.go's
-		// resolver): a model the language gate keeps for the meeting's
-		// language, so a meeting in a language MTD does not know never
-		// lands on it (#4067).
-		m, ok := local.Choose(automaticSpeechFor(a.meetingLang(), a.local.Installed(local.ASR)), "")
-		if !ok {
-			return meeting.TrackASR{}, local.NotInstalledError(local.ASR, id)
-		}
-		id = m.ID
-	}
-	p, _, err := a.local.ASR(ctx, id)
-	if err != nil {
-		return meeting.TrackASR{}, err
-	}
-	caps := p.Caps()
 	l := a.meetingLang()
 	// The dictionary terms and speech context dictation sends (#3988); a
 	// dictionary that will not read leaves the meeting without terms.
@@ -115,7 +98,26 @@ func (a *app) meetingTrackASR(ctx context.Context, src meeting.Source) (meeting.
 	}
 	// What dictation's speechContext gives an on-device model: no service template.
 	prompt := strings.TrimSpace(a.prefs.Dictionary.SpeechContext)
-	ta := meeting.TrackASR{Caps: caps, Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
+	// MTD can use this metadata even when the ordinary provider cannot open.
+	ta := meeting.TrackASR{Lang: l, Prompt: prompt, Hints: hints, StreamReq: asr.StreamRequest{Lang: l, Prompt: prompt, Hints: hints}}
+	id := strings.TrimSpace(a.prefs.Features.Meeting.ASR)
+	if id == "" {
+		// Automatic follows the features' rule (session_link.go's
+		// resolver): a model the language gate keeps for the meeting's
+		// language, so a meeting in a language MTD does not know never
+		// lands on it (#4067).
+		m, ok := local.Choose(automaticSpeechFor(a.meetingLang(), a.local.Installed(local.ASR)), "")
+		if !ok {
+			return ta, local.NotInstalledError(local.ASR, id)
+		}
+		id = m.ID
+	}
+	p, _, err := a.local.ASR(ctx, id)
+	if err != nil {
+		return ta, err
+	}
+	caps := p.Caps()
+	ta.Caps = caps
 	if ft, ok := p.(asr.FileTranscriber); ok && caps.File {
 		ta.File = ft
 	}

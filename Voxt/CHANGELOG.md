@@ -15,6 +15,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
 - **Continue processing finishes an interrupted import**: with the after-meeting pass turned off, Continue processing on an interrupted import ran nothing and the meeting stayed finishing forever, and a failed transcript clean-up or summary looked like a success. Continue processing now runs the pass as the import itself does, the meeting ends done, and a clean-up or summary failure is reported.
+- **MTD-only recording imports keep recognition metadata**: if the selected ordinary speech model cannot open, the MTD fallback still receives the meeting language, dictionary hints and Speech context instead of empty values.
 
 ### 中文
 
@@ -29,6 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
 - **“继续整理”能把中断的导入跑完**：关掉会后重新整理时，对中断的导入点“继续整理”什么都不跑，会议一直停在收尾状态，转录稿校对或总结失败也被当成成功。现在“继续整理”和导入本身一样会跑整理，会议正常完成，校对或总结失败会提示失败。
+- **仅由 MTD 转录导入录音时保留识别元数据**：所选的普通语音识别模型无法打开时，MTD 回退仍会收到会议语言、词典热词和识别上下文，不再收到空值。
 
 ## [Unreleased]
 

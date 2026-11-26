@@ -39,9 +39,13 @@ func (l *importLocal) ASR(ctx context.Context, id string) (asr.Provider, local.M
 }
 
 // importDiarizeFake is MTD on a two-speaker file.
-type importDiarizeFake struct{ fakeTranscriptions }
+type importDiarizeFake struct {
+	fakeTranscriptions
+	requests []asr.FileRequest
+}
 
-func (f *importDiarizeFake) Diarize(context.Context, asr.FileRequest) (asr.Result, error) {
+func (f *importDiarizeFake) Diarize(_ context.Context, req asr.FileRequest) (asr.Result, error) {
+	f.requests = append(f.requests, req)
 	return asr.Result{Segments: []asr.SpeakerSegment{
 		{Start: 0, End: time.Second, Speaker: "S01", Text: "welcome everyone"},
 		{Start: time.Second, End: 2 * time.Second, Speaker: "S02", Text: "thanks for having me"},
@@ -117,6 +121,63 @@ func TestMeetingImportLabelsSpeakersAndSummarizes(t *testing.T) {
 	frames(tt)
 	if _, ok := tt.Find("Speaker 1"); !ok {
 		t.Fatalf("no speaker labels in the details (%q)", firstTexts(tt))
+	}
+}
+
+// MTD still gets the meeting's language, dictionary and speech context when
+// the selected ordinary speech model cannot open for an import.
+func TestMeetingImportMTDKeepsMetadataWhenSelectedASRFails(t *testing.T) {
+	saved := decodeRecording
+	t.Cleanup(func() { decodeRecording = saved })
+	decodeRecording = func(context.Context, string) ([]byte, error) {
+		pcm := make([]byte, 2*asr.SampleRate*3)
+		for i := 0; i < len(pcm); i += 2 {
+			pcm[i], pcm[i+1] = 0x10, 0x7f
+		}
+		return pcm, nil
+	}
+	for _, tc := range []struct {
+		name            string
+		meetingLanguage string
+		dictionary      bool
+		wantLanguage    string
+		wantHints       []string
+	}{
+		{name: "language dictionary and context", dictionary: true, wantLanguage: "en", wantHints: []string{"Voxt"}},
+		{name: "meeting language with dictionary off", meetingLanguage: "zh-Hans", wantLanguage: "zh-Hans"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, _ := newTestApp(t)
+			chat := &fakeChat{texts: []string{
+				"[]",
+				`{"transcript_summary": {"title": "Weekly sync", "content": "Two speakers met."}, "todo_list": []}`,
+			}}
+			diarizer := &importDiarizeFake{}
+			a.local = &importLocal{fakeLocal: withChat(&fakeLocal{}, chat), mtd: diarizer}
+			a.prefs.General.MainLanguage = "en"
+			a.prefs.Features.Meeting.ASR = models.ASRAccurate
+			a.prefs.Features.Meeting.Lang = tc.meetingLanguage
+			a.prefs.Dictionary.Enabled = tc.dictionary
+			a.prefs.Dictionary.ASRHints = true
+			a.prefs.Dictionary.SpeechContext = "A Zoom call about Voxt"
+			if err := a.lib.store.Dictionary().Put(context.Background(), store.Term{ID: "1", Term: "Voxt", Enabled: true, UpdatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			a.importRecording("zoom.wav")
+			if len(diarizer.requests) != 1 {
+				t.Fatalf("MTD requests = %d, want 1", len(diarizer.requests))
+			}
+			req := diarizer.requests[0]
+			if req.Lang != tc.wantLanguage {
+				t.Errorf("MTD language = %q, want %q", req.Lang, tc.wantLanguage)
+			}
+			if len(req.Hints) != len(tc.wantHints) || (len(tc.wantHints) > 0 && req.Hints[0] != tc.wantHints[0]) {
+				t.Errorf("MTD dictionary hints = %q, want %q", req.Hints, tc.wantHints)
+			}
+			if !strings.Contains(req.Prompt, "A Zoom call about Voxt") {
+				t.Errorf("MTD prompt lacks the speech context: %q", req.Prompt)
+			}
+		})
 	}
 }
 
