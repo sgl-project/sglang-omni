@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **Meeting settings' shortcuts are the meeting's own**: Add a shortcut in Meeting settings put the new shortcut on Transcribe, so meetings still had none and Transcribe had one more. Changing or removing a meeting shortcut there, such as one brought over from Voxt 1.x, changed Transcribe's shortcut instead. All three now change only the meeting's shortcuts.
 
 ### 中文
 
@@ -19,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **会议设置里的快捷键只属于会议**：在会议设置里点「添加快捷键」，新快捷键会加到转录上，会议仍然没有快捷键，转录却多了一个；在那里修改或删除会议快捷键（比如从 Voxt 1.x 带过来的），改的其实是转录的快捷键。现在这三种操作都只改会议自己的快捷键。
 
 ## [Unreleased]
 

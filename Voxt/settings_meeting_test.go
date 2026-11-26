@@ -126,6 +126,48 @@ func TestMeetingCorrectionStyleSettings(t *testing.T) {
 	}
 }
 
+// #4641: the Shortcuts of Meeting settings are the meeting's own. Adding,
+// choosing and removing one there wrote to Transcribe's shortcuts instead,
+// so a meeting never got one and a dictation shortcut changed.
+func TestMeetingSettingsShortcuts(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 2400)
+	a.navigate("/meetings")
+	a.mvUI.setOpen = true
+	frames(tt)
+	saved := func() settings.Features { return a.lib.settings.Get().Features }
+	transcribe := saved().Transcribe.Hotkeys
+	keepsTranscribe := func(step string) {
+		t.Helper()
+		if hs := saved().Transcribe.Hotkeys; !slices.Equal(hs, transcribe) {
+			t.Fatalf("%s changed Transcribe's shortcuts to %+v, want %+v", step, hs, transcribe)
+		}
+	}
+
+	click(t, tt, "Add a shortcut")
+	if hs := saved().Meeting.Hotkeys; len(hs) != 1 {
+		t.Fatalf("meeting shortcuts after Add a shortcut: %+v, want one", hs)
+	}
+	keepsTranscribe("Add a shortcut")
+
+	// Choose a preset through the select's state, as the Select does. Add a
+	// shortcut takes the first free preset, so the last one is a change.
+	chosen := keyPresets[len(keyPresets)-1]
+	a.fui(hotkey.Meeting).rows[0].sel = uitext.HotkeyText(chosen)
+	a.chooseFeatureShortcut(hotkey.Meeting, 0, chosen)
+	frames(tt)
+	if hs := saved().Meeting.Hotkeys; len(hs) != 1 || hs[0].Keys != chosen {
+		t.Fatalf("meeting shortcuts after choosing %s: %+v", chosen, hs)
+	}
+	keepsTranscribe("Choosing a preset")
+
+	click(t, tt, "Remove shortcut 1")
+	if hs := saved().Meeting.Hotkeys; len(hs) != 0 {
+		t.Fatalf("meeting shortcuts after Remove shortcut 1: %+v, want none", hs)
+	}
+	keepsTranscribe("Remove shortcut 1")
+}
+
 // TestMeetingSpeechSettingsNoModel: with no speech model installed the
 // menu reads Automatic and cannot open.
 func TestMeetingSpeechSettingsNoModel(t *testing.T) {

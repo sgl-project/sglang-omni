@@ -79,6 +79,8 @@ func presetOf(keys string) string {
 	return ""
 }
 
+// setHotkeys changes feature's shortcuts: the list hotkey.HotkeysOf reads
+// for it, so every feature with a Shortcuts section needs its case here.
 func (a *app) setHotkeys(feature string, resync bool, change func([]settings.Hotkey) []settings.Hotkey) {
 	a.updateSettings(func(settings *settings.Settings) {
 		hotkeys := &settings.Features.Transcribe.Hotkeys
@@ -87,6 +89,8 @@ func (a *app) setHotkeys(feature string, resync bool, change func([]settings.Hot
 			hotkeys = &settings.Features.Translate.Hotkeys
 		case hotkey.Rewrite:
 			hotkeys = &settings.Features.Rewrite.Hotkeys
+		case hotkey.Meeting:
+			hotkeys = &settings.Features.Meeting.Hotkeys
 		}
 		*hotkeys = change(slices.Clone(*hotkeys))
 	})
