@@ -10,6 +10,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **A streaming answer no longer silently removes Continue in another session**: Continue, Speak and Send stay visible but disabled and explain that they are available when the answer finishes.
 
 ### 中文
 
@@ -19,6 +20,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **另一个会话正在生成回答时，不再直接隐藏“继续”**：继续、Speak 和 Send 保留但置灰，并说明回答完成后即可使用。
 
 ## [Unreleased]
 

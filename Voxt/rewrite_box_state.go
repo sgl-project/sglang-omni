@@ -103,6 +103,10 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	// The microphone asks for the next instruction by voice as the first
 	// one was asked; the Rewrite shortcut does the same.
 	state.CanSpeak = (a.boxAnswered() || a.boxIdle()) && !a.sess.State.Live()
+	if a.boxAnswered() && a.followUpBlocked() {
+		state.CanSend, state.CanSpeak = false, false
+		state.Subtitle = i18n.T("Continue is available when the streaming answer finishes.")
+	}
 	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
 		state.SpeakKeys = chordLabel(keys[0].Keys)
 	}

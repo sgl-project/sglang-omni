@@ -240,15 +240,25 @@ func (a *app) followUpWith(hold, typed string) bool {
 	return true
 }
 
-// canFollowUp says whether the card takes a follow-up now: a Rewrite
-// answer written from an instruction, or a translation, nothing running
-// — the current session's and the backgrounded answer's too (the card's
-// own follow-up may still be streaming there).
-func (a *app) canFollowUp() bool {
+// followUpReady says whether the ended card can take a follow-up once no
+// answer is streaming: a Rewrite answer written from an instruction, or a
+// translation.
+func (a *app) followUpReady() bool {
 	card := a.answer
 	ok := card.kind == store.KindRewrite && len(card.turns) > 0 || card.kind == store.KindTranslate && card.text != ""
-	bgLive := a.bgID != "" && a.bgSess.State.Live()
-	return card.open && ok && card.problem == nil && !a.sess.State.Live() && !bgLive
+	return card.open && ok && card.problem == nil && !a.sess.State.Live()
+}
+
+// canFollowUp keeps one answer streaming at a time, including another
+// session's backgrounded answer (the card's own follow-up may stream there).
+func (a *app) canFollowUp() bool {
+	return a.followUpReady() && (a.bgID == "" || !a.bgSess.State.Live())
+}
+
+// followUpBlocked distinguishes an intentional wait from a card that cannot
+// take a follow-up, so the controls can explain it.
+func (a *app) followUpBlocked() bool {
+	return a.followUpReady() && a.bgID != "" && a.bgSess.State.Live()
 }
 
 // closeAnswer closes the answer card (and cancels a follow-up, another

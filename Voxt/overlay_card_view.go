@@ -148,8 +148,8 @@ func cardHeader(context *ui.Context, card *sessionCardViewState, top bool, actio
 		if cardCapsule(context.Key("ov-card-stop"), i18n.T("Done"), i18n.T("Stop recording the follow-up")) {
 			actions.stopSession()
 		}
-	case card.CanFollowUp:
-		if cardCapsule(context.Key("ov-card-continue"), i18n.T("Continue"), card.FollowTooltip) {
+	case card.CanFollowUp || card.FollowDisabled:
+		if cardCapsuleEnabled(context.Key("ov-card-continue"), i18n.T("Continue"), card.FollowTooltip, card.CanFollowUp) {
 			actions.followUpAnswer("")
 		}
 	case card.CanRetry:
@@ -233,17 +233,25 @@ func cardIconButton(context *ui.Context, label, tip string, icon icons.Icon, ena
 }
 
 func cardCapsule(context *ui.Context, label, tip string) bool {
-	button := ui.ButtonBase(context).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(label)
+	return cardCapsuleEnabled(context, label, tip, true)
+}
+
+func cardCapsuleEnabled(context *ui.Context, label, tip string, enabled bool) bool {
+	button := ui.ButtonBase(context).Height(layout.CardBtn).Padding(0, 10-layout.Border).Radius(layout.CardBtn / 2).Center().Shrink(0).Label(label).Disabled(!enabled)
 	if tip != "" {
 		button.Tooltip(tip)
 	}
 	background, line := ui.RGBA(255, 255, 255, 0.08), ui.RGBA(255, 255, 255, 0.1)
-	if button.Hovered() {
+	if enabled && button.Hovered() {
 		background, line = ui.RGBA(255, 255, 255, 0.16), ui.RGBA(255, 255, 255, 0.18)
 	}
 	button.Background(background).Border(1, line)
+	alpha := float32(0.94)
+	if !enabled {
+		alpha = 0.42 * 0.94
+	}
 	return button.Children(func() {
-		ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, 0.94)).SingleLine()
+		ui.Text(context, label).FontSize(11).FontWeight(600).TextColor(ui.RGBA(255, 255, 255, alpha)).SingleLine()
 	}).Clicked()
 }
 

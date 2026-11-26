@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -472,6 +473,97 @@ func TestSessionSlotCloseLeavesOtherSlotStreaming(t *testing.T) {
 	a.pump("the answer's end", func() bool { return a.bgID == "" })
 	if c := a.answer; !c.open || c.text != full {
 		t.Fatalf("session 1's card %+v", c)
+	}
+}
+
+// TestSessionSlotContinueWaitsForStreamingAnswer: only one answer streams
+// at a time. While Session 1's answer is still streaming, Session 2's card
+// says why Continue, Speak and Send wait; they work when that answer ends.
+func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
+	full := "先订会议室 then email Ann。"
+	chat := &fakeChat{text: `{"title":"Plan","content":"` + full + `"}`, stall: true, chunkDelay: 50 * time.Millisecond}
+	set, keys, _ := fileSetup(t, "plan the offsite", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger), hotkeyLine(500, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, ev, func(s *settings.Settings) {
+		set(s)
+		s.Features.Rewrite.ShowCard = true
+	}, keys)
+	a.pump("the whole answer in the card", func() bool {
+		return a.sess.CanStop() && a.sess.Draft == full
+	})
+	a.newSession()
+	streaming := a.bgID
+	if streaming == "" || a.slot != 1 {
+		t.Fatalf("switched mid-stream: slot=%d bg=%q", a.slot, a.bgID)
+	}
+	a.answer = answerCard{open: true, id: "other", conv: "other", kind: store.KindRewrite, text: "two", target: textEditApp,
+		turns: []compose.Turn{{Instruction: "write", Answer: compose.Answer{Content: "two"}}}}
+	a.box.text = "shorter"
+	a.overlaySync()
+
+	const wait = "Continue is available when the streaming answer finishes."
+	if a.canFollowUp() {
+		t.Fatal("Continue runs a second answer beside Session 1's stream")
+	}
+	if card := a.cachedCard(); card.CanFollowUp || card.FollowTooltip != wait {
+		t.Fatalf("the blocked Continue does not explain itself: %+v", card)
+	}
+	tt := cardTester(t, a.app)
+	frames(tt)
+	if !hasExact(tt, "Continue") {
+		t.Fatalf("the disabled Continue is missing: %q", firstTexts(tt))
+	}
+	if !has(tt, wait) {
+		t.Fatalf("the disabled Continue's reason is missing: %q", firstTexts(tt))
+	}
+	if view := a.boxViewState(); view.CanSpeak || view.CanSend || view.Subtitle != wait {
+		t.Fatalf("the Rewrite card does not explain the wait: %+v", view)
+	}
+	if a.followUpAnswer("") {
+		t.Fatal("the blocked Continue accepted a follow-up")
+	}
+
+	a.mgr.StopLLM(streaming)
+	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
+	if !a.canFollowUp() {
+		t.Fatal("Continue stayed off after Session 1's answer ended")
+	}
+	if view := a.boxViewState(); !view.CanSpeak || !view.CanSend || view.Subtitle == wait {
+		t.Fatalf("the Rewrite card kept the wait after the answer ended: %+v", view)
+	}
+	a.boxActions().send()
+	if a.box.session == "" || a.followUp != a.answer.id {
+		t.Fatalf("Session 2's follow-up did not start: box=%q followUp=%q answer=%q", a.box.session, a.followUp, a.answer.id)
+	}
+	a.cancelSession()
+	a.pump("the follow-up's cancellation", func() bool { return a.sess.State.Ended() })
+}
+
+// TestSessionToggleRefreshesOpenCard: switching Sessions on or off redraws
+// the card already open in Session 1, even though no session switch happens.
+func TestSessionToggleRefreshesOpenCard(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(strconv.FormatBool(on), func(t *testing.T) {
+			chat := &fakeChat{texts: []string{"one"}}
+			a, _, _ := rewriteSelecting(t, chat, chatA, "summarize")
+			if !on {
+				sessionsOn(a)
+				a.overlaySync()
+			}
+			native := &fakeBoxWindow{}
+			a.ov.native = true
+			a.box.win, a.box.winShown = native, true
+			a.boxSync()
+			native.invalidations = 0
+
+			a.setSessionsOn(on)
+			if native.invalidations == 0 {
+				t.Fatal("the open Rewrite card was not redrawn")
+			}
+			if got := len(a.boxViewState().Sessions); (got == 1) != on {
+				t.Fatalf("SessionsOn=%v: %d session chips", on, got)
+			}
+		})
 	}
 }
 
