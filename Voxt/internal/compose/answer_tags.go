@@ -109,7 +109,7 @@ func inputTemplateIntent(input []string, name string) (bool, bool) {
 		question := strings.ContainsAny(clause, "?？")
 		positiveQuestion := question && (strings.Contains(prefix, "can't you") || strings.Contains(prefix, "couldn't you") || strings.Contains(prefix, "cannot you") || strings.Contains(prefix, "不") && strings.Contains(clause, "吗") && (strings.Contains(clause, "你") || strings.Contains(clause, "您")))
 		chineseDenials := []string{"不要", "不用", "不需要", "不必", "无需", "无须", "没必要", "勿"}
-		negated := strings.Contains(suffix, " is not what i want") || strings.Contains(suffix, " isn't what i want") || strings.Contains(suffix, " is not necessary") || strings.Contains(suffix, " isn't necessary") || strings.Contains(suffix, " is no longer needed")
+		negated := strings.Contains(suffix, " is not what i want") || strings.Contains(suffix, " isn't what i want") || strings.Contains(suffix, " is not necessary") || strings.Contains(suffix, " isn't necessary") || strings.Contains(suffix, " is no longer needed") || strings.Contains(suffix, " is not required") || strings.Contains(suffix, " isn't required") || strings.Contains(suffix, " is not needed") || strings.Contains(suffix, " isn't needed")
 		suffixPredicate := strings.TrimRight(suffix, " \t\r\n?？。")
 		for _, denial := range chineseDenials {
 			negated = negated || strings.HasSuffix(suffixPredicate, "模板"+denial)
@@ -124,7 +124,10 @@ func inputTemplateIntent(input []string, name string) (bool, bool) {
 			negated = negated || strings.Contains(chinesePrefix, "不") || strings.Contains(chinesePrefix, "别")
 		}
 		secondPerson := hasWord(clauseWords, "you") || strings.Contains(clause, "你") || strings.Contains(clause, "您") || strings.Contains(clause, "能不能")
-		questionIsNotARequest := question && !positiveQuestion && (!secondPerson || hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要"))
+		modalPrefix := strings.TrimSpace(prefix)
+		politeModal := strings.HasPrefix(modalPrefix, "can you") || strings.HasPrefix(modalPrefix, "could you") || strings.HasPrefix(modalPrefix, "你能") || strings.HasPrefix(modalPrefix, "你可以") || strings.HasPrefix(modalPrefix, "您能") || strings.HasPrefix(modalPrefix, "您可以") || strings.HasPrefix(modalPrefix, "能不能")
+		informationQuestion := question && (hasWord(clauseWords, "explain") || strings.Contains(clause, "tell me") || strings.Contains(clause, "解释"))
+		questionIsNotARequest := question && !positiveQuestion && (informationQuestion || !politeModal && (!secondPerson || hasWord(clauseWords, "use", "need", "want") || strings.Contains(clause, "用") || strings.Contains(clause, "需要") || strings.Contains(clause, "想要")))
 		if negated || questionIsNotARequest {
 			positiveMention, negatedMention = false, true
 			continue

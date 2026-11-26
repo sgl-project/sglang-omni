@@ -273,9 +273,7 @@ func TestAppUpdated(t *testing.T) {
 	if !has(tt, "Update installed") || !has(tt, "Restart Voxt to finish updating.") || has(tt, "Helper stopped unexpectedly") {
 		t.Fatalf("card: %q", firstTexts(tt))
 	}
-	if !has(tt, "Voxt was updated. Restart it to finish.") {
-		t.Errorf("home: %q", firstTexts(tt))
-	}
+
 	n := slices.IndexFunc(a.notices, func(n core.Notification) bool { return n.ID == problemUpdate })
 	if n < 0 || a.notices[n].Link != linkRelaunch || slices.ContainsFunc(a.notices, func(n core.Notification) bool { return n.ID == problemHelper }) {
 		t.Fatalf("notices %+v", a.notices)

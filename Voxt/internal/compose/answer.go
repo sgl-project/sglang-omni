@@ -322,8 +322,9 @@ func stripPartialControlMarkup(s string, inputs ...string) string {
 // truncates after an opening tag came; without one the text is the
 // user's own and shows as it is, as CleanOutput keeps it. When the
 // input itself has the tags, one outermost wrapper pair goes, as in
-// CleanOutput.
-func PartialOutput(s, input string) string {
+// CleanOutput. custom is Output.Custom of the request: the built-in
+// contract then does not apply and the text shows as it is.
+func PartialOutput(s, input string, custom bool) string {
 	t := strings.TrimLeft(stripPartialControlMarkup(s, input), " \t\r\n")
 	if strings.Contains(input, outputOpen) {
 		return unwrappedOutput(t)
@@ -333,10 +334,25 @@ func PartialOutput(s, input string) string {
 	}
 	i := strings.Index(t, outputOpen)
 	if i < 0 {
-		// No opening tag came: the text shows as it is, but a stream
-		// ending in the opening tag's start holds back — the tag may
-		// complete, and the commentary before it then goes.
+		// No opening tag came: a stream ending in the opening tag's
+		// start holds back — the tag may complete, and the commentary
+		// before it then goes. Without the tags at all, the draft is
+		// what CleanOutput makes of the final text: the cleaned text's
+		// span once it anchors (cleanedSpan); before it, nothing once a
+		// finished sentence has shown itself to be the model's
+		// deliberation (deliberating, #4086) — a sentence still being
+		// typed shows as it is, and the draft corrects when it
+		// completes.
 		if partialTagSuffix(t, outputOpen) > 0 {
+			return ""
+		}
+		if custom {
+			return t
+		}
+		if trimmed, ok := cleanedSpan(t, input); ok {
+			return trimmed
+		}
+		if deliberating(t, input) {
 			return ""
 		}
 		return t
@@ -358,15 +374,27 @@ func PartialOutput(s, input string) string {
 // they are there and the input did not have them (never the model's
 // commentary outside them, #4086); when the input itself has the tags,
 // one outermost pair the model wrapped its whole answer in goes and the
-// text keeps its own tags. Then Clean's tidy. Only the Transcribe
+// text keeps its own tags. A tag-less answer to the built-in contract
+// keeps only the cleaned text's span (cleanedSpan): the contract allows
+// nothing around it, so the model's deliberation before or after goes.
+// custom is Output.Custom of the request: the user's own prompt then
+// owns the output shape (a heading, an expansion, a translation), and
+// the answer is used as it is. Then Clean's tidy. Only the Transcribe
 // clean-up asks for the tags: Rewrite's and Translate's answers go to
 // Clean, so tags their text itself has (HTML they were asked for) stay.
-func CleanOutput(out, input string) string {
+func CleanOutput(out, input string, custom bool) string {
 	s := strings.TrimSpace(out)
 	if strings.Contains(input, outputOpen) {
 		s = unwrappedOutput(s)
 	} else if content, ok := taggedOutput(s); ok {
 		s = strings.TrimSpace(content)
+	} else if !custom {
+		// The span is judged on the text without control markup:
+		// markup the input mentions shares bigrams with it, and a
+		// markup fragment must not anchor the span.
+		if trimmed, ok := cleanedSpan(stripControlMarkup(s, input), input); ok {
+			s = trimmed
+		}
 	}
 	return Clean(s, input)
 }

@@ -119,7 +119,9 @@ func TestOnboardingReuse(t *testing.T) {
 			t.Errorf("%s: claim %+v %v", id, c, ok)
 		}
 	}
-	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Set up a language model") || hasPrefix(tt, "Download (") {
+	// The pack's draft is not on this Mac, so the guide offers its
+	// download (TestGuidePackDraftLeft drives it); nothing downloads yet.
+	if has(tt, "Use them") || !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !has(tt, "Set up a language model") || !has(tt, "Download (725.7 MB)") || !hasPrefix(tt, "Download and continue (725.7 MB)") {
 		t.Errorf("after Use them: %q", tt.Texts())
 	}
 	for _, m := range models.Catalog() {
@@ -155,7 +157,7 @@ func reuseAgain(t *testing.T, a *app) {
 	a.obGo(obModels)
 }
 
-// TestOnboardingAlternative: the accurate speech model missing, the fast
+// TestOnboardingAlternative: the recommended speech model missing, the fast
 // one AudioSmith installed is offered for now; Download stays the
 // default; Use claims it, and the step says it is ready.
 func TestOnboardingAlternative(t *testing.T) {
@@ -182,7 +184,7 @@ func TestOnboardingAlternative(t *testing.T) {
 		t.Errorf("the speech model is in the step's Download, or ready: %q", tt.Texts())
 	}
 
-	// Download (the default) starts the accurate one.
+	// Download (the default) starts the recommended one.
 	obScrollTo(tt, "Download Qwen3-ASR 1.7B (8bit)")
 	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)")
 	deadline := time.Now().Add(5 * time.Second)
@@ -290,7 +292,7 @@ func TestShortcutConflicts(t *testing.T) {
 		if has(tt, prompt) || len(a.lib.settings.Get().Family.Prompted) != 1 {
 			t.Errorf("%s: %q %q", answer, a.lib.settings.Get().Family.Prompted, tt.Texts())
 		}
-		if answer == "Change shortcut" && a.shownPath() != "/transcribe" {
+		if answer == "Change shortcut" && a.shownPath() != "/settings/transcribe" {
 			t.Errorf("change: %s", a.shownPath())
 		}
 	}

@@ -21,11 +21,16 @@ const (
 // soundPair is a start cue and a stop cue that go together.
 type soundPair struct{ key, start, stop string }
 
-// soundPairs are the built-in pairs, softest first: the family's sounds
-// made for the start and the stop of a recording. The first is the
-// events' default.
+// soundPairs are the built-in pairs, softest first: the family's Soft,
+// the events' default, which must stay first; Voxt's own cues
+// (internal/cues, the three users voted for most, most votes first); then
+// the rest of the family's sounds made for the start and the stop of a
+// recording.
 var soundPairs = []soundPair{
 	{"soft", "pebble", "nib"},
+	{"kalimba", "soft-kalimba-start", "soft-kalimba-stop"},
+	{"wood", "soft-wood-start", "soft-wood-stop"},
+	{"vibes", "soft-vibes-start", "soft-vibes-stop"},
 	{"switch", "clasp", "unclasp"},
 	{"clean", "dot", "settle"},
 	{"beep", "tally", "wrap"},
@@ -36,9 +41,27 @@ var soundPairs = []soundPair{
 // systemPair is what macOS plays until the user picks: Voxt 1.x's cues.
 var systemPair = soundPair{"system", sounds.System("Pop"), sounds.System("Tink")}
 
+// firstSoundPair is the first of soundPairs cat has (the first of all
+// when it has none).
+func firstSoundPair(cat *sounds.Catalog) (start, stop string) {
+	for _, p := range soundPairs {
+		_, hasStart := cat.Sound(p.start)
+		if _, hasStop := cat.Sound(p.stop); hasStart && hasStop {
+			return p.start, p.stop
+		}
+	}
+	return soundPairs[0].start, soundPairs[0].stop
+}
+
 // pairNameWithTranslator is a pair's name in the translator's language.
 func pairNameWithTranslator(translator *i18n.Translator, key string) string {
 	switch key {
+	case "kalimba":
+		return translator.T("Kalimba")
+	case "wood":
+		return translator.T("Wood")
+	case "vibes":
+		return translator.T("Vibraphone")
 	case "soft":
 		return translator.T("Soft")
 	case "switch":
@@ -78,7 +101,8 @@ func (a *app) soundSource() soundSource {
 }
 
 // setSoundSource turns the cues to src and plays the start cue: Built-in
-// keeps cues that are the family's sounds (else the default pair), macOS
+// keeps cues that are sounds this build has (else its first pair: Soft,
+// the default, or Kalimba in a build without the family's sounds), macOS
 // keeps system sounds (else Pop and Tink), None turns the sounds off and
 // keeps the choices for later.
 func (a *app) setSoundSource(src soundSource) {
@@ -87,11 +111,11 @@ func (a *app) setSoundSource(src soundSource) {
 	}
 	p := a.soundPrefs()
 	start, stop := p.Choice(recordStartEvent), p.Choice(recordStopEvent)
-	builtIn := func(ch string) bool { return ch != sounds.None && !sounds.IsSystem(ch) }
+	inBuild := func(ch string) bool { _, ok := a.soundCat.Sound(ch); return ok }
 	switch src {
 	case soundBuiltIn:
-		if !builtIn(start) || !builtIn(stop) {
-			start, stop = soundPairs[0].start, soundPairs[0].stop
+		if !inBuild(start) || !inBuild(stop) {
+			start, stop = firstSoundPair(a.soundCat)
 		}
 	case soundSystem:
 		if !sounds.IsSystem(start) || !sounds.IsSystem(stop) {

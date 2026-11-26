@@ -45,6 +45,13 @@ class JointRopeInplaceKernel(Protocol):
     ) -> None: ...
 
 
+# Optional platform overlap-add for one windowed [B, win_length, T] tensor; the
+# window length is frames.shape[1]. The output covers (T - 1) * hop_length +
+# win_length samples. Callers pass the signal and its window envelope separately.
+class OverlapAddImpl(Protocol):
+    def __call__(self, frames: torch.Tensor, *, hop_length: int) -> torch.Tensor: ...
+
+
 class RMSNormKernel(Protocol):
     def __call__(
         self,
@@ -288,6 +295,10 @@ class OmniPlatform(DeviceMixin):
 
     def supports_graph_captured_fft(self) -> bool:
         return True
+
+    def get_overlap_add_impl(self) -> "OverlapAddImpl | None":
+        """Optional platform overlap-add; None keeps the built-in fold path."""
+        return None
 
     def supports_graph_captured_host_read(self) -> bool:
         """Whether a capture tolerates a body that reads a tensor on the host."""

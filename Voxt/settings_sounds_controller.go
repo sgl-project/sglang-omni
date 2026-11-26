@@ -12,7 +12,8 @@ import (
 // The recording's cues: the family's Pebble and Nib (a soft tap as
 // recording starts, a short tick as it stops; Tally and Wrap's beeps
 // until 11-10, which users found harsh), Voxt's Pop and Tink in a build
-// without the family's sounds.
+// without the family's sounds. Voxt's own pairs (internal/cues) are
+// choices, not the default.
 var (
 	recordStartEvent = sounds.Event{ID: "record.start", Name: sounds.Text{En: "Recording starts", Zh: "开始录音"},
 		Default: "pebble", Fallback: "Pop", Uses: []string{"record.start"}}
@@ -31,7 +32,7 @@ type soundsState struct {
 		playing    string
 		playingEnd time.Time
 	}
-	soundCat *sounds.Catalog // the family's sounds this build has (nil: none)
+	soundCat *sounds.Catalog // Voxt's cues and the family's sounds this build has
 	// sysSounds are the Mac's system sounds (/System/Library/Sounds),
 	// read once (sysRead); tests set them.
 	sysSounds []string
@@ -45,8 +46,8 @@ type soundsState struct {
 	sndPlayer  previewPlayer
 }
 
-// openSounds loads the family's sounds the app ships and makes the
-// player; tests replace soundCat (testSounds) and the player's output.
+// openSounds loads the sounds the app ships and makes the player; tests
+// replace soundCat (testSounds) and the player's output.
 func (a *app) openSounds() {
 	a.soundCat = loadCueSounds()
 	a.cuePlayer = sounds.NewPlayer(a.soundCat, nil)

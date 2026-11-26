@@ -26,8 +26,8 @@
 
 int main(int argc, char **argv) {
   std::string model_path;
-  std::string draft_model_path;
-  int draft_quantization_bits = 0;
+  omni_common::DraftOptions draft;
+  const auto draft_flags = draft.Flags();
   moss::MossOptions options;
   std::vector<std::string> files;
   for (int i = 1; i < argc; ++i) {
@@ -44,10 +44,8 @@ int main(int argc, char **argv) {
       omni_common::SetLoadTimeQuantization(false);
     } else if (argument == "--model-path") {
       model_path = value();
-    } else if (argument == "--draft-model-path") {
-      draft_model_path = value();
-    } else if (argument == "--draft-bits") {
-      draft_quantization_bits = std::stoi(value());
+    } else if (draft_flags.count(argument) != 0) {
+      draft_flags.at(argument)(value());
     } else if (argument == "--prompt") {
       options.prompt = value();
     } else if (argument == "--max-new-tokens") {
@@ -63,18 +61,13 @@ int main(int argc, char **argv) {
       files.push_back(argument);
     }
   }
-  if (draft_quantization_bits != 0 && draft_quantization_bits != 4 &&
-      draft_quantization_bits != 6 && draft_quantization_bits != 8) {
-    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
-  } else if (draft_quantization_bits != 0 && draft_model_path.empty()) {
-    throw std::invalid_argument("--draft-bits needs --draft-model-path");
-  } else if (options.max_new_tokens.value_or(0) < 0) {
+  draft.Check();
+  if (options.max_new_tokens.value_or(0) < 0) {
     throw std::invalid_argument("max_new_tokens must not be negative");
   } else {
   }
   const auto load_started = std::chrono::steady_clock::now();
-  const moss::MossTranscriber transcriber(model_path, draft_model_path,
-                                          draft_quantization_bits);
+  const moss::MossTranscriber transcriber(model_path, draft);
   std::cerr << "loaded in "
             << std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                              load_started)

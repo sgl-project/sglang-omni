@@ -17,6 +17,8 @@ type snippetsFixtureInput struct {
 	order   snippetOrder
 	ui      snippetsFixtureUI
 	problem string // the dialog's (snippet.Check)
+	// importErr: the import dialog says the last file was not snippets.
+	importErr bool
 }
 
 func snippetsFixtureScenarios() []meetingFixtureScenario {
@@ -48,6 +50,10 @@ func snippetsFixtureScenarios() []meetingFixtureScenario {
 		input.ui = snippetsFixtureUI{EditOpen: true, Trigger: "sign off", Text: "Cheers,"}
 		input.problem = snippet.ProblemTaken
 	})
+	add("snippets-import", func(input *snippetsFixtureInput) { input.ui.ImportOpen = true })
+	add("snippets-import-error", func(input *snippetsFixtureInput) {
+		input.ui.ImportOpen, input.ui.ImportExample, input.importErr = true, true, true
+	})
 	return scenarios
 }
 
@@ -73,6 +79,9 @@ func buildSnippetsFixture(translator *i18n.Translator, input snippetsFixtureInpu
 	ui := input.ui
 	if input.problem != "" {
 		ui.Error = snippetProblemText(translator, input.problem)
+	}
+	if input.importErr {
+		ui.ImportError = translator.T("Could not import %s: it is not a JSON list of snippets.", "terms.json")
 	}
 	return &state, &ui
 }

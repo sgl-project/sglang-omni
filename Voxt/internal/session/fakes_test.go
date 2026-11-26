@@ -209,21 +209,29 @@ func (f *fakeAudio) lateEvents(id string) {
 
 // fakeStreamer streams: a partial per frame, the final on Finish.
 type fakeStreamer struct {
-	final    string
-	openErr  error
-	finalErr error         // the stream fails instead of answering
-	errAfter int           // the stream fails after this many sends
-	hang     bool          // no final after Finish
-	openWait time.Duration // Open takes this long
-	openGate chan struct{} // Open waits for it to close (nil: no wait)
-	silent   bool          // no partials
+	final             string
+	openErr           error
+	finalErr          error         // the stream fails instead of answering
+	errAfter          int           // the stream fails after this many sends
+	hang              bool          // no final after Finish
+	openWait          time.Duration // Open takes this long
+	openGate          chan struct{} // Open waits for it to close (nil: no wait)
+	openStarted       chan struct{}
+	finishGate        <-chan struct{} // Finish waits for it to close (nil: no wait)
+	finishStarted     chan struct{}   // signalled once Finish begins
+	finishEmitted     chan bool       // whether Finish emitted its Final event
+	partialGate       <-chan struct{}
+	partialReturnGate <-chan struct{}
+	silent            bool // no partials
 	// partials are what its partials say, one per send, the last one
 	// repeated (nil: "partial").
 	partials []string
 	// pieces are the cumulative "final so far" texts it reports while
 	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
-	pieces  []string
-	salvage string // the text its streams salvage (asr.Salvager), "" for none
+	pieces     []string
+	candidates []string
+	salvage    string    // the text its streams salvage (asr.Salvager), "" for none
+	onSend     func(int) // called after the i-th send (nil: not)
 
 	mu      sync.Mutex
 	streams []*fakeStream
@@ -236,6 +244,12 @@ type fakeStreamer struct {
 func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
 
 func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
+	if f.openStarted != nil {
+		select {
+		case f.openStarted <- struct{}{}:
+		default:
+		}
+	}
 	if f.openWait > 0 {
 		select {
 		case <-time.After(f.openWait):
@@ -253,7 +267,11 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	if f.openErr != nil {
 		return nil, f.openErr
 	}
-	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
+	s := &fakeStream{
+		f: f, ctx: ctx, events: make(chan asr.Event, 1024),
+		latePartials: req.LatePartials, candidates: f.candidates,
+		partialGate: f.partialGate, partialReturnGate: f.partialReturnGate,
+	}
 	f.mu.Lock()
 	f.streams = append(f.streams, s)
 	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
@@ -261,16 +279,26 @@ func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Str
 	return s, nil
 }
 
+func (f *fakeStreamer) latePartialsRequested() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.streams) > 0 && f.streams[len(f.streams)-1].latePartials
+}
+
 type fakeStream struct {
-	f      *fakeStreamer
-	ctx    context.Context
-	mu     sync.Mutex
-	bytes  int
-	data   []byte // what was sent
-	sends  int
-	closed bool
-	done   bool
-	events chan asr.Event
+	f                 *fakeStreamer
+	ctx               context.Context
+	mu                sync.Mutex
+	bytes             int
+	data              []byte // what was sent
+	sends             int
+	closed            bool
+	done              bool
+	events            chan asr.Event
+	latePartials      bool
+	candidates        []string
+	partialGate       <-chan struct{}
+	partialReturnGate <-chan struct{}
 }
 
 func (s *fakeStream) emit(ev asr.Event) {
@@ -304,14 +332,31 @@ func (s *fakeStream) Send(pcm []byte) error {
 		return nil
 	}
 	if !s.f.silent {
+		if n == 1 && s.partialGate != nil {
+			select {
+			case <-s.partialGate:
+			case <-s.ctx.Done():
+				return &asr.Error{Kind: asr.KindCancelled}
+			}
+		}
 		text := "partial"
 		if len(s.f.partials) > 0 {
 			text = s.f.partials[min(n, len(s.f.partials))-1]
 		}
 		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
+		if n == 1 && s.partialReturnGate != nil {
+			select {
+			case <-s.partialReturnGate:
+			case <-s.ctx.Done():
+				return &asr.Error{Kind: asr.KindCancelled}
+			}
+		}
 	}
 	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
 		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
+	}
+	if s.f.onSend != nil {
+		s.f.onSend(n)
 	}
 	return nil
 }
@@ -319,6 +364,31 @@ func (s *fakeStream) Send(pcm []byte) error {
 func (s *fakeStream) Salvage() string { return s.f.salvage }
 
 func (s *fakeStream) Finish() error {
+	defer func() {
+		if s.f.finishEmitted != nil {
+			s.mu.Lock()
+			emitted := s.done
+			s.mu.Unlock()
+			select {
+			case s.f.finishEmitted <- emitted:
+			default:
+			}
+		}
+	}()
+	if s.f.finishStarted != nil {
+		select {
+		case s.f.finishStarted <- struct{}{}:
+		default:
+		}
+	}
+	if s.latePartials {
+		for _, text := range s.candidates {
+			s.emit(asr.Event{Kind: asr.EventCandidate, Text: text})
+		}
+	}
+	if s.f.finishGate != nil {
+		<-s.f.finishGate
+	}
 	switch {
 	case s.f.hang:
 	case s.f.finalErr != nil:
@@ -382,6 +452,7 @@ type fakeLLM struct {
 	texts     []string
 	err       error
 	failOn    int
+	failDelta string
 	hang      bool
 	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
 	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
@@ -414,6 +485,7 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	failDelta := f.failDelta
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
 	if hang {
@@ -424,6 +496,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		return llm.Response{}, ctx.Err()
 	}
 	if failed {
+		if req.OnDelta != nil && failDelta != "" {
+			req.OnDelta(failDelta)
+		}
 		return llm.Response{}, f.err
 	}
 	if req.OnDelta == nil && f.pause > 0 {
@@ -638,6 +713,9 @@ type fakeSelector struct {
 	steps     []string
 	err       error
 	delay     time.Duration
+	// held reads come first with the ⌘C skipped: the shortcut's keys
+	// are still down.
+	held int
 
 	mu    sync.Mutex
 	calls []proto.SelectionParams
@@ -657,6 +735,11 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	if f.err != nil {
 		return proto.SelectionResult{}, f.err
 	}
+	if f.mu.Lock(); len(f.calls) <= f.held {
+		f.mu.Unlock()
+		return proto.SelectionResult{Via: proto.ViaNone, MS: 800, Steps: []string{"focus=nil", "copy: skipped held=option"}}, nil
+	}
+	f.mu.Unlock()
 	switch {
 	case f.text != "":
 		return proto.SelectionResult{Text: f.text, Via: proto.ViaAX, MS: 2}, nil

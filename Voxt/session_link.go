@@ -23,6 +23,8 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -34,7 +36,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/overlay/layout"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -51,11 +53,15 @@ type sessionState struct {
 	mgr *session.Manager
 	// sess is the current (or last) session, as its newest snapshot said.
 	sess session.Snapshot
+	// wave plays sess's levels out for the waveform (overlayWave).
+	wave layout.WavePlay
 	// bgID is the backgrounded answer's session ("" for none) and bgSess
 	// its newest snapshot: an answer that kept streaming into its card
 	// while a new session started (session_background.go, wall 116).
+	// bgSlot is the id of the session it belongs to (#4005).
 	bgID   string
 	bgSess session.Snapshot
+	bgSlot int
 	// answer is the answer card: open while a result waits there.
 	answer answerCard
 	// box is Rewrite's card with the input box (rewrite_box.go): the
@@ -77,6 +83,26 @@ type sessionState struct {
 	// under is the card a new session took the place of: it comes back
 	// when that session leaves no card (resurface, #4013).
 	under answerCard
+	// slots are the sessions, in the order the card lists them, and slot
+	// the current one's id: switching parks its cards in slots and
+	// restores the chosen one's (session_slots.go, #4005). slotSeq is the
+	// last id given. emptyCard: the current session has no card and
+	// shows the empty one, until it is closed.
+	slot, slotSeq int
+	slots         []parkedSlot
+	emptyCard     bool
+	// slotPin: where a switch found the card window, kept for the next one.
+	slotPin *mygo.Rectangle
+	// renaming: session renameID's title is being typed on the session
+	// row; the card's keys go to the text meanwhile.
+	renaming bool
+	renameID int
+	// The saved sessions (session_keep.go): read at start, the document
+	// last written, and the order of its writes.
+	sessionsLoaded bool
+	sessionsSaved  string
+	sessionsSeq    atomic.Int64
+	sessionsWrite  sync.Mutex
 	// reopen is the history's continuable conversations, newest first.
 	reopen     []reopenConversation
 	restoreSeq int
@@ -155,37 +181,6 @@ type answerCard struct {
 	copySeq int
 }
 
-// Notice actions: where the notice's button goes.
-const (
-	actionNone        = ""
-	actionModels      = "models"
-	actionLanguage    = "language" // the Language models page (remote_page.go)
-	actionPermissions = "permissions"
-	actionHelper      = "helper"
-	actionRetry       = "retry"  // the session's entry, in History (history_retry.go)
-	actionSignIn      = "signin" // the ChatGPT (Codex) dialog (remote_chatgpt.go)
-	actionUsage       = "usage"  // the ChatGPT usage page, in the browser
-)
-
-// sessionNotice is a one-line message in the overlay, where
-// the pill's waveform goes: an error and a way forward (a click), hidden
-// after a few seconds.
-type sessionNotice struct {
-	text, more string
-	action     string
-	entry      string // actionRetry's history entry
-	warn       bool   // a warning (the session went on), not an error
-	ok         bool   // done as asked (a term added, a note saved), not a problem
-	seq        int    // which notice: its timer hides only itself
-	over       bool   // shows before the card that came back as its session ended (#4013)
-	// then runs when its time is up (not when a click or the next
-	// session hides it): the notice that follows it.
-	then func()
-}
-
-// noticeTime is how long a notice shows.
-const noticeTime = 5 * time.Second
-
 // openSessions makes the session manager; connectHelper calls it once the
 // supervisor exists.
 func (a *app) openSessions() {
@@ -194,6 +189,12 @@ func (a *app) openSessions() {
 	lib := a.lib
 	logs := a.logs
 	st := a.settings
+	cleanupLatency, cleanupDiagnostic := cleanupLatencyFromEnv()
+	if cleanupDiagnostic != "" {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityWarning, Source: sessionSource, Message: cleanupDiagnostic})
+	} else if cleanupLatency.AutoFallbackAfter > 0 {
+		logs.Append(core.LogEntry{Time: time.Now(), Level: core.SeverityInfo, Source: sessionSource, Message: "experimental cleanup fallback enabled: " + cleanupLatency.AutoFallbackAfter.String() + " after Stop"})
+	}
 	a.mgr = session.New(session.Config{
 		Audio:  session.HelperAudio{H: sup},
 		Text:   a.textIO(), // family_runtime.go: the family's paste rule
@@ -223,14 +224,15 @@ func (a *app) openSessions() {
 		Glossary: func(ctx context.Context) ([]store.Term, error) {
 			return lib.store.Dictionary().List(ctx, "")
 		},
-		Snippets: snippetsReader(lib.store.Documents()),
-		Notes:    lib.store.Notes(),
-		Settings: st.Get,
-		Locale:   i18n.Locale,
-		Scene:    a.sceneConfig(), // appenhance.go
-		Self:     os.Getpid(),
-		Activate: func(pid int) bool { ok, _ := activateTarget(pid); return ok },
-		OnChange: func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
+		Snippets:       snippetsReader(lib.store.Documents()),
+		Notes:          lib.store.Notes(),
+		Settings:       st.Get,
+		Locale:         i18n.Locale,
+		Scene:          a.sceneConfig(), // appenhance.go
+		CleanupLatency: cleanupLatency,
+		Self:           os.Getpid(),
+		Activate:       func(pid int) bool { ok, _ := activateTarget(pid); return ok },
+		OnChange:       func(s session.Snapshot) { a.post(func() { a.sessionChanged(s) }) },
 		Log: func(level, msg string) {
 			logs.Append(core.LogEntry{Time: time.Now(), Level: core.Severity(level), Source: sessionSource, Message: msg})
 		},
@@ -249,12 +251,28 @@ func resolver(lm local.Services) session.Resolver {
 		f := featureOf(s, string(kind))
 		var svc session.Services
 		if speech {
-			p, m, err := lm.ASR(ctx, f.ASR)
-			switch {
-			case err == nil:
-				svc.ASR, svc.ASRInfo = p, sessionModel(m)
-			case !errors.Is(err, local.ErrNotInstalled):
-				return svc, err
+			id := strings.TrimSpace(f.ASR)
+			skip := false
+			if id == "" {
+				// Automatic: only a model that can recognise the main
+				// language (automaticSpeech). Models installed but none
+				// for it is as without one; none installed opens "" and
+				// reports the lack, as before.
+				all := lm.Installed(local.ASR)
+				if m, ok := local.Choose(automaticSpeech(s, all), ""); ok {
+					id = m.ID
+				} else {
+					skip = len(all) > 0
+				}
+			}
+			if !skip {
+				p, m, err := lm.ASR(ctx, id)
+				switch {
+				case err == nil:
+					svc.ASR, svc.ASRInfo = p, sessionModel(m)
+				case !errors.Is(err, local.ErrNotInstalled):
+					return svc, err
+				}
 			}
 		}
 		if va, ok := svc.ASR.(local.VoiceActivity); ok {
@@ -323,7 +341,7 @@ func fallbackCandidates(kind session.Kind, s settings.Settings, ready []local.Mo
 
 // sessionModel is how a session (and its history entry) names a model.
 func sessionModel(m local.Model) session.Model {
-	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID}
+	return session.Model{ID: m.ID, Name: m.Name, Model: m.ID, Remote: m.Remote}
 }
 
 // sessionChanged takes a session's snapshot (the newest wins) and
@@ -339,6 +357,7 @@ func (a *app) sessionChanged(s session.Snapshot) {
 	}
 	was := a.sess
 	a.sess = s
+	a.wave.Feed(s.ID, s.Levels, s.LevelCount, time.Now())
 	if a.box.open {
 		if s.ID == a.box.session {
 			if s.Selection != "" {
@@ -381,6 +400,7 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.historyChanged() // a try keeps nothing, but the pages may show it
 		return
 	}
+	a.titleSession(s)
 	if a.prefs.General.CopyResult && s.Card && s.Result != "" && s.State != session.Failed {
 		a.copyRecent(s.Result, false) // tray.go: the clipboard keeps each result
 	}
@@ -394,10 +414,15 @@ func (a *app) sessionEnded(s session.Snapshot) {
 			switch {
 			case s.ID == a.bgID:
 				// The backgrounded answer's own end: its card opens (and its
-				// conversation merges) as the foreground path's would. A card
-				// that is not its own waits under it: setAside holds only
-				// Rewrite and Translate cards, so a Transcribe card is held
-				// directly.
+				// conversation merges) as the foreground path's would — in
+				// its own session when the user switched away meanwhile
+				// (#4005). A card that is not its own waits under it: setAside
+				// holds only Rewrite and Translate cards, so a Transcribe
+				// card is held directly.
+				if !a.bgVisible() {
+					a.parkAnswer(s)
+					break
+				}
 				if a.answer.open && a.followUp == "" {
 					if c := a.answer; c.kind == store.KindTranscribe && c.problem == nil && !c.inserting {
 						a.under, a.answer = c, answerCard{}
@@ -453,6 +478,9 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		if text != "" {
 			// Nothing heard is not a failure: a warning.
 			n := sessionNotice{text: text, more: more, action: action, warn: p.Degraded || p.Code == session.ProblemNoSpeech, over: back}
+			if p.Code == session.ProblemNoSpeech {
+				n.hold = noSpeechTime
+			}
 			if p.Code == session.ProblemASR && s.Recording {
 				n.action, n.entry = actionRetry, s.ID // the entry kept the recording: Retry
 			}
@@ -469,59 +497,6 @@ func (a *app) sessionEnded(s session.Snapshot) {
 		a.showNotice(*copied)
 	}
 	a.historyChanged()
-}
-
-// showNotice shows a notice in the overlay; it hides by itself.
-func (a *app) showNotice(n sessionNotice) {
-	a.noticeSeq++
-	seq := a.noticeSeq
-	n.seq = seq
-	a.notice = &n
-	a.overlaySync()
-	a.later(noticeTime, func() {
-		if a.notice != nil && a.notice.seq == seq {
-			if then := a.notice.then; then != nil {
-				then() // in its place, without hiding the overlay between
-			} else {
-				a.closeNotice()
-			}
-		}
-	})
-}
-
-// closeNotice hides the notice.
-func (a *app) closeNotice() {
-	a.notice = nil
-	a.overlaySync()
-}
-
-// noticeAction runs a notice's button.
-func (a *app) noticeAction(action string) {
-	entry := ""
-	if a.notice != nil {
-		entry = a.notice.entry
-	}
-	a.closeNotice()
-	switch action {
-	case actionRetry:
-		a.retryFromNotice(entry)
-	case actionModels:
-		a.showMainWindow()
-		a.navigate(modelsPath)
-	case actionLanguage:
-		a.showMainWindow()
-		a.navigate(remotePath)
-	case actionPermissions:
-		a.showMainWindow()
-		a.navigate("/settings/permissions")
-	case actionHelper:
-		a.restartHelper()
-	case actionSignIn:
-		a.showMainWindow()
-		a.completeSetup(local.LLM, providers.ChatGPT)
-	case actionUsage:
-		go openBrowser(chatgptUsageURL)
-	}
 }
 
 // closeSessions cancels the running sessions and removes the Carbon
