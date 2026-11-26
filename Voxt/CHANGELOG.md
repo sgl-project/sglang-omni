@@ -2,6 +2,18 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+
+- **Recording starts promptly with a selected microphone whose rate differs from 48 kHz**: Voxt uses the selected device's own audio format, avoiding watchdog restarts that delayed the first words.
+
+### 中文
+
+#### 修复
+
+- **选定采样率不是 48 kHz 的麦克风后，录音可以及时开始**：Voxt 使用所选设备自身的音频格式，避免看门狗重复重启导致开头的话语丢失。
+
 ## [2.1.4] - 2026-11-25
 
 ### Added

@@ -23,6 +23,17 @@ final class CaptureFileTests: XCTestCase {
         XCTAssertEqual(CaptureFileConfig.from(environment: ["VOXTNEW_HELPER_CAPTURE_FILE": "/a", "VOXTNEW_HELPER_CAPTURE_SPEED": "-1"])?.speed, 1)
     }
 
+    /// A selected microphone can leave its previous rate on the output side.
+    func testMicrophoneTapUsesTheDevicesInputFormat() throws {
+        let inputFormat = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 32000, channels: 1, interleaved: false))
+        let outputFormat = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false))
+        let format = microphoneTapFormat(inputFormat: inputFormat, outputFormat: outputFormat)
+        XCTAssertTrue(format === inputFormat)
+        XCTAssertEqual(format.sampleRate, 32000)
+        let resampler = try XCTUnwrap(MonoResampler(inputRate: format.sampleRate, rate: 16000))
+        XCTAssertEqual(resampler.mono.sampleRate, 32000)
+    }
+
     func testPlayerPacesLikeAMicrophone() throws {
         let p = try CaptureFilePlayer(path: Self.tone, speed: 1, chunkMs: 20)
         XCTAssertEqual(p.format.sampleRate, 22050)
