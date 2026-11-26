@@ -1002,7 +1002,6 @@ def test_funasr_token_budget_covers_the_whole_request(
         ({"include_generation_metadata": "true"}, "wav"),
         ({"max_new_tokens": "many"}, "wav"),
         ({"max_new_tokens": "-1"}, "wav"),
-        ({"temperature": "0.7"}, "wav"),
         ({"repetition_penalty": "0"}, "wav"),
     ],
 )

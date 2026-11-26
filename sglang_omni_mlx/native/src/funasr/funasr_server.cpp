@@ -9,8 +9,7 @@
 // Request fields beside the audio: language (named in the prompt; Chinese and
 // auto leave the model to choose), prompt (comma-separated hotwords),
 // max_new_tokens (one budget for the whole request; unset or 0 is the
-// default), temperature (0 only: decoding is greedy), repetition_penalty,
-// stream and include_generation_metadata.
+// default), repetition_penalty, stream and include_generation_metadata.
 #include <memory>
 #include <stdexcept>
 
@@ -40,8 +39,6 @@ public:
       throw std::invalid_argument("max_new_tokens must not be negative");
     } else if (options.repetition_penalty <= 0) {
       throw std::invalid_argument("repetition_penalty must be positive");
-    } else if (asr_service::NumberField(form, "temperature").value_or(0) != 0) {
-      throw std::invalid_argument("temperature must be 0: decoding is greedy");
     } else {
     }
     return [this, samples = std::move(samples),
