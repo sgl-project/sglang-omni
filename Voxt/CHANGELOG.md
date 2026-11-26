@@ -4,6 +4,10 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ## [Unreleased]
 
+### Added
+- **Profile long recordings on a Mac**: an opt-in test harness measures meeting import or plain subtitles with local speech models, optional transcript correction and summaries, per-stage and per-request timings, draft acceptance counters, text accuracy hashes, process and system resources, Go profiles, native logs and Instruments signposts. A loop copies the input, hard-links models, runs three isolated processes per configuration and keeps the raw results and median without touching Voxt's data. A separate overlap experiment compares one-shot, serial, and recording-overlapped scheduling for dictation and meetings with real ASR and an explicitly simulated, deterministic language model. The matrix also has a dedicated `diarize_chunk_seconds` knob for MTD request caps, independent of mic ASR chunks and the production default.
+- **Import a recording as a meeting**: Import recording… on the Meetings page turns an audio file, or the sound of a video (m4a, mp3, wav, aiff, caf, mp4, mov), into a meeting. MOSS-Transcribe-Diarize transcribes the whole file and labels every voice Speaker 1, 2, 3 and so on: the file is one mixed track, so there is no You/Others split. Then the same transcript clean-up and summary as a recorded meeting's run. The meeting keeps the file's name, date and length until the summary names it, the page shows progress with Cancel for long files, and an interrupted import can be finished with Continue processing. Importing needs MOSS-Transcribe-Diarize: without it Voxt says so and opens Speech models, instead of transcribing without speaker labels.
+
 ### Changed
 - **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
@@ -11,8 +15,13 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Rewrite lost the selection in Slack, Notion and other apps that only give it by copying**: the Rewrite card took the front before Voxt copied the selection, so the copy went to Voxt and the card opened without the selected text. The card now waits until the selection is read.
+- **Continue processing finishes an interrupted import**: with the after-meeting pass turned off, Continue processing on an interrupted import ran nothing and the meeting stayed finishing forever, and a failed transcript clean-up or summary looked like a success. Continue processing now runs the pass as the import itself does, the meeting ends done, and a clean-up or summary failure is reported.
 
 ### 中文
+
+#### 新增
+- **在 Mac 上测量长录音**：新增显式启用的测试 harness，可测量会议导入或普通字幕的本地语音识别、可选转录稿校对和总结，记录各阶段与每请求耗时、draft acceptance 计数、文本准确率和 hash、进程与系统资源、Go profile、native 日志和 Instruments signpost。配套循环会复制输入、硬链接模型，每个配置用三个独立进程运行并保留原始结果与中位数，不接触 Voxt 的真实数据。另有独立的 overlap 实验，以真实 ASR 和明确标注的 deterministic 模拟语言模型比较听写与会议的整段、停止后串行、录音期重叠调度。矩阵另有专门的 `diarize_chunk_seconds` 旋钮控制 MTD 请求块长，独立于 mic ASR 切块和生产默认值。
+- **把录音导入成会议**：会议页新增“导入录音…”，把音频文件或视频的声音（m4a、mp3、wav、aiff、caf、mp4、mov）变成一场会议。MOSS-Transcribe-Diarize 整段转录，把所有人的声音标为说话人 1、2、3……文件只有一条混合音轨，所以不分“我/对方”；之后照常校对转录稿和写总结。会议先保留文件的名字、日期和时长，总结写完后再改名；导入长文件时页面显示进度并可取消，中断的导入可以用“继续处理”完成。导入需要 MOSS-Transcribe-Diarize，未安装时 Voxt 会说明并打开语音识别模型页，不会不区分说话人就直接转录。
 
 #### 变更
 - **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
@@ -21,6 +30,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **在 Slack、Notion 等只能靠复制读取选区的应用里，改写读不到选中的文字**：改写卡片在 Voxt 复制选区之前就切到了前台，复制发给了 Voxt 自己，卡片里没有选中的文字。现在卡片等选区读完再切到前台。
+- **“继续整理”能把中断的导入跑完**：关掉会后重新整理时，对中断的导入点“继续整理”什么都不跑，会议一直停在收尾状态，转录稿校对或总结失败也被当成成功。现在“继续整理”和导入本身一样会跑整理，会议正常完成，校对或总结失败会提示失败。
 
 ## [Unreleased]
 
