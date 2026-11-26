@@ -286,21 +286,22 @@ func (r *run) write(raw, selection string) {
 	r.finish(Done, problem, res.Content, o)
 }
 
-// askOrFallback asks the language model and, when it fails, the
-// fallback model once, which then is the session's model: later
-// requests, the snapshot and the history entry use it.
+// askOrFallback asks the language model and, when it fails, each
+// fallback in priority order. The model that answers is the session's
+// model: later requests, the snapshot and the history entry use it.
 func (r *run) askOrFallback(in compose.Input) (compose.Answer, string, bool, error) {
-	res, profile, truncated, err := r.ask(in)
-	if !r.useFallback(err) {
-		return res, profile, truncated, err
+	for {
+		res, profile, truncated, err := r.ask(in)
+		if !r.useFallback(err) {
+			return res, profile, truncated, err
+		}
+		if !r.swapFallback(err) {
+			return res, profile, truncated, err
+		}
 	}
-	if !r.swapFallback(err) {
-		return res, profile, truncated, err
-	}
-	return r.ask(in)
 }
 
-// useFallback says a failed request may go to the fallback model once:
+// useFallback says a failed request may go to the next fallback model:
 // there is one, the session goes on (not cancelled, skipped, stopped or
 // asked to rethink), and the failure is not the user's to manage — a
 // used-up plan is, so moving to another paid service without asking
@@ -310,7 +311,7 @@ func (r *run) useFallback(err error) bool {
 		return false
 	}
 	r.m.mu.Lock()
-	canFallback := r.cleanupDecisionOpenLocked() && r.svc.Fallback != nil
+	canFallback := r.cleanupDecisionOpenLocked() && len(r.svc.Fallbacks) > 0
 	r.m.mu.Unlock()
 	return canFallback
 }
@@ -319,21 +320,23 @@ func (r *run) useFallback(err error) bool {
 // the snapshot and the history entry use it. The answer starts over, as
 // when asked again: nothing of the failed model's draft or title stays.
 func (r *run) swapFallback(err error) bool {
-	var failed, fallback Model
+	var failed Model
+	var fallback Fallback
 	swapped := r.m.updateIf(r, func(s *Snapshot) bool {
-		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || !r.cleanupDecisionOpenLocked() || r.svc.Fallback == nil {
+		if r.cancelled.Load() || r.ctx.Err() != nil || r.skipped.Load() || r.stopped.Load() || r.rethink.Load() || !r.cleanupDecisionOpenLocked() || len(r.svc.Fallbacks) == 0 {
 			return false
 		}
-		failed, fallback = r.svc.LLMInfo, r.svc.FallbackInfo
-		r.svc.LLM, r.svc.LLMInfo, r.svc.Fallback = r.svc.Fallback, fallback, nil
+		failed, fallback = r.svc.LLMInfo, r.svc.Fallbacks[0]
+		r.svc.LLM, r.svc.LLMInfo = fallback.LLM, fallback.Info
+		r.svc.Fallbacks = r.svc.Fallbacks[1:]
 		if r.req.Kind == store.KindTranscribe {
 			r.cleanupAttempt++
 		}
-		s.LLM, s.Draft, s.Title = fallback, "", ""
+		s.LLM, s.Draft, s.Title = fallback.Info, "", ""
 		return true
 	})
 	if swapped {
-		r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", failed.ID, failed.Model, err, fallback.ID, fallback.Model)
+		r.logf("warning", "language model %s (model %s) failed: %v: asking the fallback %s (model %s)", failed.ID, failed.Model, err, fallback.Info.ID, fallback.Info.Model)
 	}
 	return swapped
 }

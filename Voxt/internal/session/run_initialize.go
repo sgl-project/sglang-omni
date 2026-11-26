@@ -185,7 +185,7 @@ func (r *run) useLLMReadiness(result LLMReadiness) bool {
 		return true
 	}
 	r.svc.LLM, r.svc.LLMInfo = result.LLM, result.LLMInfo
-	r.svc.Fallback, r.svc.FallbackInfo = result.Fallback, result.FallbackInfo
+	r.svc.Fallbacks = result.Fallbacks
 	r.m.mu.Unlock()
 	r.init.llmOutcome = result.Outcome
 	r.init.llmReady = true
@@ -363,7 +363,7 @@ func (r *run) useServices(s svcResult) {
 	r.resolved = true
 	r.svc.ASR, r.svc.ASRInfo, r.svc.VAD = s.svc.ASR, s.svc.ASRInfo, s.svc.VAD
 	r.svc.LLM, r.svc.LLMInfo = s.svc.LLM, s.svc.LLMInfo
-	r.svc.Fallback, r.svc.FallbackInfo = s.svc.Fallback, s.svc.FallbackInfo
+	r.svc.Fallbacks = s.svc.Fallbacks
 	r.terms, r.snippets = s.terms, s.snippets
 	if r.needsSpeechHints() {
 		r.speechHints = SpeechHints(r.settings, s.terms)

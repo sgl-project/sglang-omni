@@ -4,6 +4,8 @@ package main
 // builders and views. Shared Speech models callers keep these app facades.
 
 import (
+	"slices"
+
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
@@ -12,7 +14,26 @@ import (
 
 func (a *app) remoteCardsStateInput(kind local.Kind) remoteCardsStateInput {
 	input := remoteCardsStateInput{Kind: kind}
-	for _, sv := range services(kind) {
+	all := services(kind)
+	if kind == local.LLM {
+		byID := make(map[string]service, len(all))
+		for _, sv := range all {
+			byID[sv.id] = sv
+		}
+		ordered := make([]service, 0, len(all))
+		for _, provider := range a.prefs.Providers.LLM {
+			if sv, ok := byID[provider.ID]; ok {
+				ordered = append(ordered, sv)
+			}
+		}
+		for _, sv := range all {
+			if _, configured := providers.Setup(a.prefs, sv.id); !configured {
+				ordered = append(ordered, sv)
+			}
+		}
+		all = ordered
+	}
+	for _, sv := range all {
 		setup, configured := a.setupOf(kind, sv.id)
 		account := providers.Account(kind, sv.id)
 		mask, read := a.keyMasks[account]
@@ -77,6 +98,27 @@ func (a *app) testRemoteProvider(kind, id string) {
 	account := providers.Account(modelKind, id)
 	keys := a.keys
 	a.testProvider(modelKind, setup, func() (string, error) { return keys.Get(account) })
+}
+
+func (a *app) moveRemoteProvider(kind, id, targetID string) {
+	if remoteKind(kind) != local.LLM || id == targetID {
+		return
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		list := slices.Clone(s.Providers.LLM)
+		from := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == id })
+		target := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == targetID })
+		if from < 0 || target < 0 {
+			return
+		}
+		moving, movingDown := list[from], from < target
+		list = slices.Delete(list, from, from+1)
+		target = slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == targetID })
+		if movingDown {
+			target++
+		}
+		s.Providers.LLM = slices.Insert(list, target, moving)
+	})
 }
 
 func (a *app) chooseLLMWait(value string) {

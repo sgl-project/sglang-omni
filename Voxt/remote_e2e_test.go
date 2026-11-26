@@ -278,3 +278,53 @@ func TestDialogTestWithoutKey(t *testing.T) {
 		t.Errorf("the ⓘ says %q", info)
 	}
 }
+
+// TestRemoteProviderPriorityDrag: dragging a configured service onto
+// another changes their backup priority in both directions and saves the
+// order, without opening the service's dialog.
+func TestRemoteProviderPriorityDrag(t *testing.T) {
+	useKeys(t, &memKeys{m: map[string]string{}})
+	a, _, tt := newTestApp(t)
+	tt.SetSize(1200, 900)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{
+			{ID: "ollama"},
+			{ID: llm.Custom, Endpoint: "http://127.0.0.1:8080/v1", Model: "qwen3"},
+		}
+	})
+	a.navigate(remotePath)
+	frames(tt)
+	ids := func(list []settings.Provider) []string {
+		out := make([]string, len(list))
+		for i, provider := range list {
+			out[i] = provider.ID
+		}
+		return out
+	}
+	drag := func(fromID, toID string, want []string) {
+		t.Helper()
+		from, fromOK := tt.Find(lookupService(local.LLM, fromID).name)
+		to, toOK := tt.Find(lookupService(local.LLM, toID).name)
+		if !fromOK || !toOK {
+			t.Fatalf("cannot find provider cards %q and %q", fromID, toID)
+		}
+		fromX, fromY := from.X+from.W/2, from.Y+from.H/2
+		toX, toY := to.X+to.W/2, to.Y+to.H/2
+		tt.Press(fromX, fromY)
+		tt.Move(toX, toY)
+		frames(tt)
+		tt.Release(toX, toY)
+		frames(tt)
+		if a.provDlg.open {
+			t.Fatal("a priority drag opened the provider dialog")
+		}
+		if got := ids(a.prefs.Providers.LLM); !slices.Equal(got, want) {
+			t.Fatalf("provider order after dragging %s onto %s = %q, want %q", fromID, toID, got, want)
+		}
+		eventually(t, "the dragged provider order to be saved", func() bool {
+			return slices.Equal(ids(a.settings.Get().Providers.LLM), want)
+		})
+	}
+	drag(llm.Custom, "ollama", []string{llm.Custom, "ollama"})
+	drag(llm.Custom, "ollama", []string{"ollama", llm.Custom})
+}

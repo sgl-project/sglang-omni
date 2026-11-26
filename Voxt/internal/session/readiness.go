@@ -29,12 +29,11 @@ const (
 
 // LLMReadiness is the cleanup-side state a session needs after recognition.
 type LLMReadiness struct {
-	LLM          LLM
-	LLMInfo      Model
-	Fallback     LLM
-	FallbackInfo Model
-	Outcome      LLMOutcome
-	Err          error
+	LLM       LLM
+	LLMInfo   Model
+	Fallbacks []Fallback
+	Outcome   LLMOutcome
+	Err       error
 }
 
 // ASRResolver resolves speech state without opening cleanup providers.

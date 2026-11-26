@@ -308,6 +308,12 @@ type LLM interface {
 	Chat(ctx context.Context, req llm.Request) (llm.Response, error)
 }
 
+// Fallback is one language model waiting behind the session's current model.
+type Fallback struct {
+	LLM  LLM
+	Info Model
+}
+
 // Services are the speech and language models of one session.
 type Services struct {
 	// ASR is nil when no speech model is ready (the session fails with
@@ -317,11 +323,10 @@ type Services struct {
 	// LLM is nil when the feature has no language model ready.
 	LLM     LLM
 	LLMInfo Model
-	// Fallback is Translate's fallback model, or with the Language models
-	// page's switch another language model, asked once when LLM fails;
-	// nil: none.
-	Fallback     LLM
-	FallbackInfo Model
+	// Fallbacks are Translate's fallback model, then with the Language
+	// models page's switch the other ready models in priority order. Each
+	// is asked in turn when the current model fails.
+	Fallbacks []Fallback
 	// VAD is the voice activity model (Silero) that finds the speech in
 	// the recording; nil: the energy detector of internal/vad does, as it
 	// does when the model fails (vad_model.go).

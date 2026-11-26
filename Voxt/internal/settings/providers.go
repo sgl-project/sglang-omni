@@ -5,10 +5,9 @@ import (
 	"strings"
 )
 
-// Providers are the remote services the user set up, in the order they
-// were added (Auralink's): the language models of the Remote models page
-// and the speech recognition services; a service nobody set up has no
-// entry.
+// Providers are the remote services the user set up: the language models
+// of the Remote models page in the user's backup priority order, and the
+// speech recognition services; a service nobody set up has no entry.
 type Providers struct {
 	LLM []Provider `json:"llm,omitempty"`
 	ASR []Provider `json:"asr,omitempty"`

@@ -43,6 +43,13 @@ func (f llmShelf) LLM(_ context.Context, id string) (local.Chat, local.Model, er
 	return &llm.Client{Backend: &fakeChat{}}, m, nil
 }
 
+func firstFallbackID(svc session.Services) string {
+	if len(svc.Fallbacks) == 0 {
+		return ""
+	}
+	return svc.Fallbacks[0].Info.ID
+}
+
 // TestResolverFallback: Translate's fallback model is opened beside its
 // language model, and stands in for it when that one does not open;
 // never for another feature, the same model, or a model not installed.
@@ -72,8 +79,8 @@ func TestResolverFallback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if svc.LLMInfo.ID != tc.wantMain || svc.FallbackInfo.ID != tc.wantBack || (svc.LLM != nil) != (tc.wantMain != "") || (svc.Fallback != nil) != (tc.wantBack != "") {
-				t.Errorf("model %q, fallback %q; want %q, %q", svc.LLMInfo.ID, svc.FallbackInfo.ID, tc.wantMain, tc.wantBack)
+			if svc.LLMInfo.ID != tc.wantMain || firstFallbackID(svc) != tc.wantBack || (svc.LLM != nil) != (tc.wantMain != "") || (len(svc.Fallbacks) > 0) != (tc.wantBack != "") {
+				t.Errorf("model %q, fallback %q; want %q, %q", svc.LLMInfo.ID, firstFallbackID(svc), tc.wantMain, tc.wantBack)
 			}
 		})
 	}
@@ -96,7 +103,7 @@ func TestResolverSwitch(t *testing.T) {
 		{"rewrite uses the next configured API", store.KindRewrite, true, "", "", "deepseek", "openai"},
 		{"transcribe uses the next configured API", store.KindTranscribe, true, "", "", "deepseek", "openai"},
 		{"the next one does not open", store.KindRewrite, true, "", "openai", "deepseek", "custom"},
-		{"the model does not open", store.KindRewrite, true, "", "deepseek", "openai", ""},
+		{"the model does not open", store.KindRewrite, true, "", "deepseek", "openai", "custom"},
 		{"translate's own external fallback first", store.KindTranslate, true, "openai", "", "deepseek", "openai"},
 		{"translate's fallback does not open", store.KindTranslate, true, "openai", "openai", "deepseek", "custom"},
 	} {
@@ -111,10 +118,37 @@ func TestResolverSwitch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if svc.LLMInfo.ID != tc.wantMain || svc.FallbackInfo.ID != tc.wantBack || (svc.Fallback != nil) != (tc.wantBack != "") {
-				t.Errorf("model %q, fallback %q; want %q, %q", svc.LLMInfo.ID, svc.FallbackInfo.ID, tc.wantMain, tc.wantBack)
+			if svc.LLMInfo.ID != tc.wantMain || firstFallbackID(svc) != tc.wantBack || (len(svc.Fallbacks) > 0) != (tc.wantBack != "") {
+				t.Errorf("model %q, fallback %q; want %q, %q", svc.LLMInfo.ID, firstFallbackID(svc), tc.wantMain, tc.wantBack)
 			}
 		})
+	}
+}
+
+// TestResolverSwitchKeepsEveryBackupInOrder: the resolver opens the
+// whole priority queue, not only the first backup, so a later failure can
+// continue through the list.
+func TestResolverSwitchKeepsEveryBackupInOrder(t *testing.T) {
+	models := []local.Model{
+		{Kind: local.LLM, ID: "deepseek"},
+		{Kind: local.LLM, ID: "openai"},
+		{Kind: local.LLM, ID: "custom"},
+		{Kind: local.LLM, ID: "ollama"},
+	}
+	s := settings.Defaults()
+	s.Providers.LLM = []settings.Provider{{ID: "custom", Endpoint: "http://127.0.0.1:8080/v1", Model: "m"}}
+	s.Models.LLMSwitch = true
+	s.Features.Rewrite.LLM = "deepseek"
+	svc, err := resolver(llmShelf{models: models})(context.Background(), store.KindRewrite, s, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, fallback := range svc.Fallbacks {
+		got = append(got, fallback.Info.ID)
+	}
+	if svc.LLMInfo.ID != "deepseek" || !slices.Equal(got, []string{"openai", "custom", "ollama"}) {
+		t.Fatalf("primary %q, backups %q", svc.LLMInfo.ID, got)
 	}
 }
 
@@ -130,8 +164,8 @@ func TestResolverSwitchUsesRemoteAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if svc.LLMInfo.ID != "ollama" || svc.FallbackInfo.ID != "deepseek" || svc.Fallback == nil {
-		t.Errorf("model %q, fallback %q; want ollama and deepseek", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+	if svc.LLMInfo.ID != "ollama" || firstFallbackID(svc) != "deepseek" || len(svc.Fallbacks) == 0 {
+		t.Errorf("model %q, fallback %q; want ollama and deepseek", svc.LLMInfo.ID, firstFallbackID(svc))
 	}
 }
 
@@ -150,8 +184,8 @@ func TestResolverKeepsAnUnavailableChoiceClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if svc.LLM != nil || svc.LLMInfo.ID != "" || svc.Fallback != nil {
-				t.Errorf("unavailable choice opened %q with fallback %q", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+			if svc.LLM != nil || svc.LLMInfo.ID != "" || len(svc.Fallbacks) > 0 {
+				t.Errorf("unavailable choice opened %q with fallback %q", svc.LLMInfo.ID, firstFallbackID(svc))
 			}
 		})
 	}
@@ -164,8 +198,8 @@ func TestResolverKeepsAnUnavailableChoiceClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if svc.LLMInfo.ID != "ollama" || svc.Fallback != nil {
-			t.Errorf("model %q, fallback %q; want only the explicit fallback", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+		if svc.LLMInfo.ID != "ollama" || len(svc.Fallbacks) > 0 {
+			t.Errorf("model %q, fallback %q; want only the explicit fallback", svc.LLMInfo.ID, firstFallbackID(svc))
 		}
 	})
 
@@ -189,8 +223,8 @@ func TestResolverKeepsAnUnavailableChoiceClosed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if svc.LLMInfo.ID != "deepseek" || svc.Fallback != nil || svc.FallbackInfo.ID != "" {
-			t.Errorf("model %q, fallback %q; want no substituted fallback", svc.LLMInfo.ID, svc.FallbackInfo.ID)
+		if svc.LLMInfo.ID != "deepseek" || len(svc.Fallbacks) > 0 || firstFallbackID(svc) != "" {
+			t.Errorf("model %q, fallback %q; want no substituted fallback", svc.LLMInfo.ID, firstFallbackID(svc))
 		}
 	})
 }
@@ -222,8 +256,8 @@ func TestResolverWithoutSpeech(t *testing.T) {
 		if want := map[bool]int{false: 0, true: 1}[speech]; opened != want {
 			t.Errorf("speech %v: the speech model opened %d times; want %d", speech, opened, want)
 		}
-		if svc.LLMInfo.ID != "deepseek" || svc.FallbackInfo.ID != "ollama" {
-			t.Errorf("speech %v: model %q, fallback %q", speech, svc.LLMInfo.ID, svc.FallbackInfo.ID)
+		if svc.LLMInfo.ID != "deepseek" || firstFallbackID(svc) != "ollama" {
+			t.Errorf("speech %v: model %q, fallback %q", speech, svc.LLMInfo.ID, firstFallbackID(svc))
 		}
 	}
 }
@@ -278,7 +312,7 @@ func TestSessionResolversSplitSpeechAndCleanupProviderWork(t *testing.T) {
 
 	s.Features.Translate.Fallback = "ollama"
 	cleanup := resolveLLM(context.Background(), store.KindTranslate, s)
-	if cleanup.Outcome != session.LLMAvailable || cleanup.LLMInfo.ID != "deepseek" || cleanup.FallbackInfo.ID != "ollama" ||
+	if cleanup.Outcome != session.LLMAvailable || cleanup.LLMInfo.ID != "deepseek" || len(cleanup.Fallbacks) != 1 || cleanup.Fallbacks[0].Info.ID != "ollama" ||
 		shelf.asrCalls != 1 || shelf.installed != 1 || len(shelf.llmCalls) != 2 || shelf.llmCalls[0] != "deepseek" || shelf.llmCalls[1] != "ollama" {
 		t.Fatalf("LLM readiness %+v, shelf %+v", cleanup, shelf)
 	}

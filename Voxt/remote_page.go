@@ -25,7 +25,7 @@ func remoteSettingsView(c *ui.Context, state *remoteViewState, actions remoteAct
 	caption(c, i18n.T("Voxt sends the language model the recognised or selected text, never your audio."))
 	llmWaitView(c, &state.Wait, actions, local.wait)
 	on := state.Switch
-	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt asks the next language model you set up in this page's order, once, even one you chose for another feature. Translate asks its own fallback model first. The fallback provider, including an external API, receives the same request. A used-up plan does not switch."), func() {
+	settingRow(c, "llm-switch", i18n.T("Switch models when one fails"), i18n.T("When a feature's language model does not answer, Voxt tries the other language models you set up in this page's order until one answers, even one you chose for another feature. Translate asks its own fallback model first. A fallback provider that is asked, including an external API, receives the same request. A used-up plan does not switch."), func() {
 		if ui.Switch(c.Key("llm-switch-switch"), &on).Label(i18n.T("Switch models when one fails")).Changed() {
 			actions.setLLMSwitch(on)
 		}
@@ -94,9 +94,19 @@ func remoteKeyColor(c *ui.Context, status string) ui.Color {
 func remoteProviderCard(c *ui.Context, state remoteProviderCardState, actions remoteCardsActions, width float32) {
 	t := c.Theme()
 	colors := tok(t)
+	tooltip := i18n.T("Set up %s", state.Name)
+	if state.Kind == "llm" && state.Configured {
+		tooltip = i18n.T("Set up %s, or drag it to change the backup order", state.Name)
+	}
 	button := ui.ButtonBase(c.Key("remote-card-"+state.Account)).Width(width).Padding(px(t, sp3), px(t, sp4)).Radius(px(t, radiusCard)).Border(1, colors.Line).
-		Label(state.Name).Tooltip(i18n.T("Set up %s", state.Name)).AlignItems(ui.Stretch).Shrink(0).
+		Label(state.Name).Tooltip(tooltip).AlignItems(ui.Stretch).Shrink(0).
 		Role(ui.RoleGroup)
+	if state.Kind == "llm" && state.Configured {
+		button = button.Drag(state.ID)
+		if dropped, ok := ui.Drop[string](button); ok && dropped != state.ID {
+			actions.moveRemoteProvider(state.Kind, dropped, state.ID)
+		}
+	}
 	if button.Hovered() {
 		button.Background(colors.Subtle)
 	}

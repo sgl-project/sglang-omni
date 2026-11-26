@@ -17,8 +17,8 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
-// TestReady: a setup is offered once it has what it needs, in the
-// presets' order: a key (unless its service needs none), an address
+// TestReady: a setup is offered once it has what it needs, in the saved
+// priority order: a key (unless its service needs none), an address
 // (custom) and a model.
 func TestReady(t *testing.T) {
 	var s settings.Settings
@@ -33,7 +33,7 @@ func TestReady(t *testing.T) {
 	for _, p := range Ready(s, hasKey) {
 		got = append(got, p.ID+"="+Model(p))
 	}
-	if strings.Join(got, " ") != "ollama=qwen3 deepseek=deepseek-v4-pro custom=qwen3" || len(s.Providers.LLM) != 5 {
+	if strings.Join(got, " ") != "custom=qwen3 deepseek=deepseek-v4-pro ollama=qwen3" || len(s.Providers.LLM) != 5 {
 		t.Fatalf("ready %q, setups %+v", got, s.Providers.LLM)
 	}
 	for id, want := range map[string]string{"openai": MissingKey, "lmstudio": MissingModel} {

@@ -33,6 +33,8 @@ type harness struct {
 	llm         LLM
 	resolveGate <-chan struct{}
 	fallback    LLM // Translate's fallback model (nil: none)
+	fallbacks   []LLM
+	fallbackIDs []string
 	resolveErr  error
 	// speech is Resolve's speech argument, call by call.
 	speech []bool
@@ -78,7 +80,11 @@ func newHarness(t testing.TB, prov asr.Provider, model LLM, cfgFn func(*Config, 
 				svc.LLM, svc.LLMInfo = h.llm, Model{ID: "deepseek", Name: "DeepSeek", Model: "deepseek-chat", Remote: h.remote}
 			}
 			if h.fallback != nil {
-				svc.Fallback, svc.FallbackInfo = h.fallback, Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}
+				svc.Fallbacks = append(svc.Fallbacks, Fallback{LLM: h.fallback, Info: Model{ID: "ollama", Name: "Ollama", Model: "qwen3"}})
+			}
+			for i, fallback := range h.fallbacks {
+				id := h.fallbackIDs[i]
+				svc.Fallbacks = append(svc.Fallbacks, Fallback{LLM: fallback, Info: Model{ID: id, Name: id, Model: id}})
 			}
 			return svc, nil
 		},

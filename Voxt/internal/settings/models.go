@@ -30,9 +30,9 @@ type Models struct {
 	// need no migration (#3821). Either way a long text gets longer.
 	LLMWait string `json:"llmWait,omitempty"`
 	// LLMSwitch: when a feature's language model fails, or does not open,
-	// its session asks the next configured language model that serves the
-	// feature, once, including an external API chosen for another feature.
-	// Translate's own fallback model goes first.
+	// its session asks the other configured language models in their page
+	// order until one answers, including an external API chosen for another
+	// feature. Translate's own fallback model goes first.
 	LLMSwitch bool `json:"llmSwitch,omitempty"`
 	// Faster is each speech model's Faster transcription switch (its id:
 	// on): whether its server verifies the model's speculative draft. A
