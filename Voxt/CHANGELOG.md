@@ -7,6 +7,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ### Changed
 - **Experimental settings**: Sessions (experimental), its history notice and the Next session shortcut move from Settings → Shortcuts to Settings → Experimental, and the switch explains what the card's session row does. The page no longer lists the Session 1/2/3 shortcuts, whose numbers shift as sessions come and go, or the switch counts. Existing session settings keep their values.
 - **Qwen3-ASR 1.7B (8bit) is the recommended speech model again**: the setup guide, Home and the feature pages download Qwen3-ASR 1.7B (8bit) with its 726 MB DFlash draft (3.2 GB together), so Faster transcription is on from the start, and Automatic picks it first once it is installed. MOSS-Transcribe-Diarize stays on the Speech models page, and a model you chose for a feature stays as chosen.
+- **Anthropic lists the current Claude models, and they answer without thinking first** (#4697): the Model menu offers Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Fable 5.2 instead of Sonnet 4.6, Haiku 4.5 and Opus 4.6, and Claude Haiku 5.5 is the default. Claude's 5.5 models think before every answer unless asked not to, so Voxt now turns thinking off as it does for other services: Sonnet 5.5 with the setting it takes for that, while Opus 5.5 and Fable 5.2 always think. A setup that kept the default model moves to Claude Haiku 5.5; a model you chose stays.
 
 ### Fixed
 - **Rewrite distinguishes description questions from template requests** (#4358): asking Voxt to describe or explain an instruction template no longer leaves `<instruction>` tags around a real answer. Requested templates still keep their tags, and an earlier turn cannot authorize one.
@@ -17,6 +18,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 #### 变更
 - **实验功能设置**：“会话（实验功能）”开关、历史提示和“下一个会话”快捷键从“设置 → 快捷键”移到“设置 → 实验功能”，开关说明写清卡片上的会话行能做什么。页面不再列出会话 1/2/3 的快捷键（会话编号会随新建、删除变动）和切换次数统计。已有会话设置保持不变。
 - **推荐的语音识别模型改回 Qwen3-ASR 1.7B (8bit)**：设置引导、首页和功能页下载 Qwen3-ASR 1.7B (8bit) 及其 726 MB 的 DFlash 草稿（共 3.2 GB），转录加速一开始就开着；装好后“自动”先用它。MOSS-Transcribe-Diarize 仍在语音识别模型页，功能里选过的模型不变。
+- **Anthropic 列出当前的 Claude 模型，回答前不再先思考**（#4697）：模型菜单里的 Sonnet 4.6、Haiku 4.5 和 Opus 4.6 换成 Claude Haiku 5.5、Sonnet 5.5、Opus 5.5 和 Fable 5.2，默认用 Claude Haiku 5.5。Claude 的 5.5 系列不明确关掉就会在每次回答前思考，所以 Voxt 现在像对其他服务一样关掉思考：Sonnet 5.5 用它接受的写法关掉，Opus 5.5 和 Fable 5.2 始终会思考。沿用默认模型的设置会改用 Claude Haiku 5.5，自己选过的模型不变。
 
 #### 修复
 - **改写区分模板请求和描述类问题**（#4358）：让 Voxt 描述或解释 instruction 模板时，真实回答外不再保留 `<instruction>` 标签；明确请求的模板仍保留标签，先前轮次不会让本轮回答误留模板标签。
