@@ -325,7 +325,7 @@ func TestFallbackCleanupFencesLatePrimaryDraft(t *testing.T) {
 	h.speak(id, 4)
 	primaryRequest := <-primary.started
 	clock.Advance(200 * time.Millisecond)
-	primaryRequest.OnDelta("Primary draft.")
+	primaryRequest.OnDelta("<output>Primary draft.</output>")
 	if snapshot := h.m.Current(); snapshot.Draft != "Primary draft." {
 		t.Fatalf("primary draft was not published: %q", snapshot.Draft)
 	}

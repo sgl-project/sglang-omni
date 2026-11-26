@@ -107,6 +107,96 @@ func TestSceneReadinessStartsLLMWhileASRFinalIsPending(t *testing.T) {
 	}
 }
 
+func TestLateRemoteLLMReadinessStartsHeadStartWhileASRFinalIsPending(t *testing.T) {
+	const partial = "we ship the new build on friday"
+	finalStarted := make(chan struct{}, 1)
+	finalRelease, releaseFinal := controlledRelease(t)
+	provider := &fakeStreamer{final: partial, silent: true, finishGate: finalRelease, finishStarted: finalStarted}
+	model := &fakeLLM{text: "We ship the new build on Friday."}
+	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+		s.Dictionary.ASRHints = false
+	})
+	drained := readinessRecording(h.audio, 4)
+	signals := observeSessionSignals(h)
+	started, releaseLLM := setBlockedRemoteResolvers(h, provider, model)
+	id := h.start()
+	waitInitializationSignal(t, started, "blocked remote LLM resolver")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open while LLM resolution is blocked")
+	stream := initializationStream(t, provider)
+	stream.emit(asr.Event{Kind: asr.EventPartial, Text: partial})
+	h.rec.waitFor(t, "usable ASR partial", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.Partial == partial
+	})
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, finalStarted, "ASR Final held after Stop")
+	if len(model.requests()) != 0 {
+		t.Fatal("Head Start ran before remote LLM readiness")
+	}
+
+	releaseLLM()
+	waitInitializationSignal(t, signals.llmRequest, "Head Start request before ASR Final")
+	select {
+	case <-signals.asrFinal:
+		t.Fatal("ASR Final completed while its gate was closed")
+	default:
+	}
+	releaseFinal()
+
+	end := h.rec.wait(t)
+	requests := model.requests()
+	if end.State != Done || end.Raw != partial || end.Result != "We ship the new build on Friday." ||
+		len(requests) != 1 || inputOf(requests[0]) != partial || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("end=%+v, requests=%+v, deliveries=%q", end, requests, h.text.pastes())
+	}
+}
+
+func TestLateRemoteLLMReadinessDoesNotHeadStartAfterStopDeadline(t *testing.T) {
+	const (
+		partial = "we ship the new build on friday"
+		budget  = 200 * time.Millisecond
+	)
+	clock := newSoftDeadlineClock()
+	finalStarted := make(chan struct{}, 1)
+	finalRelease, releaseFinal := controlledRelease(t)
+	provider := &fakeStreamer{final: partial, silent: true, finishGate: finalRelease, finishStarted: finalStarted}
+	model := &fakeLLM{text: "We ship the new build on Friday."}
+	h := newHarness(t, provider, model, func(config *Config, s *settings.Settings) {
+		config.Now, config.AfterFunc = clock.Now, clock.AfterFunc
+		config.CleanupLatency = CleanupLatencyPolicy{AutoFallbackAfter: budget}
+		s.Features.Transcribe.Enhance = true
+		s.Dictionary.ASRHints = false
+	})
+	drained := readinessRecording(h.audio, 4)
+	signals := observeSessionSignals(h)
+	started, releaseLLM := setBlockedRemoteResolvers(h, provider, model)
+	id := h.start()
+	waitInitializationSignal(t, started, "blocked remote LLM resolver")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open while LLM resolution is blocked")
+	stream := initializationStream(t, provider)
+	stream.emit(asr.Event{Kind: asr.EventPartial, Text: partial})
+	h.rec.waitFor(t, "usable ASR partial", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.Partial == partial
+	})
+	stopReadinessRecording(t, h, id, drained)
+	waitInitializationSignal(t, finalStarted, "ASR Final held after Stop")
+	clock.Advance(budget)
+
+	releaseLLM()
+	h.rec.waitFor(t, "late LLM readiness", func(snapshot Snapshot) bool {
+		return snapshot.ID == id && snapshot.LLM.ID == "fake-llm"
+	})
+	if len(model.requests()) != 0 {
+		t.Fatal("Head Start began after the Stop-relative cleanup deadline")
+	}
+	releaseFinal()
+
+	end := h.rec.wait(t)
+	if end.State != Done || end.Raw != partial || end.Result != partial || len(model.requests()) != 0 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != partial {
+		t.Fatalf("end=%+v, requests=%d, deliveries=%q", end, len(model.requests()), h.text.pastes())
+	}
+}
+
 func TestSceneReadinessStartsLLMWhileASRResolverOrOpenIsPending(t *testing.T) {
 	t.Run("ASR resolver", func(t *testing.T) {
 		urlStarted := make(chan struct{}, 1)

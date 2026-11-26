@@ -118,7 +118,6 @@ type run struct {
 	svcResolved      chan struct{}
 	streamReaderDone chan struct{}
 	streamReaderStop context.CancelFunc
-	streamReaderMu   sync.RWMutex
 	streamReaderOff  atomic.Bool
 	stream           asr.Stream // the session owner's current stream
 	// early cleans finalized speech stretches before Stop (earlyclean.go).
@@ -431,7 +430,9 @@ func (r *run) fail(p *Problem) {
 // endFailed ends the session failed after it recorded: the entry keeps
 // the recording when the settings say so.
 func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) {
-	r.stopStreamReader(stream)
+	if !r.stopStreamReader(stream) {
+		p = &Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}
+	}
 	r.cancel()
 	r.logf("warning", "failed: %s: %v", p.Code, p.Err)
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
@@ -452,8 +453,11 @@ func (r *run) endFailed(p *Problem, stream asr.Stream, more ...func(*Snapshot)) 
 }
 
 func (r *run) endCancelled(stream asr.Stream) {
-	r.stopStreamReader(stream)
+	readerStopped := r.stopStreamReader(stream)
 	r.cancel()
+	if !readerStopped {
+		r.logf("warning", "the speech stream reader did not stop after cancellation")
+	}
 	r.logf("info", "cancelled")
 	total := r.now().Sub(r.m.snapshot(r).StartedAt)
 	audio := asr.Duration(r.pcm.bytes(), asr.SampleRate)

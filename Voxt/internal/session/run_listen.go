@@ -59,6 +59,7 @@ func (r *run) listen() (string, bool) {
 		heard        chan heardText
 		said         string
 		endPause     <-chan time.Time
+		stopEndPause func() bool
 		quiet        bool // the user is silent
 		openDone     chan openResult
 		stream       asr.Stream
@@ -69,24 +70,24 @@ func (r *run) listen() (string, bool) {
 		stopCh       = r.stop
 		sceneDone    <-chan struct{}
 	)
+	clearEndPause := func() {
+		endPause = nil
+		if stopEndPause != nil {
+			stopEndPause()
+			stopEndPause = nil
+		}
+	}
+	defer clearEndPause()
 	sceneDone = r.sceneReadySignal()
 	refreshHead := func() {
 		if !r.head.enabled.Load() {
 			return
 		}
-		for {
-			select {
-			case text := <-heard:
-				said = text
-			default:
-				if stopCh == nil {
-					r.head.ask(said)
-				} else if r.pauseWatch != nil && r.pauseWatch.quiet.Load() {
-					quiet = true
-					r.head.pause(said)
-				}
-				return
-			}
+		quiet = r.pauseWatch != nil && r.pauseWatch.quiet.Load()
+		if stopCh == nil {
+			r.head.ask(said)
+		} else if quiet {
+			r.head.pause(said)
 		}
 	}
 	maybeWarm := func() {
@@ -294,9 +295,14 @@ func (r *run) listen() (string, bool) {
 			}
 			text := update.text
 			if text != said {
-				said, endPause = text, nil
+				said = text
+				clearEndPause()
 				if _, ends := withoutEndWord(text, word); ends {
-					endPause = time.After(cfg.EndWordPause)
+					pause := make(chan time.Time, 1)
+					endPause = pause
+					stopEndPause = cfg.AfterFunc(cfg.EndWordPause, func() {
+						pause <- r.now()
+					})
 				}
 				switch {
 				case stopCh == nil:
@@ -306,12 +312,13 @@ func (r *run) listen() (string, bool) {
 					r.head.pause(said)
 				}
 			}
-		case quiet = <-r.silent:
+		case <-r.silent:
+			quiet = r.pauseWatch != nil && r.pauseWatch.quiet.Load()
 			if quiet && stopCh != nil {
 				r.head.pause(said)
 			}
 		case <-endPause:
-			endPause = nil
+			clearEndPause()
 			r.logf("info", "the end word was said last: stopping the recording")
 			r.stopRecording()
 		case <-stopCh:
@@ -323,7 +330,8 @@ func (r *run) listen() (string, bool) {
 			default:
 			}
 			r.head.ask(said)
-			stopCh, endPause = nil, nil
+			stopCh = nil
+			clearEndPause()
 			at := r.stoppedAt()
 			if at.IsZero() {
 				at = r.recordStopAt(r.now())
@@ -371,8 +379,10 @@ func (r *run) listen() (string, bool) {
 		r.logf("warning", "the microphone gave its first audio %v after the start: what was said before is not in the recording", first.Round(time.Millisecond))
 	}
 	if audioLen < cfg.MinRecording {
-		if stream != nil {
-			r.stopStreamReader(stream)
+		if stream != nil && !r.stopStreamReader(stream) {
+			r.recognitionFailed = true
+			r.endFailed(&Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}, nil)
+			return "", false
 		}
 		if r.typedOnly() {
 			return "", true
@@ -384,7 +394,7 @@ func (r *run) listen() (string, bool) {
 	asrStart := r.now()
 
 	if r.init.split || !r.resolved {
-		if !r.awaitASRReadiness(stream, startOpen, &sceneDone) {
+		if !r.awaitASRReadiness(stream, startOpen, maybeWarm, &sceneDone) {
 			return "", false
 		}
 	}
@@ -402,6 +412,29 @@ func (r *run) listen() (string, bool) {
 			case <-r.ctx.Done():
 				r.endCancelled(stream)
 				return "", false
+			case result := <-r.init.llmDone:
+				r.init.llmDone = nil
+				if !r.useLLMReadiness(result) {
+					r.endCancelled(stream)
+					return "", false
+				}
+				maybeWarm()
+			case terms := <-r.init.termsDone:
+				r.init.termsDone = nil
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(stream)
+					return "", false
+				}
+				r.useTerms(terms)
+				maybeWarm()
+			case snippets := <-r.init.snippetsDone:
+				r.init.snippetsDone = nil
+				if r.cancelled.Load() || r.ctx.Err() != nil {
+					r.endCancelled(stream)
+					return "", false
+				}
+				r.useSnippets(snippets)
+				maybeWarm()
 			case <-sceneDone:
 				sceneDone = nil
 				if r.cancelled.Load() || r.ctx.Err() != nil {
@@ -409,6 +442,7 @@ func (r *run) listen() (string, bool) {
 					return "", false
 				}
 				r.markSceneReady()
+				maybeWarm()
 			case o := <-openDone:
 				openDone = nil
 				openReturned = true
@@ -457,13 +491,13 @@ func (r *run) listen() (string, bool) {
 				err = waitErr
 			}
 		}
-		if err != nil {
-			salvaged = r.salvage(stream)
-		}
 		if !r.stopStreamReader(stream) {
 			r.recognitionFailed = true
 			r.endFailed(&Problem{Code: ProblemInternal, Err: errors.New("the speech stream reader did not stop")}, nil)
 			return "", false
+		}
+		if err != nil {
+			salvaged = r.salvage(stream)
 		}
 		if silent && r.typedOnly() {
 			return "", true
@@ -492,7 +526,7 @@ func (r *run) listen() (string, bool) {
 		r.m.update(r, func(s *Snapshot) { s.Timings.Sent = sent })
 		request := asr.FileRequest{Audio: upload, Format: "pcm", SampleRate: asr.SampleRate, Lang: r.speechLang(), Hints: r.hints(), Prompt: r.speechContext(), MaxBytes: r.settings.Audio.UploadMB << 20}
 		var ok bool
-		res, err, ok = r.transcribeFile(actx, ft, request, &sceneDone)
+		res, err, ok = r.transcribeFile(actx, ft, request, &sceneDone, maybeWarm)
 		if !ok {
 			return "", false
 		}

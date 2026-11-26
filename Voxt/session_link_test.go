@@ -229,13 +229,19 @@ func TestResolverWithoutSpeech(t *testing.T) {
 }
 
 type splitResolverServices struct {
-	models    []local.Model
-	asrCalls  int
-	llmCalls  []string
-	installed int
+	models       []local.Model
+	speechModels []local.Model
+	asrCalls     int
+	asrInstalled int
+	llmCalls     []string
+	installed    int
 }
 
 func (s *splitResolverServices) Installed(kind local.Kind) []local.Model {
+	if kind == local.ASR {
+		s.asrInstalled++
+		return s.speechModels
+	}
 	if kind == local.LLM {
 		s.installed++
 		return s.models
@@ -281,6 +287,42 @@ func TestSessionResolversSplitSpeechAndCleanupProviderWork(t *testing.T) {
 	notRequested := resolveLLM(context.Background(), store.KindTranscribe, s)
 	if notRequested.Outcome != session.LLMNotRequested || shelf.installed != 1 || len(shelf.llmCalls) != 2 {
 		t.Fatalf("disabled Cleanup did provider work: %+v, shelf %+v", notRequested, shelf)
+	}
+}
+
+func TestSessionResolversAutomaticSpeechSelectionInBothPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		models []local.Model
+		want   string
+	}{
+		{"prefer installed local speech model", []local.Model{
+			{Kind: local.ASR, ID: "doubao"}, {Kind: local.ASR, ID: "asr.fast"},
+		}, "asr.fast"},
+		{"use remote when no local speech model exists", []local.Model{
+			{Kind: local.ASR, ID: "doubao"},
+		}, "doubao"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shelf := &splitResolverServices{speechModels: tc.models}
+			resolve, resolveASR, _ := sessionResolvers(shelf)
+			prefs := settings.Defaults()
+			prefs.General.MainLanguage = "en"
+			prefs.Features.Transcribe.ASR = ""
+			prefs.Features.Transcribe.Enhance = false
+
+			voice := resolveASR(context.Background(), store.KindTranscribe, prefs)
+			if voice.Err != nil || voice.ASRInfo.ID != tc.want {
+				t.Fatalf("split ASR readiness %+v, want %q", voice, tc.want)
+			}
+			combined, err := resolve(context.Background(), store.KindTranscribe, prefs, true)
+			if err != nil || combined.ASRInfo.ID != tc.want {
+				t.Fatalf("combined services %+v, error %v, want ASR %q", combined, err, tc.want)
+			}
+			if shelf.asrCalls != 2 || shelf.asrInstalled != 2 {
+				t.Fatalf("automatic speech resolution opened %d models after %d installed-list reads", shelf.asrCalls, shelf.asrInstalled)
+			}
+		})
 	}
 }
 

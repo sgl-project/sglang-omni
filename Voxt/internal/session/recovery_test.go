@@ -394,3 +394,32 @@ func TestStreamReaderShutdownOnCancellationIgnoresLateEvents(t *testing.T) {
 		t.Fatalf("cancellation delivered text or retained reader ownership: deliveries=%q done=%v", h.text.pastes(), r.streamReaderDone)
 	}
 }
+
+func TestStreamReaderShutdownClosesBeforeJoiningReader(t *testing.T) {
+	provider := &fakeStreamer{closeLeavesEventsOpen: true}
+	opened, err := provider.Open(context.Background(), asr.StreamRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := &closeSignalStream{Stream: opened, closed: make(chan struct{})}
+	readerDone := make(chan struct{})
+	r := &run{streamReaderDone: readerDone, stream: stream}
+	joined := make(chan bool, 1)
+	go func() { joined <- r.stopStreamReader(stream) }()
+
+	waitInitializationSignal(t, stream.closed, "stream Close before reader join")
+	select {
+	case ok := <-joined:
+		t.Fatalf("reader shutdown returned %v before the reader exited", ok)
+	default:
+	}
+	close(readerDone)
+	select {
+	case ok := <-joined:
+		if !ok || r.streamReaderDone != nil || r.stream != nil {
+			t.Fatalf("reader shutdown ok=%v, remaining reader=%v stream=%v", ok, r.streamReaderDone, r.stream)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader shutdown did not finish after the reader exited")
+	}
+}

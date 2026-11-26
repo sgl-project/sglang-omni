@@ -11,9 +11,37 @@ type fileTranscriptionResult struct {
 	err    error
 }
 
-func (r *run) awaitStreamFinal(stream asr.Stream, finals <-chan streamEnd, actx context.Context, sceneDone *<-chan struct{}) (streamEnd, bool) {
+func (r *run) awaitStreamFinal(stream asr.Stream, finals <-chan streamEnd, actx context.Context, sceneDone *<-chan struct{}, onReadiness func()) (streamEnd, bool) {
 	for {
 		select {
+		case result := <-finals:
+			return result, true
+		default:
+		}
+		select {
+		case result := <-r.init.llmDone:
+			r.init.llmDone = nil
+			if !r.useLLMReadiness(result) {
+				r.endCancelled(stream)
+				return streamEnd{}, false
+			}
+			onReadiness()
+		case terms := <-r.init.termsDone:
+			r.init.termsDone = nil
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				r.endCancelled(stream)
+				return streamEnd{}, false
+			}
+			r.useTerms(terms)
+			onReadiness()
+		case snippets := <-r.init.snippetsDone:
+			r.init.snippetsDone = nil
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				r.endCancelled(stream)
+				return streamEnd{}, false
+			}
+			r.useSnippets(snippets)
+			onReadiness()
 		case result := <-finals:
 			return result, true
 		case <-*sceneDone:
@@ -23,13 +51,14 @@ func (r *run) awaitStreamFinal(stream asr.Stream, finals <-chan streamEnd, actx 
 				return streamEnd{}, false
 			}
 			r.markSceneReady()
+			onReadiness()
 		case <-actx.Done():
 			return streamEnd{err: r.ctxErr(actx)}, true
 		}
 	}
 }
 
-func (r *run) transcribeFile(actx context.Context, provider asr.FileTranscriber, request asr.FileRequest, sceneDone *<-chan struct{}) (asr.Result, error, bool) {
+func (r *run) transcribeFile(actx context.Context, provider asr.FileTranscriber, request asr.FileRequest, sceneDone *<-chan struct{}, onReadiness func()) (asr.Result, error, bool) {
 	resultCh := make(chan fileTranscriptionResult, 1)
 	go func() {
 		result, err := provider.Transcribe(actx, request)
@@ -37,6 +66,29 @@ func (r *run) transcribeFile(actx context.Context, provider asr.FileTranscriber,
 	}()
 	for {
 		select {
+		case result := <-r.init.llmDone:
+			r.init.llmDone = nil
+			if !r.useLLMReadiness(result) {
+				r.endCancelled(nil)
+				return asr.Result{}, nil, false
+			}
+			onReadiness()
+		case terms := <-r.init.termsDone:
+			r.init.termsDone = nil
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				r.endCancelled(nil)
+				return asr.Result{}, nil, false
+			}
+			r.useTerms(terms)
+			onReadiness()
+		case snippets := <-r.init.snippetsDone:
+			r.init.snippetsDone = nil
+			if r.cancelled.Load() || r.ctx.Err() != nil {
+				r.endCancelled(nil)
+				return asr.Result{}, nil, false
+			}
+			r.useSnippets(snippets)
+			onReadiness()
 		case <-*sceneDone:
 			*sceneDone = nil
 			if r.cancelled.Load() || r.ctx.Err() != nil {
@@ -44,6 +96,7 @@ func (r *run) transcribeFile(actx context.Context, provider asr.FileTranscriber,
 				return asr.Result{}, nil, false
 			}
 			r.markSceneReady()
+			onReadiness()
 		case result := <-resultCh:
 			return result.result, result.err, true
 		case <-actx.Done():

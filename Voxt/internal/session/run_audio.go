@@ -238,8 +238,6 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 			piecesBroken = false
 		}
 		handleCleanupReady := func() bool {
-			r.streamReaderMu.RLock()
-			defer r.streamReaderMu.RUnlock()
 			if r.streamReaderOff.Load() {
 				return true
 			}
@@ -253,8 +251,6 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 			return false
 		}
 		handleEvent := func(ev asr.Event, ok bool) bool {
-			r.streamReaderMu.RLock()
-			defer r.streamReaderMu.RUnlock()
 			if r.streamReaderOff.Load() {
 				return true
 			}
@@ -339,14 +335,11 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 					return
 				}
 				timer.Stop()
-				r.streamReaderMu.RLock()
 				if r.streamReaderOff.Load() {
-					r.streamReaderMu.RUnlock()
 					return
 				}
 				r.streamReaderOff.Store(true)
 				end <- streamEnd{err: asr.NetError(r.ctx, "", err)}
-				r.streamReaderMu.RUnlock()
 				return
 			}
 		}
@@ -354,10 +347,9 @@ func (r *run) feed(st asr.Stream) chan streamEnd {
 	return end
 }
 
-// stopStreamReader prevents new reader callbacks, cancels its independent
-// wait context, closes the backend stream, and joins without holding m.mu.
-// Close is expected to unblock backend-owned readers; the timeout covers
-// this session's event-reader join when a backend leaves Events open.
+// stopStreamReader stops callbacks, cancels the independent wait, and closes
+// the stream synchronously before bounding only the reader join to two seconds.
+// The Close contract itself is synchronous; this timeout does not bound Close.
 func (r *run) stopStreamReader(stream asr.Stream) bool {
 	if r.streamReaderDone == nil {
 		if stream != nil {
@@ -366,8 +358,6 @@ func (r *run) stopStreamReader(stream asr.Stream) bool {
 		return true
 	}
 	r.streamReaderOff.Store(true)
-	r.streamReaderMu.Lock()
-	r.streamReaderMu.Unlock()
 	if r.streamReaderStop != nil {
 		r.streamReaderStop()
 	}
