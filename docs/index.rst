@@ -204,6 +204,7 @@ Community & Resources
    cookbook/companies/mistral_ai.md
    cookbook/companies/dots_studio.md
    cookbook/companies/fireredteam.md
+   cookbook/companies/edge0.md
 
 .. toctree::
    :hidden:

@@ -18,6 +18,7 @@ model you are serving.
 | Model | Incremental audio | Request requirements and model-specific behavior |
 |---|---|---|
 | [Fish Speech S2-Pro](../cookbook/fishaudio_s2_pro.md) | Yes | Text-only or voice cloning with `references` |
+| [Audio8 TTS Realistic-Air](../cookbook/audio8_tts.md) | No | Text-only or one reference clip with its transcript. Native sample rate is 44.1 kHz. |
 | [Fish Audio Drama 3](../cookbook/fishaudio_drama3.md) | Yes | Text-only or voice cloning with `references` and their transcripts; `previous_takes` for editing; a request `seed` is refused |
 | [Qwen3-TTS Base](../cookbook/qwen3_tts.md) | Yes | Reference audio or a precomputed speaker embedding |
 | [Qwen3-TTS CustomVoice](../cookbook/qwen3_tts.md#customvoice) | Yes | Built-in speakers; 1.7B supports instruction control |
