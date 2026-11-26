@@ -73,58 +73,24 @@ func (r *run) lacks() *Problem {
 	return nil
 }
 
-// readSelection reads the selected text of the app in front (Translate,
-// Rewrite) and puts it in the snapshot; "" for none, or when it could
-// not be read (the session goes on without one).
-func (r *run) readSelection() string {
-	defer r.m.update(r, func(s *Snapshot) { s.ReadingSelection = false })
-	cfg := r.m.cfg
-	timeout, params := cfg.ReadTimeout, proto.SelectionParams{AllowCopy: AllowCopy(r.req.Target.BundleID)}
-	if r.req.Kind == store.KindRewrite {
-		timeout, params.CopyTimeoutMS = cfg.RewriteReadTimeout, rewriteCopyMS
-	}
-	ctx, cancel := context.WithTimeout(r.ctx, timeout)
-	defer cancel()
-	res, err := cfg.Select.Selection(ctx, params)
-	if err != nil {
-		if r.ctx.Err() == nil {
-			r.logf("warning", "reading the selection: %v", err)
-		}
-		return ""
-	}
-	text := res.Text
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		// The helper's steps say which reading found nothing (#3835).
-		r.logf("info", "no selection (%s, %.0f ms; %s)", res.Via, res.MS, strings.Join(res.Steps, ", "))
-		return ""
-	}
-	if r.req.Kind == store.KindRewrite && !r.settings.Privacy.SendClipboardImage {
-		r.clip = nil
-	} else if r.req.Kind == store.KindRewrite {
-		switch {
-		case len(res.Image) > 0 && (trimmed == "[Image]" || r.settings.Privacy.SendClipboardImageWithSelection):
-			// The copy fallback returns the newly selected image before it
-			// restores the clipboard, never an earlier copied image.
-			r.clip = res.Image
-		case trimmed == "[Image]" || !r.settings.Privacy.SendClipboardImageWithSelection:
-			// Text takes the text path by default. A placeholder without a
-			// newly decoded image never revives the earlier clipboard image.
-			r.clip = nil
-		}
-	}
-	for _, t := range r.req.Previous {
-		// A follow-up's: the text selected before, still selected, is in
-		// the conversation already (#3816).
-		if strings.TrimSpace(t.Selection) == trimmed {
-			r.logf("info", "the selection is in the conversation already")
-			return ""
-		}
-	}
-	r.logf("info", "selection: %s via %s in %.0f ms", r.logText(text), res.Via, res.MS)
-	r.m.update(r, func(s *Snapshot) { s.Selection, s.SelectionVia = text, res.Via })
-	return text
-}
+// selectionSettleMS, selectionPollMS and selectionModifierWaitMS: the
+// helper's waits around a selection read. A caret-only reading waits out
+// a settle for a selection made with ⌘A in the shortcut's motion (#4467);
+// the helper's ⌘C waits for the shortcut's held modifiers to lift, so the
+// app reads ⌘C and not a key that copies nothing (#3835).
+const (
+	selectionSettleMS       = 600
+	selectionPollMS         = 60
+	selectionModifierWaitMS = 800
+	selectionOverheadMS     = 300
+	// selectionCopyMS is the selection read's ⌘C budget, sent explicitly
+	// so the deadline arithmetic does not depend on the helper's default.
+	selectionCopyMS = 300
+)
+
+// intp is v's address: the selection params carry their budgets as
+// pointers, so an explicit 0 reaches the helper (nil is its default).
+func intp(v int) *int { return &v }
 
 // listen records and recognises: the recognised text, or false when the
 // session ended (cancelled, failed, too short, nothing heard).

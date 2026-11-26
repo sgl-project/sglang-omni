@@ -172,6 +172,23 @@ func (host *meetingDemoHost) closeAnswer() {
 	host.record("closeAnswer")
 }
 
+func (host *meetingDemoHost) switchSession(id int) { host.record("switchSession %d", id) }
+func (host *meetingDemoHost) newSession()          { host.record("newSession") }
+func (host *meetingDemoHost) deleteSession(id int) { host.record("deleteSession %d", id) }
+
+func (host *meetingDemoHost) renameSession(id int) {
+	if card := host.sessionState.Card; card != nil {
+		for i := range card.Sessions {
+			card.Sessions[i].Renaming = card.Sessions[i].ID == id
+		}
+	}
+	host.record("renameSession %d", id)
+}
+
+func (host *meetingDemoHost) nameSession(id int, name string) {
+	host.record("nameSession %d %q", id, name)
+}
+
 func (host *meetingDemoHost) noticeAction(action string) {
 	host.closeSessionMenu()
 	host.sessionState.Mode = ovHidden

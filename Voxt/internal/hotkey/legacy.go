@@ -1,4 +1,4 @@
-package main
+package hotkey
 
 // Chords for the previous Voxt's shortcuts (meetingHotkeyBindings in its
 // preferences), for Features.Meeting.Hotkeys on import.
@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -47,16 +46,16 @@ type legacyHotkeyBinding struct {
 	Behavior          string `json:"behavior"`
 }
 
-// parseLegacyMeetingHotkeys reads meetingHotkeyBindings, or the legacy single
+// ParseLegacyMeetingHotkeys reads meetingHotkeyBindings, or the legacy single
 // meeting shortcut fields, from the previous Voxt's preferences.
-func parseLegacyMeetingHotkeys(voxtDir string) []settings.Hotkey {
-	raw := strings.TrimSpace(legacyPreference(voxtDir, "meetingHotkeyBindings"))
+func ParseLegacyMeetingHotkeys(voxtDir string, preference func(string, string) string) []settings.Hotkey {
+	raw := strings.TrimSpace(preference(voxtDir, "meetingHotkeyBindings"))
 	var bindings []legacyHotkeyBinding
 	if raw != "" {
 		json.Unmarshal([]byte(raw), &bindings)
 	}
 	if len(bindings) == 0 {
-		bindings = []legacyHotkeyBinding{legacyMeetingHotkeyFromSingles(voxtDir)}
+		bindings = []legacyHotkeyBinding{legacyMeetingHotkeyFromSingles(voxtDir, preference)}
 	}
 	var out []settings.Hotkey
 	for _, b := range bindings {
@@ -64,7 +63,7 @@ func parseLegacyMeetingHotkeys(voxtDir string) []settings.Hotkey {
 		if err != nil || strings.TrimSpace(keys) == "" {
 			continue
 		}
-		if _, err := hotkey.Parse(keys); err != nil {
+		if _, err := Parse(keys); err != nil {
 			continue
 		}
 		out = append(out, settings.Hotkey{Keys: keys, Trigger: legacyTrigger(b.Behavior)})
@@ -72,18 +71,18 @@ func parseLegacyMeetingHotkeys(voxtDir string) []settings.Hotkey {
 	return out
 }
 
-func legacyMeetingHotkeyFromSingles(voxtDir string) legacyHotkeyBinding {
+func legacyMeetingHotkeyFromSingles(voxtDir string, preference func(string, string) string) legacyHotkeyBinding {
 	b := legacyHotkeyBinding{Behavior: "tap"}
-	if n, err := strconv.Atoi(strings.TrimSpace(legacyPreference(voxtDir, "meetingHotkeyKeyCode"))); err == nil && n >= 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(preference(voxtDir, "meetingHotkeyKeyCode"))); err == nil && n >= 0 {
 		b.KeyCode = uint16(n)
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(legacyPreference(voxtDir, "meetingHotkeyModifiers"))); err == nil && n >= 0 {
+	if n, err := strconv.Atoi(strings.TrimSpace(preference(voxtDir, "meetingHotkeyModifiers"))); err == nil && n >= 0 {
 		b.Modifiers = uint(n)
 	}
-	if n, err := strconv.Atoi(strings.TrimSpace(legacyPreference(voxtDir, "meetingHotkeySidedModifiers"))); err == nil {
+	if n, err := strconv.Atoi(strings.TrimSpace(preference(voxtDir, "meetingHotkeySidedModifiers"))); err == nil {
 		b.SidedModifiers = n
 	}
-	b.InputType = legacyPreference(voxtDir, "meetingHotkeyInputType")
+	b.InputType = preference(voxtDir, "meetingHotkeyInputType")
 	return b
 }
 

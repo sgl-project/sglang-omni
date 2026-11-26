@@ -41,7 +41,7 @@ func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []s
 		n := first()
 		so := answers[:n:n]
 		if n < len(parts) {
-			so = append(so, compose.PartialOutput(drafts[n].String(), parts[n].Text))
+			so = append(so, compose.PartialOutput(drafts[n].String(), parts[n].Text, parts[n].Custom()))
 		}
 		draft := r.draftSnippets(compose.JoinParts(parts[:min(n+1, len(parts))], so), parts[:min(n+1, len(parts))])
 		r.m.update(r, func(s *Snapshot) {
@@ -79,7 +79,7 @@ func (r *run) cleanPartsTogether(text string, parts []compose.Part, answered []s
 				r.logf("warning", "%v: kept as recognised", fails[i])
 				answers[i] = p.Text
 			} else {
-				answers[i] = compose.CleanOutput(resp.Text, p.Text)
+				answers[i] = compose.CleanOutput(resp.Text, p.Text, p.Custom())
 			}
 			done[i] = true
 			publish()

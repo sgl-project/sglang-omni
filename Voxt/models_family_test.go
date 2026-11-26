@@ -67,6 +67,24 @@ func onDisk(a *app, id string) bool {
 	return models.Installed(a.models.Hub(), m) != ""
 }
 
+func modelRowFamilyText(t *testing.T, a *app, id string) string {
+	t.Helper()
+	state := a.modelsPageModel()
+	cards := append(append(append([]modelCardViewState{}, state.ASR...), state.LLM...), state.Hidden...)
+	if state.Dictation != nil {
+		cards = append(cards, *state.Dictation)
+	}
+	for _, card := range cards {
+		for _, row := range card.Rows {
+			if row.ID == id {
+				return row.FamilyText
+			}
+		}
+	}
+	t.Fatalf("no model row for %s", id)
+	return ""
+}
+
 // toasted reports whether msg was toasted (still queued, or shown).
 func toasted(a *app, tt *ui.Tester, msg string) bool {
 	return slices.Contains(a.toasts, msg) || has(tt, msg)
@@ -187,8 +205,8 @@ func TestModelDeleteShared(t *testing.T) {
 	claimFor(t, a, audioSmithID, models.ASRFast)
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "Shared with AudioSmith") {
-		t.Fatalf("no Shared with: %q", tt.Texts())
+	if got := modelRowFamilyText(t, a, models.ASRFast); got != "Shared with AudioSmith" {
+		t.Fatalf("Shared with tooltip %q", got)
 	}
 
 	// Remove from VoxtNew: the claim goes, the files stay for AudioSmith.
@@ -245,9 +263,9 @@ func TestModelDeleteCancelShared(t *testing.T) {
 	claimFor(t, a, audioSmithID, models.LLMTranslate)
 	a.navigate(modelsPath)
 	frames(tt)
-	scrollSettingsToText(tt, "Made for translation: quick and natural. Only Translate uses it.")
-	if !has(tt, "Shared with AudioSmith and Dicta") {
-		t.Fatalf("no Shared with: %q", tt.Texts())
+	scrollSettingsToText(tt, uitext.ModelName(models.LLMTranslate))
+	if got := modelRowFamilyText(t, a, models.LLMTranslate); got != "Shared with AudioSmith and Dicta" {
+		t.Fatalf("Shared with tooltip %q", got)
 	}
 	clickControl(t, tt, "Delete Hy-MT2 1.8B (Q4_K_M)…")
 	if !has(tt, "AudioSmith and Dicta also use this model, so its files (1.1 GB) stay on this Mac.") {
@@ -306,8 +324,8 @@ func TestModelElsewhere(t *testing.T) {
 	a.models.Refresh()
 	a.navigate(modelsPath)
 	frames(tt)
-	if !has(tt, "Downloading in AudioSmith…") || a.modelStatus[models.ASRAccurate].Elsewhere != audioSmithID {
-		t.Fatalf("elsewhere: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
+	if got := modelRowFamilyText(t, a, models.ASRAccurate); got != "Downloading in AudioSmith…" || a.modelStatus[models.ASRAccurate].Elsewhere != audioSmithID {
+		t.Fatalf("elsewhere: %+v, tooltip %q", a.modelStatus[models.ASRAccurate], got)
 	}
 	click(t, tt, "Download Qwen3-ASR 1.7B (8bit)") // disabled
 	if st := a.models.Status(models.ASRAccurate); st.Downloading || st.Err != nil {
@@ -317,7 +335,7 @@ func TestModelElsewhere(t *testing.T) {
 	lock.Release()
 	modelstest.Seed(a.models.Hub(), models.ASRAccurate)
 	a.models.Refresh()
-	if !a.modelStatus[models.ASRAccurate].Installed || has(tt, "Downloading in AudioSmith…") {
+	if !a.modelStatus[models.ASRAccurate].Installed || modelRowFamilyText(t, a, models.ASRAccurate) == "Downloading in AudioSmith…" {
 		t.Errorf("not installed: %+v", a.modelStatus[models.ASRAccurate])
 	}
 
@@ -327,8 +345,8 @@ func TestModelElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.models.Refresh()
-	if !has(tt, "Deleted in AudioSmith") || !has(tt, "Download again") {
-		t.Errorf("deleted in: %+v %q", a.modelStatus[models.ASRAccurate], tt.Texts())
+	if got := modelRowFamilyText(t, a, models.ASRAccurate); got != "Deleted in AudioSmith" || !has(tt, "Download again") {
+		t.Errorf("deleted in: %+v, tooltip %q, %q", a.modelStatus[models.ASRAccurate], got, tt.Texts())
 	}
 }
 
@@ -483,7 +501,7 @@ func TestBorrowedModel(t *testing.T) {
 			if has(tt, "Download "+name) {
 				t.Fatalf("the card offers Download, which does nothing for a model on disk")
 			}
-			if !has(tt, name) || !has(tt, "Installed by Dicta") {
+			if !has(tt, name) || modelRowFamilyText(t, a, tc.id) != "Installed by Dicta" {
 				t.Fatalf("installed by Dicta: %q", tt.Texts())
 			}
 			drain := queuePosts(a)
@@ -491,7 +509,7 @@ func TestBorrowedModel(t *testing.T) {
 			clickControl(t, tt, "Use "+name)
 			drain()
 			frames(tt)
-			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || !has(tt, "Shared with Dicta") {
+			if st := a.models.Status(tc.id); !st.Installed || !st.Mine || modelRowFamilyText(t, a, tc.id) != "Shared with Dicta" {
 				t.Fatalf("used: %+v %q", st, tt.Texts())
 			}
 			// What it needs comes with it: Dicta's voice detection is used,
@@ -512,7 +530,7 @@ func TestBorrowedModel(t *testing.T) {
 			click(t, tt, "Remove from Voxt")
 			drain()
 			frames(tt)
-			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || !has(tt, "Installed by Dicta") {
+			if st := a.models.Status(tc.id); st.Installed || !st.OnDisk || modelRowFamilyText(t, a, tc.id) != "Installed by Dicta" {
 				t.Errorf("removed: %+v %q", st, tt.Texts())
 			}
 		})

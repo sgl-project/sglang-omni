@@ -232,7 +232,10 @@ add_executable(moss_transcribe_diarize_server src/moss/moss_transcribe_diarize_s
 target_link_libraries(moss_transcribe_diarize_server PRIVATE moss_asr asr_service)
 add_executable(moss_transcribe tools/moss_transcribe.cpp)
 target_link_libraries(moss_transcribe PRIVATE moss_asr)
-set_target_properties(moss_transcribe_diarize_server moss_transcribe PROPERTIES
+add_executable(moss_model_test EXCLUDE_FROM_ALL tests/moss_model_test.cpp)
+target_link_libraries(moss_model_test PRIVATE moss_asr)
+target_compile_options(moss_model_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_transcribe_diarize_server moss_transcribe moss_model_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path"
   INSTALL_RPATH "@loader_path")
 install(TARGETS moss_transcribe_diarize_server moss_transcribe RUNTIME DESTINATION bin)
@@ -506,6 +509,20 @@ add_executable(audio_chunk_test EXCLUDE_FROM_ALL tests/audio_chunk_test.cpp)
 target_link_libraries(audio_chunk_test PRIVATE common)
 target_compile_options(audio_chunk_test PRIVATE -Wall -Wextra)
 set_target_properties(audio_chunk_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+add_executable(tokenizer_preference_test EXCLUDE_FROM_ALL tests/tokenizer_preference_test.cpp)
+target_link_libraries(tokenizer_preference_test PRIVATE common)
+target_compile_options(tokenizer_preference_test PRIVATE -Wall -Wextra)
+set_target_properties(tokenizer_preference_test PROPERTIES
+  BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
+
+# MOSS realtime scheduling (first-preview gate, preview preemption) and its
+# timing lines; no checkpoint, run by mac-ci's native job.
+add_executable(moss_realtime_test EXCLUDE_FROM_ALL tests/moss_realtime_test.cpp)
+target_link_libraries(moss_realtime_test PRIVATE moss_asr)
+target_compile_options(moss_realtime_test PRIVATE -Wall -Wextra)
+set_target_properties(moss_realtime_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
 # Compares NEXTN with plain decoding on a small checkpoint

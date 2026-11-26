@@ -11,11 +11,10 @@ func TestHomeDemoActionControls(t *testing.T) {
 		fixture string
 		steps   []historyDemoStep
 		want    []string
-		check   func(*testing.T, *meetingDemoHost)
 	}{
 		{name: "guide", fixture: "en/home-empty", steps: historySteps("Open setup guide"), want: []string{"openHomeGuide"}},
-		{name: "history", fixture: "en/home-normal", steps: historySteps("Open History"), want: []string{"openHomeHistory"}},
 		{name: "add shortcut", fixture: "en/home-shortcut-missing", steps: historySteps("Add a shortcut to start"), want: []string{"addHomeShortcut"}},
+		{name: "activity pages", fixture: "en/home-normal", steps: historySteps("Earlier weeks"), want: []string{"activityBack"}},
 		{name: "speech download", fixture: "en/home-speech-missing", steps: historySteps("Speech recognition: Download (2.5 GB)"), want: []string{"fixHomeReadiness download-speech"}},
 		{name: "speech on disk", fixture: "en/home-speech-on-disk", steps: historySteps("Speech recognition: Open Speech models"), want: []string{"fixHomeReadiness speech-models"}},
 		{name: "speech downloading", fixture: "en/home-speech-downloading", steps: historySteps("Speech recognition: Open Speech models"), want: []string{"fixHomeReadiness speech-models"}},
@@ -30,19 +29,6 @@ func TestHomeDemoActionControls(t *testing.T) {
 		{name: "open looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Looking back"), want: []string{"setInsightsClosed false"}},
 		{name: "share card", fixture: "en/home-normal", steps: historySteps("Share a card of Voxt and you"), want: []string{"openShare"}},
 		{name: "share folded looking back", fixture: "en/home-looking-back-closed", steps: historySteps("Share a look back"), want: []string{"openInsightsShare"}},
-		{name: "open recent", fixture: "en/home-normal", steps: historySteps("Weekly plan"), want: []string{"openHomeRecent home-transcribe"}},
-		{name: "inline copy", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Copy: Weekly plan", click: true}}, want: []string{"copyHomeRecent home-transcribe"}},
-		{name: "menu copy", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Copy", menu: true}}, want: []string{`copyHistoryText "Weekly plan\nI'll send the new agenda tonight."`}},
-		{name: "menu raw", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Copy recognised text", menu: true}}, want: []string{`copyHistoryText "weekly plan\nI'll send the new agenda tonight"`}},
-		{name: "menu details", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Show details", menu: true}}, want: []string{"openHomeRecent home-transcribe"}},
-		{name: "menu reveal", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Show recording in Finder", menu: true}}, want: []string{"showHistoryRecording home-transcribe"}},
-		{name: "menu retry", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Transcribe again", menu: true}}, want: []string{"retryHistoryEntry home-transcribe"}},
-		{name: "menu delete", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Delete", menu: true}, {label: "Delete"}}, want: []string{"deleteHistoryEntry home-transcribe"}},
-		{name: "delete cancel", fixture: "en/home-normal", steps: []historyDemoStep{{label: "Weekly plan", context: true}, {label: "Delete", menu: true}, {label: "Cancel"}}, check: func(t *testing.T, host *meetingDemoHost) {
-			if host.historyUI.delAsk {
-				t.Fatal("delete confirmation stayed open")
-			}
-		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			host, err := loadMeetingDemoHost("testdata/meeting")
@@ -72,10 +58,38 @@ func TestHomeDemoActionControls(t *testing.T) {
 			if !slices.Equal(host.calls, test.want) {
 				t.Fatalf("calls %q, want %q", host.calls, test.want)
 			}
-			if test.check != nil {
-				test.check(t, host)
-			}
 		})
+	}
+}
+
+func TestHomeDemoUsage(t *testing.T) {
+	host, err := loadMeetingDemoHost("testdata/meeting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectMeetingDemoFixture(t, host, "en/home-normal")
+	tester := newMeetingDemoTester(t, host)
+	for _, text := range []string{"Today", "30 days", "Per minute", "Latency", "120", "150", "200", "2.0 s", "fixture-speech"} {
+		if !tester.HasText(text) {
+			t.Errorf("no %q in %q", text, tester.Texts())
+		}
+	}
+	for _, text := range []string{"Recent results", "Try it", "By feature"} {
+		if tester.HasText(text) {
+			t.Errorf("removed Home section %q is still visible", text)
+		}
+	}
+
+	selectMeetingDemoFixture(t, host, "en/home-error")
+	tester = newMeetingDemoTester(t, host)
+	if !tester.HasText("Could not read the history.") {
+		t.Fatalf("history-error Home: %q", tester.Texts())
+	}
+
+	selectMeetingDemoFixture(t, host, "en/home-history-off")
+	tester = newMeetingDemoTester(t, host)
+	if !tester.HasText("History is off, so nothing is counted.") || tester.HasText("Per minute") {
+		t.Fatalf("history-off Home: %q", tester.Texts())
 	}
 }
 

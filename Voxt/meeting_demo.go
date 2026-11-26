@@ -500,13 +500,6 @@ func (host *meetingDemoHost) downloadRelease(address string) {
 }
 
 func (host *meetingDemoHost) openHomeGuide()   { host.record("openHomeGuide") }
-func (host *meetingDemoHost) openHomeHistory() { host.record("openHomeHistory") }
-func (host *meetingDemoHost) openHomeRecent(id string) {
-	host.record("openHomeRecent %s", id)
-}
-func (host *meetingDemoHost) copyHomeRecent(id string) {
-	host.record("copyHomeRecent %s", id)
-}
 func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") }
 func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
@@ -558,6 +551,7 @@ func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTr
 func (host *meetingDemoHost) onboardingDownloadAndContinue() {
 	host.record("onboardingDownloadAndContinue")
 }
+func (host *meetingDemoHost) obDownload() { host.record("obDownload") }
 func (host *meetingDemoHost) obUse(ids ...string) {
 	host.record("obUse %s", strings.Join(ids, ","))
 }

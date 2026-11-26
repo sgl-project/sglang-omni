@@ -59,6 +59,9 @@ type Opts struct {
 	// Text is a Final's text (default "fake transcript"); "{n}" in it is
 	// the request's number (1 for the server's first Final).
 	Text string
+	// NoPromptText, when non-empty, answers a Final that has no prompt,
+	// so a hotword test can make the no-context comparison differ.
+	NoPromptText string
 	// WindowTexts adds Whisper's per-window metadata to a Final.
 	WindowTexts []string
 	// FailFrom: the Finals from this one on (1 = the first) answer an
@@ -96,6 +99,10 @@ type Opts struct {
 	SegmentTags bool
 	// TokenLimit ends the Final at the generation budget.
 	TokenLimit bool
+	// LiveMarkup sends MOSS's diarization markup in the live segments and
+	// the completed text, as the real model sometimes does on its
+	// plain-text instruction.
+	LiveMarkup bool
 }
 
 // Env is the environment that makes a test binary a fake with o.
@@ -104,6 +111,7 @@ func Env(o Opts) []string {
 	v.Set("mode", o.Mode)
 	v.Set("log", o.Log)
 	v.Set("text", o.Text)
+	v.Set("noprompttext", o.NoPromptText)
 	v["windows"] = o.WindowTexts
 	v.Set("delay", o.Delay.String())
 	v.Set("load", o.Load.String())
@@ -116,6 +124,7 @@ func Env(o Opts) []string {
 	v.Set("echo", strconv.FormatBool(o.Echo))
 	v.Set("audio", strconv.FormatBool(o.RecordAudio))
 	v.Set("livedrop", strconv.FormatBool(o.LiveDrop))
+	v.Set("livemarkup", strconv.FormatBool(o.LiveMarkup))
 	v.Set("livesegdelay", o.LiveSegDelay.String())
 	v.Set("livestall", strconv.FormatBool(o.LiveStall))
 	return []string{EnvFake + "=" + v.Encode()}
@@ -126,7 +135,7 @@ func Enabled() bool { return os.Getenv(EnvFake) != "" }
 
 func opts() Opts {
 	v, _ := url.ParseQuery(os.Getenv(EnvFake))
-	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), WindowTexts: v["windows"]}
+	o := Opts{Mode: v.Get("mode"), Log: v.Get("log"), Text: v.Get("text"), NoPromptText: v.Get("noprompttext"), WindowTexts: v["windows"]}
 	o.Delay, _ = time.ParseDuration(v.Get("delay"))
 	o.Load, _ = time.ParseDuration(v.Get("load"))
 	o.FailFrom, _ = strconv.Atoi(v.Get("failfrom"))
@@ -138,6 +147,7 @@ func opts() Opts {
 	o.Echo, _ = strconv.ParseBool(v.Get("echo"))
 	o.RecordAudio, _ = strconv.ParseBool(v.Get("audio"))
 	o.LiveDrop, _ = strconv.ParseBool(v.Get("livedrop"))
+	o.LiveMarkup, _ = strconv.ParseBool(v.Get("livemarkup"))
 	o.LiveSegDelay, _ = time.ParseDuration(v.Get("livesegdelay"))
 	o.LiveStall, _ = strconv.ParseBool(v.Get("livestall"))
 	if o.Text == "" {

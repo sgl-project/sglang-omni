@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -172,6 +187,71 @@
           "trigger_text": "点按",
           "has_shortcut": true,
           "needs_accessibility": true,
+          "problems": null
+        }
+      ],
+      "sessions": [
+        {
+          "title": "会话 1",
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "—",
+            "typed": {
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          },
+          "problems": null
+        },
+        {
+          "title": "会话 2",
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "—",
+            "typed": {
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          },
+          "problems": null
+        },
+        {
+          "title": "会话 3",
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "—",
+            "typed": {
+              "valid": false,
+              "canonical_keys": "",
+              "formatted_keys": "",
+              "error_text": "请输入按键，例如 Control+Option+Space。"
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          },
           "problems": null
         }
       ]

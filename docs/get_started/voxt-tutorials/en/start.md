@@ -2,25 +2,25 @@
 
 [中文](../start.md)
 
-Voxt needs a Mac with Apple silicon and macOS 15 or later. For a first install, choose the **Voxt 2.1.3** release. To try the newest changes, use the Beta route below.
+Voxt needs a Mac with Apple silicon and macOS 15 or later. For a first install, choose the **Voxt 2.1.4** release. To try the newest changes, use the Beta route below.
 
-## Download the 2.1.3 release
+## Download the 2.1.4 release
 
-[Download Voxt 2.1.3 (Apple silicon)](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg)
+[Download Voxt 2.1.4 (Apple silicon)](https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.4/Voxt-2.1.4-arm64.dmg)
 
 The same package is also linked from:
 
 - **News** on the repository home page: find **Voxt 2.0** and click **Download**. [SGLang Omni News](https://github.com/sgl-project/sglang-omni#news)
-- The **Voxt v2.1.3** release: expand **Assets** and click `Voxt-2.1.3-arm64.dmg`. [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.3)
-- The **v2.1.3** entry of the changelog: click **Download**. The changelog may tag this entry **Beta**; take the file named `Voxt-2.1.3-arm64.dmg`. [Voxt Changelog](https://voxt.actnow.dev/changelog)
+- The **Voxt v2.1.4** release: expand **Assets** and click `Voxt-2.1.4-arm64.dmg`. [GitHub Releases](https://github.com/sgl-project/sglang-omni/releases/tag/voxt-v2.1.4)
+- The **v2.1.4** entry of the changelog: click **Download**. The changelog may tag this entry **Beta**; take the file named `Voxt-2.1.4-arm64.dmg`. [Voxt Changelog](https://voxt.actnow.dev/changelog)
 
 ## Download a Beta
 
-Every change to Voxt merged into `main` builds a Beta, versioned `2.1.3-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
+Every change to Voxt merged into `main` builds a Beta, versioned `2.1.4-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
 
 A Beta updates itself: **Check for Updates…** in the Voxt menu finds the newest Beta on GitHub releases and installs it in the app. You can still install a Beta by hand from its `.dmg`, and installing the release's `.dmg` takes you back.
 
-To find the newest Beta (as of November 23, 2026 it is `2.1.3-beta.20261123.105`, build #105):
+To find the newest Beta (as of November 23, 2026 it is `2.1.4-beta.20261123.105`, build #105):
 
 1. Open the [Voxt releases](https://github.com/sgl-project/sglang-omni/releases): the newest pre-release is the newest Beta. Expand **Assets** and click `Voxt-…-beta.…-arm64.dmg`.
 2. Or open the [Voxt Beta runs](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml): the top run with a green check on `main` is the newest successful build. Skip runs with a yellow dot (still building) or a red cross (failed). Open that run, scroll to **Artifacts** and click `Voxt-…-beta.…-arm64` to download a ZIP; this route needs a GitHub sign-in, and artifacts are kept for 14 days.
@@ -56,4 +56,4 @@ Next, [set up your own API key](byok.md) for Translate, Rewrite and optional cle
 
 ## For agents
 
-> Following this page, install the Voxt 2.1.3 release on an Apple silicon Mac. Download a Beta from Actions only if I ask for one. Stop and let me confirm before replacing an older Voxt, importing its data, or answering a macOS permission prompt. Download the recommended local speech model and wait until it is ready. Check that transcription works with an empty text field and a test sentence, then tell me the installed version and the result.
+> Following this page, install the Voxt 2.1.4 release on an Apple silicon Mac. Download a Beta from Actions only if I ask for one. Stop and let me confirm before replacing an older Voxt, importing its data, or answering a macOS permission prompt. Download the recommended local speech model and wait until it is ready. Check that transcription works with an empty text field and a test sentence, then tell me the installed version and the result.
