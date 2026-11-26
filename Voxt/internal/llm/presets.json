@@ -1,6 +1,6 @@
 {
   "presets": [
-    {"id": "anthropic", "name": "Anthropic", "baseURL": "https://api.anthropic.com/v1", "jsonMode": "prompt", "defaultModel": "claude-sonnet-4-6", "models": ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"], "keyURL": "https://console.anthropic.com/settings/keys"},
+    {"id": "anthropic", "name": "Anthropic", "baseURL": "https://api.anthropic.com/v1", "jsonMode": "prompt", "defaultModel": "claude-haiku-5-5", "models": ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"], "extraBody": {"thinking": {"type": "disabled"}}, "keyURL": "https://console.anthropic.com/settings/keys"},
     {"id": "gemini", "name": "Google Gemini", "baseURL": "https://generativelanguage.googleapis.com/v1beta/openai", "jsonMode": "schema", "defaultModel": "gemini-2.5-flash", "models": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "extraBody": {"reasoning_effort": "none"}, "keyURL": "https://aistudio.google.com/apikey"},
     {"id": "openai", "name": "OpenAI", "baseURL": "https://api.openai.com/v1", "jsonMode": "schema", "defaultModel": "gpt-4.1-mini", "models": ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-5-mini", "gpt-5.2"], "maxTokensField": "max_completion_tokens", "keyURL": "https://platform.openai.com/api-keys"},
     {"id": "ollama", "name": "Ollama", "baseURL": "http://localhost:11434/v1", "keyOptional": true, "jsonMode": "object", "defaultModel": "qwen3", "models": ["qwen3", "qwen2.5", "llama3.1", "gemma3", "mistral"]},
