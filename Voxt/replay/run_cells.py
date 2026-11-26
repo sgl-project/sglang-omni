@@ -39,6 +39,14 @@ key, trigger, presses and the optional modifiers are passed to replay-driver.
 
 Blocks: "en" holds the English segments, "zh" the Chinese and mixed ones; Voxt's
 main language follows the block.
+
+Before the first cell, the settings of every 2x and 1x system are copied into
+RUN_DIR/settings-backup (SQLite's backup API for the database, `defaults export`
+for 1.x); after the last cell, or when the run stops on an error or Ctrl-C, they
+are put back and the copies deleted. A copy left by a killed run is kept, and the
+next start restores it.
+
+Relative "wav" paths in the manifest are read against the manifest's directory.
 """
 
 from __future__ import annotations
@@ -47,13 +55,14 @@ import argparse
 import hashlib
 import json
 import plistlib
+import sqlite3
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from score import outcome
+from score import mark_contamination, outcome, pick_results
 
 BLOCKS = {"en": {"en", "none"}, "zh": {"zh", "mixed"}}
 MAIN_LANGUAGE = {
@@ -61,6 +70,7 @@ MAIN_LANGUAGE = {
     "1x": {"en": '["en"]', "zh": '["zh-hans"]'},
 }
 FAMILIES = {"2x", "1x", "other"}
+BUNDLE_1X = "com.voxt.Voxt"
 INPUT = "BlackHole 2ch"
 WARMUP_SEGMENTS = 3
 MAX_RESUMES = 5
@@ -106,13 +116,63 @@ def quit_all(plan: dict) -> None:
     time.sleep(2)
 
 
+def settings_doc(db: str) -> dict:
+    con = sqlite3.connect(db)
+    try:
+        (doc,) = con.execute(
+            "select doc from documents where key='settings:app'"
+        ).fetchone()
+    finally:
+        con.close()
+    return json.loads(doc)
+
+
 def llm_providers(db: str) -> list[str]:
     """The language model services set up in Voxt 2.x, in its settings order."""
-    doc = run(
-        ["sqlite3", db, "select doc from documents where key='settings:app'"],
-        check=True,
-    ).stdout
-    return [p["id"] for p in json.loads(doc).get("providers", {}).get("llm", [])]
+    return [p["id"] for p in settings_doc(db).get("providers", {}).get("llm", [])]
+
+
+def sqlite_copy(src: str | Path, dst: str | Path) -> None:
+    source, target = sqlite3.connect(src), sqlite3.connect(dst)
+    try:
+        source.backup(target)
+    finally:
+        source.close()
+        target.close()
+
+
+def save_settings(plan: dict, root: Path) -> list[tuple[str, str, Path]]:
+    """Copies the settings each 2x and 1x system changes into root/settings-backup,
+    keeping a copy that a killed run left there; returns (family, target, copy)."""
+    backup = root / "settings-backup"
+    backup.mkdir(exist_ok=True)
+    targets = {}
+    for system in plan["systems"].values():
+        if system["family"] == "2x":
+            targets.setdefault(("2x", system["db"]), None)
+        elif system["family"] == "1x":
+            targets.setdefault(("1x", BUNDLE_1X), None)
+    saved = []
+    for n, (family, target) in enumerate(targets):
+        copy = backup / (
+            f"{n}-{Path(target).name}" if family == "2x" else f"{n}-{target}.plist"
+        )
+        if not copy.exists():
+            if family == "2x":
+                sqlite_copy(target, copy)
+            else:
+                run(["defaults", "export", target, str(copy)], check=True)
+        saved.append((family, target, copy))
+    return saved
+
+
+def restore_settings(saved: list[tuple[str, str, Path]]) -> None:
+    for family, target, copy in saved:
+        if family == "2x":
+            sqlite_copy(copy, target)
+        else:
+            run(["defaults", "import", target, str(copy)], check=True)
+        copy.unlink()
 
 
 def configure(system: dict, block: str) -> dict:
@@ -124,37 +184,51 @@ def configure(system: dict, block: str) -> dict:
     main = MAIN_LANGUAGE[family][block]
     if family == "2x":
         db = system["db"]
-        enhance = "json('true')" if system["enhance"] else "json('false')"
-        sets = (
-            f"'$.general.mainLanguage', '{main}', '$.features.transcribe.asr', '{system['asr']}', "
-            f"'$.features.transcribe.enhance', {enhance}"
-        )
+        sets = [
+            ("$.general.mainLanguage", main),
+            ("$.features.transcribe.asr", system["asr"]),
+            ("$.features.transcribe.enhance", bool(system["enhance"])),
+        ]
         if system["enhance"]:
-            sets += ", '$.features.transcribe.cleanup', json('true')"
+            sets.append(("$.features.transcribe.cleanup", True))
         if "clean_after_stop" in system:
-            sets += f", '$.features.transcribe.cleanAfterStop', json('{str(system['clean_after_stop']).lower()}')"
+            sets.append(
+                (
+                    "$.features.transcribe.cleanAfterStop",
+                    bool(system["clean_after_stop"]),
+                )
+            )
         if "reclean_sentences" in system:
-            sets += f", '$.features.transcribe.recleanSentences', {int(system['reclean_sentences'])}"
+            sets.append(
+                (
+                    "$.features.transcribe.recleanSentences",
+                    int(system["reclean_sentences"]),
+                )
+            )
         if "llm" in system:
             index = llm_providers(db).index(system["llm"])
-            sets += (
-                f", '$.features.transcribe.llm', '{system['llm']}', "
-                f"'$.providers.llm[{index}].model', '{system['llm_model']}'"
-            )
-        run(
-            [
-                "sqlite3",
-                db,
-                f"update documents set doc=json_set(doc, {sets}) where key='settings:app'",
-            ],
-            check=True,
+            sets += [
+                ("$.features.transcribe.llm", system["llm"]),
+                (f"$.providers.llm[{index}].model", system["llm_model"]),
+            ]
+        # note (luojiaxuan): Values are bound as parameters; json(?) turns "true" and "false" into JSON booleans.
+        slots = ", ".join(
+            "?, json(?)" if isinstance(v, bool) else "?, ?" for _, v in sets
         )
-        doc = run(
-            ["sqlite3", db, "select doc from documents where key='settings:app'"],
-            check=True,
-        ).stdout
-        return json.loads(doc)
-    bundle = "com.voxt.Voxt"
+        params = [
+            x for k, v in sets for x in (k, json.dumps(v) if isinstance(v, bool) else v)
+        ]
+        con = sqlite3.connect(db)
+        try:
+            with con:
+                con.execute(
+                    f"update documents set doc=json_set(doc, {slots}) where key='settings:app'",
+                    params,
+                )
+        finally:
+            con.close()
+        return settings_doc(db)
+    bundle = BUNDLE_1X
     features = json.loads(
         run(["defaults", "read", bundle, "featureSettings"], check=True).stdout
     )
@@ -376,21 +450,24 @@ def check(plan: dict, manifest: list[dict]) -> list[str]:
 
 def summary(root: Path) -> None:
     """One line per cell: segments with a fault-free row out of the block, how
-    many got their text after the stop key, only before it, not at all, or were
-    still changing, and the median wait."""
+    many got their text after the stop key, only before it, not at all, were
+    still changing or may hold another segment's text, and the median wait."""
     print(
-        f"{'cell':24s} {'done':>9s} {'text':>5s} {'early':>5s} {'empty':>5s} {'timeout':>7s} {'median wait s':>13s}"
+        f"{'cell':24s} {'done':>9s} {'text':>5s} {'early':>5s} {'empty':>5s} {'timeout':>7s} "
+        f"{'contam':>6s} {'median wait s':>13s}"
     )
     for cell in sorted(d for d in root.iterdir() if (d / "manifest.jsonl").exists()):
         total = sum(
             1 for l in (cell / "manifest.jsonl").read_text().splitlines() if l.strip()
         )
-        rows = {}
+        results = []
         if (cell / "results.jsonl").exists():
-            for l in (cell / "results.jsonl").read_text().splitlines():
-                r = json.loads(l)
-                if not r.get("driver_fault"):
-                    rows[r["id"]] = r
+            results = [
+                json.loads(l)
+                for l in (cell / "results.jsonl").read_text().splitlines()
+                if l.strip()
+            ]
+        rows = pick_results(mark_contamination(results))
         status = [outcome(r) for r in rows.values()]
         waits = sorted(
             (r["t_last"] - r["t_stop"]) / 1e9
@@ -400,7 +477,8 @@ def summary(root: Path) -> None:
         median = f"{waits[len(waits) // 2]:.2f}" if waits else "-"
         print(
             f"{cell.name:24s} {len(rows):>4d}/{total:<4d} {status.count('complete'):>5d} "
-            f"{status.count('early'):>5d} {status.count('empty'):>5d} {status.count('timeout'):>7d} {median:>13s}"
+            f"{status.count('early'):>5d} {status.count('empty'):>5d} {status.count('timeout'):>7d} "
+            f"{status.count('contaminated'):>6d} {median:>13s}"
         )
 
 
@@ -436,6 +514,11 @@ def main() -> int:
         for l in Path(plan["manifest"]).read_text().splitlines()
         if l.strip()
     ]
+    # note (luojiaxuan): replay-driver reads relative wav paths against the manifest it is given, and
+    # every cell writes its own manifest in its directory.
+    base = Path(plan["manifest"]).resolve().parent
+    for row in manifest:
+        row["wav"] = str(base / row["wav"])
     if args.check:
         problems = check(plan, manifest)
         print("\n".join(problems) or "plan OK")
@@ -452,12 +535,17 @@ def main() -> int:
         for name, block in cells:
             first.setdefault(name, block)
         cells = list(first.items())
-    for name, block in cells:
-        log(f"cell {name} {block}: start")
-        log(
-            f"cell {name} {block}: {run_cell(plan, root, manifest, name, block, args.pilot)}"
-        )
-    quit_all(plan)
+    saved = save_settings(plan, root)
+    try:
+        for name, block in cells:
+            log(f"cell {name} {block}: start")
+            log(
+                f"cell {name} {block}: {run_cell(plan, root, manifest, name, block, args.pilot)}"
+            )
+    finally:
+        quit_all(plan)
+        restore_settings(saved)
+        log(f"settings restored for {len(saved)} target(s)")
     summary(root)
     log("plan finished")
     return 0

@@ -15,7 +15,14 @@ they count towards the false-output rate, not the error rate.
 Latency: medians of t_last - t_stop and t_first - t_stop (ms) over rows whose
 outcome is "complete". A row with text whose last edit came before the stop key
 is "early": its text cannot be the answer to the whole segment (a dropped
-shortcut shifts every later segment by one), so it has no latency.
+shortcut shifts every later segment by one), so it has no latency; the report
+counts early rows next to each median.
+
+A row is "contaminated" when its text or timing may belong to another segment:
+the next segment logged a late write (late_changes_prev or
+n_changes_before_keydown), or the row itself saw changes between its clear and
+key-down or lost focus. Contaminated rows count in neither the error rate nor the
+latency, and the report prints how many there are and why.
 
 Rows with driver_fault=true are ignored; when an id has several fault-free rows,
 the last one counts.
@@ -305,9 +312,30 @@ def pick_results(rows):
     return picked
 
 
+def mark_contamination(results):
+    """Copies of the rows, in the order they ran, each with the reasons its text or
+    timing may belong to another segment under "contamination"."""
+    marked = [dict(row, contamination=[]) for row in results]
+    for prev, row in zip([None] + marked[:-1], marked):
+        late_here = row.get("n_changes_before_keydown", 0) > 0
+        if late_here:
+            row["contamination"].append("changes_before_keydown")
+        if row.get("focus_lost"):
+            row["contamination"].append("focus_lost")
+        # note (luojiaxuan): A write that comes after a segment's observation ended is logged in the
+        # next segment, before its clear (late_changes_prev) or between its clear and key-down. The
+        # earlier row then misses that write, and the later one may keep it as its final text.
+        if prev is not None and (late_here or row.get("late_changes_prev", 0) > 0):
+            prev["contamination"].append("late_write_into_next")
+    return marked
+
+
 def outcome(row):
-    """complete, early, empty or timeout: the driver's status, with text that was
-    last edited before the stop key told apart from text written after it."""
+    """complete, contaminated, early, empty or timeout: the driver's status, with
+    text that was last edited before the stop key told apart from text written
+    after it, and rows marked by mark_contamination set aside."""
+    if row.get("contamination"):
+        return "contaminated"
     if row["status"] != "complete":
         return row["status"]
     if row.get("t_last") is None or row["t_last"] < row["t_stop"]:
@@ -320,10 +348,11 @@ def median_ms(values):
 
 
 def score_run(manifest, results, keep_fillers=False):
-    picked = pick_results(results)
+    picked = pick_results(mark_contamination(results))
     langs = {}
     controls = {"n": 0, "with_text": 0}
     statuses = {}
+    contaminated = {}
     missing = []
     for item in manifest:
         row = picked.get(item["id"])
@@ -332,6 +361,10 @@ def score_run(manifest, results, keep_fillers=False):
             continue
         result = outcome(row)
         statuses[result] = statuses.get(result, 0) + 1
+        if result == "contaminated":
+            for reason in row["contamination"]:
+                contaminated[reason] = contaminated.get(reason, 0) + 1
+            continue
         hyp = row.get("final_text") or ""
         ref = item.get("reference") or ""
         if not ref.strip():
@@ -339,16 +372,18 @@ def score_run(manifest, results, keep_fillers=False):
             controls["with_text"] += 1 if hyp.strip() else 0
             continue
         g = langs.setdefault(
-            item["lang"], {"score": Score(), "segments": 0, "last": [], "first": []}
+            item["lang"],
+            {"score": Score(), "segments": 0, "early": 0, "last": [], "first": []},
         )
         g["score"] += compare(clean_reference(ref), hyp, keep_fillers)
         g["segments"] += 1
+        g["early"] += result == "early"
         if result == "complete":
             g["last"].append(row["t_last"] - row["t_stop"])
             if row.get("t_first") is not None:
                 g["first"].append(row["t_first"] - row["t_stop"])
 
-    def summary(score, segments, last, first):
+    def summary(score, segments, early, last, first):
         return {
             "segments": segments,
             "n_ref": score.n,
@@ -357,12 +392,13 @@ def score_run(manifest, results, keep_fillers=False):
             "ins": score.ins,
             "error_rate": score.rate() if score.n else None,
             "complete_with_latency": len(last),
+            "early": early,
             "median_last_minus_stop_ms": median_ms(last),
             "median_first_minus_stop_ms": median_ms(first),
         }
 
     per_lang = {
-        lang: summary(g["score"], g["segments"], g["last"], g["first"])
+        lang: summary(g["score"], g["segments"], g["early"], g["last"], g["first"])
         for lang, g in sorted(langs.items())
     }
     total = Score()
@@ -374,7 +410,13 @@ def score_run(manifest, results, keep_fillers=False):
     return {
         "keep_fillers": keep_fillers,
         "per_lang": per_lang,
-        "all": summary(total, sum(g["segments"] for g in langs.values()), last, first),
+        "all": summary(
+            total,
+            sum(g["segments"] for g in langs.values()),
+            sum(g["early"] for g in langs.values()),
+            last,
+            first,
+        ),
         "controls": {
             **controls,
             "false_output_rate": (
@@ -382,6 +424,7 @@ def score_run(manifest, results, keep_fillers=False):
             ),
         },
         "statuses": statuses,
+        "contaminated": contaminated,
         "missing": missing,
     }
 
@@ -391,7 +434,7 @@ def format_report(report):
         return "-" if v is None else format(v, fmt)
 
     lines = [
-        "lang      segs   N_ref     S     D     I   error  med(t_last-t_stop)  med(t_first-t_stop)"
+        "lang      segs   N_ref     S     D     I   error  med(t_last-t_stop)  med(t_first-t_stop)  early"
     ]
     rows = list(report["per_lang"].items()) + [("all", report["all"])]
     for lang, s in rows:
@@ -399,7 +442,7 @@ def format_report(report):
         lines.append(
             f"{lang:<8} {s['segments']:>5} {s['n_ref']:>7} {s['sub']:>5} {s['del']:>5} {s['ins']:>5} "
             f"{num(err, '6.2f'):>6}%  {num(s['median_last_minus_stop_ms'], '10.0f'):>14} ms"
-            f"  {num(s['median_first_minus_stop_ms'], '10.0f'):>15} ms"
+            f"  {num(s['median_first_minus_stop_ms'], '10.0f'):>15} ms  {s['early']:>5}"
         )
     c = report["controls"]
     lines.append(
@@ -409,6 +452,11 @@ def format_report(report):
     lines.append(
         "statuses: "
         + ", ".join(f"{k}={v}" for k, v in sorted(report["statuses"].items()))
+    )
+    reasons = ", ".join(f"{k}={v}" for k, v in sorted(report["contaminated"].items()))
+    lines.append(
+        f"contaminated, left out of error rates and waits: "
+        f"{report['statuses'].get('contaminated', 0)} ({reasons or 'none'})"
     )
     if report["missing"]:
         lines.append(

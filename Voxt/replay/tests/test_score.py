@@ -181,6 +181,64 @@ class OutcomeTest(unittest.TestCase):
         self.assertEqual(report["statuses"], {"complete": 1, "early": 1})
         self.assertEqual(report["all"]["median_last_minus_stop_ms"], 400)
 
+    def test_early_rows_are_counted_per_language(self):
+        manifest = [{"id": "a", "lang": "en", "reference": "hi"}]
+        results = [
+            {
+                "id": "a",
+                "driver_fault": False,
+                "status": "complete",
+                "final_text": "hi",
+                "t_stop": 5,
+                "t_first": 1,
+                "t_last": 2,
+            }
+        ]
+        report = score.score_run(manifest, results)
+        self.assertEqual(
+            (report["per_lang"]["en"]["early"], report["all"]["early"]), (1, 1)
+        )
+
+
+class ContaminationTest(unittest.TestCase):
+    def test_late_writes_mark_both_rows_and_leave_them_out(self):
+        ms = 1_000_000
+        manifest = [{"id": i, "lang": "en", "reference": "hi"} for i in "abcde"]
+        base = {
+            "driver_fault": False,
+            "status": "complete",
+            "final_text": "hi",
+            "t_stop": 0,
+            "t_first": 100 * ms,
+            "t_last": 200 * ms,
+        }
+        results = [
+            {**base, "id": "a"},
+            # note (luojiaxuan): a's clean-up landed after a's observation ended, before b's clear.
+            {**base, "id": "b", "late_changes_prev": 1},
+            # note (luojiaxuan): b's clean-up landed after c's clear, so c's field held it at key-down.
+            {**base, "id": "c", "n_changes_before_keydown": 1},
+            {**base, "id": "d", "focus_lost": True},
+            {**base, "id": "e", "t_last": 700 * ms, "final_text": "hi there"},
+        ]
+        report = score.score_run(manifest, results)
+        self.assertEqual(report["statuses"], {"contaminated": 4, "complete": 1})
+        self.assertEqual(
+            report["contaminated"],
+            {"late_write_into_next": 2, "changes_before_keydown": 1, "focus_lost": 1},
+        )
+        self.assertEqual(report["all"]["segments"], 1)
+        self.assertEqual(report["all"]["ins"], 1)
+        self.assertEqual(report["all"]["median_last_minus_stop_ms"], 700)
+        self.assertIn(
+            "contaminated, left out of error rates and waits: 4",
+            score.format_report(report),
+        )
+
+    def test_rows_without_the_newer_fields_are_clean(self):
+        rows = score.mark_contamination([{"id": "a"}, {"id": "b"}])
+        self.assertEqual([r["contamination"] for r in rows], [[], []])
+
 
 if __name__ == "__main__":
     unittest.main()

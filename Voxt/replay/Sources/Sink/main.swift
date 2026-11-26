@@ -78,7 +78,16 @@ final class SinkController: NSObject, NSApplicationDelegate, NSWindowDelegate, N
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
+        _ = removeSocket()
+    }
+
+    /// note (luojiaxuan): Deletes the file at --socket when it is a socket; false when something else is there.
+    private func removeSocket() -> Bool {
+        var info = stat()
+        if lstat(options.socketPath, &info) != 0 { return true }
+        guard (info.st_mode & S_IFMT) == S_IFSOCK else { return false }
         unlink(options.socketPath)
+        return true
     }
 
     // note (luojiaxuan): Cmd-V and the other edit shortcuts reach the text view through the Edit menu,
@@ -200,7 +209,7 @@ final class SinkController: NSObject, NSApplicationDelegate, NSWindowDelegate, N
     }
 
     private func startServer() throws {
-        unlink(options.socketPath)
+        guard removeSocket() else { throw ReplayError("\(options.socketPath) exists and is not a socket") }
         var address = try unixAddress(options.socketPath)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw ReplayError("socket: \(String(cString: strerror(errno)))") }

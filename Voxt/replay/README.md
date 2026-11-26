@@ -1,6 +1,6 @@
 # Replay harness
 
-The replay harness measures dictation apps on a Mac the way a user meets them. It plays recordings in real time into a virtual microphone, presses the app's shortcut, and timestamps every change of a focused text field, so it times the whole interaction, from the stop key to the last edit of the inserted text, and keeps the text the app wrote. It changes nothing in the apps under test.
+The replay harness measures dictation apps on a Mac the way a user meets them. It plays recordings in real time into a virtual microphone, presses the app's shortcut, and timestamps every change of a focused text field, so it times the whole interaction, from the stop key to the last edit of the inserted text, and keeps the text the app wrote. The driver and the sink only press keys and read a text field; `run_cells.py` also writes the settings each cell names into the app under test and puts the original settings back when the plan ends.
 
 | File | What it is |
 | --- | --- |
@@ -43,7 +43,7 @@ Some Command Line Tools installs keep a stale `usr/include/swift/module.modulema
      --sink-socket "$HOME/.replay-sink.sock" --sink-log run/sink.log --key right_option \
      --mem-app Voxt --mem-out run/mem.jsonl
    ```
-   `--trigger toggle --presses 2` double-taps to start and stop (also `--press-ms` and `--press-gap-ms`); the default holds the key while the audio plays. `--modifiers` holds modifier keys around `--key`, which also takes a virtual key code. `--settle-s 10` ends a segment's observation once the field holds text that has not changed for 10 seconds and the stop key is 10 seconds past; the default observes to the deadline.
+   `--trigger toggle --presses 2` double-taps to start and stop (also `--press-ms` and `--press-gap-ms`); the default holds the key while the audio plays. `--modifiers` holds modifier keys around `--key`, which also takes a virtual key code. `--settle-s 10` ends a segment's observation once the field holds text that has not changed for 10 seconds and the stop key is 10 seconds past; the default observes to the deadline. It must be 0 or more than 2 s, since a row whose text changed within 2 s of the end of observation is a timeout.
 5. Score: `python3 score.py --manifest run/manifest.jsonl --results run/results.jsonl [--keep-fillers] [--json out.json]`.
 
 A driver fault ends the run with exit code 2 after writing the segment's row. Running the same command again skips the segments that already have a fault-free row.
@@ -51,6 +51,8 @@ A driver fault ends the run with exit code 2 after writing the segment's row. Ru
 ## A plan of cells
 
 A cell is one system (an app in one configuration) and one language block: `en` holds the English segments, `zh` the Chinese and mixed ones. For each cell, `run_cells.py` quits every app in the plan, sets what the cell changes, launches the app and a fresh sink, plays three warm-up segments that are not scored, then runs the block. Each cell records the app's version, executable hash and the settings in effect (`cells.jsonl`). A cell interrupted by a driver fault resumes; finished cells are skipped, so the plan can be started again after any interruption.
+
+Before the first cell, `run_cells.py` copies the settings it is about to change into `RUN_DIR/settings-backup/`: each Voxt 2.x settings database through SQLite's backup API, and Voxt 1.x's defaults with `defaults export`. After the last cell, or when the run stops on an error or Ctrl-C, it quits the apps, puts the copies back and deletes them. A copy left by a killed run is kept, and the next start restores it. Relative `wav` paths in the plan's manifest are read against the manifest's directory.
 
 ```bash
 python3 run_cells.py --plan plan.json --check
@@ -75,7 +77,7 @@ python3 aasr_sample.py fetch --sample sample.jsonl --dir W/aasr --out W/manifest
 Every timestamp is `mach_continuous_time` in nanoseconds, shared by the driver and the sink.
 
 1. The sink empties its field (`t_clear`). If its window is not key, the driver activates it once, and records a driver fault without pressing a key if that fails.
-2. The driver presses the shortcut (`t_keydown`), plays 1.5 s of silence, the wav and 0.5 s of silence in real time (`t_audio_start`, `t_audio_end`), and releases the shortcut (`t_stop`; with `toggle`, the last key up of the stop gesture).
+2. The driver presses the shortcut (`t_keydown`), plays 1.5 s of silence, the wav and 0.5 s of silence in real time (`t_audio_start`, `t_audio_end`), and releases the shortcut (`t_stop`: the key-up with `hold`, the last key-up of the stop gesture with `toggle`).
 3. It observes the field until `t_stop` + 60 s + the wav's length and writes:
    - `t_first`, the first change after `t_keydown` that leaves text in the field, and `t_last`, the last change before the deadline. A system that writes while the speaker talks gets a negative `t_first − t_stop`.
    - `final_text`, the field at the deadline, which scoring uses.
@@ -83,7 +85,9 @@ Every timestamp is `mach_continuous_time` in nanoseconds, shared by the driver a
    - `focus_lost`, `n_changes_before_stop`, `n_changes_before_keydown` and `late_changes_prev` (writes that arrived after the previous segment's deadline).
 4. With `--mem-app NAME`, the peak `phys_footprint` of the app's process tree between `t_keydown` and the deadline. The tree is every process whose executable lies inside `NAME.app/`, its helpers and XPC services included, plus their descendants, sampled at 10 Hz into `mem.jsonl`. `replay-driver mem --app NAME --out idle.jsonl --seconds 600` samples an idle app.
 
-Insertion latency is `t_last − t_stop`; `score.py` reports its median over `complete` segments, and calls a segment whose last edit came before the stop key `early`.
+Insertion latency is `t_last − t_stop`; `score.py` reports its median over `complete` segments, and calls a segment whose last edit came before the stop key `early`. An app that finishes while the key is held makes early segments, so the report prints their count next to each median.
+
+A write that arrives after a segment's observation ended is logged in the next segment: before its clear (`late_changes_prev`) or between its clear and key-down (`n_changes_before_keydown`). The earlier segment then misses that write, and the later one may keep it as its final text. `score.py` marks both rows, and any row that lost focus, as `contaminated`, leaves them out of error rates and waits, and prints how many there are and why.
 
 ## Error rates
 

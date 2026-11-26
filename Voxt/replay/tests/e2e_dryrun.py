@@ -333,6 +333,8 @@ def main():
         try:
             SinkClient("sink.sock").send("quit")
         except OSError:
+            # note (luojiaxuan): A sink that already exited (failed to start or crashed) has no socket left;
+            # the wait below reaps it either way.
             pass
         sink.wait(timeout=5)
         print(f"work directory: {work}")

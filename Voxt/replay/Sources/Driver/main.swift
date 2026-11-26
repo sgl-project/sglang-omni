@@ -39,6 +39,12 @@ func runCommand(_ arguments: [String]) throws -> Int32 {
     if (args.string("--mem-app") == nil) != (args.string("--mem-out") == nil) {
         throw ReplayError("--mem-app and --mem-out go together")
     }
+    let settleSeconds = try args.double("--settle-s", default: 0)
+    // note (luojiaxuan): A row whose last change came within stillWritingSeconds of its end is a timeout,
+    // so a shorter settle would make every settled row one.
+    if settleSeconds < 0 || (settleSeconds > 0 && settleSeconds <= stillWritingSeconds) {
+        throw ReplayError("--settle-s must be 0 or more than \(stillWritingSeconds) s")
+    }
     let options = RunOptions(
         manifestPath: try args.required("--manifest"),
         outPath: try args.required("--out"),
@@ -48,7 +54,7 @@ func runCommand(_ arguments: [String]) throws -> Int32 {
         hotkey: try Hotkey(key: try args.required("--key"), modifiers: args.string("--modifiers")),
         trigger: trigger,
         deadlineBaseSeconds: try args.double("--deadline-base-s", default: 60),
-        settleSeconds: try args.double("--settle-s", default: 0),
+        settleSeconds: settleSeconds,
         dryRun: dryRun,
         writeAudioDir: args.string("--write-audio-dir"),
         memApp: args.string("--mem-app"),
