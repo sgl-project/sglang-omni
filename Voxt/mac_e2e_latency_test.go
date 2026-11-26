@@ -323,7 +323,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		// The language matrix records a session that produced no partial:
 		// it still speaks the window and stops on time, so the Final or
 		// the problem is on record too.
-		t.Logf("%s: no live text in the first minute (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
+		t.Logf("%s: no live text in the first five minutes (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
 	}
 	st.partial = time.Since(t0)
 	// The live text's updates while the user speaks: their count and the longest wait between two.
@@ -474,6 +474,20 @@ func TestMacLatencyScriptRequiresMainSHA(t *testing.T) {
 	}
 	if !strings.Contains(string(script), `VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?`) {
 		t.Fatal("the latency runner does not require an explicit source SHA")
+	}
+}
+
+func TestMacLatencyNoPartialLogMatchesWait(t *testing.T) {
+	source, err := os.ReadFile("mac_e2e_latency_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	production := strings.SplitN(string(source), "func TestLatencyResultJSON", 2)[0]
+	if !strings.Contains(production, "pumpFor(5*time.Minute") {
+		t.Fatal("the no-partial wait is no longer five minutes")
+	}
+	if !strings.Contains(production, "no live text in the first five minutes") {
+		t.Fatal("the no-partial log does not state the five-minute wait")
 	}
 }
 
