@@ -37,6 +37,11 @@ def cfg_uncond_rid(request_id: str) -> str:
     return f"{request_id}{_CFG_UNCOND_RID_SUFFIX}"
 
 
+def cfg_primary_rid(request_id: str) -> str:
+    """Map either CFG row id to the user request id."""
+    return request_id.removesuffix(_CFG_UNCOND_RID_SUFFIX)
+
+
 def is_cfg_uncond_rid(rid: str) -> bool:
     return rid.endswith(_CFG_UNCOND_RID_SUFFIX)
 
@@ -59,17 +64,17 @@ def build_sglang_minimax_request(
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.sampling.sampling_params import SamplingParams
 
-    state = build_ttm_state(payload)
-    if state.prompt is None:
-        raise RuntimeError("MiniMax Music 3 preprocessing did not build a prompt")
-    else:
-        pass
     # The twin's id is derived, so the scheduler can pair and abort by id alone.
     if is_cfg_uncond_rid(payload.request_id):
         raise ValueError(
             f"MiniMax Music 3 cannot serve request id {payload.request_id!r}: "
             f"the {_CFG_UNCOND_RID_SUFFIX} suffix is reserved for the CFG twin"
         )
+    else:
+        pass
+    state = build_ttm_state(payload)
+    if state.prompt is None:
+        raise RuntimeError("MiniMax Music 3 preprocessing did not build a prompt")
     else:
         pass
     prompt_token_ids = tokenizer(state.prompt, return_tensors="pt")["input_ids"][0]
@@ -199,6 +204,7 @@ __all__ = [
     "apply_minimax_result",
     "build_sglang_minimax_request",
     "build_stream_output",
+    "cfg_primary_rid",
     "cfg_uncond_rid",
     "is_cfg_uncond_rid",
 ]
