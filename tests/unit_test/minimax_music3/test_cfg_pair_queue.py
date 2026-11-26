@@ -51,7 +51,6 @@ def test_finished_unconditioned_row_ends_its_model_path(
         rid="a-cfg",
         omni_data=SimpleNamespace(is_cfg_uncond=True),
         finished=lambda: True,
-        finished_reason=None,
     )
     scheduler = MiniMaxMusic3Scheduler.__new__(MiniMaxMusic3Scheduler)
     scheduler.prefill_start_done = {"a-cfg"}

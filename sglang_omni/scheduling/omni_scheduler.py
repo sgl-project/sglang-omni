@@ -1054,9 +1054,7 @@ class OmniScheduler(Generic[RequestDataT]):
             ),
             output_streamer=self.output_streamer,
             beam_coordinator=self.beam_coordinator,
-            abort_request=lambda request: self.abort(
-                self.request_id_for_row(request.rid)
-            ),
+            abort_request=lambda request: self.abort(request.rid),
         )
 
     def self_check_during_idle(self) -> None:
