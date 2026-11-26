@@ -25,6 +25,7 @@ from sglang.srt.layers.rotary_embedding.mrope_rope_index import (
 )
 from tokenizers.normalizers import NFC
 
+import sglang_omni.models.qwen3_omni.bootstrap as qwen_bootstrap
 import sglang_omni.models.qwen3_omni.stages as qwen_stages
 from sglang_omni.cli.serve import (
     apply_tensor_parallel_engine_overrides,
@@ -75,6 +76,7 @@ from sglang_omni.preprocessing.audio import decode_audio_bytes
 from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
 from sglang_omni.preprocessing.text import split_content_parts
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
@@ -1258,6 +1260,7 @@ def test_qwen_thinker_cuda_graph_capture_lifecycle(
     server_args = SimpleNamespace(
         enable_streaming_session=True,
         disable_cuda_graph=False,
+        speculative_algorithm=None,
         enable_return_hidden_states=False,
         return_hidden_states_mode=None,
         cuda_graph_config=SimpleNamespace(
@@ -1470,6 +1473,7 @@ def test_qwen_thinker_enables_and_attests_breakable_prefill_graphs(
 
     server_args = SimpleNamespace(
         disable_cuda_graph=False,
+        speculative_algorithm=None,
         enable_return_hidden_states=False,
         return_hidden_states_mode=None,
         cuda_graph_config=SimpleNamespace(
@@ -3379,3 +3383,67 @@ def test_server_warmup_request_carries_an_image_and_a_second_of_audio(
     )
     assert (len(media.images), len(media.audios), len(media.videos)) == (1, 1, 0)
     assert len(audio) == sample_rate
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "is_cuda", "penalty_owner"),
+    [
+        ("DFLASH", True, "verify_logits"),
+        ("EAGLE3", True, None),
+        ("DFLASH", False, None),
+        (None, True, None),
+    ],
+)
+def test_a_dflash_thinker_applies_repetition_penalty_in_verify_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    is_cuda: bool,
+    penalty_owner: str | None,
+) -> None:
+    """DFlash verifies one linear block per request; an EAGLE3 tree does not."""
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True, speculative_algorithm=algorithm
+    )
+    model_config = SimpleNamespace(
+        model_path="model", vocab_size=8, hf_config=SimpleNamespace(thinker_config=None)
+    )
+    worker = SimpleNamespace(speculative_worker=None)
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.generation_batch_policy.get_prefill_cuda_graph_backend",
+        lambda server_args: CudaGraphBackend.DISABLED,
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(worker, None, None, None, model_config)),
+    )
+    monkeypatch.setattr("sglang.srt.utils.hf_transformers_utils.get_tokenizer", Mock())
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.thinker_model_runner.Qwen3OmniThinkerModelRunner",
+        lambda *args, **kwargs: SimpleNamespace(
+            speculative_repetition_penalty_owner=None, prompt_hidden_store=None
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.request_builders.make_thinker_scheduler_adapters",
+        Mock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.qwen3_omni.request_builders.make_thinker_stream_output_builder",
+        Mock(),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler.OmniScheduler",
+        lambda **kwargs: SimpleNamespace(model_runner=kwargs["model_runner"]),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.platforms.current_platform",
+        SimpleNamespace(is_cuda=lambda: is_cuda),
+    )
+
+    scheduler = qwen_bootstrap.create_thinker_scheduler(
+        server_args, enable_async_decode=False
+    )
+    assert scheduler.model_runner.speculative_repetition_penalty_owner == penalty_owner
