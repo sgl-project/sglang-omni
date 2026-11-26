@@ -699,10 +699,9 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     double frontend_eval_ms;
     double decoder_prefill_ms;
     double autoregressive_decode_ms;
-    double rebuild_ms_before_decode;
     std::chrono::steady_clock::time_point build_finished;
     std::chrono::steady_clock::time_point prefill_started;
-    std::optional<std::chrono::steady_clock::time_point> decode_started;
+    bool timed;
     std::chrono::steady_clock::time_point started;
   };
   std::vector<Row> rows;
@@ -751,29 +750,42 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     return;
   } else {
   }
-  // Result rebuilds of earlier rows run inside later rows' decode window,
-  // since the shared loop invokes callbacks in sequence. Track their total so
-  // each row's decode span can exclude work that is not decoding.
-  double rebuild_ms = 0.0;
+  // The batch's first callback comes right after the single evaluation that
+  // materializes every row's first token, so all rows share its timestamp as
+  // the end of their prefill and frontend spans. Everything a finished row does
+  // after its last token (result rebuild, logging, completion) runs inside
+  // later rows' decode windows; subtracting that shared total keeps it out of
+  // their decode spans too.
+  std::optional<std::chrono::steady_clock::time_point> batch_first_observed;
+  double non_decode_ms = 0.0;
+  double non_decode_baseline = 0.0;
   steps.decode(sequences, [&](size_t index, int token_id) {
     Row &row = rows[index];
     const BatchRequest &request = requests[row.request_index];
+    if (!batch_first_observed.has_value()) {
+      batch_first_observed = std::chrono::steady_clock::now();
+      non_decode_baseline = non_decode_ms;
+    } else {
+    }
     if (request.cancel->load()) {
+      const auto cancelled_at = std::chrono::steady_clock::now();
       on_finished(
           row.request_index,
           {std::nullopt, std::make_exception_ptr(GenerationCancelled())});
+      non_decode_ms +=
+          Milliseconds(std::chrono::steady_clock::now() - cancelled_at);
       return true;
     } else {
     }
-    if (!row.decode_started.has_value()) {
+    if (!row.timed) {
       // Prefill only queues work; the first blocking evaluation is inside the
       // shared decode, where the encoder, the prefill and the first token
-      // materialize. End both clocks at that callback so the wait is counted.
-      const auto observed = std::chrono::steady_clock::now();
-      row.frontend_eval_ms = Milliseconds(observed - row.build_finished);
-      row.decoder_prefill_ms = Milliseconds(observed - row.prefill_started);
-      row.rebuild_ms_before_decode = rebuild_ms;
-      row.decode_started = observed;
+      // materialize. End both clocks at the batch's shared callback.
+      row.frontend_eval_ms =
+          Milliseconds(*batch_first_observed - row.build_finished);
+      row.decoder_prefill_ms =
+          Milliseconds(*batch_first_observed - row.prefill_started);
+      row.timed = true;
     } else {
     }
     const bool finished = steps.commit(row.output, token_id, *request.options,
@@ -782,10 +794,10 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
       return false;
     } else {
     }
-    const double decode_ms =
-        Milliseconds(std::chrono::steady_clock::now() - *row.decode_started);
+    const auto finished_at = std::chrono::steady_clock::now();
     row.autoregressive_decode_ms =
-        std::max(0.0, decode_ms - (rebuild_ms - row.rebuild_ms_before_decode));
+        std::max(0.0, Milliseconds(finished_at - *batch_first_observed) -
+                          (non_decode_ms - non_decode_baseline));
     const auto rebuild_started = std::chrono::steady_clock::now();
     TranscriptionResult result =
         steps.finish(row.output, row.sample_count, row.offset_seconds);
@@ -795,10 +807,9 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     }
     result.result_rebuild_ms =
         Milliseconds(std::chrono::steady_clock::now() - rebuild_started);
-    rebuild_ms += result.result_rebuild_ms;
     result.frontend_build_ms = row.frontend_build_ms;
-    // Frontend eval ends at the same callback as prefill, so it sits inside
-    // the prefill span by design; the shared decode's wait is in both.
+    // Frontend eval ends at the same shared callback as prefill, so it sits
+    // inside the prefill span by design; the shared decode's wait is in both.
     result.frontend_eval_ms = row.frontend_eval_ms;
     result.decoder_prefill_ms = row.decoder_prefill_ms;
     result.autoregressive_decode_ms = row.autoregressive_decode_ms;
@@ -809,6 +820,8 @@ void RunTranscriptionBatch(const std::vector<BatchRequest> &requests,
     } else {
     }
     on_finished(row.request_index, {std::move(result), nullptr});
+    non_decode_ms +=
+        Milliseconds(std::chrono::steady_clock::now() - finished_at);
     return true;
   });
 }

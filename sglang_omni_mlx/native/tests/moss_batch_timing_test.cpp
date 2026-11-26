@@ -53,22 +53,29 @@ moss::BatchSteps FakeSteps(const FakeConfig &config) {
     std::this_thread::sleep_for(config.prefill_sleep);
     return omni_common::PrefilledSequence{{}, 0, mx::zeros({1}, mx::float32)};
   };
+  // Row 0 finishes on its first token, every later row needs two, so one
+  // row's whole post-finish work can fall inside another row's decode window.
   steps.decode =
       [config](std::vector<omni_common::PrefilledSequence> &sequences,
                const std::function<bool(size_t, int)> &commit) {
         std::this_thread::sleep_for(config.decode_wait);
+        std::vector<bool> done(sequences.size(), false);
         for (size_t i = 0; i < sequences.size(); ++i) {
-          commit(i, 10 + static_cast<int>(i));
+          done[i] = commit(i, 10 + static_cast<int>(i));
         }
         for (size_t i = 0; i < sequences.size(); ++i) {
-          commit(i, 20 + static_cast<int>(i));
+          if (!done[i]) {
+            commit(i, 20 + static_cast<int>(i));
+          } else {
+          }
         }
       };
   steps.commit = [](moss::MossTranscriber::ChunkOutput &output, int token_id,
                     const moss::MossOptions &, int) {
     output.output_ids.push_back(token_id);
     output.finish_reason = omni_common::FinishReason::kStop;
-    return output.output_ids.size() >= 2;
+    const size_t needed = output.output_ids.front() == 10 ? 1 : 2;
+    return output.output_ids.size() >= needed;
   };
   steps.finish = [config](const moss::MossTranscriber::ChunkOutput &output, int,
                           double) {
@@ -102,7 +109,9 @@ struct RunResult {
 };
 
 RunResult Drive(const std::vector<moss::BatchRequest> &requests,
-                const FakeConfig &config) {
+                const FakeConfig &config,
+                std::chrono::milliseconds completion_sleep = {},
+                int slow_row = -1) {
   RunResult run;
   run.outcomes.resize(requests.size());
   std::ostringstream captured;
@@ -110,6 +119,12 @@ RunResult Drive(const std::vector<moss::BatchRequest> &requests,
   try {
     moss::RunTranscriptionBatch(requests, FakeSteps(config),
                                 [&](size_t index, moss::BatchOutcome outcome) {
+                                  if (completion_sleep.count() > 0 &&
+                                      static_cast<int>(index) == slow_row) {
+                                    std::this_thread::sleep_for(
+                                        completion_sleep);
+                                  } else {
+                                  }
                                   run.outcomes[index] = std::move(outcome);
                                 });
   } catch (...) {
@@ -180,6 +195,46 @@ void TestTwoOfflineRows() {
   }
 }
 
+// Row 0 finishes on its first token and then rebuilds and completes slowly
+// while row 1 still needs another token. Row 1's first token materialized at
+// the same shared evaluation as row 0's, so row 0's post work must appear in
+// neither row 1's prefill/frontend nor row 1's decode.
+void TestEarlierRowPostWorkNotCharged() {
+  std::vector<float> short_samples = Samples(0.5);
+  std::vector<float> long_samples = Samples(1.0);
+  moss::MossOptions short_options;
+  moss::MossOptions long_options;
+  std::atomic<bool> short_cancel{false};
+  std::atomic<bool> long_cancel{false};
+  const std::vector<moss::BatchRequest> requests = {
+      {&short_samples, &short_options, &short_cancel},
+      {&long_samples, &long_options, &long_cancel}};
+
+  FakeConfig config;
+  config.decode_wait = std::chrono::milliseconds(5);
+  config.finish_sleep = std::chrono::milliseconds(80);
+  const RunResult run =
+      Drive(requests, config, std::chrono::milliseconds(80), 0);
+
+  Require(run.outcomes[0].result.has_value() &&
+              run.outcomes[1].result.has_value(),
+          "both rows must succeed");
+  Require(run.events.size() == 2, "both offline rows log an event");
+  Require(run.events[0]["autoregressive_decode_ms"].get<double>() < 20.0,
+          "row 0's own rebuild and completion stay out of its decode span");
+  Require(run.events[0]["result_rebuild_ms"].get<double>() >= 60.0,
+          "row 0's slow rebuild is timed");
+  Require(run.events[1]["decoder_prefill_ms"].get<double>() >= 3.0,
+          "row 1 keeps its shared first-token wait in prefill");
+  Require(run.events[1]["decoder_prefill_ms"].get<double>() < 60.0,
+          "row 0's post work must not leak into row 1's prefill");
+  Require(run.events[1]["frontend_eval_ms"].get<double>() < 60.0,
+          "row 0's post work must not leak into row 1's frontend");
+  Require(run.events[1]["autoregressive_decode_ms"].get<double>() < 40.0,
+          "row 1's decode excludes row 0's rebuild and completion");
+  Require(run.events[1]["audio_ms"] == 1000, "the second event is row 1");
+}
+
 // A realtime window rides the same batch path without an event; a row that
 // fails before decoding logs none either.
 void TestRealtimeAndFailedRowsAreSilent() {
@@ -219,6 +274,7 @@ void TestRealtimeAndFailedRowsAreSilent() {
 
 int main() {
   TestTwoOfflineRows();
+  TestEarlierRowPostWorkNotCharged();
   TestRealtimeAndFailedRowsAreSilent();
   return 0;
 }
