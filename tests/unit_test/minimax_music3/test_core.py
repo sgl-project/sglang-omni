@@ -9,6 +9,7 @@ import pytest
 import torch
 from sglang.multimodal_gen.runtime.managers.forward_context import set_forward_context
 from sglang.multimodal_gen.runtime.platforms import AttentionBackendEnum
+from sglang.srt import batch_invariant_ops
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch.nn import functional as F
 
@@ -378,8 +379,6 @@ def test_batch_invariant_policy_follows_the_platform(
     mode_enabled: bool,
     expected_disables: int,
 ) -> None:
-    from sglang.srt import batch_invariant_ops
-
     disables: list[None] = []
     monkeypatch.setattr(
         current_platform,

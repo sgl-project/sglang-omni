@@ -730,9 +730,9 @@ sgl-omni serve --model-path MiniMaxAI/MiniMax-Music3 --port 8000 --mem-fraction-
 ```
 
 On XPU the AR stage keeps SGLang's deterministic attention and seeded sampling but drops its
-batch-invariant matmul kernels, which run 8-15x slower than oneDNN on Arc Pro B60. A seed
-reproduces the same AR codes for a request served on its own; a request batched with others can
-produce a different take.
+batch-invariant ops: the matmul, RMSNorm, mean, log-softmax and bmm overrides. Their persistent
+Triton matmul runs 8-15x slower than oneDNN on Arc Pro B60. A seed reproduces the same AR codes for
+a request served on its own; a request batched with others can produce a different take.
 
 **Request**
 

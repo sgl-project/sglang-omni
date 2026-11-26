@@ -8,6 +8,7 @@ from types import MethodType
 from typing import TYPE_CHECKING
 
 import torch
+from sglang.srt import batch_invariant_ops
 from torch import nn
 
 from sglang_omni.platforms import current_platform
@@ -134,17 +135,12 @@ def apply_cfg(cond: torch.Tensor, uncond: torch.Tensor) -> torch.Tensor:
 
 
 def apply_batch_invariant_policy() -> None:
-    from sglang.srt.batch_invariant_ops import (
-        disable_batch_invariant_mode,
-        is_batch_invariant_mode_enabled,
-    )
-
     if current_platform.enable_minimax_music3_batch_invariant_ops():
         return
     else:
         pass
-    if is_batch_invariant_mode_enabled():
-        disable_batch_invariant_mode()
+    if batch_invariant_ops.is_batch_invariant_mode_enabled():
+        batch_invariant_ops.disable_batch_invariant_mode()
         logger.info(
             "MiniMax Music 3 AR runs without SGLang's batch-invariant ops on "
             f"{current_platform.device_type}; deterministic attention and sampling stay on"
