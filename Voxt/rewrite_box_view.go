@@ -110,6 +110,9 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 					cardIconButton(context.Key("box-insert-off"), i18n.T("Insert"), "", icons.Pen, false)
 					cardIconButton(context.Key("box-copy-off"), i18n.T("Copy"), "", icons.Copy, false)
 				}
+				if label, icon := sizeStepLabel(state.SizeStep); cardIconButton(context.Key("box-size"), label, label, icon, true) {
+					actions.cycleSize()
+				}
 				if cardIconButton(context.Key("box-close"), i18n.T("Close"), "", icons.Close, true) {
 					actions.close()
 				}
@@ -213,11 +216,7 @@ func rewriteBoxView(context *ui.Context, state rewriteBoxViewState, actions rewr
 				})
 			}
 
-			if sizeStepButton(context.Key("box-size"), state.SizeStep) {
-				actions.cycleSize()
-			}
-			// Send stops short of the size button in the corner.
-			ui.Row(context.Key("box-footer")).Shrink(0).Gap(5).Padding(0, layout.CardSizeBtn+layout.CardSizeBtnInset-layout.CardPadX+layout.Border+4, 0, 0).AlignItems(ui.Center).Children(func() {
+			ui.Row(context.Key("box-footer")).Shrink(0).Gap(5).AlignItems(ui.Center).Children(func() {
 				add := dropButton(context.Key("box-add"), icons.Add, i18n.T("Add"))
 				if add.Clicked() {
 					local.addOpen = !local.addOpen

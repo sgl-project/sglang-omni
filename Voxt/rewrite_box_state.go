@@ -35,6 +35,9 @@ func (a *app) boxSubtitle(selection string) string {
 	if a.box.err != "" {
 		return a.box.err
 	}
+	if a.boxIdle() {
+		return i18n.T("Say or type what to write")
+	}
 	if a.sess.ID == "" || a.sess.ID != a.boxSessionID() || !a.sess.State.Live() {
 		return ""
 	}
@@ -91,12 +94,12 @@ func (a *app) boxViewState() rewriteBoxViewState {
 	if state.Conversation {
 		state.Card, state.CardSessionID, state.CardWidth = a.boxCardView(), a.ov.projection.view.SessionID, a.boxFaceW()
 	}
-	if a.boxAnswered() && box.instruction == "" && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
-		state.CanSend = true // a typed follow-up
+	if (a.boxAnswered() && box.instruction == "" || a.boxIdle()) && !a.sess.State.Live() && strings.TrimSpace(a.boxTextContent()) != "" {
+		state.CanSend = true // a typed follow-up, or a new session's first instruction
 	}
 	// The microphone asks for the next instruction by voice as the first
 	// one was asked; the Rewrite shortcut does the same.
-	state.CanSpeak = a.boxAnswered() && !a.sess.State.Live()
+	state.CanSpeak = (a.boxAnswered() || a.boxIdle()) && !a.sess.State.Live()
 	if keys := a.prefs.Features.Rewrite.Hotkeys; len(keys) > 0 {
 		state.SpeakKeys = chordLabel(keys[0].Keys)
 	}
@@ -112,7 +115,7 @@ func (a *app) boxViewState() rewriteBoxViewState {
 func (a *app) boxActions() rewriteBoxActions {
 	return rewriteBoxActions{
 		viewState: a.boxViewState,
-		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSend, speak: func() { a.followUpAnswer("") }, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
+		close:     a.boxCloseCard, escape: a.boxEscape, card: boxCardActions{a}, cardLocal: func() sessionOverlayLocal { return sessionOverlayLocal{Overlay: &a.ov.ui, Card: &a.answer.ui} }, cardMeasured: a.postSessionOverlayMeasurements, cycleSize: a.boxCycleSize, send: a.boxSendNow, speak: a.boxSpeak, drop: a.boxDrop, chooseImages: a.boxChooseImages, chooseFile: a.boxChooseFile,
 		paste: a.boxPaste, pasteText: a.boxPasteTextAt, pasteClipboard: a.boxPasteClipboard,
 		remove: a.boxRemoveImage, removeText: a.boxRemoveText, removeSelection: a.boxRemoveSelection, removeAutoImage: a.boxRemoveAutoImage, segmentChanged: a.boxSegmentChanged,
 		dismissTip: a.dismissBoxTip,
@@ -261,9 +264,8 @@ const (
 // it and kept on the screen, as the answer card is (overlayFrame).
 func (a *app) boxFrame() mygo.Rectangle {
 	frame, area := layout.Frame(a.box.area, a.prefs.Overlay, a.boxFaceW(), boxFaceH), a.box.area
-	frame.X = min(max(frame.X+a.box.dragged.x, area.X-layout.Pad), area.X+area.Width-frame.Width+layout.Pad)
-	frame.Y = min(max(frame.Y+a.box.dragged.y, area.Y-layout.Pad), area.Y+area.Height-frame.Height+layout.Pad)
-	return frame
+	frame.X, frame.Y = frame.X+a.box.dragged.x, frame.Y+a.box.dragged.y
+	return a.pinnedFrame(frame, area)
 }
 
 // boxDragged keeps where the user dragged the card to (its face drags
@@ -285,7 +287,7 @@ func (a *app) boxDraggedTo(bounds mygo.Rectangle) {
 		area = mygo.Screen.DisplayMatching(bounds).WorkArea
 	}
 	display := area != a.box.area
-	a.box.area = area
+	a.box.area, a.slotPin = area, nil
 	anchor := layout.Frame(area, a.prefs.Overlay, a.boxFaceW(), boxFaceH)
 	a.box.dragged.x, a.box.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 	a.box.frame.X, a.box.frame.Y = bounds.X, bounds.Y
@@ -307,4 +309,30 @@ func (a *app) closeBoxWindow() {
 		a.box.win.Destroy()
 		a.box.win = nil
 	}
+}
+
+// boxIdle: the Rewrite card waits for a new session's first instruction,
+// with nothing asked or answered yet.
+func (a *app) boxIdle() bool {
+	b := &a.box
+	return b.open && b.session == "" && b.sending == "" && b.instruction == "" && !a.boxAnswered()
+}
+
+// boxSpeak records the next instruction: the answer's follow-up, or an
+// idle card's first.
+func (a *app) boxSpeak() {
+	if a.boxIdle() {
+		a.openBox(a.box.target, session.StartRequest{Kind: store.KindRewrite})
+		return
+	}
+	a.followUpAnswer("")
+}
+
+// boxSendNow is Send: what is typed in an idle card is its first
+// instruction.
+func (a *app) boxSendNow() {
+	if typed := strings.TrimSpace(a.boxTextContent()); a.boxIdle() && typed != "" {
+		a.box.instruction, a.box.text, a.box.textSegments = typed, "", nil
+	}
+	a.boxSend()
 }

@@ -85,11 +85,16 @@ func cardAttachView(context *ui.Context, card *sessionCardViewState, local sessi
 	})
 }
 
-func sizeStepButton(context *ui.Context, step int) bool {
-	label, icon := i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
+// sizeStepLabel names the card size button's next step.
+func sizeStepLabel(step int) (string, icons.Icon) {
 	if step+1 == len(layout.CardSizes) {
-		label, icon = i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
+		return i18n.T("Make the card smaller"), icons.MinimizeSquareMinimalistic
 	}
+	return i18n.T("Make the card larger"), icons.MaximizeSquareMinimalistic
+}
+
+func sizeStepButton(context *ui.Context, step int) bool {
+	label, icon := sizeStepLabel(step)
 	button := ui.ButtonBase(context).Absolute().Right(layout.CardSizeBtnInset).Bottom(layout.CardSizeBtnInset).
 		Size(layout.CardSizeBtn, layout.CardSizeBtn).Center().Label(label).Tooltip(label)
 	alpha := float32(0.6)

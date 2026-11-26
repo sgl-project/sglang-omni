@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
@@ -66,6 +67,8 @@ func (a *app) switchSlot(id int) {
 	if id == a.slot || n < 0 || a.answer.inserting {
 		return // an insert pastes: its callback must find its card in place
 	}
+	pin, pinned := a.cardWindowFrame()
+	wasBox, boxTarget := a.box.open, a.box.target
 	if a.box.open && a.sess.State.Live() && a.sess.ID == a.boxSessionID() && !a.answerBackgroundable() {
 		a.closeBox() // which cancels its session
 		a.sess = session.Snapshot{State: session.Idle, Rev: a.sess.Rev}
@@ -85,6 +88,9 @@ func (a *app) switchSlot(id int) {
 	if a.box.open {
 		a.closeBox()
 	}
+	if pinned {
+		a.slotPin = &pin
+	}
 	from := &a.slots[a.slotIndex(a.slot)]
 	if from.answer.open && a.answer.open && !a.under.open {
 		a.under = from.answer // the card that waited here since the restart, never shown
@@ -100,6 +106,9 @@ func (a *app) switchSlot(id int) {
 	a.resurface()
 	a.emptyCard = a.prefs.Features.SessionsOn && !a.answer.open && !a.bgVisible()
 	a.boxForAnswer()
+	if wasBox && !a.answer.open && !a.bgVisible() {
+		a.boxIn(boxTarget) // a new session goes on in the Rewrite card
+	}
 	a.buildTrayMenu()
 	a.syncHotkeys()
 	a.overlaySync()
@@ -293,7 +302,24 @@ func (a *app) boxForAnswer() {
 	if a.box.open || !a.answer.open || a.answer.kind != store.KindRewrite || a.sess.State.Live() {
 		return
 	}
-	a.box = rewriteBox{open: true, shown: true, target: a.answer.target, focusText: true, dragged: a.ov.cardDragged}
+	a.boxIn(a.answer.target)
+}
+
+// boxIn opens the Rewrite card for target with nothing running: an
+// answer restored in it, or a new session's first instruction to come.
+func (a *app) boxIn(target proto.App) {
+	a.box = rewriteBox{open: true, shown: true, target: target, focusText: true, dragged: a.ov.cardDragged}
 	a.boxShare.reset()
 	a.boxSync()
+}
+
+// cardWindowFrame is the frame of the card window on screen, if any.
+func (a *app) cardWindowFrame() (mygo.Rectangle, bool) {
+	switch {
+	case a.box.open && a.box.winShown:
+		return a.box.frame, true
+	case a.ov.shown && a.ov.mode == ovAnswer:
+		return a.ov.frame, true
+	}
+	return mygo.Rectangle{}, false
 }

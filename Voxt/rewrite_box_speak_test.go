@@ -66,9 +66,11 @@ func TestRewriteCardSpeakButton(t *testing.T) {
 // TestRewriteCardKeepsOneLayout: the Rewrite card is one chat face from
 // the first instruction to the last. The header always holds Insert, Copy
 // and Close, and the composer at the foot always holds Add, the
-// microphone and Send, each in the same place, inside the card. Send and
+// microphone and Send, each in the same place, inside the card, and the
+// size button sits in the header, clear of Send. Send and
 // the live wave used to move into the header while it listened, Insert
-// and Copy came and went, and the foot's key hints and Speak overflowed.
+// and Copy came and went, the foot's key hints and Speak overflowed, and
+// Send ran into the size button in the corner.
 func TestRewriteCardKeepsOneLayout(t *testing.T) {
 	type place struct{ add, mic, send, insert, copy, close ui.Rect }
 	measure := func(t *testing.T, view func(*ui.Context), mic string) place {
@@ -89,8 +91,8 @@ func TestRewriteCardKeepsOneLayout(t *testing.T) {
 			}
 			*f.at = r
 		}
-		if size, ok := tt.Find("Make the card larger"); !ok || size.X < p.send.X+p.send.W {
-			t.Fatalf("Send %+v runs under the size button %+v", p.send, size)
+		if size, ok := tt.Find("Make the card larger"); !ok || size.Y != p.close.Y || size.X+size.W > p.close.X {
+			t.Fatalf("the size button %+v is not in the header before Close %+v", size, p.close)
 		}
 		for _, gone := range []string{"Enter", "Esc"} {
 			if hasExact(tt, gone) {
