@@ -17,8 +17,11 @@
 
 namespace qwen3_asr {
 
+inline constexpr float kSilentPeak = 1e-3f;
+
 struct TranscriptionOptions {
   std::optional<std::string> language;
+  std::optional<std::string> context;
   bool stop_on_token_loop = false;
   std::vector<int> prefix_token_ids;
   std::string prefix_text;
@@ -140,6 +143,12 @@ public:
     result.text = "ok";
     result.finish_reason = omni_common::FinishReason::kStop;
     return result;
+  }
+
+  bool ExtendFinalPrefill(const RefreshReuse &, const std::vector<float> &, long,
+                          const TranscriptionOptions &, const std::atomic<bool> &,
+                          RefreshReuse &) const {
+    return false;
   }
 
   void TranscribeBatch(const std::vector<BatchRequest> &requests,
