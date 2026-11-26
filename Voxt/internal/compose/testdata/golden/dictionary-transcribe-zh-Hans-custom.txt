@@ -1,5 +1,5 @@
 # profile: custom:cleanup+dictionary+scene+glossary
-# layers: custom cleanup dictionary scene glossary example
+# layers: custom cleanup dictionary scene glossary example custom-cleanup
 
 My own prompt for 中文.
 
@@ -37,6 +37,9 @@ Casual.
 <output>
 帮我把周报发给小李，今天下班前。今天下班前一定要发出去。
 </output>
+
+自定义规则与基础清理：
+- 自定义规则要求翻译或重新整理时，覆盖基础清理中不翻译、不改变文风的限制。
 
 ---- user ----
 <input>

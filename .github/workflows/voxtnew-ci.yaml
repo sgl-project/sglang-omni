@@ -163,6 +163,14 @@ jobs:
           run="$(CGO_ENABLED=0 go test -list . . | scripts/test-shard.sh ${{ matrix.shard }} $(( ${{ strategy.job-total }} - 1 )))"
           CGO_ENABLED=0 go test -timeout=15m -count=1 -run "$run" .
 
+      # Two --smoke folders stand for two Macs: one exports the library, the
+      # other imports it and restarts (scripts/library-e2e.sh).
+      - name: Library export and import end to end
+        if: matrix.shard == 'rest'
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/voxt/Voxt" .
+          scripts/library-e2e.sh "$RUNNER_TEMP/voxt/Voxt"
+
       # The test skips on a machine without Chrome. The runner has it, so a
       # skip here means the rendered preview went unchecked.
       - name: The transcript preview in a browser

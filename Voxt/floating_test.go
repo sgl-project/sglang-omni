@@ -27,11 +27,14 @@ func TestFloatingWindowOptions(t *testing.T) {
 	}
 }
 
-// frontRecorder records what cardFront asks of a window.
+// frontRecorder records what cardFront asks of a window; offSpace: it is
+// not on the user's Space.
 type frontRecorder struct {
-	onTop           bool
+	onTop, offSpace bool
 	raised, focused int
 }
+
+func (w *frontRecorder) IsOnActiveSpace() bool { return !w.offSpace }
 
 func (w *frontRecorder) SetAlwaysOnTop(on bool) { w.onTop = on }
 
@@ -80,5 +83,27 @@ func TestCardFront(t *testing.T) {
 	front.sync(win, true, false, "t3", ask)
 	if win.onTop || win.raised != 2 || win.focused != 2 {
 		t.Errorf("a card for a user who went elsewhere: on top %v, raised %d, focused %d", win.onTop, win.raised, win.focused)
+	}
+}
+
+// TestCardFrontStaysOnTheUsersSpace: in another app's full screen, macOS
+// shows no ordinary window of an app with a Dock icon, and VoxtNew taking
+// the front with its card switched the user to a desktop (wish wall: "my
+// full-screen app went back to the desktop"). A card that is not on the
+// user's Space is raised and lowered, never focused.
+func TestCardFrontStaysOnTheUsersSpace(t *testing.T) {
+	win := &frontRecorder{onTop: true, offSpace: true}
+	var front overlayFront
+	front.sync(win, true, true, "t1", func() cardMay { return cardTake })
+	if win.raised != 1 || win.focused != 0 || win.onTop {
+		t.Errorf("a card off the user's Space: raised %d, focused %d, on top %v", win.raised, win.focused, win.onTop)
+	}
+	// A panel over the full screen takes the keyboard and floats: VoxtNew
+	// stays behind, and at the windows' level the app in front covers it.
+	panel, front2 := &frontRecorder{}, cardFront{floats: true}
+	front2.raise(panel)
+	front2.settle(panel, func() cardMay { return cardTake })
+	if !panel.onTop || panel.focused != 1 {
+		t.Errorf("a floating panel: on top %v, focused %d", panel.onTop, panel.focused)
 	}
 }

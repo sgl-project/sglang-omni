@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/egoist/mygo"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/macx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
 
@@ -92,11 +95,27 @@ func (a *app) postSessionOverlayMeasurements(measurements []sessionOverlayMeasur
 
 var ovTestArea = mygo.Rectangle{X: 0, Y: 25, Width: 1440, Height: 875}
 
+var overlayFocusedWindowFrame = macx.FocusedWindowFrame
+var overlayDisplayMatching = mygo.Screen.DisplayMatching
+var overlayPointerDisplay = func() mygo.Display {
+	return mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
+}
+
 func (a *app) overlayArea() mygo.Rectangle {
+	area, _ := a.overlayDisplay()
+	return area
+}
+
+func (a *app) overlayDisplay() (mygo.Rectangle, string) {
 	if !a.overlayNative() {
-		return ovTestArea
+		return ovTestArea, "display=headless"
 	}
-	return mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint()).WorkArea
+	if frame, ok := overlayFocusedWindowFrame(); ok {
+		display := overlayDisplayMatching(mygo.Rectangle(frame))
+		return display.WorkArea, fmt.Sprintf("display=%s[%d] area=%v source=focused window", display.Label, display.ID, display.WorkArea)
+	}
+	display := overlayPointerDisplay()
+	return display.WorkArea, fmt.Sprintf("display=%s[%d] area=%v source=pointer", display.Label, display.ID, display.WorkArea)
 }
 
 func (a *app) cardSize() (width, height int, exact bool) {
