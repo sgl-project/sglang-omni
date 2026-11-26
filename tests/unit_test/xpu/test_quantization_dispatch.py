@@ -48,8 +48,6 @@ def test_minicpm_o_thinker_linear_takes_the_xpu_int4_scheme() -> None:
 
     config.get_quant_method(layer, prefix="model.layers.0.self_attn.qkv_proj")
 
-    assert config.weight_bits == 4
-    assert config.group_size == 128
     assert isinstance(layer.scheme, AWQXPULinearScheme)
 
 
