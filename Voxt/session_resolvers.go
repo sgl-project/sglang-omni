@@ -67,13 +67,14 @@ func sessionResolvers(lm local.Services) (session.Resolver, session.ASRResolver,
 		for _, id := range fallbackCandidates(kind, s, ready, model.ID) {
 			client, opened, err := lm.LLM(ctx, id)
 			if err != nil || opened.ID != id {
-				if err != nil {
+				if err != nil && result.LLM == nil {
 					result.Err = err
 				}
 				continue
 			}
 			if result.LLM == nil {
 				result.LLM, result.LLMInfo = client, sessionModel(opened)
+				result.Err = nil
 			} else {
 				result.Fallbacks = append(result.Fallbacks, session.Fallback{LLM: client, Info: sessionModel(opened)})
 			}

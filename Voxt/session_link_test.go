@@ -152,6 +152,38 @@ func TestResolverSwitchKeepsEveryBackupInOrder(t *testing.T) {
 	}
 }
 
+// TestResolverSwitchReadinessHasNoErrorAfterSuccess: a provider that
+// opens makes the readiness available without an error, even when an
+// earlier or later candidate cannot open.
+func TestResolverSwitchReadinessHasNoErrorAfterSuccess(t *testing.T) {
+	models := []local.Model{{Kind: local.LLM, ID: "deepseek"}, {Kind: local.LLM, ID: "openai"}, {Kind: local.LLM, ID: "custom"}}
+	for _, tc := range []struct {
+		name, broken, wantMain, wantBack string
+	}{
+		{"a broken backup does not poison success", "openai", "deepseek", "custom"},
+		{"a promoted backup clears the earlier open error", "deepseek", "openai", "custom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, resolveLLM := sessionResolvers(llmShelf{models: models, broken: tc.broken})
+			s := settings.Defaults()
+			s.Providers.LLM = []settings.Provider{{ID: "custom", Endpoint: "http://127.0.0.1:8080/v1", Model: "m"}}
+			s.Models.LLMSwitch = true
+			s.Features.Rewrite.LLM = "deepseek"
+			readiness := resolveLLM(context.Background(), store.KindRewrite, s)
+			if readiness.Outcome != session.LLMAvailable || readiness.LLMInfo.ID != tc.wantMain || readiness.Err != nil {
+				t.Fatalf("readiness %+v", readiness)
+			}
+			var got []string
+			for _, fallback := range readiness.Fallbacks {
+				got = append(got, fallback.Info.ID)
+			}
+			if !slices.Equal(got, []string{tc.wantBack}) {
+				t.Fatalf("backups %q, want %q", got, tc.wantBack)
+			}
+		})
+	}
+}
+
 // TestResolverSwitchUsesRemoteAPI: with no local server after the chosen
 // model, the switch uses the next configured external API.
 func TestResolverSwitchUsesRemoteAPI(t *testing.T) {
