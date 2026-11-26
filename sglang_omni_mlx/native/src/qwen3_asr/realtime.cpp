@@ -12,11 +12,9 @@
 
 namespace qwen3_asr {
 
-using omni_common::CodePoints;
 using omni_common::FinishReason;
 using omni_common::GenerationCancelled;
-using omni_common::IsUnicodeSpace;
-using omni_common::StripUnicodeWhitespace;
+using omni_common::JoinTranscriptParts;
 using omni_common::TranscriptionResult;
 using omni_server::Transcription;
 using omni_server::TranscriptionWorker;
@@ -32,32 +30,11 @@ constexpr int kPrefixRollbackTokenCount = 5;
 // slack; speech uses half of that at most.
 constexpr double kPrefixedTokensPerNewSecond = 10.0;
 constexpr int kPrefixedTokenSlack = 8;
-constexpr float kSilentPeak = 1e-3f;
 // The audio from where its Final starts that a session prefills, and that it
 // keeps for that: Voxt recognises a longer recording in pieces while it
 // records, and the Final that is left starts where the last piece ended.
 constexpr size_t kMaxFinalPrefillSamples = 64 * omni_common::kSampleRate;
 constexpr size_t kMaxFinalRecordingSamples = 128 * omni_common::kSampleRate;
-
-constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
-    {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
-    {0x2E80, 0x303F}, {0x3040, 0x30FF}, {0x3400, 0x9FFF},
-    {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
-};
-
-bool IsSpacedScript(uint32_t code_point) {
-  if (IsUnicodeSpace(code_point)) {
-    return false;
-  } else {
-  }
-  for (const auto &[low, high] : kUnspacedScriptRanges) {
-    if (code_point >= low && code_point <= high) {
-      return false;
-    } else {
-    }
-  }
-  return true;
-}
 
 } // namespace
 
@@ -67,22 +44,6 @@ RealtimeSettings MakeRealtimeSettings(int decode_interval_ms,
   return {decode_interval_ms * omni_common::kSampleRate / 1000,
           first_decode_ms * omni_common::kSampleRate / 1000,
           static_cast<int>(max_segment_seconds * omni_common::kSampleRate)};
-}
-
-std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
-  std::string joined;
-  for (const std::string &raw_part : parts) {
-    const std::string part = StripUnicodeWhitespace(raw_part);
-    if (part.empty()) {
-      continue;
-    } else if (!joined.empty() && IsSpacedScript(CodePoints(joined).back()) &&
-               IsSpacedScript(CodePoints(part).front())) {
-      joined += " " + part;
-    } else {
-      joined += part;
-    }
-  }
-  return joined;
 }
 
 RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
@@ -242,7 +203,8 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
 }
 
 FinalReuse
-RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context) {
+RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
+                                bool guess_auto_language) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!should_prefill_final_ || context.value_or("") != final_context_) {
     return {recording_reuse_, false};
@@ -253,8 +215,20 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context) {
     should_prefill_final_ = false;
     std::shared_ptr<RefreshReuse> final_reuse =
         std::exchange(final_reuse_, nullptr);
-    return final_reuse != nullptr ? FinalReuse{std::move(final_reuse), true}
-                                  : FinalReuse{recording_reuse_, false};
+    FinalReuse reuse = final_reuse != nullptr
+                           ? FinalReuse{std::move(final_reuse), true}
+                           : FinalReuse{recording_reuse_, false};
+    // note (chenye): only use an auto-language preview of the same recording
+    // start. A committed segment or a moved start can leave a different tail.
+    if (guess_auto_language && !language_.has_value() &&
+        final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
+        segment_.has_value() && segment_->start_sample == 0 &&
+        !segment_->ran_out_of_tokens && segment_->language.has_value() &&
+        !segment_->transcript.empty()) {
+      reuse.auto_language_guess =
+          FinalPreviewGuess{*segment_->language, segment_->transcript};
+    }
+    return reuse;
   }
 }
 

@@ -3,8 +3,7 @@ package uitext
 // The words of the model catalogue (internal/models) and of System
 // dictation (internal/dictation): what a model is called (its family,
 // size and quantisation, as Voxt 1.x listed them: the catalogue's Name),
-// what it is good at and which languages it knows, and why a download
-// failed.
+// which languages it knows, and why a download failed.
 
 import (
 	"errors"
@@ -42,81 +41,6 @@ func FamilyName(family string) string {
 		return "Whisper"
 	}
 	return family
-}
-
-// ModelTags are model id's short labels on its card, as Voxt 1.x showed
-// them: where it runs, what it is best at, whether it shows the text
-// while you speak, and whether it takes the dictionary (only Qwen3-ASR
-// does). No ratings: they had no basis.
-func ModelTags(id string) []string {
-	return ModelTagsFor(i18n.CurrentTranslator(), id)
-}
-
-func ModelTagsFor(translator *i18n.Translator, id string) []string {
-	switch id {
-	case models.ASRAccurate, models.ASRQwen6bit:
-		return []string{translator.T("Local"), translator.T("Accurate"), translator.T("Realtime")}
-	case models.ASRFast:
-		return []string{translator.T("Local"), translator.T("Fast"), translator.T("Realtime")}
-	case models.ASRWhisperLarge, models.ASRCohere:
-		return []string{translator.T("Local"), translator.T("Accurate"), translator.T("No dictionary")}
-	case models.ASRWhisperTurbo, models.ASRWhisperSmall, models.ASRParakeet, models.ASRSenseVoice:
-		return []string{translator.T("Local"), translator.T("Fast"), translator.T("No dictionary")}
-	case models.ASRNemotron:
-		return []string{translator.T("Local"), translator.T("Fast"), translator.T("Realtime"), translator.T("No dictionary")}
-	case models.ASRMoss:
-		return []string{translator.T("Local"), translator.T("Realtime"), translator.T("No dictionary")}
-	case dictation.ModelID:
-		return []string{translator.T("Local"), translator.T("Built-in"), translator.T("Realtime")}
-	}
-	return []string{translator.T("Local")}
-}
-
-// ModelAbout says what model id is good at.
-func ModelAbout(id string) string {
-	return ModelAboutFor(i18n.CurrentTranslator(), id)
-}
-
-func ModelAboutFor(translator *i18n.Translator, id string) string {
-	switch id {
-	case models.ASRAccurate:
-		return translator.T("The most accurate. Good with accents, dialects, names and several languages in one sentence. Shows the text as you speak.")
-	case models.ASRFast:
-		return translator.T("Quicker and lighter on memory, for clear speech in a quiet place.")
-	case models.ASRQwen6bit:
-		return translator.T("Qwen3-ASR 1.7B using less memory than the 8-bit model, and nearly as accurate. Shows the text as you speak.")
-	case models.ASRWhisperTurbo:
-		return translator.T("A quicker OpenAI Whisper, good in many languages. The text shows a moment after you speak.")
-	case models.ASRWhisperLarge:
-		return translator.T("The largest Whisper: accurate in many languages, but slower and heavy on memory.")
-	case models.ASRWhisperSmall:
-		return translator.T("A small Whisper: light on memory, less accurate.")
-	case models.ASRParakeet:
-		return translator.T("NVIDIA's Parakeet: very quick, for European languages. It does not support Chinese, Japanese or Korean.")
-	case models.ASRSenseVoice:
-		return translator.T("Very quick, for Chinese, Cantonese, English, Japanese and Korean.")
-	case models.ASRCohere:
-		return translator.T("Cohere's model: accurate, with punctuation, but large. It recognises only your main language, or English if yours is not supported.")
-	case models.ASRNemotron:
-		return translator.T("NVIDIA's streaming model: shows the text as you speak, in many languages.")
-	case models.ASRMoss:
-		return translator.T("Made for conversations between several people. Shows the text as you speak.")
-	case models.VADSilero:
-		return translator.T("Tells speech from silence, so that only speech is recognised.")
-	case models.LLMBalanced:
-		return translator.T("Cleans up dictation, translates and rewrites well, with the best balance of quality and speed.")
-	case models.LLMFast:
-		return translator.T("Answers sooner and uses less memory, for short clean-ups and simple rewrites.")
-	case models.LLMTranslate:
-		return translator.T("Made for translation: quick and natural. Only Translate uses it.")
-	case models.LLMQwen3:
-		return translator.T("Cleans up, translates and rewrites well.")
-	case models.LLMGemma4:
-		return translator.T("Writes well in many languages, but is slower and needs more memory.")
-	case dictation.ModelID:
-		return translator.T("macOS's own speech recognition, on this Mac. Quick, with nothing to download, but less accurate than Qwen3-ASR and with fewer languages. It recognises only your main language.")
-	}
-	return ""
 }
 
 // ModelLanguages says which languages model id knows ("" for none).

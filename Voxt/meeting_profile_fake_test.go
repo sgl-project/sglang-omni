@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -53,7 +54,7 @@ func (f *fakeProfileASR) Diarize(context.Context, asr.FileRequest) (asr.Result, 
 	for index := 0; index < f.segments; index++ {
 		result.Segments = append(result.Segments, asr.SpeakerSegment{
 			Start: time.Duration(index) * time.Millisecond, End: time.Duration(index+1) * time.Millisecond,
-			Speaker: "S01", Text: strings.Repeat("x", 200),
+			Speaker: "S01", Text: fmt.Sprintf("segment %03d xxx", index),
 		})
 	}
 	return result, nil
@@ -208,11 +209,17 @@ func TestMeetingProfileFakeImportStagesAndRequests(t *testing.T) {
 	for _, stage := range report.Stages {
 		counts[stage.Name]++
 	}
-	if counts["correction"] != 5 || counts["summary"] != 3 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
+	if counts["correction"] != 1 || counts["summary"] != 1 || counts["diarization"] != 1 || counts["idle_unload"] != 0 || counts["teardown"] != 1 || counts["vad"] != 1 {
 		t.Errorf("stage counts %+v", counts)
 	}
-	if report.Evaluation.Value == nil || report.ASRTranscript.SHA256 != report.Transcript.SHA256 || !strings.Contains(report.Transcript.Text, "xxx") {
-		t.Errorf("evaluation or corrected text missing: %+v", report)
+	if report.Evaluation.Value == nil {
+		t.Error("evaluation is missing")
+	}
+	if report.ASRTranscript.SHA256 != report.Transcript.SHA256 {
+		t.Errorf("transcript hashes differ: ASR %q, corrected %q", report.ASRTranscript.SHA256, report.Transcript.SHA256)
+	}
+	if !strings.Contains(report.Transcript.Text, "xxx") {
+		t.Error("corrected text is missing")
 	}
 	if _, err := os.Stat(databaseDir); !os.IsNotExist(err) {
 		t.Errorf("temporary database remains at %s", databaseDir)

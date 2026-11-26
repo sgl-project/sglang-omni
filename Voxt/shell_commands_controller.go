@@ -88,6 +88,9 @@ func (a *app) commands() []command {
 	}
 	add("go/settings", nav, i18n.T("Settings"), "Settings", "⌘,", true, func() { a.navigate("/settings") })
 	for _, s := range settingsSections() {
+		if a.pageHidden("/" + s.id) {
+			continue
+		}
 		id := "go/settings/" + s.id
 		switch s.id {
 		case "models":
@@ -95,7 +98,7 @@ func (a *app) commands() []command {
 		case "language-models":
 			id = "go/language-models"
 		}
-		add(id, i18n.T("Settings"), s.title, s.en, "", true, func() { a.navigate("/settings/" + s.id) })
+		add(id, i18n.T("Settings"), s.title, s.en, pageKeys("/"+s.id), true, func() { a.navigate("/settings/" + s.id) })
 	}
 
 	view := i18n.T("View")

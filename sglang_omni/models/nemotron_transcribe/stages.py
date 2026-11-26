@@ -22,7 +22,6 @@ def create_nemotron_transcribe_executor(
     max_new_tokens: int,
     context_length: int,
     max_audio_seconds: float | None,
-    mm_embedding_cache_size_bytes: int,
     chunked_prefill_size: int,
     encoder_max_batch_size: int,
     enable_pre_lm_encoder: bool,
@@ -39,6 +38,10 @@ def create_nemotron_transcribe_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     mem_fraction_static: float | None = None,
+    mm_embedding_cache_size_bytes: int | None = None,
+    tp_rank: int = 0,
+    tp_size: int = 1,
+    nccl_port: int | None = None,
     server_args_overrides: Mapping[str, object] | None = None,
 ) -> OmniScheduler[NemotronTranscribeRequestData]:
     revision = (server_args_overrides or {}).get("revision")
@@ -62,12 +65,15 @@ def create_nemotron_transcribe_executor(
         perception_cuda_graphs=perception_cuda_graphs,
         perception_compile_mode=perception_compile_mode,
         perception_fp8=perception_fp8,
+        tp_rank=tp_rank,
+        tp_size=tp_size,
+        nccl_port=nccl_port,
     ).build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides={**(server_args_overrides or {}), "tp_size": tp_size},
     )
 
 

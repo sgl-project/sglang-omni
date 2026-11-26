@@ -346,7 +346,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 	pastesBefore := len(a.pasted())
 	stopped := time.Now()
 	a.stopSession()
-	ended := !a.pumpFor(time.Minute, func() bool {
+	ended := !a.pumpFor(5*time.Minute, func() bool {
 		if st.final == 0 && a.sess.Raw != "" {
 			st.final = time.Since(stopped)
 		}

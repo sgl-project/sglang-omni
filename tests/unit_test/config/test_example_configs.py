@@ -39,9 +39,18 @@ def test_example_config_loads_compiles_and_resolves_every_factory(
         resolve_stage_factory_args(stage, config)
 
 
-def test_disable_speculative_decoding_drops_only_the_draft_keys() -> None:
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "qwen3_asr_0_6b_dflash_rtx3090.yaml",
+        "qwen3_asr_1_7b_dflash.yaml",
+    ],
+)
+def test_disable_speculative_decoding_drops_only_the_draft_keys(
+    config_name: str,
+) -> None:
     manager = ConfigManager.from_file(
-        str(REPO_ROOT / "examples" / "configs" / "qwen3_asr_1_7b_dflash.yaml")
+        str(REPO_ROOT / "examples" / "configs" / config_name)
     )
     drafted = resolve_stage_factory_args(
         manager.config.stage_named("asr"), manager.config

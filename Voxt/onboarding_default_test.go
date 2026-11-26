@@ -54,13 +54,13 @@ func downloadAsked(t *testing.T, a *app, drain func(), id string) {
 	}
 }
 
-// TestGuideDownloadAndContinue: the guide recommends MOSS-Transcribe-Diarize
+// TestGuideDownloadAndContinue: the guide recommends Qwen3-ASR 1.7B (8bit)
 // on every Mac, 8 GB ones included, and downloads only the pack (it, its
-// catalogue draft and the VAD).
+// catalogue draft and the VAD), not MOSS-Transcribe-Diarize.
 func TestGuideDownloadAndContinue(t *testing.T) {
 	a, tt, asked, drain := guideAt(t)
 	label := "Download and continue (" + a.obDownloadLeft() + ")"
-	if !has(tt, "MOSS-Transcribe-Diarize") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
+	if !has(tt, "Qwen3-ASR 1.7B (8bit)") || !has(tt, label) || !has(tt, "Skip this step") || hasPrefix(tt, "Chosen for this Mac") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	if asked.Load() != 0 {
@@ -70,8 +70,8 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 	if a.ob.step != obTranscribe {
 		t.Fatalf("step %d", a.ob.step)
 	}
-	downloadAsked(t, a, drain, models.ASRMoss)
-	for _, id := range []string{models.ASRFast, models.ASRAccurate} {
+	downloadAsked(t, a, drain, models.ASRAccurate)
+	for _, id := range []string{models.ASRFast, models.ASRMoss} {
 		if s := a.models.Status(id); s.Err != nil || s.Downloading {
 			t.Errorf("%s downloaded too: %+v", id, s)
 		}
@@ -79,7 +79,7 @@ func TestGuideDownloadAndContinue(t *testing.T) {
 }
 
 // obTestDraft is a draft the tests pair with the recommended speech
-// model, standing in for the catalogue's (MTD's arrives with #3827).
+// model in place of the catalogue's.
 var obTestDraft = models.Model{
 	ID: "test.moss.draft", Name: "MTD test draft", Kind: models.Draft, Runtime: models.Omni, Family: "test",
 	Repo: "mlx-community/test-moss-draft", Revision: "4444444444444444444444444444444444444444",
@@ -94,7 +94,7 @@ var obTestDraft = models.Model{
 func obCatalog(draftID string) []models.Model {
 	cat := slices.Clone(models.Catalog())
 	for i := range cat {
-		if cat[i].ID == models.ASRMoss {
+		if cat[i].ID == models.ASRAccurate {
 			cat[i].Draft = draftID
 		}
 	}
@@ -115,23 +115,21 @@ func obModelsWith(t *testing.T, a *app, cat []models.Model) {
 	a.readModelStatus()
 }
 
-// TestObPackWithoutDraft: with no draft in the catalogue (today, before
-// #3827), the pack is the speech model and the VAD, and the label is the
-// speech model's size alone.
+// TestObPackWithoutDraft: with no draft in the catalogue, the pack is the
+// speech model and the VAD, and the label is the speech model's size alone.
 func TestObPackWithoutDraft(t *testing.T) {
 	a, _ := obTester(t)
 	reopenModels(a)
 	obModelsWith(t, a, obCatalog(""))
-	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, models.VADSilero}) {
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.VADSilero}) {
 		t.Errorf("pack %v", got)
 	}
-	if got := a.obDownloadLeft(); got != "1.8 GB" {
+	if got := a.obDownloadLeft(); got != "2.5 GB" {
 		t.Errorf("left %q, want the speech model's size", got)
 	}
 }
 
-// TestObPackWithDraft: with a draft in the catalogue (as #3827 adds
-// MTD's), the pack includes it and the label counts it; with the speech
+// TestObPackWithDraft: with a draft in the catalogue, the pack includes it and the label counts it; with the speech
 // model on this Mac the download is the draft alone, so that Faster
 // transcription is on (#4067, Models.FasterOn's default).
 func TestObPackWithDraft(t *testing.T) {
@@ -140,13 +138,13 @@ func TestObPackWithDraft(t *testing.T) {
 	drain := queuePosts(a)
 	reopenModels(a)
 	obModelsWith(t, a, obCatalog(obTestDraft.ID))
-	if got := a.obPack(); !slices.Equal(got, []string{models.ASRMoss, obTestDraft.ID, models.VADSilero}) {
+	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, obTestDraft.ID, models.VADSilero}) {
 		t.Fatalf("pack %v", got)
 	}
-	if got := a.obDownloadLeft(); got != "2.1 GB" {
+	if got := a.obDownloadLeft(); got != "2.7 GB" {
 		t.Errorf("left %q, want the speech model and the draft", got)
 	}
-	if err := modelstest.Seed(a.models.Hub(), models.ASRMoss, models.VADSilero); err != nil {
+	if err := modelstest.Seed(a.models.Hub(), models.ASRAccurate, models.VADSilero); err != nil {
 		t.Fatal(err)
 	}
 	a.models.Refresh()
@@ -157,26 +155,24 @@ func TestObPackWithDraft(t *testing.T) {
 	}
 	a.obDownload()
 	downloadAsked(t, a, drain, obTestDraft.ID)
-	if !a.settings.Get().Models.FasterOn(models.ASRMoss, true, false) {
+	if !a.settings.Get().Models.FasterOn(models.ASRAccurate, true, false) {
 		t.Error("Faster transcription off with the draft installed and never switched")
 	}
 }
 
-// TestObPackMainLanguageGate: MOSS-Transcribe-Diarize knows Chinese and
-// English only, so a main language it does not know makes the guide's
-// pack Qwen3-ASR 1.7B (8bit) and the VAD, with no MTD in it.
-func TestObPackMainLanguageGate(t *testing.T) {
+// TestObPackIsQwen: the guide's pack is Qwen3-ASR 1.7B (8bit), its draft
+// and the VAD whatever the main language; MOSS-Transcribe-Diarize is not
+// the default (#4069 reverted).
+func TestObPackIsQwen(t *testing.T) {
 	a, _ := obTester(t)
-	a.prefs.General.MainLanguage = "ja"
-	if got := a.obSpeech(); got != models.ASRAccurate {
-		t.Errorf("ja: obSpeech %s, want %s", got, models.ASRAccurate)
+	for _, main := range []string{"zh", "en", "ja"} {
+		a.prefs.General.MainLanguage = main
+		if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}) {
+			t.Errorf("%s: pack %v, want Qwen3-ASR 1.7B, its draft and the VAD", main, got)
+		}
 	}
-	if got := a.obPack(); !slices.Equal(got, []string{models.ASRAccurate, models.ASRAccurateDraft, models.VADSilero}) {
-		t.Errorf("ja: pack %v, want Qwen3-ASR 1.7B, its draft and the VAD, no MTD", got)
-	}
-	a.prefs.General.MainLanguage = "zh"
-	if got := a.obSpeech(); got != models.ASRMoss {
-		t.Errorf("zh: obSpeech %s, want %s", got, models.ASRMoss)
+	if m, _ := models.Lookup(models.ASRAccurate); !m.Default || models.Catalog()[0].ID != models.ASRAccurate {
+		t.Errorf("Qwen3-ASR 1.7B (8bit) is not the catalogue's default and first: %+v", models.Catalog()[0].ID)
 	}
 }
 
@@ -190,23 +186,23 @@ func TestGuidePackDraftLeft(t *testing.T) {
 	a, tt := obTester(t)
 	drain := queuePosts(a)
 	reopenModels(a)
-	seedModels(t, a, models.ASRMoss, models.VADSilero)
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
 	a.obGo(obModels)
 	drain()
 	frames(tt)
-	if !has(tt, "Use them") || !has(tt, "Download (262.5 MB)") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Use them") || !has(tt, "Download (725.7 MB)") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("on disk: %q", tt.Texts())
 	}
 	click(t, tt, "Use them")
 	drain()
 	frames(tt)
-	if !has(tt, "Ready: MOSS-Transcribe-Diarize") || !hasPrefix(tt, "Download and continue (262.5 MB)") {
+	if !has(tt, "Ready: Qwen3-ASR 1.7B (8bit)") || !hasPrefix(tt, "Download and continue (725.7 MB)") {
 		t.Fatalf("claimed: %q", tt.Texts())
 	}
 	click(t, tt, findPrefix(t, tt, "Download and continue"))
-	downloadAsked(t, a, drain, models.ASRMossDraft)
+	downloadAsked(t, a, drain, models.ASRAccurateDraft)
 	for _, m := range models.Catalog() {
-		if m.ID == models.ASRMossDraft {
+		if m.ID == models.ASRAccurateDraft {
 			continue
 		}
 		if s := a.models.Status(m.ID); s.Err != nil || s.Downloading {
@@ -237,24 +233,21 @@ func TestGuideSkipDownloadsNothing(t *testing.T) {
 	a.obGo(obModels)
 	a.closeOnboarding()
 	drain()
-	if asked.Load() != 0 || a.models.Status(models.ASRMoss).Downloading {
-		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRMoss))
+	if asked.Load() != 0 || a.models.Status(models.ASRAccurate).Downloading {
+		t.Fatalf("closing the guide asked %d: %+v", asked.Load(), a.models.Status(models.ASRAccurate))
 	}
 }
 
 // TestGuideOnDiskNoDownload: another app's copy the survey has not
-// reported yet is on disk, so the step offers no download of it, and
-// Home sends the user to the page that can claim it.
+// reported yet is on disk, so the step offers no download of it.
 func TestGuideOnDiskNoDownload(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
-	a.modelStatus[models.ASRMoss] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
+	a.modelStatus[models.ASRAccurate] = models.Status{OnDisk: true, Users: []string{"AudioSmith"}}
 	frames(tt)
 	if hasPrefix(tt, "Download and continue") {
 		t.Errorf("offers what is on disk: %q", tt.Texts())
 	}
-	if r := homeSpeech(a); r.Action != "Open Speech models" {
-		t.Errorf("Home: %+v", r)
-	}
+
 }
 
 // TestGuideAlternativeNoDownloadButton: an alternative on this Mac, with
@@ -264,7 +257,7 @@ func TestGuideAlternativeNoDownloadButton(t *testing.T) {
 	a, tt, _, _ := guideAt(t)
 	a.ob.found = []models.Found{{ID: models.ASRFast, By: []string{"AudioSmith"}}}
 	frames(tt)
-	if !has(tt, "Download MOSS-Transcribe-Diarize") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
+	if !has(tt, "Download Qwen3-ASR 1.7B (8bit)") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") {
 		t.Fatalf("%q", tt.Texts())
 	}
 }
@@ -278,12 +271,12 @@ func TestGuideReuseUnchanged(t *testing.T) {
 	a, tt := obTester(t)
 	reopenModels(a)
 	smith := addPeer(t, a, "dev.hehehai.audiosmith", nil)
-	seedModels(t, a, models.ASRMoss, models.VADSilero)
-	peerClaims(t, smith, models.ASRMoss, models.VADSilero)
+	seedModels(t, a, models.ASRAccurate, models.VADSilero)
+	peerClaims(t, smith, models.ASRAccurate, models.VADSilero)
 	a.familyFound(a.fam.Discover())
 	a.models.Refresh()
 	a.obGo(obModels)
-	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || !has(tt, "Download (262.5 MB)") {
+	if !has(tt, "Use them") || !hasExact(tt, "Continue") || hasPrefix(tt, "Download and continue") || !has(tt, "Download (725.7 MB)") {
 		t.Fatalf("%q", tt.Texts())
 	}
 	click(t, tt, "Continue")
@@ -440,63 +433,6 @@ func TestTranslateByVoiceWaits(t *testing.T) {
 	}
 }
 
-func homeSpeech(a *app) homeReadinessViewState {
-	for _, r := range a.readinessList() {
-		if r.Key == "home-asr" {
-			return r
-		}
-	}
-	return homeReadinessViewState{}
-}
-
-func TestHomeSpeechRow(t *testing.T) {
-	asked := countingHub(t)
-	a, tt := homeTester(t)
-	drain := queuePosts(a)
-	reopenModels(a)
-	if r := homeSpeech(a); r.OK || !strings.HasPrefix(r.Action, "Download (") {
-		t.Fatalf("no model: %+v", r)
-	}
-	click(t, tt, "Speech recognition: "+homeSpeech(a).Action)
-	if a.shownPath() == modelsPath {
-		t.Error("the line left Home instead of downloading")
-	}
-	downloadAsked(t, a, drain, models.ASRMoss)
-	if asked.Load() == 0 {
-		t.Error("nothing was asked of the Hub")
-	}
-
-	a.local = onlyDictation{&fakeLocal{}}
-	a.modelStatus = map[string]models.Status{}
-	r := homeSpeech(a)
-	if r.OK || r.Kind != "info" || r.Text != "Using System dictation for now." || !strings.HasPrefix(r.Action, "Download the recommended model (") {
-		t.Errorf("automatic on System dictation: %+v", r)
-	}
-	if missing, _ := homeMissing(a.readinessList()); !containsKey(missing, "home-asr") {
-		t.Errorf("counted as ready: %+v", missing)
-	}
-
-	downloading(a, a.obSpeech())
-	if r := homeSpeech(a); r.OK || r.Text != "The speech model is still downloading (33%)." {
-		t.Errorf("downloading: %+v", r)
-	}
-
-	a.modelStatus = map[string]models.Status{}
-	a.updateSettings(func(s *settings.Settings) { s.Features.Transcribe.ASR = dictation.ModelID })
-	if r := homeSpeech(a); !r.OK || r.Text != "System dictation" {
-		t.Errorf("System dictation chosen: %+v", r)
-	}
-}
-
-func containsKey(list []homeReadinessViewState, key string) bool {
-	for _, r := range list {
-		if r.Key == key {
-			return true
-		}
-	}
-	return false
-}
-
 // obDefaultShots saves the models step with nothing on this Mac.
 func obDefaultShots(a *app, save func(string)) {
 	loc, status, found := a.local, a.modelStatus, a.ob.found
@@ -528,10 +464,9 @@ func TestAutomaticSpeech(t *testing.T) {
 	}
 
 	// Automatic skips a model that does not know the main language
-	// (#4067): MTD is the catalogue's default and first, but it knows
-	// Chinese and English only, so ja lands on Qwen3-ASR — in the pages
-	// (featureModel) and in the session's resolver alike. An explicit
-	// MTD choice still opens MTD.
+	// (#4067): MTD knows Chinese and English only, so ja lands on
+	// Qwen3-ASR — in the pages (featureModel) and in the session's
+	// resolver alike. An explicit MTD choice still opens MTD.
 	a.updateSettings(func(s *settings.Settings) {
 		s.Features.Transcribe.ASR = ""
 		s.General.MainLanguage = "ja"
@@ -563,8 +498,8 @@ func TestAutomaticSpeech(t *testing.T) {
 	}
 }
 
-// automaticGateLocal is MTD and Qwen3-ASR 1.7B (8bit), MTD first as the
-// catalogue's default, recording what a session's resolver opens.
+// automaticGateLocal is MTD and Qwen3-ASR 1.7B (8bit), MTD first,
+// recording what a session's resolver opens.
 type automaticGateLocal struct {
 	local.NotInstalled
 	opened string

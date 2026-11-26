@@ -63,6 +63,7 @@ from benchmarks.duplex.mpe.protocol import (
 )
 from benchmarks.duplex.mpe.realtime_session import (
     PlaybackTimelineBuffer,
+    ProtocolSessionError,
     RealtimeEndpointSpec,
     RealtimeProtocolMode,
     compute_effective_scenario_timeout_seconds,
@@ -80,6 +81,7 @@ from benchmarks.duplex.mpe.semantic import (
     load_judge_endpoint_config,
     load_validated_existing_verdicts,
     public_judge_metadata,
+    semantic_task_key,
     transcribe_tasks_via_http,
 )
 from benchmarks.duplex.mpe.vad import SileroActivityConfig, SileroActivityDetector
@@ -600,9 +602,23 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                     elif protocol_mode == "legacy":
                         echoed_session = {
                             "modalities": ["text", "audio"],
-                            "turn_detection": {"type": "server_vad"},
+                            "turn_detection": session_cfg.get(
+                                "turn_detection",
+                                {"type": "server_vad", "silence_duration_ms": 500},
+                            ),
                         }
                     else:
+                        requested_audio = session_cfg.get("audio")
+                        requested_input = (
+                            requested_audio.get("input")
+                            if isinstance(requested_audio, dict)
+                            else None
+                        )
+                        echoed_turn_detection = (
+                            requested_input.get("turn_detection")
+                            if isinstance(requested_input, dict)
+                            else None
+                        )
                         input_section: dict[str, JsonValue] = {
                             "format": {
                                 "type": "audio/pcm",
@@ -611,7 +627,13 @@ def test_realtime_websocket_session_contracts_and_drain_tail(
                             "turn_detection": (
                                 None
                                 if protocol_mode == "native"
-                                else {"type": "server_vad"}
+                                else (
+                                    echoed_turn_detection
+                                    or {
+                                        "type": "server_vad",
+                                        "silence_duration_ms": 500,
+                                    }
+                                )
                             ),
                         }
                         echoed_session = {
@@ -1801,7 +1823,8 @@ def test_generate_resume_rejects_orphan_report_and_revision_change(
                                                         "rate": 16000,
                                                     },
                                                     "turn_detection": {
-                                                        "type": "server_vad"
+                                                        "type": "server_vad",
+                                                        "silence_duration_ms": 500,
                                                     },
                                                 },
                                                 "output": {
@@ -2274,7 +2297,10 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
                             session_body: dict[str, JsonValue] = (
                                 {
                                     "modalities": ["text", "audio"],
-                                    "turn_detection": {"type": "server_vad"},
+                                    "turn_detection": {
+                                        "type": "server_vad",
+                                        "silence_duration_ms": 500,
+                                    },
                                 }
                                 if selected_mode == "legacy"
                                 else {
@@ -2287,7 +2313,10 @@ def test_terminal_receipts_idle_cancel_and_cache_integrity_guards(
                                             "turn_detection": (
                                                 None
                                                 if selected_mode == "native"
-                                                else {"type": "server_vad"}
+                                                else {
+                                                    "type": "server_vad",
+                                                    "silence_duration_ms": 500,
+                                                }
                                             ),
                                         },
                                         "output": {
@@ -4375,3 +4404,1490 @@ def test_review_contracts_timeout_isolation_probe_receipts_and_exit_codes(
                 turn_detection=None,
             ),
         )
+
+
+def test_playback_truncation_accounting_zero_audio_and_eos_guards(
+    tmp_path: Path,
+) -> None:
+    """Verify per-item sample accounting, session.created grant propagation, legacy cuts, and EOS/close suppression."""
+    dataset_root = build_synthetic_dataset(tmp_path / "dataset")
+    scenarios = load_duplex_mpe_scenarios(dataset_root, addressing="all")
+
+    timeline_buffer = PlaybackTimelineBuffer(24000)
+    timeline_buffer.append_audio(
+        1.0,
+        np.full(4800, 0.25, dtype=np.float32),
+        response_id="resp_completed",
+        item_id="item_completed",
+    )
+    timeline_buffer.render_interval(0, 25920)
+    timeline_buffer.append_audio(
+        1.10,
+        np.full(9600, 0.35, dtype=np.float32),
+        response_id="resp_cut",
+        item_id="item_cut",
+    )
+    truncation_records = timeline_buffer.cancel_unplayed(
+        1.250,
+        target_response_id="resp_cut",
+        target_item_id="item_cut",
+        include_unstarted_target_item=True,
+    )
+    assert len(truncation_records) == 1
+    assert truncation_records[0].item_id == "item_cut"
+    assert truncation_records[0].audio_end_milliseconds == 50
+    assert timeline_buffer.cancelled_unplayed_samples == 8400
+    tail_rendered = timeline_buffer.render_interval(25920, 34000)
+    assert int(np.count_nonzero(tail_rendered)) == 4080
+
+    floor_buffer = PlaybackTimelineBuffer(24000)
+    floor_buffer.append_audio(
+        0.0,
+        np.full(4800, 0.25, dtype=np.float32),
+        response_id="resp_floor",
+        item_id="item_floor",
+    )
+    floor_buffer.render_interval(0, 2413)
+    floor_records = floor_buffer.cancel_unplayed(
+        2413 / 24000.0,
+        target_response_id="resp_floor",
+        target_item_id="item_floor",
+    )
+    assert len(floor_records) == 1
+    assert floor_records[0].audio_end_milliseconds == 100
+
+    zero_buffer = PlaybackTimelineBuffer(24000)
+    assert (
+        zero_buffer.cancel_unplayed(
+            0.2,
+            target_response_id="resp_leg_zero",
+            target_item_id="item_leg_zero",
+            include_unstarted_target_item=False,
+        )
+        == []
+    )
+    turn_based_zero_records = zero_buffer.cancel_unplayed(
+        0.2,
+        target_response_id="resp_tb_zero",
+        target_item_id="item_tb_zero",
+        include_unstarted_target_item=True,
+    )
+    assert len(turn_based_zero_records) == 1
+    assert turn_based_zero_records[0].item_id == "item_tb_zero"
+    assert turn_based_zero_records[0].audio_end_milliseconds == 0
+    zero_buffer.append_audio(
+        0.3,
+        np.full(1200, 0.25, dtype=np.float32),
+        response_id="resp_tb_zero",
+        item_id="item_tb_zero",
+    )
+    assert zero_buffer.cancelled_unplayed_samples == 1200
+
+    async def exercise_websocket_truncation_contracts() -> None:
+        observed_turn_based_truncates: list[dict[str, JsonValue]] = []
+        post_eos_or_close_truncate_seen = False
+
+        async def turn_based_peer(connection: ServerConnection) -> None:
+            nonlocal post_eos_or_close_truncate_seen
+            accepted_input_samples = 0
+            saw_eos = False
+            saw_close = False
+            stage_index = 0
+            # Grant supports_truncate ONLY in session.created (omitting it in session.updated) to verify recording-connection session.created propagation.
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "session.created",
+                        "event_id": "evt_created",
+                        "session": {
+                            "id": "sess_tb_trunc",
+                            "sglang": {
+                                "capabilities": {
+                                    "interaction": "turn_based",
+                                    "supports_truncate": True,
+                                }
+                            },
+                        },
+                    }
+                )
+            )
+            async for raw_frame in connection:
+                message = json.loads(raw_frame)
+                message_type = message["type"]
+                if message_type == "session.update":
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "session.updated",
+                                "event_id": "evt_updated",
+                                "session": {
+                                    "audio": {
+                                        "input": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 16000,
+                                            },
+                                            "turn_detection": {
+                                                "type": "server_vad",
+                                                "silence_duration_ms": 500,
+                                            },
+                                        },
+                                        "output": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 24000,
+                                            }
+                                        },
+                                    },
+                                    "sglang": {
+                                        "granted": {
+                                            "interaction": "turn_based",
+                                        }
+                                    },
+                                },
+                            }
+                        )
+                    )
+                elif message_type == "input_audio_buffer.append":
+                    accepted_input_samples += len(
+                        decode_pcm16_base64_to_float32(message["audio"])
+                    )
+                    accepted_end_milliseconds = (
+                        accepted_input_samples * 1000.0 / 16000.0
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.accepted",
+                                "event_id": f"acc_{message['sglang']['seq']}",
+                                "seq": message["sglang"]["seq"],
+                                "accepted_end_ms": accepted_end_milliseconds,
+                            }
+                        )
+                    )
+                    if stage_index == 0 and accepted_end_milliseconds >= 1600.0:
+                        stage_index = 1
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "rc_zero",
+                                    "response": {"id": "resp_zero"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.done",
+                                    "event_id": "rd_zero",
+                                    "response": {
+                                        "id": "resp_zero",
+                                        "status": "cancelled",
+                                        "output": [{"id": "item_zero"}],
+                                    },
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_zero_late",
+                                    "response_id": "resp_zero",
+                                    "item_id": "item_zero",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(2400, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                    elif stage_index == 1 and accepted_end_milliseconds >= 2400.0:
+                        stage_index = 2
+                        # Completed response with 600 ms (14400 samples) of audio, followed at 2560 ms by turn-based speech_started while 440 ms of backlog remains: backlog must play out intact without sending truncate.
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "rc_full",
+                                    "response": {"id": "resp_full"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_full",
+                                    "response_id": "resp_full",
+                                    "item_id": "item_full",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(14400, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.done",
+                                    "event_id": "rd_full",
+                                    "response": {
+                                        "id": "resp_full",
+                                        "status": "completed",
+                                        "output": [{"id": "item_full"}],
+                                    },
+                                }
+                            )
+                        )
+                    elif stage_index == 2 and accepted_end_milliseconds >= 2560.0:
+                        stage_index = 3
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "input_audio_buffer.speech_started",
+                                    "event_id": "ss_turn_based",
+                                    "item_id": "user_item_tb",
+                                    "audio_start_ms": 2560.0,
+                                }
+                            )
+                        )
+                    elif stage_index == 3 and accepted_end_milliseconds >= 4000.0:
+                        stage_index = 4
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "rc_cut",
+                                    "response": {"id": "resp_cut"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_cut",
+                                    "response_id": "resp_cut",
+                                    "item_id": "item_cut",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(19200, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                    elif stage_index == 4 and accepted_end_milliseconds >= 4320.0:
+                        stage_index = 5
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.done",
+                                    "event_id": "rd_cut",
+                                    "response": {
+                                        "id": "resp_cut",
+                                        "status": "cancelled",
+                                        "output": [{"id": "item_cut"}],
+                                    },
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "rc_eos",
+                                    "response": {"id": "resp_eos"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_eos",
+                                    "response_id": "resp_eos",
+                                    "item_id": "item_eos",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(24000, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "rc_close",
+                                    "response": {"id": "resp_close"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_close",
+                                    "response_id": "resp_close",
+                                    "item_id": "item_close",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(24000, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                    else:
+                        pass
+                elif message_type == "conversation.item.truncate":
+                    if saw_eos or saw_close:
+                        post_eos_or_close_truncate_seen = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "error",
+                                    "event_id": "err_eos",
+                                    "error": {
+                                        "code": "invalid_request_error",
+                                        "message": "input after EOS or close",
+                                    },
+                                }
+                            )
+                        )
+                        return
+                    else:
+                        observed_turn_based_truncates.append(message)
+                elif message_type == "sglang.input_audio.end":
+                    saw_eos = True
+                    expected_total_milliseconds = (
+                        accepted_input_samples * 1000.0 / 16000.0
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.ended",
+                                "event_id": "evt_end",
+                                "accepted_end_ms": expected_total_milliseconds,
+                                "tail_policy": "flush",
+                            }
+                        )
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "response.done",
+                                "event_id": "rd_eos",
+                                "response": {
+                                    "id": "resp_eos",
+                                    "status": "cancelled",
+                                    "output": [{"id": "item_eos"}],
+                                },
+                            }
+                        )
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.drained",
+                                "event_id": "evt_drain",
+                                "accepted_end_ms": expected_total_milliseconds,
+                                "consumed_ms": expected_total_milliseconds,
+                                "discarded_ms": 0.0,
+                            }
+                        )
+                    )
+                elif message_type == "session.close":
+                    saw_close = True
+                    # Inject a cancelled response after session.close and before session.closed.
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "response.done",
+                                "event_id": "rd_close",
+                                "response": {
+                                    "id": "resp_close",
+                                    "status": "cancelled",
+                                    "output": [{"id": "item_close"}],
+                                },
+                            }
+                        )
+                    )
+                    await connection.send(
+                        json.dumps({"type": "session.closed", "event_id": "evt_closed"})
+                    )
+                    return
+                else:
+                    pass
+
+        async with websockets.serve(
+            turn_based_peer, "127.0.0.1", 0
+        ) as turn_based_server:
+            server_port = turn_based_server.sockets[0].getsockname()[1]
+            turn_based_endpoint_spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{server_port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{server_port}/v1/realtime/capabilities",
+                protocol="turn_based",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+                supports_truncate=None,
+            )
+            turn_based_wav = tmp_path / "tb_trunc.wav"
+            turn_based_report = await run_realtime_scenario(
+                scenarios[0],
+                dataset_root=dataset_root,
+                endpoint_spec=turn_based_endpoint_spec,
+                output_audio_path=turn_based_wav,
+                vad_model=EnvelopeVadModel(),
+                realtime_pacing=False,
+            )
+            assert post_eos_or_close_truncate_seen is False
+            assert turn_based_report["truncations_sent"] == 2
+            assert len(observed_turn_based_truncates) == 2
+            assert observed_turn_based_truncates[0]["item_id"] == "item_zero"
+            assert observed_turn_based_truncates[0]["content_index"] == 0
+            assert observed_turn_based_truncates[0]["audio_end_ms"] == 0
+            assert observed_turn_based_truncates[1]["item_id"] == "item_cut"
+            assert observed_turn_based_truncates[1]["content_index"] == 0
+            assert observed_turn_based_truncates[1]["audio_end_ms"] == 320
+            # Verify completed response audio (14400 samples) survived turn-based speech_started at 2.56s!
+            captured_samples, captured_rate_hz = soundfile.read(
+                str(turn_based_wav), dtype="float32"
+            )
+            assert captured_rate_hz == 24000
+            completed_window = captured_samples[int(2.40 * 24000) : int(3.80 * 24000)]
+            assert int(np.count_nonzero(np.abs(completed_window) > 0.1)) == 14400
+
+        # End-to-end legacy WebSocket peer: speech_started cuts queued audio, sends conversation.item.truncate with content_index=0, suppresses late deltas, and acknowledges with conversation.item.truncated.
+        observed_legacy_truncates: list[dict[str, JsonValue]] = []
+
+        async def legacy_peer(connection: ServerConnection) -> None:
+            accepted_input_samples = 0
+            sent_reply_audio = False
+            sent_barge_in = False
+            sent_deferred_cancel = False
+            seen_first_update = False
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "session.created",
+                        "event_id": "evt_created",
+                        "session": {"id": "sess_legacy_trunc"},
+                    }
+                )
+            )
+            async for raw_frame in connection:
+                message = json.loads(raw_frame)
+                message_type = message["type"]
+                if message_type == "session.update":
+                    if not seen_first_update:
+                        seen_first_update = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "session.updated",
+                                    "event_id": "evt_upd_1",
+                                    "session": {
+                                        "modalities": ["text", "audio"],
+                                        "turn_detection": {
+                                            "type": "server_vad",
+                                            "silence_duration_ms": 500,
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                    else:
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "session.updated",
+                                    "event_id": "evt_upd_2",
+                                    "session": {},
+                                }
+                            )
+                        )
+                        return
+                elif message_type == "input_audio_buffer.append":
+                    accepted_input_samples += len(
+                        decode_pcm16_base64_to_float32(message["audio"])
+                    )
+                    accepted_end_milliseconds = (
+                        accepted_input_samples * 1000.0 / 16000.0
+                    )
+                    if not sent_reply_audio and accepted_end_milliseconds >= 2000.0:
+                        sent_reply_audio = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.created",
+                                    "event_id": "evt_lrc",
+                                    "response": {"id": "resp_leg"},
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.audio.delta",
+                                    "event_id": "evt_lad_1",
+                                    "response_id": "resp_leg",
+                                    "item_id": "item_leg",
+                                    "content_index": 1,
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(19200, 0.25, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                    elif (
+                        sent_reply_audio
+                        and not sent_barge_in
+                        and accepted_end_milliseconds >= 2240.0
+                    ):
+                        sent_barge_in = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "input_audio_buffer.speech_started",
+                                    "event_id": "evt_lss",
+                                    "item_id": "user_item_1",
+                                    "audio_start_ms": 2240,
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.audio.delta",
+                                    "event_id": "evt_lad_late",
+                                    "response_id": "resp_leg",
+                                    "item_id": "item_leg",
+                                    "content_index": 1,
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(4800, 0.75, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                    elif (
+                        sent_barge_in
+                        and not sent_deferred_cancel
+                        and accepted_end_milliseconds >= 2720.0
+                    ):
+                        sent_deferred_cancel = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.done",
+                                    "event_id": "evt_lrd",
+                                    "response": {
+                                        "id": "resp_leg",
+                                        "status": "cancelled",
+                                        "output": [{"id": "item_leg"}],
+                                    },
+                                }
+                            )
+                        )
+                    else:
+                        pass
+                elif message_type == "conversation.item.truncate":
+                    observed_legacy_truncates.append(message)
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "conversation.item.truncated",
+                                "event_id": "evt_ltrunc_ack",
+                                "item_id": message["item_id"],
+                                "content_index": message["content_index"],
+                                "audio_end_ms": message["audio_end_ms"],
+                            }
+                        )
+                    )
+                else:
+                    pass
+
+        async with websockets.serve(legacy_peer, "127.0.0.1", 0) as legacy_server:
+            legacy_port = legacy_server.sockets[0].getsockname()[1]
+            legacy_endpoint_spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{legacy_port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{legacy_port}/v1/realtime/capabilities",
+                protocol="legacy",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+            )
+            legacy_wav_path = tmp_path / "leg_trunc.wav"
+            legacy_report = await run_realtime_scenario(
+                scenarios[0],
+                dataset_root=dataset_root,
+                endpoint_spec=legacy_endpoint_spec,
+                output_audio_path=legacy_wav_path,
+                vad_model=EnvelopeVadModel(),
+                realtime_pacing=False,
+            )
+            assert legacy_report["truncations_sent"] == 1
+            assert len(observed_legacy_truncates) == 1
+            assert observed_legacy_truncates[0]["item_id"] == "item_leg"
+            assert observed_legacy_truncates[0]["content_index"] == 0
+            observed_boundary_milliseconds = observed_legacy_truncates[0][
+                "audio_end_ms"
+            ]
+            assert isinstance(observed_boundary_milliseconds, int)
+            assert observed_boundary_milliseconds in (160, 240)
+            legacy_samples, legacy_rate_hz = soundfile.read(
+                str(legacy_wav_path), dtype="float32"
+            )
+            assert legacy_rate_hz == 24000
+            assert float(np.max(np.abs(legacy_samples))) < 0.5
+            assert (
+                int(np.count_nonzero(np.abs(legacy_samples) > 0.1))
+                == observed_boundary_milliseconds * 24
+            )
+
+        ungranted_truncates: list[dict[str, JsonValue]] = []
+
+        async def ungranted_peer(connection: ServerConnection) -> None:
+            accepted_input_samples = 0
+            cancelled_once = False
+            await connection.send(
+                json.dumps(
+                    {
+                        "type": "session.created",
+                        "event_id": "evt_created",
+                        "session": {"id": "sess_ungranted"},
+                    }
+                )
+            )
+            async for raw_frame in connection:
+                message = json.loads(raw_frame)
+                message_type = message["type"]
+                if message_type == "session.update":
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "session.updated",
+                                "event_id": "evt_updated",
+                                "session": {
+                                    "audio": {
+                                        "input": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 16000,
+                                            },
+                                            "turn_detection": {
+                                                "type": "server_vad",
+                                                "silence_duration_ms": 500,
+                                            },
+                                        },
+                                        "output": {
+                                            "format": {
+                                                "type": "audio/pcm",
+                                                "rate": 24000,
+                                            }
+                                        },
+                                    },
+                                    "sglang": {
+                                        "granted": {"interaction": "turn_based"}
+                                    },
+                                },
+                            }
+                        )
+                    )
+                elif message_type == "input_audio_buffer.append":
+                    accepted_input_samples += len(
+                        decode_pcm16_base64_to_float32(message["audio"])
+                    )
+                    accepted_end_milliseconds = (
+                        accepted_input_samples * 1000.0 / 16000.0
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.accepted",
+                                "event_id": f"acc_{message['sglang']['seq']}",
+                                "seq": message["sglang"]["seq"],
+                                "accepted_end_ms": accepted_end_milliseconds,
+                            }
+                        )
+                    )
+                    if not cancelled_once and accepted_end_milliseconds >= 2000.0:
+                        cancelled_once = True
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.output_audio.delta",
+                                    "event_id": "ad_u",
+                                    "response_id": "resp_u",
+                                    "item_id": "item_u",
+                                    "delta": encode_float32_to_pcm16_base64(
+                                        np.full(9600, 0.3, dtype=np.float32)
+                                    ),
+                                }
+                            )
+                        )
+                        await connection.send(
+                            json.dumps(
+                                {
+                                    "type": "response.done",
+                                    "event_id": "rd_u",
+                                    "response": {
+                                        "id": "resp_u",
+                                        "status": "cancelled",
+                                        "output": [{"id": "item_u"}],
+                                    },
+                                }
+                            )
+                        )
+                    else:
+                        pass
+                elif message_type == "conversation.item.truncate":
+                    ungranted_truncates.append(message)
+                elif message_type == "sglang.input_audio.end":
+                    expected_total_milliseconds = (
+                        accepted_input_samples * 1000.0 / 16000.0
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.ended",
+                                "event_id": "evt_end",
+                                "accepted_end_ms": expected_total_milliseconds,
+                                "tail_policy": "flush",
+                            }
+                        )
+                    )
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "sglang.input_audio.drained",
+                                "event_id": "evt_drain",
+                                "accepted_end_ms": expected_total_milliseconds,
+                                "consumed_ms": expected_total_milliseconds,
+                                "discarded_ms": 0.0,
+                            }
+                        )
+                    )
+                elif message_type == "session.close":
+                    await connection.send(
+                        json.dumps({"type": "session.closed", "event_id": "evt_closed"})
+                    )
+                    return
+                else:
+                    pass
+
+        async with websockets.serve(ungranted_peer, "127.0.0.1", 0) as ungranted_server:
+            ungranted_port = ungranted_server.sockets[0].getsockname()[1]
+            ungranted_endpoint_spec = RealtimeEndpointSpec(
+                websocket_url=f"ws://127.0.0.1:{ungranted_port}/v1/realtime",
+                capabilities_url=f"http://127.0.0.1:{ungranted_port}/v1/realtime/capabilities",
+                protocol="turn_based",
+                input_sample_rate_hz=16000,
+                output_sample_rate_hz=24000,
+                turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+                supports_truncate=None,
+            )
+            ungranted_report = await run_realtime_scenario(
+                scenarios[0],
+                dataset_root=dataset_root,
+                endpoint_spec=ungranted_endpoint_spec,
+                output_audio_path=tmp_path / "ug_trunc.wav",
+                vad_model=EnvelopeVadModel(),
+                realtime_pacing=False,
+            )
+            assert ungranted_report["truncations_sent"] == 0
+            assert ungranted_truncates == []
+
+    asyncio.run(exercise_websocket_truncation_contracts())
+
+
+def test_partial_and_corrupted_asr_checkpoints_in_score_and_judge(
+    tmp_path: Path,
+) -> None:
+    """Verify --phase score handles 0/4 and 3/4 ASR checkpoints, stale empty-ASR failures, --phase judge rejection, and malformed rows."""
+    dataset_root = build_synthetic_dataset(tmp_path / "dataset")
+    scenarios = load_duplex_mpe_scenarios(dataset_root, addressing="all")
+
+    partial_directory = tmp_path / "partial_asr_score"
+    (partial_directory / "audio").mkdir(parents=True)
+    partial_reports: dict[str, dict[str, JsonValue]] = {}
+    for scenario in scenarios[:2]:
+        wav_path = partial_directory / "audio" / f"{scenario.scenario_id}.wav"
+        soundfile.write(
+            str(wav_path),
+            np.full(24000 * 2, 0.25, dtype=np.float32),
+            24000,
+            format="WAV",
+            subtype="FLOAT",
+        )
+        wav_sha256 = compute_file_sha256(wav_path)
+        rows_list: list[dict[str, JsonValue]] = []
+        for turn in scenario.turns:
+            is_voiced = turn.event_type in ("T", "N1")
+            rows_list.append(
+                {
+                    "turn_index": turn.turn_index,
+                    "event_type": turn.event_type,
+                    "speaker": turn.speaker,
+                    "turn_start": 0.0,
+                    "turn_end": 0.2,
+                    "win_start": 0.2,
+                    "win_end": 0.8 if is_voiced else 0.4,
+                }
+            )
+        partial_reports[scenario.scenario_id] = {
+            "protocol_id": "mpeval.unified.v3",
+            "aed_config": SileroActivityConfig().to_report_dict(),
+            "realtime_protocol": "turn_based",
+            "total_duration_s": 2.0,
+            "assistant_speech_segments": [[0.25, 0.70]],
+            "assistant_audio_sha256": wav_sha256,
+            "T": {
+                "outcome": TARGET_HIT_OUTCOME,
+                "t_end_s": 0.20,
+                "onset_s": 0.25,
+            },
+            "rows": rows_list,
+        }
+    write_json_atomic(partial_directory / "report.json", partial_reports)
+    write_json_atomic(
+        partial_directory / "run.json",
+        {
+            "model": "Qwen/Qwen3-Omni",
+            "protocol": "turn_based",
+            "turn_detection": {"type": "server_vad", "silence_duration_ms": 500},
+        },
+    )
+    all_four_tasks = build_semantic_tasks(
+        partial_reports, {row.scenario_id: row for row in scenarios[:2]}
+    )
+    assert len(all_four_tasks) == 4
+
+    write_json_atomic(partial_directory / "transcribed.json", [])
+    zero_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "score",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(partial_directory),
+            "--max-scenarios",
+            "2",
+        ]
+    )
+    assert zero_exit_code == 1
+    zero_markdown = (partial_directory / "RESULTS.md").read_text(encoding="utf-8")
+    assert (
+        "**Semantic coverage**: required `4`; resolved `0`; missing/pending `4`; failed `0`."
+        in zero_markdown
+    )
+
+    dummy_judge_config_path = tmp_path / "dummy_judge.json"
+    write_json_atomic(
+        dummy_judge_config_path,
+        {"base_url": "http://127.0.0.1:30000/v1", "model": "Qwen/Qwen3.8-27B"},
+    )
+    with pytest.raises(ValueError, match="Cached transcribed.json task keys"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "judge",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(partial_directory),
+                "--max-scenarios",
+                "2",
+                "--judge-config",
+                str(dummy_judge_config_path),
+            ]
+        )
+
+    three_checkpointed_tasks = [
+        {
+            **all_four_tasks[0],
+            "asr_model": "Qwen/Qwen3-ASR-1.7B",
+            "asr_language": "en",
+            "asr_transport": "openai_audio_transcriptions",
+            "hyp": "The cheaper option is nine dollars.",
+        },
+        {
+            **all_four_tasks[1],
+            "asr_model": "Qwen/Qwen3-ASR-1.7B",
+            "asr_language": "en",
+            "asr_transport": "openai_audio_transcriptions",
+            "hyp": "",
+        },
+        {
+            **all_four_tasks[2],
+            "asr_model": "Qwen/Qwen3-ASR-1.7B",
+            "asr_language": "en",
+            "asr_transport": "openai_audio_transcriptions",
+            "hyp": "Let me check that for you.",
+        },
+    ]
+    write_json_atomic(partial_directory / "transcribed.json", three_checkpointed_tasks)
+    single_verdict = [
+        {
+            "scenario_id": all_four_tasks[0]["scenario_id"],
+            "turn_index": all_four_tasks[0]["turn_index"],
+            "kind": all_four_tasks[0]["kind"],
+            **(
+                {"correct": True}
+                if all_four_tasks[0]["kind"] == "answer"
+                else {"label": "BACKCHANNEL"}
+            ),
+            "judge_model": "Qwen/Qwen3.8-27B",
+            "judge_enable_thinking": False,
+            "prompt_sha256": compute_prompt_sha256(three_checkpointed_tasks[0]),
+            "assistant_audio_sha256": all_four_tasks[0]["expected_audio_sha256"],
+        }
+    ]
+    write_json_atomic(partial_directory / "labels.json", single_verdict)
+    # Write a stale judge_failures.json entry on task[1] (which now resolves deterministically via hyp=="") plus a real failure on task[2].
+    write_json_atomic(
+        partial_directory / "judge_failures.json",
+        {
+            semantic_task_key(
+                all_four_tasks[1]
+            ): "stale judge failure before empty ASR",
+            semantic_task_key(all_four_tasks[2]): "HTTP 503 exhausted",
+        },
+    )
+    three_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "score",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(partial_directory),
+            "--max-scenarios",
+            "2",
+        ]
+    )
+    assert three_exit_code == 1
+    three_markdown = (partial_directory / "RESULTS.md").read_text(encoding="utf-8")
+    assert "PARTIAL / INCOMPLETE" in three_markdown
+    assert (
+        "**Semantic coverage**: required `4`; resolved `2`; missing/pending `1`; failed `1`."
+        in three_markdown
+    )
+    three_summary = json.loads(
+        (partial_directory / "duplex_mpe_results.json").read_text(encoding="utf-8")
+    )
+    assert three_summary["failed_semantic_tasks"] == 1
+
+    with pytest.raises(ValueError, match="Cached transcribed.json task keys"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "judge",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(partial_directory),
+                "--max-scenarios",
+                "2",
+                "--judge-config",
+                str(dummy_judge_config_path),
+            ]
+        )
+
+    write_json_atomic(
+        partial_directory / "transcribed.json", [*three_checkpointed_tasks, None]
+    )
+    with pytest.raises(ValueError, match="element at index 3 must be a JSON object"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "score",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(partial_directory),
+                "--max-scenarios",
+                "2",
+            ]
+        )
+    write_json_atomic(partial_directory / "transcribed.json", three_checkpointed_tasks)
+    write_json_atomic(
+        partial_directory / "labels.json", [*single_verdict, "corrupted_row"]
+    )
+    with pytest.raises(ValueError, match="element at index 1 must be a JSON object"):
+        run_duplex_mpe_cli(
+            [
+                "--phase",
+                "score",
+                "--dataset-root",
+                str(dataset_root),
+                "--output-dir",
+                str(partial_directory),
+                "--max-scenarios",
+                "2",
+            ]
+        )
+
+
+def test_turn_detection_echo_validation_and_production_serializers() -> None:
+    """Verify validate_accepted_session against real SessionNegotiation/project_control, legacy SessionUpdate, and negative cases."""
+    repo_root = Path(__file__).resolve().parents[3]
+    serializer_script = """
+import importlib.util
+import json
+import sys
+import types
+from pathlib import Path
+from benchmarks.duplex.mpe.realtime_session import (
+    RealtimeEndpointSpec,
+    build_session_update_payload,
+    validate_accepted_session,
+)
+
+repo_root = Path.cwd()
+for dotted_name, relative_file_path in (
+    ("sglang_omni.serve.realtime.constants", "sglang_omni/serve/realtime/constants.py"),
+    ("sglang_omni.serve.realtime.schema", "sglang_omni/serve/realtime/schema.py"),
+    ("sglang_omni.serve.realtime.types", "sglang_omni/serve/realtime/types.py"),
+    ("sglang_omni.serve.realtime.output", "sglang_omni/serve/realtime/output.py"),
+    ("sglang_omni.serve.realtime.control", "sglang_omni/serve/realtime/control.py"),
+    ("sglang_omni.serve.realtime.negotiation", "sglang_omni/serve/realtime/negotiation.py"),
+    ("sglang_omni.serve.realtime.projection", "sglang_omni/serve/realtime/projection.py"),
+    ("sglang_omni.serve.realtime.events", "sglang_omni/serve/realtime/events.py"),
+):
+    parts = dotted_name.split(".")
+    for depth in range(1, len(parts)):
+        package_name = ".".join(parts[:depth])
+        if package_name not in sys.modules:
+            package_module = types.ModuleType(package_name)
+            package_module.__path__ = [str(repo_root.joinpath(*parts[:depth]))]
+            sys.modules[package_name] = package_module
+        else:
+            pass
+    module_spec = importlib.util.spec_from_file_location(dotted_name, repo_root / relative_file_path)
+    assert module_spec is not None and module_spec.loader is not None
+    loaded_module = importlib.util.module_from_spec(module_spec)
+    sys.modules[dotted_name] = loaded_module
+    module_spec.loader.exec_module(loaded_module)
+
+control_module = sys.modules["sglang_omni.serve.realtime.control"]
+negotiation_module = sys.modules["sglang_omni.serve.realtime.negotiation"]
+projection_module = sys.modules["sglang_omni.serve.realtime.projection"]
+types_module = sys.modules["sglang_omni.serve.realtime.types"]
+events_module = sys.modules["sglang_omni.serve.realtime.events"]
+
+shared_endpoint_spec = RealtimeEndpointSpec(
+    websocket_url="ws://127.0.0.1:9999/v1/realtime",
+    capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+    protocol="turn_based",
+    input_sample_rate_hz=16000,
+    output_sample_rate_hz=24000,
+    turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+)
+capabilities = types_module.Capabilities(
+    interaction="turn_based",
+    input_sample_rate_hz=16000,
+    output_sample_rate_hz=24000,
+    output_modalities=("text", "audio"),
+    max_granted_modalities=2,
+    turn_control=("server_vad", "semantic_vad", None),
+    supports_truncate=True,
+)
+negotiator = negotiation_module.SessionNegotiation(
+    model="Qwen/Qwen3-Omni",
+    capabilities=capabilities,
+    limits=types_module.RuntimeLimits(),
+)
+candidate_config, granted_capabilities = negotiator.negotiate(
+    {}, "CREATED", build_session_update_payload(shared_endpoint_spec)
+)
+projected_shared_updated = json.loads(
+    json.dumps(
+        projection_module.project_control(
+            control_module.Updated(
+                "sess_1",
+                "Qwen/Qwen3-Omni",
+                candidate_config["type"],
+                granted_capabilities,
+                "evt_1",
+                candidate_config,
+            )
+        )
+    )
+)
+validate_accepted_session(projected_shared_updated, shared_endpoint_spec)
+
+legacy_endpoint_spec = RealtimeEndpointSpec(
+    websocket_url="ws://127.0.0.1:9999/v1/realtime",
+    capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+    protocol="legacy",
+    input_sample_rate_hz=16000,
+    output_sample_rate_hz=24000,
+    turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+)
+parsed_legacy_update = events_module.SessionUpdate.model_validate(
+    {
+        "type": "session.update",
+        "session": build_session_update_payload(legacy_endpoint_spec),
+    }
+)
+serialized_legacy_updated = json.loads(
+    json.dumps(
+        events_module.make_event(
+            "session.updated",
+            session=parsed_legacy_update.session.model_dump(
+                mode="json", exclude_none=True
+            ),
+        )
+    )
+)
+validate_accepted_session(serialized_legacy_updated, legacy_endpoint_spec)
+"""
+    serializer_process = subprocess.run(
+        [sys.executable, "-c", serializer_script],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert serializer_process.returncode == 0, serializer_process.stderr
+
+    legacy_endpoint_spec = RealtimeEndpointSpec(
+        websocket_url="ws://127.0.0.1:9999/v1/realtime",
+        capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+        protocol="legacy",
+        input_sample_rate_hz=16000,
+        output_sample_rate_hz=24000,
+        turn_detection={"type": "server_vad", "silence_duration_ms": 500},
+    )
+
+    interrupt_endpoint_spec = RealtimeEndpointSpec(
+        websocket_url="ws://127.0.0.1:9999/v1/realtime",
+        capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+        protocol="turn_based",
+        input_sample_rate_hz=16000,
+        output_sample_rate_hz=24000,
+        turn_detection={
+            "type": "server_vad",
+            "silence_duration_ms": 500,
+            "interrupt_response": True,
+        },
+    )
+    for numeric_silence_value in (500, 500.0):
+        validate_accepted_session(
+            {
+                "type": "session.updated",
+                "session": {
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 16000},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "silence_duration_ms": numeric_silence_value,
+                                "interrupt_response": True,
+                            },
+                        },
+                        "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+                    }
+                },
+            },
+            interrupt_endpoint_spec,
+        )
+
+    for bad_turn_detection, expected_field in (
+        (
+            {
+                "type": "server_vad",
+                "silence_duration_ms": 1000,
+                "interrupt_response": True,
+            },
+            "silence_duration_ms",
+        ),
+        ({"type": "server_vad", "interrupt_response": True}, "silence_duration_ms"),
+        (
+            {
+                "type": "server_vad",
+                "silence_duration_ms": None,
+                "interrupt_response": True,
+            },
+            "silence_duration_ms",
+        ),
+        (
+            {
+                "type": "server_vad",
+                "silence_duration_ms": True,
+                "interrupt_response": True,
+            },
+            "silence_duration_ms",
+        ),
+        (
+            {
+                "type": "server_vad",
+                "silence_duration_ms": 500,
+                "interrupt_response": False,
+            },
+            "interrupt_response",
+        ),
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match=f"session.updated echoed unexpected turn_detection.{expected_field}",
+        ):
+            validate_accepted_session(
+                {
+                    "type": "session.updated",
+                    "session": {
+                        "audio": {
+                            "input": {
+                                "format": {"type": "audio/pcm", "rate": 16000},
+                                "turn_detection": bad_turn_detection,
+                            },
+                            "output": {"format": {"type": "audio/pcm", "rate": 24000}},
+                        }
+                    },
+                },
+                interrupt_endpoint_spec,
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match="session.updated echoed unexpected turn_detection.silence_duration_ms",
+    ):
+        validate_accepted_session(
+            {
+                "type": "session.updated",
+                "session": {
+                    "modalities": ["text", "audio"],
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "silence_duration_ms": 1000,
+                    },
+                },
+            },
+            legacy_endpoint_spec,
+        )
+
+
+def test_concurrency_history_warmup_deadline_and_stale_ledger_normalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify concurrency_history provenance across 4->1 resume, warmup isolation, and stale ledger deduplication."""
+    dataset_root = build_synthetic_dataset(tmp_path / "dataset")
+    scenarios = load_duplex_mpe_scenarios(dataset_root, addressing="all")
+
+    followup_directory = tmp_path / "followup_resume"
+    endpoint_spec = RealtimeEndpointSpec(
+        websocket_url="ws://127.0.0.1:9999/v1/realtime",
+        capabilities_url="http://127.0.0.1:9999/v1/realtime/capabilities",
+        protocol="native",
+        input_sample_rate_hz=16000,
+        output_sample_rate_hz=24000,
+        turn_detection=None,
+    )
+
+    async def fake_negotiate(
+        base_url: str,
+        *,
+        protocol_selection: str = "auto",
+        input_sample_rate_hz: int | None = None,
+        output_sample_rate_hz: int | None = None,
+        turn_detection: dict[str, JsonValue] | None = None,
+        timeout_seconds: float = 30.0,
+        trust_env: bool = False,
+    ) -> RealtimeEndpointSpec:
+        return endpoint_spec
+
+    concurrency_tracker = {"active": 0, "peak_active": 0}
+
+    async def fake_run_scenario(
+        scenario: DuplexMpeScenarioRecord,
+        *,
+        dataset_root: Path,
+        endpoint_spec: RealtimeEndpointSpec,
+        output_audio_path: Path,
+        session_timeout_seconds: float = 420.0,
+        seed_mapping: dict[str, int] | None = None,
+    ) -> dict[str, JsonValue]:
+        concurrency_tracker["active"] += 1
+        concurrency_tracker["peak_active"] = max(
+            concurrency_tracker["peak_active"], concurrency_tracker["active"]
+        )
+        try:
+            await asyncio.sleep(0.01)
+            if "warmup_" in output_audio_path.name:
+                raise ProtocolSessionError("")
+            elif (
+                scenario.scenario_id == scenarios[1].scenario_id
+                and session_timeout_seconds < 450.0
+            ):
+                raise TimeoutError()
+            else:
+                output_audio_path.parent.mkdir(parents=True, exist_ok=True)
+                soundfile.write(
+                    str(output_audio_path),
+                    np.zeros(24000, dtype=np.float32),
+                    24000,
+                    format="WAV",
+                    subtype="FLOAT",
+                )
+                return {
+                    "protocol_id": "mpeval.unified.v3",
+                    "aed_config": SileroActivityConfig().to_report_dict(),
+                    "realtime_protocol": "native",
+                    "total_duration_s": 1.0,
+                    "assistant_speech_segments": [],
+                    "assistant_audio_sha256": compute_file_sha256(output_audio_path),
+                    "T": {
+                        "outcome": TARGET_MISS_OUTCOME,
+                        "t_end_s": 0.20,
+                        "onset_s": None,
+                    },
+                    "rows": [
+                        {
+                            "turn_index": turn.turn_index,
+                            "event_type": turn.event_type,
+                            "speaker": turn.speaker,
+                            "turn_start": 0.0,
+                            "turn_end": 0.2,
+                            "win_start": 0.2,
+                            "win_end": 0.4,
+                        }
+                        for turn in scenario.turns
+                    ],
+                }
+        finally:
+            concurrency_tracker["active"] -= 1
+
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_duplex_mpe.negotiate_realtime_endpoint",
+        fake_negotiate,
+    )
+    monkeypatch.setattr(
+        "benchmarks.eval.benchmark_duplex_mpe.run_realtime_scenario",
+        fake_run_scenario,
+    )
+
+    first_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "generate",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(followup_directory),
+            "--base-url",
+            "http://127.0.0.1:9999",
+            "--model",
+            "nvidia/personaplex-7b-v1",
+            "--max-scenarios",
+            "2",
+            "--max-concurrency",
+            "4",
+            "--warmup",
+            "1",
+            "--session-timeout-s",
+            "300",
+        ]
+    )
+    assert first_exit_code == 1
+    assert concurrency_tracker["peak_active"] <= 4
+    first_manifest = json.loads(
+        (followup_directory / "run.json").read_text(encoding="utf-8")
+    )
+    assert first_manifest["max_concurrency"] == 4
+    assert first_manifest["concurrency_history"] == [4]
+    failures_ledger = json.loads(
+        (followup_directory / "failures.json").read_text(encoding="utf-8")
+    )
+    assert failures_ledger[scenarios[1].scenario_id] == "TimeoutError"
+
+    second_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "generate",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(followup_directory),
+            "--base-url",
+            "http://127.0.0.1:9999",
+            "--model",
+            "nvidia/personaplex-7b-v1",
+            "--max-scenarios",
+            "2",
+            "--max-concurrency",
+            "1",
+            "--warmup",
+            "0",
+            "--session-timeout-s",
+            "500",
+        ]
+    )
+    assert second_exit_code == 0
+    second_manifest = json.loads(
+        (followup_directory / "run.json").read_text(encoding="utf-8")
+    )
+    assert second_manifest["max_concurrency"] == 1
+    assert second_manifest["concurrency_history"] == [4, 1]
+    saved_reports = json.loads(
+        (followup_directory / "report.json").read_text(encoding="utf-8")
+    )
+    assert saved_reports[scenarios[0].scenario_id]["recorded_concurrency"] == 4
+    assert saved_reports[scenarios[1].scenario_id]["recorded_concurrency"] == 1
+
+    noop_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "generate",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(followup_directory),
+            "--base-url",
+            "http://127.0.0.1:9999",
+            "--model",
+            "nvidia/personaplex-7b-v1",
+            "--max-scenarios",
+            "2",
+            "--max-concurrency",
+            "2",
+            "--warmup",
+            "0",
+            "--session-timeout-s",
+            "500",
+        ]
+    )
+    assert noop_exit_code == 0
+    noop_manifest = json.loads(
+        (followup_directory / "run.json").read_text(encoding="utf-8")
+    )
+    assert noop_manifest["max_concurrency"] == 1
+    assert noop_manifest["concurrency_history"] == [4, 1]
+
+    write_json_atomic(
+        followup_directory / "failures.json",
+        {scenarios[1].scenario_id: "stale crash entry"},
+    )
+    score_exit_code = run_duplex_mpe_cli(
+        [
+            "--phase",
+            "score",
+            "--dataset-root",
+            str(dataset_root),
+            "--output-dir",
+            str(followup_directory),
+            "--max-scenarios",
+            "2",
+        ]
+    )
+    assert score_exit_code == 0
+    score_markdown = (followup_directory / "RESULTS.md").read_text(encoding="utf-8")
+    assert (
+        "**Scenario coverage**: selected `2`; completed `2`; missing `0`; failed `0`."
+        in score_markdown
+    )
+    score_summary = json.loads(
+        (followup_directory / "duplex_mpe_results.json").read_text(encoding="utf-8")
+    )
+    assert score_summary["provenance"]["declared_server_config"][
+        "concurrency_history"
+    ] == [4, 1]

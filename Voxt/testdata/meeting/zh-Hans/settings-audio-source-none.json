@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -55,6 +70,11 @@
         "id": "storage",
         "title": "存储",
         "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
       },
       {
         "id": "about",
@@ -119,6 +139,36 @@
             "sounds": "卵石 → 笔尖",
             "play_label": "试听“轻柔”",
             "chosen": true,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-kalimba-start",
+            "stop": "soft-kalimba-stop",
+            "name": "卡林巴",
+            "sounds": "拇指琴，拨动金属簧片",
+            "play_label": "试听“卡林巴”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-wood-start",
+            "stop": "soft-wood-stop",
+            "name": "木琴",
+            "sounds": "软槌敲木条",
+            "play_label": "试听“木琴”",
+            "chosen": false,
+            "playing": false,
+            "remaining": 0
+          },
+          {
+            "start": "soft-vibes-start",
+            "stop": "soft-vibes-stop",
+            "name": "颤音琴",
+            "sounds": "毛线槌，带轻微颤动",
+            "play_label": "试听“颤音琴”",
+            "chosen": false,
             "playing": false,
             "remaining": 0
           },

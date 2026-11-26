@@ -10,6 +10,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 // audioState is the audio section's state, and the player of the
@@ -224,9 +225,13 @@ const (
 
 // recordingCue is the cue a change of the session makes: one when it
 // starts recording, another when the recording stops and the text is on
-// its way. A cancelled or failed recording stops silently.
+// its way. A cancelled or failed recording stops silently, and Rewrite
+// has no cues: its card opens with the microphone and shows it is on,
+// and the user may only type.
 func recordingCue(was, s session.Snapshot) cue {
 	switch {
+	case s.Kind == store.KindRewrite:
+		return noCue
 	case s.State == session.Recording && (was.State != session.Recording || was.ID != s.ID):
 		return startCue
 	case was.State == session.Recording && was.ID == s.ID && s.State != session.Recording &&

@@ -14,6 +14,9 @@ from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.platforms import current_platform
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 
+from sglang_omni.models.sensenova_u1.native.cache_dit import (
+    check_environment_cache_dit_params,
+)
 from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_THINK_MODE,
     RESOLUTION_ALIGNMENT,
@@ -226,6 +229,7 @@ class SenseNovaU1PipelineConfig(PipelineConfig):
             )
         else:
             pass
+        check_environment_cache_dit_params()
 
     def get_model_deployment_config(self) -> ModelDeploymentConfig:
         return ModelDeploymentConfig(
