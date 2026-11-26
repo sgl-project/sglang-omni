@@ -285,7 +285,7 @@ def test_model_measured_on_another_gpu_keeps_its_config_on_a_4090_d(mps_host) ->
                 free_memory_bytes=81000 * MIB,
             ),
             {},
-            "GPU 0 is NVIDIA A100-SXM4-80GB (81920 MiB); replica counts were measured on NVIDIA B200 (183359 MiB), NVIDIA H100 80GB HBM3 (81559 MiB)",
+            "GPU 0 is NVIDIA A100-SXM4-80GB (81920 MiB); replica counts were measured on NVIDIA B200 (183359 MiB)",
         ),
         (
             [],
