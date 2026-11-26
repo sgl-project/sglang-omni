@@ -298,9 +298,8 @@ func TestMacE2EFirstLatency(t *testing.T) {
 	}
 }
 
-// pumpFor runs posted functions until cond holds, at most d.
 func (s *sessionApp) pumpFor(d time.Duration, cond func() bool) bool {
-	deadline := time.After(d)
+	deadline := latencyAfter(d)
 	for !cond() {
 		select {
 		case fn := <-s.queue:
@@ -312,7 +311,6 @@ func (s *sessionApp) pumpFor(d time.Duration, cond func() bool) bool {
 	return true
 }
 
-// spread is "median (min–max)" of a stage, "-" when no session had it.
 func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 	var ds []time.Duration
 	for _, s := range all {
@@ -328,9 +326,11 @@ func spread(all []latencyStages, get func(latencyStages) time.Duration) string {
 	return fmt.Sprintf("%s (%s–%s)", ms(ds[len(ds)/2]), ms(ds[0]), ms(ds[len(ds)-1]))
 }
 
-// firstPartialWait is how long a session waits for its first live text
-// before the no-partial branch; the branch's regression shortens it.
-var firstPartialWait = 5 * time.Minute
+var (
+	firstPartialWait = 5 * time.Minute
+	latencyAfter     = time.After
+	noPartialLogf    = (*testing.T).Logf
+)
 
 // latencySession presses Transcribe's shortcut, stops two seconds after
 // the first live text and returns the session's stages; from is when the
@@ -357,10 +357,7 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		if os.Getenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL") != "1" {
 			t.Fatalf("%s: no live text (session %s %+v)", name, a.sess.State, a.sess.Problem)
 		}
-		// The language matrix records a session that produced no partial:
-		// it still speaks the window and stops on time, so the Final or
-		// the problem is on record too.
-		t.Logf("%s: no live text in the first minute (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
+		noPartialLogf(t, "%s: no live text before the wait elapsed (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
 	} else {
 		// Only an observed partial is evidence: with none, first_partial
 		// stays zero and the row writes null with its reason, never the wait.
@@ -570,8 +567,6 @@ func TestLatencyResultWritesUnavailableEvidenceAsNull(t *testing.T) {
 	assertUnavailable("text_sha256", "text_unavailable_reason")
 }
 
-// gateAttemptEnv writes one attempt's environment record the way the
-// runner does (attempt_env.py): clean AC, normal pressure, no contenders.
 func gateAttemptEnv(t *testing.T, dir string, attempt int) {
 	t.Helper()
 	body := fmt.Sprintf(`{"before":{"others":"","pressure":"1"},"after":{"others":"","pressure":"1"},"environment_reasons":[],"peak_pressure":"normal"}`)
@@ -614,9 +609,7 @@ func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 	rowsPath := filepath.Join(dir, "latency.jsonl")
 	t.Setenv("VOXTNEW_LATENCY_OUT", rowsPath)
 	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
-	// The reported no-partial branch wrote its wait as first_partial_ms
-	// while producing no Final, insert or text; the serialized rows must
-	// still be rejected by the real gate.
+	// The serialized no-partial rows must be rejected by the real gate.
 	st := latencyStages{partial: 60 * time.Second, minPreviewSamples: 20000}
 	for attempt := 1; attempt <= 3; attempt++ {
 		writeLatencyResult(t, "cold", "asr.test", attempt, st, 0, 0, "")
@@ -629,8 +622,6 @@ func TestNoPartialRowsAreRejectedByTheGate(t *testing.T) {
 	requireGateRejects(t, python, dir)
 }
 
-// splitGateRows splits the shared JSONL into the per-attempt files the
-// real runner writes (build/latency-round-N.jsonl).
 func splitGateRows(t *testing.T, rowsPath, dir string) {
 	t.Helper()
 	data, err := os.ReadFile(rowsPath)
@@ -661,11 +652,7 @@ func splitGateRows(t *testing.T, rowsPath, dir string) {
 	}
 }
 
-// TestNoPartialSessionRejectsTheFabricatedPartial drives latencySession's
-// real no-partial branch (VOXTNEW_LATENCY_ALLOW_NO_PARTIAL=1): a speech
-// model transcribes only the finished recording, so no live partial ever
-// arrives, yet the session still delivers a Final, a paste and text. The
-// row must carry a null first partial and the gate must reject the group.
+// TestNoPartialSessionRejectsTheFabricatedPartial drives the real no-partial branch.
 func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -677,20 +664,39 @@ func TestNoPartialSessionRejectsTheFabricatedPartial(t *testing.T) {
 	t.Setenv("VOXTNEW_MAIN_SHA", "49f60636411e24ce4f7441878c9333d68e649a83")
 	t.Setenv("VOXTNEW_LATENCY_ALLOW_NO_PARTIAL", "1")
 	t.Setenv("VOXTNEW_LATENCY_SPEAK", "50ms")
-	oldWait := firstPartialWait
+	oldWait, oldAfter, oldLogf := firstPartialWait, latencyAfter, noPartialLogf
 	firstPartialWait = 200 * time.Millisecond
-	t.Cleanup(func() { firstPartialWait = oldWait })
+	var a *sessionApp
+	latencyAfter = func(d time.Duration) <-chan time.Time {
+		if d != firstPartialWait {
+			return time.After(d)
+		}
+		timer := make(chan time.Time)
+		// Expire after the new session hears audio; later stages still use real time.
+		a.queue <- func() {
+			for a.sess.State != session.Recording || a.sess.HeardAt.IsZero() {
+				(<-a.queue)()
+			}
+			close(timer)
+		}
+		return timer
+	}
+	logged := ""
+	noPartialLogf = func(_ *testing.T, format string, _ ...any) { logged = format }
+	t.Cleanup(func() { firstPartialWait, latencyAfter, noPartialLogf = oldWait, oldAfter, oldLogf })
 
-	// NoStream: the speech model gets the recording only once it stops, so
-	// the session never has a live partial but still has a Final and a paste.
+	// NoStream delivers a Final and a paste without a live partial.
 	tr := &fakeTranscriptions{text: "meeting notes"}
-	a := newSessionApp(t, helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
+	a = newSessionApp(t, helpertest.Opt("pcm", latencyAudio()), func(s *settings.Settings) {
 		s.Features.Transcribe.Enhance = false
 	}, &fakeLocal{ASRP: tr, NoStream: true})
 	lg := &latencyLog{}
 	for attempt := 1; attempt <= 3; attempt++ {
 		for _, name := range []string{"cold", "warm"} {
 			st := latencySession(t, a, lg, time.Now(), time.Time{}, name, fakeASRModel.ID, attempt)
+			if !strings.Contains(logged, "before the wait elapsed") || strings.Contains(logged, "first minute") {
+				t.Fatalf("no-partial log is not duration-neutral: %q", logged)
+			}
 			if st.partial != 0 {
 				t.Fatalf("%s attempt %d: a no-partial session recorded %v as its first partial", name, attempt, st.partial)
 			}
@@ -779,8 +785,6 @@ func latencyMainSHA() string {
 	return "unknown"
 }
 
-// latencyAudio is the recording the fake helper plays:
-// VOXTNEW_LATENCY_PCM, else the speech sample.
 func latencyAudio() string {
 	if p := os.Getenv("VOXTNEW_LATENCY_PCM"); p != "" {
 		return p
