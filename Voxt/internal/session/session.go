@@ -137,11 +137,6 @@ type Problem struct {
 	Degraded bool
 }
 
-// Model names a model a session used.
-type Model struct {
-	ID, Name, Model string
-}
-
 // Timings are a session's stage times. Sent is how much of the
 // recording (Audio) the speech model got: less without the silence the
 // local voice activity detection left out (0 when it got none, or
@@ -179,8 +174,11 @@ type Snapshot struct {
 	// speech model's upload limit and goes in pieces (0: none applies).
 	// The pill warns as either nears (#3840).
 	MaxLen, UploadLen time.Duration
-	// Levels are the last Bars input levels, 0–1, oldest first.
-	Levels []float64
+	// Levels are the last Bars input levels, 0–1, oldest first;
+	// LevelCount how many the session has had, which tells a view the
+	// new ones from the ones it has shown.
+	Levels     []float64
+	LevelCount int
 	// Waiting is what the session still waits for, once it waited
 	// longer than Config.WaitNote (wait.go): the microphone's first audio,
 	// or the speech model, still starting. The pill says so.
@@ -360,7 +358,11 @@ const (
 	DefaultLLMPerChar     = 100 * time.Millisecond
 	DefaultLLMTimeout     = 20 * time.Second
 	DefaultWriteTimeout   = 60 * time.Second
-	DefaultReadTimeout    = 1500 * time.Millisecond
+	// DefaultReadTimeout must cover Translate's worst selection read:
+	// the settle (selectionSettleMS), the modifier wait
+	// (selectionModifierWaitMS) and the copy wait (selectionCopyMS),
+	// plus AX and IPC overhead (selectionOverheadMS) — 2 s.
+	DefaultReadTimeout = 2 * time.Second
 	// DefaultRewriteReadTimeout and rewriteCopyMS: a long selection's
 	// read, and its ⌘C landing on the clipboard (the helper's default
 	// 300 ms), in Rewrite (#3644: long selections failed).
@@ -453,12 +455,6 @@ func (s Snapshot) clone() Snapshot {
 		s.Scene = &m
 	}
 	return s
-}
-
-// Level is a dBFS level as a bar height, 0–1 (−60 dBFS and below is 0).
-func Level(db float64) float64 {
-	v := (db + 60) / 60
-	return min(max(v, 0), 1)
 }
 
 // ProblemOf classifies an error of a session.

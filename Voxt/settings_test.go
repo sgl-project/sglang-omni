@@ -1,6 +1,6 @@
 package main
 
-// Tests of the settings sections: Overlay style, Shortcuts, General's
+// Tests of the settings sections: Overlay style, Shortcuts, Experimental, General's
 // other languages, and the dialog's size (Audio: settings_audio_test.go;
 // the sidebar's automatic rail: shell_nav_test.go; the menu bar:
 // tray_test.go).
@@ -94,12 +94,12 @@ func TestShortcutsSettings(t *testing.T) {
 	// bottom; with taller fonts (Linux CI) it is below the window.
 	scrollToText(tt, "Paste the last result ⌃⌥V")
 	click(t, tt, "Paste the last result ⌃⌥V")
-	if a.settingsOpen || a.shownPath() != "/transcribe" {
+	if !a.settingsOpen || a.shownPath() != "/settings/transcribe" {
 		t.Fatalf("row click: %v %s", a.settingsOpen, a.shownPath())
 	}
 	a.navigate("/settings/shortcuts")
 	click(t, tt, "Translate Right ⌥")
-	if a.shownPath() != "/translate" {
+	if a.shownPath() != "/settings/translate" {
 		t.Fatalf("Translate row: %s", a.shownPath())
 	}
 }
@@ -339,10 +339,9 @@ func TestHideNotesAndMeetings(t *testing.T) {
 }
 
 // TestHideFeatures: unchecking Translate in Settings → General takes its
-// page out of the sidebar and ⌘K and its shortcuts out of the event tap;
-// a hidden App enhancement's scene rules are off; checking them brings
-// everything back. Voxt 1.x could hide unused features; Voxt 2
-// always showed them (#3644).
+// Settings command out of ⌘K and its shortcuts out of the event tap;
+// App enhancement leaves the sidebar and its scene rules turn off;
+// checking them brings everything back. Voxt 1.x could hide unused features.
 func TestHideFeatures(t *testing.T) {
 	if settings.HideTranslate != hotkey.Translate || settings.HideRewrite != hotkey.Rewrite {
 		t.Fatal("Features.Hidden's ids are not internal/hotkey's")
@@ -352,7 +351,7 @@ func TestHideFeatures(t *testing.T) {
 	state := func() (sidebar, palette, keys, scenes bool) {
 		a.navigate("/home")
 		frames(tt)
-		sidebar = hasExact(tt, "Translate")
+		sidebar = hasExact(tt, "App enhancement")
 		defer func() {
 			a.navigate("/settings/general")
 			frames(tt)
@@ -362,7 +361,7 @@ func TestHideFeatures(t *testing.T) {
 			}
 		}()
 		for _, cmd := range a.paletteItems() {
-			palette = palette || cmd.id == "go/translate"
+			palette = palette || cmd.id == "go/settings/translate"
 		}
 		for _, b := range a.hotkeyPlan().Bindings {
 			keys = keys || strings.HasPrefix(b.ID, hotkey.Translate+"/")
@@ -422,5 +421,56 @@ func TestOverlayPreviewKeepsItsSide(t *testing.T) {
 		if from[1] <= from[0] {
 			t.Errorf("%s: the pill is %.1f from its edge at the largest distance, %.1f at none", pos, from[1], from[0])
 		}
+	}
+}
+
+func TestShortcutsOmitSessions(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/shortcuts")
+	if has(tt, "Sessions (experimental)") {
+		t.Fatalf("Shortcuts still shows the Sessions switch: %q", firstTexts(tt))
+	}
+}
+
+// TestExperimentalSessionsSettings: Settings → Experimental lists the
+// session switch and four shortcut rows (#4005), in English and Chinese;
+// Change… opens the recorder, whose pressed keys save.
+func TestExperimentalSessionsSettings(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	a.navigate("/settings/experimental")
+	const description = "Each session keeps its own card and conversation. The session row on the card, the Rewrite card included, switches sessions, adds one with +, deletes the current one with × and renames one on a double-click; the menu bar lists them too. Privacy's history keeps sessions and their titles after a restart."
+	if !has(tt, description) {
+		t.Errorf("no feature description: %q", firstTexts(tt))
+	}
+	scrollToText(tt, "Sessions (experimental)")
+	if has(tt, "Go to session 1") || a.settings.Get().Features.SessionsOn {
+		t.Fatalf("sessions are off by default: %q", firstTexts(tt))
+	}
+	if err := tt.ClickControl("Sessions (experimental)"); err != nil {
+		t.Fatal(err)
+	}
+	frames(tt)
+	if !a.settings.Get().Features.SessionsOn {
+		t.Fatal("the switch did not turn sessions on")
+	}
+	// Only Next session: the card's row and the menu bar go to a given
+	// session, and its number shifts as sessions come and go. No use counts.
+	scrollToText(tt, "Next session")
+	if !has(tt, "Next session") || !has(tt, "⌥Tab") || has(tt, "Go to session 1") || has(tt, "Switched sessions") {
+		t.Errorf("the session rows: %q", firstTexts(tt))
+	}
+	click(t, tt, "Change…")
+	tt.Key(ui.Ctrl|ui.Alt, ui.Key4)
+	frames(tt)
+	if got := a.settings.Get().Features.Sessions[3].Keys; got != "Control+Option+4" {
+		t.Fatalf("the recorder saved %q", got)
+	}
+	if !hasExact(tt, "⌃⌥4") {
+		t.Errorf("the row shows the new keys: %q", firstTexts(tt))
+	}
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if !has(tt, "下一个会话") {
+		t.Errorf("zh-Hans: %q", firstTexts(tt))
 	}
 }

@@ -447,7 +447,77 @@ func TestRewriteReadsASlowSelection(t *testing.T) {
 	if end.State != Done || len(reqs) != 1 || !strings.Contains(reqs[0].Messages[len(reqs[0].Messages)-1].Content, "<selected_text>\na long paragraph to shorten") {
 		t.Fatalf("end %s %q, requests %+v", end.State, end.Result, reqs)
 	}
-	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS {
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != rewriteCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
+		t.Errorf("selection params %+v", p)
+	}
+}
+
+// TestRewriteReadsTheSelectionOnceTheKeysLift: with a held Option+C in
+// an app whose selection only ⌘C reads (Slack), the first reads skip
+// the ⌘C while Option is down. Rewrite reads again until the keys lift
+// and rewrites the selection, not the clipboard's picture (VX-141); keys
+// still down when the recording ends get one last read, not a wait.
+func TestRewriteReadsTheSelectionOnceTheKeysLift(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		held int
+		want string
+	}{
+		{name: "lifted", held: 1, want: "<selected_text>\nship friday?"},
+		{name: "still down", held: 1 << 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sel := &fakeSelector{copyText: "ship friday?", held: tc.held}
+			model := &fakeLLM{text: "We ship on Friday."}
+			h := newHarness(t, &fakeFile{text: " make it polite "}, model, func(c *Config, s *settings.Settings) {
+				c.Select = sel
+				s.Privacy.SendClipboardImage = true
+				c.ClipboardImage = func(context.Context) ([]byte, error) { return []byte{0xff, 0xd8, 'c', 0xff, 0xd9}, nil }
+			})
+			id, err := h.m.Start(StartRequest{Kind: store.KindRewrite, Target: slack})
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.speak(id, 5)
+			end := h.rec.wait(t)
+			reqs := model.requests()
+			if end.State != Done || len(reqs) != 1 {
+				t.Fatalf("end %s %q, requests %d", end.State, end.Result, len(reqs))
+			}
+			got := reqs[0].Messages[len(reqs[0].Messages)-1].Content
+			if tc.want != "" && (!strings.Contains(got, tc.want) || len(reqs[0].Images) != 0) {
+				t.Errorf("request %q with %d images, want the selection and no picture", got, len(reqs[0].Images))
+			}
+			if tc.want == "" && strings.Contains(got, "<selected_text>") {
+				t.Errorf("request %q", got)
+			}
+		})
+	}
+}
+
+// TestTranslateSendsTheCopyBudget: Translate's read sends its ⌘C budget
+// explicitly — left at zero the helper's default applies, and the
+// deadline arithmetic of TestSelectionBudgetsFitTimeouts no longer
+// describes the real read (#3835).
+func TestTranslateSendsTheCopyBudget(t *testing.T) {
+	sel := &fakeSelector{text: "Good morning"}
+	model := &fakeLLM{text: "早上好"}
+	h := newHarness(t, &fakeFile{text: " hello aura link "}, model, func(c *Config, s *settings.Settings) {
+		c.Select = sel
+	})
+	if _, err := h.m.Start(StartRequest{Kind: store.KindTranslate, Target: slack}); err != nil {
+		t.Fatal(err)
+	}
+	if end := h.rec.wait(t); end.State != Done {
+		t.Fatalf("end %s %q", end.State, end.Result)
+	}
+	if p := sel.params(); len(p) != 1 || p[0].CopyTimeoutMS != selectionCopyMS ||
+		p[0].CaretSettleMS == nil || *p[0].CaretSettleMS != selectionSettleMS ||
+		p[0].CaretPollMS == nil || *p[0].CaretPollMS != selectionPollMS ||
+		p[0].ModifierWaitMS == nil || *p[0].ModifierWaitMS != selectionModifierWaitMS {
 		t.Errorf("selection params %+v", p)
 	}
 }
@@ -546,6 +616,14 @@ type prefillLLM struct {
 	prefills []llm.Request
 }
 
+type unavailablePrefillLLM struct{ *fakeLLM }
+
+func (m *unavailablePrefillLLM) CanPrefill() bool { return false }
+
+func (m *unavailablePrefillLLM) Prefill(context.Context, llm.Request) error {
+	panic("session submitted Prefill to a backend that does not support it")
+}
+
 func (p *prefillLLM) Prefill(_ context.Context, req llm.Request) error {
 	p.mu.Lock()
 	p.prefills = append(p.prefills, req)
@@ -604,6 +682,19 @@ func TestWarmLLM(t *testing.T) {
 				t.Errorf("prefill %+v\nchat %+v", p, chat)
 			}
 		})
+	}
+}
+
+func TestLLMWithoutPrefillCapabilityStillCleans(t *testing.T) {
+	model := &unavailablePrefillLLM{fakeLLM: &fakeLLM{text: "Cleaned."}}
+	h := newHarness(t, &fakeFile{text: "spoken words"}, model, func(_ *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+	})
+	id := h.start()
+	h.speak(id, 4)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Result != "Cleaned." || len(model.requests()) != 1 || len(h.text.pastes()) != 1 {
+		t.Fatalf("end=%+v requests=%d deliveries=%q", end, len(model.requests()), h.text.pastes())
 	}
 }
 
@@ -667,5 +758,21 @@ func TestTranslateOpensNoSpeechModelItDoesNotUse(t *testing.T) {
 				t.Errorf("recorded %d frames", h.audio.recorded())
 			}
 		})
+	}
+}
+
+// TestSelectionBudgetsFitTimeouts: the worst helper read fits the
+// caller's deadline — the settle, the modifier wait and the copy wait
+// plus overhead. #4469 review: 600+800+300 ms of budgets exceeded
+// Translate's old 1500 ms read timeout, so a slow ⌘A reading followed
+// by a near-deadline modifier release returned no selection.
+func TestSelectionBudgetsFitTimeouts(t *testing.T) {
+	translateWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+selectionCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultReadTimeout < translateWorst {
+		t.Errorf("Translate's read timeout %v < worst read %v", DefaultReadTimeout, translateWorst)
+	}
+	rewriteWorst := time.Duration(selectionSettleMS+selectionModifierWaitMS+rewriteCopyMS+selectionOverheadMS) * time.Millisecond
+	if DefaultRewriteReadTimeout < rewriteWorst {
+		t.Errorf("Rewrite's read timeout %v < worst read %v", DefaultRewriteReadTimeout, rewriteWorst)
 	}
 }

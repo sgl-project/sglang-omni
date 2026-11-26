@@ -110,6 +110,10 @@ def instantiate_visual(
                 joint_rope_kernel = current_platform.get_joint_rope_inplace_kernel(
                     rotary_dimension=head_dimension
                 )
+            elif current_platform.device_type == "npu":
+                # The Ascend wrapper rounds the coefficients to the Q/K dtype
+                # before rotating, while vision's native path stays in FP32.
+                joint_rope_kernel = None
             else:
                 joint_rope_kernel = current_platform.get_joint_rope_inplace_kernel()
             return Qwen3OmniVisionEncoder._from_config(  # noqa: leading-underscore  # Transformers construction API

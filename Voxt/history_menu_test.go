@@ -10,7 +10,6 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/core"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // More entries for the menu's cases (seedMenuHistory).
@@ -174,71 +173,12 @@ func TestEntryMenuActions(t *testing.T) {
 	}
 }
 
-func TestHomeRecentMenu(t *testing.T) {
-	a, tt := homeTester(t)
-	seedHistory(t, a)
-	a.historyChanged()
-	frames(tt)
-	e := a.hm.recent[0]
-	title, _ := uitext.EntryTitle(e)
-	want := []string{"Copy", "Copy recognised text", "Show details", "Show recording in Finder", "Transcribe again", "-", "Delete"}
-	if got := openMenu(t, tt, title); !slices.Equal(got, want) {
-		t.Errorf("menu %q, want %q", got, want)
-	}
-	choose(t, tt, "Copy")
-	if got := tt.Clipboard(); got != e.Result {
-		t.Errorf("clipboard = %q", got)
-	}
-
-	// Delete from Home: its dialog shows there, and the list reads again.
-	openMenu(t, tt, title)
-	choose(t, tt, "Delete")
-	if a.router.Path() != "/home" || !has(tt, "Delete this entry?") {
-		t.Fatalf("no confirmation on Home: %s %q", a.router.Path(), firstTexts(tt))
-	}
-	if err := tt.Click("Delete"); err != nil {
-		t.Fatal(err)
-	}
-	frames(tt)
-	if _, err := a.lib.store.History().Get(context.Background(), e.ID); !errors.Is(err, core.ErrNotFound) {
-		t.Fatalf("still there: %v", err)
-	}
-	if has(tt, title) || len(a.hm.recent) == 0 || a.hm.recent[0].ID == e.ID {
-		t.Errorf("Home still lists it: %q", firstTexts(tt))
-	}
-
-	// Show details opens it in History, as a click does.
-	next := a.hm.recent[0]
-	nextTitle, _ := uitext.EntryTitle(next)
-	openMenu(t, tt, nextTitle)
-	choose(t, tt, "Show details")
-	if a.router.Path() != "/history" || a.histUI.sel != next.ID {
-		t.Errorf("opened %s sel %q", a.router.Path(), a.histUI.sel)
-	}
-}
-
 func TestHistoryCopyFailure(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.copyText = func(string) error { return errors.New("denied") }
 	a.copyHistoryText("text")
 	if len(a.toasts) != 1 || a.toasts[0] != "Could not copy: denied" {
 		t.Fatalf("clipboard failure toasts %q", a.toasts)
-	}
-}
-
-func TestHomeRecentMenuUsesVisibleEntry(t *testing.T) {
-	a, _ := homeTester(t)
-	a.hist.stale = true
-	a.hist.list = []store.Entry{{ID: "same", Audio: "stale.wav"}}
-	a.hm.recent = []store.Entry{{ID: "same", Audio: "fresh.wav"}}
-	var revealed []string
-	previous := revealInFinder
-	revealInFinder = func(path string) { revealed = append(revealed, path) }
-	t.Cleanup(func() { revealInFinder = previous })
-	a.showHistoryRecording("same")
-	want := a.lib.store.History().AudioPath("fresh.wav")
-	if len(revealed) != 1 || revealed[0] != want {
-		t.Fatalf("revealed %v, want visible Home recording %s", revealed, want)
 	}
 }
 

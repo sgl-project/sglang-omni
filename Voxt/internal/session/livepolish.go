@@ -61,6 +61,28 @@ type livePolish struct {
 	done    []liveResult // note (luojiaxuan): the clean-ups of the open block: each of a stretch that starts the text after blocks
 	flight  *liveFlight  // note (luojiaxuan): the request under way, nil when none
 	closed  bool         // note (luojiaxuan): the final text came, or the live clean-up gave up: no more requests
+
+	// Test gates make completion/adoption interleavings deterministic; nil in production.
+	testHooks *livePolishTestHooks
+}
+
+type livePolishTestHooks struct {
+	afterAdoptSnapshot      func()
+	beforeAdoptDraftPublish func()
+	beforeFlightCommit      func()
+	afterFinishAdopted      func()
+}
+
+func (lp *livePolish) runBeforeAdoptDraftPublish() {
+	lp.mu.Lock()
+	var hook func()
+	if lp.testHooks != nil {
+		hook = lp.testHooks.beforeAdoptDraftPublish
+	}
+	lp.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }
 
 // note (luojiaxuan): liveResult is the clean-up of src, a stretch of the live text that ends
@@ -80,9 +102,18 @@ type liveResult struct {
 // it answered.
 type liveFlight struct {
 	liveResult
-	cancel context.CancelFunc
-	done   chan struct{}
-	ok     bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	updates      chan struct{}
+	parts        []compose.Part
+	answers      []string
+	partIndex    int
+	delta        strings.Builder
+	detached     bool
+	adopted      bool
+	streamClosed bool
+	ok           bool
 }
 
 // note (luojiaxuan): hearLive takes a live text of the recording (asr.EventPartial) to the
@@ -91,6 +122,16 @@ type liveFlight struct {
 func (r *run) hearLive(text string) {
 	if r.liveOff {
 		return
+	}
+	if r.ctx.Err() != nil || r.cancelled.Load() {
+		return
+	}
+	if r.init.split {
+		select {
+		case <-r.svcResolved:
+		default:
+			return
+		}
 	}
 	r.liveOnce.Do(func() { r.live = newLivePolish(r) })
 	if r.live == nil {
@@ -121,7 +162,13 @@ func (r *run) endLive() {
 // speaks); or the language model is served on this Mac, where its requests
 // would share the GPU with the speech model while the user speaks and
 // beside the Final after Stop.
+//
+// Nor where the head start asks the whole text at every pause (headstart.go):
+// it is ahead of the sentences this would clean one by one.
 func newLivePolish(r *run) *livePolish {
+	if r.head.enabled.Load() {
+		return nil
+	}
 	r.m.mu.Lock()
 	client, llmInfo, llmCtx := r.svc.LLM, r.svc.LLMInfo, r.llmCtx
 	r.m.mu.Unlock()
@@ -148,6 +195,9 @@ func newLivePolish(r *run) *livePolish {
 		<-ctx.Done()
 		lp.mu.Lock()
 		lp.closed = true
+		if lp.flight != nil {
+			lp.flight.detached = true
+		}
 		lp.cond.Broadcast()
 		lp.mu.Unlock()
 	}()
@@ -179,6 +229,9 @@ func (lp *livePolish) stop() {
 	lp.mu.Lock()
 	lp.closed = true
 	lp.blocks, lp.done = nil, nil
+	if lp.flight != nil {
+		lp.flight.detached = true
+	}
 	lp.mu.Unlock()
 	lp.cancel()
 }
@@ -197,6 +250,7 @@ func (lp *livePolish) add(text string) {
 		lp.epoch++
 	}
 	if f := lp.flight; f != nil && (f.epoch != lp.epoch || !endsSentence(lp.open(), f.src)) {
+		f.detached = true
 		f.cancel()
 	}
 	lp.cond.Broadcast()
@@ -269,27 +323,38 @@ func (lp *livePolish) work() {
 			return
 		}
 		ctx, cancel := context.WithCancel(lp.ctx)
-		f := &liveFlight{liveResult: job, cancel: cancel, done: make(chan struct{})}
+		f := &liveFlight{liveResult: job, ctx: ctx, cancel: cancel, done: make(chan struct{}), updates: make(chan struct{}, 1)}
 		lp.flight = f
 		lp.cond.Broadcast()
 		before := liveContext(joinResults(lp.blocks, lp.text))
 		lp.mu.Unlock()
 		start := time.Now()
-		res, err := lp.clean(ctx, job, before)
-		cancelled := ctx.Err() != nil // note (luojiaxuan): before cancel: a failure of the service is not a cancellation
-		cancel()
+		res, err := lp.clean(ctx, job, before, f)
 		lp.mu.Lock()
+		var beforeCommit func()
+		if lp.testHooks != nil {
+			beforeCommit = lp.testHooks.beforeFlightCommit
+		}
+		lp.mu.Unlock()
+		if beforeCommit != nil {
+			beforeCommit()
+		}
+		cancelled := ctx.Err() != nil // note (luojiaxuan): before disposal below, a failure is not a cancellation
+		lp.mu.Lock()
+		cancelled = cancelled || ctx.Err() != nil
 		lp.flight = nil
-		f.liveResult, f.ok = res, err == nil
+		f.liveResult = res
+		f.ok = err == nil && !cancelled && !f.detached
+		f.streamClosed = true
 		switch {
 		case lp.closed:
-			// note (luojiaxuan): finish took what it keeps without waiting for this request; a late answer is only the awaited flight's (f).
+			// finish owns an adopted flight; the caller consumes its terminal state.
+		case cancelled || f.detached:
+			lp.dropped++
 		case err == nil && res.epoch == lp.epoch:
 			lp.done = append(lp.done, res)
 			lp.r.logf("info", "cleaned up %d characters while recording in %v (%d prompt tokens, %d cached)",
 				utf8.RuneCountInString(res.src), time.Since(start).Round(time.Millisecond), res.usage.PromptTokens, res.usage.CachedTokens)
-		case err != nil && cancelled:
-			lp.dropped++
 		case err != nil:
 			lp.r.logf("warning", "the live clean-up stops, Stop cleans the whole text: %v", err)
 			lp.closed = true
@@ -298,12 +363,13 @@ func (lp *livePolish) work() {
 		close(f.done)
 		lp.cond.Broadcast()
 		lp.mu.Unlock()
+		cancel()
 	}
 }
 
 // note (luojiaxuan): clean asks the language model to clean job's stretch, after before (the
 // blocks' cleaned text, "" for the first block).
-func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) (liveResult, error) {
+func (lp *livePolish) clean(ctx context.Context, job liveResult, before string, flight *liveFlight) (liveResult, error) {
 	r := lp.r
 	in := r.transcribeInput(job.src)
 	in.Before = before
@@ -312,7 +378,13 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 		return job, err
 	}
 	job.parts = parts
-	for _, p := range parts {
+	lp.mu.Lock()
+	flight.parts = slices.Clone(parts)
+	flight.partIndex = 0
+	flight.delta.Reset()
+	lp.notifyFlightLocked(flight)
+	lp.mu.Unlock()
+	for partIndex, p := range parts {
 		if err := ctx.Err(); err != nil {
 			return job, err
 		}
@@ -321,14 +393,56 @@ func (lp *livePolish) clean(ctx context.Context, job liveResult, before string) 
 		lp.mu.Unlock()
 		req := r.m.cfg.llmDeadlines(llm.Request{Messages: llmMessages(p.Output), Skill: llm.SkillTranscribeEnhance, InputChars: job.chars},
 			utf8.RuneCountInString(p.Text), r.llmFloor(r.m.cfg.LLMTimeout))
+		lp.mu.Lock()
+		flight.partIndex = partIndex
+		flight.delta.Reset()
+		lp.mu.Unlock()
+		// A retry may discard this private part only before finish adopts the flight.
+		req.OnDelta = func(delta string) {
+			if delta == "" {
+				return
+			}
+			lp.mu.Lock()
+			if !flight.detached && !flight.streamClosed && flight.partIndex == partIndex {
+				flight.delta.WriteString(delta)
+				lp.notifyFlightLocked(flight)
+			}
+			lp.mu.Unlock()
+		}
+		req.RetryPrivateStream = func() bool {
+			lp.mu.Lock()
+			defer lp.mu.Unlock()
+			if flight.detached || flight.adopted || flight.streamClosed || flight.partIndex != partIndex {
+				return false
+			}
+			flight.delta.Reset()
+			lp.notifyFlightLocked(flight)
+			return true
+		}
 		reqCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 		resp, err := lp.llm.Chat(reqCtx, req) // note (luojiaxuan): no picture and no snapshot change: newLivePolish runs only without a picture
 		cancel()
 		if err != nil {
 			return job, err
 		}
-		job.answers = append(job.answers, compose.CleanOutput(resp.Text, p.Text))
+		answer := compose.CleanOutput(resp.Text, p.Text, p.Custom())
+		job.answers = append(job.answers, answer)
 		job.usage = job.usage.Add(resp.Usage)
+		lp.mu.Lock()
+		if !flight.detached {
+			flight.answers = append(flight.answers, answer)
+			flight.partIndex = partIndex + 1
+			flight.delta.Reset()
+			lp.notifyFlightLocked(flight)
+		}
+		lp.mu.Unlock()
 	}
 	return job, nil
+}
+
+func (lp *livePolish) notifyFlightLocked(flight *liveFlight) {
+	select {
+	case flight.updates <- struct{}{}:
+	default:
+	}
 }

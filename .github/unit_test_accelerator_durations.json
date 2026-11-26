@@ -158,6 +158,7 @@
   "tests/unit_test/utils/test_cuda_staging.py": 1.011,
   "tests/unit_test/utils/test_ipc_weights_cuda.py": 35.893,
   "tests/unit_test/utils/test_snake_beta.py": 19.241,
+  "tests/unit_test/vendor/test_sglang_flashattention_backend_patch.py": 0.005,
   "tests/unit_test/voxtral_tts/test_pipeline.py": 0.18,
   "tests/unit_test/whisper_asr/test_dense_prefill.py": 0.299,
   "tests/unit_test/whisper_asr/test_draft_cuda_graph.py": 0.019,

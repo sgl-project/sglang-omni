@@ -22,6 +22,11 @@ func TestCardFirstOverlay(t *testing.T) {
 					t.Fatalf("%s: mode %s, pass-through %v, card shown %v, pill shown %v", state, a.ov.mode, a.ov.passThrough, a.ov.shown, a.pill.shown)
 				}
 				if state == session.Recording {
+					a.prefs.Features.SessionsOn = true
+					a.overlaySync()
+					if len(a.cachedCard().Sessions) != 1 {
+						t.Fatal("the live card lost its session row")
+					}
 					tt := cardTester(t, a)
 					frames(tt)
 					if !has(tt, a.sess.Selection) || !has(tt, "Input level") || !has(tt, "Done") {

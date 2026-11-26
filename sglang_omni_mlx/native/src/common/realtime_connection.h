@@ -32,7 +32,7 @@ public:
   void SendError(const std::string &type, const std::string &code,
                  const std::string &message);
   // The client left: stop any decode in flight and send nothing more.
-  void Close();
+  virtual void Close();
   // Names this connection to the HTTP API; random.
   const std::string &session_id() const { return session_id_; }
 

@@ -90,10 +90,10 @@ func ReadLocation(def string) Location {
 	return loc
 }
 
-// Resolve finishes a pending erase or move, then returns the data
-// folder to open. A folder location.json names that is missing (an
-// external drive not connected) is an error: the app explains and quits
-// rather than start an empty library.
+// Resolve finishes a pending erase, move or library import, then
+// returns the data folder to open. A folder location.json names that
+// is missing (an external drive not connected) is an error: the app
+// explains and quits rather than start an empty library.
 func Resolve(def string) (string, error) {
 	var rs PendingReset
 	if readJSON(filepath.Join(def, ResetFile), &rs) {
@@ -103,15 +103,18 @@ func Resolve(def string) (string, error) {
 	if readJSON(filepath.Join(def, MoveFile), &mv) {
 		finishMove(context.Background(), def, mv)
 	}
-	loc := ReadLocation(def)
-	if loc.Dir == "" {
-		return def, nil
+	dir := def
+	if loc := ReadLocation(def); loc.Dir != "" {
+		if fi, err := os.Stat(loc.Dir); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("the data folder %s (chosen in Settings → Storage) is not available: connect its drive, or remove %s to start over in %s",
+				loc.Dir, filepath.Join(def, LocationFile), def)
+		}
+		dir = loc.Dir
 	}
-	if fi, err := os.Stat(loc.Dir); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("the data folder %s (chosen in Settings → Storage) is not available: connect its drive, or remove %s to start over in %s",
-			loc.Dir, filepath.Join(def, LocationFile), def)
+	if _, err := os.Stat(filepath.Join(dir, ImportFile)); err == nil {
+		finishImport(context.Background(), dir)
 	}
-	return loc.Dir, nil
+	return dir, nil
 }
 
 // SkipData reports the files a move or a size count leaves out: the

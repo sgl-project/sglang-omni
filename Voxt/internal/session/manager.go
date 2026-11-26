@@ -92,6 +92,9 @@ type Manager struct {
 	snap Snapshot // the current (or last) session's
 	rev  uint64
 	last string // the last result delivered or shown, for "paste the last result"
+	// restUntil is when the services that limited the rate (429) are asked
+	// several things at once again (resting).
+	restUntil map[string]time.Time
 }
 
 // New returns a Manager; nothing runs until Start.

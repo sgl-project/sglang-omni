@@ -200,6 +200,10 @@ func (a *app) trayItems() []*mygo.MenuItem {
 		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
 		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
 	}
+	if sessions := a.sessionsMenu(act); len(sessions) > 0 {
+		items = append(items, mygo.Separator())
+		items = append(items, sessions...)
+	}
 	if reopen := a.reopenMenu(act); len(reopen) > 0 {
 		items = append(items, mygo.Separator())
 		items = append(items, reopen...)

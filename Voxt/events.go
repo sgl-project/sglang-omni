@@ -19,11 +19,7 @@ package main
 //	              try ended): Home, the menu bar's recent results, the
 //	              History page, the automatic clean-up
 
-import (
-	"strings"
-
-	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
-)
+import "github.com/sgl-project/sglang-omni/Voxt/internal/session"
 
 // events are the observers of the app's events, main-thread only.
 type events struct {
@@ -50,11 +46,6 @@ func (a *app) connectEvents() {
 		func(_, _ session.Snapshot) { a.overlaySync() }, // overlay.go
 	)
 	a.onSessionEnd = append(a.onSessionEnd,
-		func(s session.Snapshot) {
-			if s.State == session.Done && strings.TrimSpace(s.Result) != "" {
-				a.markTried() // home_try.go: Home stops offering its Try area
-			}
-		},
 		a.learnFromSession,                         // learn_link.go
 		a.recordActivity,                           // home_activity_controller.go: the activity calendar
 		func(session.Snapshot) { a.loadDevices() }, // settings_audio.go: the inputs again, for the menu bar
@@ -65,7 +56,7 @@ func (a *app) connectEvents() {
 		}
 	})
 	a.onHistory = append(a.onHistory,
-		a.homeChanged,    // home_page.go: today's numbers, the recent results
+		a.homeChanged,    // home_page.go: the last speech model and recognition latency
 		a.loadTrayRecent, // tray.go: the menu bar's recent results
 		a.historyReload,  // history_page.go: the page, now or when it shows next
 		a.pruneHistory,   // history_settings_ops.go: the automatic clean-up

@@ -1,20 +1,23 @@
 package main
 
 import (
+	"io/fs"
 	"os"
 
 	"github.com/egoist/mygo"
 	"github.com/hehehai/actnowkit/sounds"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/cues"
 )
 
-// loadCueSounds reads resources/sounds (Contents/Resources/sounds); nil
-// when the build has none.
+// loadCueSounds is Voxt's own cues (internal/cues) with the family's
+// sounds of resources/sounds (Contents/Resources/sounds) when the build
+// has them.
 func loadCueSounds() *sounds.Catalog {
-	res, err := mygo.App.Path(mygo.PathResources)
-	if err != nil {
-		return nil
+	var family fs.FS
+	if res, err := mygo.App.Path(mygo.PathResources); err == nil {
+		family = os.DirFS(res)
 	}
-	cat, err := sounds.Load(os.DirFS(res), "sounds")
+	cat, err := cues.Load(family, "sounds")
 	if err != nil {
 		return nil
 	}

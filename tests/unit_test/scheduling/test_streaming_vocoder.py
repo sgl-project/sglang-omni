@@ -262,15 +262,14 @@ def test_resolve_initial_codec_chunk_frames() -> None:
     [((0, -3), -2), ((0, -1), -1)],
 )
 def test_vocoder_decode_stream_priority_leaves_the_top_level_free(
-    monkeypatch: pytest.MonkeyPatch,
     priority_range: tuple[int, int],
     expected_priority: int,
 ) -> None:
-    monkeypatch.setattr(
-        torch.cuda.Stream, "priority_range", staticmethod(lambda: priority_range)
+    device_module = SimpleNamespace(
+        Stream=SimpleNamespace(priority_range=lambda: priority_range)
     )
     assert (
-        streaming_vocoder.vocoder_decode_stream_priority(torch.cuda)
+        streaming_vocoder.vocoder_decode_stream_priority(device_module)
         == expected_priority
     )
 

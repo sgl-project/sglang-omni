@@ -21,7 +21,7 @@ func buildSessionSpeechCardViewState(translator *i18n.Translator, input sessionC
 		ID: snapshot.ID, Kind: string(snapshot.Kind), Title: sessionCardTitleFor(translator, snapshot.Kind, snapshot.Title),
 		TargetName: snapshot.Target.Name, Language: snapshot.TargetLanguage,
 		LanguageLabel: compose.LanguageName(snapshot.TargetLanguage, translator.Locale()),
-		SizeStep:      input.SizeStep, Busy: true, Speech: true,
+		Sessions:      input.Sessions, SizeStep: input.SizeStep, Busy: true, Speech: true,
 		Recording: snapshot.State == session.Recording, Writing: snapshot.State == session.Composing,
 		CanStopAnswer: snapshot.CanStop(), CanUseTranscript: snapshot.CanSkip, Heard: !snapshot.HeardAt.IsZero(),
 		WorkingText: uitext.WorkingTextFor(translator, snapshot),
