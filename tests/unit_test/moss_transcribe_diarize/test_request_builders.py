@@ -229,12 +229,20 @@ def make_request_builder(
     return request_builder
 
 
-def test_pd_continuation_preserves_moss_transcription_state() -> None:
+@pytest.mark.parametrize("audio_metadata_key", ["audios", "audio_data", "audio"])
+def test_pd_continuation_preserves_moss_transcription_state(
+    audio_metadata_key: str,
+) -> None:
     processor = FakeProcessor()
+    audio = wav_bytes()
+    audio_source = [audio] if audio_metadata_key == "audios" else audio
     prefill_data = make_request_builder(processor)(
         payload(
             params={"language": "en", "max_new_tokens": 9},
-            metadata={"audio": wav_bytes(), "model": "moss-transcribe-diarize"},
+            metadata={
+                audio_metadata_key: audio_source,
+                "model": "moss-transcribe-diarize",
+            },
         )
     )
     request = prefill_data.req

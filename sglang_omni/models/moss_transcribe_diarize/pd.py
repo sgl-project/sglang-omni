@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sglang.srt.managers.schedule_batch import Req
 
 from sglang_omni.models.moss_transcribe_diarize.request_builders import (
+    AUDIO_SOURCE_METADATA_KEYS,
     MossTranscribeDiarizeRequestData,
 )
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
@@ -35,7 +36,7 @@ def build_prefill_state(
     metadata = {
         key: value
         for key, value in payload.request.metadata.items()
-        if key not in ("audios", "audio_data", "audio")
+        if key not in AUDIO_SOURCE_METADATA_KEYS
     }
     projected = replace(
         payload,

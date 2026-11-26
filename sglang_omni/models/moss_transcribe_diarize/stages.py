@@ -162,7 +162,7 @@ def create_sglang_moss_transcribe_diarize_executor(
             gpu_id=gpu_id,
             dtype=dtype,
             server_args_overrides=server_args_overrides,
-            total_gpu_memory_fraction=total_gpu_memory_fraction if pd_role else None,
+            total_gpu_memory_fraction=total_gpu_memory_fraction,
         )
     finally:
         if builder.draft_checkpoint is not None:
