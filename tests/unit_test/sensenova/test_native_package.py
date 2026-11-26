@@ -27,7 +27,10 @@ from transformers import PreTrainedTokenizerFast
 
 from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
 from sglang_omni.models.sensenova_u1.native import cache_dit as sensenova_cache_dit
-from sglang_omni.models.sensenova_u1.native import loader, pipeline
+from sglang_omni.models.sensenova_u1.native import loader
+from sglang_omni.models.sensenova_u1.native import options as loader_options
+from sglang_omni.models.sensenova_u1.native import pipeline
+from sglang_omni.models.sensenova_u1.native import sampling as sampling_module
 from sglang_omni.models.sensenova_u1.native.generation import SenseNovaU1GenerationStage
 from sglang_omni.models.sensenova_u1.native.pipeline import SenseNovaU1Pipeline
 from sglang_omni.models.sensenova_u1.native.sampling import SenseNovaU1SamplingParams
@@ -708,3 +711,75 @@ def test_checkpoint_dtype_falls_back_to_the_shard_header(
     )
 
     assert {device.index for device in device_map.values()} == {0, 1, 2, 3}
+
+
+@pytest.mark.parametrize(
+    ("request_switch", "expected_enabled", "expected_set_by_request"),
+    [(None, True, False), (True, True, True), (False, False, True)],
+)
+def test_server_switch_records_whether_the_request_asked_for_cache_dit(
+    monkeypatch: pytest.MonkeyPatch,
+    request_switch: bool | None,
+    expected_enabled: bool,
+    expected_set_by_request: bool,
+) -> None:
+    monkeypatch.setattr(sensenova_cache_dit.envs, "SGLANG_CACHE_DIT_ENABLED", True)
+    sampling = SenseNovaU1SamplingParams(
+        prompt="a red apple",
+        width=64,
+        height=64,
+        num_inference_steps=2,
+        guidance_scale=4.0,
+        enable_cache_dit=request_switch,
+    )
+    monkeypatch.setattr(
+        sampling_module,
+        "checkpoint_decoder_layer_count",
+        lambda model_path, revision: 2,
+    )
+
+    sampling.resolve_cache_dit("checkpoint", None)
+
+    assert sampling.enable_cache_dit is expected_enabled
+    assert sampling.cache_dit_set_by_request is expected_set_by_request
+    extra = sampling.build_request_extra()[
+        loader_options.SENSENOVA_U1_REQUEST_EXTRA_KEY
+    ]
+    assert extra["cache_dit_set_by_request"] is expected_set_by_request
+
+
+@pytest.mark.parametrize(
+    ("set_by_request", "expected"),
+    [(False, False), (True, "rejected")],
+)
+def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
+    set_by_request: bool, expected: bool | str
+) -> None:
+    decoder = SimpleNamespace(
+        layers=[
+            SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="cpu")])),
+            SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="meta")])),
+        ]
+    )
+    assert sensenova_cache_dit.spans_multiple_devices(decoder)
+
+    if expected == "rejected":
+        with pytest.raises(ValueError, match="spanned across devices"):
+            sensenova_cache_dit.resolve_cache_dit_switch(
+                True,
+                branch_count=2,
+                cfg_interval=(0.0, 1.0),
+                decoder=decoder,
+                set_by_request=set_by_request,
+            )
+    else:
+        assert (
+            sensenova_cache_dit.resolve_cache_dit_switch(
+                True,
+                branch_count=2,
+                cfg_interval=(0.0, 1.0),
+                decoder=decoder,
+                set_by_request=set_by_request,
+            )
+            is expected
+        )
