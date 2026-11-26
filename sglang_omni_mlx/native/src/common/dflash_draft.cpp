@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -30,6 +31,41 @@ constexpr int kQuantizationGroupSize = 64;
 // note (ZaneZhang-67): warm one useful plain token, then time four pipelined
 // steps.
 constexpr int kPlainProbeTokenCount = 5;
+// Note (XXXXRT666): guesses after the first mismatch are proposed up to this
+// many at a time (from half of it, doubling while a round keeps them all,
+// halving to a quarter of the draft's block when it does not), and realigned
+// on the last two committed tokens when those occur within this many
+// positions of where the guesses were expected to continue.
+constexpr int kGuessRoundTokens = 32;
+constexpr int kGuessRoundMinTokens = 4;
+constexpr int kGuessRealignTokens = 16;
+
+// The position in guessed_ids after the last two committed tokens, when they
+// occur within kGuessRealignTokens of cursor (the nearest such place), else
+// cursor: a token the target wrote in place of a guess keeps the alignment.
+int RealignGuesses(const std::vector<int> &guessed_ids,
+                   const std::vector<int> &committed_ids, int cursor) {
+  const int guessed_count = static_cast<int>(guessed_ids.size());
+  const size_t n = committed_ids.size();
+  if (n < 2 || guessed_count < 2) {
+    return cursor;
+  } else {
+  }
+  const int last = committed_ids[n - 1];
+  const int before_last = committed_ids[n - 2];
+  int best = cursor;
+  int best_distance = kGuessRealignTokens + 1;
+  for (int end = std::max(2, cursor - kGuessRealignTokens);
+       end <= std::min(guessed_count, cursor + kGuessRealignTokens); ++end) {
+    if (guessed_ids[end - 2] == before_last && guessed_ids[end - 1] == last &&
+        std::abs(end - cursor) < best_distance) {
+      best = end;
+      best_distance = std::abs(end - cursor);
+    } else {
+    }
+  }
+  return best;
+}
 
 std::string ShapeText(const mx::Shape &shape) {
   std::string text = "[";
@@ -290,6 +326,8 @@ DraftStatistics DFlashDraft::Decode(
   bool finished = false;
   int committed_token_count = 0;
   int anchor_id;
+  // The tokens committed so far, to realign the guesses on.
+  std::vector<int> committed_ids;
   {
     mx::array prompt =
         mx::slice(embeddings, {0, processed, 0}, embeddings.shape());
@@ -327,35 +365,59 @@ DraftStatistics DFlashDraft::Decode(
                   draft_caches);
     committed_token_count = accepted_count;
     anchor_id = static_cast<int>(predicted_ids[accepted_count]);
+    committed_ids.assign(guessed_ids.begin(),
+                         guessed_ids.begin() + accepted_count);
   }
   if (cancel.load()) {
     throw GenerationCancelled();
   } else {
   }
+  // The anchor took the place of the guess at committed_token_count, so the
+  // guesses would go on after it.
+  int guess_cursor = committed_token_count + 1;
   if (!finished) {
     finished = commit(anchor_id);
     ++committed_token_count;
+    committed_ids.push_back(anchor_id);
   } else {
   }
   DraftBackoff backoff;
   DraftStatistics statistics;
+  bool guesses_missed = false;
+  int guess_round_tokens = kGuessRoundTokens / 2;
   while (!finished) {
     if (cancel.load()) {
       throw GenerationCancelled();
     } else {
     }
     const auto round_started = std::chrono::steady_clock::now();
-    std::vector<int> block_ids(block_size_, mask_token_id_);
-    block_ids[0] = anchor_id;
-    const mx::array proposed_ids =
-        ProposeBlock(target.EmbedTokens(mx::array(block_ids.data(),
-                                                  {1, block_size_}, mx::int32)),
-                     draft_caches);
+    // Note (XXXXRT666): after the first mismatch the guesses usually go on
+    // matching (a punctuation mark differs, then the same words), so their
+    // continuation is proposed instead of the draft's block while there is
+    // one; a round that accepts none of it hands the next round to the draft.
+    guess_cursor = RealignGuesses(guessed_ids, committed_ids, guess_cursor);
+    const int guess_room = static_cast<int>(guessed_ids.size()) - guess_cursor;
+    const bool from_guesses = guess_room > 0 && !guesses_missed;
+    mx::array proposed_ids = mx::array(0, mx::int32);
+    int proposal_count;
+    if (from_guesses) {
+      proposal_count = std::min(guess_round_tokens, guess_room);
+      proposed_ids = mx::array(guessed_ids.data() + guess_cursor,
+                               {proposal_count}, mx::int32);
+    } else {
+      std::vector<int> block_ids(block_size_, mask_token_id_);
+      block_ids[0] = anchor_id;
+      proposed_ids =
+          ProposeBlock(target.EmbedTokens(mx::array(
+                           block_ids.data(), {1, block_size_}, mx::int32)),
+                       draft_caches);
+      proposal_count = block_size_ - 1;
+    }
     // note (wilsonzheng0327): the block is cut to the tokens the budget still
     // allows, so the caches never hold a position plain decoding would not
     // have reached.
     const int verify_count =
-        std::min(block_size_, max_new_tokens - committed_token_count);
+        std::min(proposal_count + 1, max_new_tokens - committed_token_count);
     const mx::array verify_ids =
         mx::slice(mx::concatenate(
                       {mx::array(&anchor_id, {1}, mx::int32), proposed_ids}, 0),
@@ -376,17 +438,29 @@ DraftStatistics DFlashDraft::Decode(
            proposed[accepted_count] ==
                static_cast<int>(predicted[accepted_count])) {
       finished = commit(proposed[accepted_count]);
+      committed_ids.push_back(proposed[accepted_count]);
       ++accepted_count;
     }
     if (!finished) {
       anchor_id = static_cast<int>(predicted[accepted_count]);
       finished = commit(anchor_id);
+      committed_ids.push_back(anchor_id);
     } else {
     }
     committed_token_count += accepted_count + 1;
-    ++statistics.verify_round_count;
-    statistics.proposed_token_count += verify_count - 1;
-    statistics.accepted_token_count += accepted_count;
+    guess_cursor += accepted_count + 1;
+    if (from_guesses) {
+      guesses_missed = accepted_count == 0;
+      guess_round_tokens =
+          accepted_count == verify_count - 1
+              ? std::min(2 * guess_round_tokens, kGuessRoundTokens)
+              : std::max(guess_round_tokens / 2, kGuessRoundMinTokens);
+    } else {
+      ++statistics.verify_round_count;
+      statistics.proposed_token_count += verify_count - 1;
+      statistics.accepted_token_count += accepted_count;
+      guesses_missed = false;
+    }
     // note (wilsonzheng0327): the caches keep the anchor and the accepted
     // proposals; the committed positions' hidden states become the draft's
     // context.
@@ -394,7 +468,9 @@ DraftStatistics DFlashDraft::Decode(
       cache.Trim(verify_count - 1 - accepted_count);
     }
     AppendContext(aux_hidden_states, accepted_count + 1, draft_caches);
-    if (policy == DraftPolicy::kFixed || finished) {
+    // The backoff weighs the draft's rounds against plain decoding; a round
+    // of guesses says nothing about the draft.
+    if (policy == DraftPolicy::kFixed || finished || from_guesses) {
       continue;
     } else {
     }
@@ -421,6 +497,8 @@ DraftStatistics DFlashDraft::Decode(
         mx::argmax(target.LastLogits(warm_hidden)).item<uint32_t>());
     finished = commit(anchor_id);
     ++committed_token_count;
+    committed_ids.push_back(anchor_id);
+    ++guess_cursor;
     if (finished) {
       break;
     } else if (cancel.load()) {
@@ -437,6 +515,8 @@ DraftStatistics DFlashDraft::Decode(
     const auto probe_commit = [&](int token_id) {
       anchor_id = token_id;
       finished = commit(token_id);
+      committed_ids.push_back(token_id);
+      ++guess_cursor;
       ++measured_token_count;
       ++committed_token_count;
       return finished || measured_token_count == kPlainProbeTokenCount - 1;

@@ -40,7 +40,7 @@ struct DraftOptions {
 
 struct LoadedDraft;
 
-// One draft decode's verification rounds, and the proposals the target
+// One draft decode's rounds of draft blocks, and the proposals the target
 // checked and accepted; the token the target adds each round is in neither.
 struct DraftStatistics {
   int verify_round_count = 0;
@@ -71,7 +71,10 @@ public:
   // values and the draft's context, over the same positions, which embeddings
   // and the committed tokens but the last extend. guessed_ids, tokens likely
   // to come next, are checked in the prompt's pass and kept while the target
-  // agrees. A backoff to plain decoding empties draft_caches.
+  // agrees; after the first mismatch their continuation, realigned on the
+  // committed tokens, is proposed in place of the draft's block while the
+  // target keeps some of it. A backoff to plain decoding empties
+  // draft_caches.
   // note (chenye): When set, reports guesses accepted in initial verification.
   DraftStatistics Decode(const Qwen3Decoder &target,
                          const mlx::core::array &embeddings,
