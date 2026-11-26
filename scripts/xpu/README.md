@@ -9,7 +9,7 @@ There are two kinds of test, and they answer different questions:
 | | functional tests | performance baseline |
 |---|---|---|
 | question | does every model still start and answer correctly? | is this tree slower or less accurate than the last known-good one? |
-| where | `tests/unit_test/xpu/test_model_support.py`, `tests/test_ci/xpu_model/` | `scripts/xpu/xpu_model_baseline.py` + `xpu_model_baseline.json` |
+| where | `tests/unit_test/xpu/test_model_support.py`, `tests/test_ci/xpu_model/` | `scripts/xpu/xpu_model_baseline.py`, `scripts/xpu/baseline/`, `xpu_model_baseline.json` |
 | needs | nothing (contract tests), or cards and weights (serving lane) | cards and weights |
 | runs on | every PR (contract tests); on demand (serving lane) | on demand, per host |
 | fails on | a broken recipe, a renamed stage, a wrong answer | a regression past the entry's own floor |
@@ -74,7 +74,7 @@ Run it from the repository root. It exits non-zero on a regression, naming the f
 | `--host-label NAME` | name the machine in the fingerprint, for a container or cluster pod whose hostname is generated |
 | `--calibrate --repeats 9` | report observed spread per field and exit without gating; exits non-zero if a model fails to serve |
 
-Speed is the median of 5 scored samples after 2 discarded warmups, at concurrency 1. Concurrency 1 is deliberate: Qwen3-TTS throughput at concurrency 4 has swung more than 1.5x between runs of one unchanged tree. A full single-launch check of every recorded model takes about two hours on bmg17690, most of it MiniMax-Music3 (~45 min) and the TP=8 thinker.
+Speed is the median of 5 scored samples after 2 discarded warmups, at concurrency 1; an entry records its warmups, and a check discards as many. The latency floor is the regression a check allows: the larger of the environment's speed floor and three times the spread the entry was recorded with, and never more than 50%, so a doubling always fails. Concurrency 1 is deliberate: Qwen3-TTS throughput at concurrency 4 has swung more than 1.5x between runs of one unchanged tree. A full single-launch check of every recorded model takes about two hours on bmg17690, most of it MiniMax-Music3 (~45 min) and the TP=8 thinker.
 
 An environment is the host, the card, and the torch, SGLang and oneCCL versions; a check against an environment the file has never seen stops rather than comparing numbers that were never comparable.
 
@@ -95,15 +95,12 @@ Other people share the cards: check `torch.xpu.mem_get_info` per card, or let th
 
 ### Running on D270
 
-The serving lane detects a D270 card and adds its flags itself, so the lane command is the same. The baseline takes them through `--serve-extra`, and its results go to a file outside the tree: the committed baseline holds B60 environments only, and a contract test keeps it that way.
+Both tools detect a D270 card and add its flags themselves, so the commands are the same as on a B60. The baseline's results go to a file outside the tree: the committed baseline holds B60 environments only, and a contract test keeps it that way.
 
 ```bash
 pytest tests/test_ci/xpu_model -m xpu_serving -v -rs
 python -m scripts.xpu.xpu_model_baseline --record --launches 3 \
-  --baseline /path/outside/the/tree/xpu_model_baseline.json \
-  --serve-extra "qwen3-tts=--tts_engine.engine.disable_cuda_graph true" \
-  --serve-extra "auk=--auk_engine.factory.enable_dit_cuda_graph false" \
-  --serve-extra "auk-flash=--auk_engine.factory.enable_dit_cuda_graph false"
+  --baseline /path/outside/the/tree/xpu_model_baseline.json
 ```
 
 In a container, pass `--host-label`: the fingerprint hashes the hostname, and a container's is random. Where the server has no outbound network, pass `--prefetch`.
@@ -118,41 +115,41 @@ torch `2.14.0+xpu`, sglang `0.5.23`, speed floor 10%, models recorded: 18
 
 **Speech to text**
 
-| model | key | latency | audio s / wall s | WER | spread | launches |
-|---|---|---|---|---|---|---|
-| ARK-ASR | `arkasr` | 0.199 s | 23.22 | 0.000 | 0.1% | 3 |
-| Fun-ASR-Nano | `fun-asr` | 0.085 s | 54.52 | 0.000 | 0.9% | 3 |
-| MOSS-Transcribe-Diarize | `moss-transcribe-diarize` | 0.147 s | 31.51 | 0.250 | 1.8% | 3 |
-| Nemotron 3.5 ASR | `nemotron35-asr` | 0.165 s | 28.06 | 0.000 | 4.7% | 3 |
-| Qwen3-ASR | `qwen3-asr` | 0.174 s | 26.51 | 0.000 | 0.8% | 3 |
-| Whisper large-v3 | `whisper` | 0.431 s | 10.72 | 0.000 | 19.0% | 3 |
+| model | key | latency | audio s / wall s | WER | spread | latency floor | launches |
+|---|---|---|---|---|---|---|---|
+| ARK-ASR | `arkasr` | 0.199 s | 23.22 | 0.000 | 0.1% | 10% | 3 |
+| Fun-ASR-Nano | `fun-asr` | 0.085 s | 54.52 | 0.000 | 0.9% | 10% | 3 |
+| MOSS-Transcribe-Diarize | `moss-transcribe-diarize` | 0.147 s | 31.51 | 0.250 | 1.8% | 10% | 3 |
+| Nemotron 3.5 ASR | `nemotron35-asr` | 0.165 s | 28.06 | 0.000 | 4.7% | 21% | 3 |
+| Qwen3-ASR | `qwen3-asr` | 0.174 s | 26.51 | 0.000 | 0.8% | 10% | 3 |
+| Whisper large-v3 | `whisper` | 0.431 s | 10.72 | 0.000 | 19.0% | 10% | 3 |
 
 **Text to speech**
 
-| model | key | latency | audio s / wall s | WER | spread | launches |
-|---|---|---|---|---|---|---|
-| AuK | `auk` | 1.257 s | 3.18 | 0.222 | 0.6% | 1 |
-| AuK-Flash | `auk-flash` | 0.403 s | 9.92 | 0.333 | 2.0% | 1 |
-| dots.tts SOAR | `dots-tts` | 7.767 s | 0.68 | 0.000 | 2.1% | 1 |
-| dots.tts Base | `dots-tts-base` | 7.878 s | 0.67 | 0.000 | 2.4% | 1 |
-| dots.tts MF | `dots-tts-mf` | 4.206 s | 1.26 | 0.000 | 3.2% | 1 |
-| Higgs Audio v3 TTS | `higgs` | 1.922 s | 1.87 | 0.000 | 0.1% | 1 |
-| Qwen3-TTS Base | `qwen3-tts` | 1.220 s | 3.48 | 0.000 | 0.6% | 3 |
-| Qwen3-TTS CustomVoice | `qwen3-tts-cv` | 1.075 s | 3.50 | 0.000 | 1.6% | 3 |
-| Qwen3-TTS VoiceDesign | `qwen3-tts-vd` | 0.764 s | 3.45 | 0.000 | 1.7% | 3 |
+| model | key | latency | audio s / wall s | WER | spread | latency floor | launches |
+|---|---|---|---|---|---|---|---|
+| AuK | `auk` | 1.257 s | 3.18 | 0.222 | 0.6% | 10% | 1 |
+| AuK-Flash | `auk-flash` | 0.403 s | 9.92 | 0.333 | 2.0% | 10% | 1 |
+| dots.tts SOAR | `dots-tts` | 7.767 s | 0.68 | 0.000 | 2.1% | 10% | 1 |
+| dots.tts Base | `dots-tts-base` | 7.878 s | 0.67 | 0.000 | 2.4% | 10% | 1 |
+| dots.tts MF | `dots-tts-mf` | 4.206 s | 1.26 | 0.000 | 3.2% | 10% | 1 |
+| Higgs Audio v3 TTS | `higgs` | 1.922 s | 1.87 | 0.000 | 0.1% | 10% | 1 |
+| Qwen3-TTS Base | `qwen3-tts` | 1.220 s | 3.48 | 0.000 | 0.6% | 10% | 3 |
+| Qwen3-TTS CustomVoice | `qwen3-tts-cv` | 1.075 s | 3.50 | 0.000 | 1.6% | 10% | 3 |
+| Qwen3-TTS VoiceDesign | `qwen3-tts-vd` | 0.764 s | 3.45 | 0.000 | 1.7% | 15% | 3 |
 
 **Chat (text out)**
 
-| model | key | latency | decode tok/s | WER | spread | launches |
-|---|---|---|---|---|---|---|
-| MiniCPM-o 4.5 | `minicpm-o` | 0.132 s | 22.64 | - | 0.5% | 1 |
-| Qwen3-Omni thinker (text only) | `qwen3-omni-text` | 0.282 s | 10.65 | - | 1.4% | 1 |
+| model | key | latency | decode tok/s | WER | spread | latency floor | launches |
+|---|---|---|---|---|---|---|---|
+| MiniCPM-o 4.5 | `minicpm-o` | 0.132 s | 22.64 | - | 0.5% | 10% | 1 |
+| Qwen3-Omni thinker (text only) | `qwen3-omni-text` | 0.282 s | 10.65 | - | 1.4% | 10% | 1 |
 
 **Text to music**
 
-| model | key | latency | - | WER | spread | launches |
-|---|---|---|---|---|---|---|
-| MiniMax Music 3 | `minimax-music3` | 367.303 s | - | - | 0.0% | 1 |
+| model | key | latency | - | WER | spread | latency floor | launches |
+|---|---|---|---|---|---|---|---|
+| MiniMax Music 3 | `minimax-music3` | 367.303 s | - | - | 0.0% | 10% | 1 |
 
 ### `bmg17690` -- 8x Arc Pro B60, 24 GB each, oneCCL 2022.1.2
 
@@ -160,13 +157,13 @@ torch `2.14.0+xpu`, sglang `0.5.23`, speed floor 10%, models recorded: 1
 
 **Text to speech**
 
-| model | key | latency | audio s / wall s | WER | spread | launches |
-|---|---|---|---|---|---|---|
-| Ming-Omni-TTS | `ming-tts` | 1.779 s | - | 0.000 | 41.4% | 3 |
+| model | key | latency | audio s / wall s | WER | spread | latency floor | launches |
+|---|---|---|---|---|---|---|---|
+| Ming-Omni-TTS | `ming-tts` | 1.779 s | - | 0.000 | 41.4% | 50% | 3 |
 
 ## Host-specific serve flags
 
-A B60 needs none. D270 needs these, each for a capture that **loses the device** rather than falling back to eager. The serving lane applies them on a D270 card; a baseline run takes them through `--serve-extra` and records them in the entry's `serve_extra`:
+A B60 needs none. D270 needs these, each for a capture that **loses the device** rather than falling back to eager. Both the serving lane and the baseline read them from the rows' `device_args` and apply them on a D270 card; `OMNI_XPU_DEVICE_FAMILY` forces a family for both, and a name outside `bmg`, `d270` is refused:
 
 | model | flag | why |
 |---|---|---|

@@ -305,12 +305,17 @@ def lock_card(card: int) -> IO[bytes] | None:
     return handle
 
 
-def claim_free_cards(count: int, held: list[IO[bytes]]) -> list[int]:
+def require_card_count(count: int) -> list[int]:
+    """The cards this run may claim, skipping when there are fewer than the topology needs; takes no lock."""
     cards = render_nodes()
     if len(cards) < count:
         pytest.skip(f"host has {len(cards)} XPU cards, this topology needs {count}")
     else:
-        pass
+        return cards
+
+
+def claim_free_cards(count: int, held: list[IO[bytes]]) -> list[int]:
+    cards = require_card_count(count)
 
     claimed: list[int] = []
     contended: list[int] = []

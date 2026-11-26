@@ -10,7 +10,12 @@ import os
 
 import pytest
 
-from tests.test_ci.xpu_model.conftest import ClaimCards, ServeModel, resolve_checkpoint
+from tests.test_ci.xpu_model.conftest import (
+    ClaimCards,
+    ServeModel,
+    require_card_count,
+    resolve_checkpoint,
+)
 from tests.test_ci.xpu_model.exercises import EXERCISES
 from tests.test_ci.xpu_model.model_table import ALLOW_DOWNLOAD_ENV, XPU_MODELS, XpuModel
 
@@ -54,6 +59,7 @@ def test_the_model_serves_and_answers_on_xpu(
         pytest.skip(model.serving)
     else:
         pass
+    require_card_count(model.cards)
     checkpoint = resolve_checkpoint(model)
     extra_args, env = serve_plan(model, claim_cards, xpu_device_family)
 

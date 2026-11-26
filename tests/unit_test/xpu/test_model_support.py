@@ -12,9 +12,10 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
+from scripts.xpu.baseline.models import DEFAULT_BASELINE, MODEL_BY_KEY
 from scripts.xpu.make_baseline_readme import render
-from scripts.xpu.xpu_model_baseline import DEFAULT_BASELINE, MODEL_BY_KEY
 from sglang_omni.config.manager import resolve_config_cls_for_model_path
 from sglang_omni.config.schema import PipelineConfig
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -226,6 +227,39 @@ def test_a_d270_card_gets_the_d270_recipe_and_an_unknown_card_the_base_one() -> 
     assert device_family("Intel(R) Arc(TM) Pro B60 Graphics") == "bmg"
     assert device_family("Intel(R) Data Center GPU Max 1550") == "unknown"
     assert device_family("Intel(R) Arc(TM) Pro B60 Graphics", "d270") == "d270"
+
+
+@pytest.mark.parametrize("override", ["D270", " d270 ", "Bmg"])
+def test_a_forced_family_is_read_case_blind(override: str) -> None:
+    assert (
+        device_family("Intel(R) Arc(TM) Pro B60 Graphics", override) in KNOWN_FAMILIES
+    )
+
+
+@pytest.mark.parametrize("override", ["d-270", "d27O", "b60"])
+def test_a_forced_family_the_lane_cannot_name_is_refused(override: str) -> None:
+    """A typo would otherwise serve the base recipe on the card the override exists for."""
+    with pytest.raises(ValueError, match="names no family"):
+        device_family("Intel(R) Graphics [0x674c]", override)
+
+
+@pytest.mark.parametrize("model", XPU_MODELS, ids=[m.key for m in XPU_MODELS])
+def test_a_row_pins_the_checkpoint_its_config_file_pins(model: XpuModel) -> None:
+    """The row's checkpoint outranks the config's model_path, so a bumped pin in one is silently ignored by the other."""
+    arguments = list(model.serve_args)
+    if "--config" not in arguments:
+        return
+    else:
+        config = yaml.safe_load(
+            (REPO_ROOT / arguments[arguments.index("--config") + 1]).read_text()
+        )
+    configured = str(config.get("model_path", ""))
+    if configured.partition("@")[0] == model.repo_id:
+        assert (
+            configured == model.checkpoint_spec
+        ), f"{model.key} serves {model.checkpoint_spec}, but its config pins {configured}"
+    else:
+        pass
 
 
 @pytest.mark.parametrize("model", XPU_MODELS, ids=[m.key for m in XPU_MODELS])

@@ -20,8 +20,13 @@ D270_PCI_IDS = ("0x674c",)
 
 def device_family(device_name: str, override: str = "") -> str:
     """Which recipe family a card belongs to: d270, bmg, or unknown, which gets the base recipe."""
-    if override:
-        return override
+    forced = override.strip().lower()
+    if forced and forced not in KNOWN_FAMILIES:
+        raise ValueError(
+            f"{DEVICE_FAMILY_ENV}={override!r} names no family; known: {', '.join(KNOWN_FAMILIES)}"
+        )
+    elif forced:
+        return forced
     else:
         lowered = device_name.lower()
     if any(pci_id in lowered for pci_id in D270_PCI_IDS):

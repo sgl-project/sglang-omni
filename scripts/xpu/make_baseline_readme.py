@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 import shlex
 
-from scripts.xpu.xpu_model_baseline import (
+from scripts.xpu.baseline.gate import speed_tolerance_for
+from scripts.xpu.baseline.models import (
     DEFAULT_BASELINE,
     MODEL_BY_KEY,
     BaselineFile,
@@ -21,6 +22,11 @@ from tests.test_ci.xpu_model.model_table import XPU_MODELS
 # What each recorded host is, for a reader who has not met it.
 HOST_NOTES = {
     "bmg17690": "8x Arc Pro B60, 24 GB each",
+}
+# Why each D270 flag exists; a device_args entry with no reason here stops the page from rendering.
+D270_REASONS = {
+    "--tts_engine.engine.disable_cuda_graph true": "its reference-code batcher captures a graph on a private stream; that capture loses the device, surfacing later as Level-Zero error 20 from an unrelated-looking synchronize",
+    "--auk_engine.factory.enable_dit_cuda_graph false": "the DiT step graph fails capture with error 40, logs that it will run eager, and generation then dies with error 20",
 }
 GROUPS = (
     ("transcription", "Speech to text", "audio s / wall s"),
@@ -72,17 +78,20 @@ def host_table(environment: Environment) -> str:
             continue
         else:
             out.append(f"\n**{title}**\n")
-        out.append(f"| model | key | latency | {rate_name} | WER | spread | launches |")
-        out.append("|---|---|---|---|---|---|---|")
+        out.append(
+            f"| model | key | latency | {rate_name} | WER | spread | latency floor | launches |"
+        )
+        out.append("|---|---|---|---|---|---|---|---|")
         for key in keys:
             model = models[key]
             latency, rate = speed(model)
             spread = worst_spread(model)
+            floor = speed_tolerance_for(model, "latency_s", environment["tolerances"])
             out.append(
                 f"| {MODEL_BY_KEY[key].name} | `{key}` | {formatted(latency)} s | "
                 f"{formatted(rate, '%.2f')} | {formatted(accuracy(model))} | "
                 f"{formatted(spread * 100 if spread is not None else None, '%.1f%%')} | "
-                f"{model.get('launches', 1)} |"
+                f"{floor:.0%} | {model.get('launches', 1)} |"
             )
     return "\n".join(out)
 
@@ -122,6 +131,20 @@ def recipe_table() -> str:
             f"{('`' + flags + '`') if flags else 'none'} | "
             f"{('`' + added + '`') if added else '-'} |"
         )
+    return "\n".join(out)
+
+
+def d270_table() -> str:
+    flagged: dict[str, list[str]] = {}
+    for row in XPU_MODELS:
+        added = shlex.join(row.serve_args_on("d270")[len(row.serve_args) :])
+        if added:
+            flagged.setdefault(added, []).append(f"`{row.key}`")
+        else:
+            continue
+    out = ["| model | flag | why |", "|---|---|---|"]
+    for flags, keys in flagged.items():
+        out.append(f"| {', '.join(keys)} | `{flags}` | {D270_REASONS[flags]} |")
     return "\n".join(out)
 
 
@@ -169,7 +192,7 @@ There are two kinds of test, and they answer different questions:
 | | functional tests | performance baseline |
 |---|---|---|
 | question | does every model still start and answer correctly? | is this tree slower or less accurate than the last known-good one? |
-| where | `tests/unit_test/xpu/test_model_support.py`, `tests/test_ci/xpu_model/` | `scripts/xpu/xpu_model_baseline.py` + `xpu_model_baseline.json` |
+| where | `tests/unit_test/xpu/test_model_support.py`, `tests/test_ci/xpu_model/` | `scripts/xpu/xpu_model_baseline.py`, `scripts/xpu/baseline/`, `xpu_model_baseline.json` |
 | needs | nothing (contract tests), or cards and weights (serving lane) | cards and weights |
 | runs on | every PR (contract tests); on demand (serving lane) | on demand, per host |
 | fails on | a broken recipe, a renamed stage, a wrong answer | a regression past the entry's own floor |
@@ -234,7 +257,7 @@ Run it from the repository root. It exits non-zero on a regression, naming the f
 | `--host-label NAME` | name the machine in the fingerprint, for a container or cluster pod whose hostname is generated |
 | `--calibrate --repeats 9` | report observed spread per field and exit without gating; exits non-zero if a model fails to serve |
 
-Speed is the median of 5 scored samples after 2 discarded warmups, at concurrency 1. Concurrency 1 is deliberate: Qwen3-TTS throughput at concurrency 4 has swung more than 1.5x between runs of one unchanged tree. A full single-launch check of every recorded model takes about two hours on bmg17690, most of it MiniMax-Music3 (~45 min) and the TP=8 thinker.
+Speed is the median of 5 scored samples after 2 discarded warmups, at concurrency 1; an entry records its warmups, and a check discards as many. The latency floor is the regression a check allows: the larger of the environment's speed floor and three times the spread the entry was recorded with, and never more than 50%, so a doubling always fails. Concurrency 1 is deliberate: Qwen3-TTS throughput at concurrency 4 has swung more than 1.5x between runs of one unchanged tree. A full single-launch check of every recorded model takes about two hours on bmg17690, most of it MiniMax-Music3 (~45 min) and the TP=8 thinker.
 
 An environment is the host, the card, and the torch, SGLang and oneCCL versions; a check against an environment the file has never seen stops rather than comparing numbers that were never comparable.
 
@@ -255,15 +278,12 @@ Other people share the cards: check `torch.xpu.mem_get_info` per card, or let th
 
 ### Running on D270
 
-The serving lane detects a D270 card and adds its flags itself, so the lane command is the same. The baseline takes them through `--serve-extra`, and its results go to a file outside the tree: the committed baseline holds B60 environments only, and a contract test keeps it that way.
+Both tools detect a D270 card and add its flags themselves, so the commands are the same as on a B60. The baseline's results go to a file outside the tree: the committed baseline holds B60 environments only, and a contract test keeps it that way.
 
 ```bash
 pytest tests/test_ci/xpu_model -m xpu_serving -v -rs
 python -m scripts.xpu.xpu_model_baseline --record --launches 3 \\
-  --baseline /path/outside/the/tree/xpu_model_baseline.json \\
-  --serve-extra "qwen3-tts=--tts_engine.engine.disable_cuda_graph true" \\
-  --serve-extra "auk=--auk_engine.factory.enable_dit_cuda_graph false" \\
-  --serve-extra "auk-flash=--auk_engine.factory.enable_dit_cuda_graph false"
+  --baseline /path/outside/the/tree/xpu_model_baseline.json
 ```
 
 In a container, pass `--host-label`: the fingerprint hashes the hostname, and a container's is random. Where the server has no outbound network, pass `--prefetch`.
@@ -276,12 +296,9 @@ Latency is one request at concurrency 1. The rate column is audio seconds produc
 
 ## Host-specific serve flags
 
-A B60 needs none. D270 needs these, each for a capture that **loses the device** rather than falling back to eager. The serving lane applies them on a D270 card; a baseline run takes them through `--serve-extra` and records them in the entry's `serve_extra`:
+A B60 needs none. D270 needs these, each for a capture that **loses the device** rather than falling back to eager. Both the serving lane and the baseline read them from the rows' `device_args` and apply them on a D270 card; `OMNI_XPU_DEVICE_FAMILY` forces a family for both, and a name outside `bmg`, `d270` is refused:
 
-| model | flag | why |
-|---|---|---|
-| `qwen3-tts` | `--tts_engine.engine.disable_cuda_graph true` | its reference-code batcher captures a graph on a private stream; that capture loses the device, surfacing later as Level-Zero error 20 from an unrelated-looking synchronize |
-| `auk`, `auk-flash` | `--auk_engine.factory.enable_dit_cuda_graph false` | the DiT step graph fails capture with error 40, logs that it will run eager, and generation then dies with error 20 |
+{d270_table()}
 
 **Apply such a flag by request shape, not by model family.** Qwen3-TTS CustomVoice and VoiceDesign carried the Base variant's flag for days and never needed it: only Base sends `ref_audio`, and a request without reference audio never reaches the batcher that breaks. The captured and eager paths do not generate identical audio, so which path a number came from is part of the number.
 
