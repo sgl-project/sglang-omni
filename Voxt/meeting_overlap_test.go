@@ -87,7 +87,14 @@ func TestMeetingOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reports := profile.RunOverlap(context.Background(), config, pcm, speech, detector)
+	nativePIDs := func() []int {
+		var pids []int
+		for _, process := range runtime.Processes() {
+			pids = append(pids, process.PID)
+		}
+		return pids
+	}
+	reports := profile.RunOverlapMonitored(context.Background(), config, pcm, speech, detector, nativePIDs)
 	if err := profile.WriteOverlapReports(config.OutputDir, reports); err != nil {
 		t.Fatal(err)
 	}

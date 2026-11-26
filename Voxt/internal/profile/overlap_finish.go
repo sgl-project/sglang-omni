@@ -28,6 +28,13 @@ func (r *overlapRun) finish() OverlapReport {
 		Structure:                OverlapStructureArtifact{UnavailableReason: "the run did not produce a complete ordered structure"},
 		Warnings:                 []string{}, Errors: append([]string(nil), r.errors...),
 	}
+	if r.monitor != nil {
+		report.Resources = r.resources
+	} else {
+		report.Resources = ResourceReport{
+			PeakMemoryPressure: Unavailable[string]("no resource monitor configured by the caller"),
+		}
+	}
 	if report.AudioDurationMS > 0 {
 		report.TotalRTF = Available(report.TotalWallMS / float64(report.AudioDurationMS))
 	}

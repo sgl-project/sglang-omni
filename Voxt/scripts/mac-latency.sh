@@ -28,8 +28,32 @@ models="asr.accurate=$1;asr.fast=$2"
 others="$(pgrep -fl 'qwen3_asr_server|silero_vad_server' || true)"
 [[ -z "$others" ]] || { echo "note: other model processes are running; the times are skewed:"; echo "$others" | cut -c1-160; }
 mkdir -p build
+reasons=()
+[[ -z "$others" ]] || reasons+=("contenders present")
+power="$(pmset -g ps 2>/dev/null || true)"
+[[ "$power" == *"AC Power"* ]] || reasons+=("not on AC power")
+pressure="$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null || echo 0)"
+peak=normal
+[[ "$pressure" == 1 ]] || peak=warn
+preflight="build/latency-preflight.json"
+python3 - "$preflight" "$?" "${reasons[@]+"${reasons[@]}"}" "$peak" <<'PY'
+import json, sys
+json.dump({"returncode": 0,
+           "environment_reasons": sys.argv[3:-1] if len(sys.argv) > 3 else [],
+           "peak_pressure": sys.argv[-1]}, open(sys.argv[1], "w"))
+PY
+rm -f build/latency.jsonl
 export VOXTNEW_LATENCY=1 VOXTNEW_LATENCY_ROUNDS="${3:-3}" VOXTNEW_LATENCY_SETTLE="${4:-3s}" VOXTNEW_OMNI_MODELS="$models"
 export VOXTNEW_MAIN_SHA="${VOXTNEW_MAIN_SHA:?VOXTNEW_MAIN_SHA must name the source commit}"
 export VOXTNEW_OMNI_RUNTIME="${VOXTNEW_OMNI_RUNTIME:-$APP/Contents/Resources/omni}"
-go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || { tail -30 build/latency.log; exit 1; }
-grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //'
+export VOXTNEW_LATENCY_OUT=build/latency.jsonl
+rc=0
+go test -count=1 -run TestMacE2EFirstLatency -v -timeout 30m . >build/latency.log 2>&1 || rc=$?
+python3 - "$preflight" "$rc" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["returncode"] = int(sys.argv[2])
+json.dump(d, open(sys.argv[1], "w"))
+PY
+grep 'MEASURE latency' build/latency.log | sed 's/^ *[a-z_0-9]*\.go:[0-9]*: //' || true
+python3 scripts/short_open_gate.py build/latency.jsonl "$preflight" "${3:-3}" || { echo "short-open group incomplete: no median (see build/latency-preflight.json and build/latency.jsonl)" >&2; exit 1; }

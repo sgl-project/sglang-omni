@@ -112,4 +112,7 @@ type OverlapReport struct {
 	SchedulingEffects           *OverlapSchedulingEffects `json:"scheduling_effects"`
 	Warnings                    []string                  `json:"warnings"`
 	Errors                      []string                  `json:"errors"`
+	// Resources is the host evidence (memory pressure, swap, process peaks)
+	// the summary gates require; without a monitor it carries the reason.
+	Resources ResourceReport `json:"resources"`
 }

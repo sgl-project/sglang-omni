@@ -68,23 +68,35 @@ type latencyResult struct {
 	Arm      string `json:"arm"`
 	// The native min_preview_samples the run used, null when the model
 	// or runtime emitted no such event; a numeric 0 is never written.
-	MinPreviewSamples                  *int    `json:"min_preview_samples"`
-	MinPreviewSamplesUnavailableReason string  `json:"min_preview_samples_unavailable_reason,omitempty"`
-	Model                              string  `json:"model"`
-	ASRCold                            bool    `json:"asr_cold"`
-	VADCold                            bool    `json:"vad_cold"`
-	AppReadyMS                         float64 `json:"app_ready_ms"`
-	FirstAudioMS                       float64 `json:"first_audio_ms"`
-	ServerReadyMS                      float64 `json:"server_ready_ms"`
-	ModelLoadMS                        float64 `json:"model_load_ms"`
-	FirstPartialMS                     float64 `json:"first_partial_ms"`
-	StopToFinalMS                      float64 `json:"stop_to_final_ms"`
-	StopToInsertMS                     float64 `json:"stop_to_insert_ms"`
-	StopToDoneMS                       float64 `json:"stop_to_done_ms"`
-	LiveUpdates                        int     `json:"live_updates"`
-	LongestUpdateGapMS                 float64 `json:"longest_update_gap_ms"`
-	Text                               string  `json:"text"`
-	TextSHA256                         string  `json:"text_sha256"`
+	MinPreviewSamples                  *int     `json:"min_preview_samples"`
+	MinPreviewSamplesUnavailableReason string   `json:"min_preview_samples_unavailable_reason,omitempty"`
+	Model                              string   `json:"model"`
+	ASRCold                            bool     `json:"asr_cold"`
+	VADCold                            bool     `json:"vad_cold"`
+	AppReadyMS                         float64  `json:"app_ready_ms"`
+	FirstAudioMS                       float64  `json:"first_audio_ms"`
+	ServerReadyMS                      float64  `json:"server_ready_ms"`
+	ModelLoadMS                        float64  `json:"model_load_ms"`
+	FirstPartialMS                     *float64 `json:"first_partial_ms"`
+	FirstPartialUnavailableReason      string   `json:"first_partial_unavailable_reason,omitempty"`
+	StopToFinalMS                      float64  `json:"stop_to_final_ms"`
+	StopToInsertMS                     float64  `json:"stop_to_insert_ms"`
+	StopToDoneMS                       float64  `json:"stop_to_done_ms"`
+	LiveUpdates                        int      `json:"live_updates"`
+	LongestUpdateGapMS                 float64  `json:"longest_update_gap_ms"`
+	Text                               string   `json:"text"`
+	TextSHA256                         string   `json:"text_sha256"`
+}
+
+// firstPartialEvidence is the first partial's wait when one was
+// observed, else nil: the row then carries the unavailable reason and no
+// wait time can be read as a partial that never came.
+func firstPartialEvidence(partial time.Duration) *float64 {
+	if partial > 0 {
+		ms := float64(partial.Microseconds()) / 1000
+		return &ms
+	}
+	return nil
 }
 
 // minPreviewEvidence is the actual gate when the native event arrived,
@@ -330,8 +342,11 @@ func latencySession(t *testing.T, a *sessionApp, lg *latencyLog, from, readyAt t
 		// it still speaks the window and stops on time, so the Final or
 		// the problem is on record too.
 		t.Logf("%s: no live text in the first minute (session %s %+v); continuing without a partial", name, a.sess.State, a.sess.Problem)
+	} else {
+		// Only an observed partial is evidence: with none, first_partial
+		// stays zero and the row writes null with its reason, never the wait.
+		st.partial = time.Since(t0)
 	}
-	st.partial = time.Since(t0)
 	// The live text's updates while the user speaks: their count and the longest wait between two.
 	speak, updates, gap, seen, at := 2*time.Second, 0, time.Duration(0), a.sess.Partial, time.Now()
 	if d, err := time.ParseDuration(os.Getenv("VOXTNEW_LATENCY_SPEAK")); err == nil {
@@ -392,10 +407,13 @@ func writeLatencyResult(t *testing.T, name, id string, round int, st latencyStag
 		ASRCold: name != "warm", VADCold: name == "cold",
 		AppReadyMS:   milliseconds(st.appReady),
 		FirstAudioMS: milliseconds(st.heard), ServerReadyMS: milliseconds(st.ready), ModelLoadMS: milliseconds(st.load),
-		FirstPartialMS: milliseconds(st.partial), StopToFinalMS: milliseconds(st.final),
+		FirstPartialMS: firstPartialEvidence(st.partial), StopToFinalMS: milliseconds(st.final),
 		StopToInsertMS: milliseconds(st.insert), StopToDoneMS: milliseconds(st.done),
 		LiveUpdates: updates, LongestUpdateGapMS: milliseconds(gap), Text: text,
 		TextSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(text))),
+	}
+	if result.FirstPartialMS == nil {
+		result.FirstPartialUnavailableReason = "no live partial was observed in the window"
 	}
 	if result.MinPreviewSamples == nil {
 		result.MinPreviewSamplesUnavailableReason = "no native moss_preview_timing event for this model or runtime"

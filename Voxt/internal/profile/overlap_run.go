@@ -14,14 +14,17 @@ import (
 )
 
 type overlapOptions struct {
-	now       func() time.Time
-	waitUntil func(context.Context, time.Time) error
-	afterFeed func(context.Context, int) error
-	newLLM    func() overlapLLM
+	now        func() time.Time
+	waitUntil  func(context.Context, time.Time) error
+	afterFeed  func(context.Context, int) error
+	newLLM     func() overlapLLM
+	newMonitor func(context.Context) *ResourceMonitor
 }
 
 type overlapRun struct {
 	config           OverlapConfig
+	monitor          *ResourceMonitor
+	resources        ResourceReport
 	method           string
 	speech           asr.FileTranscriber
 	pcm              []byte
@@ -76,6 +79,16 @@ func RunOverlap(ctx context.Context, config OverlapConfig, pcm []byte, speech as
 	return runOverlapWithOptions(ctx, config, pcm, speech, detector, defaultOverlapOptions(config))
 }
 
+// RunOverlapMonitored is RunOverlap with a resource monitor per method run
+// (the caller owns the speech-model servers and names their pids).
+func RunOverlapMonitored(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, processes func() []int) []OverlapReport {
+	options := defaultOverlapOptions(config)
+	options.newMonitor = func(ctx context.Context) *ResourceMonitor {
+		return StartResourceMonitor(ctx, SelfAndNative(processes))
+	}
+	return runOverlapWithOptions(ctx, config, pcm, speech, detector, options)
+}
+
 func runOverlapWithOptions(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, options overlapOptions) []OverlapReport {
 	reports := make([]OverlapReport, 0, 3)
 	for _, method := range []string{"one_shot", "serial", "overlap"} {
@@ -95,6 +108,9 @@ func newOverlapRun(config OverlapConfig, pcm []byte, speech asr.FileTranscriber,
 
 func runOverlapMethod(ctx context.Context, config OverlapConfig, pcm []byte, speech asr.FileTranscriber, detector vad.Model, method string, options overlapOptions) OverlapReport {
 	run := newOverlapRun(config, pcm, speech, method, options)
+	if options.newMonitor != nil {
+		run.monitor = options.newMonitor(ctx)
+	}
 	if err := run.plan(ctx, detector); err != nil {
 		run.fail(err)
 		return run.finish()

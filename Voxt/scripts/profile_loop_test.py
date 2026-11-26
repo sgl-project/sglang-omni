@@ -137,6 +137,34 @@ class SummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             loop.summarize_reports(reports)
 
+    def test_overlap_report_with_resources_summarizes(self):
+        from scripts import overlap_summary
+        import tempfile
+
+        def report(wall):
+            base = raw_report(wall)
+            base.update(
+                {
+                    "schema_version": 1, "method": "overlap", "simulated_llm": True,
+                    "started_at": "2026-11-26T00:00:00Z", "ended_at": "2026-11-26T00:01:00Z",
+                    "audio_duration_ms": 600000, "timing": {}, "backlog_at_stop": {},
+                    "config": {}, "stages": [], "structure": {},
+                }
+            )
+            return base
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs = []
+            for index, wall in enumerate((300, 100, 200)):
+                run = root / f"run{index}"
+                for method in overlap_summary.METHODS:
+                    (run / method).mkdir(parents=True)
+                    (run / method / "result.json").write_text(json.dumps(report(wall)))
+                runs.append(run)
+            out = overlap_summary.summarize_run_directories(runs, root / "median")
+            self.assertEqual(out["overlap"]["median"]["total_wall_ms"], 200)
+
     def test_summary_missing_numeric_field_is_a_value_error(self):
         reports = [raw_report(300), raw_report(100), raw_report(200)]
         reports[1].pop("total_wall_ms")

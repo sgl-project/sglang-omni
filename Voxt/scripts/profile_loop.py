@@ -418,17 +418,36 @@ def min_preview_samples_valid(row: dict[str, object]) -> bool:
     return False
 
 
+def text_hash(row: dict[str, object]) -> str:
+    """A row's transcript hash, only as evidence: a 64-character hex
+    string. Anything else (None, "None", "", a non-string) is no hash
+    at all and can never pass a kept gate."""
+    value = row.get("text_sha256")
+    if not isinstance(value, str) or len(value) != 64:
+        return ""
+    return value if all(c in "0123456789abcdef" for c in value) else ""
+
+
 def distinct_text_hashes(rows: list[dict[str, object]]) -> list[str]:
     """The text hashes a kept decision must be written against: one per
     scenario, different scenarios are expected to differ only when the
     model or config changed them (a cold/warm pair shares one)."""
-    return sorted({str(row.get("text_sha256", "")) for row in rows})
+    return sorted({text_hash(row) for row in rows if text_hash(row)})
+
+
+def first_partial_valid(row: dict[str, object]) -> bool:
+    """A kept short-open row observed a first partial: a positive
+    millisecond number, never a wait written when no partial arrived."""
+    value = row.get("first_partial_ms")
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, (int, float)) and value > 0
 
 
 def latency_rows_valid(rows: list[dict[str, object]]) -> bool:
     """Every latency row in a kept group passes the evidence gates."""
     return bool(rows) and all(
-        min_preview_samples_valid(row) and str(row.get("text_sha256", "")) != ""
+        min_preview_samples_valid(row) and text_hash(row) != ""
         for row in rows
     )
 
@@ -452,6 +471,7 @@ def short_open_attempt_kept(
         and [str(row.get("scenario")) for row in rows]
         == (scenarios or SHORT_OPEN_SCENARIOS)
         and latency_rows_valid(rows)
+        and all(first_partial_valid(row) for row in rows)
         and len(distinct_text_hashes(rows)) == 1
     )
 
@@ -463,7 +483,7 @@ def short_open_group_complete(observations: list[dict[str, object]]) -> bool:
     if len(observations) != 3 or not all(obs.get("kept") for obs in observations):
         return False
     rows = [row for obs in observations for row in obs.get("rows", [])]
-    return bool(rows) and "" not in distinct_text_hashes(rows)
+    return bool(rows) and latency_rows_valid(rows) and bool(distinct_text_hashes(rows))
 
 
 def report_fast_profile_pressure_recorded(report: dict[str, object]) -> bool:

@@ -24,6 +24,7 @@ def row(**overrides) -> dict[str, object]:
         "scenario": "cold",
         "text_sha256": "a" * 64,
         "min_preview_samples": 20000,
+        "first_partial_ms": 1200.0,
     }
     base.update(overrides)
     return base
@@ -67,6 +68,31 @@ class TextHashGateTests(unittest.TestCase):
     def test_rows_gate_requires_hashes(self):
         self.assertFalse(loop.latency_rows_valid([row(text_sha256="")]))
         self.assertTrue(loop.latency_rows_valid([row()]))
+
+
+class TextHashValueTests(unittest.TestCase):
+    def test_null_and_named_strings_are_no_hash(self):
+        for bad in (None, "None", "", 0, "z" * 64):
+            self.assertEqual(loop.text_hash(row(text_sha256=bad)), "")
+        self.assertEqual(loop.text_hash(row()), "a" * 64)
+
+    def test_distinct_hashes_skip_invalid(self):
+        rows = [row(text_sha256=None), row(scenario="warm")]
+        self.assertEqual(loop.distinct_text_hashes(rows), ["a" * 64])
+        self.assertEqual(loop.distinct_text_hashes([row(text_sha256=None)]), [])
+
+
+class FirstPartialGateTests(unittest.TestCase):
+    def test_no_partial_is_not_kept(self):
+        rows = [row(), row(scenario="warm", first_partial_ms=None)]
+        self.assertFalse(loop.short_open_attempt_kept(0, [], "normal", rows))
+        rows[1]["first_partial_ms"] = 60000.0
+        self.assertTrue(loop.short_open_attempt_kept(0, [], "normal", rows))
+
+    def test_zero_and_bool_are_not_partials(self):
+        self.assertFalse(loop.first_partial_valid(row(first_partial_ms=0)))
+        self.assertFalse(loop.first_partial_valid(row(first_partial_ms=True)))
+        self.assertTrue(loop.first_partial_valid(row(first_partial_ms=0.4)))
 
     def test_distinct_hashes_cold_warm_pair(self):
         same = "b" * 64
