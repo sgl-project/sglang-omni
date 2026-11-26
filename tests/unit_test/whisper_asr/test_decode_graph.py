@@ -10,6 +10,7 @@ from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.mem_cache.memory_pool import KVWriteLoc
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig, PhaseConfig
 from sglang.srt.model_executor.forward_batch_info import (
     CaptureHiddenMode,
     ForwardBatch,
@@ -26,6 +27,7 @@ from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
 from sglang_omni.platforms.xpu import XPUOmniPlatform
+from tests.unit_test.fixtures.cuda_graph_server_args import cuda_graph_server_args
 
 ENCODER_TOKENS = 8
 DECODER_TOKENS = 16
@@ -34,7 +36,6 @@ VOCAB_SIZE = 32
 
 
 class LastTokenLogits(nn.Module):
-    """The decoder's logits with no LM-head parallelism, which needs a running server."""
 
     def forward(
         self,
@@ -47,7 +48,6 @@ class LastTokenLogits(nn.Module):
 
 
 class KVBuffers:
-    """A token-to-KV pool of one K and one V buffer per attention layer."""
 
     def __init__(self, num_layers: int, config: WhisperConfig, device: str) -> None:
         heads = config.decoder_attention_heads
@@ -83,7 +83,6 @@ class KVBuffers:
 
 
 class RequestSlotAttention(AttentionBackend):
-    """Attention over exactly each request's encoder slots or its first seq_len decoder slots."""
 
     def __init__(self, token_to_kv_pool: KVBuffers, req_to_token: torch.Tensor) -> None:
         super().__init__()
@@ -124,7 +123,6 @@ class RequestSlotAttention(AttentionBackend):
 
 
 def decoder_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamespace:
-    """A two-layer Whisper decoder whose request rows map columns to scattered KV slots, none shared and none the padding slot 0."""
     monkeypatch.setattr(
         sglang_model, "LogitsProcessor", lambda config: LastTokenLogits()
     )
@@ -157,7 +155,6 @@ def decoder_runner(monkeypatch: pytest.MonkeyPatch, device: str) -> SimpleNamesp
 def decode_batch(
     rows: list[int], decoder_lengths: list[int], runner: SimpleNamespace
 ) -> ForwardBatch:
-    """An ordinary decode step of one request per request pool row, each writing the column after its last token."""
     device = runner.req_to_token.device
     seq_lens = torch.tensor(decoder_lengths, device=device)
     req_pool_indices = torch.tensor(rows, device=device)
@@ -210,7 +207,6 @@ def eager_logits(runner: SimpleNamespace, forward_batch: ForwardBatch) -> torch.
 def test_a_padded_batch_decodes_each_request_through_its_own_slots_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Three requests of different lengths in a graph of four, attended in groups of two, decode and write K/V as attention over exactly their own slots; the columns past each length still name the slots of the request that held the row before, here poisoned with NaN, and one of them leaked into every later request until the masked columns stopped reading them."""
     torch.manual_seed(0)
     monkeypatch.setattr(decode_graph, "REQUESTS_PER_ATTENTION_CALL", 2)
     runner = decoder_runner(monkeypatch, "cpu")
@@ -267,7 +263,6 @@ def test_only_an_ordinary_decode_the_graphs_can_hold_replays(
     capture_hidden_mode: CaptureHiddenMode,
     can_run: bool,
 ) -> None:
-    """A graph reads every request's whole encoder width and returns logits only, so prefill, a batch past the largest graph, a shorter encoder and a hidden-state capture stay eager."""
     graphs = graph_runner(decoder_runner(monkeypatch, "cpu"), (1, 4))
     forward_batch = SimpleNamespace(
         forward_mode=forward_mode,
@@ -280,23 +275,75 @@ def test_only_an_ordinary_decode_the_graphs_can_hold_replays(
 
 
 @pytest.mark.parametrize(
-    ("platform", "disable_decode_cuda_graph", "kv_cache_dtype", "captured"),
+    ("platform", "selectors", "kv_cache_dtype", "captured"),
     [
-        (XPUOmniPlatform(), False, torch.float16, True),
-        (XPUOmniPlatform(), True, torch.float16, False),
-        (XPUOmniPlatform(), False, torch.float8_e4m3fn, False),
-        (CUDAOmniPlatform(), False, torch.float16, False),
+        (XPUOmniPlatform(), {}, torch.float16, True),
+        (
+            XPUOmniPlatform(),
+            {"disable_decode_cuda_graph": True, "cuda_graph_backend_decode": None},
+            torch.float16,
+            False,
+        ),
+        (
+            XPUOmniPlatform(),
+            {"disable_cuda_graph": True, "cuda_graph_backend_decode": None},
+            torch.float16,
+            False,
+        ),
+        (
+            XPUOmniPlatform(),
+            {"cuda_graph_backend_decode": "disabled"},
+            torch.float16,
+            False,
+        ),
+        (
+            XPUOmniPlatform(),
+            {"cuda_graph_config": {"decode": {"backend": "disabled"}}},
+            torch.float16,
+            False,
+        ),
+        (
+            XPUOmniPlatform(),
+            {
+                "cuda_graph_config": CudaGraphConfig(
+                    decode=PhaseConfig(backend="disabled")
+                )
+            },
+            torch.float16,
+            False,
+        ),
+        (
+            XPUOmniPlatform(),
+            {
+                "disable_decode_cuda_graph": True,
+                "cuda_graph_backend_decode": None,
+                "cuda_graph_config": {"decode": {"backend": "full"}},
+            },
+            torch.float16,
+            True,
+        ),
+        (XPUOmniPlatform(), {}, torch.float8_e4m3fn, False),
+        (CUDAOmniPlatform(), {}, torch.float16, False),
     ],
-    ids=["xpu", "decode_graph_disabled", "quantized_kv_cache", "cuda"],
+    ids=[
+        "xpu",
+        "decode_graph_disabled",
+        "all_graphs_disabled",
+        "decode_backend_disabled",
+        "structured_decode_disabled",
+        "structured_config_object_disabled",
+        "structured_backend_outranks_the_flag",
+        "quantized_kv_cache",
+        "cuda",
+    ],
 )
 def test_the_decode_graphs_follow_sglangs_decode_batch_sizes_where_the_platform_owns_them(
     monkeypatch: pytest.MonkeyPatch,
     platform: XPUOmniPlatform | CUDAOmniPlatform,
-    disable_decode_cuda_graph: bool,
+    selectors: dict[str, object],
     kv_cache_dtype: torch.dtype,
     captured: bool,
 ) -> None:
-    """CUDA captures Whisper's decode in SGLang's own graphs; XPU's torch_native backend turns those off, so the model records its own at SGLang's decode batch sizes, unless decode graphs are switched off or the KV cache needs scales the graph does not apply."""
     runner = decoder_runner(monkeypatch, "cpu")
     captures = []
     monkeypatch.setattr(engine_builder, "current_platform", platform)
@@ -330,7 +377,7 @@ def test_the_decode_graphs_follow_sglangs_decode_batch_sizes_where_the_platform_
 
     builder.post_cuda_graph_setup(
         runner.model,
-        SimpleNamespace(disable_decode_cuda_graph=disable_decode_cuda_graph),
+        cuda_graph_server_args(**selectors),
     )
 
     if captured:
@@ -346,7 +393,6 @@ def test_the_decode_graphs_follow_sglangs_decode_batch_sizes_where_the_platform_
 def test_replay_decodes_the_loaded_batch_as_the_step_runs_eagerly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Graphs of 4 and 1 requests, captured on the padding row largest first in one pool, read every batch's requests, lengths and tokens from their inputs, replayed in any order."""
     torch.manual_seed(0)
     runner = decoder_runner(monkeypatch, "xpu")
     pool = runner.token_to_kv_pool

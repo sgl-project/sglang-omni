@@ -51,6 +51,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     build_default_prefill_cuda_graph_bs,
     build_generation_batch_overrides,
 )
+from tests.unit_test.fixtures.cuda_graph_server_args import cuda_graph_server_args
 
 
 def encoder_graph_builder(**kwargs):
@@ -636,15 +637,46 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
 
 
 @pytest.mark.parametrize(
-    ("platform", "device_type", "prefill_runner_type", "enabled", "replayed_by"),
+    (
+        "platform",
+        "device_type",
+        "prefill_runner_type",
+        "enabled",
+        "selectors",
+        "replayed_by",
+    ),
     [
-        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, True, "graph"),
-        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, False, None),
-        (CUDAOmniPlatform(), "cpu", WhisperPrefillCudaGraphRunner, True, None),
-        (CUDAOmniPlatform(), "cuda", EagerRunner, True, None),
-        (XPUOmniPlatform(), "xpu", EagerRunner, True, "model"),
-        (XPUOmniPlatform(), "xpu", EagerRunner, False, None),
-        (XPUOmniPlatform(), "cpu", EagerRunner, True, None),
+        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, True, {}, "graph"),
+        (CUDAOmniPlatform(), "cuda", WhisperPrefillCudaGraphRunner, False, {}, None),
+        (CUDAOmniPlatform(), "cpu", WhisperPrefillCudaGraphRunner, True, {}, None),
+        (CUDAOmniPlatform(), "cuda", EagerRunner, True, {}, None),
+        (XPUOmniPlatform(), "xpu", EagerRunner, True, {}, "model"),
+        (XPUOmniPlatform(), "xpu", EagerRunner, False, {}, None),
+        (XPUOmniPlatform(), "cpu", EagerRunner, True, {}, None),
+        (
+            XPUOmniPlatform(),
+            "xpu",
+            EagerRunner,
+            True,
+            {"cuda_graph_backend_prefill": "disabled"},
+            None,
+        ),
+        (
+            XPUOmniPlatform(),
+            "xpu",
+            EagerRunner,
+            True,
+            {"disable_prefill_cuda_graph": True, "cuda_graph_backend_prefill": None},
+            None,
+        ),
+        (
+            XPUOmniPlatform(),
+            "xpu",
+            EagerRunner,
+            True,
+            {"cuda_graph_config": {"prefill": {"backend": "disabled"}}},
+            None,
+        ),
     ],
     ids=[
         "cuda_prefill_graph",
@@ -654,6 +686,9 @@ def test_whisper_asr_threads_explicit_cuda_graph_bs(
         "xpu_eager_prefill",
         "xpu_disabled",
         "cpu_on_xpu",
+        "xpu_prefill_backend_disabled",
+        "xpu_prefill_graph_disabled",
+        "xpu_structured_prefill_disabled",
     ],
 )
 def test_dense_prefill_graphs_capture_only_where_a_runner_replays_them(
@@ -662,6 +697,7 @@ def test_dense_prefill_graphs_capture_only_where_a_runner_replays_them(
     device_type: str,
     prefill_runner_type: type[WhisperPrefillCudaGraphRunner] | type[EagerRunner],
     enabled: bool,
+    selectors: dict[str, object],
     replayed_by: str | None,
 ) -> None:
     """Other devices must not enter torch.cuda capture during resource setup."""
@@ -709,7 +745,7 @@ def test_dense_prefill_graphs_capture_only_where_a_runner_replays_them(
         lambda: SimpleNamespace(max_prefill_tokens=6144, max_running_requests=2),
     )
     builder.setup_model_resources(
-        model, SimpleNamespace(), generation_cuda_graph_enabled=True
+        model, cuda_graph_server_args(**selectors), generation_cuda_graph_enabled=True
     )
     assert builder.sglang_runner.prefill_cuda_graph_runner is prefill_runner
     assert captured_request_counts == ([] if replayed_by is None else [2])

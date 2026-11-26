@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal
 
 import torch
+from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
 from sglang.srt.model_executor.runner.base_cuda_graph_runner import (
     get_batch_sizes_to_capture,
 )
@@ -195,6 +196,35 @@ def resolve_encoder_graph_buckets(
     return tuple(sorted(resolved))
 
 
+def disables_cuda_graph_phase(server_args: ServerArgs, phase: str) -> bool:
+    if phase == "decode":
+        phase_disabled = server_args.disable_decode_cuda_graph
+        phase_backend = server_args.cuda_graph_backend_decode
+    else:
+        phase_disabled = server_args.disable_prefill_cuda_graph
+        phase_backend = server_args.cuda_graph_backend_prefill
+    backend = None
+    if server_args.disable_cuda_graph or phase_disabled:
+        backend = CudaGraphBackend.DISABLED
+    else:
+        pass
+    if phase_backend is not None:
+        backend = phase_backend
+    else:
+        pass
+    structured = server_args.cuda_graph_config
+    if isinstance(structured, CudaGraphConfig):
+        structured = structured.to_dict()
+    else:
+        pass
+    phase_config = structured.get(phase) if isinstance(structured, Mapping) else None
+    if isinstance(phase_config, Mapping) and "backend" in phase_config:
+        backend = phase_config["backend"]
+    else:
+        pass
+    return backend == CudaGraphBackend.DISABLED
+
+
 class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
     model_name = "Whisper ASR"
     model_arch_override = "WhisperForConditionalGeneration"
@@ -338,7 +368,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
         graph_backend = current_platform.get_device_graph_backend(decoder_device)
         if (
             graph_backend is None
-            or server_args.disable_decode_cuda_graph
+            or disables_cuda_graph_phase(server_args, "decode")
             or self.sglang_runner.kv_cache_dtype != self.sglang_runner.dtype
         ):
             return
@@ -402,6 +432,7 @@ class WhisperASREngineBuilder(AsrEngineBuilder[WhisperASRRequestData]):
             replays_in_model = (
                 isinstance(prefill_graph_runner, EagerRunner)
                 and current_platform.enable_whisper_decoder_graphs()
+                and not disables_cuda_graph_phase(server_args, "prefill")
             )
             if graph_backend is not None and (
                 replays_in_prefill_graph or replays_in_model
