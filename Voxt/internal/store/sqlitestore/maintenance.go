@@ -36,8 +36,8 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 }
 
 // CheckFile opens the database at path, runs SQLite's integrity check,
-// makes sure it is a Voxt library (the first migration's tables) and
-// reports the schema version it has.
+// makes sure it is a Voxt library (the first migration's tables and
+// columns) and reports the schema version it has.
 func CheckFile(ctx context.Context, path string) (int, error) {
 	db, err := sqlite.Open(ctx, path, sqlite.OpenOptions{})
 	if err != nil {
@@ -55,20 +55,47 @@ func CheckFile(ctx context.Context, path string) (int, error) {
 		}
 		return 0, fmt.Errorf("sqlitestore: %s: integrity check: %s", path, strings.Join(msgs, "; "))
 	}
-	for _, table := range libraryTables {
-		rows, err := db.Query(ctx, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table)
+	for _, want := range librarySchema {
+		rows, err := db.Query(ctx, fmt.Sprintf("PRAGMA table_info(%q)", want.table))
 		if err != nil {
 			return 0, err
 		}
-		if len(rows.Values) == 0 {
-			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (no table %s)", path, table)
+		have := make(map[string]int64, len(rows.Values))
+		for _, r := range rows.Values {
+			have[asString(r[1])] = asInt(r[5])
+		}
+		if len(have) == 0 {
+			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (no table %s)", path, want.table)
+		}
+		for _, col := range want.columns {
+			if _, ok := have[col]; !ok {
+				return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (table %s has no column %s)", path, want.table, col)
+			}
+		}
+		if have[want.key] == 0 {
+			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (table %s has no primary key %s)", path, want.table, want.key)
 		}
 	}
 	return userVersion(ctx, db)
 }
 
-// libraryTables are the first migration's, in every Voxt library.
-var libraryTables = []string{"documents", "history", "dictionary_terms"}
+// librarySchema holds the first migration's columns and key, which every
+// Voxt library has: later migrations only add. A foreign database can
+// reuse the table names, so their shape tells a Voxt library apart.
+var librarySchema = []struct {
+	table   string
+	key     string
+	columns []string
+}{
+	{"documents", "key", []string{"key", "doc", "updated_at"}},
+	{"history", "seq", []string{
+		"seq", "id", "kind", "created_at", "status", "error", "app_bundle", "app_name", "url_host",
+		"rule_id", "rule_name", "raw_text", "source_text", "prompt_text", "result", "target_lang",
+		"delivery", "asr_provider", "asr_model", "llm_provider", "llm_model", "audio_ms", "asr_ms",
+		"llm_ms", "total_ms", "audio",
+	}},
+	{"dictionary_terms", "id", []string{"id", "term", "aliases", "note", "enabled", "created_at", "updated_at"}},
+}
 
 // RewritePaths replaces the folder oldDir by newDir at the start of the
 // paths the database at path holds in its text columns (as plain text,

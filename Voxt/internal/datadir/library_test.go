@@ -104,7 +104,8 @@ func TestStageImportRefusesOtherFiles(t *testing.T) {
 }
 
 // A sound SQLite file of another app, at a schema version Voxt reads, is
-// refused too: the library stays as it was after the restart.
+// refused too: the library stays as it was after the restart. Reusing
+// Voxt's table names is not enough, since the columns differ.
 func TestStageImportRefusesForeignSQLite(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -114,23 +115,31 @@ func TestStageImportRefusesForeignSQLite(t *testing.T) {
 	}
 	putDoc(t, st, "settings:app", `{"from":"mine"}`)
 	st.Close()
-	foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
-	out, err := exec.Command(sqlite3, foreign, fmt.Sprintf("CREATE TABLE notes (x); PRAGMA user_version = %d;", sqlitestore.Version())).CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v: %s", err, out)
+	foreigns := map[string]string{
+		"another app's table":                     "CREATE TABLE notes (x);",
+		"Voxt table names, another app's columns": "CREATE TABLE documents (x); CREATE TABLE history (x); CREATE TABLE dictionary_terms (x);",
 	}
-	if err := StageImport(ctx, dir, foreign); err == nil {
-		t.Fatal("StageImport accepted another app's SQLite file")
-	}
-	if _, err := Resolve(dir); err != nil {
-		t.Fatal(err)
-	}
-	if got := docs(t, dir, "settings:app")[0]; got != `{"from":"mine"}` {
-		t.Errorf("the library after the refused import: %s", got)
-	}
-	for _, name := range []string{ImportFile, importedDB} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Errorf("%s was left after a refused import", name)
-		}
+	for name, schema := range foreigns {
+		t.Run(name, func(t *testing.T) {
+			foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
+			out, err := exec.Command(sqlite3, foreign, fmt.Sprintf("%s PRAGMA user_version = %d;", schema, sqlitestore.Version())).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if err := StageImport(ctx, dir, foreign); err == nil {
+				t.Fatal("StageImport accepted another app's SQLite file")
+			}
+			if _, err := Resolve(dir); err != nil {
+				t.Fatal(err)
+			}
+			if got := docs(t, dir, "settings:app")[0]; got != `{"from":"mine"}` {
+				t.Errorf("the library after the refused import: %s", got)
+			}
+			for _, marker := range []string{ImportFile, importedDB} {
+				if _, err := os.Stat(filepath.Join(dir, marker)); !os.IsNotExist(err) {
+					t.Errorf("%s was left after a refused import", marker)
+				}
+			}
+		})
 	}
 }
