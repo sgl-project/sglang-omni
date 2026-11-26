@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/egoist/mygo"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -186,10 +187,7 @@ func (a *app) sessionChips() []sessionChipViewState {
 	if !a.prefs.Features.SessionsOn {
 		return nil
 	}
-	list := a.sessions()
-	if len(list) < 2 && !a.renaming {
-		return nil
-	}
+	list := a.sessions() // one session too: the row's "+" adds the next
 	chips := make([]sessionChipViewState, len(list))
 	for i, p := range list {
 		chip := sessionChipViewState{ID: p.id, Title: cmpOr(p.name, p.title), Current: p.id == a.slot, Renaming: a.renaming && p.id == a.renameID}
@@ -243,11 +241,22 @@ func sessionTitle(text string) string {
 	return cutTitle(strings.Join(strings.Fields(text), " "), sessionTitleMax)
 }
 
+// cutTitle cuts text to most columns: a wide (CJK) character takes two.
 func cutTitle(text string, most int) string {
-	if runes := []rune(text); len(runes) > most {
-		text = strings.TrimSpace(string(runes[:most])) + "…"
+	columns := 0
+	for i, r := range text {
+		if columns += runeColumns(r); columns > most {
+			return strings.TrimSpace(text[:i]) + "…"
+		}
 	}
 	return text
+}
+
+func runeColumns(r rune) int {
+	if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul) || r >= 0x3000 && r <= 0x303f || r >= 0xff00 && r <= 0xffef {
+		return 2
+	}
+	return 1
 }
 
 // titleSession names the session an ended session ran in after its

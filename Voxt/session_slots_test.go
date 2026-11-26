@@ -246,11 +246,12 @@ func TestSessionSlotsDefaultUnchanged(t *testing.T) {
 	_, off, _ := a.cardSize()
 	sessionsOn(a)
 	a.overlaySync()
-	// One session: the card is as it is with sessions off.
-	if _, on, _ := a.cardSize(); on != off || chipLine(a) != "" || a.boxViewState().Sessions != nil {
+	// One session: the row shows already, CardSessionsH taller, so its
+	// "+" can add the next one.
+	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH || len(a.cachedCard().Sessions) != 1 {
 		t.Fatalf("one session: card height %d, %d without sessions, row %q", on, off, chipLine(a))
 	}
-	// A second one brings the row, CardSessionsH taller, on both cards.
+	// A second one keeps the card's height.
 	a.slots = append(a.slots, parkedSlot{id: 9, title: "A long title here"})
 	a.overlaySync()
 	if _, on, _ := a.cardSize(); on != off+layout.CardSessionsH {
@@ -404,17 +405,17 @@ func TestSessionTitleAndRename(t *testing.T) {
 		t.Fatalf("empty name: %q renaming=%v", got, a.renaming)
 	}
 	// The only session is renamed from the menu bar: its card comes on
-	// screen with the row for as long as the title is typed.
+	// screen with the row.
 	a.deleteSession(0)
-	if got := chipLine(a); got != "" {
-		t.Fatalf("one session has a row: %q", got)
+	if got := len(a.sessionChips()); got != 1 {
+		t.Fatalf("one session: %d chips", got)
 	}
 	a.renameCurrentSession()
 	if chips := a.sessionChips(); len(chips) != 1 || !chips[0].Renaming || !(a.answer.open || a.emptyCard) {
 		t.Fatalf("rename from the menu: %+v open=%v empty=%v", chips, a.answer.open, a.emptyCard)
 	}
 	a.nameSession(a.slot, "Only one")
-	if labels, _ := menuLabels(a); chipLine(a) != "" || labels[1] != "1 Only one*" {
+	if labels, _ := menuLabels(a); chipLine(a) != "1 Only one*" || labels[1] != "1 Only one*" {
 		t.Fatalf("named: row %q menu %q", chipLine(a), labels)
 	}
 	a.newSession()
@@ -424,7 +425,7 @@ func TestSessionTitleAndRename(t *testing.T) {
 	a.slots[1].titled = "x"
 	a.deleteSession(late)
 	a.setSessionTitle(late, "x", "Late")
-	if got := chipLine(a); got != "" || a.slots[0].title == "Late" {
+	if got := chipLine(a); strings.Contains(got, "Late") || len(a.sessionChips()) != 1 {
 		t.Fatalf("after the delete: %q", got)
 	}
 }
@@ -494,5 +495,20 @@ func TestSessionSlotSwitchBackKeepsRewriteCard(t *testing.T) {
 	// are letters typed there or in the app in front.
 	if a.cardHotkeyGeneration() != 0 {
 		t.Fatal("the Rewrite card binds the answer card's letter keys")
+	}
+}
+
+// TestSessionTitleOfAnswer: the model's title loses its markdown and
+// quotes, and a Chinese title is cut at half the letters of an English
+// one, as each character is twice as wide.
+func TestSessionTitleOfAnswer(t *testing.T) {
+	for answer, want := range map[string]string{
+		"**“我”与父亲之间的感情**\n这段话讲述了……": "“我”与父亲之间的感…",
+		"## `Autumn rain` haiku.": "Autumn rain haiku",
+		"这段话主要讲述了作者与父亲之间深厚的感情":    "这段话主要讲述了作…",
+	} {
+		if got := titleOfAnswer(answer); got != want {
+			t.Errorf("titleOfAnswer(%q) = %q, want %q", answer, got, want)
+		}
 	}
 }
