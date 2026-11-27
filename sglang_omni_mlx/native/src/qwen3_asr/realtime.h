@@ -97,14 +97,15 @@ private:
   long LockedEndSample();
   std::vector<float> SegmentSamples(const Segment &segment,
                                     long end_sample) const;
-  // Builds the request for a decode of segment through end_sample, a refresh
-  // or its final decode, and counts it.
-  TranscriptionOptions DecodeOptions(Segment &segment, bool is_refresh,
-                                     long end_sample);
-  // A refresh passes its segment's reuse; the final decode passes none.
+  // note (chenye): Builds refresh or final options through end_sample and
+  // increments the segment decode count.
+  TranscriptionOptions DecodeOptions(Segment &segment, long end_sample);
+  // note (chenye): Finals snapshot shared reuse on the worker; refreshes update
+  // it.
   omni_server::Transcription Decode(std::vector<float> samples,
                                     TranscriptionOptions options,
-                                    std::shared_ptr<RefreshReuse> reuse) const;
+                                    std::shared_ptr<RefreshReuse> reuse,
+                                    bool snapshot_reuse) const;
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,
                    long end_sample);

@@ -182,7 +182,7 @@
                 "id": "anthropic",
                 "account": "llm.anthropic",
                 "name": "Anthropic",
-                "model": "claude-sonnet-4-6",
+                "model": "claude-haiku-5-5",
                 "where": "",
                 "configured": false,
                 "missing": "key",

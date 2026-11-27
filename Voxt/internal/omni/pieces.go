@@ -17,11 +17,15 @@ import (
 // language) and context bias; at Finish only the rest is left. Its
 // fields are guarded by the live session's mu.
 type pieces struct {
-	wake    chan struct{} // new audio (cap 1)
-	exited  chan struct{} // closed when the loop has stopped
-	tuning  ASRTuning     // policy for this stream; guarded by live.mu
-	policy  uint64        // bumped when a safe late policy change takes effect
-	claimed bool          // a piece has started; its boundaries can no longer change
+	wake   chan struct{} // new audio (cap 1)
+	exited chan struct{} // closed when the loop has stopped
+	// note (chenye): Finish cancels planning while the session context keeps a claimed piece alive.
+	cancelPlanning context.CancelFunc
+	// note (chenye): Final joins only the current authoritative piece's transcription.
+	activePieceDone chan struct{}
+	tuning          ASRTuning // policy for this stream; guarded by live.mu
+	policy          uint64    // bumped when a safe late policy change takes effect
+	claimed         bool      // a piece has started; its boundaries can no longer change
 	// done is the bytes of audio recognised, texts their text in order,
 	// language the language they carry ("" until known when no hint).
 	done     int
@@ -36,7 +40,7 @@ func samplesOf(d time.Duration) int { return int(d.Seconds() * sampleRate) }
 // recognisePieces is the loop of s's pieces: on new audio, a piece
 // when one is due, until Finish (or a piece failed: the rest waits for
 // Finish).
-func (s *live) recognisePieces(language string, b bias) {
+func (s *live) recognisePieces(planningContext context.Context, language string, b bias) {
 	pc := s.pc
 	defer close(pc.exited)
 	looked := 0 // the audio's length at the last look for a pause
@@ -44,34 +48,41 @@ func (s *live) recognisePieces(language string, b bias) {
 	for {
 		select {
 		case <-pc.wake:
-		case <-s.ctx.Done():
+		case <-planningContext.Done():
 			return
 		}
 		s.mu.Lock()
-		finished, audio, start, t, policy := s.finished, s.audio, pc.done, pc.tuning, pc.policy
+		finished, ended, audio, start, t, policy := s.finished, s.ended, s.audio, pc.done, pc.tuning, pc.policy
 		s.mu.Unlock()
 		if policy != lookedPolicy {
 			looked, lookedPolicy = 0, policy
 		}
 		total := len(audio) / 2
 		from := start / 2
-		if finished {
+		if finished || ended || planningContext.Err() != nil {
 			return
 		}
 		if total < samplesOf(t.PiecesAfter) || total-from < samplesOf(t.PieceSeconds) || total-looked < sampleRate {
 			continue
 		}
 		looked = total
-		cut, ok := s.findCut(audio[start:], t)
+		cut, ok := s.findCut(planningContext, audio[start:], t)
 		if !ok {
 			continue
 		}
 		s.mu.Lock()
-		if s.finished || pc.policy != policy || pc.done != start {
+		var activePieceDone chan struct{}
+		if s.finished || s.ended || planningContext.Err() != nil {
+			s.mu.Unlock()
+			return
+		} else if pc.policy != policy || pc.done != start {
 			s.mu.Unlock()
 			continue
+		} else {
+			activePieceDone = make(chan struct{})
+			pc.claimed = true
+			pc.activePieceDone = activePieceDone
 		}
-		pc.claimed = true
 		s.mu.Unlock()
 		piece := audio[start : start+cut*2]
 		s.startFinalAt((start + cut*2) / 2)
@@ -88,6 +99,10 @@ func (s *live) recognisePieces(language string, b bias) {
 		}
 		took := time.Since(begin)
 		if err != nil {
+			s.mu.Lock()
+			close(activePieceDone)
+			pc.activePieceDone = nil
+			s.mu.Unlock()
 			if s.ctx.Err() == nil {
 				s.a.rt.logf("warning", "%s: a piece of the recording failed after %v, the rest waits for Stop: %v", s.a.spec.ID, took.Round(time.Millisecond), err)
 			}
@@ -102,6 +117,8 @@ func (s *live) recognisePieces(language string, b bias) {
 		pc.language = language
 		pc.busy += took
 		n := len(pc.texts)
+		close(activePieceDone)
+		pc.activePieceDone = nil
 		// The text so far is final: the session can start its clean-up of
 		// it instead of waiting for Stop (the Final repeats it as its prefix).
 		s.emit(asr.Event{Kind: asr.EventPiece, Text: joinParts(pc.texts)})
@@ -151,21 +168,23 @@ func padPiece(pcm []byte, t *ASRTuning) []byte {
 // without it, or when it fails, none is found), else, once pending
 // reaches PieceMax, the quietest CutWindow there. False: wait for more
 // audio.
-func (s *live) findCut(pending []byte, t ASRTuning) (int, bool) {
+func (s *live) findCut(planningContext context.Context, pending []byte, t ASRTuning) (int, bool) {
 	total := len(pending) / 2
 	from, to := samplesOf(t.PieceMin), min(total, samplesOf(t.PieceMax))
 	if to <= from {
 		return 0, false
 	}
 	if s.a.vad != nil {
-		ctx, cancel := context.WithTimeout(s.ctx, 15*time.Second)
-		segs, err := s.a.vad.Speech(ctx, pending[from*2:to*2], sampleRate)
+		vadContext, cancel := context.WithTimeout(planningContext, 15*time.Second)
+		segs, err := s.a.vad.Speech(vadContext, pending[from*2:to*2], sampleRate)
 		cancel()
 		if err == nil {
 			if at, ok := longestPause(segs, to-from, samplesOf(t.PauseMin), to == total); ok {
 				return from + at, true
 			}
-		} else if s.ctx.Err() == nil {
+		} else if planningContext.Err() != nil {
+			return 0, false
+		} else {
 			s.a.rt.logf("warning", "%s: looking for a pause to cut the recording at: %v", s.a.spec.ID, err)
 		}
 	}

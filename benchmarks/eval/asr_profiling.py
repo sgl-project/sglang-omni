@@ -13,6 +13,7 @@ Small, dependency-light building blocks used by ``benchmark_asr_seedtts``:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -20,15 +21,61 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TextIO
 
 import requests
 
 from sglang_omni.http.admin_auth import admin_auth_headers
-from sglang_omni.profiler.views import ProfilerReport, build_report
+from sglang_omni.profiler.event_recorder_types import (
+    DEFAULT_EVENT_BUFFER_CAPACITY,
+    DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+)
+from sglang_omni.profiler.views import EVENT_FILENAME_RE, ProfilerReport, build_report
 
 _NO_PROXIES = {"http": None, "https": None}
 _PROFILE_TIMEOUT_S = 30
+# ~6 events/request on the scheduler thread; 16 gives >2.5x headroom.
+EVENTS_PER_REQUEST_HEADROOM = 16
+FLUSH_POLL_INTERVAL_S = 0.05
+
+
+def event_buffer_capacity_for_samples(sample_count: int) -> int:
+    """Size per-producer event buffers so a profiled pass retains all requests."""
+    return max(
+        DEFAULT_EVENT_BUFFER_CAPACITY,
+        max(0, sample_count) * EVENTS_PER_REQUEST_HEADROOM,
+    )
+
+
+async def wait_for_profile_flush(
+    event_dir: str,
+    *,
+    timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
+) -> bool:
+    """Wait until every events file present so far has its run_status sidecar; processes that have not yet created an events file are not awaited."""
+    directory = Path(event_dir).expanduser()
+    if not directory.is_dir():
+        return True
+    else:
+        pass
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        event_pids: set[str] = set()
+        for event_path in directory.glob("events_*.jsonl"):
+            match = EVENT_FILENAME_RE.match(event_path.name)
+            if match is not None:
+                event_pids.add(match.group("pid"))
+            else:
+                pass
+        if event_pids and all(
+            (directory / f"run_status_{pid}.json").is_file() for pid in event_pids
+        ):
+            return True
+        else:
+            pass
+        await asyncio.sleep(FLUSH_POLL_INTERVAL_S)
+    return False
 
 
 def start_request_profile(
@@ -129,6 +176,15 @@ async def run_profiled_pass(
                     file=error_stream,
                 )
 
+    # note (evanderfff123-boop): /stop_request_profile returns before each process's background writer finishes flushing events_*.jsonl and run_status_<pid>.json.
+    flushed = await wait_for_profile_flush(event_dir)
+    if not flushed:
+        print(
+            f"{log_prefix} timed out waiting for profile flush in {event_dir}",
+            file=error_stream,
+        )
+    else:
+        pass
     report = build_stage_breakdown(event_dir)
     return {
         "run_id": run_id,
