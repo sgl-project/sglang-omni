@@ -9331,6 +9331,7 @@ def test_qwen3_tts_ar_scheduler_abort_cleans_prepared_state() -> None:
         scheduler.request_build_max_pending = 0
         scheduler.pending_request_builds = {}
         scheduler.pending_request_admissions = {}
+        scheduler.pending_session_admissions = {}
         scheduler.backlogged_request_build_payloads = []
         scheduler.request_build_max_pending_observed = 0
         scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
