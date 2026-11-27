@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -61,36 +62,112 @@ func TestPauseRefreshEligibility(t *testing.T) {
 }
 
 func TestPauseRefreshDetectorUsesSocketSamplesAcrossChunkBoundaries(t *testing.T) {
-	pcm := tone(600*time.Millisecond, 0.3)
-	pcm = append(pcm, make([]byte, 300*sampleRate/1000*2)...)
-	detector := pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: 200})}
-	chunkSizes := []int{1, 317, 2049, 71, 5201}
-	var hints []*pauseRefreshHint
-	for offset, chunk := 0, 0; offset < len(pcm); chunk++ {
-		end := min(offset+chunkSizes[chunk%len(chunkSizes)], len(pcm))
-		if hint := detector.observe(pcm[offset:end]); hint != nil {
-			hints = append(hints, hint)
-		}
-		offset = end
-	}
-	if len(hints) != 1 {
-		t.Fatalf("got %d pause hints, want one", len(hints))
-	}
-	if hints[0].SpeechStartSample != 0 || hints[0].SpeechEndSample != 600*sampleRate/1000 {
-		t.Errorf("speech range %+v, want [0, %d)", hints[0], 600*sampleRate/1000)
-	}
+	for _, pauseMS := range []int{200, 300} {
+		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
+			newDetector := func() *pauseRefreshDetector {
+				return &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
+			}
+			pause := silence(time.Duration(pauseMS) * time.Millisecond)
+			expectHint := func(got *pauseRefreshHint, startMilliseconds, endMilliseconds int) {
+				t.Helper()
+				if got == nil || got.SpeechStartSample != startMilliseconds*sampleRate/1000 || got.SpeechEndSample != endMilliseconds*sampleRate/1000 {
+					t.Fatalf("hint %+v, want [%d, %d) ms", got, startMilliseconds, endMilliseconds)
+				}
+			}
 
-	leadingSilence := make([]byte, 500*sampleRate/1000*2)
-	speech := tone(600*time.Millisecond, 0.3)
-	leadingDetector := pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: 200})}
-	if hint := leadingDetector.observe(leadingSilence); hint != nil {
-		t.Fatalf("leading silence produced a hint: %+v", hint)
+			pcm := append(tone(600*time.Millisecond, 0.3), pause...)
+			expectHint(newDetector().observe(pcm), 0, 600)
+			detector := newDetector()
+			// Direct detector writes can split bytes; the websocket test below uses PCM16-aligned chunks.
+			chunkSizes := []int{1, 317, 2049, 71, 5201}
+			var hints []*pauseRefreshHint
+			for offset, chunk := 0, 0; offset < len(pcm); chunk++ {
+				end := min(offset+chunkSizes[chunk%len(chunkSizes)], len(pcm))
+				if hint := detector.observe(pcm[offset:end]); hint != nil {
+					hints = append(hints, hint)
+				}
+				offset = end
+			}
+			if len(hints) != 1 {
+				t.Fatalf("arbitrarily chunked speech-pause produced %d hints", len(hints))
+			}
+			expectHint(hints[0], 0, 600)
+			if hint := detector.observe(pause); hint != nil {
+				t.Fatalf("silence re-emitted a consumed hint: %+v", hint)
+			}
+
+			leading := append(silence(500*time.Millisecond), tone(600*time.Millisecond, 0.3)...)
+			leading = append(leading, pause...)
+			expectHint(newDetector().observe(leading), 500, 1100)
+
+			split := newDetector()
+			first := append(tone(600*time.Millisecond, 0.3), pause...)
+			expectHint(split.observe(first), 0, 600)
+			if hint := split.observe(tone(120*time.Millisecond, 0.3)); hint != nil || !split.detector.Speaking() {
+				t.Fatalf("resumed speech state: speaking=%v hint=%+v", split.detector.Speaking(), hint)
+			}
+			if hint := split.observe(tone(40*time.Millisecond, 0.3)); hint != nil {
+				t.Fatalf("suppressed pause hint was re-emitted while speech continued: %+v", hint)
+			}
+			resumedStart := 600 + pauseMS
+			expectHint(split.observe(pause), resumedStart, resumedStart+160)
+			if hint := split.observe(pause); hint != nil {
+				t.Fatalf("resumed pause was re-emitted: %+v", hint)
+			}
+		})
 	}
-	if hint := leadingDetector.observe(speech); hint != nil {
-		t.Fatalf("open speech produced a hint before its pause: %+v", hint)
+}
+
+func TestPauseRefreshConsumesOnlyLatestHintAcrossMultipleTransitions(t *testing.T) {
+	for _, pauseMS := range []int{200, 300} {
+		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
+			pcm := append(tone(600*time.Millisecond, 0.3), silence(time.Duration(pauseMS)*time.Millisecond)...)
+			pcm = append(pcm, tone(300*time.Millisecond, 0.3)...)
+			pcm = append(pcm, silence(time.Duration(pauseMS)*time.Millisecond)...)
+			pcm = append(pcm, tone(200*time.Millisecond, 0.3)...)
+			pcm = append(pcm, silence(time.Duration(pauseMS)*time.Millisecond)...)
+
+			detector := &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
+			hint := detector.observe(pcm)
+			lastSpeechStart := 600 + pauseMS + 300 + pauseMS
+			want := &pauseRefreshHint{
+				SpeechStartSample: lastSpeechStart * sampleRate / 1000,
+				SpeechEndSample:   (lastSpeechStart + 200) * sampleRate / 1000,
+			}
+			if hint == nil || *hint != *want {
+				t.Fatalf("latest hint %+v, want %+v", hint, want)
+			}
+			if hint := detector.observe(silence(time.Duration(pauseMS) * time.Millisecond)); hint != nil {
+				t.Fatalf("consumed transitions were emitted again: %+v", hint)
+			}
+		})
 	}
-	if hint := leadingDetector.observe(make([]byte, 250*sampleRate/1000*2)); hint == nil || hint.SpeechStartSample < 500*sampleRate/1000 {
-		t.Errorf("pause after leading silence has hint %+v", hint)
+}
+
+func TestPauseRefreshRejectsStaleHintAfterResumedSpeech(t *testing.T) {
+	for _, pauseMS := range []int{200, 300} {
+		t.Run(strconv.Itoa(pauseMS)+"ms", func(t *testing.T) {
+			pcm := tone(600*time.Millisecond, 0.3)
+			pcm = append(pcm, silence(time.Duration(pauseMS)*time.Millisecond)...)
+			pcm = append(pcm, tone(120*time.Millisecond, 0.3)...)
+			detector := &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseMS})}
+			hint := detector.observe(pcm)
+			if !detector.detector.Speaking() {
+				t.Fatal("test audio did not reach the resumed-speaking detector state")
+			}
+			if hint != nil {
+				t.Errorf("stale pause hint %+v emitted while speech had resumed", hint)
+			}
+			if hint := detector.observe(tone(40*time.Millisecond, 0.3)); hint != nil {
+				t.Errorf("suppressed stale hint was re-emitted: %+v", hint)
+			}
+			resumedStart := (600 + pauseMS) * sampleRate / 1000
+			hint = detector.observe(silence(time.Duration(pauseMS) * time.Millisecond))
+			if hint == nil || hint.SpeechStartSample != resumedStart ||
+				hint.SpeechEndSample != resumedStart+160*sampleRate/1000 {
+				t.Errorf("new pause hint %+v, want resumed speech [%d, %d)", hint, resumedStart, resumedStart+160*sampleRate/1000)
+			}
+		})
 	}
 }
 
@@ -155,7 +232,29 @@ func TestPauseRefreshHintIsIgnoredByOlderRealtimeReaders(t *testing.T) {
 	}
 	fake.rt.Close()
 	liveRecords := fake.records("live")
-	if len(liveRecords) != 1 || liveRecords[0].Samples != len(pcm)/2 {
+	if len(liveRecords) != 1 || liveRecords[0].Samples != len(pcm)/2 ||
+		liveRecords[0].Fields["preview_refresh_enabled"] != "true" {
 		t.Errorf("old reader received %+v, want all %d samples", liveRecords, len(pcm)/2)
+	}
+}
+
+func TestPauseRefreshSessionOptInIsOmittedWhenDisabled(t *testing.T) {
+	t.Setenv("VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS", "0")
+	fake := newFake(t, omnitest.Opts{}, nil)
+	stream, err := fake.asr(t, ASRFast).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	drain(t, stream)
+	fake.rt.Close()
+	liveRecords := fake.records("live")
+	if len(liveRecords) != 1 {
+		t.Fatalf("got %d live records, want one", len(liveRecords))
+	}
+	if _, exists := liveRecords[0].Fields["preview_refresh_enabled"]; exists {
+		t.Errorf("disabled session sent pause refresh opt-in: %+v", liveRecords[0].Fields)
 	}
 }

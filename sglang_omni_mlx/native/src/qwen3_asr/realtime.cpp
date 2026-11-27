@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 #include "common/audio.h"
 #include "common/generation.h"
@@ -51,7 +52,14 @@ RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
                                  const Qwen3ASRTranscriber &transcriber,
                                  RealtimeSettings settings, Sender sender)
     : RealtimeConnection(std::move(sender)), worker_(worker),
-      transcriber_(transcriber), settings_(settings) {}
+      transcriber_(&transcriber), settings_(settings) {}
+
+RealtimeSession::RealtimeSession(TranscriptionWorker &worker,
+                                 DecodeOverride decode_override,
+                                 RealtimeSettings settings, Sender sender)
+    : RealtimeConnection(std::move(sender)), worker_(worker),
+      transcriber_(nullptr), decode_override_(std::move(decode_override)),
+      settings_(settings) {}
 
 bool RealtimeSession::Handle(const nlohmann::json &message) {
   const nlohmann::json type = message.value("type", nlohmann::json());
@@ -62,11 +70,18 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
           session->value("language", nlohmann::json());
       const nlohmann::json final_context =
           session->value("final_prompt", nlohmann::json());
+      const auto preview_refresh_enabled =
+          session->value("preview_refresh_enabled", nlohmann::json());
       {
         std::lock_guard<std::mutex> lock(mutex_);
         language_ = language.is_string()
                         ? NormalizeLanguage(language.get<std::string>())
                         : std::nullopt;
+        if (session->contains("preview_refresh_enabled")) {
+          preview_refresh_enabled_ = preview_refresh_enabled.is_boolean() &&
+                                     preview_refresh_enabled.get<bool>();
+        } else {
+        }
         // note (XXXXRT666): the prefill takes the recording from its first
         // sample, so a prompt sent after audio has none.
         if (final_context.is_string() && !should_prefill_final_ &&
@@ -242,9 +257,16 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
 
 FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
-                                bool guess_auto_language) {
+                                bool guess_auto_language, bool take_reuse,
+                                bool final_handoff) {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!should_prefill_final_ || context.value_or("") != final_context_) {
+  if (final_handoff) {
+    pause_refresh_final_handoff_ = true;
+  } else {
+  }
+  if (!take_reuse) {
+    return {};
+  } else if (!should_prefill_final_ || context.value_or("") != final_context_) {
     return {recording_reuse_, false};
   } else {
     // note (XXXXRT666): the prefill starts after the first preview, and without
@@ -297,9 +319,9 @@ void RealtimeSession::MaybeStartFinalPrefill() {
   const auto has_more = std::make_shared<bool>(false);
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
+  const Qwen3ASRTranscriber *transcriber = transcriber_;
   worker_.Submit(
-      [&transcriber = transcriber_, weak_self, final_reuse,
-       options = std::move(options),
+      [transcriber, weak_self, final_reuse, options = std::move(options),
        has_more](const std::atomic<bool> &cancel) {
         // Windows a refresh finished since the job was queued count too.
         RefreshReuse recording_reuse;
@@ -320,7 +342,11 @@ void RealtimeSession::MaybeStartFinalPrefill() {
                                                 kMaxFinalPrefillSamples));
         } else {
         }
-        *has_more = transcriber.ExtendFinalPrefill(
+        if (transcriber == nullptr) {
+          throw std::logic_error("Final prefill requires the Qwen transcriber");
+        } else {
+        }
+        *has_more = transcriber->ExtendFinalPrefill(
             recording_reuse, recording_samples, recording_start_sample, options,
             cancel, *final_reuse);
         return TranscriptionResult();
@@ -364,7 +390,11 @@ TranscriptionOptions RealtimeSession::DecodeOptions(Segment &segment,
                           segment.language.has_value() &&
                           !segment.ran_out_of_tokens;
   if (use_prefix) {
-    RetainedText retained = transcriber_.RetainedPrefix(
+    if (transcriber_ == nullptr) {
+      throw std::logic_error("prefix decoding requires the Qwen transcriber");
+    } else {
+    }
+    RetainedText retained = transcriber_->RetainedPrefix(
         segment.transcript, kPrefixRollbackTokenCount);
     options.prefix_token_ids = std::move(retained.prefix_ids);
     options.prefix_text = std::move(retained.prefix_text);
@@ -389,14 +419,29 @@ Transcription RealtimeSession::Decode(std::vector<float> samples,
                                       TranscriptionOptions options,
                                       std::shared_ptr<RefreshReuse> reuse,
                                       bool snapshot_reuse) const {
-  return [&transcriber = transcriber_, samples = std::move(samples),
+  const DecodeOverride decode_override = decode_override_;
+  const Qwen3ASRTranscriber *transcriber = transcriber_;
+  return [decode_override, transcriber, samples = std::move(samples),
           options = std::move(options), reuse = std::move(reuse),
           snapshot_reuse](const std::atomic<bool> &cancel) {
-    if (reuse == nullptr || !snapshot_reuse) {
-      return transcriber.Transcribe(samples, options, cancel, reuse.get());
+    if (decode_override) {
+      if (reuse == nullptr || !snapshot_reuse) {
+        return decode_override(samples, cancel, reuse.get());
+      } else {
+        RefreshReuse snapshot = *reuse;
+        return decode_override(samples, cancel, &snapshot);
+      }
     } else {
-      RefreshReuse snapshot = *reuse;
-      return transcriber.Transcribe(samples, options, cancel, &snapshot);
+      if (transcriber == nullptr) {
+        throw std::logic_error("realtime decode requires the Qwen transcriber");
+      } else {
+      }
+      if (reuse == nullptr || !snapshot_reuse) {
+        return transcriber->Transcribe(samples, options, cancel, reuse.get());
+      } else {
+        RefreshReuse snapshot = *reuse;
+        return transcriber->Transcribe(samples, options, cancel, &snapshot);
+      }
     }
   };
 }
@@ -425,105 +470,112 @@ void RealtimeSession::MaybeStartRefresh(
   std::shared_ptr<RefreshReuse> reuse;
   int segment_id = 0;
   long end_sample = 0;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!segment_.has_value()) {
-      return;
-    } else {
-    }
-    Segment &segment = *segment_;
-    const long previous_pause_speech_end_sample =
-        segment.last_pause_speech_end_sample;
-    RefreshAdmissionInput admission_input{
-        .segment_start_sample = segment.start_sample,
-        .audio_end_sample = EndSample(),
-        .next_refresh_sample = segment.next_refresh_sample,
-        .last_submitted_refresh_end_sample =
-            segment.last_submitted_refresh_end_sample,
-        .last_pause_speech_end_sample = previous_pause_speech_end_sample,
-        .decode_interval_samples = settings_.decode_interval_samples,
-        .minimum_new_speech_samples = omni_common::kSampleRate / 5,
-        .pause_hint = pause_hint,
-        .refreshing = refreshing_,
-        .finalizing = finalizing_,
-        .cancelled = cancel_->load(),
-        .silent = false,
-        .has_decoded = segment.decode_count > 0};
-    const RefreshAdmission possible_admission =
-        SelectRefreshAdmission(admission_input);
-    segment.last_pause_speech_end_sample =
-        possible_admission.last_pause_speech_end_sample;
-    if (possible_admission.source == RefreshSource::kNone &&
-        (refreshing_ || finalizing_ || admission_input.cancelled ||
-         admission_input.audio_end_sample < segment.next_refresh_sample)) {
-      return;
-    } else {
-    }
-    end_sample = admission_input.audio_end_sample;
-    samples = SegmentSamples(segment, end_sample);
-    admission_input.silent =
-        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
-    admission_input.last_pause_speech_end_sample =
-        previous_pause_speech_end_sample;
-    const RefreshAdmission admission = SelectRefreshAdmission(admission_input);
-    segment.last_pause_speech_end_sample =
-        admission.last_pause_speech_end_sample;
-    segment.next_refresh_sample = admission.next_refresh_sample;
-    if (admission.source == RefreshSource::kNone) {
-      return;
-    } else {
-    }
-    end_sample = admission.end_sample;
-    options = DecodeOptions(segment, end_sample);
-    reuse = segment.reuse;
-    segment_id = segment.segment_id;
-    segment.last_submitted_refresh_end_sample = end_sample;
-    refreshing_ = true;
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (!segment_.has_value()) {
+    return;
+  } else {
   }
+  Segment &segment = *segment_;
+  const long audio_end_sample = EndSample();
+  if (!preview_refresh_enabled_) {
+    pause_hint.reset();
+  } else {
+  }
+  const PauseHintConsumption consumption = ConsumePauseRefreshHint(
+      pause_hint, segment.start_sample, audio_end_sample,
+      segment.last_pause_speech_end_sample);
+  segment.last_pause_speech_end_sample = consumption.last_speech_end_sample;
+  const bool cadence_due = audio_end_sample >= segment.next_refresh_sample;
+  const bool pause_admission_possible = consumption.hint.has_value() &&
+                                        !pause_refresh_final_handoff_ &&
+                                        !cancel_->load();
+  if (refreshing_ || finalizing_ ||
+      (!cadence_due && !pause_admission_possible)) {
+    return;
+  } else {
+  }
+  samples = SegmentSamples(segment, audio_end_sample);
+  RefreshAdmissionInput admission_input{
+      .segment_start_sample = segment.start_sample,
+      .audio_end_sample = audio_end_sample,
+      .next_refresh_sample = segment.next_refresh_sample,
+      .last_submitted_refresh_end_sample =
+          segment.last_submitted_refresh_end_sample,
+      .decode_interval_samples = settings_.decode_interval_samples,
+      .minimum_new_speech_samples = omni_common::kSampleRate / 5,
+      .pause_hint = consumption.hint,
+      .refreshing = refreshing_,
+      .finalizing = finalizing_,
+      .cancelled = cancel_->load(),
+      .final_handoff = pause_refresh_final_handoff_,
+      .silent = omni_common::PeakIsSilent(samples.data(), samples.size(),
+                                          kSilentPeak),
+      .has_decoded = segment.decode_count > 0};
+  const RefreshAdmission admission = SelectRefreshAdmission(admission_input);
+  segment.next_refresh_sample = admission.next_refresh_sample;
+  if (admission.source == RefreshSource::kNone) {
+    return;
+  } else {
+  }
+  end_sample = admission.end_sample;
+  options = DecodeOptions(segment, end_sample);
+  reuse = segment.reuse;
+  segment_id = segment.segment_id;
+  segment.last_submitted_refresh_end_sample = end_sample;
+  refreshing_ = true;
+  const bool pause_admission = admission.source == RefreshSource::kPause;
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
-  worker_.Submit(
-      Decode(std::move(samples), std::move(options), std::move(reuse), false),
-      cancel_,
-      [weak_self, segment_id, end_sample](
-          std::optional<TranscriptionResult> result, std::exception_ptr error) {
-        const std::shared_ptr<RealtimeSession> self = weak_self.lock();
-        if (!self) {
-          return;
+  const Transcription transcribe =
+      Decode(std::move(samples), std::move(options), std::move(reuse), false);
+  const Completion completion = [weak_self, segment_id, end_sample](
+                                    std::optional<TranscriptionResult> result,
+                                    std::exception_ptr error) {
+    const std::shared_ptr<RealtimeSession> self = weak_self.lock();
+    if (!self) {
+      return;
+    } else {
+    }
+    std::optional<std::string> preview;
+    {
+      std::lock_guard<std::mutex> lock(self->mutex_);
+      self->refreshing_ = false;
+      if (result.has_value() && self->segment_.has_value() &&
+          self->segment_->segment_id == segment_id) {
+        Segment &segment = *self->segment_;
+        self->ApplyResult(segment, *result, end_sample);
+        if (segment.transcript != segment.last_text) {
+          segment.last_text = segment.transcript;
+          preview = segment.transcript;
+          self->has_preview_ = true;
         } else {
         }
-        std::optional<std::string> preview;
-        {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          self->refreshing_ = false;
-          if (result.has_value() && self->segment_.has_value() &&
-              self->segment_->segment_id == segment_id) {
-            Segment &segment = *self->segment_;
-            self->ApplyResult(segment, *result, end_sample);
-            if (segment.transcript != segment.last_text) {
-              segment.last_text = segment.transcript;
-              preview = segment.transcript;
-              self->has_preview_ = true;
-            } else {
-            }
-          } else {
-          }
-        }
-        self->refresh_done_.notify_all();
-        // note (XXXXRT666): queued before the event, so a Final sent in answer
-        // to it finds the windows this refresh finished.
-        self->MaybeStartFinalPrefill();
-        if (error) {
-          self->ReportDecodeFailure(error);
-        } else if (preview.has_value()) {
-          self->Send({{"type", "transcription.segment"},
-                      {"segment_id", segment_id},
-                      {"text", *preview},
-                      {"is_final", false}});
-        } else {
-        }
-        self->MaybeStartRefresh();
-      });
+      } else {
+      }
+    }
+    self->refresh_done_.notify_all();
+    // note (XXXXRT666): queued before the event, so a Final sent in answer
+    // to it finds the windows this refresh finished.
+    self->MaybeStartFinalPrefill();
+    if (error) {
+      self->ReportDecodeFailure(error);
+    } else if (preview.has_value()) {
+      self->Send({{"type", "transcription.segment"},
+                  {"segment_id", segment_id},
+                  {"text", *preview},
+                  {"is_final", false}});
+    } else {
+    }
+    self->MaybeStartRefresh();
+  };
+  if (pause_admission) {
+    // note (chenye): Queue the pause while Final cannot take this mutex.
+    worker_.Submit(transcribe, cancel_, completion);
+    return;
+  } else {
+    lock.unlock();
+    worker_.Submit(transcribe, cancel_, completion);
+  }
 }
 
 void RealtimeSession::FinalizeThrough(long end_sample) {

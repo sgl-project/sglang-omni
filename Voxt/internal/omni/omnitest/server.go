@@ -270,6 +270,10 @@ func realtime(o Opts, w http.ResponseWriter, r *http.Request) {
 		switch ev.Type {
 		case "session.update":
 			language, _ = ev.Session["language"].(string)
+			if enabled, ok := ev.Session["preview_refresh_enabled"].(bool); ok && enabled {
+				fields["preview_refresh_enabled"] = "true"
+			} else {
+			}
 			for _, k := range []string{"prompt", "final_prompt"} {
 				if v, ok := ev.Session[k].(string); ok {
 					fields[k] = v

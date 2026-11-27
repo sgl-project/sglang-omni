@@ -49,7 +49,7 @@ func (d *pauseRefreshDetector) observe(pcm []byte) *pauseRefreshHint {
 	detector.Write(pcm)
 	closedSegments := detector.ClosedSegmentsSince(d.closedSegmentCount)
 	d.closedSegmentCount += len(closedSegments)
-	if len(closedSegments) == 0 || !detector.Heard() {
+	if len(closedSegments) == 0 || detector.Speaking() {
 		return nil
 	}
 	segment := closedSegments[len(closedSegments)-1]

@@ -3,6 +3,7 @@
 // then finalized.
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -56,18 +57,24 @@ struct FinalReuse {
 // start on, when the audio before it was recognised otherwise.
 class RealtimeSession : public omni_server::RealtimeConnection {
 public:
+  using DecodeOverride = std::function<omni_server::Transcription(
+      const std::vector<float> &, const std::atomic<bool> &, RefreshReuse *)>;
+
   RealtimeSession(omni_server::TranscriptionWorker &worker,
                   const Qwen3ASRTranscriber &transcriber,
                   RealtimeSettings settings, Sender sender);
+  RealtimeSession(omni_server::TranscriptionWorker &worker,
+                  DecodeOverride decode_override, RealtimeSettings settings,
+                  Sender sender);
 
   bool Handle(const nlohmann::json &message) override;
-  // What the session holds for a Final of its recording's start with this
-  // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null.
+  // What a request can reuse, and whether an authoritative Final has taken
+  // the pause-refresh handoff.
   //
   // note (chenye): only snapshot a preview guess when the caller opts in.
   FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
-                            bool guess_auto_language);
+                            bool guess_auto_language, bool take_reuse,
+                            bool final_handoff);
 
 private:
   struct Segment {
@@ -119,13 +126,16 @@ private:
   void FinalizeThrough(long end_sample);
 
   omni_server::TranscriptionWorker &worker_;
-  const Qwen3ASRTranscriber &transcriber_;
+  const Qwen3ASRTranscriber *transcriber_;
+  DecodeOverride decode_override_;
   const RealtimeSettings settings_;
 
   // Session state; refreshes finish on the worker thread.
   std::mutex mutex_;
   std::condition_variable refresh_done_;
   std::optional<std::string> language_;
+  bool preview_refresh_enabled_ = false;
+  bool pause_refresh_final_handoff_ = false;
   // A Final with the context final_context_ is to be prefilled, until one is
   // taken.
   bool should_prefill_final_ = false;

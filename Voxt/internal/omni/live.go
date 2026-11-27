@@ -90,6 +90,12 @@ type live struct {
 func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*live, error) {
 	hint := a.spec.languageHint(req.Lang)
 	bias := a.spec.ASR.contextBias(req.Hints, req.Prompt)
+	pauseRefreshMS, invalidPauseRefresh := pauseRefreshExperimentMS()
+	pauseRefreshEnabledForSession := pauseRefreshEnabled(req, a.spec, pauseRefreshMS)
+	if invalidPauseRefresh && a.spec.Kind == kindQwen3ASR && a.spec.ASR != nil && a.spec.ASR.Realtime {
+		a.rt.logf("warning", "%s: ignoring invalid VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS; use 200 or 300", a.spec.ID)
+	} else {
+	}
 	sessionID := ""
 	var conn *websocket.Conn
 	if a.spec.ASR.Realtime {
@@ -105,6 +111,10 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 		conn = c
 		conn.SetReadLimit(1 << 20)
 		session := map[string]any{"input_audio_format": "pcm16", "turn_detection": nil}
+		if pauseRefreshEnabledForSession {
+			session["preview_refresh_enabled"] = true
+		} else {
+		}
 		a.rt.logf("info", "%s: live session with language hint %q", a.spec.ID, hint)
 		if hint != "" {
 			session["language"] = hint
@@ -153,14 +163,9 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 		if a.spec.ASR.SpeechOnly && a.vad != nil {
 			s.cut = newPauseCut()
 		}
-		if a.spec.Kind == kindQwen3ASR {
-			pauseRefreshMS, invalidPauseRefresh := pauseRefreshExperimentMS()
-			if invalidPauseRefresh {
-				a.rt.logf("warning", "%s: ignoring invalid VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS; use 200 or 300", a.spec.ID)
-			}
-			if pauseRefreshEnabled(req, a.spec, pauseRefreshMS) {
-				s.pauseRefresh = &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseRefreshMS})}
-			}
+		if pauseRefreshEnabledForSession {
+			s.pauseRefresh = &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseRefreshMS})}
+		} else {
 		}
 		go s.write()
 		go s.read()

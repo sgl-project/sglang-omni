@@ -11,6 +11,27 @@ struct PauseRefreshHint {
   long speech_end_sample = 0;
 };
 
+struct PauseHintConsumption {
+  std::optional<PauseRefreshHint> hint;
+  long last_speech_end_sample = 0;
+};
+
+inline PauseHintConsumption
+ConsumePauseRefreshHint(const std::optional<PauseRefreshHint> &hint,
+                        long segment_start_sample, long audio_end_sample,
+                        long last_speech_end_sample) {
+  PauseHintConsumption consumption{std::nullopt, last_speech_end_sample};
+  if (hint.has_value() && hint->speech_start_sample >= segment_start_sample &&
+      hint->speech_end_sample > hint->speech_start_sample &&
+      hint->speech_end_sample <= audio_end_sample &&
+      hint->speech_end_sample > last_speech_end_sample) {
+    consumption.hint = hint;
+    consumption.last_speech_end_sample = hint->speech_end_sample;
+  } else {
+  }
+  return consumption;
+}
+
 enum class RefreshSource { kNone, kCadence, kPause };
 
 struct RefreshAdmissionInput {
@@ -18,13 +39,13 @@ struct RefreshAdmissionInput {
   long audio_end_sample = 0;
   long next_refresh_sample = 0;
   long last_submitted_refresh_end_sample = 0;
-  long last_pause_speech_end_sample = 0;
   long decode_interval_samples = 0;
   long minimum_new_speech_samples = 0;
   std::optional<PauseRefreshHint> pause_hint;
   bool refreshing = false;
   bool finalizing = false;
   bool cancelled = false;
+  bool final_handoff = false;
   bool silent = false;
   bool has_decoded = false;
 };
@@ -33,29 +54,13 @@ struct RefreshAdmission {
   RefreshSource source = RefreshSource::kNone;
   long end_sample = 0;
   long next_refresh_sample = 0;
-  long last_pause_speech_end_sample = 0;
 };
 
 inline RefreshAdmission
 SelectRefreshAdmission(const RefreshAdmissionInput &input) {
   RefreshAdmission admission;
   admission.next_refresh_sample = input.next_refresh_sample;
-  admission.last_pause_speech_end_sample = input.last_pause_speech_end_sample;
-  bool has_new_pause_hint = false;
-  if (input.pause_hint.has_value() &&
-      input.pause_hint->speech_start_sample >= input.segment_start_sample &&
-      input.pause_hint->speech_end_sample >
-          input.pause_hint->speech_start_sample &&
-      input.pause_hint->speech_end_sample <= input.audio_end_sample &&
-      input.pause_hint->speech_end_sample >
-          input.last_pause_speech_end_sample) {
-    has_new_pause_hint = true;
-    admission.last_pause_speech_end_sample =
-        input.pause_hint->speech_end_sample;
-  } else {
-  }
-
-  if (input.refreshing || input.finalizing || input.cancelled) {
+  if (input.refreshing || input.finalizing) {
     return admission;
   } else {
   }
@@ -75,7 +80,8 @@ SelectRefreshAdmission(const RefreshAdmissionInput &input) {
   } else {
   }
 
-  if (!has_new_pause_hint || input.silent ||
+  if (!input.pause_hint.has_value() || input.silent || input.cancelled ||
+      input.final_handoff ||
       input.audio_end_sample <= input.last_submitted_refresh_end_sample) {
     return admission;
   } else {
