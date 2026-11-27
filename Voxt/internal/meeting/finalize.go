@@ -111,7 +111,11 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 			mt.AudioUntil = time.Time{}
 		}
 	}
-	mt.Status = store.MeetingDone
+	if mode == ModeImport {
+		mt.Status = store.MeetingFinishing
+	} else {
+		mt.Status = store.MeetingDone
+	}
 	return cfg.Store.UpdateMeeting(ctx, mt)
 }
 

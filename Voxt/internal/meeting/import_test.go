@@ -292,6 +292,57 @@ func TestFinishImportCancelBeforeSummary(t *testing.T) {
 	}
 }
 
+func TestImportRecoverAfterFinalizePass(t *testing.T) {
+	chat := &fixingChat{}
+	diarizer := &importDiarizer{result: asr.Result{Segments: []asr.SpeakerSegment{
+		{Start: 0, End: time.Second, Speaker: "S01", Text: "Box one"},
+	}}}
+	m, repo := importFixture(t, chat, diarizer, &importFileASR{})
+	ctx := context.Background()
+	id := "finalize-restart"
+	if err := os.MkdirAll(filepath.Join(m.cfg.Dir, id), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.cfg.Dir, id, "system.wav"), asr.WAV(importPCM(1), asr.SampleRate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt, err := repo.CreateMeeting(ctx, store.Meeting{
+		ID: id, CreatedAt: time.Now(), Status: store.MeetingFinishing,
+		Mode: store.MeetingModeImport, Title: "imported", Audio: id,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizePass(ctx, importPassConfig(m.cfg), mt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(chat.reqs) != 0 {
+		t.Fatal("correction or summary ran before the simulated restart")
+	}
+
+	restarted := NewManager(m.cfg)
+	recovered, err := restarted.Recover(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != id || recovered[0].Status != store.MeetingInterrupted {
+		t.Fatalf("recovery did not retain the unfinished import: %+v", recovered)
+	}
+	if err := restarted.Reprocess(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	finished, segments, err := repo.Meeting(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != store.MeetingDone || finished.Title != "T" || finished.Summary == "" {
+		t.Fatalf("continued import did not finish: %+v", finished)
+	}
+	if len(chat.reqs) != 2 || len(segments) != 1 || segments[0].Text != "Voxt one" {
+		t.Fatalf("continued import did not correct and summarize: requests=%d segments=%+v", len(chat.reqs), segments)
+	}
+}
+
 // Without the automatic summary the meeting keeps the file's name, date
 // and duration (the summary names it when it runs, as a recorded
 // meeting's does).
