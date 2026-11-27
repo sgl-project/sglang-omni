@@ -7295,30 +7295,40 @@ def test_qwen3_tts_bootstrap_suppression_credits_only_emitted_audio(
     ) / float(scheduler.sample_rate)
 
 
+@pytest.mark.parametrize("is_finished_before_first_decode", [False, True])
 def test_qwen3_tts_bootstrap_suppression_trims_the_first_chunk_at_any_stream_count(
     monkeypatch: pytest.MonkeyPatch,
+    is_finished_before_first_decode: bool,
 ) -> None:
-    """Past 24 live streams an eligible stream kept its silent opening frame, so its audible start depended on server load."""
+    """An eligible stream sent its silent opening frame first past 24 live streams, and at any count when its request finished before its first decode ran."""
     scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
-    plain = scheduler.create_stream_state("probe").initial_chunk_frames
+    scheduler.initial_worker = object()
+    scheduler.followup_worker = object()
     for index in range(64):
         scheduler.stream_states[str(index)] = scheduler.create_stream_state(str(index))
-    state = scheduler.create_stream_state("request")
-    scheduler.stream_states["request"] = state
-    scheduler.latch_stream_contract(
-        "request",
-        state,
-        {"num_quantizers": 2, "bootstrap_silence_suppression": True},
-        origin="metadata",
+    payload = make_payload(inputs="target", params={"stream": True})
+    payload.request_id = "request"
+    opening = qwen3_tts_stream_item(
+        torch.tensor([[0, 1]], dtype=torch.long), chunk_id=0, ref_code_len=0
     )
-    state.code_chunks.append(torch.tensor([[0, 0], [10, 1], [20, 2]], dtype=torch.long))
-    state.total_frames = 3
+    assert opening.metadata is not None
+    opening.metadata["bootstrap_silence_suppression"] = True
+    scheduler.handle_stream_chunk("request", opening)
+    scheduler.handle_stream_chunk(
+        "request",
+        qwen3_tts_stream_item(torch.tensor([[10, 1]], dtype=torch.long), chunk_id=1),
+    )
+    if is_finished_before_first_decode:
+        scheduler.handle_stream_done("request")
+        scheduler.handle_streaming_new_request("request", payload)
+    else:
+        pass
 
-    first = scheduler.decode_delta("request", state, is_final=False)
+    scheduler.run_initial_batch([scheduler.initial_queue.get_nowait()])
 
-    assert state.initial_chunk_frames == plain + 1
-    assert first is not None
-    assert first.tolist() == [10.0] * 4 + [20.0] * 4
+    first = scheduler.outbox.get_nowait()
+    assert first.type == "stream"
+    assert chunk_samples(first) == [10.0] * 4
 
 
 def test_qwen3_tts_bootstrap_suppression_trims_one_silent_frame_once() -> None:
