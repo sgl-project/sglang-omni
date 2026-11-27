@@ -70,11 +70,12 @@ type finalResult struct {
 	}
 }
 
-// body is the request's multipart form (Voxt's OmniMultipartBody for
-// Qwen3-ASR: streamed, with the generation metadata).
-func (r finalRequest) body(model string) (*bytes.Buffer, string) {
+// body builds the multipart framing and returns a reader factory over it and
+// the existing PCM. Readers borrow the PCM until they finish.
+func (r finalRequest) body(model string) (newReader func() io.Reader, bodyBytes int, contentType string) {
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
+	// The multipart writer writes to a bytes.Buffer, which never returns a write error.
 	field := func(k, v string) { _ = w.WriteField(k, v) }
 	field("model", model)
 	field("stream", "true")
@@ -110,9 +111,16 @@ func (r finalRequest) body(model string) (*bytes.Buffer, string) {
 		}
 	}
 	fw, _ := w.CreateFormFile("file", "audio.wav")
-	_, _ = fw.Write(asr.WAV(r.pcm, sampleRate))
+	wavHeader := asr.WAVHeader(len(r.pcm), sampleRate)
+	_, _ = fw.Write(wavHeader[:])
+	prefixBytes := b.Len()
 	_ = w.Close()
-	return &b, w.FormDataContentType()
+	framing := b.Bytes()
+	newReader = func() io.Reader {
+		return io.MultiReader(bytes.NewReader(framing[:prefixBytes]),
+			bytes.NewReader(r.pcm), bytes.NewReader(framing[prefixBytes:]))
+	}
+	return newReader, len(framing) + len(r.pcm), w.FormDataContentType()
 }
 
 // transcribe sends one request on l's server and reads its event stream.
@@ -126,8 +134,8 @@ func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.D
 	totalStarted := time.Now()
 	defer func() { logRequestStage(l.s.rt, requestID, "final", "total", totalStarted, len(r.pcm), 0) }()
 	started := time.Now()
-	body, ctype := r.body(l.endpoint().model)
-	logRequestStage(l.s.rt, requestID, "final", "multipart", started, len(r.pcm), body.Len())
+	newBody, bodyBytes, ctype := r.body(l.endpoint().model)
+	logRequestStage(l.s.rt, requestID, "final", "multipart", started, len(r.pcm), bodyBytes)
 	// The hint goes to the log, never the recognised text: a wrong hint
 	// translated Chinese dictation (#3398) and nothing showed it.
 	if !r.preview {
@@ -135,17 +143,19 @@ func transcribeTimed(ctx context.Context, l *lease, r finalRequest, stall time.D
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/audio/transcriptions", body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint().base()+"/v1/audio/transcriptions", newBody())
 	if err != nil {
 		return finalResult{}, &asr.Error{Kind: asr.KindProtocol, Provider: Provider, Err: err}
 	}
 	req.Header.Set("Content-Type", ctype)
+	req.ContentLength = int64(bodyBytes)
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(newBody()), nil }
 	var stalled atomic.Bool
 	watch := time.AfterFunc(stall, func() { stalled.Store(true); cancel() })
 	defer watch.Stop()
 	started = time.Now()
 	resp, err := loopback.Do(req)
-	logRequestStage(l.s.rt, requestID, "final", "http_headers", started, body.Len(), 0)
+	logRequestStage(l.s.rt, requestID, "final", "http_headers", started, bodyBytes, 0)
 	if err != nil {
 		return finalResult{}, stallOr(ctx, l, stalled.Load(), err)
 	}

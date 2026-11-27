@@ -1,7 +1,6 @@
 package asr
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"time"
@@ -26,26 +25,32 @@ func Silence(d time.Duration) []byte {
 
 // WAV wraps PCM16 mono at rate Hz (0: SampleRate) in a WAV header.
 func WAV(pcm []byte, rate int) []byte {
+	header := WAVHeader(len(pcm), rate)
+	wav := make([]byte, len(header)+len(pcm))
+	copy(wav, header[:])
+	copy(wav[len(header):], pcm)
+	return wav
+}
+
+// WAVHeader describes pcmBytes bytes of PCM16 mono at rate Hz (0: SampleRate).
+func WAVHeader(pcmBytes, rate int) [44]byte {
 	if rate <= 0 {
 		rate = SampleRate
 	}
-	var b bytes.Buffer
-	b.Grow(44 + len(pcm))
-	w := func(v any) { binary.Write(&b, binary.LittleEndian, v) }
-	b.WriteString("RIFF")
-	w(uint32(36 + len(pcm)))
-	b.WriteString("WAVEfmt ")
-	w(uint32(16))
-	w(uint16(1)) // PCM
-	w(uint16(1)) // mono
-	w(uint32(rate))
-	w(uint32(rate * 2))
-	w(uint16(2))
-	w(uint16(16))
-	b.WriteString("data")
-	w(uint32(len(pcm)))
-	b.Write(pcm)
-	return b.Bytes()
+	var header [44]byte
+	copy(header[:4], "RIFF")
+	binary.LittleEndian.PutUint32(header[4:8], uint32(36+pcmBytes))
+	copy(header[8:16], "WAVEfmt ")
+	binary.LittleEndian.PutUint32(header[16:20], 16)
+	binary.LittleEndian.PutUint16(header[20:22], 1)
+	binary.LittleEndian.PutUint16(header[22:24], 1)
+	binary.LittleEndian.PutUint32(header[24:28], uint32(rate))
+	binary.LittleEndian.PutUint32(header[28:32], uint32(rate*2))
+	binary.LittleEndian.PutUint16(header[32:34], 2)
+	binary.LittleEndian.PutUint16(header[34:36], 16)
+	copy(header[36:40], "data")
+	binary.LittleEndian.PutUint32(header[40:44], uint32(pcmBytes))
+	return header
 }
 
 // ReadWAV returns the PCM of a 16-bit PCM WAV file and its rate and

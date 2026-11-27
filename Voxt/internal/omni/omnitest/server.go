@@ -136,7 +136,7 @@ func final(o Opts, w http.ResponseWriter, r *http.Request) {
 			audio = base64.StdEncoding.EncodeToString(b[min(44, len(b)):])
 		}
 	}
-	record(o, Record{Event: "final", Host: r.Host, Fields: fields, Samples: samples, Audio: audio})
+	record(o, Record{Event: "final", Host: r.Host, Fields: fields, ContentLength: r.ContentLength, Samples: samples, Audio: audio})
 	if err := waitAtTestGate(r.Context(), o, "final", samples); err != nil || r.Context().Err() != nil {
 		return
 	}
