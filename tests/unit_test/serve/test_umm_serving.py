@@ -111,6 +111,7 @@ def test_generate_and_chat_keep_ordered_terminal_manifest(stop):
         json={
             "model": "cosmos3",
             "messages": [{"role": "user", "content": "Draw then describe"}],
+            "modalities": ["text", "image"],
             "stop": stop,
         },
     )
