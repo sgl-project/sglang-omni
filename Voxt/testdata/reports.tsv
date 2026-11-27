@@ -84,3 +84,4 @@ report	fix	symptom	level	check
 #4690	#4691	An earlier drag save notification restores an older live backup priority	L	TestRemoteProviderRapidDragNotificationsStayInDropOrder
 #4690	#4691	A duplicated saved provider appears twice in failover and configured cards	L	TestRemoteProviderDuplicateIDsKeepFirst
 #4690	#4691	Failover stops after the first backup instead of trying the remaining services	L	TestRetry
+#4701	#4745	The transcription preview jumps back toward where the drag started when new words come in while it is dragged	L	TestPreviewDraggedWhileItGrows
