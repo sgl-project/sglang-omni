@@ -21,6 +21,7 @@ from sglang_omni.pipeline.replicas import (
 )
 from sglang_omni.pipeline.session_graph import SessionGraphRunner
 from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.proto import (
     AbortMessage,
     AdminMessage,
@@ -656,6 +657,15 @@ class Coordinator(SessionGraphRunner):
             data={"raw_inputs": request.inputs},
         )
 
+        event_recorder = _get_event_recorder()
+        if event_recorder.is_runtime_active():
+            event_recorder.record_request_admission(
+                request_id,
+                request.metadata,
+                stage_name="coordinator",
+            )
+        else:
+            pass
         _emit_event(
             request_id=request_id,
             stage="coordinator",
@@ -678,10 +688,12 @@ class Coordinator(SessionGraphRunner):
             # queues the whole message or raises. No stage holds this request,
             # so it is dropped without an abort that would retire its ID there.
             self.requests.pop(request_id, None)
+            self.clear_request_sampling(request_id)
             await self.release_submission(request_id, future)
             raise
         except BaseException:
             # A cancelled send may already be queued for the entry stage.
+            self.clear_request_sampling(request_id)
             await self.release_submission(request_id, future)
             raise
 
@@ -738,6 +750,16 @@ class Coordinator(SessionGraphRunner):
             or request_id in self.stream_queues
             or request_id in self.abort_tasks
         )
+
+    def clear_request_sampling(self, request_id: str) -> None:
+        event_recorder = _get_event_recorder()
+        if event_recorder.is_runtime_active():
+            event_recorder.clear_request_sampling(
+                request_id,
+                stage_name="coordinator",
+            )
+        else:
+            pass
 
     def reject_completion_future(
         self,
@@ -830,6 +852,7 @@ class Coordinator(SessionGraphRunner):
 
         self.requests.pop(request_id, None)
         self.partial_results.pop(request_id, None)
+        self.clear_request_sampling(request_id)
 
         logger.info("Coordinator aborted req=%s", request_id)
         return True
@@ -955,6 +978,7 @@ class Coordinator(SessionGraphRunner):
                 )
             else:
                 self.requests.pop(request_id, None)
+                self.clear_request_sampling(request_id)
             self.partial_results.pop(request_id, None)
             self.reject_completion_future(
                 request_id, QueueFullError.from_message(msg.error)
@@ -994,6 +1018,7 @@ class Coordinator(SessionGraphRunner):
             else:
                 pass
             self.requests.pop(request_id, None)
+            self.clear_request_sampling(request_id)
             if request_id in self.stream_queues:
                 await self.queue_stream_message(request_id, msg)
             else:
@@ -1021,6 +1046,7 @@ class Coordinator(SessionGraphRunner):
             else:
                 pass
             self.requests.pop(request_id, None)
+            self.clear_request_sampling(request_id)
         else:
             pass
 

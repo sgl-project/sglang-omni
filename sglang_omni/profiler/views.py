@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class ProfilerCompleteness(TypedDict):
     state: Literal["complete", "incomplete", "unknown"]
     complete: bool
-    scope: str
+    scope: Literal["event_storage", "sampled_event_storage", "mixed", "unknown"]
     expected_status_files: int
     found_status_files: int
     missing_status_files: list[str]
@@ -94,7 +94,9 @@ def assess_completeness(
 
     A report is never considered complete merely because its JSONL files are
     readable. Missing or malformed sidecars are reported as ``unknown`` and
-    ``complete`` is always false in that case.
+    ``complete`` is always false in that case. Runtime's sampled storage scope
+    covers accepted sampled events written in each process, not every Request,
+    Session, or audio Unit.
     """
     sources = [source] if isinstance(source, (str, Path)) else list(source)
     directory_paths = {
@@ -105,6 +107,8 @@ def assess_completeness(
     incomplete_reasons: set[str] = set()
     event_pids_by_directory: dict[Path, set[str]] = {}
     invalid_event_filename = False
+    invalid_completeness_scope = False
+    completeness_scopes: set[Literal["event_storage", "sampled_event_storage"]] = set()
     for event_path in events:
         match = EVENT_FILENAME_RE.match(event_path.name)
         if match is None:
@@ -145,6 +149,13 @@ def assess_completeness(
                 if not isinstance(status, dict):
                     invalid_status = True
                 else:
+                    status_scope = status.get("completeness_scope")
+                    if status_scope in ("event_storage", "sampled_event_storage"):
+                        completeness_scopes.add(status_scope)
+                    else:
+                        invalid_status = True
+                        invalid_completeness_scope = True
+                        incomplete_reasons.add("invalid_completeness_scope")
                     reasons = status.get("incomplete_reasons")
                     counters = (
                         "accepted_events",
@@ -161,7 +172,6 @@ def assess_completeness(
                     )
                     if (
                         not isinstance(status.get("complete"), bool)
-                        or status.get("completeness_scope") != "event_storage"
                         or not isinstance(reasons, list)
                         or any(
                             not isinstance(status.get(counter), int)
@@ -190,6 +200,12 @@ def assess_completeness(
                         else:
                             pass
                 found_status_files += 1
+
+    if len(completeness_scopes) > 1:
+        incomplete_status = True
+        incomplete_reasons.add("mixed_completeness_scopes")
+    else:
+        pass
 
     if status_without_event_file:
         incomplete_reasons.add("status_without_event_file")
@@ -223,10 +239,16 @@ def assess_completeness(
     else:
         state = "complete"
 
+    if len(completeness_scopes) > 1:
+        report_scope = "mixed"
+    elif invalid_completeness_scope or not completeness_scopes:
+        report_scope = "unknown"
+    else:
+        report_scope = next(iter(completeness_scopes))
     return {
         "state": state,
         "complete": state == "complete",
-        "scope": "event_storage",
+        "scope": report_scope,
         "expected_status_files": len(expected_status_paths),
         "found_status_files": found_status_files,
         "missing_status_files": missing_status_files,

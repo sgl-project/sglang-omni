@@ -70,3 +70,26 @@ def test_profiler_start_message_capacity_round_trip_and_legacy_payload() -> None
     assert isinstance(legacy_message, ProfilerStartMessage)
     assert legacy_message.event_buffer_capacity is None
     assert "event_buffer_capacity" not in legacy_message.to_dict()
+
+
+def test_runtime_profiler_start_message_round_trip() -> None:
+    message = ProfilerStartMessage(
+        run_id="runtime_test",
+        trace_path_template="",
+        event_dir="/tmp/runtime_test/events",
+        enable_torch=False,
+        event_buffer_capacity=1024,
+        mode="runtime",
+        sampling_unit="session",
+        sample_rate=0.01,
+        max_event_file_bytes=268435456,
+    )
+
+    round_trip = parse_message(message.to_dict())
+
+    assert isinstance(round_trip, ProfilerStartMessage)
+    assert round_trip.mode == "runtime"
+    assert round_trip.sampling_unit == "session"
+    assert round_trip.sample_rate == 0.01
+    assert round_trip.max_event_file_bytes == 268435456
+    assert round_trip.enable_torch is False
