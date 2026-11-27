@@ -17,6 +17,7 @@ class NemotronDiarizationPipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 profile="offline",
                 max_concurrency=1,
+                max_batch_size=1,
                 max_live_sessions=8,
                 max_running_requests=16,
                 max_queued_requests=64,
