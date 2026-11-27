@@ -2,7 +2,7 @@
 
 ## Pull request checklist
 
-Paste the block below into the pull request description when the change touches `docs/` or claims a performance difference. The documentation review tool reads it as self-reported evidence. It cannot confirm the review for you. A missing item is a maintainer follow-up, not an automatic rejection.
+Fill in the contributor checklist in the pull request template when the change touches `docs/` or claims a performance difference. The documentation review tool reads it as self-reported evidence. It cannot confirm the review for you. A missing item is a maintainer follow-up, not an automatic rejection.
 
 A pull request that does not change `docs/` and does not claim a performance change can omit the block.
 

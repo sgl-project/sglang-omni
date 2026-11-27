@@ -7,12 +7,17 @@ import os
 import urllib.error
 import urllib.request
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, ValidationError
 
 from scripts.docs_review.models import ModelSettings, ReasoningEffort
 
 MODEL_TIMEOUT_SECONDS = 60
+
+
+class ReviewerConfigurationError(ValueError):
+    """The reviewer could not prepare a model request."""
 
 
 class ReviewerError(Exception):
@@ -42,6 +47,11 @@ class OpenAICompatibleReviewer:
     """Read-only model call. No shell, web search, or GitHub writes."""
 
     def __init__(self, settings: ModelSettings, prompt_text: str) -> None:
+        endpoint = urlsplit(settings.endpoint_url)
+        if endpoint.scheme not in ("http", "https") or not endpoint.hostname:
+            raise ReviewerConfigurationError("Model endpoint must be an HTTP(S) URL")
+        else:
+            self.authorization = authorization_header(settings)
         self.settings = settings
         self.prompt_text = prompt_text
 
@@ -51,7 +61,7 @@ class OpenAICompatibleReviewer:
             self.settings.endpoint_url,
             data=request.to_json().encode(),
             headers={
-                "Authorization": authorization_header(self.settings),
+                "Authorization": self.authorization,
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -92,12 +102,11 @@ def build_chat_request(
 
 def authorization_header(settings: ModelSettings) -> str:
     variable_name = settings.api_key_environment_variable
-    try:
-        secret = os.environ[variable_name]
-    except KeyError as error:
-        raise ReviewerError(
+    secret = os.environ.get(variable_name, "").strip()
+    if not secret:
+        raise ReviewerConfigurationError(
             f"Missing API key environment variable {variable_name}"
-        ) from error
+        )
     else:
         return f"Bearer {secret}"
 

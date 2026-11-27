@@ -16,13 +16,13 @@ from scripts.docs_review.models import (
     Finding,
     ReviewBundle,
 )
-from scripts.docs_review.policy import CONTRIBUTOR_CHECKLIST, PERFORMANCE_EVIDENCE
+from scripts.docs_review.policy import (
+    CONTRIBUTOR_CHECKLIST,
+    PERFORMANCE_CLAIM,
+    PERFORMANCE_EVIDENCE,
+)
 
 CHECKLIST_HEADING = "## Contributor checklist"
-PERFORMANCE_CLAIM = re.compile(
-    r"(faster|speedup|speed-up|\d+(?:\.\d+)?\s*x|\d+(?:\.\d+)?\s*%)",
-    re.IGNORECASE,
-)
 SPEECH_WORKLOAD = re.compile(r"\b(tts|asr|speech|seedtts)\b", re.IGNORECASE)
 REQUIRED_CHECKLIST_FIELDS = (
     "Purpose",
@@ -52,7 +52,7 @@ PERFORMANCE_DETAIL_FIELDS = (
 
 def audit_bundle(bundle: ReviewBundle) -> list[Finding]:
     findings: list[Finding] = []
-    if bundle.reviewed_paths:
+    if bundle.reviewed_paths and bundle.pull_request_text is not None:
         findings.extend(audit_checklist(bundle))
     else:
         pass
@@ -65,8 +65,11 @@ def interpret_checks(
     return [interpret_check(check, head_commit_sha) for check in checks]
 
 
-def author_confirmation_statement(pull_request_text: str) -> str:
-    fields = parse_checklist(pull_request_text)
+def author_confirmation_statement(pull_request_text: str | None) -> str:
+    if pull_request_text is None:
+        return "Checklist verification skipped because the PR description was not supplied."
+    else:
+        fields = parse_checklist(pull_request_text)
     if fields is None or "Reviewed the final diff" not in fields:
         return "not provided"
     else:
@@ -93,6 +96,7 @@ def parse_checklist(pull_request_text: str) -> dict[str, str] | None:
 
 
 def audit_checklist(bundle: ReviewBundle) -> list[Finding]:
+    assert bundle.pull_request_text is not None
     fields = parse_checklist(bundle.pull_request_text)
     findings: list[Finding] = []
     if fields is None:
@@ -101,7 +105,7 @@ def audit_checklist(bundle: ReviewBundle) -> list[Finding]:
                 bundle,
                 "Contributor checklist is missing.",
                 "A maintainer cannot see what the author reviewed or ran.",
-                "Paste the contributor checklist from CONTRIBUTING.md. This is a follow-up, not a rejection.",
+                "Fill in the contributor checklist from the PR template. This is a follow-up, not a rejection.",
             )
         )
         return findings

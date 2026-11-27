@@ -14,6 +14,7 @@ from scripts.docs_review.models import (
     CollectedFile,
     FileChange,
     ModelSettings,
+    ModelSnapshot,
     ReviewBundle,
     ReviewRequest,
 )
@@ -149,7 +150,7 @@ def review_input_sha256(
             [scope.model_dump(mode="json") for scope in bundle.document_scopes],
             sort_keys=True,
         ),
-        bundle.pull_request_text,
+        json.dumps(bundle.pull_request_text),
         bundle.comment_text,
         bundle.evidence_text,
         checks_canonical(bundle.checks),
@@ -161,9 +162,15 @@ def review_input_sha256(
 
 
 def bundle_payload(
-    bundle: ReviewBundle, prompt_version: str, input_hash: str
+    bundle: ReviewBundle,
+    prompt_version: str,
+    input_hash: str,
+    model_settings: ModelSettings | None,
 ) -> BundlePayload:
     return BundlePayload(
+        model_configuration=(
+            ModelSnapshot.from_settings(model_settings) if model_settings else None
+        ),
         repository_identity=bundle.repository_identity,
         base_commit_sha=bundle.base_commit_sha,
         head_commit_sha=bundle.head_commit_sha,
@@ -267,7 +274,7 @@ def review_input_files(request: ReviewRequest) -> list[CollectedFile]:
         indent=2,
     )
     bodies = {
-        "pull_request.md": request.pull_request_text,
+        "pull_request.md": request.pull_request_text or "",
         "comments.md": request.comment_text,
         "evidence.md": request.evidence_text,
         "checks.json": checks_text,

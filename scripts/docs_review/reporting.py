@@ -18,7 +18,11 @@ def render_bundle(bundle: ReviewBundle) -> str:
         "Head commit:",
         bundle.head_commit_sha,
         "Pull request text:",
-        bundle.pull_request_text,
+        (
+            bundle.pull_request_text
+            if bundle.pull_request_text is not None
+            else "PR description not supplied; skip checklist verification."
+        ),
         "Comments:",
         bundle.comment_text,
         "Supplementary evidence:",
@@ -53,10 +57,14 @@ def render_markdown(report: Report) -> str:
         f"Base: `{report.base_commit_sha}`",
         f"Head: `{report.head_commit_sha}`",
         f"Author confirmation: {report.author_confirmation}",
-        "",
-        "## Reviewed paths",
-        "",
     ]
+    if report.estimated_call_cost_cents is not None:
+        lines.append(
+            f"Estimated cost: {report.usage_cost_cents} cents at {report.estimated_call_cost_cents} cents per call."
+        )
+    else:
+        pass
+    lines.extend(["", "## Reviewed paths", ""])
     if report.reviewed_paths:
         for file_path in report.reviewed_paths:
             lines.append(f"- `{file_path}`")
