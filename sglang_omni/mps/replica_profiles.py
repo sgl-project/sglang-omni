@@ -252,6 +252,18 @@ REPLICA_PROFILES: tuple[ReplicaProfile, ...] = (
         },
     ),
     ReplicaProfile(
+        config_cls="WhisperASRPipelineConfig",
+        model_path="openai/whisper-large-v3",
+        gpu=H100,
+        num_replicas=4,
+        replicated_processes=("asr",),
+        settings={
+            "stages.asr.gpu_memory_fraction": 0.23,
+            "stages.asr.engine.mem_fraction_static": 0.94,
+            "stages.asr.engine.max_total_tokens": 20935,
+        },
+    ),
+    ReplicaProfile(
         config_cls="MossTranscribeDiarizePipelineConfig",
         model_path="OpenMOSS-Team/MOSS-Transcribe-Diarize",
         gpu=H100,

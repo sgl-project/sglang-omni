@@ -52,6 +52,7 @@ class AsrCiPreset:
     # newly onboarded model awaits calibration;
     gate_thresholds: bool = True
     revision: str | None = None
+    startup_timeout_s: int = 600
 
     def resolved_model_path(self) -> str:
         """The weights path to serve: a pinned local snapshot, or the repo id."""
@@ -280,6 +281,8 @@ ASR_CI_PRESETS: dict[str, AsrCiPreset] = {
             rtf_mean_max=WHISPER_ASR_RTF_MEAN_THRESHOLD,
             rtf_p95_max=WHISPER_ASR_RTF_P95_THRESHOLD,
         ),
+        # note (Yuanfan Chen): on an H100 the measured profile serves 4 replicas, which start one after another under the GPU startup lock, in about 1,000 s.
+        startup_timeout_s=1800,
     ),
 }
 
