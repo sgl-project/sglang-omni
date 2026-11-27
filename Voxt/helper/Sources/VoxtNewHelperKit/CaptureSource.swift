@@ -7,6 +7,12 @@ import Foundation
 // share it, so a file recording goes through the same conversion, framing
 // and notifications as a real one.
 
+/// A microphone tap uses the input side: selecting a device can leave the
+/// output side describing the previous device.
+public func microphoneTapFormat(inputFormat: AVAudioFormat, outputFormat _: AVAudioFormat) -> AVAudioFormat {
+    inputFormat
+}
+
 /// Mono at the input's rate → mono float at the capture rate: one
 /// AVAudioConverter per input, so the resampler's state carries over from
 /// one buffer to the next.

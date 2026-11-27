@@ -222,7 +222,8 @@ final class CaptureRun: @unchecked Sendable {
                                               &id, UInt32(MemoryLayout<AudioObjectID>.size))
             if status != noErr { throw RPCError(Code.deviceUnavailable, "\(deviceName(device)) cannot be selected (\(status))") }
         }
-        let format = input.outputFormat(forBus: 0)
+        let format = microphoneTapFormat(inputFormat: input.inputFormat(forBus: 0),
+                                         outputFormat: input.outputFormat(forBus: 0))
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw RPCError(Code.deviceUnavailable, "\(deviceName(device)) has no usable format")
         }
