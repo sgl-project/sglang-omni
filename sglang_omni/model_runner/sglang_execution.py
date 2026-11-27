@@ -129,6 +129,11 @@ class SGLangExecutionBridge:
         else:
             pass
         indices = batch.req_pool_indices
+        if batch.beam_tail is not None:
+            # Sampling covered one row per request; the beam coordinator relays the member rows.
+            indices = indices[: batch.beam_tail.num_base_rows]
+        else:
+            pass
         self.future_map.stash(
             indices,
             self.relay_payload_type(bonus_tokens=next_token_ids),

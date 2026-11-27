@@ -52,6 +52,7 @@ from sglang_omni.serve.realtime.events import (
     TurnDetectionType,
     parse_transcription_client_event,
 )
+from sglang_omni.serve.realtime.task_cleanup import close_websocket
 from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,
     join_transcript_parts,
@@ -894,10 +895,7 @@ class RealtimeTranscriptionSession:
             else:
                 pass
         self.pending_finals.clear()
-        if self.websocket.client_state == WebSocketState.CONNECTED:
-            await self.websocket.close()
-        else:
-            pass
+        await close_websocket(self.websocket)
 
 
 __all__ = ["RealtimeTranscriptionSession", "StreamingASRStrategy"]

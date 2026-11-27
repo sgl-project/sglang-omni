@@ -1,0 +1,32 @@
+name: PR description
+
+# Authors fix this check by editing the pull request, so it also runs on the
+# events that change the description without a new commit.
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+      - edited
+      - synchronize
+      - converted_to_draft
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  description:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check the pull request description
+        run: python3 .github/scripts/check_pr_description.py
