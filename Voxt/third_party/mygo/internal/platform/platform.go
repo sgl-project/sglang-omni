@@ -428,6 +428,9 @@ type Window interface {
 	ShowInactive()
 	Hide()
 	IsVisible() bool
+	// IsOnActiveSpace reports whether the window is, or would be once
+	// shown, on the workspace the user is on (macOS Spaces).
+	IsOnActiveSpace() bool
 	Focus()
 	Blur()
 	IsFocused() bool

@@ -111,7 +111,7 @@ def run_labeler(
             "neutral",
             [{"filename": "sglang_omni/x.py", "status": "modified"}],
             None,
-            ["documentation"],
+            [],
         ),
         (
             "Neutral",
@@ -135,10 +135,23 @@ def run_labeler(
                 {"filename": "sglang_omni/x.py", "status": "modified"},
             ],
             None,
-            ["documentation"],
+            [],
         ),
         (
-            "docs plus code with run label",
+            "Move a code example into the documentation",
+            "neutral",
+            [
+                {
+                    "filename": "docs/example.py",
+                    "previous_filename": "examples/example.py",
+                    "status": "renamed",
+                }
+            ],
+            ["run-unit-test-ci-only"],
+            [],
+        ),
+        (
+            "docs-only with a CI label",
             "neutral",
             [{"filename": "docs/foo.md", "status": "modified"}],
             ["run-unit-test-ci-only"],

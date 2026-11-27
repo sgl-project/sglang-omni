@@ -6,6 +6,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -57,5 +60,41 @@ func TestReleaseTestsHaveRoom(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "go test -count=1 -timeout 30m ./...") {
 		t.Error("voxt-release.yaml runs go test without -timeout 30m")
+	}
+}
+
+// TestCIShardsRunEveryTest: Voxt CI runs this package's tests as shards
+// beside each other, each with the names scripts/test-shard.sh deals it. A
+// name left out of every shard would be a test CI never runs.
+func TestCIShardsRunEveryTest(t *testing.T) {
+	ci, err := os.ReadFile("../.github/workflows/voxtnew-ci.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ci), "go test -list . . | scripts/test-shard.sh ${{ matrix.shard }}") {
+		t.Error("Voxt CI does not take its shards from scripts/test-shard.sh")
+	}
+	names := []string{"TestA", "TestAB", "ExampleC", "FuzzD", "TestE", "TestF", "TestG"}
+	list := strings.Join(names, "\n") + "\nok  \tpkg\t0.01s\n"
+	const shards = 3
+	ran := map[string]int{}
+	for shard := range shards {
+		cmd := exec.Command("scripts/test-shard.sh", strconv.Itoa(shard), strconv.Itoa(shards))
+		cmd.Stdin = strings.NewReader(list)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("shard %d: %v", shard, err)
+		}
+		pattern := regexp.MustCompile(strings.TrimSpace(string(out)))
+		for _, name := range names {
+			if pattern.MatchString(name) {
+				ran[name]++
+			}
+		}
+	}
+	for _, name := range names {
+		if ran[name] != 1 {
+			t.Errorf("%s runs in %d shards, want 1", name, ran[name])
+		}
 	}
 }

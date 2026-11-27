@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -25,6 +26,42 @@ func TestChangelogHeadingsOncePerVersion(t *testing.T) {
 			}
 			seen[line] = true
 		default:
+		}
+	}
+}
+
+// TestChangelogEntryTitlesOncePerVersion: one entry per change in the
+// release being prepared. The 2.1.3 section listed the same clean-up entry
+// twice, once for the landed #4459 and once for its closed-unmerged twin
+// #4383.
+func TestChangelogEntryTitlesOncePerVersion(t *testing.T) {
+	var cfg struct{ Version string }
+	b, err := os.ReadFile("mygo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("CHANGELOG.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inVersion, inSection, seen := false, "", map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case strings.HasPrefix(line, "## "):
+			inVersion = strings.HasPrefix(line, "## ["+cfg.Version+"]")
+		case !inVersion:
+		case strings.HasPrefix(line, "### "), strings.HasPrefix(line, "#### "):
+			inSection, seen = line, map[string]bool{}
+		case strings.HasPrefix(line, "- **"):
+			title, _, _ := strings.Cut(line[len("- **"):], "**")
+			key := inSection + "|" + title
+			if seen[key] {
+				t.Errorf("%s: entry %q appears twice", inSection, title)
+			}
+			seen[key] = true
 		}
 	}
 }

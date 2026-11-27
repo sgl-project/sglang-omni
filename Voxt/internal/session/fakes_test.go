@@ -43,7 +43,8 @@ type fakeAudio struct {
 	tick     time.Duration
 	startErr error // Record fails before any audio
 	maxFrame int   // the recording ends by itself after this many frames (0: never)
-	failAt   int   // after this many frames Record fails with failErr
+	maxDone  chan struct{}
+	failAt   int // after this many frames Record fails with failErr
 	failErr  error
 	deaf     bool // ignore Stop (a capture.stop that raced its start)
 	quiet    bool // nobody speaks: quietFrame instead of frame
@@ -58,11 +59,14 @@ type fakeAudio struct {
 	// in 100 ms frames (the last one may be short), drained closes once
 	// the last frame was delivered, and the recording then waits for
 	// Stop, as the helper's file input does.
-	file    []byte
-	drained chan struct{}
+	file     []byte
+	fileTick time.Duration
+	drained  chan struct{}
 	// notified closes once notifyAt frames were sent (0: never).
-	notifyAt int
-	notified chan struct{}
+	notifyAt     int
+	notified     chan struct{}
+	firstPCM     chan struct{}
+	firstPCMOnce sync.Once
 
 	mu      sync.Mutex
 	stops   map[string]chan struct{}
@@ -74,7 +78,7 @@ type fakeAudio struct {
 }
 
 func newFakeAudio() *fakeAudio {
-	return &fakeAudio{tick: time.Millisecond, stops: map[string]chan struct{}{}, late: map[string]func(AudioEvent){}}
+	return &fakeAudio{tick: time.Millisecond, stops: map[string]chan struct{}{}, late: map[string]func(AudioEvent){}, firstPCM: make(chan struct{})}
 }
 
 func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams, fn func(AudioEvent)) (proto.CaptureResult, error) {
@@ -105,14 +109,32 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "MacBook Air Microphone", SampleRate: 16000}})
 	n := 0
 	if len(f.file) > 0 {
+		var ticker *time.Ticker
+		var ticks <-chan time.Time
+		if f.fileTick > 0 {
+			ticker = time.NewTicker(f.fileTick)
+			defer ticker.Stop()
+			ticks = ticker.C
+		}
 		for off := 0; off < len(f.file); off += len(frame) {
+			if ticks != nil {
+				select {
+				case <-ctx.Done():
+					return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
+				case <-stop:
+					return proto.CaptureResult{Reason: proto.CaptureStopped, Frames: n}, nil
+				case <-ticks:
+				}
+			}
 			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: f.file[off:min(off+len(frame), len(f.file))]}})
 			n++
 		}
 		f.mu.Lock()
 		f.frames = n
 		f.mu.Unlock()
-		close(f.drained)
+		if f.drained != nil {
+			close(f.drained)
+		}
 		select {
 		case <-ctx.Done():
 			return proto.CaptureResult{}, &proto.Error{Code: proto.CodeCancelled, Message: "cancelled"}
@@ -137,6 +159,7 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 			if f.quiet || f.speaks != nil && !f.speaks(n) {
 				data = quietFrame
 			}
+			f.firstPCMOnce.Do(func() { close(f.firstPCM) })
 			fn(AudioEvent{PCM: &proto.PCMParams{Job: id, Seq: n, Data: data}})
 			n++
 			f.mu.Lock()
@@ -149,6 +172,9 @@ func (f *fakeAudio) Record(ctx context.Context, id string, p proto.CaptureParams
 				return proto.CaptureResult{}, f.failErr
 			}
 			if (f.maxFrame > 0 && n == f.maxFrame) || (p.MaxSeconds > 0 && float64(n) >= p.MaxSeconds*10) { // 100 ms frames
+				if f.maxDone != nil && f.maxFrame > 0 && n == f.maxFrame {
+					close(f.maxDone)
+				}
 				return proto.CaptureResult{Reason: proto.CaptureMaxSeconds, Frames: n}, nil
 			}
 		}
@@ -207,146 +233,14 @@ func (f *fakeAudio) lateEvents(id string) {
 	fn(AudioEvent{Started: &proto.CaptureStartedParams{Job: id, DeviceName: "late"}})
 }
 
-// fakeStreamer streams: a partial per frame, the final on Finish.
-type fakeStreamer struct {
-	final    string
-	openErr  error
-	finalErr error         // the stream fails instead of answering
-	errAfter int           // the stream fails after this many sends
-	hang     bool          // no final after Finish
-	openWait time.Duration // Open takes this long
-	openGate chan struct{} // Open waits for it to close (nil: no wait)
-	silent   bool          // no partials
-	// partials are what its partials say, one per send, the last one
-	// repeated (nil: "partial").
-	partials []string
-	// pieces are the cumulative "final so far" texts it reports while
-	// recording (asr.EventPiece): pieces[i-1] after the i-th send.
-	pieces  []string
-	salvage string // the text its streams salvage (asr.Salvager), "" for none
-
-	mu      sync.Mutex
-	streams []*fakeStream
-	hints   []string
-	prompt  string // the last stream's prompt
-	// liveResult is the last stream's StreamRequest.LiveResult.
-	liveResult bool
-}
-
-func (f *fakeStreamer) Caps() asr.Caps { return asr.Caps{Stream: true, Hints: true} }
-
-func (f *fakeStreamer) Open(ctx context.Context, req asr.StreamRequest) (asr.Stream, error) {
-	if f.openWait > 0 {
-		select {
-		case <-time.After(f.openWait):
-		case <-ctx.Done():
-			return nil, &asr.Error{Kind: asr.KindCancelled}
-		}
-	}
-	if f.openGate != nil {
-		select {
-		case <-f.openGate:
-		case <-ctx.Done():
-			return nil, &asr.Error{Kind: asr.KindCancelled}
-		}
-	}
-	if f.openErr != nil {
-		return nil, f.openErr
-	}
-	s := &fakeStream{f: f, ctx: ctx, events: make(chan asr.Event, 1024)}
-	f.mu.Lock()
-	f.streams = append(f.streams, s)
-	f.hints, f.prompt, f.liveResult = req.Hints, req.Prompt, req.LiveResult
-	f.mu.Unlock()
-	return s, nil
-}
-
-type fakeStream struct {
-	f      *fakeStreamer
-	ctx    context.Context
-	mu     sync.Mutex
-	bytes  int
-	data   []byte // what was sent
-	sends  int
-	closed bool
-	done   bool
-	events chan asr.Event
-}
-
-func (s *fakeStream) emit(ev asr.Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.done {
-		return
-	}
-	if ev.Kind == asr.EventFinal || ev.Kind == asr.EventError {
-		s.done = true
-	}
-	s.events <- ev
-	if s.done {
-		close(s.events)
-	}
-}
-
-func (s *fakeStream) Send(pcm []byte) error {
-	s.mu.Lock()
-	if s.done || s.closed {
-		s.mu.Unlock()
-		return &asr.Error{Kind: asr.KindProtocol, Detail: "the stream has ended"}
-	}
-	s.bytes += len(pcm)
-	s.data = append(s.data, pcm...)
-	s.sends++
-	n := s.sends
-	s.mu.Unlock()
-	if s.f.errAfter > 0 && n >= s.f.errAfter {
-		s.emit(asr.Event{Kind: asr.EventError, Err: &asr.Error{Kind: asr.KindNetwork, Detail: "connection reset"}})
-		return nil
-	}
-	if !s.f.silent {
-		text := "partial"
-		if len(s.f.partials) > 0 {
-			text = s.f.partials[min(n, len(s.f.partials))-1]
-		}
-		s.emit(asr.Event{Kind: asr.EventPartial, Text: text})
-	}
-	if n <= len(s.f.pieces) && s.f.pieces[n-1] != "" {
-		s.emit(asr.Event{Kind: asr.EventPiece, Text: s.f.pieces[n-1]})
-	}
-	return nil
-}
-
-func (s *fakeStream) Salvage() string { return s.f.salvage }
-
-func (s *fakeStream) Finish() error {
-	switch {
-	case s.f.hang:
-	case s.f.finalErr != nil:
-		s.emit(asr.Event{Kind: asr.EventError, Err: s.f.finalErr})
-	default:
-		s.emit(asr.Event{Kind: asr.EventFinal, Text: s.f.final, Result: asr.Result{Text: s.f.final, Model: "fake-stream"}})
-	}
-	return nil
-}
-
-func (s *fakeStream) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.closed {
-		s.closed = true
-		if !s.done {
-			close(s.events)
-		}
-	}
-}
-
-func (s *fakeStream) Events() <-chan asr.Event { return s.events }
-
 // fakeFile transcribes whole recordings.
 type fakeFile struct {
-	text string
-	err  error
-	hang bool
+	text              string
+	said              string // the language it reports (asr.Result.Lang)
+	err               error
+	hang              bool
+	transcribeGate    <-chan struct{}
+	transcribeStarted chan<- struct{}
 
 	mu     sync.Mutex
 	calls  int
@@ -366,11 +260,24 @@ func (f *fakeFile) Transcribe(ctx context.Context, req asr.FileRequest) (asr.Res
 	f.audio = req.Audio
 	f.lang, f.prompt, f.most = req.Lang, req.Prompt, req.MaxBytes
 	f.mu.Unlock()
+	if f.transcribeStarted != nil {
+		select {
+		case f.transcribeStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.transcribeGate != nil {
+		select {
+		case <-f.transcribeGate:
+		case <-ctx.Done():
+			return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
+		}
+	}
 	if f.hang {
 		<-ctx.Done()
 		return asr.Result{}, &asr.Error{Kind: asr.KindCancelled, Detail: ctx.Err().Error()}
 	}
-	return asr.Result{Text: f.text, Model: "fake-file"}, f.err
+	return asr.Result{Text: f.text, Lang: f.said, Model: "fake-file"}, f.err
 }
 
 // fakeLLM answers chats: text, or texts in turn (the last repeats),
@@ -381,6 +288,7 @@ type fakeLLM struct {
 	texts     []string
 	err       error
 	failOn    int
+	failDelta string
 	hang      bool
 	hangOn    int    // with hang: only the hangOn-th request hangs (0: all)
 	hangDelta string // with hang: the delta streamed before hanging ("Half an ans" when empty)
@@ -392,15 +300,26 @@ type fakeLLM struct {
 	// one, as a model that repeats the prompt's example does.
 	copyExample bool
 
-	mu       sync.Mutex
-	reqs     []llm.Request
-	answered int           // the requests answered so far
-	answerCh chan struct{} // closed on the next answer; see answerSignal
+	mu               sync.Mutex
+	reqs             []llm.Request
+	answered         int           // the requests answered so far
+	answerCh         chan struct{} // closed on the next answer; see answerSignal
+	firstRequest     chan struct{}
+	firstRequestOnce sync.Once
+}
+
+func (f *fakeLLM) ensureSignals() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.firstRequest == nil {
+		f.firstRequest = make(chan struct{})
+	}
 }
 
 func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
 	f.mu.Lock()
 	f.reqs = append(f.reqs, req)
+	firstRequest := f.firstRequest
 	text := f.text
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.reqs), len(f.texts))-1]
@@ -413,8 +332,12 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		}
 	}
 	failed := f.err != nil && (f.failOn == 0 || f.failOn == len(f.reqs))
+	failDelta := f.failDelta
 	hang := f.hang && (f.hangOn == 0 || f.hangOn == len(f.reqs))
 	f.mu.Unlock()
+	if firstRequest != nil {
+		f.firstRequestOnce.Do(func() { close(firstRequest) })
+	}
 	if hang {
 		if req.OnDelta != nil {
 			req.OnDelta(cmp.Or(f.hangDelta, "Half an ans"))
@@ -423,6 +346,9 @@ func (f *fakeLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, erro
 		return llm.Response{}, ctx.Err()
 	}
 	if failed {
+		if req.OnDelta != nil && failDelta != "" {
+			req.OnDelta(failDelta)
+		}
 		return llm.Response{}, f.err
 	}
 	if req.OnDelta == nil && f.pause > 0 {
@@ -604,7 +530,7 @@ func (r *recorder) wait(t *testing.T) Snapshot {
 }
 
 // waitFor waits until a snapshot satisfies ok.
-func (r *recorder) waitFor(t *testing.T, what string, ok func(Snapshot) bool) Snapshot {
+func (r *recorder) waitFor(t testing.TB, what string, ok func(Snapshot) bool) Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -637,6 +563,9 @@ type fakeSelector struct {
 	steps     []string
 	err       error
 	delay     time.Duration
+	// held reads come first with the ⌘C skipped: the shortcut's keys
+	// are still down.
+	held int
 
 	mu    sync.Mutex
 	calls []proto.SelectionParams
@@ -656,6 +585,11 @@ func (f *fakeSelector) Selection(ctx context.Context, p proto.SelectionParams) (
 	if f.err != nil {
 		return proto.SelectionResult{}, f.err
 	}
+	if f.mu.Lock(); len(f.calls) <= f.held {
+		f.mu.Unlock()
+		return proto.SelectionResult{Via: proto.ViaNone, MS: 800, Steps: []string{"focus=nil", "copy: skipped held=option"}}, nil
+	}
+	f.mu.Unlock()
 	switch {
 	case f.text != "":
 		return proto.SelectionResult{Text: f.text, Via: proto.ViaAX, MS: 2}, nil

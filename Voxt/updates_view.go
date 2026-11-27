@@ -4,6 +4,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
 type updatesLocalUI struct {
@@ -109,4 +110,79 @@ func releaseDialog(c *ui.Context, state releaseViewState, actions releaseActions
 			}
 		}
 	})
+}
+
+// sidebarUpdateControl is the update action at the foot of the sidebar:
+// a translucent tinted bar in the expanded sidebar (or solid accent once
+// installed and waiting to restart), and a circular icon button in the
+// collapsed icon rail.
+func sidebarUpdateControl(c *ui.Context, state *sidebarUpdateViewState, actions sidebarUpdateActions, rail bool) {
+	if state == nil {
+		return
+	}
+	t := c.Theme()
+	k := tok(t)
+	ic := icons.DownloadMinimalistic
+	fg := k.AccentInk
+	var bg, border ui.Color
+	if state.Ready {
+		ic = icons.Refresh
+		fg = k.OnAccent
+	}
+	var b ui.Element
+	if rail {
+		b = ui.ButtonBase(c.Key("sidebar-update-rail")).
+			Size(px(t, 32), px(t, 32)).
+			Radius(px(t, 999)).
+			Center().
+			Shrink(0).
+			Label(state.Label).
+			Tooltip(state.Tooltip)
+	} else {
+		b = ui.ButtonBase(c.Key("sidebar-update-bar")).
+			FillWidth().
+			Padding(px(t, 7), px(t, 10)).
+			Gap(px(t, sp2)).
+			Radius(px(t, radiusControl)).
+			AlignItems(ui.Center).
+			Justify(ui.Start).
+			Shrink(0).
+			Label(state.Label).
+			Tooltip(state.Tooltip)
+	}
+	if state.Ready {
+		bg = k.Accent
+		switch {
+		case b.Pressed():
+			bg = k.Accent.Mix(ui.Hex("#000000"), 0.16)
+		case b.Hovered():
+			bg = k.Accent.Mix(ui.Hex("#000000"), 0.08)
+		}
+		border = ui.Color{}
+	} else {
+		bg = k.AccentSoft
+		switch {
+		case b.Pressed():
+			bg = k.SelectedHover
+		case b.Hovered():
+			bg = k.Selected
+		}
+		border = k.Accent.Alpha(0.24)
+	}
+	b.Background(bg).Border(1, border)
+	b.Children(func() {
+		if rail {
+			ui.Icon(c, ic.Linear).Size(px(t, 16), px(t, 16)).TextColor(fg)
+			return
+		}
+		ui.Icon(c, ic.Linear).Size(px(t, 15), px(t, 15)).TextColor(fg).Shrink(0)
+		ui.Text(c, state.Label).FontSize(px(t, fsCaption)).FontWeight(600).TextColor(fg).SingleLine().Ellipsis("…").Grow(1).MinWidth(0)
+	})
+	if b.Clicked() {
+		if state.Ready {
+			actions.relaunch()
+		} else {
+			actions.checkForUpdates()
+		}
+	}
 }

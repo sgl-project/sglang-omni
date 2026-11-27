@@ -16,6 +16,7 @@ from sglang_omni.model_runner.model_worker import ModelWorker
 from sglang_omni.models.minicpm_o.components.sglang_thinker import (
     SPECULATIVE_HIDDEN_ROWS,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.generation_batch_policy import (
     get_decode_cuda_graph_bs,
     get_decode_cuda_graph_max_bs,
@@ -184,12 +185,12 @@ def create_thinker_scheduler(
     want_cuda_graph = not bool(cfg.disable_cuda_graph)
     speculative_algorithm = SpeculativeAlgorithm.from_string(cfg.speculative_algorithm)
     speculative = not speculative_algorithm.is_none()
-    if (
-        speculative_algorithm.is_dspark()
-        and read_ragged_verify_mode() != RaggedVerifyMode.STATIC
+    if speculative_algorithm.is_dspark() and read_ragged_verify_mode() not in (
+        RaggedVerifyMode.STATIC,
+        RaggedVerifyMode.COMPACT,
     ):
         raise ValueError(
-            "MiniCPM-o thinker speculative decoding requires static verify"
+            "MiniCPM-o thinker speculative decoding requires static or compact verify"
         )
     else:
         pass
@@ -290,6 +291,13 @@ def create_thinker_scheduler(
         for token in ("<|tts_eos|>", "<|im_end|>", "</s>")
     ]
     model_runner = MiniCPMOThinkerModelRunner(model_worker, output_proc, eos_token_ids)
+    if (
+        speculative_algorithm.is_dflash() or speculative_algorithm.is_dspark()
+    ) and current_platform.is_cuda():
+        # note (wilsonzheng0327): SGLang's DFlash and DSpark verify never apply repetition_penalty; each request verifies one linear block, so the shared verify rows apply it exactly.
+        model_runner.speculative_repetition_penalty_owner = "verify_logits"
+    else:
+        pass
 
     request_builder, result_adapter = make_thinker_scheduler_adapters(
         tokenizer=tokenizer,

@@ -37,24 +37,16 @@ func obTester(t *testing.T) (*app, *ui.Tester) {
 func TestOpeningLeadsToGuideOnce(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.version = "2.1.1"
-	a.startOpening()
+	a.startOpening(false)
 	a.maybeOnboard()
 	frames(tt)
 	if a.openingStarted.IsZero() || has(tt, "Get started") {
 		t.Fatal("the first launch did not show the opening before the guide")
 	}
-	if saved := a.lib.settings.Get().Setup; !saved.OpeningShown || saved.OpeningVersion != a.version || saved.Done {
-		t.Fatal("the opening did not persist independently of guide completion")
-	}
-	a.openingStarted = time.Now().Add(-openingDuration)
+	a.openingStarted = time.Now().Add(-a.openingLength())
 	frames(tt)
 	if !a.openingStarted.IsZero() || !has(tt, "Get started") {
 		t.Fatal("the opening did not finish at the setup guide")
-	}
-	a.prefs = a.lib.settings.Get()
-	a.startOpening()
-	if !a.openingStarted.IsZero() {
-		t.Fatal("an unfinished guide replayed the opening")
 	}
 	a.closeOnboarding()
 	a.openOnboarding()
@@ -73,7 +65,7 @@ func TestOpeningSkipsReducedMotion(t *testing.T) {
 				s.Appearance.ReduceMotion = mode == "app-reduced-motion"
 			})
 			tt.SetPreferences(ui.Preferences{ReduceMotion: mode == "system-reduced-motion"})
-			a.startOpening()
+			a.startOpening(false)
 			a.maybeOnboard()
 			frames(tt)
 			if !a.openingStarted.IsZero() || !has(tt, "Get started") {
@@ -81,10 +73,9 @@ func TestOpeningSkipsReducedMotion(t *testing.T) {
 			}
 			a.updateSettings(func(s *settings.Settings) { s.Appearance.ReduceMotion = false })
 			tt.SetPreferences(ui.Preferences{})
-			a.startOpening()
 			frames(tt)
 			if !a.openingStarted.IsZero() {
-				t.Fatal("turning reduced motion off replayed the opening for the same version")
+				t.Fatal("turning reduced motion off played the opening while the app runs")
 			}
 		})
 	}
@@ -162,7 +153,7 @@ func TestOnboardingSteps(t *testing.T) {
 		t.Fatalf("permissions: step %d %q", a.ob.step, tt.Texts())
 	}
 	click(t, tt, "Continue")
-	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue (2.5 GB)") || !has(tt, "Set up a language model") {
+	if a.ob.step != obModels || !has(tt, "Models") || !has(tt, "Download and continue ("+a.obDownloadLeft()+")") || !has(tt, "Set up a language model") {
 		t.Fatalf("models: step %d %q", a.ob.step, tt.Texts())
 	}
 	if !has(tt, "In Settings → Language models, choose Ollama, LM Studio, oMLX, or an API service. Paste any required key into API key, then select Test connection.") {
@@ -192,7 +183,7 @@ func TestOnboardingSteps(t *testing.T) {
 	}
 	a.obGo(obMore)
 	frames(tt)
-	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Your shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
+	for _, s := range []string{"More to explore", "App enhancement", "Dictionary", "Shortcuts", "Right ⌥ ⇧", "⌃ Right ⌥", "⌃⌥V", "Start using Voxt"} {
 		if !has(tt, s) {
 			t.Errorf("more: no %q in %q", s, tt.Texts())
 		}

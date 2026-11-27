@@ -57,6 +57,15 @@ func dictTester(t *testing.T) (*app, *ui.Tester) {
 	return a, tt
 }
 
+func chooseDictionaryMenuItem(t *testing.T, tester *ui.Tester, label string) {
+	t.Helper()
+	clickControl(t, tester, i18n.T("More actions"))
+	if err := tester.ChooseMenuItem(label); err != nil {
+		t.Fatal(err)
+	}
+	frames(tester)
+}
+
 func terms(t *testing.T, a *app) []store.Term {
 	t.Helper()
 	ts, err := a.lib.store.Dictionary().List(context.Background(), "")
@@ -68,7 +77,7 @@ func terms(t *testing.T, a *app) []store.Term {
 
 func TestDictionaryAddEditDelete(t *testing.T) {
 	a, tt := dictTester(t)
-	if !has(tt, "Names and terms you use") {
+	if !has(tt, "No terms yet") {
 		t.Fatalf("no empty state: %q", firstTexts(tt))
 	}
 	click(t, tt, "Add term")
@@ -109,47 +118,92 @@ func TestDictionaryAddEditDelete(t *testing.T) {
 	if ts := terms(t, a); ts[0].Enabled {
 		t.Errorf("still on %+v", ts)
 	}
+	tt.Move(1, 1) // off the row the switch's click left the pointer on
+	frames(tt)
+	if slices.Contains(tt.AccessLabels(), "Delete VoxtNew") {
+		t.Errorf("Delete shows without the pointer on the row: %q", tt.AccessLabels())
+	}
+	hoverText(t, tt, "VoxtNew")
 	click(t, tt, "Delete VoxtNew")
-	if len(terms(t, a)) != 0 || !has(tt, "Names and terms you use") {
+	if len(terms(t, a)) != 0 || !has(tt, "No terms yet") {
 		t.Errorf("not deleted: %q", firstTexts(tt))
 	}
 }
 
-// TestDictionaryGuide: the guide says where a term applies, in both
-// languages, with the numbers the composer uses.
-func TestDictionaryGuide(t *testing.T) {
+// TestDictionarySettingsTips: the settings dialog's ⓘ say where a term
+// goes, in both languages, with the numbers the composer uses.
+func TestDictionarySettingsTips(t *testing.T) {
 	_, tt := dictTester(t)
-	title := "How the dictionary works"
-	if !has(tt, title) || !slices.Contains(tt.AccessLabels(), title) {
-		t.Fatalf("no guide: %q", firstTexts(tt))
+	if has(tt, "Speech hints") {
+		t.Fatalf("the switches show on the page: %q", firstTexts(tt))
 	}
-	if has(tt, "Aliases are not sent") {
-		t.Errorf("the guide starts open: %q", firstTexts(tt))
+	click(t, tt, "Dictionary settings")
+	tips := func(wants ...string) {
+		t.Helper()
+		labels := strings.Join(tt.AccessLabels(), "\n")
+		for _, want := range wants {
+			if !strings.Contains(labels, want) {
+				t.Errorf("no %q in %q", want, tt.AccessLabels())
+			}
+		}
 	}
-	click(t, tt, title)
-	for _, want := range []string{
-		"is used in three places",
-		"as words to expect. Aliases are not sent",
+	tips("Terms go to the speech model as words to expect.",
 		fmt.Sprintf("With more than %d terms", compose.GlossaryAllUpTo),
-		fmt.Sprintf("are sent, up to %d.", compose.MaxGlossaryTerms),
-		"even without a language model",
-	} {
-		if !has(tt, want) {
-			t.Errorf("no %q in %q", want, firstTexts(tt))
-		}
-	}
+		fmt.Sprintf("only those in the text, up to %d.", compose.MaxGlossaryTerms),
+		"If you correct a word, it suggests your spelling.")
 	i18n.SetLocale("zh-Hans")
-	for _, want := range []string{
-		"词典的用法",
-		"启用的词条用在三个地方",
-		"别名不发送",
-		fmt.Sprintf("超过 %d 个时，只发送文本里出现的词条", compose.GlossaryAllUpTo),
-		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms),
-		"没有语言模型也有效",
+	defer i18n.SetLocale("en")
+	frames(tt)
+	tips("让语音识别更容易认出这些词",
+		fmt.Sprintf("超过 %d 个时，只用文中出现的", compose.GlossaryAllUpTo),
+		fmt.Sprintf("最多 %d 个", compose.MaxGlossaryTerms))
+}
+
+func TestDictionaryControlExplanations(t *testing.T) {
+	english := []string{
+		"Terms go to the speech model as words to expect.",
+		fmt.Sprintf("The language model writes terms as spelled here. With more than %d terms, it uses only those in the text, up to %d.", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms),
+		fmt.Sprintf("For %d seconds after inserting, Voxt reads the text around it. If you correct a word, it suggests your spelling. Nothing it reads is saved or sent.", learn.WatchSeconds),
+	}
+	chinese := []string{
+		"让语音识别更容易认出这些词。",
+		fmt.Sprintf("语言模型会按这里的写法输出词条。词条超过 %d 个时，只用文中出现的，最多 %d 个。", compose.GlossaryAllUpTo, compose.MaxGlossaryTerms),
+		fmt.Sprintf("插入后的 %d 秒内，Voxt 会读取插入处附近的文字。你改了某个词，它会建议加入词典。读到的内容不保存，也不发送。", learn.WatchSeconds),
+	}
+	for _, test := range []struct {
+		name          string
+		locale        string
+		dictionaryOff bool
+		want          []string
+	}{
+		{name: "English", locale: "en", want: english},
+		{name: "Chinese", locale: "zh-Hans", want: chinese},
+		{name: "available before enabling the dictionary", locale: "en", dictionaryOff: true, want: english},
 	} {
-		if !has(tt, want) {
-			t.Errorf("no %q in %q", want, firstTexts(tt))
-		}
+		t.Run(test.name, func(t *testing.T) {
+			_, tt := dictTester(t)
+			i18n.SetLocale(test.locale)
+			frames(tt)
+			if test.dictionaryOff {
+				chooseDictionaryMenuItem(t, tt, i18n.T("Use the dictionary"))
+			}
+			helpLabel := ""
+			for _, label := range tt.AccessLabels() {
+				if strings.Contains(label, test.want[0]) {
+					helpLabel = label
+					break
+				}
+			}
+			if helpLabel == "" {
+				t.Fatalf("no Speech hints help in %q", tt.AccessLabels())
+			}
+			clickControl(t, tt, helpLabel)
+			for _, want := range test.want {
+				if !has(tt, want) {
+					t.Errorf("no %q in %q", want, firstTexts(tt))
+				}
+			}
+		})
 	}
 }
 
@@ -172,14 +226,19 @@ func TestDictionarySearchAndSwitches(t *testing.T) {
 	if !has(tt, "No term matches “nothing”") {
 		t.Errorf("no empty search state %q", firstTexts(tt))
 	}
-	click(t, tt, "Speech hints")
-	click(t, tt, "Glossary for the language model")
+	for _, label := range []string{"Speech hints", "Glossary for the language model"} {
+		chooseDictionaryMenuItem(t, tt, label)
+	}
 	if d := a.lib.settings.Get().Dictionary; d.ASRHints || d.Glossary || !d.Enabled {
 		t.Errorf("settings %+v", d)
 	}
-	click(t, tt, "Use the dictionary")
+	chooseDictionaryMenuItem(t, tt, "Use the dictionary")
 	if a.lib.settings.Get().Dictionary.Enabled || !has(tt, "The dictionary is off, so its terms are not used.") {
 		t.Error("dictionary still on")
+	}
+	clickControl(t, tt, "Turn on the dictionary")
+	if !a.lib.settings.Get().Dictionary.Enabled || has(tt, "The dictionary is off, so its terms are not used.") {
+		t.Error("Turn on left the dictionary off")
 	}
 }
 
@@ -386,4 +445,17 @@ func TestDictionaryPageModelAppliesCompletedRead(t *testing.T) {
 	if model.Loading || len(model.Terms) != 5 {
 		t.Fatalf("completed model: loading %t, rows %d", model.Loading, len(model.Terms))
 	}
+}
+
+// hoverText moves the pointer onto the text s, for the controls that show
+// under it.
+func hoverText(t *testing.T, tt *ui.Tester, s string) {
+	t.Helper()
+	frames(tt)
+	r, ok := tt.Find(s)
+	if !ok {
+		t.Fatalf("no %q to hover: %q", s, tt.Texts())
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	frames(tt)
 }

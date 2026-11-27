@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "语音识别模型",
         "english": "Speech models download delete install recognition"
@@ -55,6 +70,11 @@
         "id": "storage",
         "title": "存储",
         "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
       },
       {
         "id": "about",
@@ -101,6 +121,18 @@
         "icons"
       ],
       "reduce_motion": false,
+      "opening": true,
+      "opening_length": 1,
+      "opening_length_options": [
+        "3 秒",
+        "2 秒",
+        "1 秒"
+      ],
+      "opening_length_values": [
+        3000,
+        2000,
+        1000
+      ],
       "palette": "#0d9384",
       "default_palette": "#0d9384",
       "transparent": false,

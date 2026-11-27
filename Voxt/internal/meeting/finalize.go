@@ -67,6 +67,12 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 		}
 		if segs != nil {
 			done[src] = segs
+			if i == 0 && len(sources) > 1 && cfg.correctOverlap != nil {
+				// The first track's correction hides under the next
+				// track's transcription; the text only loses whole
+				// lines to echo dropping afterwards, never rewrites.
+				cfg.correctOverlap.speculate(ctx, cfg, segs)
+			}
 		}
 	}
 	// Speech from the speakers reaches the microphone too (#3982).
@@ -236,6 +242,7 @@ func diarizeTrack(ctx context.Context, src Source, d asr.Diarizer, req asr.FileR
 					continue
 				}
 			}
+			text = collapseLoops(text)
 			speaker := mtdSpeaker(part.Speaker)
 			if anchored, ok := anchors[part.Speaker]; ok {
 				speaker = anchored
@@ -367,6 +374,7 @@ func transcribeChunks(ctx context.Context, src Source, ft asr.FileTranscriber, r
 		if i > 0 {
 			text = DedupeOverlapText(prevText, text)
 		}
+		text = collapseLoops(text)
 		prevText = text
 		if text == "" {
 			continue
@@ -471,7 +479,9 @@ func markFinalizeFailed(ctx context.Context, cfg Config, mt store.Meeting) error
 
 func applyAudioRetention(ctx context.Context, cfg Config, mt store.Meeting, mode Mode, success bool) error {
 	keep := cfg.Privacy().KeepAudio || mode.KeepsAudio()
-	if !success || keep {
+	// A meeting whose recording is gone has no folder of its own: joined
+	// with "", cfg.Dir is the folder of every meeting's recordings.
+	if !success || keep || mt.Audio == "" {
 		return nil
 	}
 	dir := filepath.Join(cfg.Dir, mt.Audio)

@@ -42,6 +42,7 @@ from fastapi import (
     Request,
     UploadFile,
     WebSocket,
+    WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -1891,6 +1892,10 @@ def register_realtime(app: FastAPI) -> None:
                 try:
                     await websocket.accept()
                     await session.run()
+                except WebSocketDisconnect:
+                    logger.info(
+                        f"Realtime client left during a send: {session.session_id}"
+                    )
                 finally:
                     await manager.close(session.session_id)
 

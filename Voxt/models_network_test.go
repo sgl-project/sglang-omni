@@ -21,7 +21,6 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
 
 // familyValue is the family's value of a shared key ("" unset).
@@ -47,9 +46,26 @@ func TestNetworkDialog(t *testing.T) {
 	if a.shownPath() != modelsPath || !a.netOpen || !has(tt, "How model downloads reach Hugging Face") {
 		t.Fatalf("deep link: page %q open %v %q", a.shownPath(), a.netOpen, tt.Texts())
 	}
-	if !has(tt, "Applies to all apps that use this model library") || !has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
+	if !has(tt, "Applies to all apps that use this model library") || has(tt, "The proxy in this Mac's network settings, or one set by an environment variable.") {
 		t.Fatalf("defaults: %q", tt.Texts())
 	}
+	automaticSave, ok := tt.Find("Save")
+	if !ok {
+		t.Fatal("no Save button")
+	}
+	a.netForm.source = len(networkSources)
+	a.netForm.sourceURL = "fixture-source"
+	frames(tt)
+	customSave, ok := tt.Find("Save")
+	if !ok || !has(tt, "Custom servers: fixture-source") {
+		t.Fatalf("custom source: %q", tt.Texts())
+	}
+	if customSave.Y <= automaticSave.Y {
+		t.Errorf("an empty source caption reserved a text row: automatic Save y %.0f, custom Save y %.0f", automaticSave.Y, customSave.Y)
+	}
+	a.netForm.source = 0
+	a.netForm.sourceURL = ""
+	frames(tt)
 
 	// A custom proxy: checked, then the family's.
 	click(t, tt, "Custom")
@@ -165,8 +181,7 @@ func TestNetworkUseTheirs(t *testing.T) {
 // TestFamilyLinesNeedAnotherApp: the shared settings speak of the family
 // only when a release of another ActNow app is installed (a dev build of
 // one does not count); alone, VoxtNew says nothing of it, though the data
-// still follows the family's files. Model descriptions never say "another
-// app": the status line names it ("Installed by Dicta").
+// still follows the family's files.
 func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	a.famStarted = true
@@ -214,11 +229,6 @@ func TestFamilyLinesNeedAnotherApp(t *testing.T) {
 	claimFor(t, a, dictaID, models.ASRFast)
 	check("Dicta's models in Voxt's folder", true, true)
 
-	for _, id := range []string{models.LLMQwen3, models.LLMGemma4} {
-		if about := uitext.ModelAbout(id); about == "" || strings.Contains(strings.ToLower(about), "another") {
-			t.Errorf("%s: %q", id, about)
-		}
-	}
 }
 
 // TestProxyAuth: a custom proxy's user name and password, as Voxt 1.x's.

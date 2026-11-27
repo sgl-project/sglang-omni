@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -19,12 +21,26 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		{name: "load", fixture: "en/dictionary-error", steps: historySteps("Try again"), want: []string{"loadDict"}},
 		{name: "search", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "Search dictionary", text: "vox"}}, want: []string{`searchDictionary "vox"`}},
 		{name: "clear search", fixture: "en/dictionary-search-empty", steps: historySteps("Clear search"), want: []string{`searchDictionary ""`}},
-		{name: "enabled", fixture: "en/dictionary-normal", steps: historySteps("Use the dictionary"), want: []string{"setDictionaryEnabled false"}},
-		{name: "hints", fixture: "en/dictionary-normal", steps: historySteps("Speech hints"), want: []string{"setDictionaryASRHints false"}},
-		{name: "glossary", fixture: "en/dictionary-normal", steps: historySteps("Glossary for the language model"), want: []string{"setDictionaryGlossary false"}},
-		{name: "learn", fixture: "en/dictionary-normal", steps: historySteps("Learn from my corrections"), want: []string{"setDictionaryLearn true"}},
-		{name: "scan model", fixture: "en/dictionary-scan-unavailable", steps: historySteps("Open Transcribe"), want: []string{"openDictionaryTranscribe"}},
-		{name: "open scan", fixture: "en/dictionary-normal", steps: historySteps("Scan history…"), want: []string{"openDictionaryScan"}},
+		{name: "enabled", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Use the dictionary"), want: []string{"setDictionaryEnabled false"}},
+		{name: "hints", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Speech hints"), want: []string{"setDictionaryASRHints false"}},
+		{name: "glossary", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Glossary for the language model"), want: []string{"setDictionaryGlossary false"}},
+		{name: "learn", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Learn from my corrections"), want: []string{"setDictionaryLearn true"}},
+		{name: "scan model", fixture: "en/dictionary-scan-unavailable", steps: historySteps("Open Transcribe"), want: []string{"openDictionaryTranscribe"}, check: func(t *testing.T, host *meetingDemoHost) {
+			if host.dictionaryUI.settingsOpen {
+				t.Fatal("settings stayed open over Transcribe")
+			}
+		}},
+		{name: "open scan", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Scan history…"), want: []string{"openDictionaryScan"}, check: func(t *testing.T, host *meetingDemoHost) {
+			if host.dictionaryUI.settingsOpen {
+				t.Fatal("settings stayed open under the scan")
+			}
+		}},
+		{name: "turn on", fixture: "en/dictionary-off", steps: historySteps("Turn on the dictionary"), want: []string{"setDictionaryEnabled true"}},
+		{name: "menu enabled", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Use the dictionary", menu: true}}, want: []string{"setDictionaryEnabled false"}},
+		{name: "menu hints", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Speech hints", menu: true}}, want: []string{"setDictionaryASRHints false"}},
+		{name: "menu glossary", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Glossary for the language model", menu: true}}, want: []string{"setDictionaryGlossary false"}},
+		{name: "menu learn", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Learn from my corrections", menu: true}}, want: []string{"setDictionaryLearn true"}},
+		{name: "menu open scan", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Scan history…", menu: true}}, want: []string{"openDictionaryScan"}},
 		{name: "import", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Import…", menu: true}}, want: []string{"importTerms"}},
 		{name: "legacy import", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Import from Voxt 1.x…", menu: true}}, want: []string{"importLegacy"}},
 		{name: "export csv", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "More actions"}, {label: "Export as CSV…", menu: true}}, want: []string{"exportTerms csv"}},
@@ -32,7 +48,7 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		{name: "empty import", fixture: "en/dictionary-empty", steps: historySteps("Import terms"), want: []string{"importTerms"}},
 		{name: "add", fixture: "en/dictionary-normal", steps: historySteps("Add term"), want: []string{`openDictionaryTerm ""`}},
 		{name: "edit", fixture: "en/dictionary-normal", steps: historySteps("Edit Voxt"), want: []string{`openDictionaryTerm "term-voxt"`}},
-		{name: "delete", fixture: "en/dictionary-normal", steps: historySteps("Delete Voxt"), want: []string{`deleteDictionaryTerm term-voxt "Voxt"`}},
+		{name: "delete", fixture: "en/dictionary-normal", steps: []historyDemoStep{{label: "Voxt", hover: true}, {label: "Delete Voxt"}}, want: []string{`deleteDictionaryTerm term-voxt "Voxt"`}},
 		{name: "toggle", fixture: "en/dictionary-normal", steps: historySteps("Use Voxt"), want: []string{"setDictionaryTermEnabled term-voxt false"}},
 		{name: "save", fixture: "en/dictionary-edit-existing", steps: historySteps("Save"), want: []string{"submitTerm"}},
 		{name: "submit return", fixture: "en/dictionary-edit-new", steps: []historyDemoStep{{label: "Term as written", text: "Voxt"}, {key: ui.KeyEnter}}, want: []string{"submitTerm"}},
@@ -69,19 +85,19 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 		}},
 		{name: "notes off", fixture: "en/dictionary-notes-populated", steps: historySteps("Add to the language model prompt"), want: []string{"setDictionaryNotesOff true"}},
 		{name: "notes edit and blur", fixture: "en/dictionary-notes-empty", steps: []historyDemoStep{{label: "Personal dictionary in Markdown", text: "Roth"}, {label: "Search personal dictionary", click: true}}, want: []string{"autosaveDictionaryNotes true true", "saveNotes"}},
-		{name: "guide", fixture: "en/dictionary-normal", steps: historySteps("How the dictionary works"), check: func(t *testing.T, host *meetingDemoHost) {
-			if !host.dictionaryUI.guideOpen {
-				t.Fatal("guide did not open")
+		{name: "settings done", fixture: "en/dictionary-normal", steps: historySteps("Dictionary settings", "Done"), check: func(t *testing.T, host *meetingDemoHost) {
+			if host.dictionaryUI.settingsOpen {
+				t.Fatal("settings stayed open")
 			}
 		}},
-		{name: "switch profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Work", click: true}}, want: []string{"switchDictionaryProfile work"}},
-		{name: "new profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "New profile"}, {label: "Profile name", text: "Home"}, {label: "Save"}}, want: []string{`openDictionaryProfileEdit ""`, `saveDictionaryProfile "Home"`}},
-		{name: "rename profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Profile actions"}, {label: "Rename “Default”…", menu: true}}, want: []string{`openDictionaryProfileEdit "default"`}, check: func(t *testing.T, host *meetingDemoHost) {
+		{name: "switch profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Active dictionary profile"}, {label: "Work", menu: true}}, want: []string{"switchDictionaryProfile work"}},
+		{name: "new profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Active dictionary profile"}, {label: "New profile…", menu: true}, {label: "Profile name", text: "Home"}, {label: "Save"}}, want: []string{`openDictionaryProfileEdit ""`, `saveDictionaryProfile "Home"`}},
+		{name: "rename profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Active dictionary profile"}, {label: "Rename “Default”…", menu: true}}, want: []string{`openDictionaryProfileEdit "default"`}, check: func(t *testing.T, host *meetingDemoHost) {
 			if edit := host.dictionaryUI.profileEdit; !edit.open || edit.id != "default" || edit.name != "Default" {
 				t.Fatalf("rename dialog %+v", edit)
 			}
 		}},
-		{name: "delete profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Profile actions"}, {label: "Delete “Default”…", menu: true}, {label: "Delete"}}, want: []string{"deleteDictionaryProfile default"}},
+		{name: "delete profile", fixture: "en/dictionary-normal", prepare: withDemoProfiles, steps: []historyDemoStep{{label: "Active dictionary profile"}, {label: "Delete “Default”…", menu: true}, {label: "Delete"}}, want: []string{"deleteDictionaryProfile default"}},
 		{name: "load notes", fixture: "en/notes-error", steps: historySteps("Try again"), want: []string{"loadNotes"}},
 		{name: "copy note", fixture: "en/notes-normal", steps: historySteps("Copy: call Ana"), want: []string{`copyNote "call Ana"`}},
 		{name: "edit note", fixture: "en/notes-normal", steps: historySteps("Edit call Ana", "Save"), want: []string{`saveNoteEdit note-2 "call Ana"`}},
@@ -128,6 +144,13 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 			for _, step := range test.steps {
 				var err error
 				switch {
+				case step.hover:
+					rect, ok := tester.Find(step.label)
+					if !ok {
+						err = fmt.Errorf("no %q to hover", step.label)
+					} else {
+						tester.Move(rect.X+rect.W/2, rect.Y+rect.H/2)
+					}
 				case step.context:
 					err = tester.RightClick(step.label)
 				case step.menu:
@@ -159,6 +182,69 @@ func TestDictionaryDemoActionControls(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDictionaryOverflowMenuDisabledItems(t *testing.T) {
+	t.Run("dictionary off", func(t *testing.T) {
+		host, err := loadMeetingDemoHost("testdata/meeting")
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectMeetingDemoFixture(t, host, "en/dictionary-off")
+		tester := newMeetingDemoTester(t, host)
+		if err := tester.ClickControl("More actions"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tester)
+		for _, label := range []string{"Speech hints", "Glossary for the language model", "Learn from my corrections"} {
+			if err := tester.ChooseMenuItem(label); err == nil || !strings.Contains(err.Error(), "disabled") {
+				t.Fatalf("%s: error %v, want a disabled item", label, err)
+			}
+		}
+		if len(host.calls) != 0 {
+			t.Fatalf("disabled items called %q", host.calls)
+		}
+		if err := tester.ChooseMenuItem("Use the dictionary"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tester)
+		if want := []string{"setDictionaryEnabled true"}; !slices.Equal(host.calls, want) {
+			t.Fatalf("calls %q, want %q", host.calls, want)
+		}
+	})
+
+	t.Run("scan unavailable", func(t *testing.T) {
+		host, err := loadMeetingDemoHost("testdata/meeting")
+		if err != nil {
+			t.Fatal(err)
+		}
+		selectMeetingDemoFixture(t, host, "en/dictionary-scan-unavailable")
+		tester := newMeetingDemoTester(t, host)
+		if host.dictionaryUI.settingsOpen {
+			if err := tester.ClickControl("Done"); err != nil {
+				t.Fatal(err)
+			}
+			frames(tester)
+		}
+		if err := tester.ClickControl("More actions"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tester)
+		if err := tester.ChooseMenuItem("Scan history…"); err == nil || !strings.Contains(err.Error(), "disabled") {
+			t.Fatalf("error %v, want a disabled item", err)
+		}
+		if len(host.calls) != 0 {
+			t.Fatalf("disabled scan called %q", host.calls)
+		}
+		tester.CloseMenu()
+		if err := tester.ClickControl("Open Transcribe"); err != nil {
+			t.Fatal(err)
+		}
+		frames(tester)
+		if want := []string{"openDictionaryTranscribe"}; !slices.Equal(host.calls, want) {
+			t.Fatalf("calls %q, want %q", host.calls, want)
+		}
+	})
 }
 
 // withDemoProfiles gives the fixture two profiles, Default active.
