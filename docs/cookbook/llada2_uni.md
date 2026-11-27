@@ -18,6 +18,8 @@ LLaDA2.0-Uni unifies multimodal understanding and generation into a simple Mask 
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
+For Ascend NPU, follow [Installation — NPU](../other_platforms/installation_npu.md) to set up the environment; the NPU launch settings are described in [Ascend NPU](#ascend-npu) below.
+
 ## Server Configuration
 
 The default `omni` pipeline runs preprocessing, image encoding, and the
@@ -28,7 +30,9 @@ The `text` variant retains the four-stage text-output pipeline.
 
 The CFG thinker uses synchronous execution and defaults to eager mode.
 CUDA Graph replay is available for fixed-width DLLM blocks, including
-multi-way CFG and tensor parallel execution.
+multi-way CFG and tensor parallel execution. On Ascend NPU the CFG path
+captures a fixed-buffer decode graph and keeps prefill eager; see
+[Ascend NPU](#ascend-npu).
 
 ```bash
 sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
@@ -37,6 +41,41 @@ sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --port 8000 \
 
 The cookbook explicitly disables `torch.compile` to match the validated
 generation settings. CUDA Graph execution is controlled separately.
+
+### Ascend NPU
+
+The `omni` pipeline needs two devices on Ascend, because the thinker and the
+image decoder do not fit on one card together: the thinker is a 16B bf16 model,
+and the image decoder allocates about 9.4 GiB of attention buffers for a
+1024x1024 image. Select two visible NPUs and start the server with one device
+per stage:
+
+```bash
+export ASCEND_RT_VISIBLE_DEVICES=0,1
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni \
+  --variant omni --port 8000 \
+  --thinker.engine.enable_torch_compile false --thinker.engine.mem_fraction_static 0.65 \
+  --image_decode.gpu 1 --image_decode.gpu_memory_fraction 0.9 \
+  --image_decode.factory.decode_mode decoder-turbo
+```
+
+`--image_decode.gpu 1` selects the second visible device, and the thinker and
+image encoder stay on the first. Device indices are relative to the visible
+devices.
+
+The text-only variant fits on a single device:
+
+```bash
+sgl-omni serve --model-path inclusionAI/LLaDA2.0-Uni --text-only --port 8000 \
+  --thinker.engine.enable_torch_compile false
+```
+
+Keep `torch.compile` disabled on NPU, where dynamo tracing reaches the triton
+driver and crashes. The CFG thinker uses SGLang's `ascend` attention backend and
+captures a fixed-buffer decode graph: the scheduler page-aligns the CFG left
+pad, replay drops the padded pages and shortens the KV lengths, and the graph
+input update completes before each replay. Prefill stays eager because the NPU
+has no prefill graph backend.
 
 ### Thinker Tensor Parallelism
 

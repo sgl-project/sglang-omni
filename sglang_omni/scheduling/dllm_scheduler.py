@@ -34,6 +34,7 @@ from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.model_runner.base import resolve_deferred_prefill_inputs
 from sglang_omni.model_runner.model_worker import ModelWorker
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto.request import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
 from sglang_omni.scheduling.sglang_backend.request_data import (
@@ -322,6 +323,23 @@ class DllmScheduler:
             pass
         if not 0 <= int(left_pad_len) <= len(uncond_input_ids):
             raise ValueError("CFG left-pad length is outside the companion prompt")
+        else:
+            pass
+        left_pad_len = int(left_pad_len)
+        if current_platform.is_npu():
+            # The Ascend page table can only drop whole pages, so round the
+            # masked prefix up to a page. The extra masks are hidden from
+            # attention together with the rest of the pad.
+            block_size = cond_req.dllm_config.block_size
+            aligned_pad = -(-left_pad_len // block_size) * block_size
+            if aligned_pad != left_pad_len:
+                extra_pad = [cond_req.dllm_config.mask_id] * (
+                    aligned_pad - left_pad_len
+                )
+                uncond_input_ids = extra_pad + uncond_input_ids
+                left_pad_len = aligned_pad
+            else:
+                pass
         else:
             pass
         uncond_sampling_params = SamplingParams(

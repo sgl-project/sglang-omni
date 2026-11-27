@@ -55,6 +55,7 @@ def make_preprocessor() -> LLaDA2Preprocessor:
     preprocessor.max_seq_len = 8192
     preprocessor.merge_size = 2
     preprocessor.factor = 32
+    preprocessor.understanding_factor = 32
 
     def process_images(**kwargs: object) -> dict[str, torch.Tensor]:
         return {

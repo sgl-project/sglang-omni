@@ -36,6 +36,7 @@ from sglang_omni.models.llada2_uni.payload_types import (
     LLaDA2UniPipelineState,
     ThinkerOutput,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.sglang_backend.request_data import (
     DllmRequest,
@@ -198,6 +199,13 @@ def build_dllm_thinker_request(
         else:
             pass
         conditional_pad = length - len(input_ids_array)
+        if conditional_pad > 0 and current_platform.is_npu():
+            # Ascend decode graphs can only hide whole pages of left padding.
+            block_size = dllm_config.block_size
+            aligned_pad = -(-conditional_pad // block_size) * block_size
+            conditional_pad = aligned_pad
+        else:
+            pass
         input_ids_array = array(
             "q", [tokenizer.mask_token_id] * conditional_pad + list(input_ids_array)
         )
