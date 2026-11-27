@@ -28,6 +28,7 @@ def make_rope(freqs: torch.Tensor) -> Rope:
     return Rope(freqs, 1.0, freqs.cos(), freqs.sin())
 
 
+@pytest.mark.accelerator
 def test_qk_fusion_matches_native_norm_and_rope(triton_device):
     from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
@@ -57,6 +58,7 @@ def test_qk_fusion_matches_native_norm_and_rope(triton_device):
             torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.accelerator
 def test_qk_fusion_supports_native_bf16_backbone(triton_device):
     from sglang_omni.models.auk.fused_qk_norm_rope import fused_qk_norm_rope
 
