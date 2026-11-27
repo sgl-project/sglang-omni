@@ -203,15 +203,39 @@ func windowServerFocusedWindowFrame(pid int) (WindowFrame, bool) {
 		if cgWindow.numberGetValue(cgWindow.dictionaryGet(window, cgWindow.layer), cfNumberIntType, &layer) == 0 || layer != 0 {
 			continue
 		}
-		bounds := cgWindow.dictionaryGet(window, cgWindow.bounds)
-		if bounds == 0 {
-			continue
+		if frame, ok := cgWindowFrame(window); ok {
+			return frame, true
 		}
-		var frame struct{ X, Y, Width, Height float64 }
-		if !cgWindow.rectWithDictionary(bounds, unsafe.Pointer(&frame)) || frame.Width <= 0 || frame.Height <= 0 {
-			continue
-		}
-		return WindowFrame{X: int(frame.X), Y: int(frame.Y), Width: int(frame.Width), Height: int(frame.Height)}, true
 	}
 	return WindowFrame{}, false
+}
+
+// cgWindowFrame is the frame in a window's entry of the window server's list.
+func cgWindowFrame(window uintptr) (WindowFrame, bool) {
+	bounds := cgWindow.dictionaryGet(window, cgWindow.bounds)
+	if bounds == 0 {
+		return WindowFrame{}, false
+	}
+	var frame struct{ X, Y, Width, Height float64 }
+	if !cgWindow.rectWithDictionary(bounds, unsafe.Pointer(&frame)) || frame.Width <= 0 || frame.Height <= 0 {
+		return WindowFrame{}, false
+	}
+	return WindowFrame{X: int(frame.X), Y: int(frame.Y), Width: int(frame.Width), Height: int(frame.Height)}, true
+}
+
+func windowServerFrame(handle uintptr) (WindowFrame, bool) {
+	number := windowNumber(handle)
+	if number <= 0 || loadCGWindow() != nil {
+		return WindowFrame{}, false
+	}
+	const includingWindow = 0x8
+	list := cgWindow.copyList(includingWindow, uint32(number))
+	if list == 0 {
+		return WindowFrame{}, false
+	}
+	defer cgWindow.release(list)
+	if cgWindow.arrayCount(list) == 0 {
+		return WindowFrame{}, false
+	}
+	return cgWindowFrame(cgWindow.arrayValueAt(list, 0))
 }

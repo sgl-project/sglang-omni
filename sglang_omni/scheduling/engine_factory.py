@@ -21,9 +21,9 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     GenerationStageDefaults,
     build_generation_batch_overrides,
-    falls_back_to_breakable_prefill,
     get_prefill_cuda_graph_backend,
     operator_selected_prefill_backend,
+    prefill_graph_fallback,
     validate_generation_batch_policy,
 )
 from sglang_omni.scheduling.types import (
@@ -234,8 +234,15 @@ class SGLangGenerationEngineBuilder(ABC, Generic[RequestDataT]):
             # note (luojiaxuan): full is only the model's default here, so a
             # prefill attention backend that cannot capture it keeps the
             # breakable graph; an operator's explicit full fails validation.
-            if falls_back_to_breakable_prefill(server_args, self.model_name):
-                overrides["cuda_graph_backend_prefill"] = CudaGraphBackend.BREAKABLE
+            # note (Yuanfan Chen): a model without the breakable contract prefills
+            # eagerly instead, e.g. MOSS-TTS Local under a B200's trtllm_mha default.
+            fallback = prefill_graph_fallback(
+                server_args,
+                self.model_name,
+                supports_breakable=self.supports_breakable_prefill_cuda_graph,
+            )
+            if fallback is not None:
+                overrides["cuda_graph_backend_prefill"] = fallback
                 server_args = resolve_server_args()
             else:
                 pass

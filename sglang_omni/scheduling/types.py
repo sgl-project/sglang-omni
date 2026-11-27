@@ -104,6 +104,36 @@ class SpecTokensDetailsDict(TypedDict):
     spec_correct_drafts_histogram: list[int]
 
 
+MAX_BEAM_WIDTH = 16
+
+
+class BeamLogitRules(Protocol):
+    """Model rules that mask a beam group's next-token scores before each selection."""
+
+    def mask_scores(self, scores: torch.Tensor, step_index: int) -> None:
+        """Set the disallowed tokens of scores [rows, vocab] to -inf; step_index counts generated tokens."""
+
+    def advance(
+        self, parent_indices: torch.Tensor, next_token_ids: torch.Tensor
+    ) -> None:
+        """Follow the survivors: beam i continues beam parent_indices[i] with next_token_ids[i]."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class BeamSearchSettings:
+    beam_width: int
+    diversity_rate: float
+    logit_rules: BeamLogitRules | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class BeamHypothesis:
+    token_ids: list[int]
+    cumulative_logprob: float
+    score: float
+    finish_reason: Literal["stop", "length"]
+
+
 @dataclass
 class ARRequestData:
     """Backend-neutral autoregressive request state."""
@@ -130,6 +160,8 @@ class ARRequestData:
     # compacts the history of every request it retracts, whatever the model.
     prefill_input_embeds: "torch.Tensor | None" = None
     decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
+    beam_search: BeamSearchSettings | None = None
+    beam_hypotheses: list[BeamHypothesis] | None = None
 
 
 RequestDataT = TypeVar("RequestDataT", bound=ARRequestData, default=ARRequestData)
