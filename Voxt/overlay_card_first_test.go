@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -65,6 +66,51 @@ func TestCardFirstOverlayWithBackgroundAnswerInAnotherSession(t *testing.T) {
 	if !a.liveCard() || a.ov.mode != ovAnswer || a.pill.shown || a.cachedCard().Empty || !a.cachedCard().Speech {
 		t.Fatalf("live %v, mode %s, pill %v, card %+v", a.liveCard(), a.ov.mode, a.pill.shown, a.cachedCard())
 	}
+}
+
+// TestCardFirstFrontOwnership keeps the live card above the target app
+// without activating Voxt, then restores the answer card's front behavior.
+func TestCardFirstFrontOwnership(t *testing.T) {
+	t.Run("live card floats until the answer opens", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		previous := frontmostPID
+		t.Cleanup(func() { frontmostPID = previous })
+		frontmostPID = func() int { return slackApp.PID }
+		win := &frontRecorder{onTop: true}
+		a.sess = session.Snapshot{ID: "card-first", Kind: store.KindTranscribe, State: session.Recording, Card: true, Target: slackApp}
+		a.syncOverlayFront(win, ovAnswer, true)
+		if !win.onTop || win.focused != 0 {
+			t.Fatalf("recording: on top %v, focused %d", win.onTop, win.focused)
+		}
+		a.answer = answerCard{open: true, id: "answer", target: slackApp}
+		a.syncOverlayFront(win, ovAnswer, false)
+		if win.onTop || win.focused != 1 {
+			t.Fatalf("real answer: on top %v, focused %d", win.onTop, win.focused)
+		}
+	})
+
+	t.Run("close returns to the session target", func(t *testing.T) {
+		a, _, _ := newTestApp(t)
+		previousFront, previousActivate := frontmostPID, activateTarget
+		t.Cleanup(func() { frontmostPID, activateTarget = previousFront, previousActivate })
+		activated := make(chan int, 1)
+		activateTarget = func(pid int) (bool, time.Duration) {
+			activated <- pid
+			return true, 0
+		}
+		a.sess = session.Snapshot{ID: "card-first", Kind: store.KindTranscribe, State: session.Recording, Card: true, Target: slackApp}
+		a.ov.native = true
+		frontmostPID = func() int { return os.Getpid() }
+		a.giveAnswerFrontBack(a.liveCard())
+		select {
+		case pid := <-activated:
+			if pid != slackApp.PID {
+				t.Fatalf("activated %d, want %d", pid, slackApp.PID)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Close did not return the front to the session target")
+		}
+	})
 }
 
 // TestCardFirstFailureOffersRetry: a card-first Transcribe whose speech

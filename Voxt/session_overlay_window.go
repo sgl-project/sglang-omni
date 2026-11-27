@@ -239,6 +239,10 @@ func (a *app) saveCardDrag() {
 	a.ov.cardDraggedSet = true
 }
 
+func (a *app) syncOverlayFront(win cardWindow, mode overlayMode, opened bool) {
+	a.ov.front.sync(win, mode == ovAnswer && !a.liveCard(), opened, a.answer.id, func() cardMay { return a.cardMayTake(a.answer.target.PID) })
+}
+
 func (a *app) overlaySync() {
 	defer a.syncHotkeys()
 	a.keepSessions() // session_keep.go: every change of the sessions ends here
@@ -331,7 +335,7 @@ func (a *app) overlaySync() {
 	if !was {
 		showFloating(a.ov.win, frame.X, frame.Y)
 	}
-	a.ov.front.sync(a.ov.win, mode == ovAnswer, !was, a.answer.id, func() cardMay { return a.cardMayTake(a.answer.target.PID) })
+	a.syncOverlayFront(a.ov.win, mode, !was)
 }
 
 func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
