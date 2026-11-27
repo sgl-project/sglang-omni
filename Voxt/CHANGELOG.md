@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Automatic speech labels name the model Voxt will open**: when the main language rules out the first installed speech model, the feature menus and Apply to dialog now name the language-compatible model that Automatic selects instead of that first model.
+
+### 中文
+
+#### 修复
+- **“自动”显示实际会使用的语音识别模型**：主语言不支持已安装列表中的第一个模型时，功能菜单和“应用到”对话框会显示“自动”实际选择的支持该语言的模型，不再显示第一个模型。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

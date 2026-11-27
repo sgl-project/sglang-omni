@@ -180,6 +180,28 @@ func TestModelAssignmentDialogShowsSavedModel(t *testing.T) {
 	}
 }
 
+// TestModelAssignmentAutomaticSpeechLabelUsesLanguageGate: Apply to names
+// the same Automatic speech model the feature and its session resolver use.
+func TestModelAssignmentAutomaticSpeechLabelUsesLanguageGate(t *testing.T) {
+	installed := []local.Model{
+		{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize"},
+		{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)"},
+	}
+	prefs := settings.Defaults()
+	prefs.General.MainLanguage = "ja"
+	selected, ok := chooseFeatureModel(prefs, installed, local.ASR, hotkey.Transcribe)
+	if !ok || selected.ID != models.ASRAccurate {
+		t.Fatalf("Automatic selected %+v, %v; want %s", selected, ok, models.ASRAccurate)
+	}
+	state := buildModelAssignmentViewState(i18n.CurrentTranslator(), modelAssignmentStateInput{
+		Kind: local.ASR, ID: models.ASRMoss, Installed: installed, Settings: prefs,
+	})
+	want := "Current: Automatic (now: Qwen3-ASR 1.7B (8bit))"
+	if got := state.Rows[0].Current; got != want {
+		t.Errorf("Transcribe's current model = %q; want %q", got, want)
+	}
+}
+
 func TestModelAssignmentBehaviorDoc(t *testing.T) {
 	doc, err := os.ReadFile("docs/behavior.md")
 	if err != nil {

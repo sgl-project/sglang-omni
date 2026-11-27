@@ -507,7 +507,10 @@ type automaticGateLocal struct {
 
 func (l *automaticGateLocal) Installed(kind local.Kind) []local.Model {
 	if kind == local.ASR {
-		return []local.Model{{Kind: local.ASR, ID: models.ASRMoss}, {Kind: local.ASR, ID: models.ASRAccurate}}
+		return []local.Model{
+			{Kind: local.ASR, ID: models.ASRMoss, Name: "MOSS-Transcribe-Diarize"},
+			{Kind: local.ASR, ID: models.ASRAccurate, Name: "Qwen3-ASR 1.7B (8bit)"},
+		}
 	}
 	return nil
 }
