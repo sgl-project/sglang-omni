@@ -59,7 +59,7 @@ class ContextExhaustedError(ValueError):
 class SessionCapacityExhaustedError(ValueError):
     """A session unit the server has no room for: the server is overloaded, the session is not at fault.
 
-    Raised for both session capacity refusals, KV tokens and request-to-token slots; the message names which.
+    Raised when KV tokens, request-to-token slots, or native batch slots cannot admit a unit.
     """
 
     CODE = "session_capacity_exhausted"

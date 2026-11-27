@@ -7,6 +7,7 @@ from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from typing import Protocol, get_args
 
+from sglang_omni.admission import ContextExhaustedError, SessionCapacityExhaustedError
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.profiler.duplex_events import SessionUnitReadyObservation
 from sglang_omni.proto.session import (
@@ -68,7 +69,11 @@ class SessionOpenTimeoutError(TimeoutError):
 
 def failure_code(exc: Exception) -> str:
     """Client-facing error code of a server-side session failure."""
-    if isinstance(exc, ContextLimitError):
+    if ContextExhaustedError.matches(exc):
+        return ContextExhaustedError.CODE
+    elif SessionCapacityExhaustedError.matches(exc):
+        return SessionCapacityExhaustedError.CODE
+    elif isinstance(exc, ContextLimitError):
         return CLOSE_REASON_CONTEXT_LIMIT
     elif isinstance(exc, (OutputBudgetError, SessionOutputBudgetError)):
         return CLOSE_REASON_OUTPUT_BUDGET_EXHAUSTED

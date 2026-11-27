@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
-from sglang_omni.admission import QueueFullError
+from sglang_omni.admission import QueueFullError, SessionCapacityExhaustedError
 from sglang_omni.client.client import Client
 from sglang_omni.serve.openai_api import create_app
 from sglang_omni.serve.realtime.manager import RealtimeDeployment
@@ -612,8 +612,8 @@ def test_open_timeout_is_fatal_and_has_a_message(
                 reply=[
                     TurnFailure(
                         "server_error",
-                        "session_capacity_exhausted",
-                        "session KV capacity exhausted",
+                        SessionCapacityExhaustedError.CODE,
+                        "session_capacity_exhausted: kv cache full",
                     )
                 ]
             ),

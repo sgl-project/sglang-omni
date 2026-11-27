@@ -278,6 +278,9 @@ class FactoryArgs(BaseModel):
     prefill_coalesce_after_builds_during_decode: bool | None = None
     request_build_max_workers: int | None = Field(default=None, ge=1)
     request_build_max_pending: int | None = Field(default=None, ge=1)
+    session_admission_timeout_seconds: float | None = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
     early_request_builds: bool | None = None
     encoder_mem_reserve: float | None = Field(default=None, ge=0, lt=1)
     enable_partial_start: bool | None = None

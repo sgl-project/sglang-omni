@@ -303,18 +303,40 @@ def test_history_cut_moves_both_models_before_freeing_the_shared_tail(
 
 
 @pytest.mark.parametrize("reserve_tokens", [0, 8])
-def test_session_capacity_reserves_a_draft_block_for_each_pending_append(
+@pytest.mark.parametrize("peer_state", ["pending", "queued", "running"])
+def test_session_capacity_reserves_a_draft_block_for_each_admitted_append(
     reserve_tokens: int,
+    peer_state: str,
 ) -> None:
-    """Session admission and the history capacity each reserve a draft block for every pending append."""
+    """The candidate and admitted peers reserve a draft block, but waiting peers do not."""
     pools = SessionPools(size=24, reserve_tokens=reserve_tokens)
     for session_id in ("a", "b"):
         pools.open(session_id)
-    pools.append("a", "a1", [1, 2, 3], 4)
+    peer = pools.append("a", "a1", [1, 2, 3], 4)
     assert pools.bridge.check_session_capacity("a1") is None
+    if peer_state == "running":
+        pools.allocate(peer, 3)
+        peer.output_ids.append(20)
+    elif peer_state == "queued":
+        pools.bridge.units_by_request_id["a1"].is_enqueued = True
+    else:
+        pass
     pools.append("b", "b1", [4, 5, 6], 4)
-    expected_refusal = "session KV capacity exhausted" if reserve_tokens else None
-    assert pools.bridge.check_session_capacity("b1") == expected_refusal
+    expected_refusal = (
+        "session KV capacity exhausted"
+        if reserve_tokens and peer_state != "pending"
+        else None
+    )
+    assert (
+        pools.bridge.check_session_capacity(
+            "b1",
+            running_request_ids=(
+                frozenset({"a1"}) if peer_state == "running" else frozenset()
+            ),
+            new_token_ratio=0.1,
+        )
+        == expected_refusal
+    )
     assert pools.adapter.history_capacities == [56 - reserve_tokens] * 2
 
 
