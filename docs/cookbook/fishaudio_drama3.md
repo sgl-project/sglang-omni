@@ -6,7 +6,7 @@
 
 - **35B parameters, 3B active per token**: a mixture-of-experts backbone with a codebook-MTP audio decoder; the [technical report](https://github.com/fishaudio/fish-speech/tree/main/docs/assets/Fish_Audio_Drama_3_Technical_Report.pdf) has the architecture
 - **37.0 GB of engine weights** in the default FP8 checkpoint; the [int4 checkpoint](#int4-checkpoint) needs 20.8 GB
-- **Speaker tags** `<|speaker:0|>` … `<|speaker:15|>` — one text can carry up to 16 characters
+- **Speaker tags** `<|speaker:0|>` through `<|speaker:15|>` are in the model vocabulary. The CUDA `/v1/audio/speech` endpoint supports only speaker 0 (see [Known limitations](#known-limitations)).
 - **Long text** is chunked automatically and can be streamed per chunk
 - **Shared request fields, streaming and clients** are in [TTS Model Usage](../basic_usage/tts.md); this page covers the CUDA server, and the native Apple Silicon server is under [Platform deployment](fishaudio_drama3/platforms.md)
 
@@ -197,6 +197,7 @@ Engine-side defaults, such as CUDA graphs, Triton sampling and vocoder placement
 
 ### Known limitations
 
+- **Speaker tags.** The CUDA `/v1/audio/speech` endpoint accepts plain text or `<|speaker:0|>` in both `input` and `references[].text`. Plain text defaults to speaker 0, and you can supply multiple reference clips for that speaker. Tags `<|speaker:1|>` through `<|speaker:15|>` in either field return HTTP 400.
 - **Attention backend.** Only `triton`; any other `--tts_engine.engine.attention_backend` stops startup.
 - **Reference audio length.** Each reference given as audio may be at most 60 seconds long; a longer one fails the request with HTTP 400 before it is encoded. Raise the limit with `--preprocessing.factory.max_reference_audio_seconds` and the preprocessing reserve with it; see [Reference Audio Length](fishaudio_drama3/reference.md#reference-audio-length).
 - **Prompt length.** A prompt may have at most 8192 rows, counting the text tokens and about 21.5 rows per second of reference audio. A longer one fails with HTTP 400. Change the cap with `--tts_engine.factory.max_prompt_rows`; see [Prompt Length](fishaudio_drama3/reference.md#prompt-length).
