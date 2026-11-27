@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/vad"
 )
 
 // maxQueued is the preview's backlog: audio not yet written to the socket
@@ -46,13 +47,14 @@ type live struct {
 	language string
 	bias     bias
 
-	mu        sync.Mutex
-	audio     []byte        // everything sent, for the Final
-	queued    int           // bytes of audio in out
-	previewed int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
-	preview   bool          // the socket still takes audio
-	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
-	writeDone chan struct{} // closed when write returns (the queue is drained)
+	mu           sync.Mutex
+	audio        []byte    // everything sent, for the Final
+	queued       int       // bytes of audio in out
+	previewed    int       // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
+	preview      bool      // the socket still takes audio
+	cut          *pauseCut // the socket's pauses (SpeechOnly with Silero on), else nil
+	pauseRefresh *pauseRefreshDetector
+	writeDone    chan struct{} // closed when write returns (the queue is drained)
 	// idle, cap 1, gets a token whenever the writer empties the queue
 	// (a test waits on it and re-checks queued under s.mu).
 	idle chan struct{}
@@ -150,6 +152,15 @@ func openLive(ctx context.Context, a *ASR, l *lease, req asr.StreamRequest) (*li
 	if conn != nil {
 		if a.spec.ASR.SpeechOnly && a.vad != nil {
 			s.cut = newPauseCut()
+		}
+		if a.spec.Kind == kindQwen3ASR {
+			pauseRefreshMS, invalidPauseRefresh := pauseRefreshExperimentMS()
+			if invalidPauseRefresh {
+				a.rt.logf("warning", "%s: ignoring invalid VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS; use 200 or 300", a.spec.ID)
+			}
+			if pauseRefreshEnabled(req, a.spec, pauseRefreshMS) {
+				s.pauseRefresh = &pauseRefreshDetector{detector: vad.NewDetector(sampleRate, vad.Params{HangoverMS: pauseRefreshMS})}
+			}
 		}
 		go s.write()
 		go s.read()
@@ -259,7 +270,11 @@ func (s *live) Send(pcm []byte) error {
 		s.stopPreview("the preview fell behind the microphone")
 		return nil
 	}
-	msg, _ := json.Marshal(map[string]string{"type": "input_audio_buffer.append", "audio": base64.StdEncoding.EncodeToString(pcm)})
+	var pauseHint *pauseRefreshHint
+	if s.pauseRefresh != nil {
+		pauseHint = s.pauseRefresh.observe(pcm)
+	}
+	msg, _ := json.Marshal(realtimeAppend{Type: "input_audio_buffer.append", Audio: base64.StdEncoding.EncodeToString(pcm), PreviewRefresh: pauseHint})
 	select {
 	case s.out <- msg:
 		s.queued += len(pcm)

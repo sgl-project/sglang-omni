@@ -553,6 +553,12 @@ target_compile_options(moss_realtime_test PRIVATE -Wall -Wextra)
 set_target_properties(moss_realtime_test PROPERTIES
   BUILD_RPATH "${MLX_LIBRARY_DIRS};@loader_path")
 
+add_executable(qwen3_asr_pause_refresh_test EXCLUDE_FROM_ALL
+  tests/qwen3_asr_pause_refresh_test.cpp)
+target_include_directories(qwen3_asr_pause_refresh_test PRIVATE src)
+target_link_libraries(qwen3_asr_pause_refresh_test PRIVATE common)
+target_compile_options(qwen3_asr_pause_refresh_test PRIVATE -Wall -Wextra)
+
 # Compares NEXTN with plain decoding on a small checkpoint
 # (tests/test_ming3_mtp.py); built only on request and never installed.
 add_executable(ming3_mtp_probe EXCLUDE_FROM_ALL tests/ming3_mtp_probe.cpp)

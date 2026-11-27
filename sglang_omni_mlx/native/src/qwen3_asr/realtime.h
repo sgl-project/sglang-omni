@@ -18,6 +18,7 @@
 #include "common/worker.h"
 #include "nlohmann/json.hpp"
 #include "qwen3_asr/qwen3_asr_transcriber.h"
+#include "qwen3_asr/realtime_refresh.h"
 
 namespace qwen3_asr {
 
@@ -73,6 +74,8 @@ private:
     int segment_id = 0;
     long start_sample = 0;
     long next_refresh_sample = 0;
+    long last_submitted_refresh_end_sample = 0;
+    long last_pause_speech_end_sample = 0;
     std::optional<std::string> language;
     int decode_count = 0;
     std::string transcript;
@@ -86,7 +89,8 @@ private:
     std::shared_ptr<RefreshReuse> reuse;
   };
 
-  void Append(const nlohmann::json &audio);
+  void Append(const nlohmann::json &audio,
+              const nlohmann::json &preview_refresh);
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
   void StartFinalAt(const nlohmann::json &start_sample);
@@ -109,7 +113,8 @@ private:
   void ApplyResult(Segment &segment,
                    const omni_common::TranscriptionResult &result,
                    long end_sample);
-  void MaybeStartRefresh();
+  void
+  MaybeStartRefresh(std::optional<PauseRefreshHint> pause_hint = std::nullopt);
   void MaybeStartFinalPrefill();
   void FinalizeThrough(long end_sample);
 

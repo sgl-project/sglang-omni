@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 #include "common/audio.h"
 #include "common/generation.h"
@@ -81,7 +82,8 @@ bool RealtimeSession::Handle(const nlohmann::json &message) {
     }
     return true;
   } else if (type == "input_audio_buffer.append") {
-    Append(message.value("audio", nlohmann::json()));
+    Append(message.value("audio", nlohmann::json()),
+           message.value("preview_refresh", nlohmann::json()));
     return true;
   } else if (type == "input_audio_buffer.final_start") {
     StartFinalAt(message.value("start_sample", nlohmann::json()));
@@ -114,10 +116,44 @@ long RealtimeSession::LockedEndSample() {
   return EndSample();
 }
 
-void RealtimeSession::Append(const nlohmann::json &audio) {
+void RealtimeSession::Append(const nlohmann::json &audio,
+                             const nlohmann::json &preview_refresh) {
   const std::optional<std::vector<float>> appended = AppendedSamples(audio);
   if (!appended.has_value()) {
     return;
+  } else {
+  }
+  std::optional<PauseRefreshHint> pause_hint;
+  if (preview_refresh.is_object()) {
+    const auto sample = [](const nlohmann::json &value) -> std::optional<long> {
+      if (value.is_number_unsigned()) {
+        const uint64_t wide_sample = value.get<uint64_t>();
+        if (wide_sample <=
+            static_cast<uint64_t>(std::numeric_limits<long>::max())) {
+          return static_cast<long>(wide_sample);
+        } else {
+          return std::nullopt;
+        }
+      } else if (value.is_number_integer()) {
+        const int64_t wide_sample = value.get<int64_t>();
+        if (wide_sample >= 0 &&
+            wide_sample <= std::numeric_limits<long>::max()) {
+          return static_cast<long>(wide_sample);
+        } else {
+          return std::nullopt;
+        }
+      } else {
+        return std::nullopt;
+      }
+    };
+    const std::optional<long> speech_start_sample =
+        sample(preview_refresh.value("speech_start_sample", nlohmann::json()));
+    const std::optional<long> speech_end_sample =
+        sample(preview_refresh.value("speech_end_sample", nlohmann::json()));
+    if (speech_start_sample.has_value() && speech_end_sample.has_value()) {
+      pause_hint = PauseRefreshHint{*speech_start_sample, *speech_end_sample};
+    } else {
+    }
   } else {
   }
   long cut_sample = -1;
@@ -153,7 +189,7 @@ void RealtimeSession::Append(const nlohmann::json &audio) {
     StartSegment(cut_sample);
   } else {
   }
-  MaybeStartRefresh();
+  MaybeStartRefresh(pause_hint);
 }
 
 void RealtimeSession::StartSegment(long start_sample) {
@@ -161,6 +197,8 @@ void RealtimeSession::StartSegment(long start_sample) {
   segment.segment_id = next_segment_id_++;
   segment.start_sample = start_sample;
   segment.next_refresh_sample = start_sample + settings_.first_decode_samples;
+  segment.last_submitted_refresh_end_sample = start_sample;
+  segment.last_pause_speech_end_sample = start_sample;
   segment.language = language_;
   segment.reuse = std::make_shared<RefreshReuse>();
   if (recording_reuse_ == nullptr) {
@@ -380,7 +418,8 @@ void RealtimeSession::ApplyResult(Segment &segment,
   }
 }
 
-void RealtimeSession::MaybeStartRefresh() {
+void RealtimeSession::MaybeStartRefresh(
+    std::optional<PauseRefreshHint> pause_hint) {
   std::vector<float> samples;
   TranscriptionOptions options;
   std::shared_ptr<RefreshReuse> reuse;
@@ -388,30 +427,57 @@ void RealtimeSession::MaybeStartRefresh() {
   long end_sample = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (refreshing_ || finalizing_ || !segment_.has_value() ||
-        EndSample() < segment_->next_refresh_sample) {
+    if (!segment_.has_value()) {
       return;
     } else {
     }
     Segment &segment = *segment_;
-    end_sample = EndSample();
-    samples = SegmentSamples(segment, end_sample);
-    const bool silent =
-        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
-    // Note (Jiaxin Deng): leading silence keeps the early first decode for the
-    // first audible audio.
-    if (!(silent && segment.decode_count == 0)) {
-      segment.next_refresh_sample =
-          end_sample + settings_.decode_interval_samples;
-    } else {
-    }
-    if (silent) {
+    const long previous_pause_speech_end_sample =
+        segment.last_pause_speech_end_sample;
+    RefreshAdmissionInput admission_input{
+        .segment_start_sample = segment.start_sample,
+        .audio_end_sample = EndSample(),
+        .next_refresh_sample = segment.next_refresh_sample,
+        .last_submitted_refresh_end_sample =
+            segment.last_submitted_refresh_end_sample,
+        .last_pause_speech_end_sample = previous_pause_speech_end_sample,
+        .decode_interval_samples = settings_.decode_interval_samples,
+        .minimum_new_speech_samples = omni_common::kSampleRate / 5,
+        .pause_hint = pause_hint,
+        .refreshing = refreshing_,
+        .finalizing = finalizing_,
+        .cancelled = cancel_->load(),
+        .silent = false,
+        .has_decoded = segment.decode_count > 0};
+    const RefreshAdmission possible_admission =
+        SelectRefreshAdmission(admission_input);
+    segment.last_pause_speech_end_sample =
+        possible_admission.last_pause_speech_end_sample;
+    if (possible_admission.source == RefreshSource::kNone &&
+        (refreshing_ || finalizing_ || admission_input.cancelled ||
+         admission_input.audio_end_sample < segment.next_refresh_sample)) {
       return;
     } else {
     }
+    end_sample = admission_input.audio_end_sample;
+    samples = SegmentSamples(segment, end_sample);
+    admission_input.silent =
+        omni_common::PeakIsSilent(samples.data(), samples.size(), kSilentPeak);
+    admission_input.last_pause_speech_end_sample =
+        previous_pause_speech_end_sample;
+    const RefreshAdmission admission = SelectRefreshAdmission(admission_input);
+    segment.last_pause_speech_end_sample =
+        admission.last_pause_speech_end_sample;
+    segment.next_refresh_sample = admission.next_refresh_sample;
+    if (admission.source == RefreshSource::kNone) {
+      return;
+    } else {
+    }
+    end_sample = admission.end_sample;
     options = DecodeOptions(segment, end_sample);
     reuse = segment.reuse;
     segment_id = segment.segment_id;
+    segment.last_submitted_refresh_end_sample = end_sample;
     refreshing_ = true;
   }
   std::weak_ptr<RealtimeSession> weak_self =

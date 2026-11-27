@@ -30,6 +30,14 @@ open --env VOXT_EXPERIMENT_CLEANUP_FALLBACK_MS=1500 build/darwin-arm64/Voxt.app
 
 Use `0` to disable it. Values from 1 to 60000 enable the experiment; invalid or larger values are ignored with a warning in the session log. The option applies only to ordinary Transcribe dictation.
 
+**Developer-only Qwen3-ASR pause refresh experiment:** the default is disabled and nothing is saved in user settings. Launch the actual macOS bundle with either the 200 ms or 300 ms pause arm:
+
+```sh
+open --env VOXT_EXPERIMENT_ASR_PAUSE_REFRESH_MS=200 build/darwin-arm64/Voxt.app
+```
+
+Use `0` to disable it. Other values are ignored with a warning. This applies only to Qwen3-ASR realtime sessions with an authoritative HTTP Final, and uses speech boundaries from the PCM actually queued for the preview. A pause hint is considered only when at least 200 ms of new speech follows the latest submitted preview; the existing one-second audio-sample cadence remains active otherwise.
+
 **The release build** is one command, on the Mac: `scripts/release.sh` builds the helper and the Omni runtime, packages and signs the app, and checks the result (`--runtimes DIR` takes prebuilt runtimes; with a Developer ID identity, `--notarize` notarises it; over ssh it runs through `scripts/mac-gui.sh`). A release is that build on GitHub: a `voxt-vX.Y.Z` tag runs the Voxt Release workflow, which signs it with the Developer ID of the team RY2TQTYSKQ, notarises it and puts its disk image and signed update files on a draft GitHub release. Local builds without a feed keep the GitHub update check. See [docs/release.md](release.md).
 
 From Linux, `scripts/mac.sh <command>` mirrors the project to a Mac (`MAC_HOST`, default `mac-air`; `MAC_DIR`, default `code/VoxtNew`) and runs the command there: `scripts/mac.sh 'scripts/build-helper.sh && go tool mygo build'`.
