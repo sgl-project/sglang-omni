@@ -12,11 +12,13 @@
 #include <string>
 #include <vector>
 
+#include "common/audio.h"
 #include "common/transcription.h"
 #include "common/worker.h"
 
 namespace qwen3_asr {
 
+inline constexpr size_t kMaxChunkSamples = 120 * omni_common::kSampleRate;
 inline constexpr float kSilentPeak = 1e-3f;
 
 struct TranscriptionOptions {
