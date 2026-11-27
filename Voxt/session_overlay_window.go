@@ -33,6 +33,7 @@ type overlayState struct {
 		textW          map[ovSized]ovMeasured
 		area           mygo.Rectangle
 		dragged        struct{ x, y int }
+		dragging       bool // the user is moving the window (overlayDragged)
 		cardDragged    struct{ x, y int }
 		cardDraggedSet bool
 		style          mygo.VibrancyStyle
@@ -64,6 +65,7 @@ type overlayState struct {
 		textW       map[ovSized]ovMeasured
 		area        mygo.Rectangle
 		dragged     struct{ x, y int }
+		dragging    bool // as ov.dragging
 		style       mygo.VibrancyStyle
 		passThrough bool
 		reveal      bool
@@ -269,6 +271,7 @@ func (a *app) overlaySync() {
 		a.ov.mode, a.ov.shown = mode, false
 		a.ov.live.id, a.ov.live.w = "", 0
 		a.ov.dragged.x, a.ov.dragged.y = 0, 0
+		a.ov.dragging = false
 		if was {
 			a.overlayFadeOut()
 		}
@@ -278,6 +281,7 @@ func (a *app) overlaySync() {
 	if !was {
 		a.ov.area = a.overlayArea()
 	}
+	a.overlayDragged()
 	width, height := a.overlayFace(mode)
 	frame := a.overlayFrame(mode, width, height)
 	defer a.syncLangMenu()
@@ -353,6 +357,9 @@ func (a *app) currentSessionOverlayLayout() sessionOverlayLayout {
 func (a *app) overlayFrame(mode overlayMode, width, height int) mygo.Rectangle {
 	frame, area := layout.Frame(a.ov.area, a.prefs.Overlay, width, height), a.ov.area
 	frame.X, frame.Y = frame.X+a.ov.dragged.x, frame.Y+a.ov.dragged.y
+	if a.ov.dragging {
+		return frame // the user's place: back on the screen once it is let go
+	}
 	if mode != ovAnswer {
 		return a.onScreen(frame, area) // the pill keeps its own place
 	}
@@ -374,18 +381,11 @@ func (a *app) onScreen(frame, area mygo.Rectangle) mygo.Rectangle {
 	return frame
 }
 
-func (a *app) overlayDragged() {
-	bounds := a.ov.win.ContentBounds()
-	if !a.ov.shown || bounds.X == a.ov.frame.X && bounds.Y == a.ov.frame.Y {
-		return
-	}
-	a.overlayDraggedTo(bounds)
-}
-
 func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 	a.slotPin = nil
-	frame := layout.Frame(a.ov.area, a.prefs.Overlay, a.ov.w, a.ov.h)
-	a.ov.dragged.x, a.ov.dragged.y = bounds.X-frame.X, bounds.Y-frame.Y
+	x, y := layout.Place(a.ov.area, a.prefs.Overlay, bounds.Width, bounds.Height) // the window's own size: a resize may be on its way
+	a.ov.dragged.x, a.ov.dragged.y = bounds.X-x, bounds.Y-y
+	a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	area := ovTestArea
 	if a.overlayNative() {
 		area = mygo.Screen.DisplayMatching(bounds).WorkArea
@@ -398,8 +398,6 @@ func (a *app) overlayDraggedTo(bounds mygo.Rectangle) {
 		anchor := layout.Frame(a.ov.area, a.prefs.Overlay, width, height)
 		a.ov.dragged.x, a.ov.dragged.y = bounds.X-anchor.X, bounds.Y-anchor.Y
 		a.overlayRestyle()
-	} else {
-		a.ov.frame.X, a.ov.frame.Y = bounds.X, bounds.Y
 	}
 	if a.ov.mode == ovAnswer {
 		a.saveCardDrag()
@@ -482,8 +480,13 @@ func (a *app) overlayFadeOut() {
 	a.later(2*layout.FadeStep, hide)
 }
 
+// overlayFace is the face's size for mode. While the window is dragged a guessed
+// size waits for the measured one: each frame set holds the drag up.
 func (a *app) overlayFace(mode overlayMode) (int, int) {
-	width, height, _ := a.overlaySize(mode)
+	width, height, exact := a.overlaySize(mode)
+	if a.ov.dragging && !exact && mode == a.ov.mode && a.ov.w > 0 {
+		return a.ov.w, a.ov.h
+	}
 	return width, height
 }
 
@@ -494,6 +497,7 @@ func (a *app) overlayRestyle() {
 	if !a.ov.shown {
 		return
 	}
+	a.overlayDragged()
 	a.refreshSessionOverlay(time.Now())
 	width, height := a.overlayFace(a.ov.mode)
 	frame := a.overlayFrame(a.ov.mode, width, height)
