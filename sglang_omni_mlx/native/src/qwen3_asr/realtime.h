@@ -78,6 +78,8 @@ public:
   // note (chenye): only snapshot a preview guess when the caller opts in.
   FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
                             bool guess_auto_language);
+  // Stops a running shadow Final (MaybeStartShadowFinal).
+  void CancelShadowFinal();
 
 private:
   struct Segment {

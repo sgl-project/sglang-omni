@@ -47,7 +47,6 @@ constexpr long kShadowDelaySamples = omni_common::kSampleRate / 10;
 // tokens before them that find where the preview goes on.
 constexpr int kShadowUnsettledTokens = 4;
 constexpr int kShadowAnchorTokens = 3;
-
 } // namespace
 
 std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
@@ -233,6 +232,9 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
                                    recording_samples_.size()));
         }
         final_start_sample_ = sample;
+        // The shadow decoded the audio from the old start.
+        shadow_guess_.reset();
+        shadow_cancel_->store(true);
       } else {
       }
     } else {
@@ -247,13 +249,21 @@ void RealtimeSession::StartFinalAt(const nlohmann::json &start_sample) {
   }
 }
 
+void RealtimeSession::CancelShadowFinal() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  shadow_cancel_->store(true);
+}
+
 FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
                                 bool guess_auto_language) {
   std::lock_guard<std::mutex> lock(mutex_);
   shadow_cancel_->store(true);
+  // A shadow that finished after the start moved decoded other audio.
+  const std::optional<FinalPreviewGuess> shadow_guess =
+      final_start_sample_ == 0 ? shadow_guess_ : std::nullopt;
   if (!should_prefill_final_ || context.value_or("") != final_context_) {
-    return {recording_reuse_, false, std::nullopt, shadow_guess_};
+    return {recording_reuse_, false, std::nullopt, shadow_guess};
   } else {
     // note (XXXXRT666): the prefill starts after the first preview, and without
     // a dictionary after the first segment, so a Final before it finds none
@@ -264,7 +274,7 @@ RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
     FinalReuse reuse = final_reuse != nullptr
                            ? FinalReuse{std::move(final_reuse), true}
                            : FinalReuse{recording_reuse_, false};
-    reuse.shadow_guess = shadow_guess_;
+    reuse.shadow_guess = shadow_guess;
     // note (chenye): only use an auto-language preview of the same recording
     // start. A committed segment or a moved start can leave a different tail.
     if (guess_auto_language && !language_.has_value() &&

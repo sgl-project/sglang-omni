@@ -34,6 +34,9 @@ public:
   asr_service::Transcription
   Prepare(std::vector<float> samples,
           const asr_service::FormFields &form) const override {
+    // note (XXXXRT666): a request does not wait behind a session's shadow
+    // Final, which is only background work.
+    CancelShadowFinals();
     TranscriptionOptions options;
     const auto language = asr_service::TextField(form, "language");
     options.language = language.has_value()
@@ -156,6 +159,16 @@ public:
   }
 
 private:
+  void CancelShadowFinals() const {
+    std::lock_guard<std::mutex> lock(live_sessions_mutex_);
+    for (const auto &[session_id, session] : live_sessions_) {
+      if (const auto live = session.lock()) {
+        live->CancelShadowFinal();
+      } else {
+      }
+    }
+  }
+
   // What the live session of this id holds for a Final with this prompt, null
   // when it is not open.
   qwen3_asr::FinalReuse
