@@ -79,12 +79,13 @@ public:
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
   // Runs every layer over the embeddings, appending to the caches; returns
   // the last layer's hidden states. The hidden states entering each layer in
-  // capture_layers are appended to captured, in that order.
-  mlx::core::array
-  Forward(const mlx::core::array &embeddings,
-          std::vector<omni_common::KVCache> &caches,
-          const std::vector<int> &capture_layers = {},
-          std::vector<mlx::core::array> *captured = nullptr) const;
+  // capture_layers are appended to captured, in that order. A long input
+  // stops with GenerationCancelled between layers once cancel is set.
+  mlx::core::array Forward(const mlx::core::array &embeddings,
+                           std::vector<omni_common::KVCache> &caches,
+                           const std::vector<int> &capture_layers = {},
+                           std::vector<mlx::core::array> *captured = nullptr,
+                           const std::atomic<bool> *cancel = nullptr) const;
   // Appends every layer's keys and values of hidden_states [1, length,
   // hidden] to the caches, for later queries to attend to. The hidden states
   // are projected as given, without the layers' input norms.
