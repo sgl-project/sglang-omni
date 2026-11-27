@@ -42,21 +42,39 @@ func (a *app) meetingMTDInstalled() bool {
 	return false
 }
 
-func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
-	if !a.meetingMTDInstalled() {
-		return nil, nil
+// meetingDiarizerLanguageOK says the meeting's language is one MTD
+// knows: MTD knows only zh and en, so a meeting in another language
+// keeps the selected model's transcription instead of a wrong-language
+// one. An empty hint means the language is unknown (SpeechLang stays
+// empty on purpose, #3398), so the same call.
+func (a *app) meetingDiarizerLanguageOK() bool {
+	l := a.meetingLang()
+	if l == "" {
+		return false
 	}
-	// MTD knows only zh and en: a meeting in another language keeps the
-	// selected model's transcription instead of a wrong-language one. An
-	// empty hint means the language is unknown (SpeechLang stays empty on
-	// purpose, #3398), so the same call.
-	if l := cmp.Or(a.prefs.Features.Meeting.Lang, session.SpeechLang(a.prefs, i18n.Locale())); l != "" {
-		if spec, ok := omni.Lookup(models.ASRMoss); ok {
-			if _, fit := lang.Match(spec.Languages, l); !fit {
-				return nil, nil
-			}
-		}
-	} else {
+	if spec, ok := omni.Lookup(models.ASRMoss); ok {
+		_, fit := lang.Match(spec.Languages, l)
+		return fit
+	}
+	return true
+}
+
+// meetingDiarizerGates says the automatic MTD diarizer would run for a
+// meeting with the current settings, without opening a model: the final
+// pass is on, the mode diarizes, MTD is installed and the meeting's
+// language is one MTD knows (#4067).
+func (a *app) meetingDiarizerGates() bool {
+	if a.prefs.Features.Meeting.NoFinalPass {
+		return false
+	}
+	if !meetingModeFrom(a.prefs.Features.Meeting).Diarize() {
+		return false
+	}
+	return a.meetingMTDInstalled() && a.meetingDiarizerLanguageOK()
+}
+
+func (a *app) meetingDiarizer(ctx context.Context) (asr.Diarizer, error) {
+	if !a.meetingMTDInstalled() || !a.meetingDiarizerLanguageOK() {
 		return nil, nil
 	}
 	p, opened, err := a.local.ASR(ctx, models.ASRMoss)

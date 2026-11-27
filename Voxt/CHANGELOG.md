@@ -5,12 +5,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Fixed
-- **The Speech context note said no speech model takes it while a meeting's speech model did**: with Transcribe, Translate and Rewrite on a local model that takes no context, the note ignored the meeting's speech model, so it showed while a meeting used Qwen3-ASR. The note now stays hidden while any of the four speech models takes the context.
+- **The Speech context note said no speech model takes it while a meeting's speech model did**: with Transcribe, Translate and Rewrite on a local model that takes no context, the note ignored the meeting's speech model, so it showed while a meeting used Qwen3-ASR. It also ignored the automatic meeting diarizer: with every feature on such a model but MOSS-Transcribe-Diarize installed, an English or Chinese meeting's final pass still read the context. The note now stays hidden while any of the four speech models, or the diarizer that would run, takes the context.
 
 ### 中文
 
 #### 修复
-- **会议用的语音识别模型会读识别上下文时，“识别上下文”下的说明仍然出现**：转录、翻译、改写都换成不吃上下文的本地模型后，说明没有算上会议用的模型，会议用 Qwen3-ASR 时也照常显示。现在四个语音识别模型里有一个会读识别上下文，说明就不出现。
+- **会议用的语音识别模型会读识别上下文时，“识别上下文”下的说明仍然出现**：转录、翻译、改写都换成不吃上下文的本地模型后，说明没有算上会议用的模型，会议用 Qwen3-ASR 时也照常显示；它也没算上自动的会议说话人分离：所有功能都用这类模型但已安装 MOSS-Transcribe-Diarize 时，中文或英语会议的会后整理仍会读识别上下文。现在四个语音识别模型里有一个会读识别上下文，或者会跑的说话人分离会读，说明就不出现。
 
 ## [2.1.4] - 2026-11-26
 

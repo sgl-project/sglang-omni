@@ -344,8 +344,9 @@ func (a *app) modelsViewStateInput() modelsViewStateInput {
 
 // speechContextUnused says that Transcribe, Translate, Rewrite and
 // Meetings all use a local speech model that takes no context
-// (MOSS-Transcribe-Diarize, Whisper…), so a speech context would reach
-// none of them (#4067).
+// (Cohere, Whisper…), so a speech context would reach none of them
+// (#4067). Meetings' automatic MTD diarizer counts too: the final pass
+// hands it the same context (#4687).
 func (a *app) speechContextUnused() bool {
 	for _, f := range []string{hotkey.Transcribe, hotkey.Translate, hotkey.Rewrite} {
 		m, ok := a.featureModel(local.ASR, f)
@@ -354,6 +355,9 @@ func (a *app) speechContextUnused() bool {
 		}
 	}
 	if m, ok := a.meetingASRModel(); ok && !speechModelTakesNoContext(m) {
+		return false
+	}
+	if a.meetingDiarizerGates() && !speechModelTakesNoContext(local.Model{Kind: local.ASR, ID: models.ASRMoss}) {
 		return false
 	}
 	return true

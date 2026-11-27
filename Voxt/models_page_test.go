@@ -753,3 +753,46 @@ func TestSpeechContextNoteMeetingTaker(t *testing.T) {
 		t.Errorf("Cohere in every feature and Meetings: no note: %q", tt.Texts())
 	}
 }
+
+// TestSpeechContextNoteAutomaticDiarizer: with Cohere in every feature
+// and Meetings, the installed MOSS-Transcribe-Diarize still reads the
+// Speech context: the final pass of a full-mode Chinese or English
+// meeting diarizes the system track with it (#4687 review). The final
+// pass off, a non-diarizing mode or a language MOSS does not know keeps
+// the note.
+func TestSpeechContextNoteAutomaticDiarizer(t *testing.T) {
+	a, _, tt := newTestApp(t)
+	tt.SetSize(windowWidth, 4800)
+	seedModels(t, a, models.ASRCohere, models.ASRMoss, models.VADSilero)
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Transcribe.ASR, s.Features.Translate.ASR, s.Features.Rewrite.ASR = models.ASRCohere, models.ASRCohere, models.ASRCohere
+		s.Features.Meeting.ASR = models.ASRCohere
+		s.Features.Meeting.Lang = "en"
+	})
+	a.navigate(modelsPath)
+	frames(tt)
+	if has(tt, speechContextNote) {
+		t.Errorf("Cohere everywhere but the MTD diarizer runs: note shows: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) { s.Features.Meeting.NoFinalPass = true })
+	frames(tt)
+	if !has(tt, speechContextNote) {
+		t.Errorf("final pass off: no note: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Meeting.NoFinalPass = false
+		s.Features.Meeting.Mode = "subtitles"
+	})
+	frames(tt)
+	if !has(tt, speechContextNote) {
+		t.Errorf("subtitles mode: no note: %q", tt.Texts())
+	}
+	a.updateSettings(func(s *settings.Settings) {
+		s.Features.Meeting.Mode = ""
+		s.Features.Meeting.Lang = "fr"
+	})
+	frames(tt)
+	if !has(tt, speechContextNote) {
+		t.Errorf("a meeting language MOSS does not know: no note: %q", tt.Texts())
+	}
+}
