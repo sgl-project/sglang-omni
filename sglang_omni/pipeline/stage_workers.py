@@ -343,8 +343,16 @@ def patched_spawn_env(
         if current_platform.is_cpu()
         else None
     )
-    caps = [len(cpus) for cpus in (spec.cpu_affinity, bound_cpus) if cpus]
-    if current_platform.is_cpu() and spec.cpu_threads is not None:
+    on_cpu = current_platform.is_cpu()
+    launcher_cpus = os.sched_getaffinity(0) if on_cpu else set()
+    caps = []
+    for cpus in (spec.cpu_affinity, bound_cpus):
+        if cpus:
+            # The spawn narrows to the planned CPUs the launcher may use, and starts unbound when none are.
+            caps.append(
+                len(set(cpus) & launcher_cpus or launcher_cpus) if on_cpu else len(cpus)
+            )
+    if on_cpu and spec.cpu_threads is not None:
         caps.append(spec.cpu_threads)
     thread_cap = min(caps) if caps else None
     planned_threads = env_default_updates.get("OMP_NUM_THREADS", "")

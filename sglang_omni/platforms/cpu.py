@@ -63,6 +63,7 @@ class CPUOmniPlatform(CpuDeviceMixin, OmniPlatform):
                 env.update(stage_spec.env_defaults)
             env = {**env, **os.environ}
             spec_envs.append((spec, env))
+            cpu_numa.reserve_mapped_nodes(env)
             cpu_numa.claim_explicit_nodes(spec.process_name, env)
         # Tensor-parallel groups need several nodes at once, so they pick before single-process stages take the free ones, whatever the start order.
         for spec, env in spec_envs:

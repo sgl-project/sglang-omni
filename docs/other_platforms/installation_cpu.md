@@ -149,9 +149,13 @@ SGLANG_USE_CPU_ENGINE=1 sgl-omni serve --model-path <model> --port 8000
 ```
 
 Nodes named in the map are reserved, so other workers avoid them while free
-nodes remain. A stage must list either one node or `tp_size` nodes, and an
+nodes remain, including nodes named in the `env` of any stage. A replica such as
+`talker@r0` uses its own map entry if it has one, otherwise the entry of its
+stage `talker`. A stage must list either one node or `tp_size` nodes, and an
 unknown node id is rejected at startup.
 
 Setting `SGLANG_CPU_OMP_THREADS_BIND` yourself overrides the placement for that
 worker. The OMP thread count of each worker is capped to the size of its bound
-CPU set and to its share of the container CPU quota.
+CPU set, restricted to the CPUs the launcher may use, and to its share of the
+container CPU quota. A bind list that spans several nodes is applied whole, so
+its thread count is the length of the list rather than the OMP cap.

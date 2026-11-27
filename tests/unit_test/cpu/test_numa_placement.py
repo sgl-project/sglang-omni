@@ -357,6 +357,7 @@ def _spawned_omp_threads(monkeypatch, spec) -> str:
     monkeypatch.setattr(stage_workers, "current_platform", CPUOmniPlatform())
     monkeypatch.setattr(stage_workers, "get_platform_spec", lambda _p: "cpu")
     monkeypatch.setenv(_BIND, "0-9")
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(40)))
     with stage_workers.patched_spawn_env(spec):
         return os.environ["OMP_NUM_THREADS"]
 
@@ -385,6 +386,40 @@ def test_derived_omp_default_is_capped_to_the_quota_share(monkeypatch) -> None:
     spec = _spawn_spec({"OMP_NUM_THREADS": "28"}, cpu_threads=4)
 
     assert _spawned_omp_threads(monkeypatch, spec) == "4"
+
+
+def test_omp_cap_counts_only_the_cpus_the_launcher_allows(monkeypatch) -> None:
+    import os
+
+    spec = _spawn_spec({"OMP_NUM_THREADS": "192"})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(8, 40)))
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    from sglang_omni.pipeline import stage_workers
+
+    monkeypatch.setattr(stage_workers, "current_platform", CPUOmniPlatform())
+    monkeypatch.setattr(stage_workers, "get_platform_spec", lambda _p: "cpu")
+    monkeypatch.setenv(_BIND, "4-11")
+    with stage_workers.patched_spawn_env(spec):
+        assert os.environ["OMP_NUM_THREADS"] == "4"
+
+
+def test_omp_cap_falls_back_to_the_launcher_mask_when_the_bind_is_disallowed(
+    monkeypatch,
+) -> None:
+    import os
+
+    spec = _spawn_spec({"OMP_NUM_THREADS": "192"})
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(20, 26)))
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+
+    from sglang_omni.pipeline import stage_workers
+
+    monkeypatch.setattr(stage_workers, "current_platform", CPUOmniPlatform())
+    monkeypatch.setattr(stage_workers, "get_platform_spec", lambda _p: "cpu")
+    monkeypatch.setenv(_BIND, "0-9")
+    with stage_workers.patched_spawn_env(spec):
+        assert os.environ["OMP_NUM_THREADS"] == "6"
 
 
 def test_node_cap_never_raises_an_affinity_capped_default(monkeypatch) -> None:
@@ -617,7 +652,7 @@ def _install_hook(monkeypatch, pinned: list) -> None:
     cpu_numa.install_binding_hook()
 
 
-def test_binding_hook_pins_only_the_thread_budget(monkeypatch) -> None:
+def test_binding_hook_pins_only_the_thread_budget(monkeypatch, nodes) -> None:
     import os
 
     pinned: list = []
@@ -629,13 +664,27 @@ def test_binding_hook_pins_only_the_thread_budget(monkeypatch) -> None:
     monkeypatch.setenv("OMP_NUM_THREADS", "4")
     _install_hook(monkeypatch, pinned)
 
-    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-31")
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-9")
     cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid=list(range(8)))
     monkeypatch.setenv("OMP_NUM_THREADS", "0")
     cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-3")
 
     assert pinned == ["0,1,2,3", [0, 1, 2, 3], "0"]
-    assert applied == [set(range(32)), set(range(8)), set(range(4))]
+    assert applied == [set(range(10)), set(range(8)), set(range(4))]
+
+
+def test_binding_hook_keeps_a_multi_node_bind_whole(monkeypatch, nodes) -> None:
+    import os
+
+    pinned: list = []
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(40)))
+    monkeypatch.setattr(os, "sched_setaffinity", lambda _pid, cpus: None)
+    monkeypatch.setenv("OMP_NUM_THREADS", "4")
+    _install_hook(monkeypatch, pinned)
+
+    cpu_numa.sglang_bootstrap._init_cpu_threads_env(local_omp_cpuid="0-19")
+
+    assert pinned == [",".join(map(str, range(20)))]
 
 
 def test_binding_hook_never_pins_outside_the_allowed_cpus(monkeypatch) -> None:
@@ -746,6 +795,48 @@ def test_planning_reserves_nodes_a_later_worker_pins_explicitly(
     platform.plan_process_placement([_spawn_spec({}), pinned])
 
     assert _bind(platform, "auto", ["a"], {})[_BIND] == nodes[1]
+
+
+def test_planning_reserves_nodes_another_workers_numa_map_names(
+    monkeypatch, nodes
+) -> None:
+    monkeypatch.delenv(_BIND, raising=False)
+    monkeypatch.delenv(_MAP, raising=False)
+    platform = CPUOmniPlatform()
+    mapped = _spawn_spec({_MAP: "pinned=0"})
+    mapped.process_name = "pinned"
+
+    platform.plan_process_placement([_spawn_spec({}), mapped])
+
+    assert _bind(platform, "auto", ["a"], {})[_BIND] == nodes[1]
+
+
+def test_a_numa_map_beside_an_explicit_bind_reserves_nothing(
+    monkeypatch, nodes
+) -> None:
+    monkeypatch.delenv(_BIND, raising=False)
+    platform = CPUOmniPlatform()
+    pinned = _spawn_spec({_MAP: "pinned=0", _BIND: "20-29"})
+    pinned.process_name = "pinned"
+
+    platform.plan_process_placement([pinned])
+
+    assert _bind(platform, "auto", ["a"], {})[_BIND] == nodes[0]
+
+
+def test_numa_nodes_use_the_node_column_not_cache_blocks(monkeypatch) -> None:
+    import os
+    import subprocess
+
+    lscpu = "\n".join(
+        ["# CPU,Core,Socket,Node"]
+        + [f"{cpu},{cpu},0,{cpu // 4}" for cpu in range(8)]
+        + [f"{cpu + 8},{cpu},0,{cpu // 4}" for cpu in range(8)]
+    )
+    monkeypatch.setattr(subprocess, "check_output", lambda *a, **k: lscpu)
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: set(range(16)))
+
+    assert cpu_numa.numa_nodes() == {0: "0,1,2,3", 1: "4,5,6,7"}
 
 
 def test_planning_gives_tp_groups_nodes_before_single_process_stages(

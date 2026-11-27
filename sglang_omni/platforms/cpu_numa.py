@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import threading
 from collections import Counter
 from collections.abc import Mapping
@@ -19,14 +20,6 @@ from sglang.srt.utils import get_cpu_ids_by_node
 from sglang_omni.config.schema import parse_replica_instance_name
 from sglang_omni.utils.cpu import LAUNCHER_CPUS_ENV, parse_cpu_list
 
-try:
-    from sglang.srt.utils import get_physical_cpus_by_numa
-except ImportError:
-    # The pinned release names it differently from newer SGLang.
-    from sglang.srt.utils import (
-        get_physical_cpus_by_numa_or_block as get_physical_cpus_by_numa,
-    )
-
 logger = logging.getLogger(__name__)
 
 THREADS_BIND_ENV = "SGLANG_CPU_OMP_THREADS_BIND"
@@ -36,6 +29,7 @@ WIDEN_HOOK_MARKER = "omni_widen_hooked"
 node_by_process_name: dict[str, int] = {}
 node_usage: Counter[int] = Counter()
 tp_group_nodes: dict[str, list[int]] = {}
+mapped_nodes: set[int] = set()
 node_assignment_lock = threading.Lock()
 
 
@@ -71,11 +65,35 @@ def parse_numa_map(raw: str | None) -> dict[str, tuple[int, ...]]:
 
 
 def numa_nodes() -> dict[int, str]:
-    """CPU lists of the NUMA nodes that have CPUs, keyed by the node id lscpu reports, which need not be contiguous."""
+    """Physical-core CPU lists of the NUMA nodes that have allowed CPUs, keyed by the node id lscpu reports, which need not be contiguous.
+
+    SGLang's own helper keys by cache block on hosts with more L3 blocks than nodes, so the NODE column is read directly.
+    """
+    try:
+        output = subprocess.check_output(
+            ["lscpu", "-p=CPU,Core,Socket,Node"], text=True
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"Could not run lscpu: {exc}") from exc
+    first_cpu_of_core: dict[tuple[int, int, int], int] = {}
+    for line in output.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.split(",")
+        try:
+            cpu, core, socket = (int(part) for part in parts[:3])
+        except ValueError as exc:
+            raise RuntimeError(f"Unexpected lscpu line {line!r}") from exc
+        # lscpu leaves the node empty on hosts without NUMA information.
+        node = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+        first_cpu_of_core.setdefault((node, socket, core), cpu)
+    allowed = os.sched_getaffinity(0)
+    by_node: dict[int, set[int]] = {}
+    for (node, _, _), cpu in first_cpu_of_core.items():
+        if cpu in allowed:
+            by_node.setdefault(node, set()).add(cpu)
     return {
-        node: ",".join(map(str, sorted(cpus)))
-        for node, cpus in sorted(get_physical_cpus_by_numa().items())
-        if cpus
+        node: ",".join(map(str, sorted(cpus))) for node, cpus in sorted(by_node.items())
     }
 
 
@@ -94,6 +112,7 @@ def reset_assignment() -> None:
         node_by_process_name.clear()
         node_usage.clear()
         tp_group_nodes.clear()
+        mapped_nodes.clear()
 
 
 def assign_node(
@@ -107,7 +126,7 @@ def assign_node(
     """Pick and record the node of one process; the caller holds node_assignment_lock."""
     node_ids = sorted(topology)
     group = ",".join(stage_names)
-    reserved = {node for nodes in user_map.values() for node in nodes}
+    reserved = mapped_nodes | {node for nodes in user_map.values() for node in nodes}
     free_nodes = [n for n in node_ids if n not in reserved] or node_ids
     by_load = sorted(free_nodes, key=lambda n: (node_usage[n], n))
     requested: dict[str, int] = {}
@@ -162,6 +181,17 @@ def assign_node(
         node_usage[node] += 1
     node_by_process_name[process_name] = node
     return node
+
+
+def reserve_mapped_nodes(env: Mapping[str, str]) -> None:
+    """Keep the nodes one worker's NUMA map names away from the automatic placement of the others; a worker with its own bind list ignores the map."""
+    if env.get(THREADS_BIND_ENV):
+        return
+    nodes = {
+        node for ids in parse_numa_map(env.get(NUMA_MAP_ENV)).values() for node in ids
+    }
+    with node_assignment_lock:
+        mapped_nodes.update(nodes)
 
 
 def claim_explicit_nodes(process_name: str, env: Mapping[str, str]) -> None:
@@ -274,10 +304,18 @@ def node_core_count() -> int | None:
     return min(len(parse_cpu_list(ids)) for ids in topology.values()) or None
 
 
+def spans_one_node(cpus: set[int]) -> bool:
+    """Whether the CPUs sit on a single NUMA node; False when the topology cannot be read."""
+    topology = read_numa_nodes("keeping the bind list whole")
+    if topology is None:
+        return False
+    return sum(1 for ids in topology.values() if parse_cpu_list(ids) & cpus) <= 1
+
+
 def install_binding_hook() -> bool:
     """Keep SGLang's thread binding inside the worker's CPUs and thread budget.
 
-    The bind list is cut to the allowed CPUs, and to OMP_NUM_THREADS of them, before SGLang pins OMP threads to it and sets the thread count to its length. init_cpu_threads_env also pins the main thread to a single core, and every thread created afterwards inherits that mask, so the main thread is widened back to the bound range. OMP workers keep their own per-core affinity, so that does not disturb them.
+    The bind list is cut to the allowed CPUs, and when it sits on one node to OMP_NUM_THREADS of them, before SGLang pins OMP threads to it and sets the thread count to its length. init_cpu_threads_env also pins the main thread to a single core, and every thread created afterwards inherits that mask, so the main thread is widened back to the bound range. OMP workers keep their own per-core affinity, so that does not disturb them.
     """
     original = getattr(sglang_bootstrap, "_init_cpu_threads_env", None)
     if original is None:
@@ -305,10 +343,11 @@ def install_binding_hook() -> bool:
                 f"The bound CPUs {local_omp_cpuid} are outside the CPUs this worker may use ({sorted(allowed_cpus)})."
             )
         # SGLang sets the OMP and torch thread count to the length of the list it pins, so hand it only as many CPUs as the thread budget.
+        # It also derives the memory nodes from the list, so a list spanning nodes is kept whole rather than losing nodes.
         threads = os.environ.get("OMP_NUM_THREADS", "")
-        pinned = (
-            sorted(cpus)[: max(1, int(threads))] if threads.isdigit() else sorted(cpus)
-        )
+        pinned = sorted(cpus)
+        if threads.isdigit() and spans_one_node(cpus):
+            pinned = pinned[: max(1, int(threads))]
         original(
             local_omp_cpuid=(
                 ",".join(map(str, pinned))
