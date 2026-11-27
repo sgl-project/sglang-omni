@@ -105,6 +105,9 @@ type fakeChat struct {
 	// onRequest runs as each request comes (mute_e2e_test.go: is the
 	// output back by then?).
 	onRequest func()
+	// recorded takes a token after each request is kept, so a test can
+	// wait for the model's request without a UI post (#4724).
+	recorded chan struct{}
 }
 
 func (f *fakeChat) set(text string, status int) {
@@ -121,6 +124,12 @@ func (f *fakeChat) Chat(ctx context.Context, req llm.Request) (llm.Response, err
 	}
 	f.mu.Lock()
 	f.bodies = append(f.bodies, requestBody(req))
+	if f.recorded != nil {
+		select {
+		case f.recorded <- struct{}{}:
+		default:
+		}
+	}
 	text, status, delay, stall, chunkDelay := f.text, f.status, f.delay, f.stall, f.chunkDelay
 	if len(f.texts) > 0 {
 		text = f.texts[min(len(f.bodies), len(f.texts))-1]
