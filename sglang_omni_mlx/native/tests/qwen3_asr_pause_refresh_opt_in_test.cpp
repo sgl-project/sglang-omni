@@ -4,7 +4,6 @@
 #include <future>
 #include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,6 +11,7 @@
 #include "common/generation.h"
 #include "common/http.h"
 #include "common/worker.h"
+#include "pause_refresh_test_support.h"
 #include "qwen3_asr/realtime.h"
 
 namespace qwen3_asr::tests {
@@ -19,13 +19,6 @@ namespace {
 
 constexpr int kSampleRate = 16000;
 constexpr int kSpeechEndSample = 600 * kSampleRate / 1000;
-
-void Require(bool condition, const std::string &message) {
-  if (!condition) {
-    throw std::runtime_error(message);
-  } else {
-  }
-}
 
 std::string AudioBase64(int sample_count) {
   std::string pcm;
@@ -56,18 +49,16 @@ void TestPauseRefreshRequiresSessionOptIn() {
                               {nlohmann::json(true), true}};
   for (const auto &[opt_in_value, expect_pause_admission] :
        session_opt_in_cases) {
-    omni_server::TranscriptionWorker worker([] {}, [] {});
-    std::promise<void> decode_finished;
+    TestSignal decode_finished;
     std::atomic<int> decode_count = 0;
+    omni_server::TranscriptionWorker worker([] {}, [] {});
     RealtimeSession::DecodeOverride decoder =
         [&decode_finished,
          &decode_count](const std::vector<float> &, const std::atomic<bool> &,
-                        RefreshReuse *) -> omni_server::Transcription {
-      return [&decode_finished, &decode_count](const std::atomic<bool> &) {
-        decode_count.fetch_add(1);
-        decode_finished.set_value();
-        return PreviewResult();
-      };
+                        RefreshReuse *) -> omni_common::TranscriptionResult {
+      decode_count.fetch_add(1);
+      decode_finished.Notify();
+      return PreviewResult();
     };
     auto session = std::make_shared<RealtimeSession>(
         worker, std::move(decoder), MakeRealtimeSettings(1000, 1000, 30.0),
@@ -93,7 +84,7 @@ void TestPauseRefreshRequiresSessionOptIn() {
           {"speech_end_sample", kSpeechEndSample}}}};
     Require(session->Handle(append_message), "pause append was rejected");
     if (expect_pause_admission) {
-      decode_finished.get_future().wait();
+      decode_finished.Wait("enabled session pause refresh timed out");
       Require(decode_count.load() == 1,
               "enabled session did not admit exactly one pause refresh");
     } else {

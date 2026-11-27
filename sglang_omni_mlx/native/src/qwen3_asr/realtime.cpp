@@ -510,6 +510,7 @@ void RealtimeSession::MaybeStartFinalPrefill() {
 }
 
 void RealtimeSession::MaybeStartShadowFinal() {
+  const Qwen3ASRTranscriber *transcriber = transcriber_;
   std::vector<float> samples;
   TranscriptionOptions options;
   std::string preview_text;
@@ -519,9 +520,9 @@ void RealtimeSession::MaybeStartShadowFinal() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const long recording_end = static_cast<long>(recording_samples_.size());
-    if (!should_prefill_final_ || !has_preview_ || is_shadowing_ ||
-        finalizing_ || is_recording_cut_off_ || final_start_sample_ != 0 ||
-        IsShadowQuiet() || !segment_.has_value() ||
+    if (transcriber == nullptr || !should_prefill_final_ || !has_preview_ ||
+        is_shadowing_ || finalizing_ || is_recording_cut_off_ ||
+        final_start_sample_ != 0 || IsShadowQuiet() || !segment_.has_value() ||
         recording_end <
             std::max(next_shadow_sample_,
                      kShadowIntervalSamples + kShadowDelaySamples) ||
@@ -555,7 +556,7 @@ void RealtimeSession::MaybeStartShadowFinal() {
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
   worker_.Submit(
-      [&transcriber = transcriber_, weak_self, samples = std::move(samples),
+      [transcriber, weak_self, samples = std::move(samples),
        options = std::move(options), preview_text = std::move(preview_text),
        preview_language,
        shadow_guess](const std::atomic<bool> &cancel) mutable {
@@ -566,9 +567,9 @@ void RealtimeSession::MaybeStartShadowFinal() {
         const auto guesses = [&](const std::optional<std::string> &language,
                                  const std::string &text) {
           return options.language.has_value()
-                     ? transcriber.RetainedPrefix(text, 0).prefix_ids
+                     ? transcriber->RetainedPrefix(text, 0).prefix_ids
                  : language.has_value()
-                     ? transcriber.AutoLanguageGuesses(*language, text)
+                     ? transcriber->AutoLanguageGuesses(*language, text)
                      : std::vector<int>();
         };
         const std::vector<int> preview_ids =
@@ -595,7 +596,7 @@ void RealtimeSession::MaybeStartShadowFinal() {
         } else {
           return TranscriptionResult();
         }
-        return transcriber.Transcribe(samples, options, cancel, &reuse);
+        return transcriber->Transcribe(samples, options, cancel, &reuse);
       },
       cancel,
       [weak_self](std::optional<TranscriptionResult> result,
@@ -773,11 +774,11 @@ void RealtimeSession::MaybeStartRefresh(
   const bool pause_admission = admission.source == RefreshSource::kPause;
   std::weak_ptr<RealtimeSession> weak_self =
       std::static_pointer_cast<RealtimeSession>(shared_from_this());
-  const Transcription transcribe =
+  Transcription transcribe =
       Decode(std::move(samples), std::move(options), std::move(reuse), false);
-  const Completion completion = [weak_self, segment_id, end_sample](
-                                    std::optional<TranscriptionResult> result,
-                                    std::exception_ptr error) {
+  Completion completion = [weak_self, segment_id, end_sample](
+                              std::optional<TranscriptionResult> result,
+                              std::exception_ptr error) {
     const std::shared_ptr<RealtimeSession> self = weak_self.lock();
     if (!self) {
       return;
@@ -818,11 +819,11 @@ void RealtimeSession::MaybeStartRefresh(
   };
   if (pause_admission) {
     // note (chenye): Queue the pause while Final cannot take this mutex.
-    worker_.Submit(transcribe, cancel_, completion);
+    worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
     return;
   } else {
     lock.unlock();
-    worker_.Submit(transcribe, cancel_, completion);
+    worker_.Submit(std::move(transcribe), cancel_, std::move(completion));
   }
 }
 

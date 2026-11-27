@@ -264,9 +264,9 @@ void TestRollbackGuessParity(TranscriptionWorker &worker,
                                           {"language", "en"},
                                           {"final_prompt", ""}}}});
   Require(handled, "realtime session closed during its update");
-  AppendAudio(session, first_preview_samples);
+  AppendAudio(*session, first_preview_samples);
   const nlohmann::json first_preview = WaitForSegment(event_log, 0, false);
-  AppendAudio(session, followup_preview_samples);
+  AppendAudio(*session, followup_preview_samples);
   const int first_preview_index = first_preview.at("event_index").get<int>();
   const nlohmann::json last_preview =
       WaitForSegment(event_log, first_preview_index, false);
@@ -478,8 +478,11 @@ int main(int argc, char **argv) {
     std::unique_ptr<Qwen3ASRTranscriber> transcriber;
     TranscriptionWorker worker(
         [&transcriber, &model_directory, &draft_directory] {
-          transcriber = std::make_unique<Qwen3ASRTranscriber>(model_directory,
-                                                              draft_directory);
+          omni_common::DraftOptions draft_options;
+          draft_options.directory = draft_directory;
+          transcriber = std::make_unique<Qwen3ASRTranscriber>(
+              model_directory, draft_options,
+              omni_common::DraftPolicy::kAdaptive);
         },
         [] {});
     Require(transcriber != nullptr, "Qwen3-ASR transcriber did not load");
