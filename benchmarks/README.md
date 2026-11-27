@@ -194,6 +194,7 @@ python -m benchmarks.eval.benchmark_omni_seedtts \
 | `eval/benchmark_tts_seedtts.py` | TTS speed + WER (unified) | e.g. S2-Pro, Voxtral, Higgs TTS | `/v1/audio/speech` |
 | `eval/benchmark_tts_serving.py` | TTS serving contract | OpenAI-compatible TTS models | `/v1/audio/speech`, raw PCM streaming, WebSocket, voice and batch contracts |
 | `eval/benchmark_omni_seedtts.py` | TTS speed + WER (unified) | Qwen3-Omni, MiniCPM-o | `/v1/chat/completions` |
+| `eval/benchmark_omni_bfcl_audio.py` | BFCL v3 audio structured tool calls | Audio chat models with native function calling | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmsu.py` | MMSU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmau.py` | MMAU (audio comprehension) | Qwen3-Omni | `/v1/chat/completions` |
 | `eval/benchmark_omni_mmar.py` | MMAR (audio reasoning) | Qwen3-Omni | `/v1/chat/completions` |
@@ -422,6 +423,20 @@ Session control events after completion remain legal. The client stops receiving
 at its first completion, so post-completion violations are detected only when
 present in the recorded or injected trace. These checks validate the ASR profile,
 not native duplex interruption or physical audio playback.
+
+## Audio tool calling
+
+Start an audio chat endpoint that accepts OpenAI function tools and base64 WAV input. Run the benchmark from the repository root with the model name served by that endpoint.
+
+```bash
+python -m benchmarks.eval.benchmark_omni_bfcl_audio \
+    --base-url http://localhost:8000 --model inclusionAI/Ming-3.0-audio-flash \
+    --output-dir results/bfcl-audio
+```
+
+The default run uses all 1,240 test recordings across five subsets of [ServiceNow-AI/BFCL_v3_audio](https://huggingface.co/datasets/ServiceNow-AI/BFCL_v3_audio). For a smoke run add `--max-samples-per-subset 1`. Use `--subsets parallel irrelevance` to select categories. Requests contain the recording and candidate tools with automatic selection. Dots in function names become underscores for OpenAI compatibility.
+
+The local metric, `structured_call_accuracy`, is the fraction of samples with a complete matching response. A tool response must finish with `tool_calls` and match every reference exactly once in any order. Arguments use the dataset’s accepted JSON values, case-sensitive strings and optional-argument omission markers. An irrelevance example requires a nonempty text response with `stop` and zero structured calls. This metric differs from AU-Harness’s `bfcl_match_score`, which also normalizes strings. The file `bfcl_audio.json` contains each response, reference and error, per-subset accuracy, and the sample-weighted overall accuracy. Failed requests count as incorrect.
 
 ## Native duplex (VoiceChat) protocol benchmark
 
