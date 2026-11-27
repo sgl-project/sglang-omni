@@ -1368,12 +1368,15 @@ def test_start_request_profile_returns_started_stages(
 ) -> None:
     """POST /start_request_profile reports coordinator plus every broadcasted stage so clients can wait for all writers."""
     from sglang_omni.serve import launcher
+
     class FakeRecorder:
         def start(self, **kwargs: object) -> None:
             return None
+
     class FakeProfilerControl:
         async def broadcast_start(self, **kwargs: object) -> list[str]:
             return ["encoder", "asr"]
+
     monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
     monkeypatch.setattr(launcher, "_get_event_recorder", lambda: FakeRecorder())
     app = FastAPI()
