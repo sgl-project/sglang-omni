@@ -18,11 +18,6 @@ on:
         type: string
         required: false
         default: fun
-      omni_ci_home:
-        description: PR-scoped CI home from the parent omni-ci workflow.
-        type: string
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -30,20 +25,23 @@ permissions:
   pull-requests: read
 
 env:
-  OMNI_CI_HOME: >-
-    ${{ inputs.omni_ci_home != ''
-        && inputs.omni_ci_home
-        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
 # The jobs share no data, so they run side by side.
 
 jobs:
+  authorize:
+    uses: ./.github/workflows/authorize-self-hosted.yml
+
   moss-td-multi-speaker:
+    needs: authorize
     name: MOSS-TD multi-speaker
     if: inputs.run_multi_speaker
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
     container:
@@ -59,6 +57,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -98,9 +99,12 @@ jobs:
           summary-only: "true"
 
   seedtts:
+    needs: authorize
     name: SeedTTS ASR
     if: inputs.run_seedtts
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -115,6 +119,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:

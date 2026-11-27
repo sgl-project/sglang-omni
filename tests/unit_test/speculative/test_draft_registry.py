@@ -491,7 +491,7 @@ def test_config_explain_names_the_default_draft_added_at_launch(
 
 def test_ci_prefetches_the_default_on_draft_of_each_model_it_downloads() -> None:
     """A model without CI can serve its draft by default, and CI then downloads neither."""
-    workflow = (REPO_ROOT / ".github" / "workflows" / "omni-ci.yaml").read_text(
+    workflow = (REPO_ROOT / ".github" / "workflows" / "self-hosted-omni.yaml").read_text(
         encoding="utf-8"
     )
     for draft in DRAFT_REGISTRY:

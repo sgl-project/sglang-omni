@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 # Remove a PR- or run-scoped CI home directory on the self-hosted runner.
-#
-# Omni CI preserves /data/omni-ci/pr-* across workflow runs so pushes within the
-# runner TTL (e.g. 3 days) can reuse venv/cache; this script is used on PR close
-# and for ephemeral workflow_dispatch run-* homes—not after every PR CI run.
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/pin_to_ci_cpuset.sh"

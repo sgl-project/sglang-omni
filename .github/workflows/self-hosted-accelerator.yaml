@@ -2,18 +2,9 @@ name: PR Test
 
 on:
   workflow_call:
-    inputs:
-      omni_ci_home:
-        description: PR-scoped CI home from the parent omni-ci workflow.
-        type: string
-        required: false
-        default: ""
 
 env:
-  OMNI_CI_HOME: >-
-    ${{ inputs.omni_ci_home != ''
-        && inputs.omni_ci_home
-        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
 
 # Invoked by omni-ci.yaml after shared setup for the H100 accelerator unit-test
 # partitions; CPU unit tests run on GitHub-hosted runners in omni-ci.yaml.
@@ -22,9 +13,15 @@ env:
 # not. Restores omni only.
 
 jobs:
+  authorize:
+    uses: ./.github/workflows/authorize-self-hosted.yml
+
   unit-test-accelerator:
+    needs: authorize
     name: ${{ matrix.name }}
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     strategy:
       fail-fast: false
       matrix:
@@ -46,6 +43,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:

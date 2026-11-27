@@ -457,7 +457,7 @@ Qwen3-TTS-12Hz-1.7B-CustomVoice has no reliable reference. `docs/cookbook/qwen3_
 
 ## Comparing with TTS CI
 
-TTS CI (`.github/workflows/test-tts-ci.yaml`) deploys differently from this page. Do not compare numbers from this page with CI numbers.
+TTS CI (`.github/workflows/self-hosted-tts.yaml`) deploys differently from this page. Do not compare numbers from this page with CI numbers.
 
 - CI runs a Rust router over two workers on two H100s. This page runs one server on one GPU.
 - CI sets `SGLANG_OMNI_TORCH_COMPILE_DEFAULT=0` (`.github/scripts/ci_env.sh`). This page keeps compile on.

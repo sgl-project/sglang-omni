@@ -8,11 +8,6 @@ on:
         type: string
         required: false
         default: qwen3-omni
-      omni_ci_home:
-        description: PR-scoped CI home from the parent omni-ci workflow.
-        type: string
-        required: false
-        default: ""
 
 permissions:
   contents: read
@@ -21,10 +16,7 @@ permissions:
 
 env:
   OMNI_CI_MODEL: ${{ inputs.omni_ci_model }}
-  OMNI_CI_HOME: >-
-    ${{ inputs.omni_ci_home != ''
-        && inputs.omni_ci_home
-        || format('/data/omni-ci/run-{0}', github.run_id) }}
+  OMNI_CI_HOME: /data/omni-ci/run-${{ github.run_id }}
   PYTORCH_ALLOC_CONF: expandable_segments:True
   # NCCL 2.29.7 (torch 2.13 pin) makes a failed NVLS multicast bind fatal at init
   # (NVIDIA/nccl#2077); the TP=2 stages hit it, and two-GPU TP gains nothing from NVLS.
@@ -35,9 +27,15 @@ env:
 # stages run side by side. stage-11-process-replicas runs only for qwen3-omni.
 
 jobs:
+  authorize:
+    uses: ./.github/workflows/authorize-self-hosted.yml
+
   stage-1-thinker:
+    needs: authorize
     name: stage 1 - thinker length integration
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 20
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -53,6 +51,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -88,8 +89,11 @@ jobs:
           stage-label: thinker-length
 
   stage-2-tts:
+    needs: authorize
     name: stage 2 - TTS speed + WER + SIM
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 25
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -105,6 +109,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -145,8 +152,11 @@ jobs:
           artifact-upload-path: /tmp/**/*_results.json
 
   stage-3-mmmu:
+    needs: authorize
     name: stage 3 - MMMU accuracy + speed
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 20
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -162,6 +172,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -189,8 +202,11 @@ jobs:
           artifact-upload-path: /tmp/**/mmmu_results.json
 
   stage-4-mmmu-talker:
+    needs: authorize
     name: stage 4 - MMMU Talker
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 15
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -206,6 +222,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -233,8 +252,11 @@ jobs:
           artifact-upload-path: /tmp/**/mmmu_audio*/mmmu_results.json
 
   stage-5-mmsu:
+    needs: authorize
     name: stage 5 - MMSU accuracy + speed
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 20
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -250,6 +272,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -278,8 +303,11 @@ jobs:
           summary-only: "true"
 
   stage-6-mmsu-talker:
+    needs: authorize
     name: stage 6 - MMSU Talker
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 15
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -295,6 +323,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -322,8 +353,11 @@ jobs:
           artifact-upload-path: /tmp/**/mmsu_audio*/mmsu_results.json
 
   stage-7-videomme:
+    needs: authorize
     name: stage 7 - Video-MME accuracy + speed
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -339,6 +373,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -366,8 +403,11 @@ jobs:
           artifact-upload-path: /tmp/**/videomme/videomme_results.json
 
   stage-8-videomme-talker:
+    needs: authorize
     name: stage 8 - Video-MME Talker
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -383,6 +423,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -410,8 +453,11 @@ jobs:
           artifact-upload-path: /tmp/**/videomme_audio*/videomme_results.json
 
   stage-9-videoamme:
+    needs: authorize
     name: stage 9 - Video-AMME accuracy + speed
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -427,6 +473,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -454,8 +503,11 @@ jobs:
           artifact-upload-path: /tmp/**/videoamme/videoamme_results.json
 
   stage-10-videoamme-talker-tp2:
+    needs: authorize
     name: stage 10 - Video-AMME Talker
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 35
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -473,6 +525,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
@@ -500,9 +555,12 @@ jobs:
           artifact-upload-path: /tmp/**/videoamme_audio*/videoamme_results.json
 
   stage-11-process-replicas:
+    needs: authorize
     name: stage 11 - process replicas
     if: inputs.omni_ci_model == 'qwen3-omni'
-    runs-on: [self-hosted, h100]
+    runs-on:
+      group: sglang-omni-ci
+      labels: [h100]
     timeout-minutes: 30
     container:
       image: hongccc/sglang-omni@sha256:d2fbd80ec42c8a6d9dff4b8a4fdbee35d50c5a1b41aa8dc872925da6e0c82f6a
@@ -518,6 +576,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
 
       - uses: ./.github/actions/omni-setup
         with:
