@@ -140,10 +140,7 @@ class SenseNovaU1GenerationStage(PipelineStage):
         )
         if edit_options is not None:
             model_device = self.model.device
-            if model_device.type not in ("cpu", "mps"):
-                device_module = torch.get_device_module(model_device)
-            else:
-                device_module = torch.cuda
+            device_module = torch.get_device_module(model_device)
             free_memory_bytes, _ = device_module.mem_get_info(model_device)
             reusable_memory_bytes = device_module.memory_reserved(
                 model_device

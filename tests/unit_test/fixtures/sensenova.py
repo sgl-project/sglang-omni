@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from types import ModuleType, SimpleNamespace
 
+import pytest
 import torch
 from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
 from sglang.kernels.spec import KernelBackend
@@ -77,3 +79,25 @@ def torch_fused_op_backend() -> Iterator[None]:
         yield
     finally:
         set_fused_op_backend(previous_backend)
+
+
+def mock_cpu_device_memory(
+    monkeypatch: pytest.MonkeyPatch, free_memory_bytes: int = 4 * 1024**3
+) -> None:
+    """Supply memory budget queries when SenseNova editing tests run on CPU."""
+    original_get_device_module = torch.get_device_module
+    cpu_module = SimpleNamespace(
+        mem_get_info=lambda device: (free_memory_bytes, 0),
+        memory_reserved=lambda device: 0,
+        memory_allocated=lambda device: 0,
+    )
+
+    def resolve_device_module(
+        device: torch.device | str | None = None,
+    ) -> ModuleType | SimpleNamespace:
+        if device is not None and torch.device(device).type == "cpu":
+            return cpu_module
+        else:
+            return original_get_device_module(device)
+
+    monkeypatch.setattr(torch, "get_device_module", resolve_device_module)

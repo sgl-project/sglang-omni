@@ -17,9 +17,7 @@ import torch
 from sglang.multimodal_gen.registry import get_model_info
 from sglang.multimodal_gen.runtime.pipelines_core.schedule_batch import Req
 from sglang.multimodal_gen.runtime.pipelines_core.stages import base as stage_base
-from sglang.multimodal_gen.runtime.platforms import (
-    current_platform as native_platform,
-)
+from sglang.multimodal_gen.runtime.platforms import current_platform as native_platform
 
 from sglang_omni.models.sensenova_u1 import config as sensenova_config
 from sglang_omni.models.sensenova_u1.config import SenseNovaU1PipelineConfig
@@ -231,9 +229,9 @@ def test_npu_startup_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     stage_overridden_config = SenseNovaU1PipelineConfig(model_path="/models/sensenova")
-    stage_overridden_config.stage_named("generation").env["PYTORCH_ALLOC_CONF"] = (
-        "expandable_segments:False"
-    )
+    stage_overridden_config.stage_named("generation").env[
+        "PYTORCH_ALLOC_CONF"
+    ] = "expandable_segments:False"
     stage_overridden_env = stage_overridden_config.resolved_stage_env_defaults(
         "generation"
     )
@@ -245,9 +243,8 @@ def test_npu_startup_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
         "environ",
         environment | {"PYTORCH_ALLOC_CONF": "expandable_segments:False"},
     )
-    assert (
-        "PYTORCH_NPU_ALLOC_CONF"
-        not in omni_config.resolved_stage_env_defaults("generation")
+    assert "PYTORCH_NPU_ALLOC_CONF" not in omni_config.resolved_stage_env_defaults(
+        "generation"
     )
 
     monkeypatch.setattr(
@@ -255,9 +252,8 @@ def test_npu_startup_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
         "environ",
         environment | {"PYTORCH_NPU_ALLOC_CONF": "expandable_segments:False"},
     )
-    assert (
-        "PYTORCH_NPU_ALLOC_CONF"
-        not in omni_config.resolved_stage_env_defaults("generation")
+    assert "PYTORCH_NPU_ALLOC_CONF" not in omni_config.resolved_stage_env_defaults(
+        "generation"
     )
 
 

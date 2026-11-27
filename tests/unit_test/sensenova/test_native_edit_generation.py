@@ -31,6 +31,7 @@ from sglang_omni.vendor.sensenova_u1.modeling_neo_chat import (
     prepare_flash_kv_cache,
 )
 from tests.unit_test.fixtures.sensenova import (
+    mock_cpu_device_memory,
     tiny_sensenova_model,
     tiny_sensenova_tokenizer,
     torch_fused_op_backend,
@@ -398,9 +399,7 @@ def test_edit_loop_checks_cancellation_between_steps(
         "get_global_server_args",
         lambda: SimpleNamespace(comfyui_mode=False),
     )
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (4 * 1024**3, 0))
-    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device: 0)
-    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: 0)
+    mock_cpu_device_memory(monkeypatch)
     monkeypatch.setattr(cancellation.CancellationState, "enabled", True)
     original_progress_bar = stage_base.PipelineStage.progress_bar
 
