@@ -3,6 +3,7 @@
 
 from array import array
 from dataclasses import dataclass, field
+from functools import partial
 
 import torch
 from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
@@ -24,6 +25,7 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexSampling,
     MiniCPMODuplexWindow,
 )
+from sglang_omni.models.minicpm_o.realtime_warmup import warm_up_minicpm_session
 from sglang_omni.models.minicpm_o.special_tokens import (
     MiniCPMOSpecialTokenIds,
     resolve_special_token_ids,
@@ -694,28 +696,30 @@ def build_realtime_deployment(
             atomic_consumption=True,
         )
 
-    return RealtimeDeployment(
-        Capabilities(
-            native_unit_ms=UNIT_MS,
-            output_sample_rate_hz=OUTPUT_SAMPLE_RATE,
-            output_modalities=("audio", "text"),
-            input_modalities=("audio", "image"),
-            image_frames_per_unit=tuple(
-                min(
-                    config.vision.max_frames_per_unit,
-                    config.vision.max_tiles_per_unit
-                    // (1 if slices == 1 else slices + 1),
-                )
-                for slices in range(1, config.vision.max_slice_nums_limit + 1)
-            ),
-            default_max_slice_nums=config.vision.max_slice_nums,
-            tail_policy="pad",
-            supports_reference_audio=True,
-            supports_truncate=True,
-            supports_cancel=True,
-            sampling_parameters=tuple(MiniCPMODuplexSampling.model_fields),
+    capabilities = Capabilities(
+        native_unit_ms=UNIT_MS,
+        output_sample_rate_hz=OUTPUT_SAMPLE_RATE,
+        output_modalities=("audio", "text"),
+        input_modalities=("audio", "image"),
+        image_frames_per_unit=tuple(
+            min(
+                config.vision.max_frames_per_unit,
+                config.vision.max_tiles_per_unit // (1 if slices == 1 else slices + 1),
+            )
+            for slices in range(1, config.vision.max_slice_nums_limit + 1)
         ),
+        default_max_slice_nums=config.vision.max_slice_nums,
+        tail_policy="pad",
+        supports_reference_audio=True,
+        supports_truncate=True,
+        supports_cancel=True,
+        sampling_parameters=tuple(MiniCPMODuplexSampling.model_fields),
+    )
+    limits = runtime_limits_for_pipeline(config)
+    return RealtimeDeployment(
+        capabilities,
         factory,
-        limits=runtime_limits_for_pipeline(config),
+        limits=limits,
         max_connections=config.max_sessions,
+        warmup=partial(warm_up_minicpm_session, capabilities, factory, limits),
     )
