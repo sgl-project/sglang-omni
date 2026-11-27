@@ -19,6 +19,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,14 +52,16 @@ def event_buffer_capacity_for_samples(sample_count: int) -> int:
 async def wait_for_profile_flush(
     event_dir: str,
     *,
+    expected_stages: Sequence[str] | None = None,
     timeout_seconds: float = DEFAULT_FINALIZATION_TIMEOUT_SECONDS,
 ) -> bool:
-    """Wait until every events file present so far has its run_status sidecar; processes that have not yet created an events file are not awaited."""
+    """Wait until all expected stage writers and present events files publish their run_status sidecars."""
     directory = Path(event_dir).expanduser()
     if not directory.is_dir():
         return True
     else:
         pass
+    expected_stage_counts = Counter(expected_stages or ())
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         event_pids: set[str] = set()
@@ -68,9 +71,39 @@ async def wait_for_profile_flush(
                 event_pids.add(match.group("pid"))
             else:
                 pass
-        if event_pids and all(
+        all_event_sidecars_present = all(
             (directory / f"run_status_{pid}.json").is_file() for pid in event_pids
-        ):
+        )
+        if expected_stage_counts:
+            published_stage_counts: Counter[str] = Counter()
+            for status_path in directory.glob("run_status_*.json"):
+                try:
+                    status_payload = json.loads(
+                        status_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if isinstance(status_payload, dict):
+                    stages = status_payload.get("stages")
+                    if isinstance(stages, list):
+                        for stage_name in stages:
+                            if isinstance(stage_name, str):
+                                published_stage_counts[stage_name] += 1
+                            else:
+                                pass
+                    else:
+                        pass
+                else:
+                    pass
+            stages_ready = all(
+                published_stage_counts[stage_name] >= expected_count
+                for stage_name, expected_count in expected_stage_counts.items()
+            )
+            if stages_ready and all_event_sidecars_present:
+                return True
+            else:
+                pass
+        elif event_pids and all_event_sidecars_present:
             return True
         else:
             pass
@@ -142,12 +175,23 @@ async def run_profiled_pass(
 ) -> dict[str, Any] | None:
     """Run one pass inside a scoped request-profiling lifecycle."""
     started: list[str] = []
+    expected_stages: list[str] = []
     try:
         for url in profile_urls:
-            start_request_profile(
+            start_response = start_request_profile(
                 url, run_id, event_dir, event_buffer_capacity=event_buffer_capacity
             )
             started.append(url)
+            if isinstance(start_response, dict):
+                response_stages = start_response.get("stages")
+                if isinstance(response_stages, list):
+                    expected_stages.extend(
+                        stage for stage in response_stages if isinstance(stage, str)
+                    )
+                else:
+                    pass
+            else:
+                pass
     except requests.RequestException as exc:
         for url in started:
             try:
@@ -177,7 +221,10 @@ async def run_profiled_pass(
                 )
 
     # note (evanderfff123-boop): /stop_request_profile returns before each process's background writer finishes flushing events_*.jsonl and run_status_<pid>.json.
-    flushed = await wait_for_profile_flush(event_dir)
+    flushed = await wait_for_profile_flush(
+        event_dir,
+        expected_stages=expected_stages or None,
+    )
     if not flushed:
         print(
             f"{log_prefix} timed out waiting for profile flush in {event_dir}",
