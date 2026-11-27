@@ -13,7 +13,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: Homebrew/actions/setup-homebrew@main
-      - run: brew trust sgl-project/voxt
-      - run: brew style --cask sgl-project/voxt/voxt
-      - run: brew audit --cask --strict --online sgl-project/voxt/voxt
-      - run: brew livecheck --cask sgl-project/voxt/voxt
+      - run: brew trust zhaochenyang20/voxt
+      - run: brew style --cask zhaochenyang20/voxt/voxt
+      - run: brew audit --cask --strict --online zhaochenyang20/voxt/voxt
+      - run: brew livecheck --cask zhaochenyang20/voxt/voxt

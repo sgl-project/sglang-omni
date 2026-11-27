@@ -3,7 +3,7 @@
 [Voxt](https://github.com/sgl-project/sglang-omni/tree/main/Voxt) is a voice input, translation and rewriting app for Macs with Apple silicon.
 
 ```sh
-brew install --cask sgl-project/voxt/voxt
+brew install --cask zhaochenyang20/voxt/voxt
 ```
 
 Voxt updates itself after it is installed, so `brew upgrade` leaves it alone unless you pass `--greedy`.
