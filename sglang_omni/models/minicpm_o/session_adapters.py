@@ -260,7 +260,8 @@ class ThinkerAdapter(ARSessionAdapter):
         plan: PerceptionStepPlan = payload.data
         is_interrupted = state.is_interrupt_pending
         state.is_interrupt_pending = False
-        if state.is_listen_held or state.drain_units_left > 0:
+        is_reply_draining = state.drain_units_left > 0
+        if state.is_listen_held or is_reply_draining:
             pcm = (
                 chunk.payload["pcm"]
                 if isinstance(chunk.payload, dict)
@@ -289,7 +290,20 @@ class ThinkerAdapter(ARSessionAdapter):
             suffix = [self.special.turn_eos]
         else:
             suffix = []
-        token_ids = [*prefix, *plan["token_ids"], *suffix]
+        sampling = state.sampling
+        is_listen_forced = (
+            is_interrupted
+            or state.is_listen_held
+            or state.force_listen_counter < sampling.force_listen_count
+        )
+        if state.is_turn_ended and not is_reply_draining and not is_listen_forced:
+            # note (cuzmi): As in the official harness, a result waits until no speech is in flight and the model is free to answer it; otherwise it breaks into speech the user is hearing, or a forced listen right after it reads as the model passing it over.
+            backend_token_ids = state.backend_token_ids
+            state.backend_token_ids = []
+        else:
+            backend_token_ids = []
+        own_token_ids = [*plan["token_ids"], *backend_token_ids]
+        token_ids = [*prefix, *own_token_ids, *suffix]
         perception_embedding_spans = [
             EmbeddingSpan(
                 start=span["token_start"],
@@ -311,7 +325,6 @@ class ThinkerAdapter(ARSessionAdapter):
                 for span in perception_embedding_spans
             ),
         ]
-        sampling = state.sampling
         sampling_params = SamplingParams(
             max_new_tokens=sampling.max_new_tokens_per_unit,
             temperature=1.0,
@@ -345,13 +358,12 @@ class ThinkerAdapter(ARSessionAdapter):
                 if token_id == self.special.unit
             ),
             unit_embedding_spans=spans,
-            is_listen_forced=is_interrupted
-            or state.is_listen_held
-            or state.force_listen_counter < sampling.force_listen_count,
+            is_listen_forced=is_listen_forced,
             is_interrupted=is_interrupted,
             hears_user=hears_user,
             unit_index=chunk.seq,
-            perception_token_ids=plan["token_ids"],
+            # note (cuzmi): A cut re-feeds a unit from these ids, so the result it read stays read.
+            perception_token_ids=own_token_ids,
             perception_embedding_spans=perception_embedding_spans,
             is_turn_ended_at_start=state.is_turn_ended,
             generated_history_at_start=list(state.generated_history),

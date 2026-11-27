@@ -1874,6 +1874,101 @@ def test_a_stop_keeps_the_result_of_a_task_the_client_already_ran() -> None:
     assert adapter.states[SESSION].backend_token_ids == BACKEND_SPAN
 
 
+@pytest.mark.parametrize(
+    ("spoken_units", "result_before_unit", "reading_unit"),
+    [({}, 1, 1), ({0: False, 1: True}, 1, 5)],
+    ids=[
+        "an_idle_model_reads_it_in_its_next_unit",
+        "a_reply_reads_it_once_the_speech_it_owes_has_drained",
+    ],
+)
+def test_a_call_result_is_read_once_in_the_first_unit_the_model_is_idle_in(
+    spoken_units: dict[int, bool], result_before_unit: int, reading_unit: int
+) -> None:
+    """The model read a task's result while it still spoke a reply, or while the talker still spoke the reply it had ended, so its answer broke into speech the user was hearing; or it read the same result twice."""
+    adapter, request = open_delegate_adapter()
+    input_ids: list[list[int]] = []
+
+    for unit_index in range(6):
+        if unit_index == result_before_unit:
+            adapter.control(SESSION, call_result(RESULT))
+        else:
+            pass
+        unit_request = feed_unit(
+            adapter,
+            request,
+            unit_index,
+            spoken_token_id=PLAIN_TOKEN_ID if unit_index in spoken_units else None,
+            ends_turn=spoken_units.get(unit_index, False),
+        )
+        input_ids.append(unit_request.input_ids.tolist())
+
+    assert [
+        unit_index for unit_index, ids in enumerate(input_ids) if BACKEND_START in ids
+    ] == [reading_unit]
+    assert input_ids[reading_unit] == [
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        AUDIO_PLACEHOLDER_ID_BASE + reading_unit,
+        *BACKEND_SPAN,
+    ]
+
+
+def test_a_call_result_waits_out_the_listen_a_stop_holds() -> None:
+    """The model read a task's result in a unit a stop made it listen in, so its history showed it passing the result over in silence and it never told the user the outcome."""
+    adapter, request = open_delegate_adapter()
+    adapter.states[SESSION].is_turn_ended = False
+    adapter.control(SESSION, call_result(RESULT))
+
+    finished_units = listen_after_a_stop(
+        adapter,
+        request,
+        [
+            SILENT_UNIT_PCM,
+            SILENT_UNIT_PCM,
+            unit_pcm(speech(UNIT_SAMPLES), VOICE_DBFS),
+            SILENT_UNIT_PCM,
+        ],
+    )
+
+    assert [unit_request.input_ids.tolist() for unit_request, _ in finished_units] == [
+        [*UNIT_INPUT_IDS, SPECIAL_TOKENS.turn_eos],
+        [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
+        [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS, *BACKEND_SPAN],
+        [SPECIAL_TOKENS.unit_end, *UNIT_INPUT_IDS],
+    ]
+
+
+def test_a_cut_keeps_the_result_a_later_unit_read() -> None:
+    """A truncate cut a reply after the model had read a task's result in one of the listen units after it, and the model forgot the result."""
+    adapter, request = open_delegate_adapter()
+    feed_unit(adapter, request, 0, spoken_token_id=PLAIN_TOKEN_ID, ends_turn=True)
+    adapter.control(SESSION, call_result(RESULT))
+    for unit_index in range(1, 5):
+        feed_unit(adapter, request, unit_index, spoken_token_id=None)
+
+    adapter.control(SESSION, truncate_through(-1))
+    cut = adapter.build(SESSION, audio_unit(5), perception_payload(request, 5))
+
+    assert cut.input_ids.tolist() == [
+        SPECIAL_TOKENS.listen,
+        *[
+            token_id
+            for unit_index in range(1, 5)
+            for token_id in (
+                SPECIAL_TOKENS.unit_end,
+                SPECIAL_TOKENS.unit,
+                AUDIO_PLACEHOLDER_ID_BASE + unit_index,
+                *(BACKEND_SPAN if unit_index == 4 else []),
+                SPECIAL_TOKENS.listen,
+            )
+        ],
+        SPECIAL_TOKENS.unit_end,
+        SPECIAL_TOKENS.unit,
+        AUDIO_PLACEHOLDER_ID_BASE + 5,
+    ]
+
+
 def test_chunk_eos_from_the_first_sample_skips_the_second_stage() -> None:
     runner = duplex_runner(SPECIAL_TOKENS)
     state = session_state()
