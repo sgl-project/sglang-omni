@@ -45,7 +45,7 @@ func (s *live) finalPass(pcm []byte) {
 		var known prior
 		if s.a.spec.Kind == kindQwen3ASR {
 			// The server has prefilled the Final's audio, from the last piece
-			// on, and its dictionary (startFinalAt).
+			// on, and its dictionary (recognisePieces).
 			known.session = s.session
 			if done == 0 {
 				if hint != "" {
