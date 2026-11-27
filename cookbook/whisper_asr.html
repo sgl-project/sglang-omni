@@ -616,6 +616,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#translate-audio">Translate Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#beam-search">Beam Search</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
@@ -976,6 +977,16 @@ for response formats and other ASR models.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">0.0</span></code></p></td>
 <td><p>Sampling temperature; defaults to greedy decoding. A negative value returns HTTP 422</p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">beam_width</span></code></p></td>
+<td><p>int</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
+<td><p>Beam search width, 1 to 16; above 1 the response carries the N-best (see <a class="reference internal" href="#beam-search"><span class="std std-ref">Beam Search</span></a>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">beam_search_diversity_rate</span></code></p></td>
+<td><p>float</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.0</span></code></p></td>
+<td><p>Ranking-only diversity bonus for beam search</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -986,6 +997,30 @@ the request minimal and use <code class="docutils literal notranslate"><span cla
 <p>For both transcription and translation, <code class="docutils literal notranslate"><span class="pre">srt</span></code> and <code class="docutils literal notranslate"><span class="pre">vtt</span></code> request Whisper’s
 model-derived segment timestamps. Non-streaming subtitle requests are
 supported; <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> with either subtitle format returns HTTP 400.</p>
+</section>
+<section id="beam-search">
+<h2>Beam Search<a class="headerlink" href="#beam-search" title="Link to this heading">#</a></h2>
+<p>Set <code class="docutils literal notranslate"><span class="pre">beam_width</span></code> above 1 to decode with beam search. The response keeps the best hypothesis in <code class="docutils literal notranslate"><span class="pre">text</span></code> and returns all <code class="docutils literal notranslate"><span class="pre">beam_width</span></code> hypotheses, best first, in <code class="docutils literal notranslate"><span class="pre">sglext.n_best</span></code>, a SGLang-Omni extension:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/transcriptions<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">model</span><span class="o">=</span>openai/whisper-large-v3<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">file</span><span class="o">=</span>@tests/data/query_to_cars.wav<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">beam_width</span><span class="o">=</span><span class="m">5</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-F<span class="w"> </span><span class="nv">response_format</span><span class="o">=</span>json
+</pre></div>
+</div>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"sglext"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"n_best"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span><span class="nt">"text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"cum_logprob"</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.14</span><span class="p">,</span><span class="w"> </span><span class="nt">"score"</span><span class="p">:</span><span class="w"> </span><span class="mf">-0.005</span><span class="p">,</span><span class="w"> </span><span class="nt">"finish_reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stop"</span><span class="p">}</span>
+<span class="w">    </span><span class="p">]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">cum_logprob</span></code> is the hypothesis’s raw cumulative log-probability and <code class="docutils literal notranslate"><span class="pre">score</span></code> is <code class="docutils literal notranslate"><span class="pre">cum_logprob</span></code> divided by the number of generated tokens, which is the order of the list. Selection and stopping follow Hugging Face <code class="docutils literal notranslate"><span class="pre">generate</span></code> with <code class="docutils literal notranslate"><span class="pre">num_beams</span></code>, <code class="docutils literal notranslate"><span class="pre">length_penalty=1.0</span></code> and <code class="docutils literal notranslate"><span class="pre">early_stopping=False</span></code>, and every beam gets Whisper’s suppress, begin-suppress and timestamp rules before selection. <code class="docutils literal notranslate"><span class="pre">beam_search_diversity_rate</span></code> adds <code class="docutils literal notranslate"><span class="pre">rate</span> <span class="pre">*</span> <span class="pre">(rank_within_parent</span> <span class="pre">%</span> <span class="pre">beam_width)</span></code> to each candidate’s ranking, as TensorRT-LLM does; the returned log-probabilities stay raw.</p>
+<p>Greedy and beam requests share one server and one decode step. While a beam request is decoding, its decode steps run without the async-decode lookahead, as timestamped requests do.</p>
+<p>Beam search returns final transcripts only. These requests return HTTP 400 with <code class="docutils literal notranslate"><span class="pre">beam_width</span></code> above 1: <code class="docutils literal notranslate"><span class="pre">stream=true</span></code>, <code class="docutils literal notranslate"><span class="pre">temperature</span></code> above 0, audio long enough to be split into chunks, <code class="docutils literal notranslate"><span class="pre">/v1/audio/translations</span></code>, and servers running speculative decoding. A <code class="docutils literal notranslate"><span class="pre">beam_width</span></code> above 16 also returns 400. <code class="docutils literal notranslate"><span class="pre">json</span></code> and <code class="docutils literal notranslate"><span class="pre">verbose_json</span></code> carry <code class="docutils literal notranslate"><span class="pre">sglext.n_best</span></code>; <code class="docutils literal notranslate"><span class="pre">srt</span></code>, <code class="docutils literal notranslate"><span class="pre">vtt</span></code> and <code class="docutils literal notranslate"><span class="pre">text</span></code> are plain text and return the best hypothesis only.</p>
 </section>
 <section id="long-audio">
 <h2>Long Audio<a class="headerlink" href="#long-audio" title="Link to this heading">#</a></h2>
@@ -1402,6 +1437,7 @@ contain Whisper special tokens.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#translate-audio">Translate Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#beam-search">Beam Search</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#long-audio">Long Audio</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
