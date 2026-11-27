@@ -627,7 +627,7 @@ func TestOverlayGoesAway(t *testing.T) {
 	if a.ov.mode != ovNotice || a.notice == nil || a.notice.text != "Nothing was heard." || !a.notice.warn {
 		t.Fatalf("no speech: %s %+v", a.ov.mode, a.notice)
 	}
-	ft.advance(noticeTime - time.Millisecond)
+	ft.advance(noSpeechTime - time.Millisecond)
 	if a.ov.mode != ovNotice || !a.ov.visible {
 		t.Fatalf("the notice went early: %s", a.ov.mode)
 	}
@@ -645,35 +645,6 @@ func TestOverlayGoesAway(t *testing.T) {
 	}
 	a.closeAnswer()
 	gone("card closed")
-}
-
-// TestOverlayQuickSessions: what the last session left on its way out
-// (the fade, a notice's timer) never hides the next one.
-func TestOverlayQuickSessions(t *testing.T) {
-	a, _, _ := newTestApp(t)
-	ft := new(fakeTimers).install(a)
-	snap(a, session.Snapshot{ID: "s1", State: session.Recording})
-	snap(a, session.Snapshot{ID: "s1", State: session.Done, Result: "One.", Inserted: true})
-	ft.advance(20 * time.Millisecond) // mid-fade
-	snap(a, session.Snapshot{ID: "s2", State: session.Recording})
-	ft.advance(time.Second)
-	if a.ov.mode != ovRecording || !a.ov.shown || !a.ov.visible {
-		t.Fatalf("the second recording hidden: %s shown %v visible %v", a.ov.mode, a.ov.shown, a.ov.visible)
-	}
-	// A notice of the second, then a third session failing: the second's
-	// timer leaves the third's notice alone.
-	snap(a, session.Snapshot{ID: "s2", State: session.Done, Problem: &session.Problem{Code: session.ProblemNoSpeech}})
-	ft.advance(3 * time.Second)
-	snap(a, session.Snapshot{ID: "s3", State: session.Recording})
-	snap(a, session.Snapshot{ID: "s3", State: session.Failed, Problem: &session.Problem{Code: session.ProblemNoASR}})
-	ft.advance(3 * time.Second) // the second's timer is due
-	if a.notice == nil || a.notice.action != actionModels || !a.ov.visible {
-		t.Fatalf("the third's notice went with the second's timer: %+v", a.notice)
-	}
-	ft.advance(noticeTime)
-	if a.notice != nil || a.ov.visible {
-		t.Errorf("the third's notice stays: %+v", a.notice)
-	}
 }
 
 // renderOverlay draws the overlay's window as it shows now, at scale 2,

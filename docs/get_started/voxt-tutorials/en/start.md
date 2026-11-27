@@ -16,11 +16,11 @@ The same package is also linked from:
 
 ## Download a Beta
 
-Every change to Voxt merged into `main` builds a Beta, versioned `2.1.3-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
+Every change to Voxt merged into `main` builds a Beta, versioned `2.1.4-beta.YYYYMMDD.N` (the date and the build number). A Beta is newer than the release and may be less stable.
 
 A Beta updates itself: **Check for Updates…** in the Voxt menu finds the newest Beta on GitHub releases and installs it in the app. You can still install a Beta by hand from its `.dmg`, and installing the release's `.dmg` takes you back.
 
-To find the newest Beta (as of November 23, 2026 it is `2.1.3-beta.20261123.105`, build #105):
+To find the newest Beta (as of November 23, 2026 it is `2.1.4-beta.20261123.105`, build #105):
 
 1. Open the [Voxt releases](https://github.com/sgl-project/sglang-omni/releases): the newest pre-release is the newest Beta. Expand **Assets** and click `Voxt-…-beta.…-arm64.dmg`.
 2. Or open the [Voxt Beta runs](https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml): the top run with a green check on `main` is the newest successful build. Skip runs with a yellow dot (still building) or a red cross (failed). Open that run, scroll to **Artifacts** and click `Voxt-…-beta.…-arm64` to download a ZIP; this route needs a GitHub sign-in, and artifacts are kept for 14 days.

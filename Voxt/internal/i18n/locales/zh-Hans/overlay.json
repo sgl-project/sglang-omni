@@ -1,5 +1,4 @@
 {
-  "Insert": "插入",
   "Preview of the overlay": "浮窗预览",
   "Recording mode: %s": "录音模式：%s",
   "Stop recording the follow-up": "结束追问录音",
@@ -7,5 +6,10 @@
   "Images sent with the instruction": "随指令发送的图片",
   "Inputs sent with the instruction": "随指令发送的内容",
   "Back to answer": "返回答案",
-  "%d chars · %d lines": "%d 个字符 · %d 行"
+  "%d chars · %d lines": "%d 个字符 · %d 行",
+  "Switch to session %d. Double-click to rename.": "切换到会话 %d。双击可改名。",
+  "Session %d": "会话 %d",
+  "Session %d, the current one. Double-click to rename.": "会话 %d，当前会话。双击可改名。",
+  "Session title": "会话标题",
+  "Delete session %d": "删除会话 %d"
 }

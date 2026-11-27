@@ -250,5 +250,41 @@
       "model.safetensors": "bf31b4e5fb713a565750e120ebadd54de245eb1214e46d14fc5108f1e79171a1",
       "codec.safetensors": "c2096e27a1bb69a05151ccb502649a88744712270d9b029a68a3c9305f2b1edf"
     }
+  },
+  "higurashi-ai/Haru-4B": {
+    "revision": "8d6e83bcd3701a76fc27a764965665da1df7da78",
+    "files": {
+      "config.json": "ff29b2dab25780d33fe1ea8efc3d1364d31e7bef95b0b08514b935305ba2f427",
+      "tokenizer.json": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523",
+      "tokenizer_config.json": "7df4f800f74978c0ede927b5938f137ec112f872059adf76ddb9918f3281668a",
+      "model.safetensors": "ad2c3534ef6bd88525e22e5da3ac4fb739368406bf3b1c852cbafbade647c0fa"
+    }
+  },
+  "Edge0/ARK-ASR-3B": {
+    "revision": "1e28271b79edc97635783bea65abc89195a09ed3",
+    "files": {
+      "config.json": "caeca44885fbb11f61d5fd7ee9d6e2ac4551a0b38a4fdb4401c8d2bc6103423f",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "model-00001-of-00002.safetensors": "b0f93d36c42c3487d95532c7d54952c7810bf629ee2a2265ed4e2f9e988e5342",
+      "model-00002-of-00002.safetensors": "db6d540d2b230e322efc17176d7f67ae44a25705bd85c5caccdf5d8c426c072c",
+      "tokenizer_config.json": "d6ef48bad22668f57a44db107dbbaf15adb8253e77e3012129dbf53c32558bd4",
+      "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+    }
+  },
+  "wilsonzheng0327/ARK-ASR-3B-dflash": {
+    "revision": "b0789bb314fab990e0f2377054c4b1947d204273",
+    "files": {
+      "config.json": "6b2a6e3e80282a4590de7ac7b25986ab3095265d1b098fff4866176104941ce5",
+      "model.safetensors": "8f4db8cc741e3e53f49ca0215fd59965674837f9c4bacc1f8a780280ad6f1386"
+    }
+  },
+  "FunAudioLLM/Fun-ASR-Nano-2512-hf": {
+    "revision": "7ef6cafdc445b5beff0b730cbeb51952c793ca6e",
+    "files": {
+      "config.json": "a2179cec35f10675fca8ac0ed37019fb5a6a158c9d7daa60c62971d0bf589f80",
+      "model.safetensors": "1bbb6dcc5d8b75084a399d48c4d4b0f3aa1d3f09f2616ae40ed2c4fba03d89c9",
+      "processor_config.json": "4bbe26c6109b27e4b7fd68008a4e8f60e519b326b59dadba00725ea5678a6b93",
+      "tokenizer.json": "be75606093db2094d7cd20f3c2f385c212750648bd6ea4fb2bf507a6a4c55506"
+    }
   }
 }

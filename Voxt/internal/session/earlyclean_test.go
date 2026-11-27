@@ -283,13 +283,13 @@ func newEarlyUnitHarnessRun(t *testing.T, model LLM, terms []store.Term) (*harne
 }
 
 func TestEarlyCleanShortInputThinking(t *testing.T) {
-	full := strings.Repeat("a", 1000)
+	full := strings.Repeat("一", 1000)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.settings.Providers.LLM = []settings.Provider{{
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
 	}}
-	r.hearPiece(full[:100])
+	r.hearPiece(strings.Repeat("一", 100))
 	output := r.cleanUpFirst(full)
 	if output.err != nil {
 		t.Fatal(output.err)
@@ -382,8 +382,8 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	for i := range terms {
 		terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
 	}
-	first := strings.Repeat("a", 295) + "Term00"
-	full := first + strings.Repeat("b", 293) + "Term30"
+	first := strings.Repeat("一", 295) + "Term00"
+	full := first + strings.Repeat("二", 293) + "Term30"
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, terms)
 	r.hearPiece(first)
@@ -404,8 +404,8 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 }
 
 func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
-	first := strings.Repeat("a", 301)
-	full := first + strings.Repeat("b", 299)
+	first := strings.Repeat("一", 301)
+	full := first + strings.Repeat("二", 299)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearPiece(first)
@@ -527,7 +527,7 @@ func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
 func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	model := &earlyFallbackLLM{secondStarted: make(chan struct{}), secondRelease: make(chan struct{})}
 	r := newEarlyUnitRun(t, model, nil)
-	lastJob := strings.Repeat("a", 301)
+	lastJob := strings.Repeat("一", 301)
 	full := "one " + lastJob + " tail"
 	r.hearPiece("one")
 	r.hearPiece("one " + lastJob)

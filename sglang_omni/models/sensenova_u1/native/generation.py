@@ -11,6 +11,10 @@ from sglang.multimodal_gen.runtime.pipelines_core.stages.base import PipelineSta
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from transformers import PreTrainedTokenizerBase
 
+from sglang_omni.models.sensenova_u1.native.cache_dit import (
+    SenseNovaCacheDit,
+    guidance_branch_count,
+)
 from sglang_omni.models.sensenova_u1.native.options import (
     DEFAULT_CFG_INTERVAL,
     DEFAULT_CFG_NORM,
@@ -60,6 +64,7 @@ class SenseNovaU1GenerationStage(PipelineStage):
         super().__init__()
         self.model: NEOChatModel = model
         self.tokenizer: PreTrainedTokenizerBase = tokenizer
+        self.cache_dit: SenseNovaCacheDit = SenseNovaCacheDit()
 
     @property
     def role_affinity(self) -> RoleType:
@@ -118,8 +123,22 @@ class SenseNovaU1GenerationStage(PipelineStage):
             pass
         seed = seeds[0] if prompt_count == 1 else seeds
 
-        if batch.image_path:
-            edit_options = batch.extra[SENSENOVA_U1_REQUEST_EXTRA_KEY]
+        edit_options = (
+            batch.extra[SENSENOVA_U1_REQUEST_EXTRA_KEY] if batch.image_path else None
+        )
+        self.cache_dit.prepare(
+            self.model.language_model.model,
+            batch,
+            branch_count=guidance_branch_count(
+                is_edit=edit_options is not None,
+                cfg_scale=float(batch.guidance_scale),
+                img_cfg_scale=(
+                    1.0 if edit_options is None else edit_options["img_cfg_scale"]
+                ),
+            ),
+            cfg_interval=generation_options.cfg_interval,
+        )
+        if edit_options is not None:
             free_memory_bytes, _ = torch.cuda.mem_get_info(self.model.device)
             reusable_memory_bytes = torch.cuda.memory_reserved(
                 self.model.device
