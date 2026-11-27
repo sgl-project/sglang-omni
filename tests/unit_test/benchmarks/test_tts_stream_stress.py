@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.benchmarker.data import RequestResult
+from benchmarks.tts_serving.stream_stress import export_seedtts_corpus
 from benchmarks.tts_serving.stream_stress.builder import write_generated_metadata
 from benchmarks.tts_serving.stream_stress.config_parser import (
     StressConfig,
@@ -955,3 +956,60 @@ class TestScoreWer:
         )
         assert score_wer.main(["--audio-dir", str(tmp_path)]) == 2
         assert not (tmp_path / "wer_en").exists()
+
+
+class TestExportSeedttsCorpus:
+    def test_exported_corpus_sends_each_sample_its_own_reference(
+        self, tmp_path: Path
+    ) -> None:
+        """The exported file is read back by the stress parser, so the references reach the request inline."""
+        source = tmp_path / "seedtts"
+        (source / "a").mkdir(parents=True)
+        (source / "b").mkdir()
+        (source / "a" / "clip.wav").write_bytes(b"RIFFfirst")
+        (source / "b" / "clip.wav").write_bytes(b"RIFFsecond")
+        (source / "meta.lst").write_text(
+            "s1|first words|a/clip.wav|say one\n"
+            "s2|first words|a/clip.wav|say two\n"
+            "s3|second words|b/clip.wav|说三\n",
+            encoding="utf-8",
+        )
+        corpus_dir = tmp_path / "corpus"
+
+        assert (
+            export_seedtts_corpus.main(
+                [
+                    "--meta",
+                    str(source / "meta.lst"),
+                    "--output-dir",
+                    str(corpus_dir),
+                    "--language",
+                    "English",
+                ]
+            )
+            == 0
+        )
+
+        assert len(list((corpus_dir / "refs").iterdir())) == 2
+        config = parse_config(
+            [
+                "--text-jsonl",
+                str(corpus_dir / "corpus.jsonl"),
+                "--output",
+                str(tmp_path / "out.jsonl"),
+            ]
+        )
+        one, two, three = (config.payload_for(entry) for entry in config.corpus)
+        first_clip = "data:audio/wav;base64," + base64.b64encode(b"RIFFfirst").decode()
+        second_clip = (
+            "data:audio/wav;base64," + base64.b64encode(b"RIFFsecond").decode()
+        )
+        assert [entry.sample_id for entry in config.corpus] == ["s1", "s2", "s3"]
+        assert (one["input"], one["ref_audio"], one["ref_text"]) == (
+            "say one",
+            first_clip,
+            "first words",
+        )
+        assert two["ref_audio"] == first_clip
+        assert (three["input"], three["ref_audio"]) == ("说三", second_clip)
+        assert three["language"] == "English"
