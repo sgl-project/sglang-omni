@@ -8,3 +8,6 @@ stages:
       speculative_algorithm: STANDALONE
       speculative_draft_model_path: wilsonzheng0327/Whisper-large-v3-distil-draft
       speculative_num_steps: 7
+    factory:
+      # note (Haoling Pu): under the draft, builds reach the encoder in bigger groups and every clip waits for its whole group; 2 shortens first text at c16.
+      pre_lm_max_batch_size: 2

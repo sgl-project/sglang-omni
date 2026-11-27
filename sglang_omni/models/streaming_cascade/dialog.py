@@ -258,6 +258,7 @@ class DialogConfig(ComponentConfig):
 
     kind: Literal["dialog"] = "dialog"
     system_prompt: str = "You are a helpful voice assistant. Answer concisely."
+    language: str = ""
     max_history_chars: int = Field(default=MAX_HISTORY_CHARS, gt=0)
     max_text_chars: int = Field(default=16000, gt=0)
     speech_tool: str | None = None
@@ -285,14 +286,14 @@ class Dialog(StreamComponent):
     arrives after the next reply began still cuts the history later prompts
     read. A reply the history keeps nothing of leaves no entry once an
     utterance follows it, and that utterance joins the user message the reply
-    answered. The language the recognizer heard in the last utterance of at
-    least 3 words or 3 Chinese, Japanese or Korean characters is the
-    Session's language, and every messages chunk carries it; a shorter
-    utterance leaves it unchanged, and when the recognizer heard another
-    language in it, that turn's latest user message asks for a reply in the
-    Session's language. A replacement adopts the history, the open reply and
-    the waiting utterances, so new settings apply at once and reach the next
-    prompt.
+    answered. A clear utterance carries the language the recognizer heard.
+    A shorter utterance leaves that remembered language unchanged and carries
+    the configured language when set, otherwise the remembered language; when
+    the recognizer heard another language in it, or named none while a
+    language is configured, that turn's latest user message asks for a reply
+    in the language it carries. A replacement adopts the history, the open
+    reply and the waiting utterances, so new settings apply at once and reach
+    the next prompt.
 
     A reply whose deltas carry a style shows the model, in later prompts,
     the tag [style] before the first text of each style; the history,
@@ -943,24 +944,26 @@ class Dialog(StreamComponent):
                 len(CJK_CHAR.findall(text)) >= MIN_LANGUAGE_CJK_CHARS
                 or len(text.split()) >= MIN_LANGUAGE_WORDS
             )
-            is_short_switch = (
-                not is_clear
-                and language is not None
-                and self.language is not None
-                and language != self.language
-            )
             if language is not None and is_clear:
                 self.language = language
             else:
                 pass
+            short_utterance_language = self.config.language or self.language
+            is_short_switch = (
+                not is_clear
+                and short_utterance_language is not None
+                and language != short_utterance_language
+                and (language is not None or bool(self.config.language))
+            )
             prompt = prompt_messages(self.messages)
             if is_short_switch:
-                note = SHORT_UTTERANCE_NOTE.format(language=self.language)
+                note = SHORT_UTTERANCE_NOTE.format(language=short_utterance_language)
                 prompt[-1] = ChatMessage(
                     role="user", content=f"{prompt[-1].content}\n\n[{note}]"
                 )
             else:
                 pass
+            reply_language = self.language if is_clear else short_utterance_language
             if self.has_new_instructions and self.config.speech_tool is not None:
                 prompt[-1] = ChatMessage(
                     role="user",
@@ -982,7 +985,7 @@ class Dialog(StreamComponent):
                 messages_chunk(
                     prompt,
                     turn,
-                    self.language,
+                    reply_language,
                     (None if self.config.speech_tool is None else SPEECH_TOOL_CHOICE),
                 ),
             ]

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -38,6 +41,106 @@ func piecesASR(t *testing.T, f *fake) *ASR {
 	a.spec.ASR.PauseMin = 150 * time.Millisecond
 	return a
 }
+
+type pieceGateRequest struct {
+	eventKind   string
+	sampleCount int
+	release     chan struct{}
+}
+
+type pieceTestGate struct {
+	server    *httptest.Server
+	pending   chan pieceGateRequest
+	cancelled chan pieceGateRequest
+	shutdown  chan struct{}
+}
+
+func newPieceTestGate(t *testing.T) *pieceTestGate {
+	t.Helper()
+	gate := &pieceTestGate{
+		pending:   make(chan pieceGateRequest, 16),
+		cancelled: make(chan pieceGateRequest, 16),
+		shutdown:  make(chan struct{}),
+	}
+	gateHandler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		sampleCount, _ := strconv.Atoi(request.Header.Get("X-Omnitest-Samples"))
+		gateRequest := pieceGateRequest{
+			eventKind: request.Header.Get("X-Omnitest-Event"), sampleCount: sampleCount, release: make(chan struct{}),
+		}
+		select {
+		case gate.pending <- gateRequest:
+		case <-request.Context().Done():
+			gate.cancelled <- gateRequest
+			return
+		case <-gate.shutdown:
+			return
+		}
+		select {
+		case <-gateRequest.release:
+			w.WriteHeader(http.StatusNoContent)
+		case <-request.Context().Done():
+			gate.cancelled <- gateRequest
+		case <-gate.shutdown:
+			return
+		}
+	})
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.server = httptest.NewUnstartedServer(gateHandler)
+	gate.server.Listener = listener
+	gate.server.Start()
+	t.Cleanup(func() {
+		close(gate.shutdown)
+		gate.server.Close()
+	})
+	return gate
+}
+
+func (gate *pieceTestGate) next(t *testing.T) pieceGateRequest {
+	t.Helper()
+	select {
+	case request := <-gate.pending:
+		return request
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for a gated request")
+		return pieceGateRequest{}
+	}
+}
+
+func (gate *pieceTestGate) waitForFinal(t *testing.T) pieceGateRequest {
+	t.Helper()
+	for {
+		request := gate.next(t)
+		if request.eventKind == "final" {
+			return request
+		} else if request.eventKind == "vad" {
+			request.allow()
+		} else {
+			t.Fatalf("unexpected gated request %q", request.eventKind)
+		}
+	}
+}
+
+func (gate *pieceTestGate) waitForCancellation(t *testing.T, eventKind string) {
+	t.Helper()
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case request := <-gate.cancelled:
+			if request.eventKind == eventKind {
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for gated %s cancellation", eventKind)
+			return
+		}
+	}
+}
+
+func (request pieceGateRequest) allow() { close(request.release) }
 
 // sendAll sends pcm in 100 ms frames, as fast as it goes.
 func sendAll(t *testing.T, st asr.Stream, pcm []byte) {
@@ -248,6 +351,216 @@ func TestLiveNoPiecesWhenShort(t *testing.T) {
 	}
 	if finals := f.records("final"); len(finals) != 1 || finals[0].Samples != len(pcm)/2 {
 		t.Fatalf("finals %+v", finals)
+	}
+}
+
+// note (chenye): Final must not wait for planner shutdown when no piece is active.
+func TestFinishCancelsPendingPiecePlanning(t *testing.T) {
+	gate := newPieceTestGate(t)
+	f := newFake(t, omnitest.Opts{Text: "p{n}", RecordAudio: true, GateURL: gate.server.URL}, nil)
+	st, err := piecesASR(t, f).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(st.Close)
+	pcm := speechAndPauses(3)
+	if err := st.Send(pcm); err != nil {
+		t.Fatal(err)
+	}
+	if request := gate.next(t); request.eventKind != "vad" {
+		t.Fatalf("planning request is %q", request.eventKind)
+	}
+	stream := st.(*live)
+	stream.mu.Lock()
+	if stream.pc.activePieceDone != nil {
+		stream.mu.Unlock()
+		t.Fatal("a piece was active before Finish")
+	}
+	// note (chenye): Keep the planner signal pending to distinguish it from active transcription.
+	plannerExitSignal := make(chan struct{})
+	stream.pc.exited = plannerExitSignal
+	stream.mu.Unlock()
+	defer close(plannerExitSignal)
+	if err := st.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	gate.waitForCancellation(t, "vad")
+	finalRequest := gate.waitForFinal(t)
+	if finalRequest.sampleCount != len(pcm)/2 {
+		t.Fatalf("Final has %d samples, want all %d", finalRequest.sampleCount, len(pcm)/2)
+	}
+	finalRequest.allow()
+	events := drain(t, st)
+	if last := events[len(events)-1]; last.Kind != asr.EventFinal || last.Text != "p1" {
+		t.Fatalf("final %+v", last)
+	}
+	select {
+	case <-plannerExitSignal:
+		t.Fatal("Final waited until the piece planner exited")
+	default:
+	}
+	for _, event := range events {
+		if event.Kind == asr.EventPiece {
+			t.Fatalf("unclaimed planning emitted a piece: %+v", events)
+		}
+	}
+	finals := f.records("final")
+	if len(finals) != 1 {
+		t.Fatalf("Final requests %+v", finals)
+	}
+	finalAudio, err := base64.StdEncoding.DecodeString(finals[0].Audio)
+	if err != nil || !bytes.Equal(finalAudio, pcm) {
+		t.Fatalf("Final audio does not cover the recording: requests=%d bytes=%d error=%v", len(finals), len(finalAudio), err)
+	}
+	if f.logged("looking for a pause") {
+		t.Error("planning cancellation was logged as a VAD failure")
+	}
+	st.Close()
+	f.rt.Close()
+	if sessions := f.records("live"); len(sessions) != 1 || sessions[0].Fields["final_start"] != "" {
+		t.Fatalf("unclaimed planning changed Final's prefill position: %+v", sessions)
+	}
+}
+
+func TestClaimedPieceHandoffPreservesAudioAndFailureFallback(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		failFirst bool
+		wantText  string
+	}{
+		{name: "success", wantText: "p1 p2"},
+		{name: "failure", failFirst: true, wantText: "p2"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			gate := newPieceTestGate(t)
+			options := omnitest.Opts{Text: "p{n}", RecordAudio: true, GateURL: gate.server.URL}
+			if testCase.failFirst {
+				options.FailAt = 1
+			}
+			f := newFake(t, options, nil)
+			st, err := piecesASR(t, f).Open(context.Background(), asr.StreamRequest{SampleRate: sampleRate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			pcm := speechAndPauses(3)
+			if err := st.Send(pcm); err != nil {
+				t.Fatal(err)
+			}
+			pieceRequest := gate.waitForFinal(t)
+			if pieceRequest.sampleCount <= 0 || pieceRequest.sampleCount >= len(pcm)/2 {
+				t.Fatalf("claimed piece has %d samples of %d", pieceRequest.sampleCount, len(pcm)/2)
+			}
+			if err := st.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			pieceRequest.allow()
+			tailRequest := gate.waitForFinal(t)
+			wantTail := len(pcm)/2 - pieceRequest.sampleCount
+			if testCase.failFirst {
+				wantTail = len(pcm) / 2
+			}
+			if tailRequest.sampleCount != wantTail {
+				t.Fatalf("tail has %d samples, want %d", tailRequest.sampleCount, wantTail)
+			}
+			tailRequest.allow()
+			events := drain(t, st)
+			if last := events[len(events)-1]; last.Kind != asr.EventFinal || last.Text != testCase.wantText {
+				t.Fatalf("final %+v", last)
+			}
+			pieceEvents := 0
+			for _, event := range events {
+				if event.Kind == asr.EventPiece {
+					pieceEvents++
+				}
+			}
+			wantPieceEvents := 1
+			if testCase.failFirst {
+				wantPieceEvents = 0
+			}
+			if pieceEvents != wantPieceEvents {
+				t.Fatalf("committed piece events: %+v", events)
+			}
+			finals := f.records("final")
+			if len(finals) != 2 {
+				t.Fatalf("Final requests %+v", finals)
+			}
+			if testCase.failFirst {
+				fallbackAudio, err := base64.StdEncoding.DecodeString(finals[1].Audio)
+				if err != nil || !bytes.Equal(fallbackAudio, pcm) {
+					t.Fatalf("fallback audio does not cover the uncommitted recording: %v", err)
+				}
+			} else {
+				if finals[1].Fields["language"] != "Chinese" {
+					t.Fatalf("detected language was not propagated: %+v", finals[1].Fields)
+				}
+				var transcribed []byte
+				for _, request := range finals {
+					requestAudio, err := base64.StdEncoding.DecodeString(request.Audio)
+					if err != nil {
+						t.Fatal(err)
+					}
+					transcribed = append(transcribed, requestAudio...)
+				}
+				if !bytes.Equal(transcribed, pcm) {
+					t.Fatalf("piece and tail do not cover audio exactly: got %d bytes, want %d", len(transcribed), len(pcm))
+				}
+			}
+		})
+	}
+}
+
+func TestSessionCancellationAndCloseReleasePiecePlanningVAD(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		closeStream bool
+	}{
+		{name: "session cancellation"},
+		{name: "Close", closeStream: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			gate := newPieceTestGate(t)
+			f := newFake(t, omnitest.Opts{GateURL: gate.server.URL}, nil)
+			parentContext, cancelParent := context.WithCancel(context.Background())
+			defer cancelParent()
+			st, err := piecesASR(t, f).Open(parentContext, asr.StreamRequest{SampleRate: sampleRate})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			if err := st.Send(speechAndPauses(3)); err != nil {
+				t.Fatal(err)
+			}
+			if request := gate.next(t); request.eventKind != "vad" {
+				t.Fatalf("planning request is %q", request.eventKind)
+			}
+			if testCase.closeStream {
+				st.Close()
+			} else {
+				cancelParent()
+			}
+			gate.waitForCancellation(t, "vad")
+			stream := st.(*live)
+			select {
+			case <-stream.pc.exited:
+			case <-time.After(10 * time.Second):
+				t.Fatal("piece planner retained its VAD request")
+			}
+			events := drain(t, st)
+			if !testCase.closeStream && (len(events) == 0 || events[len(events)-1].Kind != asr.EventError) {
+				t.Fatalf("session cancellation events %+v", events)
+			} else if testCase.closeStream {
+				for _, event := range events {
+					if event.Kind == asr.EventPiece || event.Kind == asr.EventFinal {
+						t.Fatalf("Close emitted a late piece or Final: %+v", events)
+					}
+				}
+			}
+			f.rt.Close()
+			if got := len(f.records("shutdown")); got != 2 {
+				t.Fatalf("runtime shut down %d servers, want ASR and VAD", got)
+			}
+		})
 	}
 }
 

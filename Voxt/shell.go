@@ -118,7 +118,7 @@ func shellView(c *ui.Context, state *shellViewState, actions shellActions, local
 		c.Toast(m)
 	}
 	ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		sidebarFrame(c, state.Nav, state.Notices, actions, actions, local.nav, func() { // shell_nav.go: the sidebar or the icon rail
+		sidebarFrame(c, state.Nav, state.Notices, state.Update, actions, actions, actions, local.nav, func() { // shell_nav.go: the sidebar or the icon rail
 			page()
 			if state.Logs != nil {
 				// At most half the window: the page keeps its header and

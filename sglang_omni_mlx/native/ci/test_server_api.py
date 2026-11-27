@@ -41,6 +41,7 @@ LARGE_DRAFT_REPO = "wilsonzheng0327/Qwen3-ASR-1.7B-dflash"
 STARTUP_TIMEOUT_SECONDS = 600
 SHUTDOWN_TIMEOUT_SECONDS = 10
 MODEL_TEST_TIMEOUT_SECONDS = 1800
+REALTIME_EVENT_TIMEOUT_SECONDS = 60
 
 
 def model_directory(repo: str = MODEL_REPO) -> Path:
@@ -621,13 +622,15 @@ def test_realtime_manual_session(server: Server) -> None:
     assert indexes == sorted(indexes)
 
 
-def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> None:
-    """The Final encodes only the audio after the session's complete windows, and its text is the one without a session; a head the session does not share, a Final of other audio and an unknown session reuse no more than its rows."""
+def test_a_segment_final_reuses_its_live_session_cache(server: Server) -> None:
+    """A segment Final reuses cache, matches reference decoding, and preserves HTTP reuse."""
     clip_id = "0098_en_mid"
     pcm = pcm16(clip_id)
+    segment_pcm = pcm[: 17 * 32000]
     fields = {
         "stream": "true",
         "language": "en",
+        "stop_on_token_loop": "true",
         "include_generation_metadata": "true",
         "audio_layout": "voxt_swift",
     }
@@ -646,17 +649,30 @@ def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> No
                 }
             )
         )
-        session_id = json.loads(socket.recv())["session_id"]
+        session_id = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))[
+            "session_id"
+        ]
         # note (XXXXRT666): 17 s of audio in one append make one refresh, over two windows.
         socket.send(
             json.dumps(
                 {
                     "type": "input_audio_buffer.append",
-                    "audio": base64.b64encode(pcm[: 17 * 32000]).decode(),
+                    "audio": base64.b64encode(segment_pcm).decode(),
                 }
             )
         )
-        assert json.loads(socket.recv())["type"] == "transcription.segment"
+        preview = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        assert preview["type"] == "transcription.segment"
+        assert preview["segment_id"] == 0
+        assert preview["is_final"] is False
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        finalized = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        assert finalized["type"] == "transcription.segment"
+        assert finalized["segment_id"] == 0
+        assert finalized["is_final"] is True
+        assert finalized["generation_metadata"]["reused_audio_token_count"] == 208
+        assert finalized["generation_metadata"]["reused_prompt_token_count"] > 208
+        reference = final({"audio_layout": "reference"}, wav_bytes(segment_pcm))
         plain = final({})
         reused = final({"realtime_session": session_id})
         with_context = final({"realtime_session": session_id, "prompt": "GLOSSARY"})
@@ -665,6 +681,7 @@ def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> No
             wav_bytes(pcm16("0100_en_mid")[: len(pcm)]),
         )
         unknown = final({"realtime_session": "sess_0"})
+    assert finalized["text"] == reference["text"]
     assert reused["text"] == plain["text"] == unknown["text"]
     # note (XXXXRT666): two complete 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_audio_token_count"] == 208
@@ -672,6 +689,93 @@ def test_a_final_reuses_the_audio_its_live_session_encoded(server: Server) -> No
         with_context["generation_metadata"]["reused_audio_token_count"] == 208
         and "reused_audio_token_count" not in other_audio["generation_metadata"]
         and "reused_audio_token_count" not in unknown["generation_metadata"]
+    )
+
+
+def test_a_short_segment_final_encodes_audio_without_a_complete_cache(
+    server: Server,
+) -> None:
+    """A Final with no completed encoder window computes its audio instead of claiming reuse."""
+    pcm = pcm16("0006_en_short")[: 5 * 32000]
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "language": "en"},
+                }
+            )
+        )
+        json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        socket.send(
+            json.dumps(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm).decode(),
+                }
+            )
+        )
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        events: list[dict[str, object]] = []
+        deadline = time.monotonic() + REALTIME_EVENT_TIMEOUT_SECONDS
+        while not events or not events[-1].get("is_final", False):
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "timed out waiting for the segment Final"
+            events.append(json.loads(socket.recv(timeout=remaining)))
+    finalized = events[-1]
+    assert finalized["type"] == "transcription.segment"
+    assert finalized["generation_metadata"]["reused_audio_token_count"] == 0
+
+
+def test_a_segment_final_verifies_eligible_rollback_guesses(
+    server: Server,
+) -> None:
+    """Two completed previews make rollback guesses eligible for Segment Final."""
+    quiet = array(
+        "h",
+        (sample // 10 for sample in array("h", pcm16("0098_en_mid")[: 9 * 32000])),
+    ).tobytes()
+    loud = pcm16("0108_en_mid")[: 2 * 32000]
+    chunks = (quiet, loud)
+    with connect(f"ws://127.0.0.1:{server.port}/v1/realtime") as socket:
+        socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {"turn_detection": None, "language": "en"},
+                }
+            )
+        )
+        updated = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        assert updated["type"] == "transcription_session.updated"
+        preview_indexes = []
+        for chunk in chunks:
+            socket.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode(),
+                    }
+                )
+            )
+            preview = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+            assert preview["type"] == "transcription.segment"
+            assert preview["segment_id"] == 0
+            assert preview["is_final"] is False
+            preview_indexes.append(preview["event_index"])
+        socket.send(json.dumps({"type": "input_audio_buffer.commit"}))
+        finalized = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+    assert preview_indexes == sorted(set(preview_indexes))
+    assert finalized["type"] == "transcription.segment"
+    assert finalized["segment_id"] == 0
+    assert finalized["is_final"] is True
+    assert preview_indexes[-1] < finalized["event_index"]
+    metadata = finalized["generation_metadata"]
+    assert metadata["verified_guess_token_count"] > 0
+    assert (
+        0
+        <= metadata["accepted_guess_token_count"]
+        <= metadata["verified_guess_token_count"]
     )
 
 
@@ -723,6 +827,32 @@ def test_a_final_reuses_the_keys_and_values_of_its_prompt(server: Server) -> Non
     assert reused["text"] == sse_events(body)[0]["text"]
     # note (XXXXRT666): the head of the prompt and two 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_prompt_token_count"] > 208
+
+
+@pytest.mark.skipif(
+    not AUTO_LANGUAGE_TEST_BIN,
+    reason="set NATIVE_QWEN3_ASR_AUTO_LANGUAGE_TEST",
+)
+@pytest.mark.parametrize("draft_repo", [None, DRAFT_REPO], ids=["greedy", "dflash"])
+def test_prefixed_segment_final_preserves_output_with_rollback_guesses(
+    draft_repo: str | None,
+) -> None:
+    assert AUTO_LANGUAGE_TEST_BIN is not None
+    draft_directory = (
+        model_directory(draft_repo) if draft_repo is not None else Path("-")
+    )
+    subprocess.run(
+        [
+            AUTO_LANGUAGE_TEST_BIN,
+            str(model_directory()),
+            str(draft_directory),
+            str(clip_path("0098_en_mid")),
+            "rollback_guess_parity",
+            str(clip_path("0108_en_mid")),
+        ],
+        check=True,
+        timeout=MODEL_TEST_TIMEOUT_SECONDS,
+    )
 
 
 @pytest.mark.skipif(
@@ -987,11 +1117,34 @@ def test_a_long_final_reuses_the_windows_after_the_first_segment(
             )
         )
         # note (XXXXRT666): the first segment's final and the second's preview.
-        for _ in range(2):
-            assert json.loads(socket.recv())["type"] == "transcription.segment"
+        initial_segments = [
+            json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+            for _ in range(2)
+        ]
+        assert [event["type"] for event in initial_segments] == [
+            "transcription.segment",
+            "transcription.segment",
+        ]
+        assert [event["segment_id"] for event in initial_segments] == [0, 1]
+        assert [event["is_final"] for event in initial_segments] == [True, False]
         # note (XXXXRT666): the second preview queued the background jobs, one window each, and the server is idle again once they are done.
         wait_for(lambda: request_states(server) == {}, 30, "the prefill did not finish")
         reused = final({"realtime_session": session_id})
+        socket.send(json.dumps({"type": "transcription.done"}))
+        second_final = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        completed = json.loads(socket.recv(timeout=REALTIME_EVENT_TIMEOUT_SECONDS))
+        assert second_final["type"] == "transcription.segment"
+        assert second_final["segment_id"] == 1
+        assert second_final["is_final"] is True
+        assert completed["type"] == "transcription.completed"
+        assert completed["text"]
+        event_indices = [
+            initial_segments[0]["event_index"],
+            initial_segments[1]["event_index"],
+            second_final["event_index"],
+            completed["event_index"],
+        ]
+        assert event_indices == sorted(event_indices)
     # note (XXXXRT666): four complete 8 s windows of 104 audio tokens.
     assert reused["generation_metadata"]["reused_audio_token_count"] == 416
     assert reused["generation_metadata"]["reused_prompt_token_count"] > 416

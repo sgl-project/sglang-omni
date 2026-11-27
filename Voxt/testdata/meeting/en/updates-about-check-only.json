@@ -11,7 +11,7 @@
     "auto_install": false,
     "beta": false,
     "check_description": "Last checked 2 hours ago.",
-    "automatic_description": "Once a day. A card says when a new version is out.",
+    "automatic_description": "Once a day. An Update button shows when a new version is out.",
     "beta_note": "Releases only."
   }
 }

@@ -344,7 +344,8 @@ Voxt writes these itself. Do not edit them; they are listed so that every field 
 | `setup.sessionSwitchTotal` | integer | Every session switch the user makes (a shortcut, a session on the card, or a new session); stays on this Mac |
 | `setup.sessionReturns` | integer | Session switches that came back to a session with a card; stays on this Mac |
 | `updates.lastCheck` | string (RFC 3339 time) or absent | When the last update check succeeded |
-| `updates.dismissed` | string | The version whose "is available" card was dismissed |
+| `updates.available` | string | Newest GitHub release found by a check-only build, kept across restarts until installed or cleared |
+| `updates.dismissed` | string | Legacy version whose sidebar "is available" card was dismissed |
 | `network.proxyUser` | string | A custom proxy's user name (its password is in the Keychain) |
 | `network.proxyAuthHost` | string | The proxy host that user name is for |
 | `family.follow` | object, string → bool | Which shared values Voxt follows ([Shared with other apps](#shared-with-other-apps)); the one field here you may change |
