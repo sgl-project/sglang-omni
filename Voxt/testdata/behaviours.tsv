@@ -57,6 +57,7 @@ Remote speech recognition and system dictation	L	TestSessionSystemDictation	none
 Remote language models	L	TestRemoteModelEndToEnd	none
 Remote language models	L	TestSavedOllamaSetupMenuIsTheServersModels	none
 Remote language models	L	TestRemoteErrorKeepsNoKey	none
+Remote language models	L	TestMessagesRequest	Anthropic's own answers and its cache reads are checked by hand (docs/manual-test.md 8.9)
 Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked on a real device only
 Audio settings	M	TestMacHelperMicrophoneSelection	none
 Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none
@@ -99,3 +100,4 @@ The insights cards to share	L	TestInsightsFaces	How the cards look and move is c
 Home Looking back folds to its title row and stays folded	L	TestLookingBackFolds	none
 Session list: switch sessions on the card, each keeping its card and conversation	L	TestSessionSlotSwitchKeepsConversations	A real-app pass over the session row and the parked cards is checked by hand only
 Sessions come back after a restart while history is kept	L	TestSessionsSurviveRestart	none
+Sidebar update control (bar and icon-rail button) and menu bar tray update action	L	TestSidebarUpdateControlAndTray	none

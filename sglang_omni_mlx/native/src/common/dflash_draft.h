@@ -40,7 +40,7 @@ struct DraftOptions {
 
 struct LoadedDraft;
 
-// One draft decode's verification rounds, and the proposals the target
+// One draft decode's rounds of draft blocks, and the proposals the target
 // checked and accepted; the token the target adds each round is in neither.
 struct DraftStatistics {
   int verify_round_count = 0;
@@ -71,7 +71,12 @@ public:
   // values and the draft's context, over the same positions, which embeddings
   // and the committed tokens but the last extend. guessed_ids, tokens likely
   // to come next, are checked in the prompt's pass and kept while the target
-  // agrees. A backoff to plain decoding empties draft_caches.
+  // agrees; after the first mismatch their continuation, realigned on the
+  // committed tokens, is proposed in place of the draft's block. A backoff to
+  // plain decoding empties draft_caches.
+  // note (chenye): When set, reports guesses accepted in initial verification.
+  // verified_guess_count, when set, reports the guesses that verification
+  // checked.
   DraftStatistics Decode(const Qwen3Decoder &target,
                          const mlx::core::array &embeddings,
                          const std::vector<int> &guessed_ids,
@@ -79,7 +84,9 @@ public:
                          const std::function<bool(int)> &commit,
                          const std::atomic<bool> &cancel, DraftPolicy policy,
                          std::vector<omni_common::KVCache> &caches,
-                         std::vector<omni_common::KVCache> &draft_caches) const;
+                         std::vector<omni_common::KVCache> &draft_caches,
+                         int *accepted_guess_count = nullptr,
+                         int *verified_guess_count = nullptr) const;
   // Extends caches the caller keeps, the target's and the draft's over the
   // same positions, by embeddings [1, length, hidden] without decoding.
   void Prefill(const Qwen3Decoder &target, const mlx::core::array &embeddings,
@@ -112,6 +119,11 @@ private:
   // Tokens per block: the anchor and block_size - 1 proposals.
   int block_size_;
   int mask_token_id_;
+  // Note (XXXXRT666): the plain decoding speed the last probe measured, kept
+  // for the next requests so that each does not pay for a probe of its own
+  // (5 plain tokens, about 100 ms more on an M4 Air with the 1.7B); decodes
+  // run on one worker thread.
+  mutable double plain_seconds_per_token_ = 0.0;
 };
 
 } // namespace omni_common

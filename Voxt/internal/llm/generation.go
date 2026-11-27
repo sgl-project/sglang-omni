@@ -35,6 +35,9 @@ type Generation struct {
 	Verbosity     string // OpenAI's text verbosity: "low", "medium", "high"
 	KeepAlive     string // Ollama's keep_alive ("5m")
 	IncludeUsage  *bool  // oMLX's stream_options.include_usage; nil: Voxt's (on)
+	// PromptCache marks the system prompt for the service's prompt cache
+	// (the Messages API).
+	PromptCache bool
 	// ExtraBody is applied to the body last as a JSON merge patch (RFC
 	// 7386): its keys win, an object merges into the body's, null removes.
 	ExtraBody map[string]any
