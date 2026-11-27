@@ -25,7 +25,6 @@
   "Could not change “Open at login”: %v": "无法更改“登录时打开”：%v",
   "Cut": "剪切",
   "Deselect": "取消选择",
-  "Edit": "编辑",
   "Enter Full Screen": "进入全屏幕",
   "Filter": "筛选",
   "Filter logs": "筛选日志",
@@ -57,6 +56,7 @@
   "Quit": "退出",
   "Quit Voxt": "退出 Voxt",
   "Recording and shortcuts work again once it is running.": "它恢复运行前，录音和快捷键都不能用。",
+  "Recent results": "最近结果",
   "Redo": "重做",
   "Resources": "资源",
   "Search commands": "搜索命令",
@@ -83,7 +83,6 @@
   "Transcribe, Translate, Rewrite, App enhancement": "转录、翻译、改写、应用增强",
   "Translate and Rewrite need one. Without it, Transcribe types the text as recognised.": "翻译和改写需要它。没有它时，转录会直接输入识别出的原文。",
   "Type a command or a page…": "输入命令或页面…",
-  "Undo": "撤销",
   "Unknown link: %s": "未知链接：%s",
   "View": "显示",
   "Voxt cannot open its library": "Voxt 无法打开数据库",
@@ -98,5 +97,8 @@
   "Network…": "网络…",
   "What's new": "更新内容",
   "Voxt no longer uses these. Delete them to free up space.": "Voxt 已不再使用这些模型，可以删除以释放空间。",
-  "Theme: transparent": "主题：透明"
+  "Theme: transparent": "主题：透明",
+  "Restart Voxt to update": "重启 Voxt 以更新",
+  "Restart Voxt to update (%s)": "重启 Voxt 以更新 (%s)",
+  "Update available (%s)…": "有新版本可用 (%s)…"
 }

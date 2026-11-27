@@ -6,9 +6,11 @@ A request's encoder slots lead its req_to_token row, so every draft and verify f
 
 from __future__ import annotations
 
+import bisect
 import copy
 import glob
 import json
+import logging
 import os
 from collections.abc import Iterable
 from tempfile import TemporaryDirectory
@@ -46,7 +48,10 @@ from sglang.srt.speculative.spec_utils import draft_pp_context
 from torch import nn
 from transformers import WhisperConfig
 
-from sglang_omni.models.whisper_asr.draft_cuda_graph import DraftDecodeGraph
+from sglang_omni.models.whisper_asr.draft_cuda_graph import (
+    DraftDecodeGraph,
+    draft_capture_stream,
+)
 from sglang_omni.models.whisper_asr.sglang_model import (
     LogitsProcessor,
     WhisperDecoderModel,
@@ -55,10 +60,15 @@ from sglang_omni.models.whisper_asr.sglang_model import (
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampParams,
     apply_timestamp_rules_on_device,
+    timestamp_state_after,
 )
 from sglang_omni.speculative.target_worker import SpeculativeTargetWorker
 
+logger = logging.getLogger(__name__)
+
 DRAFT_ARCHITECTURE = "WhisperDraftForCausalLM"
+# note (Haoling Pu): these graphs take about 1 GB on an H100, and a round of more requests keeps the step loop.
+DRAFT_GRAPH_BATCH_SIZES = (1, 2, 4, 8, 16, 32)
 SHARED_ENCODER_TENSOR_NAMES = (
     "model.encoder.conv1.weight",
     "model.encoder.layer_norm.weight",
@@ -388,19 +398,19 @@ class ChainSampler:
             tokens = torch.where(self.greedy_rows, greedy_tokens, sampled_tokens)
             self.draft_probs.append(probs)
         if self.timestamp_rows is not None:
-            last_token, _, last_timestamp = self.timestamp_states[-1]
-            drafted = tokens[self.timestamp_rows].long()
-            timestamp_begin = int(self.timestamp_params["timestamp_begin_id"])
-            self.timestamp_states.append(
-                (
-                    drafted,
-                    last_token,
-                    torch.where(drafted >= timestamp_begin, drafted, last_timestamp),
-                )
-            )
+            self.follow_drafts(tokens[:, None])
         else:
             pass
         return tokens
+
+    def follow_drafts(self, draft_token_ids: torch.Tensor) -> None:
+        """Move the timestamp rows' rule state past each of their [batch, drafts] drafts, so verify has the state of every row after them."""
+        for drafted in draft_token_ids[self.timestamp_rows].long().unbind(dim=1):
+            self.timestamp_states.append(
+                timestamp_state_after(
+                    self.timestamp_states[-1], drafted, self.timestamp_params
+                )
+            )
 
     def verify(
         self, logits: torch.Tensor, draft_token_ids: torch.Tensor
@@ -517,7 +527,8 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
         check_shared_encoder(target_model, get_spec().speculative_draft_model_path)
         draft_model.target_encoder = target_model.run_encoder
         self.previous_token_ids: torch.Tensor | None = None
-        self.draft_graph: DraftDecodeGraph | None = None
+        self.draft_graphs: list[DraftDecodeGraph] = []
+        self.timestamp_draft_graphs: list[DraftDecodeGraph] = []
 
     def alloc_memory_pool(
         self,
@@ -541,16 +552,56 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
 
     def init_cuda_graphs(self) -> None:
         self.draft_worker.init_cuda_graphs()
-        # note (Haoling Pu): the draft graph follows the draft's decode graphs, so disable_cuda_graph turns it off too, and its attention reads the KV cache without scales, so it needs the model's dtype there.
+        # note (Haoling Pu): the draft graphs follow the draft's decode graphs, so disable_cuda_graph turns them off too, and their attention reads the KV cache without scales, so it needs the model's dtype there.
         if (
             self.speculative_num_steps > 1
             and self.draft_runner.decode_cuda_graph_runner is not None
             and self.draft_runner.kv_cache_dtype == self.draft_runner.dtype
         ):
-            self.draft_graph = DraftDecodeGraph(
-                self.draft_runner, self.speculative_num_steps - 1
+            free_bytes_before, _ = torch.cuda.mem_get_info()
+            memory_pool = torch.cuda.graph_pool_handle()
+            # note (Haoling Pu): a graph keeps the cuBLAS workspace of the stream it was captured on, and the encoder's graphs, which replay on their own thread, took torch.cuda.graph's shared default stream, so these graphs take their own.
+            capture_stream = draft_capture_stream()
+            # note (Haoling Pu): a round holds at most the request pool's rows, so a graph past the first size that holds them all would never replay.
+            graph_batch_sizes = DRAFT_GRAPH_BATCH_SIZES[
+                : bisect.bisect_left(
+                    DRAFT_GRAPH_BATCH_SIZES, self.req_to_token_pool.size
+                )
+                + 1
+            ]
+            # note (Tz22z): the request builder reads the no-timestamps id from the same generation config and starts the timestamps right after it, so the graphs draft under the rules that verify applies.
+            target_runner = self.target_worker.model_runner
+            no_timestamps_token_id = int(
+                target_runner.model_config.hf_generation_config.no_timestamps_token_id
             )
-            self.draft_graph.capture()
+            timestamp_params = {
+                "segment_timestamps": True,
+                "timestamp_begin_id": no_timestamps_token_id + 1,
+                "no_timestamps_token_id": no_timestamps_token_id,
+                "eos_token_id": int(target_runner.model.config.eos_token_id),
+                "max_initial_timestamp_index": None,
+            }
+            # note (Haoling Pu): the largest graph is captured first, so the smaller ones reuse its memory in the shared pool.
+            for batch_size in sorted(graph_batch_sizes, reverse=True):
+                # note (Tz22z): the timestamp rules add to a graph's memory, so each size captures that graph before the plain one.
+                for draft_graphs, graph_timestamp_params in (
+                    (self.timestamp_draft_graphs, timestamp_params),
+                    (self.draft_graphs, None),
+                ):
+                    draft_graph = DraftDecodeGraph(
+                        self.draft_runner,
+                        self.speculative_num_steps - 1,
+                        batch_size,
+                        timestamp_params=graph_timestamp_params,
+                    )
+                    draft_graph.capture(memory_pool, capture_stream)
+                    draft_graphs.insert(0, draft_graph)
+            free_bytes_after, _ = torch.cuda.mem_get_info()
+            logger.info(
+                f"Captured the Whisper draft decode graphs of {self.speculative_num_steps - 1} steps "
+                f"for batch sizes {list(graph_batch_sizes)}, with and without the timestamp rules, "
+                f"in {(free_bytes_before - free_bytes_after) / 2**20:.0f} MiB"
+            )
         else:
             pass
 
@@ -567,10 +618,10 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             capture_hidden_mode=CaptureHiddenMode.NULL,
             return_hidden_states_before_norm=False,
         )
-        self.draft_runner.forward(draft_batch)
         result = self.target_worker.forward_batch_generation(
             batch, capture_hidden_mode=CaptureHiddenMode.NULL
         )
+        self.draft_runner.forward(draft_batch)
         # note (wilsonzheng0327): the sampled token has no KV yet, so the committed
         # length is the prompt's.
         result.new_seq_lens = batch.seq_lens
@@ -606,15 +657,27 @@ class WhisperSpeculativeWorker(BaseSpecWorker):
             slots=slots[:, :2],
         )
         drafts = [sampler.draw(logits.view(batch_size, 2, -1)[:, 1])]
-        # note (Haoling Pu): the draft graph is captured for one request and drafts by plain argmax.
-        if (
-            self.draft_graph is not None
-            and batch_size == 1
-            and sampler.is_all_greedy
-            and sampler.timestamp_rows is None
-        ):
-            self.draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
-            draft_token_ids = self.draft_graph.replay()
+        # note (Tz22z): the timestamp rules add kernels over the whole vocabulary to every step, so a round without timestamps replays the graphs without them.
+        draft_graphs = (
+            self.draft_graphs
+            if sampler.timestamp_rows is None
+            else self.timestamp_draft_graphs
+        )
+        draft_graph = next(
+            (graph for graph in draft_graphs if graph.batch_size >= batch_size),
+            None,
+        )
+        # note (Tz22z): both kinds of graph draft by argmax, so a sampled round keeps the step loop.
+        if draft_graph is not None and sampler.is_all_greedy:
+            draft_graph.load_inputs(batch, drafts[0], sampler.logit_bias)
+            if sampler.timestamp_rows is None:
+                draft_token_ids = draft_graph.replay()[:batch_size]
+            else:
+                draft_graph.load_timestamp_state(
+                    sampler.timestamp_rows, sampler.timestamp_states[-1]
+                )
+                draft_token_ids = draft_graph.replay()[:batch_size]
+                sampler.follow_drafts(draft_token_ids[:, 1:])
         else:
             for step in range(1, draft_steps):
                 logits = self.decode_forward(

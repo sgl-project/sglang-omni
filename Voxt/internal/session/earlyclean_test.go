@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/appctx"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
@@ -68,17 +69,19 @@ func waitEarly(t *testing.T, model *fakeLLM, n int) {
 }
 
 type earlyOrderedLLM struct {
-	mu      sync.Mutex
-	calls   int
-	started [4]chan struct{}
-	release [4]chan struct{}
-	reqs    []llm.Request
+	mu       sync.Mutex
+	calls    int
+	started  [4]chan struct{}
+	finished [4]chan struct{}
+	release  [4]chan struct{}
+	reqs     []llm.Request
 }
 
 func newEarlyOrderedLLM() *earlyOrderedLLM {
 	model := &earlyOrderedLLM{}
 	for i := range model.started {
 		model.started[i] = make(chan struct{})
+		model.finished[i] = make(chan struct{})
 		model.release[i] = make(chan struct{})
 	}
 	return model
@@ -94,6 +97,7 @@ func (m *earlyOrderedLLM) Chat(ctx context.Context, req llm.Request) (llm.Respon
 		return llm.Response{Text: "extra"}, nil
 	}
 	close(m.started[call-1])
+	defer close(m.finished[call-1])
 	select {
 	case <-m.release[call-1]:
 		return llm.Response{Text: []string{"整理一。", "整理二。", "整理三。", "整理四。"}[call-1]}, nil
@@ -113,6 +117,15 @@ func (m *earlyOrderedLLM) waitStarted(t *testing.T, call int) {
 	case <-m.started[call]:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("request %d did not start", call+1)
+	}
+}
+
+func (m *earlyOrderedLLM) waitFinished(t *testing.T, call int) {
+	t.Helper()
+	select {
+	case <-m.finished[call]:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("request %d did not finish", call+1)
 	}
 }
 
@@ -156,6 +169,37 @@ func TestEarlyCleanWhileRecording(t *testing.T) {
 		if len(m) != 2 || m[1].Content != compose.UserMessage(f.segs[i]) { // system and the segment: Transcribe sends no example (#4244)
 			t.Errorf("request %d cleaned %q, want segment %d", i+1, m[len(m)-1].Content, i+1)
 		}
+	}
+}
+
+// TestEarlyCleanPerAppOn: with the global clean-up off but the matched
+// group's override on, finalized stretches are still cleaned during the
+// recording, as with the global setting on (reverted, none is).
+func TestEarlyCleanPerAppOn(t *testing.T) {
+	f := newEarlyFixture(t)
+	model := &fakeLLM{text: "clean"}
+	h := newHarness(t, &fakeStreamer{final: f.full, pieces: f.stable}, model, func(c *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = false
+		rules := appctx.Rules{Groups: []appctx.Group{{ID: "g-chat", Enabled: true, TranscribeCleanup: appctx.CleanupOn,
+			Apps: []appctx.App{{BundleID: slack.BundleID, Name: "Slack"}}, Features: appctx.Features{Transcribe: true}}}}
+		c.Scene = &SceneConfig{Rules: func() (appctx.Rules, bool) { return rules, true }}
+	})
+	h.audio.notifyAt, h.audio.notified = 3, make(chan struct{})
+	id := h.start()
+	waitEarly(t, model, 1)
+	select {
+	case <-h.audio.notified: // three frames recorded
+	case <-time.After(5 * time.Second):
+		t.Fatal("too few frames recorded")
+	}
+	h.m.Stop(id)
+	if end := h.rec.wait(t); end.State != Done || end.Problem != nil {
+		t.Fatalf("end %+v", end)
+	}
+	reqs := model.requests()
+	m := reqs[0].Messages
+	if len(m) != 2 || m[1].Content != compose.UserMessage(f.segs[0]) {
+		t.Errorf("the early request cleaned %q, want the first stretch", m[len(m)-1].Content)
 	}
 }
 
@@ -214,6 +258,11 @@ func TestEarlyCleanFallback(t *testing.T) {
 }
 
 func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
+	_, r := newEarlyUnitHarnessRun(t, model, terms)
+	return r
+}
+
+func newEarlyUnitHarnessRun(t *testing.T, model LLM, terms []store.Term) (*harness, *run) {
 	t.Helper()
 	h := newHarness(t, nil, model, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -230,20 +279,20 @@ func newEarlyUnitRun(t *testing.T, model LLM, terms []store.Term) *run {
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.startScene()
 	close(r.svcResolved)
-	return r
+	return h, r
 }
 
 func TestEarlyCleanShortInputThinking(t *testing.T) {
-	full := strings.Repeat("a", 1000)
+	full := strings.Repeat("一", 1000)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.settings.Providers.LLM = []settings.Provider{{
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 200},
 	}}
-	r.hearPiece(full[:100])
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	r.hearPiece(strings.Repeat("一", 100))
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 4 {
@@ -263,13 +312,68 @@ func TestEarlyCleanThinkingCountsReplacedText(t *testing.T) {
 		ID: "deepseek", Generation: settings.Generation{ThinkingOffUnder: 20},
 	}}
 	r.hearPiece("aaaaaaaaaaaaaaaaaaaa")
-	_, _, err := r.cleanUpFirst("X")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("X")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 1 || reqs[0].InputChars != 1 || reqs[0].OnDelta == nil {
 		t.Fatalf("requests %+v, want one whole-text request with the replaced length 1", reqs)
+	}
+}
+
+func TestEarlyCleanMatchingTextBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		tail   string
+	}{
+		{"English spaces", "hello world.", " Next sentence."},
+		{"Chinese without spaces", "今天下午开会，讨论发布计划。", "然后确认时间。"},
+		{"mixed Chinese and English", "今天 review the API, 然后提交。", "Please send the notes."},
+		{"punctuation boundaries", "Version 1.2: ship it—today!", " (after QA)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &fakeLLM{text: "clean"}
+			r := newEarlyUnitRun(t, model, nil)
+			r.hearPiece(tc.prefix)
+			waitEarly(t, model, 1)
+
+			parts, answers, tail, _, _, ok := r.earlyCleanup().drain(tc.prefix + tc.tail)
+			if !ok || len(parts) == 0 || len(answers) != len(parts) || tail != tc.tail {
+				t.Fatalf("drain ok=%t, parts=%d, answers=%d, tail=%q; want matching prefix and tail %q", ok, len(parts), len(answers), tail, tc.tail)
+			}
+		})
+	}
+}
+
+func TestEarlyCleanChainedAliasesAreNormalizedOnce(t *testing.T) {
+	terms := []store.Term{
+		{Term: "Alpha", Aliases: []string{"source"}, Enabled: true},
+		{Term: "Beta", Aliases: []string{"Alpha"}, Enabled: true},
+	}
+	raw := "Say source, then stop."
+	model := &fakeLLM{text: "cleaned once"}
+	h := newHarness(t, &fakeStreamer{final: raw, pieces: []string{raw}}, model, func(config *Config, s *settings.Settings) {
+		s.Features.Transcribe.Enhance = true
+		s.Dictionary.Enabled = true
+		config.Glossary = func(context.Context) ([]store.Term, error) { return terms, nil }
+	})
+	id := h.start()
+	waitEarly(t, model, 1)
+	h.speak(id, 5)
+	end := h.rec.wait(t)
+	reqs := model.requests()
+	if end.Result != "cleaned once" || len(reqs) != 1 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != "cleaned once" {
+		t.Fatalf("end %+v, requests %d, pasted %q", end, len(reqs), h.text.pastes())
+	}
+	var requestText strings.Builder
+	for _, message := range reqs[0].Messages {
+		requestText.WriteString(message.Content)
+		requestText.WriteByte('\n')
+	}
+	if !strings.Contains(requestText.String(), "Say Alpha, then stop.") || strings.Contains(requestText.String(), "Say Beta, then stop.") {
+		t.Fatalf("cleanup normalized the chained aliases more than once: %q", requestText.String())
 	}
 }
 
@@ -278,14 +382,14 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 	for i := range terms {
 		terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
 	}
-	first := strings.Repeat("a", 295) + "Term00"
-	full := first + strings.Repeat("b", 293) + "Term30"
+	first := strings.Repeat("一", 295) + "Term00"
+	full := first + strings.Repeat("二", 293) + "Term30"
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, terms)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 2 {
@@ -300,14 +404,14 @@ func TestEarlyCleanLargeGlossary(t *testing.T) {
 }
 
 func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
-	first := strings.Repeat("a", 301)
-	full := first + strings.Repeat("b", 299)
+	first := strings.Repeat("一", 301)
+	full := first + strings.Repeat("二", 299)
 	model := &fakeLLM{text: "clean"}
 	r := newEarlyUnitRun(t, model, nil)
 	r.hearPiece(first)
-	_, _, err := r.cleanUpFirst(full)
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst(full)
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
 	reqs := model.requests()
 	if len(reqs) != 3 {
@@ -319,21 +423,27 @@ func TestEarlyCleanLeavesUnfinishedPartsForStop(t *testing.T) {
 }
 
 type earlyFallbackLLM struct {
-	mu            sync.Mutex
-	calls         int
-	answered      chan struct{}
-	secondStarted chan struct{}
-	secondRelease chan struct{}
-	secondErr     error
-	thirdStarted  bool
-	tailStarted   chan struct{}
-	tailRelease   chan struct{}
-	tailOnce      sync.Once
+	mu             sync.Mutex
+	calls          int
+	answered       chan struct{}
+	secondStarted  chan struct{}
+	secondCanceled chan struct{}
+	secondRelease  chan struct{}
+	secondErr      error
+	lateSecondErr  error
+	thirdStarted   bool
+	tailStarted    chan struct{}
+	tailRelease    chan struct{}
+	tailRequest    llm.Request
+	tailOnce       sync.Once
 }
 
 func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if req.OnDelta != nil {
 		if f.tailStarted != nil {
+			f.mu.Lock()
+			f.tailRequest = req
+			f.mu.Unlock()
 			f.tailOnce.Do(func() { close(f.tailStarted) })
 			<-f.tailRelease
 		}
@@ -351,18 +461,32 @@ func (f *earlyFallbackLLM) Chat(ctx context.Context, req llm.Request) (llm.Respo
 		return llm.Response{Text: "early one"}, nil
 	case 2:
 		close(f.secondStarted)
-		if f.secondRelease != nil {
-			select {
-			case <-f.secondRelease:
-				return llm.Response{Text: "early two"}, nil
-			case <-ctx.Done():
+		late := false
+		select {
+		case <-f.secondRelease:
+		case <-ctx.Done():
+			if f.secondCanceled != nil {
+				close(f.secondCanceled)
 			}
-		} else {
-			<-ctx.Done()
+			if f.secondRelease == nil {
+				break
+			}
+			<-f.secondRelease
+			late = true
 		}
 		f.mu.Lock()
 		f.secondErr = ctx.Err()
+		lateErr := f.lateSecondErr
 		f.mu.Unlock()
+		if late {
+			if lateErr != nil {
+				return llm.Response{}, lateErr
+			}
+			return llm.Response{Text: "late early two"}, nil
+		}
+		if ctx.Err() == nil {
+			return llm.Response{Text: "early two"}, nil
+		}
 		return llm.Response{}, ctx.Err()
 	default:
 		f.mu.Lock()
@@ -379,13 +503,14 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 	r.hearPiece("one two")
 	r.hearPiece("one two three")
 	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one changed three")
-	if err != nil {
-		t.Fatal(err)
+	output := r.cleanUpFirst("one changed three")
+	if output.err != nil {
+		t.Fatal(output.err)
 	}
-	if result != "fallback" {
-		t.Errorf("result %q, want the whole-text fallback", result)
+	if output.text != "fallback" {
+		t.Errorf("result %q, want the whole-text fallback", output.text)
 	}
+	waitEarlyWorker(t, r)
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	if !errors.Is(model.secondErr, context.Canceled) {
@@ -397,32 +522,145 @@ func TestEarlyCleanFallbackCancelsBacklog(t *testing.T) {
 }
 
 func TestEarlyCleanMatchingFinalCancelsBacklog(t *testing.T) {
-	model := &earlyFallbackLLM{secondStarted: make(chan struct{})}
-	r := newEarlyUnitRun(t, model, nil)
-	r.m.cfg.LLMBase, r.m.cfg.LLMStall, r.m.cfg.LLMTimeout = 50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond
-	r.hearPiece("one")
-	r.hearPiece("one two")
-	r.hearPiece("one two three")
-	<-model.secondStarted
-	result, _, err := r.cleanUpFirst("one two three tail")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result != "early one fallback" {
-		t.Errorf("result %q, want the completed early answer and the fallback tail", result)
-	}
-	model.mu.Lock()
-	calls := model.calls
-	model.mu.Unlock()
-	if calls != 2 {
-		t.Errorf("%d requests, want the first and the cancelled second; the queued early request must not run", calls)
+	for _, tc := range []struct {
+		name          string
+		lateSecondErr error
+	}{
+		{name: "late success"},
+		{name: "late error", lateSecondErr: errors.New("late early-clean failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &earlyFallbackLLM{
+				secondStarted:  make(chan struct{}),
+				secondCanceled: make(chan struct{}),
+				secondRelease:  make(chan struct{}),
+				lateSecondErr:  tc.lateSecondErr,
+				tailStarted:    make(chan struct{}),
+				tailRelease:    make(chan struct{}),
+			}
+			r := newEarlyUnitRun(t, model, nil)
+			early := r.earlyCleanup()
+			var releaseSecond, releaseTail sync.Once
+			release := func() {
+				releaseSecond.Do(func() { close(model.secondRelease) })
+				releaseTail.Do(func() { close(model.tailRelease) })
+			}
+			cleanupResult := make(chan cleanupOutput, 1)
+			cleanupDone := make(chan struct{})
+			cleanupStarted := false
+			t.Cleanup(func() {
+				release()
+				if cleanupStarted {
+					select {
+					case <-cleanupDone:
+					case <-time.After(3 * time.Second):
+						t.Error("authoritative cleanup did not stop after releasing the LLM calls")
+					}
+				}
+				select {
+				case <-early.workerDone:
+				case <-time.After(3 * time.Second):
+					t.Error("early clean-up worker did not stop after release")
+				}
+			})
+			r.hearPiece("one")
+			r.hearPiece("one two")
+			select {
+			case <-model.secondStarted:
+			case <-time.After(3 * time.Second):
+				t.Fatal("second Early Cleanup request did not start")
+			}
+			early.mu.Lock()
+			firstPublished := len(early.segs) == 1 && early.segs[0].done && len(early.segs[0].answers) == 1 && early.segs[0].answers[0] == "early one"
+			early.mu.Unlock()
+			if !firstPublished {
+				t.Fatal("first Early Cleanup answer was not published before the second request started")
+			}
+			r.hearPiece("one two three")
+			early.mu.Lock()
+			queuedJobs := len(early.jobs)
+			early.mu.Unlock()
+			if queuedJobs != 3 {
+				t.Fatalf("queued Early Cleanup jobs=%d, want three", queuedJobs)
+			}
+			cleanupStarted = true
+			go func() {
+				defer close(cleanupDone)
+				cleanupResult <- r.cleanUpFirst("one two three tail")
+			}()
+			select {
+			case <-model.secondCanceled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("discarded Early Cleanup request did not observe cancellation")
+			}
+			select {
+			case <-model.tailStarted:
+			case <-time.After(3 * time.Second):
+				t.Fatal("authoritative tail cleanup waited for the cancelled Early Cleanup request to exit")
+			}
+			select {
+			case <-early.workerDone:
+				t.Fatal("cancelled worker exited before its controlled release")
+			default:
+			}
+			releaseTail.Do(func() { close(model.tailRelease) })
+			var output cleanupOutput
+			select {
+			case output = <-cleanupResult:
+			case <-time.After(3 * time.Second):
+				t.Fatal("authoritative tail cleanup did not finish while the cancelled worker was blocked")
+			}
+			if output.err != nil || output.text != "early one fallback" {
+				t.Fatalf("final result %q, %v; want the completed prefix and cleaned authoritative tail", output.text, output.err)
+			}
+			model.mu.Lock()
+			tailRequest := model.tailRequest
+			model.mu.Unlock()
+			if len(tailRequest.Messages) == 0 || !strings.Contains(tailRequest.Messages[len(tailRequest.Messages)-1].Content, "two three tail") {
+				t.Errorf("authoritative cleanup request omitted the remaining transcript: %+v", tailRequest.Messages)
+			}
+			select {
+			case <-early.workerDone:
+				t.Fatal("cancelled worker exited before its controlled release")
+			default:
+			}
+			releaseSecond.Do(func() { close(model.secondRelease) })
+			waitEarlyWorker(t, r)
+			early.mu.Lock()
+			segmentCount := len(early.segs)
+			prefix := ""
+			if segmentCount > 0 && len(early.segs[0].answers) > 0 {
+				prefix = early.segs[0].answers[0]
+			}
+			failed := early.failed
+			finalized, closed := early.finalized, early.closed
+			early.mu.Unlock()
+			model.mu.Lock()
+			calls, secondErr, thirdStarted := model.calls, model.secondErr, model.thirdStarted
+			model.mu.Unlock()
+			if segmentCount != 1 || prefix != "early one" || failed != nil {
+				t.Errorf("late result changed the retained prefix or failure state: segments=%d prefix=%q failure=%v", segmentCount, prefix, failed)
+			}
+			if !finalized || !closed {
+				t.Errorf("finalized=%t, closed=%t; want both late-publication fences set", finalized, closed)
+			}
+			if !errors.Is(secondErr, context.Canceled) {
+				t.Errorf("discarded request observed %v, want cancellation", secondErr)
+			}
+			if calls != 2 || thirdStarted {
+				t.Errorf("early requests=%d, third started=%t; want only the first and cancelled second requests", calls, thirdStarted)
+			}
+			if output.text != "early one fallback" {
+				t.Errorf("late result changed final output to %q", output.text)
+			}
+		})
 	}
 }
 
 func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	model := &earlyFallbackLLM{secondStarted: make(chan struct{}), secondRelease: make(chan struct{})}
 	r := newEarlyUnitRun(t, model, nil)
-	lastJob := strings.Repeat("a", 301)
+	lastJob := strings.Repeat("一", 301)
 	full := "one " + lastJob + " tail"
 	r.hearPiece("one")
 	r.hearPiece("one " + lastJob)
@@ -432,7 +670,7 @@ func TestEarlyCleanMatchingFinalSkipsRemainingParts(t *testing.T) {
 	r.early.mu.Unlock()
 	close(model.secondRelease)
 	waitEarlyWorker(t, r)
-	parts, answers, tail, _, ok := r.early.drain(full)
+	parts, answers, tail, _, _, ok := r.early.drain(full)
 	if !ok || len(parts) != 1 || len(answers) != 1 || answers[0] != "early one" {
 		t.Fatalf("early parts = %d, answers = %q, ok = %v; want only the completed first job", len(parts), answers, ok)
 	}
@@ -471,6 +709,39 @@ func TestEarlyCleanMatchingFinalSkipAndRethink(t *testing.T) {
 				t.Errorf("skip end %+v, want the raw transcript", end)
 			}
 			if tc.name == "rethink" && (end.Result != "fallback" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
+				t.Errorf("rethink end %+v", end)
+			}
+		})
+	}
+}
+
+func TestEarlyCleanDrainSkipAndRethink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		act  func(*Manager, string)
+	}{
+		{name: "skip", act: func(m *Manager, id string) { m.SkipLLM(id) }},
+		{name: "rethink", act: func(m *Manager, id string) { m.Rethink(id, &llm.Thinking{Mode: llm.ThinkOff}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newEarlyOrderedLLM()
+			h := newHarness(t, &fakeStreamer{final: "one tail", pieces: []string{"one"}}, model, nil)
+			h.m.cfg.LLMTimeout = 10 * time.Second
+			id := h.start()
+			model.waitStarted(t, 0)
+			h.speak(id, 3)
+			h.rec.waitFor(t, "early cleanup draining", func(s Snapshot) bool { return s.State == Composing && s.CanSkip })
+			tc.act(h.m, id)
+			model.waitFinished(t, 0)
+			if tc.name == "rethink" {
+				model.waitStarted(t, 1)
+				model.finish(t, 1)
+			}
+			end := h.rec.wait(t)
+			if tc.name == "skip" && end.Result != "one tail" {
+				t.Errorf("skip end %+v, want the raw transcript", end)
+			}
+			if tc.name == "rethink" && (end.Result != "整理二。" || end.Thinking == nil || end.Thinking.Mode != llm.ThinkOff) {
 				t.Errorf("rethink end %+v", end)
 			}
 		})

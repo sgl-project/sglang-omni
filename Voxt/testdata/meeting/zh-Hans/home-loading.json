@@ -2,14 +2,12 @@
   "name": "home-loading",
   "kind": "home",
   "home": {
-    "read": false,
-    "loading": true,
-    "error": "",
     "keep_history": true,
     "slogan": {
       "before": "按 ",
       "keys": "右 ⌥",
-      "after": " 开始"
+      "after": " 开始",
+      "model": "fixture-speech"
     },
     "missing": null,
     "ready": [
@@ -64,31 +62,6 @@
         "fix": ""
       }
     ],
-    "show_try": true,
-    "try_recording": false,
-    "today": {
-      "count": "0",
-      "count_label": "次",
-      "characters": "0",
-      "characters_label": "字",
-      "kinds": [
-        {
-          "kind": "transcribe",
-          "title": "转录",
-          "count": "0"
-        },
-        {
-          "kind": "translate",
-          "title": "翻译",
-          "count": "0"
-        },
-        {
-          "kind": "rewrite",
-          "title": "改写",
-          "count": "0"
-        }
-      ]
-    },
-    "recent": []
+    "outfit": "new-year"
   }
 }

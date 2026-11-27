@@ -38,6 +38,12 @@ const (
 // shortcut records.
 const selectionWait = 300 * time.Millisecond
 
+// selectionProbe is the dictionary's selection read: Accessibility only
+// (never ⌘C) and no caret settle — the read must answer inside
+// selectionWait, and an omitted caretSettleMs is the helper's 600 ms
+// default, so the 0 goes on the wire explicitly (#4469 review).
+var selectionProbe = proto.SelectionParams{CaretSettleMS: new(int)}
+
 // selectionSkipped are the apps whose selection Voxt 1.x never took as a
 // term (SelectedTextSystemSelectionSupport.ignoresSelectedTextFlow).
 var selectionSkipped = map[string]bool{"md.obsidian": true}
@@ -119,7 +125,7 @@ func (a *app) transcribeOrAddSelection(req session.StartRequest) {
 		return
 	}
 	a.selPress = &selectionPress{req: req}
-	helperCall(a, proto.MethodTextSelection, proto.SelectionParams{}, selectionWait, func(res proto.SelectionResult, err error) {
+	helperCall(a, proto.MethodTextSelection, selectionProbe, selectionWait, func(res proto.SelectionResult, err error) {
 		p := a.selPress
 		a.selPress = nil
 		term := ""
@@ -143,20 +149,23 @@ func (a *app) addSelectedTerm(term string) {
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		have, err := repo.List(ctx, term)
 		existing := ""
-		for _, t := range have {
-			if strings.EqualFold(t.Term, term) {
-				existing = t.Term
+		err := withDictionaryLock(repo, func() error {
+			have, err := repo.List(ctx, term)
+			for _, t := range have {
+				if strings.EqualFold(t.Term, term) {
+					existing = t.Term
+				}
 			}
-		}
-		if err == nil && existing == "" {
-			now := time.Now()
-			err = repo.Put(ctx, store.Term{ID: core.NewID(now), Term: term, Enabled: true, CreatedAt: now, UpdatedAt: now})
-			if errors.Is(err, core.ErrExists) {
-				existing, err = term, nil
+			if err == nil && existing == "" {
+				now := time.Now()
+				err = repo.Put(ctx, store.Term{ID: core.NewID(now), Term: term, Enabled: true, CreatedAt: now, UpdatedAt: now})
+				if errors.Is(err, core.ErrExists) {
+					existing, err = term, nil
+				}
 			}
-		}
+			return err
+		})
 		a.post(func() {
 			switch {
 			case err != nil:

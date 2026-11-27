@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -69,6 +70,113 @@ func TestEndWordStops(t *testing.T) {
 				t.Errorf("end %s %q, pasted %q; want %q", end.State, end.Raw, h.text.pastes(), c.raw)
 			}
 		})
+	}
+}
+
+func TestEndWordPartialSurvivesLateCleanupReadiness(t *testing.T) {
+	const pause = 30 * time.Millisecond
+	provider := &fakeStreamer{final: "hello over", silent: true}
+	model := &fakeLLM{text: "Hello."}
+	clock := newSoftDeadlineClock()
+	after, timerArmed, _ := controlledEndWordTimer(clock, pause)
+	h := newHarness(t, provider, model, func(config *Config, settings *settings.Settings) {
+		config.Now, config.AfterFunc, config.EndWordPause = clock.Now, after, pause
+		settings.Features.EndWord = "over"
+		settings.Features.Transcribe.Enhance = true
+	})
+	audioReady := make(chan struct{})
+	h.audio.notifyAt, h.audio.notified = 4, audioReady
+	signals := observeSessionSignals(h)
+	started, releaseLLM := setBlockedRemoteResolvers(h, provider, model)
+	id := h.start()
+	waitInitializationSignal(t, started, "blocked LLM resolver")
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open while LLM resolution is blocked")
+	waitInitializationSignal(t, audioReady, "enough recording audio")
+	r := sessionRun(t, h)
+	stream := initializationStream(t, provider)
+
+	func() {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		releaseLLM()
+		stream.emit(asr.Event{Kind: asr.EventPartial, Text: "hello over"})
+		waitEndWordQueuedOrArmed(t, r, timerArmed)
+	}()
+	waitInitializationSignal(t, timerArmed, "end word timer after late cleanup readiness")
+	clock.Fire(t, 0)
+
+	end := h.rec.wait(t)
+	if end.State != Done || end.Raw != "hello" || end.Result != "Hello." || len(model.requests()) != 1 || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Result {
+		t.Fatalf("end=%+v, requests=%d, deliveries=%q", end, len(model.requests()), h.text.pastes())
+	}
+	if end.ID != id {
+		t.Fatalf("ended session %q, want %q", end.ID, id)
+	}
+}
+
+func TestEndWordLaterPartialClearsStopTimer(t *testing.T) {
+	const pause = time.Hour
+	provider := &fakeStreamer{final: "hello again", silent: true}
+	clock := newSoftDeadlineClock()
+	after, timerArmed, timerStopped := controlledEndWordTimer(clock, pause)
+	h := newHarness(t, provider, nil, func(config *Config, settings *settings.Settings) {
+		config.Now, config.AfterFunc, config.EndWordPause = clock.Now, after, pause
+		settings.Features.EndWord = "over"
+	})
+	audioReady := make(chan struct{})
+	h.audio.notifyAt, h.audio.notified = 4, audioReady
+	signals := observeSessionSignals(h)
+	id := h.start()
+	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+	waitInitializationSignal(t, audioReady, "enough recording audio")
+	stream := initializationStream(t, provider)
+	stream.emit(asr.Event{Kind: asr.EventPartial, Text: "hello over"})
+	waitInitializationSignal(t, timerArmed, "end word timer")
+	stream.emit(asr.Event{Kind: asr.EventPartial, Text: "hello again"})
+	waitInitializationSignal(t, timerStopped, "later partial to clear the end word timer")
+
+	select {
+	case <-sessionRun(t, h).stop:
+		t.Fatal("the cleared end word timer stopped the recording")
+	default:
+	}
+	h.m.Stop(id)
+	end := h.rec.wait(t)
+	if end.State != Done || end.Raw != "hello again" || len(h.text.pastes()) != 1 || h.text.pastes()[0] != end.Raw {
+		t.Fatalf("end=%+v, deliveries=%q", end, h.text.pastes())
+	}
+}
+
+func controlledEndWordTimer(clock *softDeadlineClock, pause time.Duration) (func(time.Duration, func()) func() bool, <-chan struct{}, <-chan struct{}) {
+	armed, stopped := make(chan struct{}, 1), make(chan struct{}, 1)
+	after := func(delay time.Duration, callback func()) func() bool {
+		stop := clock.AfterFunc(delay, callback)
+		if delay != pause {
+			return stop
+		}
+		armed <- struct{}{}
+		return func() bool {
+			wasStopped := stop()
+			if wasStopped {
+				stopped <- struct{}{}
+			}
+			return wasStopped
+		}
+	}
+	return after, armed, stopped
+}
+
+func waitEndWordQueuedOrArmed(t *testing.T, r *run, armed <-chan struct{}) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for len(r.heard) != 1 && len(armed) == 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("timed out waiting for the end word partial to queue or arm its timer")
+		default:
+			runtime.Gosched()
+		}
 	}
 }
 

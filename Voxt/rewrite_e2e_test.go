@@ -53,8 +53,9 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 	a.pump("the follow-up's recording", func() bool {
 		return a.sess.ID != first && a.sess.State == session.Recording && a.sess.HeardAt.After(a.sess.StartedAt)
 	})
-	if v := a.cachedCard(); a.ov.mode != ovAnswer || !v.Conversation || !v.Recording || !v.CanStop || v.CanFollowUp {
-		t.Errorf("recording the follow-up: %s %+v", a.ov.mode, v)
+	// It is asked in the same card, the conversation above the text box.
+	if v := a.boxViewState(); !a.boxHoldsCard(a.overlayModeNow()) || !v.Conversation || !v.Recording {
+		t.Errorf("recording the follow-up: box shown %v, overlay %s, %+v", a.box.shown, a.overlayModeNow(), v)
 	}
 	// At least 400 ms recorded, over the shortest recording kept: the
 	// fake helper sends a level before each 100 ms frame.
@@ -66,7 +67,7 @@ func (a *sessionApp) recordFollowUp(t *testing.T, tr *fakeTranscriptions, said s
 // TestRewriteShortAnswerInCard: 10-15, the user's case, with the card
 // switch on: nothing selected, an app that takes text, a short answer: it
 // waits in the card (it was typed, with no way to follow up), with
-// Continue; Insert pastes it.
+// Continue, as a chat under the instruction; Insert pastes it.
 func TestRewriteShortAnswerInCard(t *testing.T) {
 	chat := &fakeChat{text: `{"title":"Help","content":"Sure: tell me the problem."}`}
 	a, _ := rewriteOnce(t, "", chat, "help me with a problem")
@@ -74,7 +75,7 @@ func TestRewriteShortAnswerInCard(t *testing.T) {
 	if a.sess.State != session.Done || a.sess.Inserted || !a.answer.open || a.ov.mode != ovAnswer || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || v.Conversation {
+	if v.Title != "Help" || cardTextForTest(v) != "Sure: tell me the problem." || !v.CanFollowUp || !v.CanInsert || !v.CanCopy || !v.Conversation {
 		t.Errorf("card %+v", v)
 	}
 	a.insertAnswer()
@@ -94,7 +95,7 @@ func TestRewriteSelectionInCard(t *testing.T) {
 	if a.sess.Inserted || !a.answer.open || a.answer.input.Selection != "hey all, ship friday" || len(a.pasted()) != 0 {
 		t.Fatalf("end %+v card %+v", a.sess, a.answer)
 	}
-	if v := a.cachedCard(); v.Title != "AI answer" || !v.CanFollowUp || !v.CanInsert {
+	if v := a.cachedCard(); v.Title != "Rewrite" || !v.CanFollowUp || !v.CanInsert {
 		t.Errorf("card %+v", v)
 	}
 	msgs := chatMessages(chat.requests()[0])
@@ -205,18 +206,21 @@ func TestRewriteNoCard(t *testing.T) {
 }
 
 // TestRewriteBlankSelectionReadsTheCopy: Accessibility gives a selection
-// of one blank (a Lark block selection in Chrome): that is not the
+// of one blank (a Lark block selection in Chrome) or of the object
+// replacement character (an image-only block selection): that is not the
 // selection. The text ⌘C copies is, and the model gets it.
 func TestRewriteBlankSelectionReadsTheCopy(t *testing.T) {
-	chat := &fakeChat{text: "Team: the release moves to Friday."}
-	opts := helpertest.Opt("selection", " ") + "," + helpertest.Opt("copy-selection", "hey all, ship friday") + ","
-	a, _ := rewriteOnce(t, opts, chat, "make it formal")
-	if a.sess.SelectionVia != proto.ViaCopy || a.answer.input.Selection != "hey all, ship friday" {
-		t.Fatalf("end %+v card %+v", a.sess, a.answer)
-	}
-	msgs := chatMessages(chat.requests()[0])
-	if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
-		t.Errorf("user message %q", msgs[1][1])
+	for _, ax := range []string{" ", "\uFFFC"} {
+		chat := &fakeChat{text: "Team: the release moves to Friday."}
+		opts := helpertest.Opt("selection", ax) + "," + helpertest.Opt("copy-selection", "hey all, ship friday") + ","
+		a, _ := rewriteOnce(t, opts, chat, "make it formal")
+		if a.sess.SelectionVia != proto.ViaCopy || a.answer.input.Selection != "hey all, ship friday" {
+			t.Fatalf("ax %q: end %+v card %+v", ax, a.sess, a.answer)
+		}
+		msgs := chatMessages(chat.requests()[0])
+		if msgs[1][1] != "<selected_text>\nhey all, ship friday\n</selected_text>\n\n<instruction>\nmake it formal\n</instruction>" {
+			t.Errorf("ax %q: user message %q", ax, msgs[1][1])
+		}
 	}
 }
 

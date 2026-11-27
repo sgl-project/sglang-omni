@@ -67,8 +67,8 @@ func (a *app) applyTray() {
 		return
 	}
 	live := a.trayShowsRecording()
-	// Voxt's microphone, a 36 px template image MyGo shows 18 pt tall
-	// (Voxt: 18×18 pt, template); while recording it has a dot.
+	// The star-free microphone is a 36 px template image shown 18 pt tall;
+	// while recording it has a dot.
 	t, err := mygo.NewTray(mygo.TrayOptions{Icon: trayicon.Icon(live), IconIsTemplate: true, ToolTip: a.trayToolTip()})
 	if err != nil {
 		a.toast(i18n.T("Could not create the menu bar icon: %v", err))
@@ -195,10 +195,30 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	if len(f.Transcribe.Hotkeys) > 0 {
 		start += "    " + uitext.HotkeyGlyphs(f.Transcribe.Hotkeys[0].Keys)
 	}
-	items := []*mygo.MenuItem{
-		{Label: start, Click: act(a.toggleTranscribe)},
-		{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
-		{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	var items []*mygo.MenuItem
+	if a.bundleUpdated {
+		label := i18n.T("Restart Voxt to update")
+		if v := a.updPrefs.InstalledVersion; v != "" {
+			label = i18n.T("Restart Voxt to update (%s)", v)
+		}
+		items = append(items,
+			&mygo.MenuItem{Label: label, Click: act(a.relaunch)},
+			mygo.Separator(),
+		)
+	} else if v := a.availableUpdateVersion(); v != "" {
+		items = append(items,
+			&mygo.MenuItem{Label: i18n.T("Update available (%s)…", v), Click: act(a.checkForUpdates)},
+			mygo.Separator(),
+		)
+	}
+	items = append(items,
+		&mygo.MenuItem{Label: start, Click: act(a.toggleTranscribe)},
+		&mygo.MenuItem{Label: i18n.T("Paste the last result") + "    " + uitext.HotkeyGlyphs(f.PasteLast.Keys), Click: act(func() { a.pasteLast(a.front) })},
+		&mygo.MenuItem{Label: i18n.T("Microphone"), Submenu: a.trayMicrophones(act)},
+	)
+	if sessions := a.sessionsMenu(act); len(sessions) > 0 {
+		items = append(items, mygo.Separator())
+		items = append(items, sessions...)
 	}
 	if reopen := a.reopenMenu(act); len(reopen) > 0 {
 		items = append(items, mygo.Separator())
@@ -220,7 +240,7 @@ func (a *app) trayItems() []*mygo.MenuItem {
 	if len(a.recent) > 0 {
 		items = append(items, mygo.Separator(), &mygo.MenuItem{Label: i18n.T("Recent results"), Disabled: true})
 		for _, text := range a.recent {
-			items = append(items, &mygo.MenuItem{Label: uitext.TrayLabel(text), ToolTip: trayTip(text), Click: act(func() { a.copyRecent(text) })})
+			items = append(items, &mygo.MenuItem{Label: i18n.T("Copy: %s", uitext.TrayLabel(text)), ToolTip: trayTip(text), Click: act(func() { a.copyRecent(text, true) })})
 		}
 	}
 	items = append(items,
@@ -249,14 +269,20 @@ func (a *app) trayMicrophones(act func(func()) func(*mygo.MenuItem, *mygo.Window
 	return items
 }
 
-// copyRecent copies a recent result (the menu bar).
-func (a *app) copyRecent(text string) {
+// copyRecent copies a recent result (a session's end, the menu bar);
+// a pick in the menu bar confirms the copy, a session's copy stays
+// silent (session_link.go shows its own notice).
+func (a *app) copyRecent(text string, confirm bool) {
 	cp := a.copyText
 	if cp == nil {
 		cp = func(s string) error { return mygo.Clipboard.Write(transfer.TextData(s)) }
 	}
 	if err := cp(text); err != nil {
 		a.toast(i18n.T("Could not copy: %v", err))
+		return
+	}
+	if confirm {
+		a.toast(i18n.T("Copied"))
 	}
 }
 

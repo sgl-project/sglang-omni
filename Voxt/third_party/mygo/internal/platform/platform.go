@@ -356,6 +356,9 @@ type WindowOptions struct {
 	// ones included, out of the taskbar and the app switcher, and on macOS
 	// takes the keyboard without activating the app.
 	Panel bool
+	// HoverWhileInactive tracks the pointer while another app is active
+	// (mygo.WindowOptions.HoverWhileInactive).
+	HoverWhileInactive bool
 
 	// UserScripts are injected into every page, in order.
 	UserScripts []UserScript
@@ -425,6 +428,9 @@ type Window interface {
 	ShowInactive()
 	Hide()
 	IsVisible() bool
+	// IsOnActiveSpace reports whether the window is, or would be once
+	// shown, on the workspace the user is on (macOS Spaces).
+	IsOnActiveSpace() bool
 	Focus()
 	Blur()
 	IsFocused() bool

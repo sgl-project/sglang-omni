@@ -1,0 +1,140 @@
+{
+  "name": "shell-rail-update-ready",
+  "kind": "shell",
+  "shell": {
+    "theme": "system",
+    "scale": 1,
+    "accent_palette": "#0d9384",
+    "still": true,
+    "nav": {
+      "groups": [
+        {
+          "id": "",
+          "pages": [
+            {
+              "path": "/home",
+              "title": "Home",
+              "keys": "⌘1",
+              "selected": true
+            },
+            {
+              "path": "/history",
+              "title": "History",
+              "keys": "⌘2",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Features",
+          "title": "Features",
+          "pages": [
+            {
+              "path": "/notes",
+              "title": "Notes",
+              "selected": false
+            },
+            {
+              "path": "/meetings",
+              "title": "Meetings",
+              "selected": false
+            },
+            {
+              "path": "/app-enhancement",
+              "title": "App enhancement",
+              "keys": "⌘6",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "Resources",
+          "title": "Resources",
+          "pages": [
+            {
+              "path": "/dictionary",
+              "title": "Dictionary",
+              "selected": false
+            },
+            {
+              "path": "/snippets",
+              "title": "Snippets",
+              "selected": false
+            }
+          ]
+        },
+        {
+          "id": "System",
+          "title": "System",
+          "pages": [
+            {
+              "path": "/logs",
+              "title": "Logs",
+              "selected": false
+            },
+            {
+              "path": "/settings",
+              "title": "Settings",
+              "selected": false
+            }
+          ]
+        }
+      ],
+      "current": "/home",
+      "shortcut_pages": [
+        {
+          "path": "/home",
+          "num": 1
+        },
+        {
+          "path": "/history",
+          "num": 2
+        },
+        {
+          "path": "/transcribe",
+          "num": 3
+        },
+        {
+          "path": "/translate",
+          "num": 4
+        },
+        {
+          "path": "/rewrite",
+          "num": 5
+        },
+        {
+          "path": "/app-enhancement",
+          "num": 6
+        }
+      ],
+      "settings": {
+        "path": "/settings",
+        "title": "Settings",
+        "keys": "⌘,",
+        "selected": false
+      },
+      "settings_selected": false,
+      "notices_count": 0,
+      "rail_chosen": true,
+      "rail": true,
+      "sidebar_width": 0,
+      "min_sidebar_width": 170,
+      "max_sidebar_width": 320
+    },
+    "update": {
+      "ready": true,
+      "version": "2.1.4",
+      "label": "Restart to update",
+      "tooltip": "Voxt 2.1.4 is ready. Restart to finish updating."
+    },
+    "logs_height": 220,
+    "palette": {
+      "items": null
+    },
+    "sheet": {
+      "groups": null
+    },
+    "settings_open": false
+  },
+  "shell_ui": {}
+}

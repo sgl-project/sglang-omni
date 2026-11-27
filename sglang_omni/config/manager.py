@@ -94,8 +94,16 @@ class ConfigManager:
     dynamically configure their runtime settings.
     """
 
-    def __init__(self, config: PipelineConfig | None = None):
+    def __init__(
+        self,
+        config: PipelineConfig | None = None,
+        source_patches: ConfigPatchSet | None = None,
+    ):
         self.config = config
+        # The file's own patches, so a launch can tell what the user set from a model default.
+        self.source_patches = (
+            source_patches if source_patches is not None else ConfigPatchSet()
+        )
 
     def parse_extra_args(self, args: list[str]) -> list[tuple[str, str]]:
         """Parse the CLI arguments into ordered ``(key, value)`` pairs.
@@ -192,7 +200,7 @@ class ConfigManager:
         else:
             pass
         resolved = ConfigResolver(config).resolve(patches)
-        return ConfigManager(resolved.config)
+        return ConfigManager(resolved.config, source_patches=patches)
 
 
 def normalize_flag_key(key: str) -> str:

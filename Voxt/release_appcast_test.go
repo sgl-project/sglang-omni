@@ -98,7 +98,8 @@ func TestReleaseAppcastEntryChannels(t *testing.T) {
 
 func TestVoxt2FeedChannels(t *testing.T) {
 	base, err := runReleaseAppcast(t, "", "feed-base")
-	if err != nil || base != "https://voxt.actnow.dev/updates/voxt2\n" {
+	// The manifests of the GitHub releases, which MyGo resolves itself: no update service.
+	if err != nil || base != "https://github.com/sgl-project/sglang-omni/releases/download/voxt-v{version}\n" {
 		t.Fatalf("feed-base: %q, %v", base, err)
 	}
 	for channel, suffix := range map[string]string{"stable": "", "beta": "/beta"} {
@@ -110,6 +111,90 @@ func TestVoxt2FeedChannels(t *testing.T) {
 	}
 	if out, err := runReleaseAppcast(t, "", "feed-url", "nightly"); err == nil {
 		t.Errorf("feed-url nightly printed %q: only beta and stable have feeds", out)
+	}
+}
+
+// TestVoxt2FeedOffers: after a release is published, feed-offers names the
+// release the installed apps resolve their feed to, as MyGo patch 0021
+// does, and fails when that is not the release just published.
+func TestVoxt2FeedOffers(t *testing.T) {
+	releases := `[
+		{"tag_name": "voxt-v2.1.3-beta.20261122.102", "draft": false, "prerelease": true},
+		{"tag_name": "v0.3.0", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.2.0", "draft": true, "prerelease": false},
+		{"tag_name": "voxt-v2.1.2", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.1.3-beta.20261122.9", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.10", "draft": false, "prerelease": false},
+		{"tag_name": "voxt-v2.1.9", "draft": false, "prerelease": false}
+	]`
+	for _, c := range []struct{ channel, version string }{
+		{"stable", "2.1.10"}, // numbers, not text: 2.1.10 is above 2.1.9 and 2.1.2
+		{"beta", "2.1.10"},   // a release above every beta is the beta channel's too
+	} {
+		out, err := runReleaseAppcast(t, releases, "feed-offers", c.channel, c.version)
+		if err != nil || out != "voxt-v"+c.version+"\n" {
+			t.Errorf("feed-offers %s %s: %q, %v", c.channel, c.version, out, err)
+		}
+	}
+	betas := `[
+		{"tag_name": "voxt-v2.1.3-beta.20261122.9", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.3-beta.20261122.102", "draft": false, "prerelease": true},
+		{"tag_name": "voxt-v2.1.2", "draft": false, "prerelease": false}
+	]`
+	if out, err := runReleaseAppcast(t, betas, "feed-offers", "beta", "2.1.3-beta.20261122.102"); err != nil {
+		t.Errorf("the newest beta: %q, %v", out, err)
+	}
+	// What went wrong with 2.1.1 and 2.1.2: published, and the feed did not name them.
+	for _, c := range []struct{ name, in, channel, version string }{
+		{"a beta is not on the stable channel", betas, "stable", "2.1.3-beta.20261122.102"},
+		{"an older beta", betas, "beta", "2.1.3-beta.20261122.9"},
+		{"a draft", releases, "stable", "2.2.0"},
+		{"no Voxt release", `[{"tag_name": "v0.3.0", "draft": false, "prerelease": false}]`, "stable", "2.1.3"},
+	} {
+		if out, err := runReleaseAppcast(t, c.in, "feed-offers", c.channel, c.version); err == nil {
+			t.Errorf("%s: feed-offers %s %s printed %q", c.name, c.channel, c.version, out)
+		}
+	}
+}
+
+// TestPublishingChecksTheFeed: both ways a Voxt 2 update reaches installed
+// apps run feed-check right after: a beta in Voxt Release, once its
+// prerelease exists, and a release when it is published, where an older
+// build also installs the update (scripts/mac-update-feed-e2e.sh).
+func TestPublishingChecksTheFeed(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile("../.github/workflows/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	release := read("voxt-release.yaml")
+	publish := strings.Index(release, "- name: Publish the beta as a prerelease")
+	check := strings.Index(release, `scripts/release-appcast.sh feed-check beta "$VERSION" "$GITHUB_REPOSITORY"`)
+	if publish < 0 || check < publish {
+		t.Error("Voxt Release must check the beta feed after it publishes the prerelease")
+	}
+	// The beta before it then updates itself, which needs betas built with
+	// the update check.
+	for _, want := range []string{
+		`export GOFLAGS="${GOFLAGS:-} -tags=updatecheck"`,
+		`scripts/mac-update-feed-e2e.sh --from "$prev" "$GITHUB_REPOSITORY"`,
+	} {
+		if !strings.Contains(release, want) {
+			t.Errorf("Voxt Release lacks %q", want)
+		}
+	}
+	published := read("voxt-update-feed-check.yaml")
+	for _, want := range []string{
+		"release:\n    types: [published]",
+		"startsWith(github.event.release.tag_name, 'voxt-v')",
+		`scripts/release-appcast.sh feed-check "$channel" "$version" "$GITHUB_REPOSITORY"`,
+		`scripts/mac-update-feed-e2e.sh "$GITHUB_REPOSITORY"`,
+	} {
+		if !strings.Contains(published, want) {
+			t.Errorf("Voxt Update Feed Check lacks %q", want)
+		}
 	}
 }
 
@@ -337,5 +422,44 @@ func TestReleaseAppcastBetaChangelog(t *testing.T) {
 	}
 	if out, err := runReleaseAppcast(t, "", "beta-changelog", "2.1.2", "abc123"); err == nil {
 		t.Errorf("a release version got a beta section:\n%s", out)
+	}
+}
+
+// TestReleaseVerifyChecksTheAppsFeed: release-verify.sh, which every
+// signed build passes before it is uploaded, looks inside the app for the
+// feeds and the key of the release. An app with another feed or key can
+// never be updated, as 2.1.1 and 2.1.2 showed.
+func TestReleaseVerifyChecksTheAppsFeed(t *testing.T) {
+	data, err := os.ReadFile("scripts/release-verify.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`grep -aqF "$feed/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"`,
+		`grep -aqF "$feed/beta/update-darwin-arm64.json" "$app/Contents/MacOS/Voxt"`,
+		`grep -aqF "$(jq -r .updates.publicKey "$release")" "$app/Contents/MacOS/Voxt"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("release-verify.sh lacks %q", want)
+		}
+	}
+}
+
+// The step that updates the previous beta skips a build without the headless
+// check. It tells by a field of the check's report, which a build keeps as
+// text; it does not keep the flag names, so looking for those skipped every beta.
+func TestPreviousBetaIsToldByItsReport(t *testing.T) {
+	const field = `json:"notPublished"`
+	for file, want := range map[string]string{
+		"scripts/mac-update-feed-e2e.sh": "grep -aqF '" + field + "' \"$bin\"",
+		"update_check.go":                field,
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("%s has no %s", file, want)
+		}
 	}
 }

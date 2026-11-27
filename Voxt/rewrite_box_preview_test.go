@@ -44,7 +44,7 @@ func TestBoxPastedTextCollapseThreshold(t *testing.T) {
 		t.Fatal("a four-line paste stayed in the editor")
 	}
 	a.box.text = "after"
-	if got, want := a.boxTextContent(), "before\n"+long+"after"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nafter"; got != want {
 		t.Fatalf("request text %q, want %q", got, want)
 	}
 	if len(a.box.textSegments) != 2 {
@@ -70,12 +70,12 @@ func TestBoxImagePreviewMetadataAndFullView(t *testing.T) {
 	}
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if !has(tt, "draft.png") || !has(tt, "20 × 10") {
-		t.Fatalf("caption missing from %q", firstTexts(tt))
+	if hasExact(tt, "draft.png") || has(tt, "20 × 10") {
+		t.Fatalf("the thumbnail carries a caption: %q", firstTexts(tt))
 	}
 	click(t, tt, "Preview draft.png")
 	frames(tt)
-	if a.box.ui.previewImage != 1 || !has(tt, "Back to input") {
+	if a.box.ui.previewImage != 1 || !has(tt, "Back to input") || !has(tt, "20 × 10") {
 		t.Fatalf("full preview did not open: index %d, texts %q", a.box.ui.previewImage, firstTexts(tt))
 	}
 	click(t, tt, "Back to input")
@@ -96,7 +96,7 @@ func TestBoxSelectionUsesCollapsibleTextBlock(t *testing.T) {
 	snap(a, session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Recording, Selection: selection, SelectionVia: "copy"})
 	tt := hudTester(a.boxView, boxWinW, boxWinH)
 	frames(tt)
-	if !hasExact(tt, "Copied text · 45 chars") || !has(tt, "Show all") || has(tt, "third line") || has(tt, "fourth line") {
+	if !hasExact(tt, "Selected text · 45 chars") || !has(tt, "Show all") || has(tt, "third line") || has(tt, "fourth line") {
 		t.Fatalf("collapsed selection texts %q", firstTexts(tt))
 	}
 	click(t, tt, "Show all")
@@ -212,7 +212,7 @@ func TestAnswerCardInputChipsOpenOriginals(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	click(t, tt, "Copied text")
+	click(t, tt, "Selected text")
 	frames(tt)
 	if !has(tt, "fourth line") || !has(tt, "Back to answer") {
 		t.Fatalf("text original did not open: %q", firstTexts(tt))
@@ -242,9 +242,26 @@ func TestBoxWindowPreviewStaysVisibleUntilConfirmed(t *testing.T) {
 		t.Fatalf("Send did not confirm the preview: %v", err)
 	}
 	a.sessionChanged(session.Snapshot{ID: "v1", Kind: store.KindRewrite, State: session.Composing, Rev: 3})
-	if a.box.shown {
-		t.Fatal("the confirmed box stayed over the answer")
+	if !a.box.shown {
+		t.Fatal("the confirmed card left before its answer (wall 122)")
 	}
+}
+
+// VX-141: the Rewrite shortcut's stop sends. The window picture taken for
+// the request goes with it, without waiting for another Enter.
+func TestBoxShortcutStopSendsWithoutReview(t *testing.T) {
+	chat := &fakeChat{}
+	chat.set("Shorter.", 0)
+	set, keys, _ := fileSetup(t, "make it shorter", chat)
+	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
+	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, func(s *settings.Settings) {
+		set(s)
+		s.Privacy.SendWindow = true
+	}, keys)
+	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
+	a.postQueue(a.boxShortcutSend)
+	a.pump("the request, with no second Enter", func() bool { return len(chat.requests()) > 0 })
 }
 
 func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
@@ -256,6 +273,7 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 		s.Privacy.SendWindow = true
 	}, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first window review", func() bool {
 		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
@@ -284,8 +302,8 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	}
 	a.postQueue(func() {
 		a.boxSend()
-		if a.box.shown {
-			t.Error("the confirmed resend stayed visible")
+		if !a.box.shown {
+			t.Error("the confirmed resend left the screen (wall 122)")
 		}
 	})
 	a.postQueue(func() {
@@ -293,8 +311,8 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 		next.Rev++
 		next.Draft = "streaming"
 		a.sessionChanged(next)
-		if a.box.shown {
-			t.Error("a later draft reopened the confirmed resend")
+		if !a.box.shown {
+			t.Error("the card left when the answer began (wall 122)")
 		}
 	})
 	a.pump("the resend's answer", func() bool { return a.answer.open })
@@ -311,12 +329,13 @@ func TestBoxResendWindowPreviewCanBeConfirmed(t *testing.T) {
 	}
 }
 
-func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
+func TestBoxResendWithoutWindowReviewKeepsTheCard(t *testing.T) {
 	chat := &fakeChat{status: 400, delay: 100 * time.Millisecond}
 	set, keys, _ := fileSetup(t, "make it shorter", chat)
 	ev := script(t, hotkeyLine(0, "rewrite/0", proto.PhaseTrigger))
 	a := newSessionApp(t, helpertest.Opt("selection", "the selected text")+","+ev, set, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first failure", func() bool { return a.box.shown && a.box.err != "" })
 	sent := len(chat.requests())
@@ -324,8 +343,8 @@ func TestBoxResendWithoutWindowReviewHides(t *testing.T) {
 
 	a.postQueue(a.boxSend)
 	a.pump("the resend", func() bool { return a.box.sending != "" })
-	if a.box.shown {
-		t.Fatal("a resend without a window review stayed visible")
+	if !a.box.shown {
+		t.Fatal("the resend left the screen (wall 122)")
 	}
 	a.pump("the resend's answer", func() bool { return a.answer.open })
 	if a.sess.State != session.Done || len(chat.requests()) <= sent {
@@ -342,6 +361,7 @@ func TestBoxCloseCancelsResendWindowReview(t *testing.T) {
 		s.Privacy.SendWindow = true
 	}, keys)
 	a.pump("the recording", func() bool { return a.box.open && a.sess.State == session.Recording })
+	a.speak()
 	a.postQueue(a.boxSend)
 	a.pump("the first window review", func() bool {
 		return a.sess.ID == a.box.session && a.sess.State == session.Recognizing && len(a.sess.ImagePreview) > 0
@@ -444,7 +464,7 @@ func TestBoxLongPasteThroughEditorDoesNotDuplicate(t *testing.T) {
 	}
 	tt.Type("after")
 	frames(tt)
-	if got, want := a.boxTextContent(), "before\n"+long+"after"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nafter"; got != want {
 		t.Fatalf("request text after typing %q, want %q", got, want)
 	}
 }
@@ -461,7 +481,7 @@ func TestBoxTypingImmediatelyAfterPaste(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "before\n"+long+"X"; got != want {
+	if got, want := a.boxTextContent(), "before\n"+long+"\nX"; got != want {
 		t.Fatalf("request text after fast typing %q, want %q", got, want)
 	}
 }
@@ -482,7 +502,7 @@ func TestBoxCaretMovesAfterPastedBlock(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+long+"X world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\nX world"; got != want {
 		t.Fatalf("request text after typing at the suffix caret %q, want %q", got, want)
 	}
 }
@@ -501,7 +521,7 @@ func TestBoxSelectedReplacementFollowedByTyping(t *testing.T) {
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), long+"X"; got != want {
+	if got, want := a.boxTextContent(), long+"\nX"; got != want {
 		t.Fatalf("request text after selected replacement and typing %q, want %q", got, want)
 	}
 }
@@ -521,14 +541,14 @@ func TestBoxBackToBackPastesKeepTheirOrder(t *testing.T) {
 	second := "five\nsix\nseven\neight"
 	tt.SetClipboardData(transfer.TextData(first))
 	tt.Command("paste")
-	if got, want := a.boxTextContent(), "hello"+first+" world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+first+"\n world"; got != want {
 		t.Fatalf("request text after the first paste %q, want %q", got, want)
 	}
 	tt.SetClipboardData(transfer.TextData(second))
 	tt.Command("paste")
 	tt.Type("X")
 	frames(tt)
-	if got, want := a.boxTextContent(), "hello"+first+second+"X world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+first+"\n"+second+"\nX world"; got != want {
 		t.Fatalf("request text after back-to-back pastes %q, want %q", got, want)
 	}
 }
@@ -540,8 +560,8 @@ func TestBoxMixedPasteLengthsWithoutAFrame(t *testing.T) {
 		pastes []string
 		want   string
 	}{
-		{name: "long then short", pastes: []string{long, "x"}, want: long + "x"},
-		{name: "short then long", pastes: []string{"x", long}, want: "x" + long},
+		{name: "long then short", pastes: []string{long, "x"}, want: long + "\nx"},
+		{name: "short then long", pastes: []string{"x", long}, want: "x\n" + long},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, _, _ := newTestApp(t)
@@ -568,7 +588,7 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	if !a.boxPasteTextAt(-1, long, 5, 5) {
 		t.Fatal("the long paste was not taken")
 	}
-	if got, want := a.boxTextContent(), "hello"+long+" world"; got != want {
+	if got, want := a.boxTextContent(), "hello\n"+long+"\n world"; got != want {
 		t.Fatalf("request text %q, want %q", got, want)
 	}
 	a.boxRemoveText(1)
@@ -579,7 +599,7 @@ func TestBoxLongPasteUsesTheCaretAndKeepsTextEditable(t *testing.T) {
 	if !a.boxPasteTextAt(0, long, 3, 3) {
 		t.Fatal("a paste into an earlier typed segment was not taken")
 	}
-	if got, want := a.boxTextContent(), "HEL"+long+"LO world"; got != want {
+	if got, want := a.boxTextContent(), "HEL\n"+long+"\nLO world"; got != want {
 		t.Fatalf("text after pasting into an earlier segment %q, want %q", got, want)
 	}
 }

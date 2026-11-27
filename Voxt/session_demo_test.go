@@ -78,9 +78,15 @@ func TestAnswerCardMathRequestsPreview(t *testing.T) {
 	}
 }
 
+// sessionDemoRow gives the fixture's card a session row of two sessions.
+func sessionDemoRow(host *meetingDemoHost) {
+	host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Title: "Goroutines", Current: true}, {ID: 7}}
+}
+
 type sessionDemoActionCase struct {
 	name           string
 	fixture        string
+	setup          func(*meetingDemoHost) // changes the fixture's state before it is drawn
 	methods        []string
 	steps          []meetingDemoStep
 	notice         bool
@@ -108,6 +114,54 @@ func sessionDemoActionCases() []sessionDemoActionCase {
 				t.Fatal("close did not hide the local card")
 			}
 		}},
+		{name: "session row", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"switchSession", "newSession", "deleteSession"},
+			steps: steps("Session 2", "New session", "Delete session 1"), want: []string{"switchSession 7", "newSession", "deleteSession 3"}},
+		{name: "only session", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
+			host.sessionState.Card.Sessions = []sessionChipViewState{{ID: 3, Current: true}}
+		}, methods: []string{"deleteSession"}, steps: steps("Delete session 1"), want: []string{"deleteSession 3"}}, // the only session closes too
+		{name: "session row scrolls", fixture: "en/card-short", setup: func(host *meetingDemoHost) {
+			chips := []sessionChipViewState{{ID: 1, Title: "First"}}
+			for id := 2; id <= 30; id++ {
+				chips = append(chips, sessionChipViewState{ID: id, Current: id == 20})
+			}
+			host.sessionState.Card.Sessions = chips
+		}, check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+			// The current session came into view, which put the first out of it.
+			frames(tester)
+			now, ok := tester.Find("20 New session")
+			first, _ := tester.Find("1 First")
+			if !ok || now.W == 0 || first.W != 0 {
+				t.Fatalf("session 20 at %v (%v), session 1 at %v", now, ok, first)
+			}
+			// The row scrolls back to the first session and stays there.
+			tester.Scroll(now.X, now.Y+now.H/2, -100000, 0)
+			frames(tester)
+			if first, ok = tester.Find("1 First"); !ok || first.W == 0 {
+				t.Fatalf("after scrolling back, session 1 at %v (%v)", first, ok)
+			}
+		}},
+		{name: "session rename", fixture: "en/card-short", setup: sessionDemoRow, methods: []string{"renameSession", "nameSession"},
+			check: func(t *testing.T, host *meetingDemoHost, tester *ui.Tester) {
+				// A double click on the current session, a new title, Return.
+				if _, ok := tester.Find("2 New session"); !ok {
+					t.Fatalf("the untitled session is not named New session (%q)", tester.Texts())
+				}
+				box, ok := tester.Find("1 Goroutines")
+				if !ok {
+					t.Fatalf("no session chip (controls %q)", tester.AccessLabels())
+				}
+				x, y := box.X+box.W/2, box.Y+box.H/2
+				tester.ClickAt(x, y)
+				tester.ClickAt(x, y)
+				frames(tester)
+				// The field starts empty: typing needs no clearing first.
+				tester.Type("Go notes")
+				tester.Key(0, ui.KeyEnter)
+				frames(tester)
+				if want := []string{"renameSession 3", `nameSession 3 "Go notes"`}; !slices.Equal(host.calls, want) {
+					t.Fatalf("calls %q, want %q", host.calls, want)
+				}
+			}},
 		{name: "notice models", fixture: "en/session-problem-no-asr", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction models"}},
 		{name: "notice language", fixture: "en/session-problem-no-llm", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction language"}},
 		{name: "notice permissions", fixture: "en/session-problem-microphone", methods: []string{"noticeAction"}, notice: true, want: []string{"noticeAction permissions"}},
@@ -167,6 +221,9 @@ func TestSessionDemoActionControls(t *testing.T) {
 			originalText := ""
 			if original != nil && len(original.Blocks) > 0 {
 				originalText = original.Blocks[0].Text
+			}
+			if test.setup != nil {
+				test.setup(host)
 			}
 			tester := newSessionDemoActionTester(t, host)
 			if test.notice {
@@ -299,7 +356,8 @@ func clickSessionDemoBubbleCopy(t *testing.T, host *meetingDemoHost, tester *ui.
 	tester.Move(textBounds.X+textBounds.W/2, textBounds.Y+textBounds.H/2)
 	frames(tester)
 	text, _, _ := sessionCardBlockText(block, layout.CardSizes[card.SizeStep].Width(ovTestArea, host.sessionSeed.Overlay.Margin))
-	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX-35, titleBounds.Y-layout.BubblePadY+19)
+	// The Copy icon (24) right of the bubble, level with its top.
+	tester.ClickAt(textBounds.X+text.wrap+layout.BubblePadX+bubbleCopyGap+12, titleBounds.Y-layout.BubblePadY+12)
 	frames(tester)
 }
 

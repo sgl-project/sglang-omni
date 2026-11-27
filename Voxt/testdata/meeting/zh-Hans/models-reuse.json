@@ -40,8 +40,8 @@
         "on_disk": true,
         "installed_by": "已安装 · 来自 AudioSmith",
         "size_label": "还需下载 2.5 GB",
-        "show_download": false,
-        "download_label": "下载（2.5 GB）",
+        "show_download": true,
+        "download_label": "下载（725.7 MB）",
         "downloading": false,
         "download_fraction": 0,
         "about": "最准确。能识别口音、方言、人名，以及一句话里夹杂的多种语言，边说边出文字。"

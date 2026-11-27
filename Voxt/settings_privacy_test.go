@@ -21,7 +21,7 @@ func TestPrivacySendWindow(t *testing.T) {
 	openPrivacy(t, a, tt)
 	tt.Scroll(float32(windowWidth)*0.6, 900, 0, -10000)
 	frames(tt)
-	if !has(tt, "sends it to the language model with the text") {
+	if !has(tt, "sends a screenshot of the window with the text") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the window to the language model")
@@ -47,7 +47,7 @@ func TestPrivacyHistoryExplainsReopen(t *testing.T) {
 }
 
 // The list names the content and destination of each local or API request,
-// including optional images and Translate's fallback (#4159).
+// including optional images and automatic or Translate-only fallback (#4159).
 func TestPrivacyNamesBothDataPaths(t *testing.T) {
 	a, _, tt := newTestApp(t)
 	openPrivacy(t, a, tt)
@@ -63,7 +63,7 @@ func TestPrivacyNamesBothDataPaths(t *testing.T) {
 		"A request to a language-model server on this Mac",
 		"stays on this Mac",
 		"A request to an external API goes to the provider handling it",
-		"If Translate uses your fallback model, that provider gets the same request too",
+		"If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too",
 	} {
 		if !has(tt, want) {
 			t.Errorf("the list does not say %q: %q", want, firstTexts(tt))
@@ -73,14 +73,14 @@ func TestPrivacyNamesBothDataPaths(t *testing.T) {
 
 // TestPrivacySendClipboardImage: sending the copied image with Rewrite is
 // off by default; the switch saves it, asks for no permission, and its
-// note says what goes and what does not.
+// note says what goes and to whom (docs/settings.md lists what does not).
 func TestPrivacySendClipboardImage(t *testing.T) {
 	a, fs, tt := newTestApp(t)
 	if a.settings.Get().Privacy.SendClipboardImage {
 		t.Fatal("on by default")
 	}
 	openPrivacy(t, a, tt)
-	if !has(tt, "Copied text, and copied files that are not images, are not sent") {
+	if !has(tt, "sends the image you copied to the language model") {
 		t.Fatalf("no explanation: %q", firstTexts(tt))
 	}
 	click(t, tt, "Send the copied image with Rewrite")

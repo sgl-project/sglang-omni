@@ -70,8 +70,9 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 			case "updates-release":
 				releaseDialog(c, *fixture.state.UpdatesRelease, host, &host.updatesUI)
 			case "home":
-				homePage(c, fixture.state.Home, host, &host.historyUI, nil)
-				historyDeleteDialog(c, &host.historyUI, host)
+				state := *fixture.state.Home
+				state.InsightsClosed = host.insightsClosed
+				homePage(c, &state, host)
 			case "onboarding":
 				onboardingView(c, *fixture.state.Onboarding, host, &host.onboardingUI)
 			case "appenhance":
@@ -81,6 +82,8 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				dictionaryPage(c, fixture.state.Dictionary, host, &host.dictionaryUI)
 			case "notes":
 				notesPage(c, fixture.state.Notes, host, &host.notesUI)
+			case "snippets":
+				snippetsPage(c, fixture.state.Snippets, host, &host.snipUI)
 			case "remote":
 				local := remoteLocalUI{wait: &host.remoteWaitUI, dialog: &host.remoteDialogUI}
 				ui.Scroll(c.Key("demo-remote")).Grow(1).Children(func() {
@@ -115,9 +118,19 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 				modelAssignmentDialog(c, state.Assignment, host, &host.modelsUI.assign)
 			case "feature":
 				state := host.featureViewState(fixture.state.Feature)
-				featurePage(c, &state, host, &host.feature.local, host)
+				columnPageHeader(c, state.Title, nil)
+				ui.Scroll(c.Key(state.Prefix + "-scroll")).Grow(1).MinHeight(0).Children(func() {
+					pageColumn(c).Gap(px(c.Theme(), sp3)).Children(func() {
+						featureSettings(c, &state, host, &host.feature.local, host)
+					})
+				})
 			case "settings":
-				settingsDialog(c, *fixture.state.Settings, host, host.settingsDialogUI)
+				state := *fixture.state.Settings
+				if state.Feature != nil {
+					feature := host.featureViewState(state.Feature)
+					state.Feature = &feature
+				}
+				settingsDialog(c, state, host, host.settingsDialogUI, host)
 			case "meeting-settings":
 				dialogFrame(c, "mt-set", &host.pageUI.setOpen, i18n.T("Meeting settings"), "", 560, func() {
 					state := *fixture.state.MeetingSettings
@@ -145,7 +158,7 @@ func meetingDemoView(c *ui.Context, host *meetingDemoHost) {
 					announcementDialog(c, fixture.state.Announcement, &host.announcementOpen)
 				})
 			case "shell-nav":
-				sidebarFrame(c, fixture.state.Nav, fixture.state.Notices, host, host, &host.navUI, func() {
+				sidebarFrame(c, fixture.state.Nav, fixture.state.Notices, nil, host, host, host, &host.navUI, func() {
 					ui.Column(c).Grow(1).Center().Children(func() { ui.Text(c, fixture.name) })
 				})
 			case "shell-notices":

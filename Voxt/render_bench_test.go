@@ -81,7 +81,6 @@ func benchmarkRenderFrames(b *testing.B, tt *ui.Tester, sentinel string) {
 func BenchmarkW0Pages(b *testing.B) {
 	sentinels := map[string]string{
 		"/home": "Today", "/history": "Benchmark history result",
-		"/transcribe": "Models", "/translate": "Models", "/rewrite": "Models",
 		"/app-enhancement": "Team chat", modelsPath: "Speech models", remotePath: "On this Mac",
 		"/dictionary": "BenchmarkTerm", "/notes": "Keys to record a note", "/meetings": "Benchmark meeting title", "/logs": "benchmark log line",
 	}
@@ -98,9 +97,10 @@ func BenchmarkW0Pages(b *testing.B) {
 			a, _, tt := newRenderBenchmarkApp(b)
 			a.navigate("/settings/" + section.id)
 			sentinel := map[string]string{
+				"transcribe": "Models", "translate": "Models", "rewrite": "Models",
 				"general": "Languages", "permissions": "Microphone", "audio": "Recognition",
 				"overlay": "Preview", "shortcuts": "Transcribe", "appearance": "Sidebar",
-				"privacy": "What leaves this Mac", "storage": "Data folder", "about": "Self-check",
+				"privacy": "What leaves this Mac", "storage": "Data folder", "experimental": "Sessions (experimental)", "about": "Self-check",
 			}[section.id]
 			benchmarkRenderFrames(b, tt, sentinel)
 		})
@@ -121,6 +121,7 @@ func benchmarkFirstFrame(b *testing.B, a *app, sentinel string) {
 	b.Helper()
 	fresh := func() *app {
 		fresh := &app{lib: a.lib, shellState: newShellState(), helperLink: helperLink{host: a.host}}
+		fresh.now = a.now
 		fresh.router = ui.NewRouter(a.shownPath())
 		fresh.settings, fresh.prefs = a.settings, a.prefs
 		fresh.notes, fresh.notices, fresh.logs = a.notes, a.notices, a.logs

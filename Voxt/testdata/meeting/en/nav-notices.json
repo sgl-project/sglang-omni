@@ -25,24 +25,6 @@
         "title": "Features",
         "pages": [
           {
-            "path": "/transcribe",
-            "title": "Transcribe",
-            "keys": "⌘3",
-            "selected": false
-          },
-          {
-            "path": "/translate",
-            "title": "Translate",
-            "keys": "⌘4",
-            "selected": false
-          },
-          {
-            "path": "/rewrite",
-            "title": "Rewrite",
-            "keys": "⌘5",
-            "selected": false
-          },
-          {
             "path": "/notes",
             "title": "Notes",
             "selected": false
@@ -67,6 +49,11 @@
           {
             "path": "/dictionary",
             "title": "Dictionary",
+            "selected": false
+          },
+          {
+            "path": "/snippets",
+            "title": "Snippets",
             "selected": false
           }
         ]
@@ -136,16 +123,14 @@
       "severity": "warning",
       "title": "Second card",
       "body": "Before that.",
-      "action_label": "Open",
-      "time_hint": "Jan 2 07:04"
+      "action_label": "Open"
     },
     {
       "id": "fixture-1",
       "severity": "info",
       "title": "First card",
       "body": "The newest thing that happened.",
-      "action_label": "Open",
-      "time_hint": "Jan 2 07:04"
+      "action_label": "Open"
     }
   ]
 }

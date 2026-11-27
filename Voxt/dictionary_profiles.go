@@ -1,7 +1,7 @@
 package main
 
-// Dictionary profiles: named sets of terms, switched in the bar above the
-// list. The repository reads and writes the active profile, so sessions,
+// Dictionary profiles: named sets of terms, switched from the menu beside
+// the page's title. The repository reads and writes the active profile, so sessions,
 // meetings, imports and learning follow the same choice as this page.
 // Other programs switch it through the voxtnew:// URL scheme
 // (docs/dictionary-profiles.md; dictionary_profiles_controller.go).
@@ -9,7 +9,6 @@ package main
 import (
 	"github.com/egoist/mygo/ui"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
-	"github.com/sgl-project/sglang-omni/Voxt/internal/icons"
 )
 
 // dictionaryProfileEdit is the New or Rename profile dialog: a new profile
@@ -19,36 +18,37 @@ type dictionaryProfileEdit struct {
 	id, name, err string
 }
 
-func dictionaryProfileBar(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
-	t := c.Theme()
+// dictionaryProfilePicker is the active profile beside the page's title,
+// a menu of the profiles with a check by the active one, and below them
+// New, Rename and Delete. The page shows it only with more than one
+// profile (dictionaryHeader).
+func dictionaryProfilePicker(c *ui.Context, state *dictionaryViewState, actions dictionaryActions, local *dictionaryLocalUI) {
 	profiles := state.Profiles
 	if len(profiles) == 0 {
 		return
 	}
-	selected, names := 0, make([]string, len(profiles))
-	for index, profile := range profiles {
-		names[index] = profile.Name
+	active := profiles[0]
+	for _, profile := range profiles {
 		if profile.Active {
-			selected = index
+			active = profile
 		}
 	}
-	active := profiles[selected]
-	ui.Row(c).Gap(px(t, sp2)).AlignItems(ui.Center).Wrap().Children(func() {
-		caption(c, i18n.T("Active profile"))
-		if segmentedFit(c.Key("dict-profile"), &selected, names...).Label(i18n.T("Active dictionary profile")).Changed() {
-			actions.switchDictionaryProfile(profiles[selected].ID)
+	dropButton(c.Key("dict-profile"), dictionaryIcon, active.Name).Label(i18n.T("Active dictionary profile")).Menu(func(menu *ui.Menu) {
+		for _, profile := range profiles {
+			if menu.Item(profile.Name).Checked(profile.Active).Chosen() && !profile.Active {
+				actions.switchDictionaryProfile(profile.ID)
+			}
 		}
-		if ghostIconButton(c.Key("dict-profile-new"), icons.Add, i18n.T("New profile")).Clicked() {
+		menu.Separator()
+		if menu.Item(i18n.T("New profile…")).Chosen() {
 			actions.openDictionaryProfileEdit("")
 		}
-		moreMenu(c.Key("dict-profile-more"), i18n.T("Profile actions"), func(menu *ui.Menu) {
-			if menu.Item(i18n.T("Rename “%s”…", active.Name)).Disabled(!active.Active).Chosen() {
-				actions.openDictionaryProfileEdit(active.ID)
-			}
-			if menu.Item(i18n.T("Delete “%s”…", active.Name)).Disabled(len(profiles) <= 1).Chosen() {
-				local.profileDeleteOpen, local.profileDeleteID = true, active.ID
-			}
-		})
+		if menu.Item(i18n.T("Rename “%s”…", active.Name)).Disabled(!active.Active).Chosen() {
+			actions.openDictionaryProfileEdit(active.ID)
+		}
+		if menu.Item(i18n.T("Delete “%s”…", active.Name)).Disabled(len(profiles) <= 1).Chosen() {
+			local.profileDeleteOpen, local.profileDeleteID = true, active.ID
+		}
 	})
 }
 

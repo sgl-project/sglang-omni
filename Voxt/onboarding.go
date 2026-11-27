@@ -228,7 +228,7 @@ func (a *app) closeOnboarding() {
 	a.shortcutPrompt() // settings_shortcuts_family.go: it waited for the guide
 }
 
-// obGo moves to a step (Back, Continue, Skip).
+// obGo moves to a step (a previous breadcrumb, Back, Continue, Skip).
 func (a *app) obGo(step int) {
 	if a.obBusy() {
 		return
@@ -245,12 +245,36 @@ func (a *app) obGo(step int) {
 	}
 }
 
-// obSpeech is the pack's speech model, the same on every Mac: 1.7B (8bit)
-// runs well with 8 GB of memory too.
+// obSpeech is the pack's speech model: the catalogue's recommended one,
+// Qwen3-ASR 1.7B (8bit), which runs well with 8 GB of memory too.
 func (a *app) obSpeech() string { return models.ASRAccurate }
 
-// obPack is the recommended pack: what the guide downloads.
-func (a *app) obPack() []string { return []string{a.obSpeech(), models.VADSilero} }
+// obPack is the recommended pack: what the guide downloads. The speech
+// model's draft comes with it, so that Faster transcription is on from
+// the start (settings.Models.FasterOn). The catalogue names the draft
+// (Model.Draft); with none, the pack is the speech model and the VAD.
+func (a *app) obPack() []string {
+	pack := []string{a.obSpeech()}
+	if d := a.obDraft(); d != "" {
+		pack = append(pack, d)
+	}
+	return append(pack, models.VADSilero)
+}
+
+// obDraft is the pack speech model's catalogue draft, "" when the
+// catalogue names none.
+func (a *app) obDraft() string {
+	m, _ := a.models.Lookup(a.obSpeech())
+	return m.Draft
+}
+
+// obDownload downloads the pack's speech model and its draft.
+func (a *app) obDownload() {
+	a.downloadModel(a.obSpeech())
+	if d := a.obDraft(); d != "" {
+		a.downloadModel(d)
+	}
+}
 
 // downloadPercent is how much of a download has come, in percent.
 func downloadPercent(st models.Status) int {
@@ -260,12 +284,20 @@ func downloadPercent(st models.Status) int {
 	return int(100 * float64(st.Done) / float64(st.Total))
 }
 
-// obDownloadLeft is what the recommended speech model still has to
-// download, for the buttons that start it.
+// obDownloadLeft is what the recommended speech model and its draft still
+// have to download, for the buttons that start it.
 func (a *app) obDownloadLeft() string {
-	id := a.obSpeech()
-	m, _ := models.Lookup(id)
-	return uitext.HumanBytes(m.Size() - a.modelStatus[id].Done)
+	var left int64
+	for _, id := range []string{a.obSpeech(), a.obDraft()} {
+		if id == "" {
+			continue
+		}
+		if st := a.modelStatus[id]; !st.Installed {
+			m, _ := a.models.Lookup(id)
+			left += m.Size() - st.Done
+		}
+	}
+	return uitext.HumanBytes(left)
 }
 
 // obSurvey looks for the pack's models and their alternatives in the
@@ -325,7 +357,7 @@ func (a *app) onboardingTryLanguage() {
 }
 
 func (a *app) onboardingDownloadAndContinue() {
-	a.downloadModel(a.obSpeech())
+	a.obDownload()
 	a.obGo(a.ob.step + 1)
 }
 

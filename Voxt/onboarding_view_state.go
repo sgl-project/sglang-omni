@@ -50,6 +50,7 @@ type onboardingPermissionRowViewState struct {
 	CanOpen    bool   `json:"can_open"`
 	AskAction  string `json:"ask_action"`
 	AskTooltip string `json:"ask_tooltip"`
+	Tip        string `json:"tip,omitempty"` // the status's tooltip
 }
 
 type onboardingPermissionsViewState struct {
@@ -57,6 +58,7 @@ type onboardingPermissionsViewState struct {
 	Microphone  onboardingPermissionRowViewState `json:"microphone"`
 	Access      onboardingPermissionRowViewState `json:"access"`
 	Speech      onboardingPermissionRowViewState `json:"speech"`
+	SystemAudio onboardingPermissionRowViewState `json:"system_audio"`
 }
 
 type onboardingAlternativeViewState struct {
@@ -217,6 +219,9 @@ type onboardingModelStateInput struct {
 	InstalledASR  []local.Model
 	Language      local.Model
 	LanguageReady bool
+	// PackLeft is what the pack's speech model and its catalogue draft
+	// still have to download, formatted (the pack counts both, #4067).
+	PackLeft string
 }
 
 type onboardingWelcomeCacheKey struct {
@@ -237,6 +242,7 @@ type onboardingViewStateInput struct {
 	PermissionMic       permission.State
 	PermissionSpeech    permission.State
 	PermissionAccess    bool
+	SystemAudioAsked    bool
 	Models              onboardingModelStateInput
 	SpeechAbout         string
 	AlternativeUseLabel string
@@ -344,10 +350,10 @@ func buildOnboardingViewState(translator *i18n.Translator, input onboardingViewS
 		state.Subtitle = translator.T("Translate turns the selected text, or what you say, into the language you choose. Translate the sample below, or press the shortcut (or Start) and say a sentence.")
 	case obRewrite:
 		state.Title = translator.T("Try Rewrite")
-		state.Subtitle = translator.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and ask for something short. Outside this guide, the Rewrite shortcut opens a card with the microphone on: speak what to do, add text or images, then press Enter to send or Esc to close.")
+		state.Subtitle = translator.T("Rewrite writes what you ask for, or changes the selected text as you say. Press the shortcut (or Start) and say what to write.")
 	default:
 		state.Title = translator.T("More to explore")
-		state.Subtitle = translator.T("Voxt is ready. Two more things make it yours.")
+		state.Subtitle = translator.T("Go try Voxt. Two more things make it yours.")
 	}
 	if input.Step == obWelcome {
 		state.Welcome = &onboardingWelcomeViewState{LegacyAvailable: input.LegacyAvailable}
@@ -428,6 +434,7 @@ func (a *app) onboardingModelsInput() onboardingModelStateInput {
 	return onboardingModelStateInput{
 		SpeechID: a.obSpeech(), PackIDs: a.obPack(), Status: a.modelStatus, Found: a.ob.found,
 		InstalledASR: a.installed(local.ASR), Language: language, LanguageReady: languageReady,
+		PackLeft: a.obDownloadLeft(),
 	}
 }
 
@@ -443,7 +450,7 @@ func (a *app) onboardingViewStateForTranslator(translator *i18n.Translator) onbo
 	}
 	input := onboardingViewStateInput{
 		Open: a.ob.open, Step: a.ob.step, Passed: a.ob.passed, Tries: a.ob.tries, Session: a.sess,
-		Settings: a.prefs, PermissionMic: a.perms.mic, PermissionSpeech: a.perms.speech, PermissionAccess: a.perms.access,
+		Settings: a.prefs, PermissionMic: a.perms.mic, PermissionSpeech: a.perms.speech, PermissionAccess: a.perms.access, SystemAudioAsked: a.perms.systemAudioAsked,
 		Block: a.ob.block, Hint: a.ob.hint, Legacy: a.ob.legacy,
 		LegacyAvailable: a.ob.legacyAvailable, LegacyDone: a.ob.legacyDone, HotkeysInstalled: a.hotkeys.Installed, Now: time.Now(),
 	}

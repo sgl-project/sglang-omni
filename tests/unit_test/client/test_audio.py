@@ -1,8 +1,14 @@
+import asyncio
 import io
+import shutil
+import sys
+from typing import Literal
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+import sglang_omni.client.audio as client_audio
 from sglang_omni.client.audio import (
     FORMAT_MIME_TYPES,
     encode_audio,
@@ -10,6 +16,8 @@ from sglang_omni.client.audio import (
     resample_linear,
     to_numpy,
 )
+from sglang_omni.client.types import GenerateRequest
+from tests.unit_test.fixtures.speech_fakes import FixedSpeechClient
 
 
 def stereo_test_signal() -> tuple[np.ndarray, int]:
@@ -129,16 +137,16 @@ def test_encode_audio_preserves_stereo_content(
     response_format: str, expected_sample_rate: int
 ):
     audio, sample_rate = stereo_test_signal()
-    encoded, mime = encode_audio(
+    encoded_audio = encode_audio(
         audio,
         response_format=response_format,
         sample_rate=sample_rate,
     )
 
-    decoded_sample_rate, decoded = decode_audio(encoded)
+    decoded_sample_rate, decoded = decode_audio(encoded_audio.audio_bytes)
 
-    assert mime == FORMAT_MIME_TYPES[response_format]
-    assert decoded_sample_rate == expected_sample_rate
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES[response_format]
+    assert encoded_audio.sample_rate == decoded_sample_rate == expected_sample_rate
     assert_stereo_content(decoded, decoded_sample_rate)
 
 
@@ -150,15 +158,15 @@ def test_encode_audio_flac_preserves_stereo_orientations(channel_last: bool):
     if channel_last:
         audio = audio.T
 
-    encoded, mime = encode_audio(
+    encoded_audio = encode_audio(
         audio,
         response_format="flac",
         sample_rate=sample_rate,
     )
 
-    assert mime == FORMAT_MIME_TYPES["flac"]
-    assert_flac(encoded)
-    decoded_sample_rate, decoded = decode_audio(encoded)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES["flac"]
+    assert_flac(encoded_audio.audio_bytes)
+    decoded_sample_rate, decoded = decode_audio(encoded_audio.audio_bytes)
     assert decoded_sample_rate == sample_rate
     assert_stereo_content(decoded, decoded_sample_rate)
 
@@ -168,15 +176,15 @@ def test_encode_audio_flac_preserves_mono():
     time = np.arange(sample_rate // 2, dtype=np.float32) / sample_rate
     audio = 0.35 * np.sin(2 * np.pi * 440 * time)
 
-    encoded, mime = encode_audio(
+    encoded_audio = encode_audio(
         audio,
         response_format="flac",
         sample_rate=sample_rate,
     )
 
-    assert mime == FORMAT_MIME_TYPES["flac"]
-    assert_flac(encoded)
-    decoded_sample_rate, decoded = decode_audio(encoded)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES["flac"]
+    assert_flac(encoded_audio.audio_bytes)
+    decoded_sample_rate, decoded = decode_audio(encoded_audio.audio_bytes)
     assert decoded_sample_rate == sample_rate
     assert decoded.shape[0] == 1
 
@@ -186,25 +194,12 @@ def test_encode_audio_opus():
     t = np.linspace(0, 1, sr, endpoint=False)
     audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
 
-    encoded_bytes, mime = encode_audio(audio, response_format="opus", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["opus"]
+    encoded_audio = encode_audio(audio, response_format="opus", sample_rate=sr)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES["opus"]
     try:
-        assert encoded_bytes.startswith(b"OggS")
+        assert encoded_audio.audio_bytes.startswith(b"OggS")
     except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
-
-
-def test_encode_audio_opus_resampling():
-    sr = 44100  # invalid sample rate for Opus
-    t = np.linspace(0, 1, sr, endpoint=False)
-    audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
-
-    encoded_bytes, mime = encode_audio(audio, response_format="opus", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["opus"]
-    try:
-        assert encoded_bytes.startswith(b"OggS")
-    except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
+        assert encoded_audio.audio_bytes.startswith(b"RIFF")
 
 
 def test_encode_audio_aac():
@@ -212,27 +207,13 @@ def test_encode_audio_aac():
     t = np.linspace(0, 1, sr, endpoint=False)
     audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
 
-    encoded_bytes, mime = encode_audio(audio, response_format="aac", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["aac"]
+    encoded_audio = encode_audio(audio, response_format="aac", sample_rate=sr)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES["aac"]
     try:
-        assert encoded_bytes[0] == 0xFF
-        assert (encoded_bytes[1] & 0xF0) == 0xF0
+        assert encoded_audio.audio_bytes[0] == 0xFF
+        assert (encoded_audio.audio_bytes[1] & 0xF0) == 0xF0
     except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
-
-
-def test_encode_audio_aac_resampling():
-    sr = 12345  # invalid sample rate for AAC
-    t = np.linspace(0, 1, sr, endpoint=False)
-    audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
-
-    encoded_bytes, mime = encode_audio(audio, response_format="aac", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["aac"]
-    try:
-        assert encoded_bytes[0] == 0xFF
-        assert (encoded_bytes[1] & 0xF0) == 0xF0
-    except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
+        assert encoded_audio.audio_bytes.startswith(b"RIFF")
 
 
 def test_encode_audio_mp3():
@@ -240,22 +221,184 @@ def test_encode_audio_mp3():
     t = np.linspace(0, 1, sr, endpoint=False)
     audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
 
-    encoded_bytes, mime = encode_audio(audio, response_format="mp3", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["mp3"]
+    encoded_audio = encode_audio(audio, response_format="mp3", sample_rate=sr)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES["mp3"]
     try:
-        assert encoded_bytes.startswith(b"ID3")
+        assert encoded_audio.audio_bytes.startswith(b"ID3")
     except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
+        assert encoded_audio.audio_bytes.startswith(b"RIFF")
 
 
-def test_encode_audio_mp3_resampling():
-    sr = 12345  # invalid sample rate for MP3
-    t = np.linspace(0, 1, sr, endpoint=False)
-    audio = np.sin(2 * np.pi * 440 * t).astype(np.float32)
+def test_output_sample_rate_filters_aliases() -> None:
+    """Downsampling must remove frequencies above the output Nyquist frequency."""
+    source_sample_rate = 24000
+    output_sample_rate = 8000
+    seconds = np.arange(source_sample_rate, dtype=np.float32) / source_sample_rate
+    audio = 0.2 * np.sin(2 * np.pi * 1000 * seconds)
+    audio += 0.2 * np.sin(2 * np.pi * 10000 * seconds)
+    encoded = encode_audio(
+        audio,
+        response_format="pcm",
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+    ).audio_bytes
+    samples = np.frombuffer(encoded, dtype="<i2").astype(np.float32) / 32768
+    assert samples.size == output_sample_rate
+    assert dominant_frequency(samples, output_sample_rate) == pytest.approx(1000, abs=3)
+    interior = samples[output_sample_rate // 10 : -output_sample_rate // 10]
+    assert np.sqrt(np.mean(interior**2)) == pytest.approx(0.2 / np.sqrt(2), abs=0.003)
 
-    encoded_bytes, mime = encode_audio(audio, response_format="mp3", sample_rate=sr)
-    assert mime == FORMAT_MIME_TYPES["mp3"]
-    try:
-        assert encoded_bytes.startswith(b"ID3")
-    except ImportError:
-        assert encoded_bytes.startswith(b"RIFF")
+
+def test_output_sample_rate_preserves_stereo() -> None:
+    """Resampling must preserve channel orientation and each channel's pitch."""
+    audio, source_sample_rate = stereo_test_signal()
+    output_sample_rate = 16000
+    encoded = encode_audio(
+        audio,
+        response_format="wav",
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+    ).audio_bytes
+    actual_sample_rate, decoded = decode_audio(encoded)
+    assert actual_sample_rate == output_sample_rate
+    assert decoded.shape == (2, output_sample_rate // 2)
+    assert_stereo_content(decoded, actual_sample_rate)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "output_sample_rate"),
+    [
+        ("wav", 12345),
+        ("wav", 192000),
+        ("flac", 12345),
+        ("flac", 65540),
+        ("mp3", 44100),
+        ("aac", 22050),
+        ("opus", 48000),
+    ],
+)
+def test_encode_audio_honors_custom_output_sample_rate(
+    response_format: str, output_sample_rate: int
+) -> None:
+    """Encoded audio must actually decode at the requested rate, including arbitrary WAV/FLAC rates."""
+    source_sample_rate = 24000
+    seconds = np.arange(source_sample_rate, dtype=np.float32) / source_sample_rate
+    audio = 0.25 * np.sin(2 * np.pi * 1000 * seconds)
+    encoded_audio = encode_audio(
+        audio,
+        response_format=response_format,
+        sample_rate=source_sample_rate,
+        output_sample_rate=output_sample_rate,
+        allow_format_fallback=False,
+    )
+    decoded_sample_rate, decoded = decode_audio(encoded_audio.audio_bytes)
+    assert encoded_audio.mime_type == FORMAT_MIME_TYPES[response_format]
+    assert encoded_audio.sample_rate == decoded_sample_rate == output_sample_rate
+    assert dominant_frequency(
+        decoded.reshape(-1), decoded_sample_rate
+    ) == pytest.approx(1000, abs=3)
+
+
+@pytest.mark.parametrize(
+    ("response_format", "output_sample_rate"),
+    [("wav", 7349), ("wav", True), ("wav", 192001), ("mp3", 12345), ("opus", 24000)],
+)
+def test_encode_audio_rejects_invalid_output_sample_rate(
+    response_format: str, output_sample_rate: int | bool
+) -> None:
+    """Direct Python encoding must reject invalid rates without relying on HTTP validation."""
+    with pytest.raises(ValueError, match="sample_rate"):
+        encode_audio(
+            np.zeros(2400, dtype=np.float32),
+            response_format=response_format,
+            output_sample_rate=output_sample_rate,
+        )
+
+
+def test_output_resampling_rejects_empty_result() -> None:
+    """A source sample shorter than half an output period must not produce a header-only WAV."""
+    with pytest.raises(ValueError, match="No audio samples remain"):
+        encode_audio(
+            np.ones(1, dtype=np.float32), sample_rate=24000, output_sample_rate=7350
+        )
+
+
+def test_speech_rejects_unsupported_output_rate_before_generation() -> None:
+    """An unsupported rate must not submit a direct Python synthesis request."""
+    speech_client = FixedSpeechClient(np.zeros(2400, dtype=np.float32))
+    with pytest.raises(ValueError, match="sample_rate for FLAC"):
+        asyncio.run(
+            speech_client.speech(
+                GenerateRequest(prompt="Hello."),
+                request_id="unsupported-flac-rate",
+                response_format=" FLAC ",
+                output_sample_rate=65536,
+            )
+        )
+    assert speech_client.requests == []
+
+
+@pytest.mark.parametrize(
+    (
+        "encoding_backend",
+        "response_format",
+        "source_sample_rate",
+        "output_sample_rate",
+        "expected_sample_rate",
+    ),
+    [
+        ("pyav", "mp3", 96000, None, 48000),
+        ("pyav", "opus", 16000, None, 48000),
+        ("pydub", "aac", 20000, None, 22050),
+        ("pydub", "opus", 24000, 48000, 48000),
+        ("wav", "mp3", 96000, None, 96000),
+        ("wav", "aac", 24000, 22050, 22050),
+    ],
+)
+def test_speech_sample_rate_metadata_matches_encoded_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    encoding_backend: Literal["pyav", "pydub", "wav"],
+    response_format: str,
+    source_sample_rate: int,
+    output_sample_rate: int | None,
+    expected_sample_rate: int,
+) -> None:
+    """Speech metadata must match decoded audio even when the preferred encoder fails."""
+    if encoding_backend != "pyav":
+        monkeypatch.setattr(
+            client_audio,
+            "encode_with_pyav",
+            Mock(side_effect=RuntimeError("PyAV encoder unavailable")),
+        )
+    else:
+        pass
+    if encoding_backend in ("pyav", "wav"):
+        monkeypatch.setitem(sys.modules, "pydub", None)
+    else:
+        pytest.importorskip("pydub")
+        if shutil.which("ffmpeg") is None:
+            pytest.skip("ffmpeg is required for pydub encoding")
+        else:
+            pass
+    time_seconds = (
+        np.arange(source_sample_rate // 2, dtype=np.float32) / source_sample_rate
+    )
+    waveform = 0.2 * np.sin(2 * np.pi * 440 * time_seconds)
+    speech_client = FixedSpeechClient(waveform, source_sample_rate)
+    result = asyncio.run(
+        speech_client.speech(
+            GenerateRequest(prompt="Hello."),
+            request_id="encoded-sample-rate",
+            response_format=response_format,
+            output_sample_rate=output_sample_rate,
+            allow_format_fallback=encoding_backend == "wav",
+        )
+    )
+    decoded_sample_rate, decoded = decode_audio(result.audio_bytes)
+    assert result.sample_rate == decoded_sample_rate == expected_sample_rate
+    assert dominant_frequency(
+        decoded.reshape(-1), decoded_sample_rate
+    ) == pytest.approx(440, abs=3)
+    expected_format = "wav" if encoding_backend == "wav" else response_format
+    assert result.format == expected_format
+    assert result.mime_type == FORMAT_MIME_TYPES[expected_format]

@@ -1,0 +1,112 @@
+{
+  "name": "settings-experimental-normal",
+  "kind": "settings",
+  "settings": {
+    "open": true,
+    "path": "/experimental",
+    "shown_path": "/settings/experimental",
+    "sections": [
+      {
+        "id": "general",
+        "title": "通用",
+        "english": "General language menu bar login"
+      },
+      {
+        "id": "transcribe",
+        "title": "转录",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "翻译",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "改写",
+        "english": "Rewrite answer shortcut"
+      },
+      {
+        "id": "models",
+        "title": "语音识别模型",
+        "english": "Speech models download delete install recognition"
+      },
+      {
+        "id": "language-models",
+        "title": "语言模型",
+        "english": "Language models services providers API"
+      },
+      {
+        "id": "permissions",
+        "title": "权限",
+        "english": "Permissions microphone accessibility privacy"
+      },
+      {
+        "id": "audio",
+        "title": "音频",
+        "english": "Audio microphone input device sounds silence"
+      },
+      {
+        "id": "overlay",
+        "title": "浮窗样式",
+        "english": "Overlay style position opacity corners recording pill"
+      },
+      {
+        "id": "shortcuts",
+        "title": "快捷键",
+        "english": "Shortcuts hotkeys keys fn"
+      },
+      {
+        "id": "appearance",
+        "title": "外观",
+        "english": "Appearance theme color palette transparency size sidebar"
+      },
+      {
+        "id": "privacy",
+        "title": "隐私",
+        "english": "Privacy history audio logs"
+      },
+      {
+        "id": "storage",
+        "title": "存储",
+        "english": "Storage disk data folder reset"
+      },
+      {
+        "id": "experimental",
+        "title": "实验功能",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
+        "id": "about",
+        "title": "诊断与关于",
+        "english": "Diagnostics about version bug report"
+      }
+    ],
+    "experimental": {
+      "sessions": [
+        {
+          "slot": 3,
+          "title": "下一个会话",
+          "recorder": {
+            "helper_records_keys": false,
+            "displayed_keys": "⌥Tab",
+            "typed": {
+              "valid": true,
+              "canonical_keys": "Option+Tab",
+              "formatted_keys": "⌥Tab",
+              "error_text": ""
+            },
+            "raw_keys": "",
+            "custom": false,
+            "typing": false,
+            "edited": false,
+            "unknown": false,
+            "record_denied": false,
+            "focused": false
+          },
+          "problems": null
+        }
+      ]
+    }
+  }
+}

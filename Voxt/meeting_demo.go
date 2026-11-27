@@ -27,6 +27,7 @@ type meetingDemoHost struct {
 	pageUI                meetingsLocalUI
 	overlayUI             meetingOverlayLocalUI
 	historyUI             historyLocalUI
+	insightsClosed        bool // Home's Looking back, folded in the demo
 	historySettingsUI     historySettingsLocalUI
 	historyAccessUI       historyAccessLocalUI
 	updatesUI             updatesLocalUI
@@ -36,6 +37,7 @@ type meetingDemoHost struct {
 	appEnhancementApps    map[string][]appEnhancementAppChoice
 	dictionaryUI          dictionaryLocalUI
 	notesUI               notesLocalUI
+	snipUI                snippetsLocalUI
 	remoteWaitUI          llmWaitLocalUI
 	remoteDialogUI        providerDialogLocalUI
 	remoteDebugUI         llmDebugUI
@@ -141,6 +143,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 	if fixture.state.Overlay != nil {
 		host.overlayUI.collapsed = fixture.state.Overlay.Collapsed
 	}
+	host.insightsClosed = fixture.state.Home != nil && fixture.state.Home.InsightsClosed
 	host.historyUI = historyLocalUI{}
 	if fixture.state.History != nil {
 		host.historyUI.tab = len(store.Kinds)
@@ -195,6 +198,7 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		host.dictionaryUI.query = state.Query
 		host.dictionaryUI.tab = state.Tab
 		host.dictionaryUI.scanOpen = state.ScanOpen
+		host.dictionaryUI.settingsOpen = state.SettingsOpen
 		host.dictionaryUI.notes = speechContextState{text: state.NotesText, seen: state.NotesText}
 		host.dictionaryUI.notesQuery = state.NotesQuery
 		host.dictionaryUI.notesFind.cur = state.NotesFindCurrent
@@ -220,6 +224,15 @@ func (host *meetingDemoHost) selectMeetingFixture(delta int) {
 		if host.notesUI.keys.sel == "" {
 			host.notesUI.keys.sel = shortcut.CurrentText
 		}
+	}
+	host.snipUI = snippetsLocalUI{}
+	if state, local := fixture.state.Snippets, fixture.state.SnippetsUI; state != nil && local != nil {
+		host.snipUI.query, host.snipUI.order = local.Query, state.Order
+		if local.EditOpen {
+			host.snipUI.open(snippetEdit{id: local.ID, trigger: local.Trigger, text: local.Text})
+			host.snipUI.err = local.Error
+		}
+		host.snipUI.importOpen, host.snipUI.importExample, host.snipUI.importErr = local.ImportOpen, local.ImportExample, local.ImportError
 	}
 	host.remoteWaitUI = llmWaitLocalUI{}
 	host.remoteDialogUI = providerDialogLocalUI{}
@@ -403,6 +416,9 @@ func (host *meetingDemoHost) openHistoryFeature(feature string) {
 	host.record("openHistoryFeature %s", feature)
 }
 func (host *meetingDemoHost) openHistoryPrivacy() { host.record("openHistoryPrivacy") }
+func (host *meetingDemoHost) saveHistoryDetailWidth(width float64) {
+	host.record("saveHistoryDetailWidth %g", width)
+}
 func (host *meetingDemoHost) openHistorySettingsDialog() {
 	host.historySettingsUI.open = true
 	host.record("openHistorySettingsDialog")
@@ -485,17 +501,32 @@ func (host *meetingDemoHost) downloadRelease(address string) {
 }
 
 func (host *meetingDemoHost) openHomeGuide()   { host.record("openHomeGuide") }
-func (host *meetingDemoHost) openHomeHistory() { host.record("openHomeHistory") }
-func (host *meetingDemoHost) openHomeRecent(id string) {
-	host.record("openHomeRecent %s", id)
-}
-func (host *meetingDemoHost) copyHomeRecent(id string) {
-	host.record("copyHomeRecent %s", id)
-}
 func (host *meetingDemoHost) addHomeShortcut() { host.record("addHomeShortcut") }
 func (host *meetingDemoHost) fixHomeReadiness(fix string) {
 	host.record("fixHomeReadiness %s", fix)
 }
+
+func (host *meetingDemoHost) activityBack()      { host.record("activityBack") }
+func (host *meetingDemoHost) openShare()         { host.record("openShare") }
+func (host *meetingDemoHost) openInsightsShare() { host.record("openInsightsShare") }
+func (host *meetingDemoHost) setInsightsClosed(closed bool) {
+	host.insightsClosed = closed
+	host.record("setInsightsClosed %t", closed)
+}
+func (host *meetingDemoHost) closeInsightsShare()   { host.record("closeInsightsShare") }
+func (host *meetingDemoHost) shuffleInsightsShare() { host.record("shuffleInsightsShare") }
+func (host *meetingDemoHost) copyInsightsShare()    { host.record("copyInsightsShare") }
+func (host *meetingDemoHost) saveInsightsShare()    { host.record("saveInsightsShare") }
+func (host *meetingDemoHost) postInsightsShare(site string) {
+	host.record("postInsightsShare %s", site)
+}
+func (host *meetingDemoHost) turnInsightsShare(by int) {
+	host.record("turnInsightsShare %d", by)
+}
+func (host *meetingDemoHost) showInsightsShare(card int) {
+	host.record("showInsightsShare %d", card)
+}
+func (host *meetingDemoHost) activityForward() { host.record("activityForward") }
 
 func (host *meetingDemoHost) openOnboarding()  { host.record("openOnboarding") }
 func (host *meetingDemoHost) closeOnboarding() { host.record("closeOnboarding") }
@@ -521,6 +552,7 @@ func (host *meetingDemoHost) onboardingTryLanguage() { host.record("onboardingTr
 func (host *meetingDemoHost) onboardingDownloadAndContinue() {
 	host.record("onboardingDownloadAndContinue")
 }
+func (host *meetingDemoHost) obDownload() { host.record("obDownload") }
 func (host *meetingDemoHost) obUse(ids ...string) {
 	host.record("obUse %s", strings.Join(ids, ","))
 }

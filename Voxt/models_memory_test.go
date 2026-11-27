@@ -66,10 +66,9 @@ func omniLoads(t *testing.T) <-chan resident.Event {
 	return ch
 }
 
-// TestModelsMemory: the Speech models page says the memory of the model
-// loaded in the fake Omni server, measured by its pid, every memPoll
-// while the page shows; nothing for a model that is not loaded, and
-// nothing after an unload.
+// TestModelsMemory: the Speech models page measures the model loaded in
+// the fake Omni server by its pid every memPoll while the page shows,
+// without adding memory text to the simplified rows.
 func TestModelsMemory(t *testing.T) {
 	fakeOmni(t, omnitest.Opts{})
 	loads := omniLoads(t)
@@ -98,11 +97,19 @@ func TestModelsMemory(t *testing.T) {
 	if ps := a.omniRT.Processes(); len(ps) != 1 || ps[0].PID != pid {
 		t.Fatalf("processes %+v, loaded pid %d", ps, pid)
 	}
+	frames(tt)
+	englishRows := tt.Texts()
+	i18n.SetLocale("zh-Hans")
+	frames(tt)
+	chineseRows := tt.Texts()
+	i18n.SetLocale("en")
+	frames(tt)
+
 	pm.set(pid, 1536<<20)
 	timers.advance(memPoll)
 	frames(tt)
-	if !has(tt, "Loaded · 1.5 GB in memory") {
-		t.Errorf("loaded models: %v %q", a.modelMem, tt.Texts())
+	if got := tt.Texts(); !slices.Equal(got, englishRows) {
+		t.Errorf("memory changed the simplified rows: before %q, after %q", englishRows, got)
 	}
 	if len(a.modelMem) != 1 {
 		t.Errorf("memory %v", a.modelMem)
@@ -111,15 +118,18 @@ func TestModelsMemory(t *testing.T) {
 		t.Errorf("asked %v", pm.asked)
 	}
 
-	// Measured again on the next tick; zh-Hans says it in Chinese.
+	// Measured again on the next tick without changing the row content.
 	pm.set(pid, 1<<30)
 	timers.advance(memPoll)
+	frames(tt)
+	if got := tt.Texts(); a.modelMem[models.ASRFast] != 1<<30 || !slices.Equal(got, englishRows) {
+		t.Errorf("second measurement: %v, before %q, after %q", a.modelMem, englishRows, got)
+	}
 	i18n.SetLocale("zh-Hans")
 	frames(tt)
-	if !has(tt, "已载入 · 占用内存 1.0 GB") {
-		t.Errorf("zh-Hans: %q", tt.Texts())
+	if got := tt.Texts(); !slices.Equal(got, chineseRows) {
+		t.Errorf("memory changed the Chinese simplified rows: before %q, after %q", chineseRows, got)
 	}
-	i18n.SetLocale("en")
 
 	// Another page stops the ticks; the next visit measures at once.
 	a.navigate("/home")
@@ -138,7 +148,7 @@ func TestModelsMemory(t *testing.T) {
 	}
 	a.navigate(modelsPath)
 	frames(tt)
-	if has(tt, "Loaded") || len(a.modelMem) != 0 {
+	if has(tt, "Loaded") || has(tt, "已载入") || len(a.modelMem) != 0 {
 		t.Errorf("after the unload: %v %q", a.modelMem, tt.Texts())
 	}
 	if !a.memPolling {

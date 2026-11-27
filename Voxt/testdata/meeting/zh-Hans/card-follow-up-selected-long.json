@@ -38,7 +38,7 @@
     "card": {
       "id": "r4",
       "kind": "rewrite",
-      "title": "AI 回答",
+      "title": "改写",
       "target_name": "Slack",
       "thinking": {},
       "follow_tooltip": "语音追问（⌃ 右 ⌥）。先选中的文字会一起加进对话。",
@@ -76,7 +76,6 @@
           "key": "turn-0-user",
           "kind": "bubble",
           "turn": 0,
-          "title": "你",
           "text": "write that I am late",
           "user": true,
           "selectable": true
@@ -94,7 +93,6 @@
           "key": "turn-1-user",
           "kind": "bubble",
           "turn": 1,
-          "title": "你",
           "text": "shorter",
           "user": true,
           "selectable": true
@@ -112,7 +110,6 @@
           "key": "turn-2-user",
           "kind": "bubble",
           "turn": 2,
-          "title": "你",
           "text": "add these",
           "quote": "Anna: I can start the meeting.",
           "full_quote": "Anna: I can start the meeting.",
@@ -131,7 +128,6 @@
           "key": "turn-3-user",
           "kind": "bubble",
           "turn": 3,
-          "title": "你",
           "text": "and these",
           "quote": "Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the n…",
           "full_quote": "Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I will send the notes after the meeting. Ben: I wil",
@@ -190,7 +186,7 @@
       "radius": 24,
       "margin": 96,
       "show_time": false,
-      "live_lines": true
+      "live_lines": false
     }
   }
 }

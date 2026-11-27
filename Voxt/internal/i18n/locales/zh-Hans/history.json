@@ -12,7 +12,6 @@
   "1 week": "1 周",
   "1 year": "1 年",
   "3 months": "3 个月",
-  "30 days": "30 天",
   "6 months": "6 个月",
   "All recordings": "全部录音",
   "App rule": "应用增强规则",
@@ -54,7 +53,6 @@
   "Exported %d recording": "已导出 %d 段录音",
   "Exported %d recordings": "已导出 %d 段录音",
   "Exporting the recordings… %d of %d": "正在导出录音… %d / %d",
-  "Export…": "导出…",
   "Failed: %s": "失败：%s",
   "History is off, so new results are not kept.": "历史已关闭，新的结果不会保存。",
   "Instruction": "指令",
@@ -123,7 +121,6 @@
   "How to use it": "使用说明",
   "Let programs on this Mac read the history?": "允许这台 Mac 上的程序读取历史吗？",
   "Any program you run can then read the text Voxt transcribed, translated and rewrote and the app names, but not the recordings or web addresses. Voxt cannot see where a program sends it.": "打开后，你运行的任何程序都能读到 Voxt 转录、翻译和改写的文字和 App 名称，但读不到录音和网址。程序会把文字发到哪里，Voxt 无从得知。",
-  "Turn on": "打开",
   "Read log": "读取记录",
   "Recent reads by other programs. No text is kept here.": "其他程序最近的读取记录，不保存任何文字。",
   "Could not open the connection for other programs: %v": "无法打开给其他程序的连接：%v",
@@ -139,5 +136,7 @@
   "Format": "格式",
   "Could not export the text: %v": "无法导出文字：%v",
   "Exported %d entry to %s": "已导出 %d 条到 %s",
-  "Exported %d entries to %s": "已导出 %d 条到 %s"
+  "Exported %d entries to %s": "已导出 %d 条到 %s",
+  "Resize entry details": "调整记录详情宽度",
+  "Drag to widen. Double-click to reset.": "拖动加宽，双击恢复默认。"
 }

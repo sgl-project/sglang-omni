@@ -36,7 +36,7 @@ Voice input built on speech recognition plus a language model's polish. Any-to-a
 - **Nothing you said is lost.** When recognition fails, the recording is kept and **Retry** in History recognises it again.
 - **A conversation in the answer card.** A result can wait in a floating card: keep asking follow-ups by voice, then copy or insert the answer.
 - **Your models, your data.** Speech runs on your Mac with Qwen3-ASR or MOSS-Transcribe-Diarize, served by the SGLang-Omni MLX runtime, or goes to a cloud speech API you set up. The language model is anything with an OpenAI-compatible API: SGLang MLX or Ollama on your Mac, or a service such as DeepSeek V4.1 and Kimi K3.1, the two our team uses most. Where your data goes is yours to decide.
-- **Optional speculative decoding for Qwen3-ASR, MOSS-Transcribe-Diarize, and Whisper Large v3.** Open **Faster transcription** on the model's card to download its draft.
+- **Optional speculative decoding for Qwen3-ASR, MOSS-Transcribe-Diarize, and Whisper Large v3.** Open **Speed-up model** on the model's card to download its draft.
 - **And more**: sign in with ChatGPT instead of pasting an API key, a fallback model for Translate, your own prompts, and History export to Markdown or JSONL.
 
 Already on Voxt 1.x? See [Coming from Voxt 1.x](#coming-from-voxt-1x). Every change, version by version: [CHANGELOG.md](CHANGELOG.md).
@@ -65,15 +65,15 @@ Tap **right ⌥ Option**. What you say is typed where your cursor is. The text s
 - **Notes**: tap right ⌘, speak, and Voxt saves what you said as a note instead of typing it.
 - **History**: every result, with search, **Retry** from the recording, and export.
 
-Every shortcut can be changed on its feature's page, and Settings → Shortcuts has presets: right ⌥, fn, ⌘ combinations, or the middle mouse button. ⌃⌥V pastes the last result again.
+Every shortcut can be changed in its feature's section in Settings, and Settings → Shortcuts has presets: right ⌥, fn, ⌘ combinations, or the middle mouse button. ⌃⌥V pastes the last result again.
 
 ## Install
 
 ### New to Voxt
 
-1. **Download** [`Voxt-2.1.2-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
+1. **Download** [`Voxt-2.1.3-arm64.dmg`][download], open it and drag **Voxt** to **Applications**.
 
-2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit), 2.5 GB), and set up a language model for clean-up, Translate and Rewrite.
+2. **Open Voxt and follow the setup guide**: allow the microphone and Accessibility, download the recommended speech model (Qwen3-ASR 1.7B (8bit) with its Faster transcription draft, 3.2 GB), and set up a language model for clean-up, Translate and Rewrite.
 3. **Tap the right Option key** in any app, speak, and tap it again.
 
 Step by step: [Install Voxt][install-guide].
@@ -98,7 +98,7 @@ What the import brings, with screenshots: [From Voxt 1.x to Voxt 2](docs/voxt-mi
 ### Requirements
 
 - A Mac with **Apple silicon** and **macOS 15** or later. Voxt 2 does not run on an Intel Mac; there, keep using Voxt 1.x.
-- About 280 MB for the app, and 2.5 GB for the recommended speech model.
+- About 280 MB for the app, and 3.2 GB for the recommended speech model and its draft.
 - Voxt 2 tells you when a new version is out (Check for Updates…, and a daily check you can turn off in Settings → Diagnostics & About). Builds with an update feed can also install updates automatically. Builds without one only check GitHub Releases; install newer versions of those builds from a disk image.
 
 ## Your models, your data
@@ -109,12 +109,13 @@ Speech is recognised **on your Mac** by the [SGLang-Omni MLX runtime](../sglang_
 
 | Model | Good at | Download |
 |---|---|---|
-| **Qwen3-ASR 1.7B (8bit)**, recommended | The most accurate: accents, dialects, names, several languages in one sentence. Live text. | 2.5 GB |
+| **Qwen3-ASR 1.7B (8bit)**, recommended | The most accurate: accents, dialects, names, several languages in one sentence. Live text, with Faster transcription on. | 3.2 GB with its draft |
 | **Qwen3-ASR 0.6B (4bit)** | Quicker and lighter, for clear speech in a quiet place. Live text. | 713 MB |
+| **MOSS-Transcribe-Diarize** | Chinese and English, made for conversations between several people. Live text. Takes no dictionary or Speech context: your dictionary still guides the language model's clean-up. | 1.8 GB |
 
-- **More local models**: MOSS-Transcribe-Diarize (Chinese and English, live text), Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
+- **More local models**: Nemotron 3.5 ASR 0.6B (28 languages, live text), Qwen3-ASR 1.7B (6bit), Whisper Large v3 Turbo, Large v3 and Small (about 100 languages), Parakeet TDT 0.6B v3 (25 European languages), SenseVoice Small (Chinese, Cantonese, English, Japanese, Korean) and Cohere Transcribe 03-2026 (14 languages). macOS's own System dictation is there too, with nothing to download.
 - **Qwen3-ASR** knows 30 languages and 22 Chinese dialects, and uses your dictionary; the other models you download do not.
-- **Faster transcription** is available on the Qwen3-ASR 1.7B (8bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR or MOSS (726 MB, 262 MB, or 262 MB, respectively), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
+- **Speed-up model** is available on the Qwen3-ASR 1.7B (8bit and 6bit), Qwen3-ASR 0.6B (4bit), MOSS-Transcribe-Diarize, and Whisper Large v3 cards. Turn on the switch to download the DFlash draft for Qwen3-ASR (726 MB, downloaded once for the 1.7B's 8bit and 6bit; 262 MB for the 0.6B) or MOSS (262 MB), or the Distil draft for Whisper (1.5 GB). Turning off the switch resumes ordinary decoding and keeps the draft on disk.
 - **Cloud speech APIs**, if you prefer one: OpenAI Transcribe, Doubao (Volcengine), Zhipu GLM-ASR, Aliyun Bailian, StepFun, Xiaomi MiMo and Google Gemini.
 
 ### Language models
@@ -134,7 +135,7 @@ A model on your Mac and an external API are two paths for your data. You choose 
 | | With a model on your Mac | With an external API |
 |---|---|---|
 | **Speech recognition** | Your recordings are recognised on your Mac and stay there. This is the default. | The feature sends its recordings to that speech service. When the feature and model support them, Voxt can also send your speech context and recognition prompt. With Speech hints on, supported services can get enabled dictionary terms, not aliases. |
-| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, that provider gets the same request too. |
+| **Language model** (clean-up, Translate, Rewrite, meeting correction and summaries) | Requests to a server on your Mac (Ollama, LM Studio, oMLX, SGLang MLX) stay on your Mac. | The provider handling each request gets its contents. Depending on the feature and your settings, a request can include recognised, selected or typed text, meeting transcripts and earlier conversation content, your speech context, your rules and enabled dictionary content, and the app name from a matching app enhancement rule. Transcribe, Translate and Rewrite can include the target window's screenshot when Send a screenshot is on. Rewrite can include a copied image instead when Send a copied image is on. Both switches are off by default. If Translate uses your fallback model, or Switch models when one fails picks another configured model, that provider gets the same request too. |
 
 - **Audio is never sent to a language model.** It gets text, and images only with the two switches above.
 - **API keys stay in the macOS Keychain**, never in Voxt's settings or logs.
@@ -149,6 +150,7 @@ A model on your Mac and an external API are two paths for your data. You choose 
 - **For your own scripts and agents**: [read your dictation history](docs/history-access.md) from other programs on your Mac. It is off by default.
 - **Change settings with a script or an agent**: [every setting, where it is stored and how to edit it safely](docs/settings.md).
 - **Transcribe recordings and videos to subtitles**: [`Voxt transcribe`](docs/transcribe.md) turns a local audio or video file into SRT or text with your speech model.
+- **Import dictionary terms from a script**: [`Voxt dictionary import`](docs/dictionary-import.md) merges a CSV, text or Voxt 1.x file into your dictionary, as Dictionary → Import… does, with `--dry-run` to see the counts first.
 
 ## For developers
 
@@ -167,7 +169,7 @@ Apache License 2.0 ([LICENSE](LICENSE)), as the rest of this repository. Copyrig
 
 [![Back to top][back-to-top]](#readme-top)
 
-[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.2/Voxt-2.1.2-arm64.dmg
+[download]: https://github.com/sgl-project/sglang-omni/releases/download/voxt-v2.1.3/Voxt-2.1.3-arm64.dmg
 [beta-download]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839/artifacts/13825829109
 [beta-run]: https://github.com/sgl-project/sglang-omni/actions/runs/42954481839#artifacts
 [beta-workflow]: https://github.com/sgl-project/sglang-omni/actions/workflows/voxt-beta.yaml

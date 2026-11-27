@@ -92,12 +92,21 @@ type Manager struct {
 	snap Snapshot // the current (or last) session's
 	rev  uint64
 	last string // the last result delivered or shown, for "paste the last result"
+	// restUntil is when the services that limited the rate (429) are asked
+	// several things at once again (resting).
+	restUntil map[string]time.Time
 }
 
 // New returns a Manager; nothing runs until Start.
 func New(cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.AfterFunc == nil {
+		cfg.AfterFunc = func(delay time.Duration, callback func()) func() bool {
+			timer := time.AfterFunc(delay, callback)
+			return timer.Stop
+		}
 	}
 	if cfg.Settings == nil {
 		cfg.Settings = settings.Defaults
@@ -208,7 +217,7 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	r := &run{
 		m: m, id: m.cfg.NewID(), req: req, settings: m.cfg.Settings(), ctx: ctx, cancel: cancel,
 		stop: make(chan struct{}), recorded: make(chan struct{}), pcm: newPCMBuffer(),
-		svcResolved: make(chan struct{}),
+		svcResolved: make(chan struct{}), cleanupWake: make(chan struct{}, 1), cleanupGeneration: 1,
 	}
 	r.llmCtx, r.llmStop = context.WithCancel(ctx)
 	r.think = req.Thinking
@@ -225,6 +234,8 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	if t := req.Text; t != nil {
 		m.snap.Raw, m.snap.Selection, m.snap.Typed = strings.TrimSpace(t.Raw), t.Selection, t.Typed
 	}
+	// Set before the id is returned: the caller's card waits for it.
+	m.snap.ReadingSelection = req.Text == nil && r.canSelect()
 	s := m.snap.clone()
 	m.foregroundPub.enqueue(publication{snapshot: s})
 	m.mu.Unlock()
@@ -233,17 +244,16 @@ func (m *Manager) Start(req StartRequest) (string, error) {
 	return r.id, nil
 }
 
-// Background lets the current session's answer finish composing beside a
-// new session: the run keeps going and publishing (its snapshots keep
-// their id), but it no longer blocks Start. It reports whether id is the
-// current session and composing. Only a composing session can background:
-// every earlier state needs the session's place (the microphone, the
-// recognition the pill waits on).
+// Background lets a Rewrite or Translate answer finish composing beside
+// a new session. Transcribe cannot background: its cleanup and delivery
+// still own the foreground session slot. The run keeps publishing to its
+// own snapshot and no longer blocks Start.
 func (m *Manager) Background(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := m.cur
-	if r == nil || r.id != id || m.snap.State != Composing || m.bg != nil {
+	if r == nil || r.id != id || m.snap.State != Composing || m.bg != nil ||
+		!slices.Contains([]store.Kind{store.KindRewrite, store.KindTranslate}, r.req.Kind) {
 		return false
 	}
 	r.own = m.snap.clone()
@@ -271,7 +281,7 @@ func (m *Manager) Stop(id string) {
 	ok := r != nil && snap.State == Recording
 	m.mu.Unlock()
 	if ok {
-		r.stopOnce.Do(func() { close(r.stop) })
+		r.stopRecording()
 	}
 }
 
@@ -280,10 +290,24 @@ func (m *Manager) Cancel(id string) {
 	m.mu.Lock()
 	r, snap := m.find(id)
 	ok := r != nil && snap.State.Live()
-	m.mu.Unlock()
+	alreadyCancelled := r != nil && r.cancelled.Load()
+	logCleanupCancellation := ok && !alreadyCancelled && r.req.Kind == store.KindTranscribe && snap.State == Composing && r.cleanupChoice == cleanupUndecided
 	if ok {
 		r.cancelled.Store(true)
+		if logCleanupCancellation {
+			r.cleanupOutcome = cleanupOutcomeCancelled
+		}
+		if r.cleanupChoice == cleanupUndecided {
+			wakeCleanupLocked(r)
+		}
+	}
+	m.mu.Unlock()
+	if ok {
+		if logCleanupCancellation {
+			r.logf("info", "cleanup outcome=%s", cleanupOutcomeCancelled)
+		}
 		r.cancel()
+		r.finalizeEarlyCleanup()
 	}
 }
 
@@ -293,9 +317,10 @@ func (m *Manager) Cancel(id string) {
 func (m *Manager) SkipLLM(id string) {
 	m.mu.Lock()
 	r, snap := m.find(id)
-	if r != nil && snap.State == Composing && snap.CanSkip {
+	if r != nil && snap.State == Composing && snap.CanSkip && r.cleanupChoice == cleanupUndecided {
 		r.skipped.Store(true)
 		r.llmStop()
+		wakeCleanupLocked(r)
 	}
 	m.mu.Unlock()
 }
@@ -327,12 +352,16 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 		return
 	}
 	m.update(r, func(s *Snapshot) {
-		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() {
+		if !slices.Contains([]store.Kind{store.KindTranscribe, store.KindTranslate, store.KindRewrite}, s.Kind) || s.State != Composing || r.skipped.Load() || r.stopped.Load() || r.cleanupChoice != cleanupUndecided || !r.cleanupDecisionOpenLocked() {
 			return
 		}
 		s.Thinking, r.think = t, t
+		s.Draft, s.Title = "", ""
 		r.rethink.Store(true)
+		r.cleanupGeneration++
+		r.cleanupCandidate = nil
 		r.llmStop()
+		wakeCleanupLocked(r)
 	})
 }
 
@@ -340,35 +369,47 @@ func (m *Manager) Rethink(id string, t *llm.Thinking) {
 // the current one (its snapshot is the Manager's) or the backgrounded
 // one (its own) — and publishes it. It reports whether it did.
 func (m *Manager) update(r *run, fn func(*Snapshot)) bool {
-	m.mu.Lock()
-	if m.bg == r && !r.ended {
-		fn(&r.own)
-		m.rev++
-		r.own.Rev = m.rev
-		s := r.own.clone()
-		m.backgroundPub.enqueue(publication{snapshot: s})
-		m.mu.Unlock()
+	return m.updateIf(r, func(s *Snapshot) bool {
+		fn(s)
 		return true
-	}
-	if m.cur != r || r.ended {
-		changed := false
-		if r.onDraft != nil { // a history retry: its own snapshot
-			was := r.own.Draft
-			fn(&r.own)
-			changed = r.own.Draft != was
+	})
+}
+
+// updateIf routes snapshot changes for the current session or the one
+// background answer. History retries own a private snapshot instead and
+// may report Draft changes to History without publishing a session.
+func (m *Manager) updateIf(r *run, snapshotUpdate func(*Snapshot) bool) bool {
+	m.mu.Lock()
+	var snap *Snapshot
+	var pub *publisher
+	switch {
+	case m.cur == r && !r.ended:
+		snap, pub = &m.snap, m.foregroundPub
+	case m.bg == r && !r.ended:
+		snap, pub = &r.own, m.backgroundPub
+	case r.historyRetry && !r.ended:
+		was := r.own.Draft
+		if !snapshotUpdate(&r.own) {
+			m.mu.Unlock()
+			return false
 		}
-		draft := r.own.Draft
+		draft, onDraft := r.own.Draft, r.onDraft
 		m.mu.Unlock()
-		if changed {
-			r.onDraft(draft)
+		if onDraft != nil && draft != was {
+			onDraft(draft)
 		}
+		return true
+	default:
+		m.mu.Unlock()
 		return false
 	}
-	fn(&m.snap)
+	if !snapshotUpdate(snap) {
+		m.mu.Unlock()
+		return false
+	}
 	m.rev++
-	m.snap.Rev = m.rev
-	s := m.snap.clone()
-	m.foregroundPub.enqueue(publication{snapshot: s})
+	snap.Rev = m.rev
+	pub.enqueue(publication{snapshot: snap.clone()})
 	m.mu.Unlock()
 	return true
 }

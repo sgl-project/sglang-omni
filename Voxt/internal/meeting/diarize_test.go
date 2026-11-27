@@ -128,6 +128,14 @@ func TestDiarizeTrackAnchorsRenumberedSpeaker(t *testing.T) {
 	}
 }
 
+func TestAnchorSpeakersSkipsPunctuationHistory(t *testing.T) {
+	tail := []labeledLine{{words: echoWords("..."), speaker: "s2"}}
+	parts := []asr.SpeakerSegment{{End: time.Second, Speaker: "S01", Text: "你好"}}
+	if anchors := anchorSpeakers(parts, 0, time.Second, tail); len(anchors) != 0 {
+		t.Fatalf("punctuation anchored an unrelated speaker: %v", anchors)
+	}
+}
+
 // Pauses shorter than a chunk do not start a new MTD request: speech
 // packs into chunks up to the cap, so a pause-rich track's request count
 // follows its length, not its pause count.
@@ -163,5 +171,32 @@ func TestMTDSpeakerNumbers(t *testing.T) {
 	}
 	if got := SpeakerLabel("", nil); got != "Them" {
 		t.Errorf("SpeakerLabel(\"\") = %q", got)
+	}
+}
+
+// The final pass applies the same repetition guard as live captions: a
+// hallucinated phrase cannot reach correction or summary as a long loop.
+func TestFinalPassCollapsesRepeatedText(t *testing.T) {
+	repeated := "Mm. " + strings.Repeat("Mm. ", 20)
+	rate := asr.SampleRate
+	segments, err := transcribeChunks(context.Background(), SourceMic, &chineseFileASR{text: repeated}, asr.FileRequest{}, rate, make([]byte, rate*2), []Chunk{{Start: 0, End: rate}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Mm." {
+		t.Fatalf("plain final pass kept the loop: %+v", segments)
+	}
+
+	d := &seqDiarizer{results: []asr.Result{
+		{Segments: []asr.SpeakerSegment{
+			{Start: 0, End: time.Second, Speaker: "S01", Text: repeated},
+		}},
+	}}
+	segments, err = diarizeTrack(context.Background(), SourceSystem, d, asr.FileRequest{}, rate, make([]byte, rate*2), []vad.Segment{{Start: 0, End: rate}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 1 || segments[0].Text != "Mm." || segments[0].Speaker != "s1" {
+		t.Fatalf("diarized final pass kept the loop or changed its speaker: %+v", segments)
 	}
 }

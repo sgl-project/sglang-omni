@@ -21,6 +21,7 @@ from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.session.session_controller import Session
 from sglang.srt.session.streaming_session import SessionSlot, StreamingSession
+from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 
 from sglang_omni.admission import ContextExhaustedError, QueueFullError
 from sglang_omni.proto import OmniRequest, StagePayload
@@ -652,6 +653,7 @@ def test_context_exhaustion_releases_append_unit() -> None:
     scheduler.prefill_start_done = set()
     scheduler.prefill_end_done = set()
     scheduler.backlogged_request_build_payloads = deque()
+    scheduler.early_request_builds = False
     scheduler.waiting_queue = []
     scheduler.mark_running_request_aborted.return_value = False
     scheduler.mark_request_finished_immediately.return_value = []
@@ -774,6 +776,7 @@ def test_speculative_session_append_clamps_by_reserve_and_exhausts_context(
     scheduler.max_total_num_tokens = 16384
     scheduler.model_config = SimpleNamespace(context_len=8192, vocab_size=128)
     scheduler.draft_worker = SimpleNamespace()
+    scheduler.draft_algorithm = SpeculativeAlgorithm.DFLASH
     scheduler.enable_plain_fallback = False
     scheduler.model_runner = SimpleNamespace(
         speculative_verifies_repetition_penalty=False,

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Callable
 
@@ -84,16 +85,18 @@ class MossTranscribeDiarizeEngineBuilder(
         enable_async_decode: bool | None,
         enable_plain_fallback: bool,
         async_decode_min_batch_size: int,
+        prefill_drain_below_batch_size: int | None,
         prefill_coalesce_requests: int,
         prefill_coalesce_wait_ms: float,
         prefill_coalesce_when_idle: bool,
         prefill_coalesce_requires_pending_builds: bool,
-        prefill_coalesce_after_builds_during_decode: bool,
+        prefill_coalesce_after_builds_during_decode: bool | None,
         encoder_chunk_buckets: list[int],
         encoder_torch_compile: bool,
         encoder_max_batch_size: int,
         request_build_max_workers: int,
         request_build_max_pending: int | None,
+        early_request_builds: bool | None,
         stream_emit_interval_s: float,
         enable_trimmed_fbank: bool = True,
     ) -> None:
@@ -108,6 +111,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_async_decode = enable_async_decode
         self.enable_plain_fallback = enable_plain_fallback
         self.async_decode_min_batch_size = async_decode_min_batch_size
+        self.prefill_drain_below_batch_size = prefill_drain_below_batch_size
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.prefill_coalesce_when_idle = prefill_coalesce_when_idle
@@ -123,6 +127,7 @@ class MossTranscribeDiarizeEngineBuilder(
         self.enable_trimmed_fbank = enable_trimmed_fbank
         self.request_build_max_workers = request_build_max_workers
         self.request_build_max_pending = request_build_max_pending
+        self.early_request_builds = early_request_builds
         self.stream_emit_interval_s = stream_emit_interval_s
         self.processor: ProcessorMixin | None = None
         self.tokenizer: PreTrainedTokenizerBase | None = None
@@ -184,6 +189,26 @@ class MossTranscribeDiarizeEngineBuilder(
             "dtype": dtype,
         }
 
+    def validate_before_infrastructure(self, server_args: ServerArgs) -> None:
+        """Reject runtime settings that deadlock the scheduler after the first batch."""
+        if current_platform.is_npu():
+            from sglang.srt.arg_groups.model_override_base import resolved_view
+
+            from sglang_omni.platforms.npu import validate_npu_graph_environment
+
+            cfg = resolved_view(server_args)
+            # torch_npu reads the Host queue mode once at process start. A shared
+            # queue lets a graph update overlap a replay and stalls the scheduler,
+            # and capture rejects TASK_QUEUE_ENABLE=2 whatever the bucket size, so
+            # validate the queue setup whenever decode graphs run.
+            if cfg.cuda_graph_config.decode.backend != CudaGraphBackend.DISABLED:
+                validate_npu_graph_environment(self.model_name)
+            else:
+                pass
+        else:
+            pass
+        super().validate_before_infrastructure(server_args)
+
     def adjust_overrides(self, overrides: dict[str, object]) -> None:
         # note (Dayuxiaoshui): context_length is an explicit server-args
         # parameter, so consume the operator override before the shared builder
@@ -207,6 +232,15 @@ class MossTranscribeDiarizeEngineBuilder(
                     **prefill_config,
                 },
             }
+        else:
+            pass
+
+        if current_platform.is_npu():
+            # The fused QKV path queries the triton driver while dynamo traces,
+            # which aborts decode graph capture. This turns compile off for the
+            # whole decoder; decode graph replay and the fused NPU QKV path stay
+            # enabled.
+            overrides["enable_torch_compile"] = False
         else:
             pass
 
@@ -251,9 +285,14 @@ class MossTranscribeDiarizeEngineBuilder(
             self.speculative_worker_class = draft_worker_class(
                 self.draft_checkpoint.name
             )
-            # note (wilsonzheng0327): async decode under a draft means speculative overlap, so it stays off unless the operator asks for it.
+            # note (Zhenning Guo): async decode under a draft means speculative overlap, which is on by default; plain fallback needs the synchronous verify loop, so it keeps overlap off.
             if self.enable_async_decode is None:
-                self.enable_async_decode = False
+                self.enable_async_decode = not self.enable_plain_fallback
+            else:
+                pass
+            # note (Zhenning Guo): under overlap a prefill's first token otherwise waits for the verify round launched after it, so by default every prefill is drained, whatever the batch size.
+            if self.enable_async_decode and self.prefill_drain_below_batch_size is None:
+                self.prefill_drain_below_batch_size = sys.maxsize
             else:
                 pass
             overrides["disable_overlap_schedule"] = not self.enable_async_decode
@@ -355,6 +394,7 @@ class MossTranscribeDiarizeEngineBuilder(
             "enable_async_decode": self.enable_async_decode,
             "enable_plain_fallback": self.enable_plain_fallback,
             "async_decode_min_batch_size": self.async_decode_min_batch_size,
+            "prefill_drain_below_batch_size": self.prefill_drain_below_batch_size,
             # The scheduler otherwise idles on every prefill's sampled-token
             # copy while the next decode could already launch.
             # note (wilsonzheng0327): the speculative overlap loop never takes the async prefill path, so it stays a no-draft setting.
@@ -369,11 +409,20 @@ class MossTranscribeDiarizeEngineBuilder(
             "prefill_coalesce_requires_pending_builds": (
                 self.prefill_coalesce_requires_pending_builds
             ),
+            # note (Zhenning Guo): with a draft this defaults to off, because each drafted decode round is 2-3x longer, so a prefill held during decode delays the first output, with or without overlap.
             "prefill_coalesce_after_builds_during_decode": (
-                self.prefill_coalesce_after_builds_during_decode
+                self.speculative_worker_class is None
+                if self.prefill_coalesce_after_builds_during_decode is None
+                else self.prefill_coalesce_after_builds_during_decode
             ),
             "request_build_max_workers": self.request_build_max_workers,
             "request_build_max_pending": self.request_build_max_pending,
+            # note (wilsonzheng0327): only with the draft by default, where a request would otherwise wait for the rest of a verify round before its build starts; without it, early builds made Fun-ASR's first output later.
+            "early_request_builds": (
+                self.speculative_worker_class is not None
+                if self.early_request_builds is None
+                else self.early_request_builds
+            ),
         }
         if scheduler_kwargs["async_prefill"]:
             # The full-graph scheduler need not stall for encoder builds. Keep

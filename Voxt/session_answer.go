@@ -32,6 +32,7 @@ func (a *app) openAnswer(s session.Snapshot) {
 		card.images, card.ui.thumbs = a.box.images, a.box.thumbs
 	}
 	card.previews = answerInputPreviews(s, &a.box)
+	fresh := len(card.previews) // this turn's: the earlier turns' follow below
 	if s.State == session.Failed {
 		card.problem = s.Problem
 	}
@@ -74,6 +75,9 @@ func (a *app) openAnswer(s session.Snapshot) {
 		} else if card.problem != nil && len(card.turns) > 0 {
 			card.input.Raw, card.input.Typed = s.Raw, s.Typed // Try again asks the same follow-up
 		}
+	}
+	for index := range fresh {
+		card.previews[index].Turn = max(len(card.turns)-1, 0)
 	}
 	a.followUp = ""
 	if card.target.PID == 0 && a.answer.open {
@@ -182,6 +186,15 @@ func (a *app) redoAnswer(req session.StartRequest) {
 // translation is the conversation's first turn, its source as the
 // selection (#3897).
 func (a *app) followUpAnswer(hold string) bool {
+	return a.followUpWith(hold, "")
+}
+
+// followUpTyped asks the follow-up typed into the card: no recording.
+func (a *app) followUpTyped(typed string) bool {
+	return a.followUpWith("", typed)
+}
+
+func (a *app) followUpWith(hold, typed string) bool {
 	a.closeLangMenu()
 	if !a.canFollowUp() {
 		return false
@@ -193,16 +206,35 @@ func (a *app) followUpAnswer(hold string) bool {
 	}
 	card := a.answer
 	a.followUp = card.id
-	req := session.StartRequest{Kind: store.KindRewrite, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
+	// It is asked in the input card, as the first turn was: spoken or
+	// typed, with the answer it changes on top.
+	req := session.StartRequest{Kind: store.KindRewrite, Box: true, Target: card.target, HoldBinding: hold, Previous: card.turns, Conversation: card.conv}
 	// The box's pictures go with the follow-up too: the same bytes in
 	// the same position, so the server's prefix cache reuses them.
 	req.Images = card.images
-	if n := a.startSession(req); n != nil {
+	var text string
+	var textSegments []boxTextSegment
+	var nextTextID int
+	if typed != "" {
+		req.Text = &session.TextInput{Raw: typed}
+		text, textSegments, nextTextID = a.box.text, a.box.textSegments, a.box.nextTextID
+		a.box.text, a.box.textSegments = "", nil // it is the instruction now, not text beside one
+		a.box.textSegmentsDirty = true
+		a.boxShare.store("", a.box.images)
+	}
+	if id, n := a.startSessionID(req); n != nil || id == "" {
 		a.followUp = ""
+		if typed != "" {
+			a.box.text, a.box.textSegments, a.box.nextTextID = text, textSegments, nextTextID
+			a.box.textSegmentsDirty = true
+			a.boxSync()
+		}
 	} else {
-		// The card turns into a conversation, where the follow-up records
-		// (Voxt's).
+		// The card turns into a conversation, which the follow-up's answer
+		// joins (Voxt's).
 		a.answer.conversation, a.answer.msg = true, ""
+		a.showBox(card.target, id)
+		a.box.typedFollowUp = typed != ""
 		a.overlaySync()
 	}
 	return true
@@ -222,10 +254,16 @@ func (a *app) canFollowUp() bool {
 // closeAnswer closes the answer card (and cancels a follow-up, another
 // language, or the backgrounded answer, on its way).
 func (a *app) closeAnswer() {
-	if a.cardSessionLive() || a.writingAnswer() || a.bgID != "" && a.bgSess.State.Live() {
+	if a.cardSessionLive() || a.writingAnswer() || a.bgVisible() && a.bgSess.State.Live() {
 		a.cancelCardSession()
 	}
-	a.answer, a.followUp = answerCard{}, ""
+	target := a.answer.target.PID
+	defer a.giveFrontBack(target) // after the card's window went: VoxtNew in front with no window
+	a.answer, a.followUp, a.emptyCard = answerCard{}, "", false
+	if a.box.open { // the card that showed it
+		a.dropBox()
+		a.boxSync()
+	}
 	a.resurface()
 	a.buildTrayMenu()
 	a.syncHotkeys()
@@ -249,7 +287,7 @@ func (a *app) setAside(try bool) {
 // resurface brings the card under back once no card shows and no session
 // runs, and says whether it did.
 func (a *app) resurface() bool {
-	if !a.under.open || a.answer.open || a.sess.State.Live() || a.bgID != "" && a.bgSess.State.Live() {
+	if !a.under.open || a.answer.open || a.sess.State.Live() || a.bgVisible() && a.bgSess.State.Live() {
 		return false
 	}
 	a.answer, a.under = a.under, answerCard{}
@@ -280,6 +318,7 @@ func (a *app) insertAnswer() {
 	}
 	a.answer.inserting, a.answer.msg = true, ""
 	a.overlaySync()
+	a.boxSync()
 	text := a.textIO() // family_runtime.go: the family's paste rule
 	a.async(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -8,7 +8,7 @@
 # fail the run:
 #   version    mygo.json and the helper's Info.plist both say the version
 #   changelog  CHANGELOG.md has "## [VERSION] - DATE" with English and 中文
-#   links      the six pages that link the disk image link this version's
+#   links      the six pages name one published version with a stable tag, not this one
 #   pulls      [Voxt] pull requests merged since the last stable tag that
 #              CHANGELOG.md does not name (a note: a change no user can
 #              notice needs no entry)
@@ -41,28 +41,44 @@ else
 fi
 
 section="$(awk -v v="## [$version] - " 'index($0, v) == 1 { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md)"
+# Capture before grepping: in a pipeline grep -q exits at the first match and
+# sed dies with SIGPIPE, which pipefail reads as a failure.
+english="$(sed '/^### 中文$/,$d' <<<"$section")"
+chinese="$(sed -n '/^### 中文$/,$p' <<<"$section")"
 if [[ -z "$section" ]]; then
   row changelog FAIL "CHANGELOG.md has no \"## [$version] - DATE\" section"
 elif ! grep -q '^### 中文$' <<<"$section"; then
   row changelog FAIL "the $version section has no \"### 中文\" part"
-elif ! sed '/^### 中文$/,$d' <<<"$section" | grep -q '^- '; then
+elif ! grep -q '^- ' <<<"$english"; then
   row changelog FAIL "the $version section has no English entry before \"### 中文\""
-elif ! sed -n '/^### 中文$/,$p' <<<"$section" | grep -q '^- '; then
+elif ! grep -q '^- ' <<<"$chinese"; then
   row changelog FAIL "the $version section has no Chinese entry after \"### 中文\""
 else
   row changelog ok "English and 中文"
 fi
 
-dmg="https://github.com/sgl-project/sglang-omni/releases/download/voxt-v$version/Voxt-$version-arm64.dmg"
-missing=""
-for page in ../README.md README.md README.zh-CN.md ../docs/get_started/voxt.md \
-  ../docs/get_started/voxt-tutorials/start.md ../docs/get_started/voxt-tutorials/en/start.md; do
-  grep -qF "$dmg" "$page" 2>/dev/null || missing+=" $page"
-done
-if [[ -z "$missing" ]]; then
-  row links ok "six pages link Voxt-$version-arm64.dmg"
+dmg="$(grep -Eo -m 1 'https://github\.com/sgl-project/sglang-omni/releases/download/voxt-v[0-9.]+/Voxt-[0-9.]+-arm64\.dmg' ../README.md)"
+if [[ -z "$dmg" ]]; then
+  row links FAIL "../README.md has no direct disk-image link"
 else
-  row links FAIL "no link to Voxt-$version-arm64.dmg in:$missing"
+  missing=""
+  for page in ../README.md README.md README.zh-CN.md ../docs/get_started/voxt.md \
+    ../docs/get_started/voxt-tutorials/start.md ../docs/get_started/voxt-tutorials/en/start.md; do
+    grep -qF "$dmg" "$page" 2>/dev/null || missing+=" $page"
+  done
+  if [[ -n "$missing" ]]; then
+    row links FAIL "no link to $dmg in:$missing"
+  else
+    published="${dmg#*voxt-v}"
+    published="${published%%/*}"
+    if [[ "$published" == "$version" ]]; then
+      row links FAIL "six pages still link the upcoming $published; keep the previous published version until its release is published"
+    elif ! git rev-parse --verify --quiet "refs/tags/voxt-v$published" >/dev/null; then
+      row links FAIL "voxt-v$published has no stable tag; the six pages would link an unpublished disk image"
+    else
+      row links ok "six pages link published $published, behind upcoming $version"
+    fi
+  fi
 fi
 
 last="$(git tag -l 'voxt-v*' | grep -E '^voxt-v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF "voxt-v$version" | sort -V | tail -1)"

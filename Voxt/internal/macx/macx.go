@@ -36,3 +36,31 @@ func Frontmost() App { return frontmost() }
 // (mygo.Window.NativeHandle), as screencapture -l takes it; 0 off macOS.
 // Main thread.
 func WindowNumber(handle uintptr) int { return windowNumber(handle) }
+
+// WindowFrame is a window's frame in screen coordinates, with the origin at
+// the primary display's top left.
+type WindowFrame struct {
+	X, Y, Width, Height int
+}
+
+var (
+	focusedWindowFrontmost     = frontmost
+	focusedWindowAccessibility = accessibilityFocusedWindowFrame
+	focusedWindowServer        = windowServerFocusedWindowFrame
+)
+
+func focusedWindowFrame() (WindowFrame, bool) {
+	front := focusedWindowFrontmost()
+	if front.PID <= 0 {
+		return WindowFrame{}, false
+	}
+	if frame, ok := focusedWindowAccessibility(front.PID); ok {
+		return frame, true
+	}
+	return focusedWindowServer(front.PID)
+}
+
+// FocusedWindowFrame returns the front app's focused window's frame, using
+// the window server when Accessibility is unavailable. It reports false when
+// neither source exposes a suitable window.
+func FocusedWindowFrame() (WindowFrame, bool) { return focusedWindowFrame() }

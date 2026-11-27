@@ -12,6 +12,21 @@
         "english": "General language menu bar login"
       },
       {
+        "id": "transcribe",
+        "title": "Transcribe",
+        "english": "Transcribe dictation clean-up shortcut"
+      },
+      {
+        "id": "translate",
+        "title": "Translate",
+        "english": "Translate target language shortcut"
+      },
+      {
+        "id": "rewrite",
+        "title": "Rewrite",
+        "english": "Rewrite answer shortcut"
+      },
+      {
         "id": "models",
         "title": "Speech models",
         "english": "Speech models download delete install recognition"
@@ -57,6 +72,11 @@
         "english": "Storage disk data folder reset"
       },
       {
+        "id": "experimental",
+        "title": "Experimental",
+        "english": "Experimental sessions session shortcuts history"
+      },
+      {
         "id": "about",
         "title": "About",
         "english": "Diagnostics about version bug report"
@@ -88,6 +108,7 @@
         "status": "Unknown",
         "allowed": false,
         "known": false,
+        "tip": "macOS does not let apps read this permission. Check it in System Settings.",
         "ask": true,
         "open": true
       },

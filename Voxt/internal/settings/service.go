@@ -25,6 +25,14 @@ type Documents interface {
 // Scales are the UI scales Appearance offers (90, 100, 110 and 125 %).
 var Scales = []float64{0.9, 1, 1.1, 1.25}
 
+// OpeningLengths are the opening's lengths Appearance offers, in
+// milliseconds, from slow to fast: the speed slider runs from the turtle
+// (3 seconds) to the rabbit (1 second).
+var OpeningLengths = []int{3000, 2000, 1000}
+
+// DefaultOpeningMillis is the opening's length unless chosen.
+const DefaultOpeningMillis = 2000
+
 const (
 	ThemeSystem      = "system"
 	ThemeLight       = "light"
@@ -45,6 +53,9 @@ var Themes = []string{ThemeSystem, ThemeDark, ThemeLight, ThemeTransparent}
 const (
 	MinSidebarWidth = 170
 	MaxSidebarWidth = 320
+
+	MinHistoryDetailWidth = 290
+	MaxHistoryDetailWidth = 350
 )
 
 // Store implements Service over Documents.
@@ -170,8 +181,14 @@ func normalize(s Settings) Settings {
 		}
 	}
 	ap.Scale = best
+	if !slices.Contains(OpeningLengths, ap.OpeningMillis) {
+		ap.OpeningMillis = DefaultOpeningMillis
+	}
 	if ap.SidebarWidth != 0 {
 		ap.SidebarWidth = min(max(ap.SidebarWidth, MinSidebarWidth), MaxSidebarWidth)
+	}
+	if ap.HistoryDetailWidth != 0 {
+		ap.HistoryDetailWidth = min(max(ap.HistoryDetailWidth, MinHistoryDetailWidth), MaxHistoryDetailWidth)
 	}
 	ap.ClosedSections = uniq(ap.ClosedSections)
 	s.General.MainLanguage = strings.TrimSpace(s.General.MainLanguage)
@@ -212,6 +229,12 @@ func normalize(s Settings) Settings {
 	if f.Note.Keys != "" {
 		f.Note = normalizeHotkey(f.Note)
 		f.Note.Trigger = TriggerTap
+	}
+	for i := range f.Sessions {
+		if f.Sessions[i].Keys != "" {
+			f.Sessions[i] = normalizeHotkey(f.Sessions[i])
+			f.Sessions[i].Trigger = TriggerTap // a slot switch is always a tap
+		}
 	}
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)

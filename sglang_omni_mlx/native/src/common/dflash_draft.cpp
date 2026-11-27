@@ -125,10 +125,32 @@ LoadedDraft CheckedDraft(const std::filesystem::path &directory,
 
 } // namespace
 
-DFlashDraft::DFlashDraft(const std::filesystem::path &directory,
-                         int quantization_bits,
+std::map<std::string, std::function<void(const std::string &)>>
+DraftOptions::Flags() {
+  return {
+      {"--draft-model-path",
+       [this](const std::string &value) { directory = value; }},
+      {"--draft-bits",
+       [this](const std::string &value) {
+         quantization_bits = std::stoi(value);
+       }},
+  };
+}
+
+void DraftOptions::Check() const {
+  if (quantization_bits != 0 && quantization_bits != 4 &&
+      quantization_bits != 6 && quantization_bits != 8) {
+    throw std::invalid_argument("--draft-bits must be 4, 6 or 8");
+  } else if (quantization_bits != 0 && directory.empty()) {
+    throw std::invalid_argument("--draft-bits needs --draft-model-path");
+  } else {
+  }
+}
+
+DFlashDraft::DFlashDraft(const DraftOptions &options,
                          const Qwen3DecoderConfig &target)
-    : DFlashDraft(CheckedDraft(directory, target), quantization_bits) {}
+    : DFlashDraft(CheckedDraft(options.directory, target),
+                  options.quantization_bits) {}
 
 DFlashDraft::DFlashDraft(LoadedDraft draft, int quantization_bits)
     : checkpoint_(omni_common::QuantizedCheckpoint(
@@ -210,12 +232,32 @@ DraftStatistics DFlashDraft::Decode(const Qwen3Decoder &target,
                 commit, cancel, policy, caches, draft_caches);
 }
 
+void DFlashDraft::Prefill(const Qwen3Decoder &target,
+                          const mx::array &embeddings,
+                          std::vector<KVCache> &caches,
+                          std::vector<KVCache> &draft_caches) const {
+  std::vector<mx::array> aux_hidden_states;
+  const mx::array hidden =
+      target.Forward(embeddings, caches, aux_layers_, &aux_hidden_states);
+  AppendContext(aux_hidden_states, embeddings.shape(1), draft_caches);
+  std::vector<mx::array> evaluated = {hidden};
+  for (const KVCache &cache : draft_caches) {
+    const auto arrays = cache.Arrays();
+    evaluated.insert(evaluated.end(), arrays.begin(), arrays.end());
+  }
+  mx::eval(evaluated);
+}
+
 DraftStatistics DFlashDraft::Decode(
     const Qwen3Decoder &target, const mx::array &embeddings,
     const std::vector<int> &guessed_ids, int max_new_tokens,
     int prefill_step_tokens, const std::function<bool(int)> &commit,
     const std::atomic<bool> &cancel, DraftPolicy policy,
-    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches) const {
+    std::vector<KVCache> &caches, std::vector<KVCache> &draft_caches,
+    int *accepted_guess_count) const {
+  if (accepted_guess_count != nullptr) {
+    *accepted_guess_count = 0;
+  }
   std::vector<mx::array> aux_hidden_states;
   int processed = 0;
   while (prefill_step_tokens > 0 && embeddings.shape(1) - processed > 1) {
@@ -274,6 +316,9 @@ DraftStatistics DFlashDraft::Decode(
                guessed_ids[accepted_count]) {
       finished = commit(guessed_ids[accepted_count]);
       ++accepted_count;
+    }
+    if (accepted_guess_count != nullptr) {
+      *accepted_guess_count = accepted_count;
     }
     for (KVCache &cache : caches) {
       cache.Trim(guessed_count - accepted_count);

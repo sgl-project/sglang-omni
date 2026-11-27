@@ -11,12 +11,12 @@ import (
 )
 
 type track struct {
-	src        Source
-	job        string
-	audio      session.Audio
-	stopping   bool
-	transcribe *trackTranscriber
-	done       chan struct{} // closed once Record returned and its PCM is handled
+	src      Source
+	job      string
+	audio    session.Audio
+	stopping bool
+	done     chan struct{} // closed once Record returned, its PCM is handled and its transcriber finished
+	settled  chan struct{} // closed after the track's reconnect decision has settled
 }
 
 func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio) *StartError {
@@ -35,7 +35,8 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	m.timeline.Begin(src, job, m.timeline.Elapsed())
 	done := make(chan struct{})
-	m.tracks[src] = &track{src: src, job: job, audio: audio, done: done}
+	tr := &track{src: src, job: job, audio: audio, done: done, settled: make(chan struct{})}
+	m.tracks[src] = tr
 	m.mu.Unlock()
 
 	tx, err := m.newTrackTranscriber(ctx, src, job)
@@ -47,7 +48,7 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 	if tx != nil {
 		m.mu.Lock()
-		m.tracks[src].transcribe = tx
+		tx.owner = tr
 		m.mu.Unlock()
 	}
 
@@ -64,16 +65,13 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 			if !ok {
 				return
 			}
-			_ = m.archive.Write(src, data)
 			m.mu.Lock()
-			var tr *trackTranscriber
-			if tx := m.tracks[src]; tx != nil {
-				tr = tx.transcribe
+			if m.tracks[src] == tr && m.archive != nil {
+				_ = m.archive.Write(src, data)
 			}
-			runCtx := m.runCtx
 			m.mu.Unlock()
-			if tr != nil && runCtx != nil {
-				_ = tr.onPCM(runCtx, data)
+			if tx != nil {
+				_ = tx.onPCM(ctx, data)
 			}
 		}
 	}()
@@ -109,22 +107,44 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 				m.noteLevel(src, ev.Level.RMS)
 			}
 		})
-		pcm.close()
-		<-pumped
-		close(done)
 		if err != nil {
+			// A slow Final must not hide the capture error behind the startup timeout.
 			select {
 			case started <- err:
 			default:
 			}
 		}
+		pcm.close()
+		<-pumped
+		// Decided before the Final: a lost track must reconnect even when
+		// the streaming ASR connection hangs (wake from sleep, network loss).
 		m.mu.Lock()
-		tr := m.tracks[src]
-		intentional := tr != nil && tr.stopping
+		lost := m.tracks[src] == tr && !tr.stopping
 		m.mu.Unlock()
-		if !intentional {
+		if tx != nil {
+			finished := make(chan struct{})
+			go func() {
+				// The capture's original error takes precedence over a Final teardown error.
+				_ = tx.finish(context.Background())
+				close(finished)
+			}()
+			if lost {
+				select {
+				case <-finished:
+				case <-time.After(lostFinalWait): // the late Final is dropped once the new track is installed
+				}
+			} else {
+				<-finished
+			}
+		}
+		close(done)
+		m.mu.Lock()
+		reconnect := lost && m.tracks[src] == tr && !tr.stopping
+		m.mu.Unlock()
+		if reconnect {
 			m.handleTrackLost(ctx, src)
 		}
+		close(tr.settled)
 	}()
 	select {
 	case err := <-started:
@@ -143,17 +163,21 @@ func (m *Manager) runTrack(ctx context.Context, src Source, audio session.Audio)
 	}
 }
 
+// lostFinalWait bounds how long a lost track waits for its transcriber's
+// Final before it reconnects.
+var lostFinalWait = 5 * time.Second
+
 // stop ends the capture first, so the transcriber sees its last PCM
 // before it finishes.
 func (t *track) stop() {
-	_ = t.audio.Stop(context.Background(), t.job)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Teardown continues to the shared deadline even when the helper refuses Stop.
+	_ = t.audio.Stop(ctx, t.job)
 	select {
 	case <-t.done:
-	case <-time.After(5 * time.Second): // a helper that never answers Stop
-	}
-	if t.transcribe != nil {
-		_ = t.transcribe.finish(context.Background())
-		t.transcribe = nil
+	case <-ctx.Done(): // a helper that never answers Stop; its PCM pump may still be running
+		// shortcut: with the final pass off, a tail Final slower than this is lost (CHANGELOG #4409); wait for it there if users hit it.
 	}
 }
 

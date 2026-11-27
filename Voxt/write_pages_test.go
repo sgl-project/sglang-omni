@@ -14,12 +14,16 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
-// pageTester is the test app on a feature page, in a tall window.
+// pageTester is the test app on path, in a tall window.
 func pageTester(t *testing.T, path string) (*app, *ui.Tester) {
 	t.Helper()
 	a, _, tt := newTestApp(t)
 	tt.SetSize(windowWidth, 2400)
 	a.navigate(path)
+	switch path {
+	case "/transcribe", "/translate", "/rewrite":
+		tt = featureViewTester(a)
+	}
 	frames(tt)
 	return a, tt
 }
@@ -150,7 +154,7 @@ func TestOverlayWriting(t *testing.T) {
 	}
 	tt := cardTester(t, a)
 	frames(tt)
-	for _, s := range []string{"AI answer", "Try again", "shorter", "a long text"} {
+	for _, s := range []string{"Rewrite", "Try again", "shorter", "a long text"} {
 		if !has(tt, s) {
 			t.Errorf("failure card: no %q in %q", s, firstTexts(tt))
 		}

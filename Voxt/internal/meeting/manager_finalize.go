@@ -2,10 +2,14 @@ package meeting
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
+
+// ErrNoRecording means a finished meeting kept no recording to transcribe again.
+var ErrNoRecording = errors.New("meeting: no recording kept")
 
 // Reprocess reruns the final transcription pass for a stored meeting.
 func (m *Manager) Reprocess(ctx context.Context, id string) error {
@@ -17,6 +21,9 @@ func (m *Manager) Reprocess(ctx context.Context, id string) error {
 	case store.MeetingInterrupted, store.MeetingFinishing, store.MeetingDone:
 	default:
 		return fmt.Errorf("meeting: cannot reprocess %s", mt.Status)
+	}
+	if mt.Status == store.MeetingDone && mt.Audio == "" {
+		return ErrNoRecording // its transcript stays as it is
 	}
 	mt.Status = store.MeetingFinishing
 	if err := m.cfg.Store.UpdateMeeting(ctx, mt); err != nil {
@@ -53,26 +60,56 @@ func (m *Manager) runFinalize(ctx context.Context, mt store.Meeting) {
 		m.releaseModels = nil
 	}
 	m.mu.Unlock()
+	auto := !m.cfg.Settings().NoAutoSummary
+	if auto {
+		if o := m.startCorrectOverlap(mt.ID); o != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			o.cancel = cancel
+			m.mu.Lock()
+			m.cfg.correctOverlap = o
+			m.mu.Unlock()
+		}
+	}
 	err := FinalizePass(ctx, m.cfg, mt, m.finalizeProgress(mt.ID))
+	if err != nil {
+		m.dropCorrectOverlap()
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.id != mt.ID {
+		m.mu.Unlock()
 		return
 	}
 	if err != nil {
 		m.state = StateInterrupted
 		m.snap.State = StateInterrupted
-		m.notify(m.snap)
+		s := m.snap
+		m.mu.Unlock()
+		m.notify(s)
 		return
 	}
 	meetingID := mt.ID
-	auto := !m.cfg.Settings().NoAutoSummary
 	m.state = StateDone
 	m.snap.State = StateDone
 	m.resetAfterDone()
-	m.notify(m.snap)
+	s := m.snap
+	m.mu.Unlock()
+	m.notify(s)
 	if auto {
 		go m.correctAndSummarize(context.Background(), meetingID)
+	}
+}
+
+// dropCorrectOverlap cancels and clears the speculative correction, so a
+// later correction asks the language model afresh (its context, like the
+// dictionary, may have changed since).
+func (m *Manager) dropCorrectOverlap() {
+	m.mu.Lock()
+	o := m.cfg.correctOverlap
+	m.cfg.correctOverlap = nil
+	m.mu.Unlock()
+	if o != nil && o.cancel != nil {
+		o.cancel()
 	}
 }
 
@@ -96,6 +133,7 @@ func (m *Manager) correctAndSummarize(ctx context.Context, id string) {
 	if err := m.CorrectTranscript(ctx, id); err != nil {
 		m.warn("correct: " + err.Error())
 	}
+	m.dropCorrectOverlap()
 	if err := m.GenerateMeetingSummary(ctx, id); err != nil {
 		m.warn("summary: " + err.Error())
 	}
