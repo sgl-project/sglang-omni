@@ -1362,6 +1362,37 @@ def test_start_profile_torch_mode_still_requires_trace_template() -> None:
     assert "trace_path_template is required" in resp.json()["detail"]
 
 
+def test_start_request_profile_returns_started_stages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /start_request_profile reports coordinator plus every broadcasted stage so clients can wait for all writers."""
+    from sglang_omni.serve import launcher
+    class FakeRecorder:
+        def start(self, **kwargs: object) -> None:
+            return None
+    class FakeProfilerControl:
+        async def broadcast_start(self, **kwargs: object) -> list[str]:
+            return ["encoder", "asr"]
+    monkeypatch.setenv("SGLANG_OMNI_ADMIN_KEY", "")
+    monkeypatch.setattr(launcher, "_get_event_recorder", lambda: FakeRecorder())
+    app = FastAPI()
+    launcher.mount_profiler_routes(
+        app, FakeProfilerControl(), profiler_dir=str(tmp_path)
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/start_request_profile",
+            json={"run_id": "run-stages", "event_dir": str(tmp_path / "events")},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "run_id": "run-stages",
+        "event_dir": str(tmp_path / "events"),
+        "stages": ["coordinator", "encoder", "asr"],
+    }
+
+
 @pytest.mark.asyncio
 async def test_launcher_stops_runner_when_server_raises(
     tmp_path: Path,
