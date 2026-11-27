@@ -16,8 +16,8 @@ const liveResultTimeout = 20 * time.Second
 // audio still queued for the socket, and the server answers, once it has
 // recognised the last segment, with the whole text, which is the result.
 // When the socket fails first, or the answer takes liveResultTimeout,
-// the Final recognises pcm, the whole recording, as without LiveResult.
-func (s *live) finishLive(pcm []byte) {
+// the Final recognises the whole recording, as without LiveResult.
+func (s *live) finishLive(duration time.Duration) {
 	start := time.Now()
 	done, _ := json.Marshal(map[string]string{"type": "transcription.done"})
 	fallback := func(why string) {
@@ -26,7 +26,7 @@ func (s *live) finishLive(pcm []byte) {
 		s.preview = false
 		s.finalOnly = true
 		s.mu.Unlock()
-		s.finalPass(pcm)
+		s.finalPass()
 	}
 	select {
 	case s.out <- done:
@@ -54,7 +54,7 @@ func (s *live) finishLive(pcm []byte) {
 		return
 	}
 	took := time.Since(start)
-	s.a.rt.logf("info", "%s: live result of %v of audio in %v", s.a.spec.ID, asr.Duration(pcm, sampleRate).Round(100*time.Millisecond), took.Round(time.Millisecond))
-	res := asr.Result{Text: text, Lang: s.language, Duration: asr.Duration(pcm, sampleRate), Model: s.a.spec.ID, Latency: took}
+	s.a.rt.logf("info", "%s: live result of %v of audio in %v", s.a.spec.ID, duration.Round(100*time.Millisecond), took.Round(time.Millisecond))
+	res := asr.Result{Text: text, Lang: s.language, Duration: duration, Model: s.a.spec.ID, Latency: took}
 	s.end(asr.Event{Kind: asr.EventFinal, Text: text, Result: res})
 }

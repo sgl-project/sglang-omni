@@ -52,12 +52,13 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 			return
 		}
 		s.mu.Lock()
-		finished, ended, audio, start, t, policy := s.finished, s.ended, s.audio, pc.done, pc.tuning, pc.policy
+		finished, ended, start, t, policy := s.finished, s.ended, pc.done, pc.tuning, pc.policy
+		pending := s.audio[start-s.audioStart:]
 		s.mu.Unlock()
 		if policy != lookedPolicy {
 			looked, lookedPolicy = 0, policy
 		}
-		total := len(audio) / 2
+		total := (start + len(pending)) / 2
 		from := start / 2
 		if finished || ended || planningContext.Err() != nil {
 			return
@@ -66,7 +67,7 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 			continue
 		}
 		looked = total
-		cut, ok := s.findCut(planningContext, audio[start:], t)
+		cut, ok := s.findCut(planningContext, pending, t)
 		if !ok {
 			continue
 		}
@@ -84,7 +85,7 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 			pc.activePieceDone = activePieceDone
 		}
 		s.mu.Unlock()
-		piece := audio[start : start+cut*2]
+		piece := pending[:cut*2]
 		s.startFinalAt((start + cut*2) / 2)
 		begin := time.Now()
 		var r finalResult
@@ -113,6 +114,13 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 		}
 		s.mu.Lock()
 		pc.done += len(piece)
+		committed := pc.done - s.audioStart
+		if tail := s.audio[committed:]; committed >= len(tail) {
+			// Copy at most as many bytes as we release. Readers may
+			// still hold snapshots of the old backing array.
+			s.audio = append([]byte(nil), tail...)
+			s.audioStart = pc.done
+		}
 		pc.texts = append(pc.texts, r.text)
 		pc.language = language
 		pc.busy += took
@@ -129,7 +137,7 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 		default:
 		}
 		s.a.rt.logf("info", "%s: piece %d of the recording, %v of audio from %v, in %v", s.a.spec.ID, n,
-			asr.Duration(piece, sampleRate).Round(10*time.Millisecond), asr.Duration(audio[:start], sampleRate).Round(10*time.Millisecond), took.Round(time.Millisecond))
+			asr.Duration(piece, sampleRate).Round(10*time.Millisecond), (time.Duration(from) * time.Second / sampleRate).Round(10*time.Millisecond), took.Round(time.Millisecond))
 	}
 }
 

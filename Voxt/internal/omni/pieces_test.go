@@ -181,6 +181,13 @@ func TestLivePieces(t *testing.T) {
 	pcm := speechAndPauses(5) // 8.5 s: the closing pause is no cut, so a fifth stretch of speech for a fourth piece
 	sendAll(t, st, pcm)
 	f.waitLogged(t, "piece 4 of the recording")
+	stream := st.(*live)
+	stream.mu.Lock()
+	retained := cap(stream.audio)
+	stream.mu.Unlock()
+	if retained >= len(pcm) {
+		t.Errorf("ASR still holds %d bytes of PCM capacity after recognising four pieces of a %d-byte recording", retained, len(pcm))
+	}
 	if err := st.Finish(); err != nil {
 		t.Fatal(err)
 	}
