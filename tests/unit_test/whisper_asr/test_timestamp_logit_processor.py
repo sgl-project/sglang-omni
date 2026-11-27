@@ -6,8 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from transformers import WhisperTimeStampLogitsProcessor
+from transformers import (
+    SuppressTokensAtBeginLogitsProcessor,
+    SuppressTokensLogitsProcessor,
+    WhisperTimeStampLogitsProcessor,
+)
 
+from sglang_omni.models.whisper_asr.beam_rules import WhisperBeamLogitRules
 from sglang_omni.models.whisper_asr.timestamp_logit_processor import (
     WhisperTimestampLogitProcessor,
     apply_timestamp_rules,
@@ -200,4 +205,58 @@ def test_the_rule_state_moved_one_token_at_a_time_matches_the_whole_history() ->
         assert last_timestamp.tolist() == [
             next((token for token in reversed(row) if token >= TIMESTAMP_BEGIN_ID), -1)
             for row in rows
+        ]
+
+
+def test_beam_rules_follow_each_beam_through_reparenting() -> None:
+    """Every beam's masks equal Transformers' Whisper processors on that beam's own sequence, after survivors switch parents."""
+    generator = torch.Generator().manual_seed(0)
+    config = SimpleNamespace(
+        eos_token_id=EOS_TOKEN_ID,
+        bos_token_id=1,
+        no_timestamps_token_id=NO_TIMESTAMPS_TOKEN_ID,
+        max_initial_timestamp_index=MAX_INITIAL_TIMESTAMP_INDEX,
+    )
+    suppress_token_ids = [4]
+    begin_suppress_token_ids = [EOS_TOKEN_ID, 7]
+    transformers_processors = [
+        SuppressTokensAtBeginLogitsProcessor(
+            begin_suppress_token_ids, begin_index=len(PROMPT)
+        ),
+        SuppressTokensLogitsProcessor(suppress_token_ids),
+        WhisperTimeStampLogitsProcessor(config, begin_index=len(PROMPT)),
+    ]
+    rules = WhisperBeamLogitRules(
+        suppress_token_ids=suppress_token_ids,
+        begin_suppress_token_ids=begin_suppress_token_ids,
+        timestamp_params={
+            "segment_timestamps": True,
+            "timestamp_begin_id": TIMESTAMP_BEGIN_ID,
+            "no_timestamps_token_id": NO_TIMESTAMPS_TOKEN_ID,
+            "eos_token_id": EOS_TOKEN_ID,
+            "max_initial_timestamp_index": MAX_INITIAL_TIMESTAMP_INDEX,
+            "__req__": SimpleNamespace(output_ids=[]),
+        },
+    )
+    steps = [
+        ([0, 0, 0], [6, 7, 6]),
+        ([0, 1, 2], [3, 3, 8]),
+        ([2, 0, 1], [3, 9, 3]),
+        ([1, 1, 0], [10, 3, 3]),
+        ([2, 0, 1], [11, 10, 3]),
+    ]
+    histories: list[list[int]] = [[]]
+    for step_index, (parent_indices, next_token_ids) in enumerate(steps):
+        logits = torch.randn(len(histories), VOCAB_SIZE, generator=generator) * 3
+        actual = logits.clone()
+        rules.mask_scores(actual, step_index)
+        for row, history in enumerate(histories):
+            expected = logits[row : row + 1].clone()
+            for processor in transformers_processors:
+                expected = processor(torch.tensor([PROMPT + history]), expected)
+            assert torch.equal(actual[row : row + 1], expected), (step_index, history)
+        rules.advance(torch.tensor(parent_indices), torch.tensor(next_token_ids))
+        histories = [
+            histories[parent] + [token_id]
+            for parent, token_id in zip(parent_indices, next_token_ids)
         ]

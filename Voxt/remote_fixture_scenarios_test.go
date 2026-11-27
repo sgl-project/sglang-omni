@@ -243,7 +243,7 @@ func remoteFixtureCaps() providers.GenCaps {
 		Efforts:         []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"},
 		MaxOutputTokens: true, Temperature: true, TopP: true, TopK: true, MinP: true, Seed: true,
 		Logprobs: true, Stop: true, Penalties: true, ResponseFormat: true, JSONSchema: true, ExtraBody: true,
-		Verbosity: true, KeepAlive: true, IncludeUsage: true, APIFormat: true,
+		Verbosity: true, KeepAlive: true, IncludeUsage: true, APIFormats: []string{"", llm.APIResponses},
 	}
 }
 

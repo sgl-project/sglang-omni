@@ -70,6 +70,7 @@ Remote speech recognition and system dictation	L	TestSessionSystemDictation	none
 Remote language models	L	TestRemoteModelEndToEnd	none
 Remote language models	L	TestSavedOllamaSetupMenuIsTheServersModels	none
 Remote language models	L	TestRemoteErrorKeepsNoKey	none
+Remote language models	L	TestMessagesRequest	Anthropic's own answers and its cache reads are checked by hand (docs/manual-test.md 8.9)
 Audio settings	L	TestSessionMutesOutput	A changed microphone setting is checked on a real device only
 Audio settings	M	TestMacHelperMicrophoneSelection	none
 Command-line transcription	L	TestTranscribeCLIWritesSRTAndText	none

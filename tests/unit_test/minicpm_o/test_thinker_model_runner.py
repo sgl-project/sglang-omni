@@ -63,6 +63,7 @@ from sglang_omni.scheduling.sglang_backend.request_data import (
     SGLangARRequestData,
     ThinkerRequest,
 )
+from sglang_omni.speculative.seeded_dspark import SeededDSparkWorker
 
 EOS_TOKEN_IDS = [1, 3]
 VOCAB_SIZE = 128
@@ -571,6 +572,71 @@ def test_thinker_admits_only_static_and_compact_verify_before_model_loading(
     with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
         with pytest.raises(error, match=message):
             bootstrap_module.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize(
+    "algorithm,supports_seed,expected_worker,ignores_seed",
+    [
+        ("DSPARK", True, SeededDSparkWorker, False),
+        ("DSPARK", False, SeededDSparkWorker, True),
+        ("DFLASH", False, None, True),
+    ],
+)
+def test_bootstrap_advertises_seed_only_for_supported_dspark_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str,
+    supports_seed: bool,
+    expected_worker: type[SeededDSparkWorker] | None,
+    ignores_seed: bool,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True, speculative_algorithm=algorithm
+    )
+    worker = SimpleNamespace(
+        speculative_worker=SimpleNamespace(supports_request_seed=supports_seed)
+    )
+    config = SimpleNamespace(model_path="unused", vocab_size=17)
+    infrastructure = Mock(return_value=(worker, None, None, None, config))
+    tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: 1)
+    runner = SimpleNamespace(
+        speculative_ignores_request_seed=True, reset_request=Mock()
+    )
+    scheduler = Mock()
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure", infrastructure
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.get_tokenizer",
+        Mock(return_value=tokenizer),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.thinker_model_runner.MiniCPMOThinkerModelRunner",
+        Mock(return_value=runner),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.request_builders.make_thinker_scheduler_adapters",
+        Mock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler.OmniScheduler", scheduler
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        assert (
+            bootstrap_module.create_thinker_scheduler(server_args)
+            is scheduler.return_value
+        )
+    assert (
+        infrastructure.call_args.kwargs.get("speculative_worker_class")
+        is expected_worker
+    )
+    assert (
+        scheduler.call_args.kwargs["model_runner"].speculative_ignores_request_seed
+        is ignores_seed
+    )
 
 
 @pytest.mark.parametrize(
