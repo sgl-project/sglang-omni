@@ -119,8 +119,10 @@ the entry. `sgl-omni serve` adds a default-on entry's draft after every
 source is merged, so the model path and TP size that launch decide it: only
 for that entry's model path, with or without an `@<revision>` pin, or a
 Hugging Face cache snapshot of it, only on CUDA, and only to a stage with
-`tp_size` 1 that sets neither `disable_speculative_decoding` nor a
-`speculative_algorithm` other than the entry's. Like the TP derivation, it
+`tp_size` 1, or at most the entry's `max_default_on_tp_size`, that sets neither `disable_speculative_decoding` nor a
+`speculative_algorithm` other than the entry's. An entry with
+`max_default_on_running_requests` goes only to a stage whose
+`max_running_requests` is set and at most that. Like the TP derivation, it
 fills only the `speculative_*` keys no source set.
 `sgl-omni config resolve` shows these keys and the engine block as written,
 and the pinned revision is added when the stage's server args are built.

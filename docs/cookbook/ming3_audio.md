@@ -24,21 +24,21 @@ CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
 
 ## MTP decoding
 
-Multi-token prediction (MTP) can accelerate transcription and audio-chat text generation using the prediction layer included in the checkpoint. MTP is off by default. Enable it with:
+Multi-token prediction (MTP) accelerates transcription and audio-chat text generation with the prediction layer included in the checkpoint. The thinker decodes with MTP by default. To serve without it:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 sgl-omni serve \
   --model-path inclusionAI/Ming-3.0-audio-flash \
   --thinker.tp_size 2 \
-  --thinker.engine.revision db94e0de19f6d05adc0413c255a28eb480cd1fae \
-  --thinker.engine.speculative_algorithm NEXTN
+  --thinker.engine.disable_speculative_decoding true
 ```
 
-MTP uses additional GPU memory. Speedup depends on the workload and output length. Standalone speech synthesis is unaffected.
+MTP is on by default on CUDA for a thinker `tp_size` of up to 4 and `max_running_requests` of up to 32 (the default is 8). A larger thinker, or a larger `max_running_requests`, serves without it unless `--thinker.engine.speculative_algorithm NEXTN` is set.
+
+MTP uses additional GPU memory: the Kimi delta attention layers keep state for each proposed token of every running request. On two GPUs, MTP starts with `--thinker.engine.max_running_requests 32` but not with 64. Speedup depends on the workload and output length. Standalone speech synthesis is unaffected.
 
 Usage notes:
 
-- To disable MTP in a config that enables it, add `--thinker.engine.disable_speculative_decoding true`.
 - MTP decodes synchronously by default. Add `--thinker.factory.enable_async_decode true` to overlap each verify round with the host work of the previous one. `--thinker.factory.async_decode_min_batch_size N` keeps batches of fewer than N requests synchronous. On 4×H20 at TP4, overlap raised MTP transcription throughput by 5–6% at 16 and 32 running requests and made no measurable difference at 8 or fewer, so leave it off at low load.
 - Keep `speculative_eagle_topk=1`. On CUDA, MTP applies `repetition_penalty` exactly as decoding without it does. Prefix caching and chunked prefill are unavailable for this model.
 
@@ -73,15 +73,15 @@ More running requests on two GPUs, transcribing SeedTTS English and Chinese (3,1
 | Running requests | No draft | MTP | DFlash |
 |---|---:|---:|---:|
 | 16 | 15.95 clips/s | 20.82 (1.31x) | 22.84 (1.43x) |
-| 32 | 21.92 clips/s | Does not start | 34.20 (1.56x) |
+| 32 | 21.92 clips/s | 1.31x, see below | 34.20 (1.56x) |
 | 64 | 29.46 clips/s | Does not start | 38.71 (1.31x) |
 
-MTP at 32 starts only when the thinker loads before the other stages on its GPUs.
+At 32 running requests, a later measurement gave MTP 32.40 clips/s against 24.67 without a draft, with SeedTTS English WER 1.218% against 1.233%.
 
 Usage notes:
 
 - Verifying on the Kimi delta attention layers records each proposed token's inputs in a ring buffer and folds the accepted prefix into the state (`--thinker.engine.enable_linear_replayssm_spec`, on by default with the draft).
-- SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
+- SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time at TP 2, MTP output is identical to the server without a draft; at TP 4, greedy chat answers with MTP diverge from it after about 90 characters, with the same transcription WER and MMSU accuracy. The draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
 - The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
 
 ## Transcription

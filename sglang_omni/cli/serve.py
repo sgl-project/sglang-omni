@@ -366,7 +366,15 @@ def default_draft_engine_writes(
         if (
             draft is not None
             and stage.engine is not None
-            and stage.tp_size == 1
+            and stage.tp_size <= draft.max_default_on_tp_size
+            and (
+                draft.max_default_on_running_requests is None
+                or (
+                    stage.engine.max_running_requests is not None
+                    and stage.engine.max_running_requests
+                    <= draft.max_default_on_running_requests
+                )
+            )
             and not stage.engine.disable_speculative_decoding
             and stage.engine.overrides().get("speculative_algorithm", draft.algorithm)
             == draft.algorithm

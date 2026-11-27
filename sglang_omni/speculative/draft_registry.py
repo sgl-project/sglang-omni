@@ -26,6 +26,10 @@ class PinnedDraft:
     # note (Haoling Pu): None means the model card states no license, so the draft stays off by default.
     license: str | None
     is_default_on: bool = False
+    # Largest stage tp_size that gets the draft by default; a draft measured only on one GPU stays at 1.
+    max_default_on_tp_size: int = 1
+    # Largest stage max_running_requests that gets the draft by default; None leaves it unbounded.
+    max_default_on_running_requests: int | None = None
 
     def engine_overrides(self) -> dict[str, str | int]:
         if self.draft_model_path == self.model_path:
@@ -181,6 +185,11 @@ DRAFT_REGISTRY: tuple[PinnedDraft, ...] = (
         draft_model_path="inclusionAI/Ming-3.0-audio-flash",
         draft_model_revision="db94e0de19f6d05adc0413c255a28eb480cd1fae",
         license="mit",
+        is_default_on=True,
+        # note (wilsonzheng0327): the thinker needs two GPUs; MTP was measured at TP 2 on H200 and TP 4 on H20.
+        max_default_on_tp_size=4,
+        # note (wilsonzheng0327): MTP's Kimi delta attention state grows with running requests; at TP 2 on H200, 32 starts and 64 leaves no KV cache.
+        max_default_on_running_requests=32,
     ),
     PinnedDraft(
         model_path="inclusionAI/Ming-3.0-audio-flash",
