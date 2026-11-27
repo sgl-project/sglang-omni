@@ -71,14 +71,26 @@ func TestGenerationSettings(t *testing.T) {
 	}
 }
 
-// TestAPIFormat: only OpenAI and custom services offer the Responses API,
-// a setup passes its choice on, and one saved before the option existed
-// stays on chat completions.
+// TestAPIFormat: only OpenAI and custom services offer the Responses API
+// and only Anthropic the Messages API, Chat Completions first; a setup
+// passes its choice and its prompt caching on, and one saved before the
+// option existed stays on chat completions.
 func TestAPIFormat(t *testing.T) {
 	for _, pr := range llm.Presets() {
-		if got, want := Capabilities(pr.ID, "").APIFormat, pr.ID == "openai" || pr.ID == llm.Custom; got != want {
-			t.Errorf("%s: APIFormat %v", pr.ID, got)
+		var want []string
+		switch pr.ID {
+		case "openai", llm.Custom:
+			want = []string{"", llm.APIResponses}
+		case "anthropic":
+			want = []string{"", llm.APIMessages}
 		}
+		if got := Capabilities(pr.ID, "").APIFormats; !slices.Equal(got, want) {
+			t.Errorf("%s: APIFormats %q", pr.ID, got)
+		}
+	}
+	cfg := Config(settings.Provider{ID: "anthropic", APIFormat: llm.APIMessages, Generation: settings.Generation{PromptCache: true}})
+	if cfg.API != llm.APIMessages || !cfg.Generation.PromptCache {
+		t.Errorf("Anthropic: API %q, prompt cache %v", cfg.API, cfg.Generation.PromptCache)
 	}
 	if api := Config(settings.Provider{ID: "openai", APIFormat: llm.APIResponses}).API; api != llm.APIResponses {
 		t.Errorf("API %q", api)

@@ -1384,3 +1384,18 @@ Developer ID 签名、公证、发布和更新的测试见 [release.md](release.
   - 第 6 步：下一次转录清理时，浮窗说“语言模型出错了，已插入识别原文。”，有“登录”按钮；翻译和改写这类直接失败的会话才说“ChatGPT 的登录已失效”。卡片显示“需要登录”，不反复重试。
   - 第 7 步：钥匙串里 `llm.codex` 没了，卡片显示“需要登录”，设置里的模型还在。
 - **不对时看**：日志里 `connection test of remote language model codex`；`chatgpt sign-in:` 开头的错误只有状态和错误码。
+
+**8.9 Anthropic 的 Messages API 和提示词缓存（约 8 分钟，要一个 Anthropic API Key）**
+- **做**：〔用临时 HOME，别露出 Key〕
+  1. 语言模型页 → Anthropic，填 Key，模型用 Claude Haiku 5.5，保存。再打开，展开“高级”，看“API 格式”。
+  2. 把“API 格式”改成 Messages，看“高级”里多出的开关，点“测试连接”，保存。
+  3. 用这个服务做两次转录清理（两次间隔不到 5 分钟）、一次翻译、一次改写（含 JSON 答案卡）。
+  4. 打开“提示词缓存”，保存，再做两次转录清理。
+  5. 改回 Chat Completions，再做一次转录清理。
+- **应看到**：
+  - 第 1 步：默认是 Chat Completions，没有“提示词缓存”。
+  - 第 2 步：选 Messages 后出现“提示词缓存”，默认关；测试连接成功。
+  - 第 3 步：都能出结果，流式的文字逐步出现；日志里转录清理的 `piece 1 of 1: … prompt tokens, 0 cached`。
+  - 第 4 步：第二次清理那行的 `cached` 不是 0，约等于指令的长度（1,000 多 tokens）；第一次只写入缓存，还是 0。
+  - 第 5 步：照常出结果，“提示词缓存”不见了。
+- **不对时看**：日志里 `connection test of remote language model anthropic`；`llm.bad_request` 的 detail 是 Anthropic 返回的原话（`invalid_request_error: …`）。
