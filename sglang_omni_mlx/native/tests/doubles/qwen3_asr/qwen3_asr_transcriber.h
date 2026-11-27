@@ -196,4 +196,6 @@ struct BatchableTranscription {
   }
 };
 
+omni_server::BatchRunner BatchableTranscriptionRunner();
+
 } // namespace qwen3_asr
