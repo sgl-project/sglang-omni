@@ -160,7 +160,6 @@ def test_lookahead_admits_repetition_penalty_but_not_additive_history_terms():
     runner = Qwen3TTSModelRunner.__new__(Qwen3TTSModelRunner)
 
     assert runner.lookahead_eligible(decode_batch(lookahead_request())) is True
-    assert runner.lookahead_eligible(decode_batch()) is False
     for blocked in (
         {"frequency_penalty": 0.5},
         {"presence_penalty": 0.5},

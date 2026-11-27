@@ -203,9 +203,7 @@ class Qwen3TTSModelRunner(ModelRunner):
         if not batch.forward_mode.is_decode():
             return False
         else:
-            return bool(batch.reqs) and all(
-                is_lookahead_safe_request(req) for req in batch.reqs
-            )
+            return all(is_lookahead_safe_request(req) for req in batch.reqs)
 
     def post_decode_launch(
         self,
@@ -214,8 +212,10 @@ class Qwen3TTSModelRunner(ModelRunner):
         requests: list[SchedulerRequest],
     ) -> Qwen3TTSLaunchedStep:
         assert (
-            requests and result.next_token_ids is not None
-        ), "Qwen3-TTS step-ahead launches only sampled, non-empty decode batches"
+            requests
+            and result.next_token_ids is not None
+            and self.launch_input_rows is not None
+        ), "Qwen3-TTS step-ahead launches only sampled decode batches that before_decode staged"
         layer0_codes = result.next_token_ids
         self.run_code_predictor(result, forward_batch, layer0_codes)
         batch_size = len(requests)
@@ -228,9 +228,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         for row_idx, sched_req in enumerate(requests):
             sched_req.data.inflight_feedback = feedback_rows[row_idx]
             sched_req.data.inflight_codec_id = codec_id_rows[row_idx]
-        assert (
-            self.launch_input_rows is not None
-        ), "Qwen3-TTS step-ahead launches only after before_decode staged its rows"
         input_rows = self.launch_input_rows
         self.launch_input_rows = None
         ids = layer0_codes.reshape(-1)[:batch_size]
