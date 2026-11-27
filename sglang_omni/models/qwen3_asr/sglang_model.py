@@ -494,6 +494,17 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
 
             count = install_fp8_linears(self.language_model)
             logger.info(f"Qwen3-ASR FP8 linears: {count} decoder linears")
+        elif current_platform.is_cuda() and torch.cuda.get_device_capability()[0] == 9:
+            # note (jvzibro): SM90 has no block-scaled FP8 MMA, but cuBLASLt
+            # rowwise W8A8 beats bf16 for the vocab projection at every measured
+            # batch size on both SM90 cards tried (H20, H200); the decoder
+            # linears are machine-dependent and stay bf16.
+            from sglang_omni.models.qwen3_asr.fp8_scaled_mm import (
+                install_fp8_scaled_mm_lm_head,
+            )
+
+            converted = install_fp8_scaled_mm_lm_head(self.language_model)
+            logger.info(f"Qwen3-ASR FP8 lm_head via _scaled_mm: {converted}")
         else:
             pass
 
