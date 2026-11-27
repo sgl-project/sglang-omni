@@ -501,14 +501,18 @@ def mount_profiler_routes(
                 exc_info=True,
             )
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        await profiler_ctl.broadcast_start(
+        stages = await profiler_ctl.broadcast_start(
             run_id=run_id,
             trace_path_template="",
             event_dir=event_dir,
             enable_torch=False,
             event_buffer_capacity=req.event_buffer_capacity,
         )
-        return {"run_id": run_id, "event_dir": event_dir}
+        return {
+            "run_id": run_id,
+            "event_dir": event_dir,
+            "stages": ["coordinator", *(stages or ())],
+        }
 
     @router.post("/stop_profile")
     async def stop(req: StopReq):
