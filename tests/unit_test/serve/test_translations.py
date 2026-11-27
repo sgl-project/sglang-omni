@@ -123,6 +123,26 @@ def test_whisper_translation_sets_translate_task_and_preserves_language() -> Non
     assert request.extra_params["language"] == "fr"
 
 
+def test_translation_rejects_beam_search() -> None:
+    app, backend = translation_client()
+
+    async def post() -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                "/v1/audio/translations",
+                data={"model": WHISPER_MODEL, "language": "fr", "beam_width": "5"},
+                files={"file": ("sample.wav", b"RIFF", "audio/wav")},
+            )
+
+    response = asyncio.run(post())
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "beam_width"
+    assert backend.requests == []
+
+
 def test_unsupported_model_returns_openai_shaped_400_before_audio_read() -> None:
     model_name = UNSUPPORTED_MODEL
     client, backend = translation_client(

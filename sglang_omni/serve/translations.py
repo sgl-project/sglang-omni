@@ -76,6 +76,12 @@ def register_translations(app: FastAPI) -> None:
                 "use /v1/audio/transcriptions instead.",
                 param="model",
             )
+        elif (form.beam_width or 1) > 1:
+            return invalid_request(
+                f"beam_width > 1 is served on /v1/audio/transcriptions only, not on "
+                f"{TRANSLATIONS_ENDPOINT}.",
+                param="beam_width",
+            )
         else:
             pass
 

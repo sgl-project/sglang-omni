@@ -19,6 +19,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     build_generation_batch_overrides,
+    prefill_graph_fallback,
 )
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     build_sglang_server_args,
@@ -132,8 +133,9 @@ def test_prefill_stays_eager_where_the_attention_backend_cannot_capture_it(
     platform: dict[str, bool],
 ) -> None:
     """An attention backend that cannot capture a full prefill graph, the operator's or
-    SGLang's default on SM100, leaves the prefill eager instead of the breakable graph
-    this model refuses."""
+    SGLang's default on SM100, gets an eager prefill from the builder's fallback, since
+    this model has no breakable graph."""
+    builder = FunCosyVoice3EngineBuilder()
     with override_platform(**platform):
         server_args = resolved_cuda_server_args(
             tmp_path, monkeypatch, server_args_overrides
@@ -141,7 +143,15 @@ def test_prefill_stays_eager_where_the_attention_backend_cannot_capture_it(
     resolved = resolved_view(server_args)
 
     assert attention_backends_of(resolved)[0] not in FULL_PREFILL_ATTENTION_BACKENDS
-    assert resolved.cuda_graph_config.prefill.backend == CudaGraphBackend.DISABLED
+    assert resolved.cuda_graph_config.prefill.backend == CudaGraphBackend.FULL
+    assert (
+        prefill_graph_fallback(
+            server_args,
+            builder.model_name,
+            supports_breakable=builder.supports_breakable_prefill_cuda_graph,
+        )
+        == CudaGraphBackend.DISABLED
+    )
 
 
 def npu_server_args(
