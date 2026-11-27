@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Library imports reject another app's database**: a valid SQLite file with Voxt's table names but without the required columns is refused before it is staged or installed, leaving the current library unchanged.
+
+### 中文
+
+#### 修复
+- **导入资料库时拒绝其他应用的数据库**：有效的 SQLite 文件即使使用 Voxt 的表名，只要缺少所需列，就会在暂存或替换前被拒绝，现有资料库保持不变。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

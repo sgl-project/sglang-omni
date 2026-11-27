@@ -1,6 +1,7 @@
 package datadir
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -104,33 +105,69 @@ func TestStageImportRefusesOtherFiles(t *testing.T) {
 }
 
 // A sound SQLite file of another app, at a schema version Voxt reads, is
-// refused too: the library stays as it was after the restart.
+// refused too: the library stays as it was after the restart. Table names
+// alone do not make it a Voxt library.
 func TestStageImportRefusesForeignSQLite(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	st, err := sqlitestore.Open(ctx, dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	putDoc(t, st, "settings:app", `{"from":"mine"}`)
-	st.Close()
-	foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
-	out, err := exec.Command(sqlite3, foreign, fmt.Sprintf("CREATE TABLE notes (x); PRAGMA user_version = %d;", sqlitestore.Version())).CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v: %s", err, out)
-	}
-	if err := StageImport(ctx, dir, foreign); err == nil {
-		t.Fatal("StageImport accepted another app's SQLite file")
-	}
-	if _, err := Resolve(dir); err != nil {
-		t.Fatal(err)
-	}
-	if got := docs(t, dir, "settings:app")[0]; got != `{"from":"mine"}` {
-		t.Errorf("the library after the refused import: %s", got)
-	}
-	for _, name := range []string{ImportFile, importedDB} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
-			t.Errorf("%s was left after a refused import", name)
-		}
+	for _, tc := range []struct {
+		name   string
+		schema string
+	}{
+		{"missing Voxt tables", "CREATE TABLE notes (x);"},
+		{"same table names with wrong columns", "CREATE TABLE documents (x); CREATE TABLE history (x); CREATE TABLE dictionary_terms (x);"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			st, err := sqlitestore.Open(ctx, dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			putDoc(t, st, "settings:app", `{"from":"mine"}`)
+			st.Close()
+			db := filepath.Join(dir, sqlitestore.FileName)
+			before, err := os.ReadFile(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foreign := filepath.Join(t.TempDir(), "other.voxtlibrary")
+			out, err := exec.Command(sqlite3, foreign, tc.schema+fmt.Sprintf("PRAGMA user_version = %d;", sqlitestore.Version())).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if err := StageImport(ctx, dir, foreign); err == nil {
+				t.Fatal("StageImport accepted another app's SQLite file")
+			}
+			assertNoImport := func() {
+				t.Helper()
+				for _, name := range []string{ImportFile, importedDB, BeforeImport} {
+					if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+						t.Errorf("%s was left after a refused import", name)
+					}
+				}
+			}
+			assertNoImport()
+
+			// Resolve checks a staged file again before replacing the library.
+			if _, err := copyVerified(foreign, filepath.Join(dir, importedDB)); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteJSON(filepath.Join(dir, ImportFile), struct{}{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Resolve(dir); err != nil {
+				t.Fatal(err)
+			}
+			assertNoImport()
+			after, err := os.ReadFile(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Error("the refused import changed the current library")
+			}
+			if got := docs(t, dir, "settings:app")[0]; got != `{"from":"mine"}` {
+				t.Errorf("the library after the refused import: %s", got)
+			}
+		})
 	}
 }

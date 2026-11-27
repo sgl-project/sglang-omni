@@ -577,6 +577,22 @@ func TestNotes(t *testing.T) {
 	}
 }
 
+func TestCheckFileAcceptsEveryLibraryVersion(t *testing.T) {
+	saved := migrations
+	t.Cleanup(func() { migrations = saved })
+	for v := 1; v <= len(saved); v++ {
+		t.Run(strconv.Itoa(v), func(t *testing.T) {
+			migrations = slices.Clone(saved[:v])
+			dir := t.TempDir()
+			s := openTest(t, dir)
+			s.Close()
+			if got, err := CheckFile(ctx, filepath.Join(dir, FileName)); err != nil || got != v {
+				t.Fatalf("CheckFile = %d, %v; want schema %d", got, err, v)
+			}
+		})
+	}
+}
+
 func TestCheckAndRewritePaths(t *testing.T) {
 	dir := t.TempDir()
 	s := openTest(t, dir)

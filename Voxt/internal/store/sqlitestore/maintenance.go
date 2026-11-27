@@ -36,8 +36,8 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 }
 
 // CheckFile opens the database at path, runs SQLite's integrity check,
-// makes sure it is a Voxt library (the first migration's tables) and
-// reports the schema version it has.
+// makes sure it is a Voxt library (the first migration's tables and
+// columns) and reports the schema version it has.
 func CheckFile(ctx context.Context, path string) (int, error) {
 	db, err := sqlite.Open(ctx, path, sqlite.OpenOptions{})
 	if err != nil {
@@ -56,19 +56,44 @@ func CheckFile(ctx context.Context, path string) (int, error) {
 		return 0, fmt.Errorf("sqlitestore: %s: integrity check: %s", path, strings.Join(msgs, "; "))
 	}
 	for _, table := range libraryTables {
-		rows, err := db.Query(ctx, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table)
+		rows, err := db.Query(ctx, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", table.name)
 		if err != nil {
 			return 0, err
 		}
 		if len(rows.Values) == 0 {
-			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (no table %s)", path, table)
+			return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (no table %s)", path, table.name)
+		}
+		rows, err = db.Query(ctx, fmt.Sprintf("PRAGMA table_info(%q)", table.name))
+		if err != nil {
+			return 0, err
+		}
+		have := map[string]bool{}
+		for _, row := range rows.Values {
+			have[asString(row[1])] = true
+		}
+		for _, column := range table.columns {
+			if !have[column] {
+				return 0, fmt.Errorf("sqlitestore: %s is not a Voxt library (table %s has no column %s)", path, table.name, column)
+			}
 		}
 	}
 	return userVersion(ctx, db)
 }
 
-// libraryTables are the first migration's, in every Voxt library.
-var libraryTables = []string{"documents", "history", "dictionary_terms"}
+// libraryTables are the first migration's tables and columns, which every
+// Voxt library still has after later migrations.
+var libraryTables = []struct {
+	name    string
+	columns []string
+}{
+	{"documents", []string{"key", "doc", "updated_at"}},
+	{"history", []string{
+		"seq", "id", "kind", "created_at", "status", "error", "app_bundle", "app_name", "url_host", "rule_id", "rule_name",
+		"raw_text", "source_text", "prompt_text", "result", "target_lang", "delivery", "asr_provider", "asr_model", "llm_provider", "llm_model",
+		"audio_ms", "asr_ms", "llm_ms", "total_ms", "audio",
+	}},
+	{"dictionary_terms", []string{"id", "term", "aliases", "note", "enabled", "created_at", "updated_at"}},
+}
 
 // RewritePaths replaces the folder oldDir by newDir at the start of the
 // paths the database at path holds in its text columns (as plain text,
