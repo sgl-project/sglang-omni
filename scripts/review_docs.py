@@ -88,7 +88,11 @@ def run_review_command(parsed: argparse.Namespace) -> int:
         base_commit_sha=parsed.base_commit,
         head_commit_sha=parsed.head_commit,
         pull_request_number=parsed.pull_request_number,
-        pull_request_text=read_optional_text(parsed.pull_request_text_file),
+        pull_request_text=(
+            read_optional_text(parsed.pull_request_text_file)
+            if parsed.pull_request_text_file is not None
+            else None
+        ),
         comment_text=read_optional_text(parsed.comments_file),
         evidence_text=read_optional_text(parsed.evidence_file),
         checks=read_checks(parsed.checks_file),

@@ -8,6 +8,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Literal, Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -95,6 +96,27 @@ class ModelSettings(BaseModel):
         return self
 
 
+class ModelSnapshot(BaseModel):
+    model_name: str
+    endpoint_url: str
+    max_output_tokens: int
+    reasoning_effort: ReasoningEffort | None
+    temperature: Literal[0] | None
+
+    @classmethod
+    def from_settings(cls, settings: ModelSettings) -> ModelSnapshot:
+        endpoint = urlsplit(settings.endpoint_url)
+        return cls(
+            model_name=settings.model_name,
+            endpoint_url=endpoint._replace(
+                netloc=endpoint.netloc.rsplit("@", 1)[-1], query="", fragment=""
+            ).geturl(),
+            max_output_tokens=settings.max_output_tokens,
+            reasoning_effort=settings.reasoning_effort,
+            temperature=0 if settings.reasoning_effort is None else None,
+        )
+
+
 class Finding(BaseModel):
     rule_id: str
     file_path: str
@@ -125,6 +147,8 @@ class CheckView(BaseModel):
 
 
 class Report(BaseModel):
+    model_configuration: ModelSnapshot | None = None
+    estimated_call_cost_cents: int | None = Field(default=None, ge=0)
     advisory: Literal[True]
     execution: Literal["complete", "incomplete"]
     outcome: Literal["findings", "no_findings", "incomplete"]
@@ -174,7 +198,7 @@ class ReviewBundle:
     head_commit_sha: str
     merge_base_commit_sha: str
     policy_version: str
-    pull_request_text: str
+    pull_request_text: str | None
     comment_text: str
     evidence_text: str
     checks: list[CheckRecord]
@@ -191,7 +215,7 @@ class ReviewRequest:
     base_commit_sha: str
     head_commit_sha: str
     pull_request_number: int
-    pull_request_text: str
+    pull_request_text: str | None
     comment_text: str = ""
     evidence_text: str = ""
     checks: list[CheckRecord] = field(default_factory=list)
@@ -220,6 +244,7 @@ class SpendAuthorization:
 
 
 class BundlePayload(BaseModel):
+    model_configuration: ModelSnapshot | None = None
     repository_identity: str
     base_commit_sha: str
     head_commit_sha: str
@@ -230,7 +255,7 @@ class BundlePayload(BaseModel):
     reviewed_paths: list[str]
     added_documentation_text: str
     style_guide_limitation: str
-    pull_request_text: str
+    pull_request_text: str | None
     comment_text: str
     evidence_text: str
     files: list[CollectedFile]

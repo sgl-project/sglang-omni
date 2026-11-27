@@ -657,7 +657,7 @@ def test_head_only_style_guide_is_not_trusted(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     base_commit_sha = start_repository(repository)
     write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
-    write_file(repository, "docs/STYLE_GUIDE.md", "# Style\n\nUse H1 only.\n")
+    write_file(repository, "docs/README.md", "# Style\n\nUse H1 only.\n")
     head_commit_sha = commit_all(repository, "add style guide")
     result = review_change(
         repository,
@@ -744,6 +744,9 @@ def test_cli_writes_a_reproducible_bundle(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     bundle = json.loads((output / "input_bundle.json").read_text(encoding="utf-8"))
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert bundle["pull_request_text"] is None
+    assert "skipped" in report["author_confirmation"]
+    assert report["findings"] == []
     assert "docs/guide.md" in bundle["reviewed_paths"]
     assert bundle["review_input_sha256"] == report["review_input_sha256"]
     assert report["execution"] == "incomplete"
@@ -895,7 +898,7 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
     monkeypatch.setattr(
         "scripts.docs_review.transport.urllib.request.urlopen", fake_urlopen
     )
-    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
+    monkeypatch.delenv("DOCS_REVIEW_TEST_KEY", raising=False)
     request = ReviewRequest(
         repository=repository,
         base_commit_sha=base_commit_sha,
@@ -912,6 +915,16 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
         ),
         ledger_path=tmp_path / "ledger.sqlite",
     )
+    request.retry_count = 1
+    missing_key = run_review(request, None, FixedClock())
+    assert "Missing API key" in missing_key.report.incomplete_reason
+    assert missing_key.report.usage_cost_cents == 0
+    assert captured_requests == []
+    ledger = ReviewLedger(request.ledger_path)
+    assert ledger.round_count(7) == 0
+    assert ledger.fetch(missing_key.report.review_input_sha256) is None
+    ledger.close()
+    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
     result = run_review(request, None, FixedClock())
     assert result.report.execution == "complete"
     assert result.report.findings == [finding]
@@ -1134,7 +1147,7 @@ def test_model_configuration_change_invalidates_cached_report(
     head_commit_sha = commit_all(repository, "guide")
     settings = ModelSettings(
         model_name="reviewer",
-        endpoint_url="https://example.invalid/one",
+        endpoint_url="https://user:redaction-probe@example.invalid/one?token=redaction-probe#redaction-probe",
         max_output_tokens=512,
         api_key_environment_variable="TEST_KEY",
     )
@@ -1150,6 +1163,15 @@ def test_model_configuration_change_invalidates_cached_report(
     )
     reviewer = ScriptedReviewer(["[]", "[]"])
     first = run_review(request, reviewer, FixedClock())
+    for artifact in (first.payload, first.report):
+        assert artifact.model_dump()["model_configuration"] == {
+            "model_name": "reviewer",
+            "endpoint_url": "https://example.invalid/one",
+            "temperature": 0,
+            "max_output_tokens": 512,
+            "reasoning_effort": None,
+        }
+        assert "redaction-probe" not in artifact.model_dump_json()
     cached = run_review(request, reviewer, FixedClock())
     assert cached.report.review_input_sha256 == first.report.review_input_sha256
     assert reviewer.call_count == 1
@@ -1187,3 +1209,78 @@ def test_evaluation_counts_distinct_defects_in_the_same_file() -> None:
     assert report.labeled_defect_count == 2
     assert report.recall == 0.5
     assert not report.meets_recall_threshold
+
+
+@pytest.mark.parametrize(
+    ("claim", "requires_benchmark"),
+    [
+        ("Use 50% overlap on a 2x2 grid.", False),
+        ("Latency dropped by 20%.", True),
+    ],
+)
+def test_performance_claim_overrides_na_only_for_comparisons(
+    tmp_path: Path, claim: str, requires_benchmark: bool
+) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    write_file(repository, "docs/README.md", "# Style\n")
+    base = commit_all(repository, "base style guide")
+    write_file(repository, "docs/benchmark.md", f"# Benchmark\n\n{claim}\n")
+    template = (REPO_ROOT / ".github/pull_request_template.md").read_text()
+    for field, value in [
+        ("Purpose", "Update documentation"),
+        ("Reviewed the final diff", "yes"),
+        ("Checks", "docs build"),
+        ("Untested", "none"),
+        ("Performance", "not applicable"),
+    ]:
+        template = template.replace(f"- {field}:\n", f"- {field}: {value}\n")
+    result = review_change(
+        repository,
+        base,
+        commit_all(repository, "docs"),
+        tmp_path / "ledger.sqlite",
+        template,
+        ScriptedReviewer(["[]"]),
+    )
+    assert result.report.style_guide_limitation == ""
+    assert [finding.rule_id for finding in result.report.findings] == (
+        [PERFORMANCE_EVIDENCE] if requires_benchmark else []
+    )
+
+
+def test_interrupted_dispatch_retains_estimated_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repo"
+    base = start_repository(repository)
+    write_file(repository, "docs/guide.md", "# Guide\n")
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base,
+        head_commit_sha=commit_all(repository, "docs"),
+        pull_request_number=7,
+        pull_request_text=None,
+        budget=sample_budget(),
+        ledger_path=tmp_path / "ledger.sqlite",
+        model_settings=ModelSettings(
+            model_name="reviewer",
+            endpoint_url="https://example.invalid/chat",
+            max_output_tokens=64,
+            api_key_environment_variable="TEST_REVIEW_KEY",
+        ),
+    )
+
+    def interrupt(request: Request, timeout: int) -> BytesIO:
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("TEST_REVIEW_KEY", "fake")
+    monkeypatch.setattr(
+        "scripts.docs_review.transport.urllib.request.urlopen", interrupt
+    )
+    with pytest.raises(KeyboardInterrupt):
+        run_review(request, None, FixedClock())
+    ledger = ReviewLedger(request.ledger_path)
+    assert ledger.pull_request_spend_cents(7) == 10
+    assert ledger.round_count(7) == 1
+    ledger.close()

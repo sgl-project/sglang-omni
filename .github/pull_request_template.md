@@ -23,11 +23,20 @@
 ## Checklist
 
 - [ ] Format your code according with pre-commit.
-- [ ] If this PR changes docs or claims a performance difference, paste the contributor checklist from `CONTRIBUTING.md`.
 - [ ] Add unit tests.
 - [ ] Update documentation / docstrings / example tutorials as needed.
 - [ ] Provide throughput / latency benchmark results and accuracy evaluation results as needed.
 - [ ] For reviewers: If you haven't made any contributions to this PR and are only assisting with merging the main branch, please remove yourself as a co-author when merging the PR.
+
+## Contributor checklist
+
+<!-- Fill in for docs changes or performance claims. Other PRs may remove this section. See CONTRIBUTING.md for benchmark fields. -->
+
+- Purpose:
+- Reviewed the final diff:
+- Checks:
+- Untested:
+- Performance:
 
 ## CI
 
