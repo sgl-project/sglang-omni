@@ -1231,6 +1231,70 @@ def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     }
 
 
+def test_streamed_tool_call_is_published_once_and_can_be_returned() -> None:
+    tool = {
+        "type": "function",
+        "function": {"name": "lookup", "parameters": {"type": "object"}},
+    }
+    call = {
+        "id": "call_one",
+        "type": "function",
+        "function": {"name": "lookup", "arguments": "{}"},
+    }
+
+    class ToolCoordinator:
+        async def stream(
+            self, request_id: str, request: OmniRequest
+        ) -> AsyncIterator[StreamMessage | CompleteMessage]:
+            assert request.metadata["tools"] == [tool]
+            yield StreamMessage(
+                request_id, "thinker", {"tool_calls": [call]}, modality="text"
+            )
+            yield CompleteMessage(
+                request_id,
+                "decode",
+                True,
+                {"text": "", "tool_calls": [call], "finish_reason": "tool_calls"},
+            )
+
+        async def submit(self, request_id: str, request: OmniRequest) -> dict[str, str]:
+            assert request.inputs[-2]["tool_calls"] == [call]
+            assert request.inputs[-1] == {
+                "role": "tool",
+                "tool_call_id": "call_one",
+                "content": "K17",
+            }
+            return {"text": "K17"}
+
+    client = TestClient(
+        create_app(
+            Client(ToolCoordinator()),
+            architectures=["BailingMoeV3AudioForConditionalGeneration"],
+        )
+    )
+    messages = [{"role": "user", "content": "Look up my code"}]
+    body = {"model": "ming", "messages": messages, "tools": [tool]}
+    response = client.post("/v1/chat/completions", json={**body, "stream": True})
+    assert response.status_code == 200
+    choices = [
+        json.loads(line[6:])["choices"][0]
+        for line in response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    assert [
+        item for choice in choices for item in choice["delta"].get("tool_calls", [])
+    ] == [{**call, "index": 0}]
+    assert choices[-1]["finish_reason"] == "tool_calls"
+    messages.extend(
+        [
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call_one", "content": "K17"},
+        ]
+    )
+    reply = client.post("/v1/chat/completions", json=body)
+    assert reply.json()["choices"][0]["message"]["content"] == "K17"
+
+
 class TextDeltaCoordinator:
     """Answer chat with fixed text: whole when buffered, as deltas when streamed.
 

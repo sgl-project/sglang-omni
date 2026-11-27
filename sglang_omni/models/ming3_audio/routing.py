@@ -12,6 +12,14 @@ def route_preprocessing(request_id: str, output: StagePayload) -> str:
         return "audio_encoder"
 
 
+def tool_stream_targets(request_id: str, output: StagePayload) -> list[str]:
+    return (
+        ["decode"]
+        if output.request.metadata.get("tools") and output.request.params.get("stream")
+        else []
+    )
+
+
 def route_thinker(request_id: str, output: StagePayload) -> str:
     """Select the output modality; request_id follows the routing interface."""
     if "audio" in output.request.metadata.get("output_modalities", []):

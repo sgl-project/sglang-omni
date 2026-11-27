@@ -84,6 +84,12 @@ Usage notes:
 - SeedTTS English WER is 1.227% and Chinese CER 0.747% with the draft, against 1.219% and 0.741% without it. One at a time, MTP output is identical to the server without a draft; the draft's is identical on 81 of 84 held-out transcripts and differs more on long answers. At 8 at a time, both agree with the server without a draft on 263-264 of 280 transcripts, because greedy decoding on this thinker depends on the batch.
 - The draft decodes synchronously. Keep `repetition_penalty=1`. The draft rejects a request `seed` when sampling; greedy and one-token requests still accept a seed. Standalone speech synthesis is unaffected.
 
+## Function calls from audio
+
+Pass OpenAI function definitions in `tools` on `/v1/chat/completions` with text output. When the thinker calls a function, its reply contains `message.tool_calls` and a `tool_calls` finish reason. Execute the function in the client, then send the original conversation, the assistant's tool-call message, and a `role: tool` message with the matching `tool_call_id` and a string result. The checkpoint template renders tool results in conversation order.
+
+With ordinary decoding, the SSE response publishes each completed call in an indexed `delta.tool_calls` entry when its closing token arrives. Speculative decoding publishes completed calls with the final result. Each function's arguments are a JSON string. This path supports automatic tool selection and `tool_choice: "none"`.
+
 ## Transcription
 
 ```bash

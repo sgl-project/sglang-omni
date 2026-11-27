@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal, TypedDict
 
+from pydantic import JsonValue
+
 from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
@@ -54,9 +56,20 @@ class Message:
 
     role: str
     content: object
+    tool_calls: list[dict[str, object]] | None = None
+    tool_call_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"role": self.role, "content": self.content}
+        message = {"role": self.role, "content": self.content}
+        if self.tool_calls:
+            message["tool_calls"] = self.tool_calls
+        else:
+            pass
+        if self.tool_call_id is not None:
+            message["tool_call_id"] = self.tool_call_id
+        else:
+            pass
+        return message
 
 
 @dataclass
@@ -191,6 +204,7 @@ class GenerateChunk:
     """Streaming chunk from the client."""
 
     request_id: str
+    tool_calls: list[dict[str, JsonValue]] | None = field(default=None, kw_only=True)
     index: int = 0
     token_ids: list[int] = field(default_factory=list)
     text: str = ""
@@ -351,6 +365,7 @@ class CompletionResult:
     """Result of a non-streaming completion call."""
 
     request_id: str
+    tool_calls: list[dict[str, JsonValue]] | None = field(default=None, kw_only=True)
     text: str
     audio: CompletionAudio | None = None
     # Saved media of a generation stage. Delivered files belong to the
@@ -373,6 +388,7 @@ class CompletionStreamChunk:
     """A single chunk from a streaming completion call."""
 
     request_id: str
+    tool_calls: list[dict[str, JsonValue]] | None = field(default=None, kw_only=True)
     text: str = ""
     modality: str = "text"
     audio_b64: str | None = None  # already base64-encoded

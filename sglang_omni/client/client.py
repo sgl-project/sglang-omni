@@ -340,6 +340,7 @@ class Client:
             language=language,
             diarization=last_chunk.diarization,
             image=image_base64,
+            tool_calls=last_chunk.tool_calls,
         )
         if isinstance(last_chunk, UMMGenerateChunk):
             return UMMCompletionResult(
@@ -367,6 +368,7 @@ class Client:
         need to touch numpy / raw bytes.
         """
         streamed_text = ""
+        streamed_call_ids: set[str] = set()
         stop_trimmer = (
             StreamedStopTrimmer(stop=request.sampling.stop)
             if request.sampling.stop
@@ -417,6 +419,12 @@ class Client:
                 else:
                     pass
 
+                calls = [
+                    call
+                    for call in chunk.tool_calls or ()
+                    if call["id"] not in streamed_call_ids
+                ]
+                streamed_call_ids.update(call["id"] for call in calls)
                 stream_chunk = CompletionStreamChunk(
                     request_id=request_id,
                     text=text,
@@ -426,6 +434,7 @@ class Client:
                     usage=chunk.usage,
                     spec_tokens_details=chunk.spec_tokens_details,
                     stage_name=chunk.stage_name,
+                    tool_calls=calls or None,
                 )
                 if isinstance(chunk, UMMGenerateChunk):
                     stream_chunk = UMMCompletionStreamChunk(
@@ -811,6 +820,7 @@ class Client:
                 return chunk
             else:
                 pass
+            chunk.tool_calls = result.get("tool_calls")
             text = result.get("text")
             if isinstance(text, str):
                 chunk.text = text
@@ -924,6 +934,7 @@ class Client:
                 return umm_segment_chunk(chunk, data)
             else:
                 pass
+            chunk.tool_calls = data.get("tool_calls")
             text = data.get("text")
             if isinstance(text, str):
                 chunk.text = text

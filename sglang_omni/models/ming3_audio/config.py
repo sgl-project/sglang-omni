@@ -48,11 +48,14 @@ def default_stages() -> list[StageConfig]:
             ),
             next=["decode", "talker"],
             route_fn=f"{PACKAGE}.routing.route_thinker",
+            stream_to=["decode"],
+            stream_done_to_fn=f"{PACKAGE}.routing.tool_stream_targets",
         ),
         StageConfig(
             name="decode",
             process="preprocessing",
             factory_path=f"{PACKAGE}.stages.create_decode_executor",
+            can_accept_stream_before_payload=True,
             terminal=True,
         ),
         StageConfig(

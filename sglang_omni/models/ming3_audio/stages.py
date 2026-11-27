@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 import torch
 from pydantic import JsonValue
+from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.managers.schedule_batch import Req
 from sglang.srt.models.registry import ModelRegistry
 from sglang.srt.sampling.sampling_params import SamplingParams
@@ -24,6 +25,12 @@ from sglang_omni.models.ming3_audio.preprocessing import (
     separate_asr_language_prefix,
 )
 from sglang_omni.models.ming3_audio.talker import Ming3SpeechGenerator
+from sglang_omni.models.ming3_audio.tool_calls import (
+    MingAudioDecodeScheduler,
+    MingAudioRequest,
+    MingToolCallStream,
+    parse_tool_reply,
+)
 from sglang_omni.modules.ming_audio.audio_encoder import (
     AudioEncoderConfig,
     Ming3AudioEncoder,
@@ -52,13 +59,13 @@ from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.device import resolve_concrete_device
 
 
-def create_decode_executor(model_path: str) -> SimpleScheduler:
+def create_decode_executor(model_path: str) -> MingAudioDecodeScheduler:
     """Publish thinker text; model_path follows the stage factory interface."""
 
     def decode(payload: StagePayload) -> StagePayload:
         return payload
 
-    return SimpleScheduler(decode)
+    return MingAudioDecodeScheduler(decode)
 
 
 def create_talker_executor(
@@ -316,7 +323,9 @@ def create_thinker_executor(
         model_path, trust_remote_code=False, revision=overrides.get("revision")
     )
 
-    def build_request(payload: StagePayload) -> SGLangARRequestData:
+    call_stream = MingToolCallStream(tokenizer)
+
+    def build_request(payload: StagePayload) -> MingAudioRequest:
         state: AudioPipelineState = payload.data
         parameters = payload.request.params
         sampling = SamplingParams(
@@ -338,7 +347,7 @@ def create_thinker_executor(
             eos_token_ids={tokenizer.eos_token_id},
         )
         request.tokenizer = tokenizer
-        return SGLangARRequestData(
+        return MingAudioRequest(
             input_ids=state["input_ids"],
             req=request,
             model_inputs={
@@ -353,7 +362,27 @@ def create_thinker_executor(
 
     def build_result(request: SGLangARRequestData) -> StagePayload:
         payload = request.stage_payload
-        text = tokenizer.decode(request.output_ids, skip_special_tokens=True).strip()
+        tools = payload.request.metadata.get("tools")
+        if tools:
+            hidden_token_ids = set(tokenizer.all_special_ids) - {
+                call_stream.start_call_id,
+                call_stream.end_call_id,
+            }
+            token_ids = [
+                token for token in request.output_ids if token not in hidden_token_ids
+            ]
+            text = tokenizer.decode(token_ids, skip_special_tokens=False).strip()
+            text, calls = parse_tool_reply(
+                text,
+                [Tool.model_validate(tool) for tool in tools],
+                payload.request_id,
+                0,
+            )
+        else:
+            text = tokenizer.decode(
+                request.output_ids, skip_special_tokens=True
+            ).strip()
+            calls = []
         if payload.request.metadata.get("task") == "asr":
             text = separate_asr_language_prefix(text)
         else:
@@ -366,6 +395,10 @@ def create_thinker_executor(
                 "completion_tokens": len(request.output_ids),
             },
         }
+        if calls:
+            payload.data.update(finish_reason="tool_calls", tool_calls=calls)
+        else:
+            pass
         return payload
 
     processor = SGLangOutputProcessor()
@@ -379,6 +412,7 @@ def create_thinker_executor(
         model_runner=Ming3AudioModelRunner(worker, processor),
         request_builder=build_request,
         result_adapter=build_result,
+        stream_output_builder=call_stream if speculative_algorithm.is_none() else None,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )
