@@ -499,3 +499,79 @@ async def test_wait_for_profile_flush_waits_for_all_status_sidecars(
     await publisher
     assert flushed is True
     assert (tmp_path / "run_status_102.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_wait_for_profile_flush_waits_for_late_stage_writer(
+    tmp_path: Path,
+) -> None:
+    """Coordinator finishing before a stage process creates its events file must not exit early."""
+    (tmp_path / "events_coordinator_101.jsonl").write_text("")
+    (tmp_path / "run_status_101.json").write_text(
+        json.dumps({"stages": ["coordinator"]})
+    )
+    async def publish_late_stage() -> None:
+        await asyncio.sleep(0.03)
+        (tmp_path / "events_asr_102.jsonl").write_text("")
+        (tmp_path / "run_status_102.json").write_text(json.dumps({"stages": ["asr"]}))
+    publisher = asyncio.create_task(publish_late_stage())
+    flushed = await asr_profiling.wait_for_profile_flush(
+        str(tmp_path),
+        expected_stages=["coordinator", "asr"],
+        timeout_seconds=1.0,
+    )
+    await publisher
+    assert flushed is True
+    assert (tmp_path / "run_status_102.json").is_file()
+@pytest.mark.asyncio
+async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_profiled_pass aggregates stages returned by /start_request_profile across replicas."""
+    observed_expected_stages: list[list[str] | None] = []
+    def fake_start(
+        url: str,
+        run_id: str,
+        event_dir: str,
+        *,
+        event_buffer_capacity: int | None,
+    ) -> dict[str, object]:
+        return {
+            "run_id": run_id,
+            "event_dir": event_dir,
+            "stages": ["coordinator", "asr"],
+        }
+    async def fake_wait(
+        event_dir: str,
+        *,
+        expected_stages: list[str] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
+        observed_expected_stages.append(
+            list(expected_stages) if expected_stages is not None else None
+        )
+        return True
+    async def fake_run_pass() -> dict[str, object]:
+        return {"wall_clock_s": 1.0}
+    monkeypatch.setattr(asr_profiling, "start_request_profile", fake_start)
+    monkeypatch.setattr(asr_profiling, "stop_request_profile", lambda url, run_id: {})
+    monkeypatch.setattr(asr_profiling, "wait_for_profile_flush", fake_wait)
+    monkeypatch.setattr(
+        asr_profiling,
+        "build_stage_breakdown",
+        lambda event_dir: {
+            "request_count": 2,
+            "stage_breakdown": [],
+            "hop_breakdown": [],
+        },
+    )
+    result = await run_profiled_pass(
+        run_id="run-multi",
+        event_dir=str(tmp_path),
+        profile_urls=["http://worker-0:8000", "http://worker-1:8000"],
+        run_pass=fake_run_pass,
+        log_prefix="[conc=4]",
+    )
+    assert result is not None
+    assert observed_expected_stages == [["coordinator", "asr", "coordinator", "asr"]]
