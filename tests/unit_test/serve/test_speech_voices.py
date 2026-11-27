@@ -9,13 +9,19 @@ from typing import Any
 
 import numpy as np
 import pytest
+from fastapi.params import File as FileParam
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from sglang_omni.client.audio import DEFAULT_SAMPLE_RATE, encode_wav
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.scheduling.speaker_cache import SpeakerArtifactCache, SpeakerCacheKey
 from sglang_omni.serve import create_app
-from sglang_omni.serve.openai_api import VoiceUploadBodyLimitMiddleware
+from sglang_omni.serve.openai_api import (
+    AUDIO_UPLOAD_BODY_LIMITS,
+    AudioUploadBodyLimitMiddleware,
+    UploadBodyLimit,
+)
 from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.serve.speech_voices import SpeakerSampleStore
@@ -40,11 +46,16 @@ class RecordingSpeechClient:
 
 
 @pytest.mark.asyncio
-async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
+async def test_audio_upload_body_limit_rejects_before_endpoint() -> None:
     async def unreachable_app(scope, receive, send) -> None:
         raise AssertionError("oversized body reached downstream app")
 
-    middleware = VoiceUploadBodyLimitMiddleware(unreachable_app, max_bytes=8)
+    middleware = AudioUploadBodyLimitMiddleware(
+        unreachable_app,
+        path_limits={
+            "/v1/audio/transcriptions": UploadBodyLimit(max_body_bytes=8, param="file")
+        },
+    )
     messages: list[dict[str, Any]] = []
 
     async def receive() -> dict[str, Any]:
@@ -57,7 +68,7 @@ async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
         {
             "type": "http",
             "method": "POST",
-            "path": "/v1/audio/voices",
+            "path": "/v1/audio/transcriptions",
             "headers": [(b"content-length", b"9")],
         },
         receive,
@@ -65,17 +76,23 @@ async def test_voice_upload_body_limit_rejects_before_endpoint() -> None:
     )
 
     assert messages[0]["status"] == 413
+    assert json.loads(messages[1]["body"])["error"]["param"] == "file"
 
 
 @pytest.mark.asyncio
-async def test_voice_upload_body_limit_rejects_chunked_body() -> None:
+async def test_audio_upload_body_limit_rejects_chunked_body() -> None:
     async def downstream_app(scope, receive, send) -> None:
         while True:
             message = await receive()
             if not message.get("more_body", False):
                 return
 
-    middleware = VoiceUploadBodyLimitMiddleware(downstream_app, max_bytes=4)
+    middleware = AudioUploadBodyLimitMiddleware(
+        downstream_app,
+        path_limits={
+            "/v1/audio/voices": UploadBodyLimit(max_body_bytes=4, param="audio_sample")
+        },
+    )
     messages: list[dict[str, Any]] = []
     chunks = iter(
         (
@@ -102,6 +119,74 @@ async def test_voice_upload_body_limit_rejects_chunked_body() -> None:
     )
 
     assert messages[0]["status"] == 413
+
+
+@pytest.mark.asyncio
+async def test_audio_upload_body_limit_passes_non_upload_requests_through() -> None:
+    reached: list[str] = []
+
+    async def downstream_app(scope, receive, send) -> None:
+        reached.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = AudioUploadBodyLimitMiddleware(
+        downstream_app,
+        path_limits={
+            "/v1/audio/voices": UploadBodyLimit(max_body_bytes=8, param="audio_sample")
+        },
+    )
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        return
+
+    # A huge body on a non-upload route, and listing voices, both pass through.
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"content-length", b"999999")],
+        },
+        receive,
+        send,
+    )
+    await middleware(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/audio/voices",
+            "headers": [(b"content-length", b"999999")],
+        },
+        receive,
+        send,
+    )
+
+    assert reached == ["/v1/chat/completions", "/v1/audio/voices"]
+
+
+def test_every_multipart_upload_route_has_a_body_limit() -> None:
+    app = create_app(RecordingSpeechClient())
+    upload_paths = set()
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        # The speech-to-text routes take their file through a form dependency,
+        # so the File parameter sits one dependant below the route itself.
+        dependants = [route.dependant] + list(route.dependant.dependencies)
+        if any(
+            isinstance(param.field_info, FileParam)
+            for dependant in dependants
+            for param in dependant.body_params
+        ):
+            upload_paths.add(route.path)
+        else:
+            pass
+
+    assert upload_paths == set(AUDIO_UPLOAD_BODY_LIMITS)
 
 
 def test_voice_routes_upload_list_use_and_delete(tmp_path: Path, monkeypatch) -> None:
