@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Fixed
+- **Meeting model usage follows Spoken language**: with Meetings on Automatic, the model usage check now follows the meeting's Spoken language override. The model the meeting actually opens is marked Used by Meetings and cannot be hidden from the meeting model menu.
+
+### 中文
+
+#### 修复
+- **会议模型的使用关系跟随说话语言**：会议使用「自动」时，Used by 和会议模型菜单现在会跟随会议的「说话语言」设置。会议实际打开的模型会标为 Used by Meetings，不能再被隐藏。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added

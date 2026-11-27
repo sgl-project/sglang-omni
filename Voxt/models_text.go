@@ -11,6 +11,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -36,7 +37,19 @@ func modelsUsedBy(translator *i18n.Translator, prefs settings.Settings, installe
 		if kind == local.LLM {
 			installed = installedLLM
 		}
-		if selected, ok := chooseFeatureModel(prefs, installed, kind, feature); ok && selected.ID == id {
+		var selected local.Model
+		var ok bool
+		if kind == local.ASR && feature == hotkey.Meeting && strings.TrimSpace(prefs.Features.Meeting.ASR) == "" {
+			// Meeting Automatic follows its own Spoken language override.
+			language := prefs.Features.Meeting.Lang
+			if language == "" {
+				language = session.SpeechLang(prefs, i18n.Locale())
+			}
+			selected, ok = local.Choose(automaticSpeechFor(language, installed), "")
+		} else {
+			selected, ok = chooseFeatureModel(prefs, installed, kind, feature)
+		}
+		if ok && selected.ID == id {
 			names = append(names, uitext.FeatureTitleFor(translator, feature))
 		}
 	}

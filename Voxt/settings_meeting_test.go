@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/models"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/uitext"
 )
@@ -147,7 +149,7 @@ func TestMeetingSpeechSettingsNoModel(t *testing.T) {
 // TestMeetingSettingsAutomaticNamesGatedModel: the menu's
 // "Automatic (now: …)" names the model a meeting on Automatic opens —
 // the language gate's first for the meeting's language, not the first
-// installed (#4067).
+// installed (#4067). Used by protects the same model from being hidden.
 func TestMeetingSettingsAutomaticNamesGatedModel(t *testing.T) {
 	a, _, _ := newTestApp(t)
 	a.local = &meetingGateLocal{}
@@ -155,8 +157,21 @@ func TestMeetingSettingsAutomaticNamesGatedModel(t *testing.T) {
 	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: Qwen3-ASR 1.7B (8bit))" {
 		t.Errorf("main ja: %q", got)
 	}
+	if got := a.usedBy(local.ASR, models.ASRAccurate); got != "Used by Transcribe · Translate · Rewrite · Meetings" {
+		t.Errorf("main ja Used by = %q", got)
+	}
 	a.prefs.Features.Meeting.Lang = "zh"
 	if got := a.meetingSettingsModel().ASRSelected; got != "Automatic (now: MOSS-Transcribe-Diarize)" {
 		t.Errorf("meeting zh: %q", got)
 	}
+	if got := a.usedBy(local.ASR, models.ASRMoss); got != "Used by Meetings" {
+		t.Errorf("meeting zh Used by = %q", got)
+	}
+	a.prefs.Models.Hidden = []string{models.ASRMoss}
+	for _, option := range a.meetingSettingsModel().ASROptions {
+		if option.Code == models.ASRMoss {
+			return
+		}
+	}
+	t.Error("the meeting's Automatic model is hidden from its menu")
 }
