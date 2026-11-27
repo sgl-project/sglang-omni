@@ -672,14 +672,23 @@ func TestReprocessSurfacesCorrectionFailure(t *testing.T) {
 	}}}
 	plain := &importFileASR{}
 	m, repo := importFixture(t, chat, diarizer, plain)
+	m.cfg.Privacy = func() settings.Privacy { return settings.Privacy{KeepHistory: true, KeepAudio: true} }
 	ctx := context.Background()
 	id, err := m.Import(ctx, ImportRequest{Name: "x", CreatedAt: time.Now(), PCM: importPCM(1)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) { return nil, errors.New("model down") }
-	if err := m.Reprocess(ctx, id); err == nil {
-		t.Fatal("a failed correction came back as a success")
+	modelRequests := 0
+	m.cfg.LLM = func(context.Context, string) (SummaryChat, error) {
+		modelRequests++
+		return nil, errors.New("model down")
+	}
+	err = m.Reprocess(ctx, id)
+	if err == nil || !strings.Contains(err.Error(), "model down") {
+		t.Fatalf("err %v, want the failing language model", err)
+	}
+	if modelRequests == 0 {
+		t.Fatal("Continue processing returned before calling the language model")
 	}
 	mt, _, err := repo.Meeting(ctx, id)
 	if err != nil || mt.Status != store.MeetingDone {
