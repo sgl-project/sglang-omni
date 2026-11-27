@@ -465,8 +465,6 @@ func meetingOverlayFinishing(c *ui.Context, message string, look pillLook) {
 	ui.Row(c).Height(layout.RowH).Shrink(0).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
 		overlayLoader(c, message, look, layout.LoaderDotsW)
 		ui.Text(c, message).FontSize(layout.NoticeSize).TextColor(ovText).SingleLine().Ellipsis("…").MinWidth(0).Shrink(1)
-		// Balance the loader so the message itself stays in the face's centre.
-		ui.Box(c).Width(layout.LoaderDotsW).Shrink(0)
 	})
 }
 

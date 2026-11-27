@@ -150,7 +150,7 @@ func meetingOverlayFinishingText(translator *i18n.Translator, snapshot meeting.S
 	message := translator.T("Finishing the meeting…")
 	switch snapshot.Stage {
 	case meeting.StageTranscribing:
-		message = translator.T("Finalising transcript…")
+		message = translator.T("Finalising")
 		if snapshot.Progress > 0 {
 			message += fmt.Sprintf(" %.0f%%", snapshot.Progress*100)
 		}
