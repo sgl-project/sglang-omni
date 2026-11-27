@@ -32,7 +32,7 @@ const (
 	meetingAskLater = 2 * time.Minute
 	// meetingTabAgain is how often the tab of a browser that records is
 	// read again while it is no meeting's (readMeetingTabNow).
-	meetingTabAgain = 4 * time.Second
+	meetingTabAgain = time.Second
 )
 
 // meetingDetectState is the detection as the main thread knows it.

@@ -193,11 +193,13 @@ type Detector struct {
 
 // Update takes the processes recording at now and returns the candidates
 // to decide about, each app once, by key, and how long until an app that
-// just started has recorded for Hold (0: none waits; call Update again
+// just started has recorded for Hold (a confirmed meeting process skips
+// that wait; 0: none waits; call Update again
 // then). An app that stopped recording more than Quiet ago is forgotten:
 // its next use is a candidate again.
 func (d *Detector) Update(users []User, browsers []string, now time.Time) (found []Candidate, wait time.Duration) {
 	d.present = d.present[:0]
+	confirmed := map[string]bool{}
 	for _, u := range users {
 		c, ok := classify(u.BundleID, browsers)
 		if !ok || slices.Contains(d.present, c.Key) || !inMeeting(c, u) {
@@ -205,6 +207,7 @@ func (d *Detector) Update(users []User, browsers []string, now time.Time) (found
 		}
 		d.present = append(d.present, c.Key)
 		found = append(found, c)
+		confirmed[c.Key] = u.Hosts != nil && len(meetingHosts[c.App]) > 0
 	}
 	if d.since == nil {
 		d.since = map[string]time.Time{}
@@ -231,6 +234,9 @@ func (d *Detector) Update(users []User, browsers []string, now time.Time) (found
 	found = slices.DeleteFunc(found, func(c Candidate) bool {
 		if _, done := d.settled[c.Key]; done {
 			return true
+		}
+		if confirmed[c.Key] {
+			return false // Zoom's meeting process already rules out its microphone test.
 		}
 		if left := hold - now.Sub(d.since[c.Key]); left > 0 {
 			if wait == 0 || left < wait {

@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -204,7 +205,7 @@ func TestMeetingDetectReadsTheTabAgain(t *testing.T) {
 		t.Fatalf("mail asked: %+v", a.ask.view)
 	}
 	browserURLs(fs, map[string]string{"com.google.Chrome": "https://meet.google.com/abc-defg-hij"})
-	detectClock(t, a).advance(meetingTabAgain)
+	detectClock(t, a).advance(time.Second)
 	if !a.ask.view.Visible || a.ask.view.App != "Google Meet" {
 		t.Fatalf("its meeting tab, read again: %+v", a.ask.view)
 	}

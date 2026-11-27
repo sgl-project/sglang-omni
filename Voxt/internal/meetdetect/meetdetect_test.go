@@ -164,7 +164,7 @@ func TestWeb(t *testing.T) {
 
 // Zoom records for a meeting only while one of its meeting processes runs
 // for it: its settings' microphone test brings no card (11-25), and the
-// meeting's Hold counts from when the meeting process came. A helper that
+// meeting is ready as soon as the meeting process came. A helper that
 // does not say (Hosts nil) leaves Zoom a meeting.
 func TestZoomNeedsItsMeetingProcess(t *testing.T) {
 	var d Detector
@@ -175,8 +175,8 @@ func TestZoomNeedsItsMeetingProcess(t *testing.T) {
 	}
 	meeting := []User{{PID: 758, BundleID: "us.zoom.xos", Hosts: []string{"aomhost"}}}
 	later := start.Add(time.Minute)
-	if found, wait := d.Update(meeting, nil, later); len(found) != 0 || wait != Hold {
-		t.Fatalf("its meeting at once: %+v, wait %v, want a wait of Hold", found, wait)
+	if found, wait := d.Update(meeting, nil, later); len(found) != 1 || found[0].App != Zoom || wait != 0 {
+		t.Fatalf("its confirmed meeting should ask at once: %+v, wait %v", found, wait)
 	}
 	if found, _ := d.Update(meeting, nil, later.Add(Hold)); len(found) != 1 || found[0].App != Zoom {
 		t.Fatalf("its meeting after Hold: %+v", found)

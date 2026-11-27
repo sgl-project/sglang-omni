@@ -8,8 +8,8 @@ import VoxtNewHelperKit
 /// change. Only these properties are read: no audio, no permission.
 ///
 /// Core Audio's notices are not enough: on 11-25 Zoom joined a meeting and
-/// no notice of its input came for 34 s. So the users are read again 1 s
-/// and 3 s after a change, and every pollEvery while the watch is on.
+/// no notice of its input came for 34 s. So the users are read again after
+/// 100 ms, 300 ms, 1 s and 3 s, and every pollEvery while the watch is on.
 final class Mic: @unchecked Sendable {
     let out: Writer
     private let watch = MicWatch()
@@ -22,7 +22,7 @@ final class Mic: @unchecked Sendable {
     private var poll: DispatchSourceTimer?
     private let own = [getpid(), getppid()]
     private static let pollEvery: DispatchTimeInterval = .seconds(2)
-    private static let againAfter: [DispatchTimeInterval] = [.seconds(1), .seconds(3)]
+    private static let againAfter: [DispatchTimeInterval] = [.milliseconds(100), .milliseconds(300), .seconds(1), .seconds(3)]
 
     init(out: Writer) {
         self.out = out
