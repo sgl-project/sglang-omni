@@ -246,9 +246,35 @@ class ShortOpenGateTests(unittest.TestCase):
             loop.write_text_consistency(observations, path)
             self.assertEqual(json.loads(path.read_text()), consistency)
 
-    def test_consistency_rejects_missing_hash(self):
-        observations = [{"rows": [row(text_sha256=""), row(scenario="warm")]}]
-        self.assertFalse(loop.text_consistency(observations)["shared_text_hash"])
+    def test_attempt_and_group_reject_null_and_non_string_hashes(self):
+        for bad in (None, 123):
+            with self.subTest(text_sha256=bad):
+                bad_observation = self.observation(scenario_hashes=[bad, bad])
+                self.assertFalse(
+                    loop.short_open_attempt_kept(
+                        0, [], "normal", bad_observation["rows"]
+                    )
+                )
+                self.assertFalse(loop.short_open_group_complete([bad_observation] * 3))
+
+    def test_consistency_rejects_missing_or_malformed_hash(self):
+        for bad in (None, 123, "", "None", "z" * 64):
+            with self.subTest(text_sha256=bad):
+                observations = [
+                    {
+                        "rows": [
+                            row(text_sha256=bad),
+                            row(scenario="warm", text_sha256=bad),
+                        ]
+                    }
+                ]
+                self.assertFalse(
+                    loop.text_consistency(observations)["shared_text_hash"]
+                )
+                observations[0]["rows"][1]["text_sha256"] = "a" * 64
+                self.assertFalse(
+                    loop.text_consistency(observations)["shared_text_hash"]
+                )
 
     def test_switch_text_is_separate_from_short_open_consistency(self):
         observations = []

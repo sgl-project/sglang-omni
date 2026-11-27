@@ -517,8 +517,8 @@ def text_consistency(observations: list[dict[str, object]]) -> dict[str, object]
     ]
     shared = (
         bool(short_open_rows)
-        and all(row.get("text_sha256") for row in short_open_rows)
-        and len({str(row.get("text_sha256")) for row in short_open_rows}) == 1
+        and all(text_hash(row) != "" for row in short_open_rows)
+        and len(distinct_text_hashes(short_open_rows)) == 1
     )
     return {"scenarios": per_scenario, "shared_text_hash": shared}
 
