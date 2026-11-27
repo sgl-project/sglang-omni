@@ -9,6 +9,7 @@ import re
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -32,9 +33,17 @@ from scripts.docs_review.models import (
     ReviewBundle,
     ReviewRequest,
 )
-from scripts.docs_review.policy import KNOWN_RULE_IDS, read_prompt
+from scripts.docs_review.policy import (
+    CONTRIBUTOR_CHECKLIST,
+    KNOWN_RULE_IDS,
+    read_prompt,
+)
 from scripts.docs_review.reporting import render_bundle
-from scripts.docs_review.transport import OpenAICompatibleReviewer, ReviewerError
+from scripts.docs_review.transport import (
+    OpenAICompatibleReviewer,
+    ReviewerConfigurationError,
+    ReviewerError,
+)
 
 FINDING_LIST = TypeAdapter(list[Finding])
 
@@ -51,28 +60,68 @@ class ReviewRun:
     report: Report
 
 
+@dataclass(frozen=True, kw_only=True)
+class PreparedReview:
+    bundle: ReviewBundle
+    prompt_text: str
+    prompt_version: str
+    input_hash: str
+
+
+def prepare_review(request: ReviewRequest) -> PreparedReview:
+    bundle = collect_review_bundle(request)
+    prompt_text = read_prompt()
+    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
+    return PreparedReview(
+        bundle=bundle,
+        prompt_text=prompt_text,
+        prompt_version=prompt_version,
+        input_hash=review_input_sha256(bundle, request.model_settings, prompt_version),
+    )
+
+
 def run_review(
     request: ReviewRequest,
     reviewer: DocumentationReviewer | None,
     clock: Clock,
+    *,
+    prepared: PreparedReview | None = None,
 ) -> ReviewRun:
     if request.retry_count < 0:
         raise ValueError("retry_count must be zero or greater")
     else:
         pass
-    bundle = collect_review_bundle(request)
-    prompt_text = read_prompt()
-    prompt_version = hashlib.sha256(prompt_text.encode()).hexdigest()
-    input_hash = review_input_sha256(bundle, request.model_settings, prompt_version)
-    payload = bundle_payload(bundle, prompt_version, input_hash)
+    prepared_review = prepared if prepared is not None else prepare_review(request)
+    bundle = prepared_review.bundle
+    payload = bundle_payload(
+        bundle,
+        prepared_review.prompt_version,
+        prepared_review.input_hash,
+        request.model_settings,
+    )
     with closing(ReviewLedger(request.ledger_path)) as ledger:
-        report = ledger.fetch(input_hash)
+        report = ledger.fetch(prepared_review.input_hash)
         if report is None:
             report = review_uncached(
-                request, reviewer, clock.now(), bundle, payload, prompt_text, ledger
+                request,
+                reviewer,
+                clock.now(),
+                bundle,
+                payload,
+                prepared_review.prompt_text,
+                ledger,
             )
         else:
-            pass
+            report = report.model_copy(
+                update={
+                    "base_commit_sha": bundle.base_commit_sha,
+                    "head_commit_sha": bundle.head_commit_sha,
+                    "merge_base_commit_sha": bundle.merge_base_commit_sha,
+                    "check_results": interpret_checks(
+                        bundle.checks, bundle.head_commit_sha
+                    ),
+                }
+            )
     return ReviewRun(bundle=bundle, payload=payload, report=report)
 
 
@@ -88,47 +137,69 @@ def review_uncached(
     budget = request.budget
     findings: list[Finding] = []
     attempts = 0
-    usage_cost_cents = 0
+    reservation_id = uuid4().hex
+    call_cost_cents = budget.call_cost_cents if budget is not None else None
     if reviewer is None and request.model_settings is None:
         incomplete_reason = "model is not configured"
     elif budget is None:
         incomplete_reason = "quotas are not configured"
     else:
-        authorization = ledger.authorize(
-            pull_request_number=request.pull_request_number,
-            budget=budget,
-            follow_up_authorized=request.follow_up_authorized,
-            retry_count=request.retry_count,
-            reviewed_at=reviewed_at,
-        )
-        incomplete_reason = authorization.reason
-        if authorization.allowed:
+        try:
             if reviewer is None:
                 assert request.model_settings is not None
                 reviewer = OpenAICompatibleReviewer(request.model_settings, prompt_text)
             else:
                 pass
-            findings, incomplete_reason, attempts = review_findings(
-                reviewer, render_bundle(bundle), request.retry_count
-            )
-            usage_cost_cents = attempts * budget.call_cost_cents
+        except ReviewerConfigurationError as error:
+            incomplete_reason = str(error)
         else:
-            pass
+            findings, incomplete_reason, attempts = review_findings(
+                reviewer,
+                render_bundle(bundle),
+                request,
+                ledger,
+                reservation_id,
+                reviewed_at,
+            )
     report = assemble_report(
-        bundle, payload, findings, incomplete_reason, usage_cost_cents
+        bundle,
+        payload,
+        findings,
+        incomplete_reason,
+        attempts * (call_cost_cents or 0),
+        call_cost_cents,
     )
     if attempts:
-        ledger.store(request.pull_request_number, report, reviewed_at)
+        ledger.store(reservation_id, report)
     else:
         pass
     return report
 
 
 def review_findings(
-    reviewer: DocumentationReviewer, bundle_text: str, retry_count: int
+    reviewer: DocumentationReviewer,
+    bundle_text: str,
+    request: ReviewRequest,
+    ledger: ReviewLedger,
+    reservation_id: str,
+    reviewed_at: datetime,
 ) -> tuple[list[Finding], str, int]:
-    max_attempts = retry_count + 1
+    assert request.budget is not None
+    max_attempts = request.retry_count + 1
     for attempt in range(1, max_attempts + 1):
+        authorization = ledger.reserve_attempt(
+            reservation_id,
+            attempt == 1,
+            request.pull_request_number,
+            request.budget,
+            request.follow_up_authorized,
+            max_attempts - attempt,
+            reviewed_at,
+        )
+        if not authorization.allowed:
+            return [], authorization.reason, attempt - 1
+        else:
+            pass
         try:
             output = reviewer.review(bundle_text)
         except ReviewerError:
@@ -149,8 +220,14 @@ def assemble_report(
     model_findings: list[Finding],
     incomplete_reason: str,
     usage_cost_cents: int,
+    call_cost_cents: int | None,
 ) -> Report:
-    combined = audit_bundle(bundle) + model_findings
+    combined = audit_bundle(bundle) + [
+        finding
+        for finding in model_findings
+        if bundle.pull_request_text is not None
+        or finding.rule_id != CONTRIBUTOR_CHECKLIST
+    ]
     kept, pre_existing, dropped_citations, dropped_absence = validate_findings(
         combined, bundle
     )
@@ -177,6 +254,8 @@ def assemble_report(
         outcome = "no_findings"
     return Report(
         advisory=True,
+        model_configuration=payload.model_configuration,
+        estimated_call_cost_cents=call_cost_cents,
         execution=execution,
         outcome=outcome,
         review_input_sha256=payload.review_input_sha256,
@@ -253,18 +332,31 @@ def validate_findings(
 def citation_matches(
     bundle: ReviewBundle, file_path: str, line_start: int, line_end: int, quote: str
 ) -> bool:
-    if quote == "":
+    if quote == "" or line_start < 1 or line_end < line_start:
         return False
     else:
         pass
     for collected in bundle.files:
         if collected.file_path == file_path:
-            lines = collected.content.splitlines()
-            if line_start < 1 or line_end > len(lines) or line_end < line_start:
+            if collected.excerpts:
+                for excerpt in collected.excerpts:
+                    if (
+                        excerpt.line_start <= line_start
+                        and line_end <= excerpt.line_end
+                    ):
+                        lines = excerpt.content.splitlines()
+                        start_offset = line_start - excerpt.line_start
+                        end_offset = line_end - excerpt.line_start + 1
+                        return quote in "\n".join(lines[start_offset:end_offset])
+                    else:
+                        pass
                 return False
             else:
-                excerpt = "\n".join(lines[line_start - 1 : line_end])
-                return quote in excerpt
+                lines = collected.content.splitlines()
+                if line_end > len(lines):
+                    return False
+                else:
+                    return quote in "\n".join(lines[line_start - 1 : line_end])
         else:
             pass
     return False

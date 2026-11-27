@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import json
 
-from scripts.docs_review.models import CheckView, Finding, Report, ReviewBundle
+from scripts.docs_review.models import (
+    CheckView,
+    CollectedFile,
+    Finding,
+    Report,
+    ReviewBundle,
+)
 
 
 def render_bundle(bundle: ReviewBundle) -> str:
@@ -18,7 +24,11 @@ def render_bundle(bundle: ReviewBundle) -> str:
         "Head commit:",
         bundle.head_commit_sha,
         "Pull request text:",
-        bundle.pull_request_text,
+        (
+            bundle.pull_request_text
+            if bundle.pull_request_text is not None
+            else "PR description not supplied; skip checklist verification."
+        ),
         "Comments:",
         bundle.comment_text,
         "Supplementary evidence:",
@@ -31,15 +41,28 @@ def render_bundle(bundle: ReviewBundle) -> str:
             sort_keys=True,
         ),
     ]
-    for collected in bundle.files:
-        parts.append(
-            f"File {collected.file_path} change {collected.change} truncated={collected.truncated} missing={collected.missing}"
-        )
-        numbered: list[str] = []
-        for line_number, line in enumerate(collected.content.splitlines(), start=1):
-            numbered.append(f"{line_number}: {line}")
-        parts.append("\n".join(numbered))
+    parts.extend(render_collected_file(file) for file in bundle.files)
     return "\n".join(parts)
+
+
+def render_collected_file(file: CollectedFile) -> str:
+    header = f"File {file.file_path} change {file.change} truncated={file.truncated} missing={file.missing}"
+
+    def numbered(content: str, start: int) -> str:
+        return "\n".join(
+            f"{number}: {line}"
+            for number, line in enumerate(content.splitlines(), start)
+        )
+
+    if file.excerpts:
+        body = "\n...\n".join(
+            f"[Lines {part.line_start}-{part.line_end}]\n"
+            + numbered(part.content, part.line_start)
+            for part in file.excerpts
+        )
+    else:
+        body = numbered(file.content, 1)
+    return header + "\n" + body
 
 
 def render_markdown(report: Report) -> str:
@@ -53,10 +76,14 @@ def render_markdown(report: Report) -> str:
         f"Base: `{report.base_commit_sha}`",
         f"Head: `{report.head_commit_sha}`",
         f"Author confirmation: {report.author_confirmation}",
-        "",
-        "## Reviewed paths",
-        "",
     ]
+    if report.estimated_call_cost_cents is not None:
+        lines.append(
+            f"Estimated cost: {report.usage_cost_cents} cents at {report.estimated_call_cost_cents} cents per call."
+        )
+    else:
+        pass
+    lines.extend(["", "## Reviewed paths", ""])
     if report.reviewed_paths:
         for file_path in report.reviewed_paths:
             lines.append(f"- `{file_path}`")
