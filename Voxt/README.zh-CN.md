@@ -72,6 +72,7 @@ https://github.com/user-attachments/assets/ab31c202-9415-47a1-b1d3-bc91a7285e8b
 ### 第一次用 Voxt
 
 1. **下载** [`Voxt-2.1.3-arm64.dmg`][download]，打开后把 **Voxt** 拖进“应用程序”。
+   也可以用 [Homebrew](https://brew.sh) 安装：`brew install --cask sgl-project/voxt/voxt`。装好以后 Voxt 自己更新，和从 dmg 安装时一样。
 
 2. **打开 Voxt，跟着设置引导走**：授权麦克风和辅助功能，下载推荐的语音识别模型（Qwen3-ASR 1.7B (8bit) 及其转录加速草稿，3.2 GB），再配置一个语言模型用于整理、翻译和改写。
 3. 在任意 App 里**单按右 Option**，说话，再按一下。

@@ -46,6 +46,7 @@ scripts/mac-gui.sh scripts/release.sh（在 Mac 上，ssh 里经 mac-gui.sh 进�
 4. 在 Release 页面检查说明后发布（默认标成 Latest）。用户下载 dmg，把 Voxt 拖进“应用程序”，会替换 Swift 版 Voxt 1.x 的 Voxt.app。之后的版本在 app 里检查、下载、安装并重新启动。
    **点“发布”就是推送给所有 Voxt 2 用户**：更新源是 GitHub Release 本身，没有另一步。发布以后，每个装着带这个更新源的版本的用户，下次检查更新就会收到它。发布前先在一台装着上一版的 Mac 上验证更新（见下面“验证应用内更新”）。
    发布会触发 [Voxt Update Feed Check](../../.github/workflows/voxt-update-feed-check.yaml)：它按 app 的规则解析更新源，确认解析到的就是刚发布的版本，清单是这个版本的签名清单，tar.gz 能下载且大小和清单一致。它失败说明已安装的 app 看不到这个版本，要马上处理。
+   正式版的发布还会触发 [Voxt Homebrew](../../.github/workflows/voxt-homebrew.yaml)：[scripts/homebrew-cask.sh](../scripts/homebrew-cask.sh) 用 Release 上 dmg 的 digest 和 `Voxt-X.Y.Z-arm64.dmg.sha256` 写出 `Casks/voxt.rb`（两者不一致、或者版本不是 X.Y.Z 就失败），工作流把它作为 PR 提到 `sgl-project/homebrew-voxt`（`brew install --cask sgl-project/voxt/voxt`），由那个 tap 的检查跑 `brew audit` 和 `brew style`，人合并。beta 不进 Homebrew。它用 `voxt-release` 环境的 secret `VOXT_HOMEBREW_TAP_TOKEN`：只对 `sgl-project/homebrew-voxt` 有 Contents 和 Pull requests 读写权限的 fine-grained token。重做某个版本就手动运行它，填 tag。这个 cask 带 `auto_updates true`，装好以后 app 自己更新。Voxt Appcast 的 stable 一步照旧更新 1.x 用的 `hehehai/homebrew-tap`。
    **撤回**：把 Release 改回草稿（`gh release edit voxt-vX.Y.Z --draft`）或删除它，更新源立刻退回上一个正式版。已经装上新版的用户不会降级，要再发一个版本号更高的版本修复。
    发布后按第 6 步更新所有文档的 DMG 直链，确认它们直接下载本版的 `Voxt-X.Y.Z-arm64.dmg`。
 5. 推给 Voxt 1.x 的用户和 Homebrew：发布后手动运行 Voxt Appcast 工作流，先放进 1.x 的 beta 通道，在真机上测通后再发到 stable，只给 Apple 芯片上的 1.x，见 [Voxt 1.x 的应用内更新和 Homebrew](#voxt-1x-的应用内更新和-homebrew)。

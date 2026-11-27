@@ -2,6 +2,16 @@
 
 All notable changes to Voxt. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/). Each version's section is its release notes: English first, then the same in Chinese under `### 中文`, with `####` headings below it (docs/release.md §2.1).
 
+## [Unreleased]
+
+### Added
+- **Install Voxt with Homebrew**: `brew install --cask sgl-project/voxt/voxt` installs the newest stable Voxt from its disk image on a Mac with Apple silicon. Each stable release updates the cask; Voxt still updates itself, so `brew upgrade` leaves it alone unless you pass `--greedy`.
+
+### 中文
+
+#### 新增
+- **可以用 Homebrew 安装 Voxt**：在 Apple 芯片的 Mac 上，`brew install --cask sgl-project/voxt/voxt` 从 dmg 安装最新的正式版。每个正式版都会更新这个 cask；Voxt 仍然自己更新，所以 `brew upgrade` 不会动它，除非加 `--greedy`。
+
 ## [2.1.4] - 2026-11-26
 
 ### Added
