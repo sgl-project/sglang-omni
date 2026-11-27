@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """MiniCPM-o unit conversion for the shared session runtime."""
 
+import logging
 from array import array
 from dataclasses import dataclass, field
 
@@ -66,6 +67,8 @@ from sglang_omni.serve.realtime.output import (
 )
 from sglang_omni.serve.realtime.types import Capabilities, samples_to_ms
 
+logger = logging.getLogger(__name__)
+
 # note (ruoyu): A client's truncate follows its stop within a unit or two; this many listen units after a reply's last spoken unit, a cut would re-feed more audio than any stop needs, so the reply is no longer cut.
 TRUNCATE_WINDOW_UNITS = 10
 
@@ -124,6 +127,9 @@ class ThinkerAdapter(ARSessionAdapter):
             state.speech_detector.reset()
             state.drain_units_left = 0
             state.is_latest_reply_ended = True
+            # note (cuzmi): A stop ends the turn, and a task the model had not finished writing is no task.
+            state.delegate_task_ids = None
+            state.is_delegate_malformed = False
             self.cut_reply(state, keep_through_unit_of(event))
         elif control_type(event) == TRUNCATE:
             state = self.states[session_identity]
@@ -205,6 +211,7 @@ class ThinkerAdapter(ARSessionAdapter):
             end_of_turn=True,
             is_interrupted=self.states[session_identity].is_interrupt_pending,
             hears_user=False,
+            delegates=[],
         )
         return payload
 
@@ -373,6 +380,11 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             pass
         output_token_ids = [int(token_id) for token_id in data.output_ids]
+        is_spoken, tasks = self.split_delegates(state, data.generated_unit_ids)
+        for task in tasks:
+            logger.info(
+                f"Session {session_identity.id} unit {data.unit_index} delegates {task!r}"
+            )
         ends_own_turn = not data.is_interrupted and (
             self.special.turn_eos in output_token_ids
             or any(ends_turn for _, _, ends_turn in data.talker_conditions)
@@ -417,9 +429,23 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             pass
         data.stage_payload.data = dict(
-            talker_conditions=data.talker_conditions,
+            # note (cuzmi): The talker conditions pair one to one, in order, with the generated ids.
+            talker_conditions=[
+                condition
+                for condition, is_condition_spoken in zip(
+                    data.talker_conditions, is_spoken
+                )
+                if is_condition_spoken
+            ],
             text=self.tokenizer.decode(
-                data.generated_unit_ids, skip_special_tokens=True
+                [
+                    token_id
+                    for token_id, is_token_spoken in zip(
+                        data.generated_unit_ids, is_spoken
+                    )
+                    if is_token_spoken
+                ],
+                skip_special_tokens=True,
             ),
             is_listen=bool(
                 output_token_ids and output_token_ids[0] == self.special.listen
@@ -427,8 +453,48 @@ class ThinkerAdapter(ARSessionAdapter):
             end_of_turn=is_turn_ending,
             is_interrupted=data.is_interrupted,
             hears_user=data.hears_user,
+            delegates=tasks,
         )
         return data.stage_payload
+
+    def split_delegates(
+        self, state: MiniCPMOThinkerSessionState, generated_unit_ids: list[int]
+    ) -> tuple[list[bool], list[str]]:
+        """Whether each of a unit's generated ids is speech, and the task of each delegate span the unit closes; a span is never spoken, and it may open and close in different units."""
+        delegate_tokens = self.special.delegate_tokens
+        if delegate_tokens is None:
+            return [True] * len(generated_unit_ids), []
+        else:
+            is_spoken: list[bool] = []
+            tasks: list[str] = []
+            for token_id in generated_unit_ids:
+                if token_id == delegate_tokens.delegate_start:
+                    if state.delegate_task_ids is None:
+                        state.delegate_task_ids = []
+                    else:
+                        state.is_delegate_malformed = True
+                    is_spoken.append(False)
+                elif state.delegate_task_ids is not None and token_id in (
+                    delegate_tokens.delegate_end,
+                    self.special.turn_eos,
+                ):
+                    task = self.tokenizer.decode(
+                        state.delegate_task_ids, skip_special_tokens=True
+                    ).strip()
+                    if task and not state.is_delegate_malformed:
+                        tasks.append(task)
+                    else:
+                        pass
+                    state.delegate_task_ids = None
+                    state.is_delegate_malformed = False
+                    # note (cuzmi): The checkpoint may close a task with turn_eos instead of its end token, and the turn still ends there.
+                    is_spoken.append(token_id == self.special.turn_eos)
+                elif state.delegate_task_ids is not None:
+                    state.delegate_task_ids.append(token_id)
+                    is_spoken.append(False)
+                else:
+                    is_spoken.append(token_id != delegate_tokens.delegate_end)
+            return is_spoken, tasks
 
 
 @dataclass(frozen=True, kw_only=True)

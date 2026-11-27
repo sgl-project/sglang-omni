@@ -38,6 +38,7 @@ from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
 from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import (
+    DELEGATE_SPECIAL_TOKENS,
     REQUIRED_SPECIAL_TOKENS,
     MiniCPMOSpecialTokenIds,
     resolve_special_token_ids,
@@ -775,14 +776,23 @@ def test_speech_verify_capacity_is_checked_before_graph_capture(
             bootstrap_module.create_thinker_scheduler(server_args, speech_enabled=True)
 
 
-def duplex_tokenizer() -> Mock:
+def duplex_tokenizer(*, has_delegate_tokens: bool = False) -> Mock:
+    """The duplex tokens, then the delegate tokens when has_delegate_tokens; any other token is unknown."""
     tokenizer = Mock(unk_token_id=0, bad_token_ids=list(BAD_TOKEN_IDS))
-    special_token_ids = range(
-        SPECIAL_TOKEN_ID_START, SPECIAL_TOKEN_ID_START + len(REQUIRED_SPECIAL_TOKENS)
+    special_tokens = (
+        (*REQUIRED_SPECIAL_TOKENS, *DELEGATE_SPECIAL_TOKENS)
+        if has_delegate_tokens
+        else REQUIRED_SPECIAL_TOKENS
     )
-    tokenizer.convert_tokens_to_ids.side_effect = dict(
-        zip(REQUIRED_SPECIAL_TOKENS, special_token_ids)
-    ).__getitem__
+    special_token_ids = dict(
+        zip(
+            special_tokens,
+            range(SPECIAL_TOKEN_ID_START, SPECIAL_TOKEN_ID_START + len(special_tokens)),
+        )
+    )
+    tokenizer.convert_tokens_to_ids.side_effect = lambda token: special_token_ids.get(
+        token, tokenizer.unk_token_id
+    )
     return tokenizer
 
 
@@ -1022,6 +1032,7 @@ def test_a_stop_holds_the_listen_through_silence_until_the_user_speaks(
             end_of_turn=end_of_turn,
             is_interrupted=end_of_turn,
             hears_user=hears_user,
+            delegates=[],
         )
         for end_of_turn, hears_user in (
             (True, False),
@@ -1094,6 +1105,7 @@ def test_the_input_end_reports_a_stop_no_unit_has_carried(
         end_of_turn=True,
         is_interrupted=is_interrupted,
         hears_user=False,
+        delegates=[],
     )
 
 
@@ -1664,6 +1676,135 @@ def test_a_stopped_reply_is_no_longer_cut_past_the_truncate_window() -> None:
     ]
     assert past_preparation == ARSessionPreparation()
     assert past.input_ids.tolist() == [SPECIAL_TOKENS.unit_end, SPECIAL_TOKENS.unit, 92]
+
+
+DELEGATE_TOKENS = resolve_special_token_ids(
+    duplex_tokenizer(has_delegate_tokens=True), bad_token_ids=BAD_TOKEN_IDS
+).delegate_tokens
+DELEGATE_START = DELEGATE_TOKENS.delegate_start
+DELEGATE_END = DELEGATE_TOKENS.delegate_end
+TURN_EOS = SPECIAL_TOKENS.turn_eos
+# note (cuzmi): The delegate tests' tokenizer decodes these plain ids to words and every other id to nothing.
+WORDS = {
+    PLAIN_TOKEN_ID: "Sure.",
+    OTHER_TOKEN_ID: " weather",
+    THIRD_TOKEN_ID: " in Nanjing",
+}
+
+
+def speak_generated_units(
+    units: list[list[int]], stop_before_unit: int | None
+) -> list[dict[str, object]]:
+    """Run a thinker that has the delegate tokens through one unit per list of generated ids, a client stop arriving before stop_before_unit, and return each unit's result for the talker."""
+    tokenizer = duplex_tokenizer(has_delegate_tokens=True)
+    tokenizer.decode.side_effect = lambda token_ids, skip_special_tokens: "".join(
+        WORDS.get(token_id, "") for token_id in token_ids
+    )
+    adapter = make_thinker_adapter(tokenizer)
+    request = OmniRequest(
+        None, params=MiniCPMODuplexSampling(force_listen_count=0).model_dump()
+    )
+    adapter.open(SESSION, request)
+    results: list[dict[str, object]] = []
+    for unit_index, generated_unit_ids in enumerate(units):
+        if unit_index == stop_before_unit:
+            adapter.control(SESSION, interrupt_after(unit_index - 1))
+        else:
+            pass
+        unit = adapter.build(
+            SESSION, audio_unit(unit_index), step_plan_payload(request)
+        )
+        unit.talker_conditions = [
+            (token_id, torch.zeros(1), token_id == TURN_EOS)
+            for token_id in generated_unit_ids
+        ]
+        complete_unit(
+            adapter,
+            unit,
+            prompt_length=FIRST_UNIT_PROMPT_LENGTH,
+            output_ids=(
+                [SPECIAL_TOKENS.speak, *generated_unit_ids, SPECIAL_TOKENS.chunk_eos]
+                if generated_unit_ids
+                else [SPECIAL_TOKENS.listen]
+            ),
+            generated_unit_ids=generated_unit_ids,
+        )
+        results.append(unit.stage_payload.data)
+    return results
+
+
+@pytest.mark.parametrize(
+    ("units", "stop_before_unit", "spoken_ids", "texts", "delegates"),
+    [
+        (
+            [
+                [PLAIN_TOKEN_ID, DELEGATE_START, OTHER_TOKEN_ID],
+                [THIRD_TOKEN_ID, DELEGATE_END, TURN_EOS],
+            ],
+            None,
+            [[PLAIN_TOKEN_ID], [TURN_EOS]],
+            ["Sure.", ""],
+            [[], ["weather in Nanjing"]],
+        ),
+        (
+            [[DELEGATE_START, OTHER_TOKEN_ID], [THIRD_TOKEN_ID, TURN_EOS]],
+            None,
+            [[], [TURN_EOS]],
+            ["", ""],
+            [[], ["weather in Nanjing"]],
+        ),
+        (
+            [
+                [
+                    DELEGATE_START,
+                    OTHER_TOKEN_ID,
+                    DELEGATE_START,
+                    THIRD_TOKEN_ID,
+                    DELEGATE_END,
+                    DELEGATE_END,
+                    PLAIN_TOKEN_ID,
+                ]
+            ],
+            None,
+            [[PLAIN_TOKEN_ID]],
+            ["Sure."],
+            [[]],
+        ),
+        (
+            [
+                [DELEGATE_START, OTHER_TOKEN_ID],
+                [],
+                [PLAIN_TOKEN_ID, DELEGATE_END, TURN_EOS],
+            ],
+            1,
+            [[], [], [PLAIN_TOKEN_ID, TURN_EOS]],
+            ["", "", "Sure."],
+            [[], [], []],
+        ),
+    ],
+    ids=[
+        "a_span_across_units_is_silent_and_gives_its_task_where_it_closes",
+        "turn_eos_closes_a_span_and_still_ends_the_turn",
+        "a_nested_span_gives_no_task_and_a_stray_end_is_not_spoken",
+        "a_stop_drops_the_task_the_model_was_still_writing",
+    ],
+)
+def test_a_delegate_span_is_never_spoken_and_gives_its_task_once_closed(
+    units: list[list[int]],
+    stop_before_unit: int | None,
+    spoken_ids: list[list[int]],
+    texts: list[str],
+    delegates: list[list[str]],
+) -> None:
+    """The task the model writes inside a delegate span was spoken aloud and transcribed as part of the reply, and never reached the client as a task."""
+    results = speak_generated_units(units, stop_before_unit)
+
+    assert [
+        [token_id for token_id, _, _ in result["talker_conditions"]]
+        for result in results
+    ] == spoken_ids
+    assert [result["text"] for result in results] == texts
+    assert [result["delegates"] for result in results] == delegates
 
 
 def test_chunk_eos_from_the_first_sample_skips_the_second_stage() -> None:
