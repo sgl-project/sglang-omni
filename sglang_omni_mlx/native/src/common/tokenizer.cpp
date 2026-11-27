@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <array>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
 
+#include "common/layers.h"
 #include "common/text.h"
 #include "nlohmann/json.hpp"
 
@@ -24,17 +26,6 @@ namespace {
 constexpr const char *kQwen2SplitPattern =
     R"((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N})"
     R"(| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)";
-
-std::string ReadFile(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream) {
-    throw std::runtime_error("cannot read " + path.string());
-  } else {
-  }
-  std::ostringstream contents;
-  contents << stream.rdbuf();
-  return contents.str();
-}
 
 // Note (Jiaxin Deng): GPT-2's byte-to-unicode table; printable bytes map to
 // themselves, the rest to code points from 256 upward.
@@ -199,10 +190,27 @@ struct Tokenizer::Pcre2Regex {
 
 Tokenizer::Tokenizer(const std::filesystem::path &model_directory)
     : split_pattern_(std::make_unique<Pcre2Regex>()) {
-  if (!std::filesystem::exists(model_directory / "vocab.json")) {
-    LoadJson(
-        nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json")));
-    return;
+  if (std::filesystem::exists(model_directory / "tokenizer.json")) {
+    try {
+      LoadJson(
+          nlohmann::json::parse(ReadFile(model_directory / "tokenizer.json")));
+      return;
+    } catch (const std::exception &error) {
+      if (!std::filesystem::exists(model_directory / "vocab.json") ||
+          !std::filesystem::exists(model_directory / "merges.txt")) {
+        throw;
+      } else {
+      }
+      std::cerr << "tokenizer.json not loaded (" << error.what()
+                << "); using vocab.json and merges.txt\n";
+      // LoadJson may have filled any container before throwing.
+      vocabulary_.clear();
+      merge_ranks_.clear();
+      added_token_index_by_id_.clear();
+      added_tokens_.clear();
+      tokens_by_id_.clear();
+      split_pattern_ = std::make_unique<Pcre2Regex>();
+    }
   } else {
   }
   const nlohmann::json vocabulary =

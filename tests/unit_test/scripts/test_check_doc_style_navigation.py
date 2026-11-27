@@ -344,7 +344,6 @@ def test_check_docs_reports_new_orphans_until_explicitly_included(
         "design/gpu_radix_hash.md",
         "design/refactor_rfc.md",
         "developer_reference/mlx.md",
-        "get_started/apiserver_quickstart.md",
         "basic_usage/python_router.md",
     ],
 )

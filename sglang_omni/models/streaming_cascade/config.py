@@ -26,6 +26,11 @@ from sglang_omni.models.nemotron3_5_asr.config import (
 )
 from sglang_omni.models.streaming_cascade.base import ComponentConfig
 from sglang_omni.models.streaming_cascade.components import COMPONENTS
+from sglang_omni.models.streaming_cascade.dialog import DialogConfig
+from sglang_omni.models.streaming_cascade.generators import OpenAIChatGeneratorConfig
+from sglang_omni.models.streaming_cascade.synthesizers import (
+    OpenAISpeechSynthesizerConfig,
+)
 from sglang_omni.models.turn_detection.node import TURN_DETECTION_STAGE
 from sglang_omni.models.vad.node import VAD_STAGE
 from sglang_omni.proto.session import (
@@ -41,11 +46,14 @@ from sglang_omni.proto.streams import (
     COMMIT,
     CONFIGURE,
     INTERRUPT,
+    MESSAGES,
     PCM16,
     REPLY_DELIVERED,
     REPLY_PROGRESS,
     SESSION_CONTROL,
     SESSION_INPUT_SAMPLE_RATE_HZ,
+    TEXT_DELTA,
+    TOOL_CALL,
     TRUNCATE,
     AudioPort,
     SessionPorts,
@@ -226,11 +234,13 @@ class ComponentGraphConfig(BaseModel):
         self.check_names()
         produced = self.produced_formats()
         self.check_inputs(produced)
+        self.check_speech_tool(produced)
         self.check_publish(produced)
         self.check_published_audio()
         self.check_turn_roles()
         self.check_progress()
         self.check_delivery()
+        self.check_languages()
         return self
 
     def check_names(self) -> None:
@@ -379,6 +389,71 @@ class ComponentGraphConfig(BaseModel):
             else:
                 pass
 
+    def check_speech_tool(self, produced: dict[str, frozenset[str]]) -> None:
+        """The model speaks either through the text its generator writes or through the dialog's speech tool, never both, or a reply would be spoken twice or not at all. A generator's tools need a dialog that answers them, since nothing else does."""
+        dialogs = [
+            node.name for node in self.nodes if isinstance(node.component, DialogConfig)
+        ]
+        for node in self.nodes:
+            edges = node.edges()
+            is_speaker = isinstance(node.component, OpenAISpeechSynthesizerConfig)
+            reads_text = any(
+                TEXT_DELTA in formats & produced[name]
+                for name, formats in edges.items()
+            )
+            reads_calls = any(TOOL_CALL in edges.get(name, ()) for name in dialogs)
+            if is_speaker and not reads_text and not reads_calls:
+                raise ValueError(
+                    f"no input of node {node.name!r} produces {TEXT_DELTA} or {TOOL_CALL}"
+                )
+            elif is_speaker and reads_text and reads_calls:
+                raise ValueError(
+                    f"node {node.name!r} reads both {TEXT_DELTA} and {TOOL_CALL}, so a reply would be spoken twice"
+                )
+            elif isinstance(node.component, OpenAIChatGeneratorConfig):
+                self.check_generator_tools(node)
+            elif (
+                isinstance(node.component, DialogConfig)
+                and node.component.speech_tool is not None
+                and not any(
+                    isinstance(other.component, OpenAISpeechSynthesizerConfig)
+                    and TOOL_CALL in other.edges().get(node.name, ())
+                    for other in self.nodes
+                )
+            ):
+                raise ValueError(
+                    f"node {node.name!r} speaks through {node.component.speech_tool!r}, but no synthesizer reads {node.name}:{TOOL_CALL}"
+                )
+            else:
+                pass
+
+    def check_generator_tools(self, generator: NodeSettings) -> None:
+        """Each dialog that prompts a generator must speak through a tool the generator offers, if either has one, and read the generator's calls and the end of each completion."""
+        offered = {tool.name for tool in generator.component.tools}
+        for dialog in self.nodes:
+            if not isinstance(
+                dialog.component, DialogConfig
+            ) or MESSAGES not in generator.edges().get(dialog.name, ()):
+                pass
+            elif not offered and dialog.component.speech_tool is not None:
+                raise ValueError(
+                    f"node {dialog.name!r} speaks through {dialog.component.speech_tool!r}, which node {generator.name!r} does not offer"
+                )
+            elif not offered:
+                pass
+            elif dialog.component.speech_tool not in offered:
+                raise ValueError(
+                    f"node {generator.name!r} offers {sorted(offered)}, but node {dialog.name!r} does not speak through any of them, so nothing would answer a call"
+                )
+            elif not {TOOL_CALL, SESSION_CONTROL} <= dialog.edges().get(
+                generator.name, frozenset()
+            ):
+                raise ValueError(
+                    f"node {dialog.name!r} must read {generator.name}:{TOOL_CALL} and {generator.name}:{SESSION_CONTROL}"
+                )
+            else:
+                pass
+
     def interrupt_takers(self, name: str) -> list[NodeSettings]:
         """The nodes that take node `name`'s interrupt on a control edge."""
         return [
@@ -399,6 +474,24 @@ class ComponentGraphConfig(BaseModel):
             if AUDIO_FORMATS & set(self.publish.get(other.name, ()))
             and SESSION_CONTROL in node.edges().get(other.name, frozenset())
         ]
+
+    def check_languages(self) -> None:
+        """A dialog's language is one every speech node with language="auto" takes, since that node may send it as a sentence's language tag and a tag its service does not take fails the session."""
+        for dialog in self.nodes:
+            for speaker in self.nodes:
+                if (
+                    isinstance(dialog.component, DialogConfig)
+                    and isinstance(speaker.component, OpenAISpeechSynthesizerConfig)
+                    and speaker.component.language == "auto"
+                    and dialog.component.language
+                    and dialog.component.language
+                    not in speaker.component.supported_languages
+                ):
+                    raise ValueError(
+                        f"language {dialog.component.language!r} of node {dialog.name!r} is not one of the supported_languages of node {speaker.name!r}: {list(speaker.component.supported_languages)}"
+                    )
+                else:
+                    pass
 
     def node(self, name: str) -> NodeSettings:
         return next(node for node in self.nodes if node.name == name)
@@ -496,6 +589,12 @@ class ComponentGraphConfig(BaseModel):
             controls = frozenset({COMMIT, CONFIGURE, INTERRUPT, TRUNCATE})
         else:
             controls = frozenset({COMMIT, CONFIGURE, TRUNCATE})
+        speakers = [
+            node.component
+            for node in self.nodes
+            if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+            and AUDIO_FORMATS & set(self.publish.get(node.name, ()))
+        ]
         return SessionPorts(
             input=(AudioPort(PCM16, SESSION_INPUT_SAMPLE_RATE_HZ),),
             output=published_audio_port(self.published_audio_ports()),
@@ -505,6 +604,9 @@ class ComponentGraphConfig(BaseModel):
             sampling_parameters=(
                 tuple(SAMPLING_FIELDS) if "sampling" in hot_settings else ()
             ),
+            # note (Haoling Pu): only a speaker whose audio is published reaches the user, and one that says the blocks would leave the client hiding words the user hears, so each of them has to skip the blocks.
+            skips_screen_blocks=bool(speakers)
+            and all(speaker.skip_screen_blocks for speaker in speakers),
         )
 
 

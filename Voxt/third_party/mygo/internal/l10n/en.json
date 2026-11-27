@@ -1,0 +1,876 @@
+{
+  "@@locale": "en",
+  "previousMonth": "Previous month",
+  "@previousMonth": {
+    "description": "Labels the button of a calendar that shows the previous month."
+  },
+  "nextMonth": "Next month",
+  "@nextMonth": {
+    "description": "Labels the button of a calendar that shows the next month."
+  },
+  "undo": "Undo",
+  "@undo": {
+    "description": "An item of the menu of a text field."
+  },
+  "cut": "Cut",
+  "@cut": {
+    "description": "An item of the menu of a text field."
+  },
+  "copy": "Copy",
+  "@copy": {
+    "description": "An item of the menu of a text field."
+  },
+  "paste": "Paste",
+  "@paste": {
+    "description": "An item of the menu of a text field."
+  },
+  "delete": "Delete",
+  "@delete": {
+    "description": "An item of the menu of a text field."
+  },
+  "selectAll": "Select All",
+  "@selectAll": {
+    "description": "An item of the menu of a text field."
+  },
+  "find": "Find",
+  "@find": {
+    "description": "Labels the bar that searches text, and is what its empty field shows."
+  },
+  "search": "Search",
+  "@search": {
+    "description": "What an empty search field shows."
+  },
+  "clear": "Clear",
+  "@clear": {
+    "description": "Labels the button that clears a search field."
+  },
+  "removeToken": "Remove {token}",
+  "@removeToken": {
+    "description": "Labels the button that removes a token of a token field, as in \"Remove Ada\".",
+    "placeholders": {
+      "token": {
+        "type": "String"
+      }
+    }
+  },
+  "saturation": "Saturation and brightness",
+  "@saturation": {
+    "description": "Labels the area of a color picker that sets the saturation and the brightness."
+  },
+  "hex": "Hex",
+  "@hex": {
+    "description": "Labels the field of a color picker that holds the color as hexadecimal."
+  },
+  "divider": "Divider",
+  "@divider": {
+    "description": "Labels the line between the panes of a split view."
+  },
+  "developerTools": "Developer tools",
+  "@developerTools": {
+    "description": "Labels the inspector of native UI."
+  },
+  "elements": "Elements",
+  "@elements": {
+    "description": "Labels the inspector's list of the elements of the window."
+  },
+  "more": "More",
+  "@more": {
+    "description": "Labels the button of a toolbar that opens what the toolbar hides."
+  },
+  "codeEditor": "Code editor",
+  "@codeEditor": {
+    "description": "Names the code editor to assistive technology when the app gives it no label."
+  },
+  "goToDefinition": "Go to Definition",
+  "@goToDefinition": {
+    "description": "An item of the code editor's menu."
+  },
+  "toggleComment": "Toggle Comment",
+  "@toggleComment": {
+    "description": "An item of the code editor's menu, which comments out the selection or its lines."
+  },
+  "selection": "Selection",
+  "@selection": {
+    "description": "A submenu of the code editor's menu."
+  },
+  "transform": "Transform",
+  "@transform": {
+    "description": "A submenu of the code editor's menu."
+  },
+  "folding": "Folding",
+  "@folding": {
+    "description": "A submenu of the code editor's menu."
+  },
+  "selectNextOccurrence": "Select Next Occurrence",
+  "@selectNextOccurrence": {
+    "description": "An item of the code editor's Selection menu."
+  },
+  "selectAllOccurrences": "Select All Occurrences",
+  "@selectAllOccurrences": {
+    "description": "An item of the code editor's Selection menu."
+  },
+  "expandSelection": "Expand Selection",
+  "@expandSelection": {
+    "description": "An item of the code editor's Selection menu."
+  },
+  "splitIntoLines": "Split into Lines",
+  "@splitIntoLines": {
+    "description": "An item of the code editor's Selection menu, which splits a selection of several lines into one selection a line."
+  },
+  "upperCase": "Upper Case",
+  "@upperCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "lowerCase": "Lower Case",
+  "@lowerCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "titleCase": "Title Case",
+  "@titleCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "snakeCase": "Snake Case",
+  "@snakeCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "kebabCase": "Kebab Case",
+  "@kebabCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "camelCase": "Camel Case",
+  "@camelCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "pascalCase": "Pascal Case",
+  "@pascalCase": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "sortLines": "Sort Lines",
+  "@sortLines": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "reverseLines": "Reverse Lines",
+  "@reverseLines": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "uniqueLines": "Unique Lines",
+  "@uniqueLines": {
+    "description": "An item of the code editor's Transform menu, which removes repeated lines."
+  },
+  "joinLines": "Join Lines",
+  "@joinLines": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "trimTrailingWhitespace": "Trim Trailing Whitespace",
+  "@trimTrailingWhitespace": {
+    "description": "An item of the code editor's Transform menu."
+  },
+  "fold": "Fold",
+  "@fold": {
+    "description": "An item of the code editor's Folding menu."
+  },
+  "unfold": "Unfold",
+  "@unfold": {
+    "description": "An item of the code editor's Folding menu."
+  },
+  "foldAll": "Fold All",
+  "@foldAll": {
+    "description": "An item of the code editor's Folding menu."
+  },
+  "unfoldAll": "Unfold All",
+  "@unfoldAll": {
+    "description": "An item of the code editor's Folding menu."
+  },
+  "expandUp": "Expand up",
+  "@expandUp": {
+    "description": "Labels the button of a diff viewer that shows the unchanged lines above a change."
+  },
+  "expandDown": "Expand down",
+  "@expandDown": {
+    "description": "Labels the button of a diff viewer that shows the unchanged lines below a change."
+  },
+  "expandAll": "Expand all",
+  "@expandAll": {
+    "description": "Labels the button of a diff viewer that shows all the unchanged lines."
+  },
+  "expand": "Expand {what}",
+  "@expand": {
+    "description": "What assistive technology calls a button of a diff viewer that shows unchanged lines, as in \"Expand 4 unmodified lines\".",
+    "placeholders": {
+      "what": {
+        "type": "String"
+      }
+    }
+  },
+  "unmodifiedLines": "{n, plural, one {# unmodified line} other {# unmodified lines}}",
+  "@unmodifiedLines": {
+    "description": "The unchanged lines a separator of a diff viewer collapses.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "revert": "Revert",
+  "@revert": {
+    "description": "An action of a diff viewer on a change."
+  },
+  "keep": "Keep",
+  "@keep": {
+    "description": "An action of a diff viewer on a change."
+  },
+  "hunkAction": "{action} change",
+  "@hunkAction": {
+    "description": "What assistive technology calls a button that takes an action on a change, as in \"Revert change\".",
+    "placeholders": {
+      "action": {
+        "type": "String"
+      }
+    }
+  },
+  "line": "Line {n, number, ::group-off}",
+  "@line": {
+    "description": "The line a gutter button of a diff viewer adds a line at, as assistive technology reads it.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "newText": "New text",
+  "@newText": {
+    "description": "Names the side of a diff viewer with the text as it is."
+  },
+  "oldText": "Old text",
+  "@oldText": {
+    "description": "Names the side of a diff viewer with the text as it was."
+  },
+  "invalid": "Invalid",
+  "@invalid": {
+    "description": "What a find bar says of a query that is not a valid regular expression."
+  },
+  "noResults": "No results",
+  "@noResults": {
+    "description": "What a find bar says of a query that matches nothing."
+  },
+  "matches": "{current} of {total}",
+  "@matches": {
+    "description": "Which of the matches a find bar is at, as \"3 of 12\".",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "matchesMore": "{current} of {total}+",
+  "@matchesMore": {
+    "description": "Which of the matches a find bar is at, when it stopped counting them, as \"3 of 1000+\".",
+    "placeholders": {
+      "current": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "matchCase": "Match case",
+  "@matchCase": {
+    "description": "An option of a find bar."
+  },
+  "matchWholeWord": "Match whole word",
+  "@matchWholeWord": {
+    "description": "An option of a find bar."
+  },
+  "useRegularExpression": "Use regular expression",
+  "@useRegularExpression": {
+    "description": "An option of a find bar."
+  },
+  "findInSelection": "Find in selection",
+  "@findInSelection": {
+    "description": "An option of a find bar."
+  },
+  "previousMatch": "Previous match",
+  "@previousMatch": {
+    "description": "Labels the button of a find bar that goes to the previous match."
+  },
+  "nextMatch": "Next match",
+  "@nextMatch": {
+    "description": "Labels the button of a find bar that goes to the next match."
+  },
+  "replace": "Replace",
+  "@replace": {
+    "description": "Labels the button of a find bar that replaces the match it is at, and is what the empty replacement field shows."
+  },
+  "replaceAll": "Replace All",
+  "@replaceAll": {
+    "description": "Labels the button of a find bar that replaces every match."
+  },
+  "close": "Close",
+  "@close": {
+    "description": "Labels the button that closes a find bar."
+  },
+  "goToLine": "Go to line",
+  "@goToLine": {
+    "description": "Labels the bar that goes to a line."
+  },
+  "lineRange": "Line 1 to {lines, number, ::group-off}, then :column",
+  "@lineRange": {
+    "description": "What the empty field of the go to line bar shows.",
+    "placeholders": {
+      "lines": {
+        "type": "int"
+      }
+    }
+  },
+  "currentLine": "Current line {line, number, ::group-off} of {lines, number, ::group-off}, column {column, number, ::group-off}",
+  "@currentLine": {
+    "description": "Where the caret is, which the go to line bar says.",
+    "placeholders": {
+      "line": {
+        "type": "int"
+      },
+      "lines": {
+        "type": "int"
+      },
+      "column": {
+        "type": "int"
+      }
+    }
+  },
+  "completions": "Completions",
+  "@completions": {
+    "description": "Labels the code editor's list of completions."
+  },
+  "menuUndo": "Undo",
+  "@menuUndo": {
+    "description": "The label of the menu items of the role undo (MenuItem.Role)."
+  },
+  "menuRedo": "Redo",
+  "@menuRedo": {
+    "description": "The label of the menu items of the role redo (MenuItem.Role)."
+  },
+  "menuCut": "Cut",
+  "@menuCut": {
+    "description": "The label of the menu items of the role cut (MenuItem.Role)."
+  },
+  "menuCopy": "Copy",
+  "@menuCopy": {
+    "description": "The label of the menu items of the role copy (MenuItem.Role)."
+  },
+  "menuPaste": "Paste",
+  "@menuPaste": {
+    "description": "The label of the menu items of the role paste (MenuItem.Role)."
+  },
+  "menuPasteAndMatchStyle": "Paste and Match Style",
+  "@menuPasteAndMatchStyle": {
+    "description": "The label of the menu items of the role pasteAndMatchStyle (MenuItem.Role)."
+  },
+  "menuDelete": "Delete",
+  "@menuDelete": {
+    "description": "The label of the menu items of the role delete (MenuItem.Role)."
+  },
+  "menuSelectAll": "Select All",
+  "@menuSelectAll": {
+    "description": "The label of the menu items of the role selectAll (MenuItem.Role)."
+  },
+  "menuReload": "Reload",
+  "@menuReload": {
+    "description": "The label of the menu items of the role reload (MenuItem.Role)."
+  },
+  "menuForceReload": "Force Reload",
+  "@menuForceReload": {
+    "description": "The label of the menu items of the role forceReload (MenuItem.Role)."
+  },
+  "menuToggleDevTools": "Toggle Developer Tools",
+  "@menuToggleDevTools": {
+    "description": "The label of the menu items of the role toggleDevTools (MenuItem.Role)."
+  },
+  "menuActualSize": "Actual Size",
+  "@menuActualSize": {
+    "description": "The label of the menu items of the role resetZoom (MenuItem.Role)."
+  },
+  "menuZoomIn": "Zoom In",
+  "@menuZoomIn": {
+    "description": "The label of the menu items of the role zoomIn (MenuItem.Role)."
+  },
+  "menuZoomOut": "Zoom Out",
+  "@menuZoomOut": {
+    "description": "The label of the menu items of the role zoomOut (MenuItem.Role)."
+  },
+  "menuToggleFullScreen": "Toggle Full Screen",
+  "@menuToggleFullScreen": {
+    "description": "The label of the menu items of the role togglefullscreen (MenuItem.Role)."
+  },
+  "menuMinimize": "Minimize",
+  "@menuMinimize": {
+    "description": "The label of the menu items of the role minimize (MenuItem.Role)."
+  },
+  "menuZoom": "Zoom",
+  "@menuZoom": {
+    "description": "The label of the menu items of the role zoom (MenuItem.Role)."
+  },
+  "menuBringAllToFront": "Bring All to Front",
+  "@menuBringAllToFront": {
+    "description": "The label of the menu items of the role front (MenuItem.Role)."
+  },
+  "menuClose": "Close",
+  "@menuClose": {
+    "description": "The item that closes a document's window."
+  },
+  "menuCloseWindow": "Close Window",
+  "@menuCloseWindow": {
+    "description": "The item that closes a window."
+  },
+  "menuNew": "New",
+  "@menuNew": {
+    "description": "The label of the menu items of the role new (MenuItem.Role)."
+  },
+  "menuOpen": "Open…",
+  "@menuOpen": {
+    "description": "The label of the menu items of the role open (MenuItem.Role)."
+  },
+  "menuOpenRecent": "Open Recent",
+  "@menuOpenRecent": {
+    "description": "The label of the menu items of the role openRecent (MenuItem.Role)."
+  },
+  "menuSave": "Save",
+  "@menuSave": {
+    "description": "The label of the menu items of the role save (MenuItem.Role)."
+  },
+  "menuSaveAs": "Save As…",
+  "@menuSaveAs": {
+    "description": "The label of the menu items of the role saveAs (MenuItem.Role)."
+  },
+  "menuDuplicate": "Duplicate",
+  "@menuDuplicate": {
+    "description": "The label of the menu items of the role duplicate (MenuItem.Role)."
+  },
+  "menuRename": "Rename…",
+  "@menuRename": {
+    "description": "The label of the menu items of the role rename (MenuItem.Role)."
+  },
+  "menuMoveTo": "Move To…",
+  "@menuMoveTo": {
+    "description": "The label of the menu items of the role moveTo (MenuItem.Role)."
+  },
+  "menuRevert": "Revert",
+  "@menuRevert": {
+    "description": "The item that reverts a document to its saved version."
+  },
+  "menuRevertToSaved": "Revert to Saved",
+  "@menuRevertToSaved": {
+    "description": "macOS's item that reverts a document to its saved version."
+  },
+  "menuQuitApp": "Quit {app}",
+  "@menuQuitApp": {
+    "description": "The item of macOS's app menu that quits the app, with the app's name.",
+    "placeholders": {
+      "app": {
+        "type": "String"
+      }
+    }
+  },
+  "menuAbout": "About {app}",
+  "@menuAbout": {
+    "description": "The item of macOS's app menu that shows the app's about panel, with the app's name.",
+    "placeholders": {
+      "app": {
+        "type": "String"
+      }
+    }
+  },
+  "menuHide": "Hide {app}",
+  "@menuHide": {
+    "description": "The item of macOS's app menu that hides the app, with the app's name.",
+    "placeholders": {
+      "app": {
+        "type": "String"
+      }
+    }
+  },
+  "menuQuit": "Quit",
+  "@menuQuit": {
+    "description": "The item that quits the app on Linux."
+  },
+  "menuExit": "Exit",
+  "@menuExit": {
+    "description": "The item that quits the app on Windows."
+  },
+  "menuHideOthers": "Hide Others",
+  "@menuHideOthers": {
+    "description": "The label of the menu items of the role hideOthers (MenuItem.Role)."
+  },
+  "menuShowAll": "Show All",
+  "@menuShowAll": {
+    "description": "The label of the menu items of the role unhide (MenuItem.Role)."
+  },
+  "menuServices": "Services",
+  "@menuServices": {
+    "description": "The label of the menu items of the role services (MenuItem.Role)."
+  },
+  "menuStartSpeaking": "Start Speaking",
+  "@menuStartSpeaking": {
+    "description": "The label of the menu items of the role startSpeaking (MenuItem.Role)."
+  },
+  "menuStopSpeaking": "Stop Speaking",
+  "@menuStopSpeaking": {
+    "description": "The label of the menu items of the role stopSpeaking (MenuItem.Role)."
+  },
+  "menuFile": "File",
+  "@menuFile": {
+    "description": "A menu of the menu bar."
+  },
+  "menuEdit": "Edit",
+  "@menuEdit": {
+    "description": "A menu of the menu bar."
+  },
+  "menuView": "View",
+  "@menuView": {
+    "description": "A menu of the menu bar."
+  },
+  "menuFormat": "Format",
+  "@menuFormat": {
+    "description": "A menu of the menu bar."
+  },
+  "menuWindow": "Window",
+  "@menuWindow": {
+    "description": "A menu of the menu bar."
+  },
+  "menuHelp": "Help",
+  "@menuHelp": {
+    "description": "A menu of the menu bar."
+  },
+  "menuBold": "Bold",
+  "@menuBold": {
+    "description": "The label of the menu items of the role bold (MenuItem.Role)."
+  },
+  "menuItalic": "Italic",
+  "@menuItalic": {
+    "description": "The label of the menu items of the role italic (MenuItem.Role)."
+  },
+  "menuUnderline": "Underline",
+  "@menuUnderline": {
+    "description": "The label of the menu items of the role underline (MenuItem.Role)."
+  },
+  "menuStrikethrough": "Strikethrough",
+  "@menuStrikethrough": {
+    "description": "The label of the menu items of the role strikethrough (MenuItem.Role)."
+  },
+  "menuAlignLeft": "Align Left",
+  "@menuAlignLeft": {
+    "description": "The label of the menu items of the role alignLeft (MenuItem.Role)."
+  },
+  "menuCenter": "Center",
+  "@menuCenter": {
+    "description": "The label of the menu items of the role alignCenter (MenuItem.Role)."
+  },
+  "menuAlignRight": "Align Right",
+  "@menuAlignRight": {
+    "description": "The label of the menu items of the role alignRight (MenuItem.Role)."
+  },
+  "noMatches": "No matches",
+  "@noMatches": {
+    "description": "What a find bar says of a query that matches nothing."
+  },
+  "previous": "Previous",
+  "@previous": {
+    "description": "Labels the button of a find bar that goes to the previous match."
+  },
+  "next": "Next",
+  "@next": {
+    "description": "Labels the button of a find bar that goes to the next match."
+  },
+  "done": "Done",
+  "@done": {
+    "description": "The button that closes a find bar."
+  },
+  "colorValue": "{saturation, number, percent} saturation, {brightness, number, percent} brightness",
+  "@colorValue": {
+    "description": "What assistive technology reads of the area of a color picker that sets the saturation and the brightness, as \"40% saturation, 75% brightness\".",
+    "placeholders": {
+      "saturation": {
+        "type": "double"
+      },
+      "brightness": {
+        "type": "double"
+      }
+    }
+  },
+  "hours": "hours",
+  "@hours": {
+    "description": "Names the hours of a time field to assistive technology, after the field's label."
+  },
+  "minutes": "minutes",
+  "@minutes": {
+    "description": "Names the minutes of a time field to assistive technology, after the field's label."
+  },
+  "dayPeriod": "AM/PM",
+  "@dayPeriod": {
+    "description": "Names the part of a time field that says AM or PM to assistive technology, after the field's label."
+  },
+  "richText": "Rich text",
+  "@richText": {
+    "description": "Names a rich text editor to assistive technology when the app gives it no label."
+  },
+  "copyCode": "Copy code",
+  "@copyCode": {
+    "description": "Labels the button of a code block of Markdown that copies its code."
+  },
+  "copied": "Copied",
+  "@copied": {
+    "description": "What the copy button of a code block of Markdown says once it copied the code."
+  },
+  "copyAsMarkdown": "Copy as Markdown",
+  "@copyAsMarkdown": {
+    "description": "An item of the menu of a view of Markdown."
+  },
+  "image": "Image",
+  "@image": {
+    "description": "Names an image of Markdown without a description to assistive technology."
+  },
+  "menuSpeech": "Speech",
+  "@menuSpeech": {
+    "description": "The submenu of macOS's Edit menu with the items that speak the selection."
+  },
+  "menuClearRecent": "Clear Menu",
+  "@menuClearRecent": {
+    "description": "The last item of the menu of recent documents, which empties it."
+  },
+  "untitled": "Untitled",
+  "@untitled": {
+    "description": "The name of a new document before it is saved."
+  },
+  "untitledNumbered": "Untitled {n, number, ::group-off}",
+  "@untitledNumbered": {
+    "description": "The name of the second and later new documents before they are saved, as \"Untitled 2\".",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "cancel": "Cancel",
+  "@cancel": {
+    "description": "A button of a dialog that cancels what it asks about."
+  },
+  "save": "Save",
+  "@save": {
+    "description": "A button of a dialog that saves a document."
+  },
+  "saveEllipsis": "Save…",
+  "@saveEllipsis": {
+    "description": "A button of a dialog that saves a new document, after asking where."
+  },
+  "saveAs": "Save As…",
+  "@saveAs": {
+    "description": "A button of a dialog that saves a document as another file."
+  },
+  "saveAnyway": "Save Anyway",
+  "@saveAnyway": {
+    "description": "A button of a dialog that saves a document whose file another app changed."
+  },
+  "saveAll": "Save All",
+  "@saveAll": {
+    "description": "A button of a dialog that saves every document with changes."
+  },
+  "dontSave": "Don’t Save",
+  "@dontSave": {
+    "description": "A button of a dialog that closes a document without saving its changes."
+  },
+  "deleteDocument": "Delete",
+  "@deleteDocument": {
+    "description": "A button of a dialog that deletes a new document instead of saving it."
+  },
+  "revertDocument": "Revert",
+  "@revertDocument": {
+    "description": "A button of a dialog that reverts a document to its file."
+  },
+  "replaceFile": "Replace",
+  "@replaceFile": {
+    "description": "A button of a dialog that replaces a file with a document."
+  },
+  "rename": "Rename",
+  "@rename": {
+    "description": "The title and the button of the dialog that renames a document."
+  },
+  "renameTo": "Rename To:",
+  "@renameTo": {
+    "description": "Labels the field of the name of the dialog that renames a document."
+  },
+  "moveTo": "Move To",
+  "@moveTo": {
+    "description": "The title of the dialog that moves a document to another folder."
+  },
+  "move": "Move",
+  "@move": {
+    "description": "The button of the dialog that moves a document to another folder."
+  },
+  "reviewChanges": "Review Changes…",
+  "@reviewChanges": {
+    "description": "A button of the dialog asking about the documents with changes as the app quits."
+  },
+  "discardChanges": "Discard Changes",
+  "@discardChanges": {
+    "description": "A button of the dialog asking about the documents with changes as the app quits."
+  },
+  "keepNewDocument": "Do you want to keep this new document “{name}”?",
+  "@keepNewDocument": {
+    "description": "Asks, as a new document closes, whether to keep it.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "keepNewDocumentDetail": "You can choose to save your changes, or delete this document immediately. You can’t undo this action.",
+  "@keepNewDocumentDetail": {
+    "description": "Explains the question of keepNewDocument."
+  },
+  "saveChanges": "Do you want to save the changes made to the document “{name}”?",
+  "@saveChanges": {
+    "description": "Asks, as a document with changes closes, whether to save them.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "changesLost": "Your changes will be lost if you don’t save them.",
+  "@changesLost": {
+    "description": "Explains the question of saveChanges."
+  },
+  "readOnly": "The document “{name}” can’t be saved because its file is read-only.",
+  "@readOnly": {
+    "description": "Says a document cannot be saved in its file.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "readOnlyDetail": "Save it as another file to keep your changes.",
+  "@readOnlyDetail": {
+    "description": "Explains readOnly."
+  },
+  "changedOnDisk": "The file “{name}” has been changed by another application.",
+  "@changedOnDisk": {
+    "description": "Says another app changed the file of a document being saved.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "changedOnDiskDetail": "Save Anyway replaces it with your version. Revert discards your changes and shows the version on disk.",
+  "@changedOnDiskDetail": {
+    "description": "Explains the buttons saveAnyway and revertDocument."
+  },
+  "alreadyExists": "An item named “{name}” already exists in this location. Do you want to replace it?",
+  "@alreadyExists": {
+    "description": "Asks whether to replace a file as a document moves.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "alreadyExistsDetail": "Replacing it overwrites its current contents.",
+  "@alreadyExistsDetail": {
+    "description": "Explains alreadyExists."
+  },
+  "revertQuestion": "Do you want to revert “{name}” to the last saved version?",
+  "@revertQuestion": {
+    "description": "Asks whether to revert a document to its file.",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "revertDetail": "Your current changes will be lost.",
+  "@revertDetail": {
+    "description": "Explains revertQuestion."
+  },
+  "reviewBeforeQuitting": "You have {n} {app} documents with unsaved changes. Do you want to review these changes before quitting?",
+  "@reviewBeforeQuitting": {
+    "description": "Asks on macOS, as the app quits, about its documents with changes, two or more.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      },
+      "app": {
+        "type": "String"
+      }
+    }
+  },
+  "reviewBeforeQuittingDetail": "If you don’t review your documents, all your changes will be lost.",
+  "@reviewBeforeQuittingDetail": {
+    "description": "Explains reviewBeforeQuitting."
+  },
+  "saveManyChanges": "Do you want to save the changes to the following {n} documents?",
+  "@saveManyChanges": {
+    "description": "Asks, as the app quits, about its documents with changes, two or more, which the dialog lists.",
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "documentFailed": "{action, select, opened {The document “{name}” could not be opened.} renamed {The document “{name}” could not be renamed.} moved {The document “{name}” could not be moved.} reverted {The document “{name}” could not be reverted.} other {The document “{name}” could not be saved.}}",
+  "@documentFailed": {
+    "description": "Says what failed of a document: opened, renamed, moved, reverted, or saved (other).",
+    "placeholders": {
+      "action": {
+        "type": "String"
+      },
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "colorName": "{color, select, red {Red} orange {Orange} yellow {Yellow} green {Green} teal {Teal} blue {Blue} indigo {Indigo} purple {Purple} pink {Pink} brown {Brown} gray {Gray} black {Black} other {{color}}}",
+  "@colorName": {
+    "description": "The name of a swatch of a color picker, by its color: red, orange, yellow, green, teal, blue, indigo, purple, pink, brown, gray or black.",
+    "placeholders": {
+      "color": {
+        "type": "String"
+      }
+    }
+  },
+  "ok": "OK",
+  "@ok": {
+    "description": "The button of a dialog that only tells something, and of a page's alert, confirm and prompt."
+  },
+  "open": "Open",
+  "@open": {
+    "description": "The title and the button of the dialog that opens files."
+  },
+  "selectFolder": "Select Folder",
+  "@selectFolder": {
+    "description": "The title of the dialog that chooses a folder."
+  },
+  "clearScrollback": "Clear Scrollback",
+  "@clearScrollback": {
+    "description": "An item of a terminal's menu, which clears the lines scrolled out of view."
+  },
+  "clipboardRead": "A program wants to read the clipboard",
+  "@clipboardRead": {
+    "description": "The title of the terminal's prompt about a program's read of the clipboard."
+  },
+  "clipboardReadAllow": "Allow",
+  "@clipboardReadAllow": {
+    "description": "The button of the terminal's clipboard prompt that lets the program read."
+  },
+  "clipboardReadDeny": "Deny",
+  "@clipboardReadDeny": {
+    "description": "The button of the terminal's clipboard prompt that refuses the program."
+  },
+  "clipboardReadEmpty": "The clipboard is empty.",
+  "@clipboardReadEmpty": {
+    "description": "What the terminal's clipboard prompt shows when the clipboard holds no text."
+  }
+}

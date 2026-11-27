@@ -55,7 +55,7 @@ def summarize_playback_continuity(
     *,
     thresholds_ms: Sequence[int] = CONTINUITY_THRESHOLDS_MS,
 ) -> dict[str, float | int | None]:
-    """Aggregate underrun percentiles and c50/c100/c200 pass rates."""
+    """Aggregate underrun percentiles, the largest underrun and c50/c100/c200 pass rates."""
     scored = [float(value) for value in max_underruns_s if value is not None]
     summary: dict[str, float | int | None] = {
         "playback_continuity_requests": len(scored),
@@ -65,6 +65,7 @@ def summarize_playback_continuity(
         summary["max_playback_underrun_mean_s"] = None
         summary["max_playback_underrun_p95_s"] = None
         summary["max_playback_underrun_p99_s"] = None
+        summary["max_playback_underrun_max_s"] = None
         for threshold_ms in thresholds_ms:
             summary[f"c{int(threshold_ms)}"] = None
         return summary
@@ -74,6 +75,7 @@ def summarize_playback_continuity(
     summary["max_playback_underrun_mean_s"] = round(float(np.mean(scored)), 4)
     summary["max_playback_underrun_p95_s"] = round(float(np.percentile(scored, 95)), 4)
     summary["max_playback_underrun_p99_s"] = round(float(np.percentile(scored, 99)), 4)
+    summary["max_playback_underrun_max_s"] = round(max(scored), 4)
     for threshold_ms in thresholds_ms:
         rate = continuity_pass_rate(scored, threshold_s=threshold_ms / 1000.0)
         summary[f"c{int(threshold_ms)}"] = (

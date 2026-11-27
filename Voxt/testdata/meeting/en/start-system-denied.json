@@ -1,0 +1,8 @@
+{
+  "name": "start-system-denied",
+  "kind": "start",
+  "start": {
+    "code": "meeting.system.unavailable",
+    "text": "Could not record system audio. Allow system audio recording for Voxt in System Settings → Privacy \u0026 Security → Screen \u0026 System Audio Recording, or record the microphone only."
+  }
+}

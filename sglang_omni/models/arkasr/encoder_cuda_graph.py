@@ -17,7 +17,7 @@ from torch import nn
 
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import DeviceGraphBackend, ReplayableGraph
-from sglang_omni.utils.device import supports_device_streams
+from sglang_omni.utils.device import has_device_streams
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class ArkasrEncoderCudaGraphRunner:
         self.min_free_bytes = int(float(min_free_gb) * (1024**3))
         self.graph_backend: DeviceGraphBackend | None = (
             current_platform.get_device_graph_backend(self.device)
-            if supports_device_streams(self.device)
+            if has_device_streams(self.device)
             else None
         )
         self.device_module = torch.get_device_module(self.device)

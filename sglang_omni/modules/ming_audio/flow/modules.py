@@ -304,6 +304,23 @@ class DiTBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
+    def forward_with_residual(
+        self,
+        update: torch.Tensor,
+        residual: torch.Tensor | None,
+        mask: torch.Tensor | None,
+        rope: RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Same math as forward, with the block input carried as residual + update."""
+        if residual is None:
+            residual = update
+            hidden = self.norm1(update)
+        else:
+            hidden, residual = self.norm1(update, residual)
+        attention = self.attn(hidden, mask=mask, rope=rope)
+        hidden, residual = self.norm2(attention, residual)
+        return self.mlp(hidden), residual
+
 
 class FinalLayer(nn.Module):
     """
@@ -324,6 +341,34 @@ class FinalLayer(nn.Module):
         x = self.norm_final(x)
         x = self.linear(x)
         return x
+
+    def forward_with_residual(
+        self, update: torch.Tensor, residual: torch.Tensor
+    ) -> torch.Tensor:
+        hidden, _ = self.norm_final(update, residual)
+        return self.linear(hidden)
+
+
+def run_transformer_blocks(
+    blocks: nn.ModuleList,
+    final_layer: FinalLayer,
+    x: torch.Tensor,
+    mask: torch.Tensor | None,
+    rope: RotaryInputs | tuple[torch.Tensor, float | torch.Tensor | None] | None,
+    *,
+    fuse_residual_norm: bool,
+) -> torch.Tensor:
+    if fuse_residual_norm:
+        # note (Dayuxiaoshui): The fused norm accumulates into residual in place,
+        # so x is overwritten; callers pass a fresh tensor.
+        update, residual = x, None
+        for block in blocks:
+            update, residual = block.forward_with_residual(update, residual, mask, rope)
+        return final_layer.forward_with_residual(update, residual)
+    else:
+        for block in blocks:
+            x = block(x, mask, rope)
+        return final_layer(x)
 
 
 def modulate(x, shift, scale):

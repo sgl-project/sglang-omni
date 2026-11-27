@@ -8,6 +8,7 @@ the batched full-sequence decode (decode_codes_batch) without session slots.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Mapping
@@ -26,6 +27,7 @@ from sglang_omni.models.moss_tts.codec_session import (
 from sglang_omni.models.moss_tts.vocoder import decode_codes_batch
 from sglang_omni.models.moss_tts_local.payload_types import MossTTSLocalState
 from sglang_omni.proto import StagePayload
+from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.scheduling.pipeline_state import build_usage
 from sglang_omni.scheduling.streaming_vocoder import (
     StreamingVocoderBase,
@@ -325,6 +327,18 @@ class MossTTSLocalStreamingVocoderScheduler(
         del request_id
         if state.slot is not None and self.session is not None:
             self.session.release(state.slot)
+        else:
+            pass
+
+    def run_non_streaming_batch(
+        self, batch: list[IncomingMessage], loop: asyncio.AbstractEventLoop
+    ) -> None:
+        """A whole-utterance batch is followed by one ready step when a stream is due or a final is ready."""
+        super().run_non_streaming_batch(batch, loop)
+        # note (zhaochenyang20): The serving loop drains its inbox before a ready step, so streams waited behind every queued non-streaming request: with 16 queued, each stream's first audio followed all 16 results.
+        self.ingest_queued_stream_chunks()
+        if self.has_ready_work():
+            self.run_ready_step()
         else:
             pass
 

@@ -6,10 +6,11 @@
 #include <string>
 #include <vector>
 
+#include "common/kv_cache.h"
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
 #include "qwen3_asr/qwen3_audio.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace qwen3_asr {
 
@@ -28,16 +29,22 @@ public:
   // .scales are quantized as the checkpoint was.
   explicit Qwen3ASR(const std::filesystem::path &model_directory);
 
-  // [mel_bins, frames] to [audio_tokens, output_dim].
-  mlx::core::array EncodeAudio(const mlx::core::array &mel,
-                               AudioLayout layout) const;
+  // [mel_bins, frames] to [audio_tokens, output_dim]. When earlier chunks come
+  // before mel, its last chunk is padded to a whole one, as it would be were
+  // they in the same call.
+  mlx::core::array EncodeAudio(const mlx::core::array &mel, AudioLayout layout,
+                               bool has_earlier_chunks = false) const;
   // Token ids [1, length] to embeddings [1, length, hidden].
   mlx::core::array EmbedTokens(const mlx::core::array &ids) const;
   // Logits for the last position only, [vocab].
   mlx::core::array Decode(const mlx::core::array &embeddings,
-                          std::vector<KVCache> &caches) const;
-  std::vector<KVCache> NewCaches() const;
-  const Qwen3Decoder &decoder() const { return decoder_; }
+                          std::vector<omni_common::KVCache> &caches) const;
+  std::vector<omni_common::KVCache> NewCaches() const;
+  // Mel frames per attention window of the encoder. A mel cut at a multiple
+  // of it encodes to the rows its windows get in the whole mel, but for the
+  // rounding of matrices with other row counts.
+  int WindowFrameCount() const;
+  const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
 
 private:
   Qwen3ASR(const nlohmann::json &config,
@@ -49,7 +56,7 @@ private:
 
   AudioEncoderConfig audio_;
   omni_common::Checkpoint checkpoint_;
-  Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
 };
 
 } // namespace qwen3_asr

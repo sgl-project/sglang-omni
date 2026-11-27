@@ -202,7 +202,7 @@ def test_packed_dit_compile_warmup_failure_fails_startup() -> None:
     assert leftover_batches == []
 
 
-def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
+def test_cpu_f0_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
     calls = []
 
     class Predictor:
@@ -221,7 +221,7 @@ def test_mps_hift_adapter_moves_f0_to_cpu_before_float64() -> None:
 
     hift = SimpleNamespace(f0_predictor=Predictor())
 
-    stages.MpsHiFTAdapter(hift, "mps")
+    stages.CpuF0HiFTAdapter(hift, "mps")
 
     assert calls == [
         ((), {"device": "cpu"}),
@@ -446,6 +446,14 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
         flow_prompt_speech_token=torch.tensor([[5]], dtype=torch.int32),
         flow_embedding=torch.ones(1, 192),
         flow_prompt_speech_feat=reference_features,
+        spec_tokens_details={
+            "spec_accept_rate": 0.5,
+            "spec_accept_length": 2.0,
+            "spec_num_correct_drafts": 1,
+            "spec_num_proposed_drafts": 2,
+            "spec_verify_ct": 1,
+            "spec_correct_drafts_histogram": [0, 1],
+        },
     )
     payload = make_payload(state)
 
@@ -474,6 +482,7 @@ def test_cosyvoice3_vocoder_prepare_and_store_audio_payload() -> None:
     )
     assert result.sample_rate == 24000
     assert result.modality == "audio"
+    assert result.spec_tokens_details == state.spec_tokens_details
 
 
 def test_cosyvoice3_vocoder_rejects_payload_without_audio_codes() -> None:
@@ -1336,6 +1345,7 @@ def test_onnx_intra_op_threads_reaches_both_encoders(monkeypatch) -> None:
         def load_weights(self, weights) -> None:
             del weights
 
+    monkeypatch.setattr(engine_builder.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(engine_builder, "SpeechTokenizerV3", fake_tokenizer)
     monkeypatch.setattr(engine_builder, "SpeakerEncoder", fake_encoder)
     monkeypatch.setattr(engine_builder, "CosyVoice3Tokenizer", lambda path: object())

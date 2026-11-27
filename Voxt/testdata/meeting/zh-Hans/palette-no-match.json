@@ -1,0 +1,11 @@
+{
+  "name": "palette-no-match",
+  "kind": "shell-palette",
+  "shell_ui": {
+    "palette_open": true,
+    "palette_query": "zzqx"
+  },
+  "shell_palette": {
+    "items": null
+  }
+}

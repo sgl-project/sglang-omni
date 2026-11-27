@@ -110,6 +110,11 @@ def build_decode_result(
         result.setdefault("finish_reason", finish_reason)
     else:
         pass
+    spec_tokens_details = thinker_out.get("spec_tokens_details")
+    if spec_tokens_details is not None:
+        result["spec_tokens_details"] = spec_tokens_details
+    else:
+        pass
     prompt_tokens = prompt_token_count(state)
     completion_tokens = len(output_ids)
     result.setdefault(

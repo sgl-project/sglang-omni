@@ -13,8 +13,14 @@ import numpy as np
 from pydantic import JsonValue
 
 from benchmarks.duplex.client import PACKET_MS, SAMPLE_RATE, SEND_RECEIPTS_FILE
-from benchmarks.duplex.oracle_models import MediaTime, TraceRecord, WireEvent
+from benchmarks.duplex.oracle_models import (
+    MediaTime,
+    TraceRecord,
+    WireEvent,
+    is_admission_rejection,
+)
 from benchmarks.duplex.profiles import PROFILES, ProfileName
+from benchmarks.duplex.reference_capture import read_trace
 from benchmarks.duplex.run_artifacts import load_run
 from benchmarks.duplex.v15_audio import AUDIO_DELTA, LEGACY_AUDIO_DELTA
 
@@ -218,30 +224,69 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         for variant_state in attempted
         if variant_state["status"] in SCORED_STATUSES
     ]
+    failed_variants = [
+        variant_state
+        for variant_state in attempted
+        if variant_state["status"] in FAILED_STATUSES
+        and variant_state.get("failure_kind") != "admission_rejected"
+    ]
     # note (jeffro): every unit of a session that broke off is missed, so a failure
     # cannot lower the miss rate.
     failed_units = sum(
         input_units(run_dir / variant_state["directory"], unit_ms)
-        for variant_state in attempted
-        if variant_state["status"] in FAILED_STATUSES
+        for variant_state in failed_variants
     )
     trace_spans_s: list[tuple[float, float]] = []
+    sessions_with_admission_events = 0
+    sessions_with_http_denials = 0
+    sessions_with_admission_rejections = 0
+    http_admission_denial_events = session_admission_rejection_events = 0
     for variant_state in attempted:
         variant_dir = run_dir / variant_state["directory"]
-        trace_lines = (variant_dir / "continuous.jsonl").read_text().splitlines()
-        if trace_lines:
-            trace_spans_s.append(
-                (
-                    json.loads(trace_lines[0])["time_s"],
-                    json.loads(trace_lines[-1])["time_s"],
-                )
-            )
+        admission = variant_state.get("admission")
+        trace_start_s: float | None = None
+        trace_end_s: float | None = None
+        http_denials = session_rejections = 0
+        with (variant_dir / "continuous.jsonl").open(encoding="utf-8") as trace_file:
+            for capture in read_trace(trace_file):
+                if capture.row is None:
+                    continue
+                else:
+                    record = capture.row
+                if trace_start_s is None:
+                    trace_start_s = record.time_s
+                else:
+                    pass
+                trace_end_s = record.time_s
+                if admission is None:
+                    http_denials += record.direction == "admission"
+                    session_rejections += (
+                        record.direction == "receive"
+                        and is_admission_rejection(record.event)
+                    )
+                else:
+                    pass
+        if admission is not None:
+            http_denials = admission["admission_denials"]
+            session_rejections = admission["admission_rejections"]
         else:
             pass
+        if trace_start_s is not None:
+            assert trace_end_s is not None
+            trace_spans_s.append((trace_start_s, trace_end_s))
+        else:
+            pass
+        http_admission_denial_events += http_denials
+        session_admission_rejection_events += session_rejections
+        sessions_with_admission_events += bool(http_denials or session_rejections)
+        sessions_with_http_denials += bool(http_denials)
+        sessions_with_admission_rejections += bool(session_rejections)
     replies = [reply for session in sessions for reply in session["replies"]]
     load = run["load"]
-    sessions_failed = sum(
-        variant_state["status"] in FAILED_STATUSES for variant_state in attempted
+    sessions_failed = len(failed_variants)
+    sessions_rejected = sum(
+        variant_state.get("failure_kind") == "admission_rejected"
+        for variant_state in attempted
     )
     # note (jeffro): a native reply comes out one unit per input unit, so its
     # real-time factor tracks the input pace.
@@ -263,10 +308,10 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
         units_missed = failed_units + sum(
             session["units_missed"] for session in sessions
         )
-        unit_miss_rate = units_missed / units_expected
+        unit_miss_rate = units_missed / units_expected if units_expected else None
         pacing_target = (
             f"unit miss rate at most {MAX_UNIT_MISS_RATE:.0%}",
-            unit_miss_rate > MAX_UNIT_MISS_RATE,
+            unit_miss_rate is not None and unit_miss_rate > MAX_UNIT_MISS_RATE,
         )
     else:
         units_expected = units_missed = unit_miss_rate = None
@@ -275,20 +320,30 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             real_time_factor["p90"] is None
             or real_time_factor["p90"] >= MAX_REPLY_REAL_TIME_FACTOR,
         )
+    elapsed_s = max((end_s for _, end_s in trace_spans_s), default=0.0) - min(
+        (start_s for start_s, _ in trace_spans_s), default=0.0
+    )
     return {
         "run": str(run_dir),
         "profile": profile,
         "concurrency": load["concurrency"],
         # note (jeffro): sessions start as slots free up, so the first and last ones
         # of a recording run with fewer neighbours than the concurrency.
-        "mean_open_sessions": sum(end_s - start_s for start_s, end_s in trace_spans_s)
-        / (
-            max(end_s for _, end_s in trace_spans_s)
-            - min(start_s for start_s, _ in trace_spans_s)
+        "mean_open_sessions": (
+            sum(end_s - start_s for start_s, end_s in trace_spans_s) / elapsed_s
+            if elapsed_s > 0
+            else None
         ),
         "sessions": len(attempted),
         "sessions_failed": sessions_failed,
-        "admission_denials": load["variants_with_admission_denials"],
+        "admission_denials": sessions_with_http_denials,
+        "sessions_rejected": sessions_rejected,
+        "sessions_with_admission_events": sessions_with_admission_events,
+        "sessions_with_admission_rejections": sessions_with_admission_rejections,
+        "http_admission_denial_events": http_admission_denial_events,
+        "session_admission_rejection_events": session_admission_rejection_events,
+        "admission_denial_events": http_admission_denial_events
+        + session_admission_rejection_events,
         "input_pacing_violations": load["input_pacing_violations"],
         "units_expected": units_expected,
         "units_missed": units_missed,
@@ -316,7 +371,8 @@ def summarize_level(run_dir: Path, playback_reserve_s: float) -> dict[str, JsonV
             target
             for target, is_unmet in (
                 ("no failed sessions", sessions_failed > 0),
-                ("no admission denials", load["variants_with_admission_denials"] > 0),
+                ("no admission denials", sessions_with_http_denials > 0),
+                ("no admission rejections", sessions_with_admission_rejections > 0),
                 ("no input pacing violations", load["input_pacing_violations"] > 0),
                 pacing_target,
             )

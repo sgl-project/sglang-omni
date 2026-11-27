@@ -1,0 +1,4 @@
+{"@":"note","text":"Messages shaped after Model Studio, Qwen-ASR-Realtime server events (help.aliyun.com/zh/model-studio/qwen-asr-realtime-server-events: session.created/updated, input_audio_transcription.text/completed, session.finished, error examples) and Voxt RemoteASRAliyunStreaming.swift; texts are made up."}
+{"event_id":"event_1234","type":"session.created","session":{"id":"sess_001","object":"realtime.session","model":"qwen3-asr-flash-realtime","modalities":["text"],"input_audio_format":"pcm16","input_audio_transcription":null,"turn_detection":{"type":"server_vad","threshold":0.5,"silence_duration_ms":200}}}
+{"@":"wait","for":"start"}
+{"event_id":"event_2","type":"error","error":{"type":"invalid_request_error","code":"InvalidApiKey","message":"Invalid API-key provided.","param":"","event_id":"event_x"}}

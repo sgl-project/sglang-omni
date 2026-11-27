@@ -3,8 +3,18 @@ name: ASR CI
 on:
   workflow_call:
     inputs:
+      run_multi_speaker:
+        description: Run the MOSS-TD multi-speaker job.
+        type: boolean
+        required: false
+        default: true
+      run_seedtts:
+        description: Run the SeedTTS ASR job.
+        type: boolean
+        required: false
+        default: true
       asr_ci_model:
-        description: ASR CI model preset selected by the parent omni-ci preflight.
+        description: SeedTTS ASR model preset selected by the parent omni-ci preflight.
         type: string
         required: false
         default: fun
@@ -27,11 +37,12 @@ env:
   MOSS_TRANSCRIBE_DIARIZE_MODEL_PATH: OpenMOSS-Team/MOSS-Transcribe-Diarize
 
 # Invoked by omni-ci.yaml after unit tests. Restores omni only.
-# The stages share no data, so they run side by side.
+# The jobs share no data, so they run side by side.
 
 jobs:
-  stage-1-multi-speaker:
-    name: stage 1 - MOSS-TD multi-speaker
+  moss-td-multi-speaker:
+    name: MOSS-TD multi-speaker
+    if: inputs.run_multi_speaker
     runs-on: [self-hosted, h100]
     # movies800 + stream + aishell4_long + googletime on DP=2.
     timeout-minutes: 90
@@ -70,14 +81,14 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: ASR stage 1 (MOSS-TD multi-speaker)
+          stage-label: ASR MOSS-TD multi-speaker
           artifact-path-globs: |
             */moss_transcribe_diarize_results.json
             */moss_transcribe_diarize_stream_results.json
             */moss_transcribe_diarize_aishell4_long_results.json
             */moss_transcribe_diarize_aishell4_long90_results.json
             */moss_transcribe_diarize_googletime_results.json
-          artifact-upload-name: asr-stage-multi-speaker-results
+          artifact-upload-name: asr-stage-multi-speaker-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: |
             /tmp/**/moss_transcribe_diarize_results.json
             /tmp/**/moss_transcribe_diarize_stream_results.json
@@ -86,8 +97,9 @@ jobs:
             /tmp/**/moss_transcribe_diarize_googletime_results.json
           summary-only: "true"
 
-  stage-2-seedtts:
-    name: stage 2 - SeedTTS ASR
+  seedtts:
+    name: SeedTTS ASR
+    if: inputs.run_seedtts
     runs-on: [self-hosted, h100]
     timeout-minutes: 30
     container:
@@ -125,11 +137,11 @@ jobs:
         if: always()
         uses: ./.github/actions/omni-post-stage
         with:
-          stage-label: ASR stage 2 (SeedTTS)
+          stage-label: ASR SeedTTS
           artifact-path-globs: |
             */asr_seedtts_en_results.json
             */asr_seedtts_zh_results.json
-          artifact-upload-name: asr-stage-seedtts-results
+          artifact-upload-name: asr-stage-seedtts-results-attempt-${{ github.run_attempt }}
           artifact-upload-path: |
             /tmp/**/asr_seedtts_en_results.json
             /tmp/**/asr_seedtts_zh_results.json

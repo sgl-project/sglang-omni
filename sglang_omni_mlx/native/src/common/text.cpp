@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "common/text.h"
 
+#include <CoreFoundation/CoreFoundation.h>
+
 #include <algorithm>
+#include <cctype>
 #include <set>
+#include <utility>
 
 namespace omni_common {
 
@@ -13,6 +17,26 @@ constexpr size_t kTokenLoopMaxDistinct = 3;
 // Note (Minyi Tang): half the window, as a short unit can stop the guard while
 // the window still holds a token from before the loop.
 constexpr size_t kTokenLoopMinTokens = kTokenLoopWindow / 2;
+
+constexpr std::pair<uint32_t, uint32_t> kUnspacedScriptRanges[] = {
+    {0x0E00, 0x0EFF}, {0x1000, 0x109F}, {0x1780, 0x17FF},
+    {0x2E80, 0x303F}, {0x3040, 0x30FF}, {0x3400, 0x9FFF},
+    {0xF900, 0xFAFF}, {0xFF00, 0xFFEF}, {0x20000, 0x2FA1F},
+};
+
+bool IsSpacedScript(uint32_t code_point) {
+  if (IsUnicodeSpace(code_point)) {
+    return false;
+  } else {
+  }
+  for (const auto &[low, high] : kUnspacedScriptRanges) {
+    if (code_point >= low && code_point <= high) {
+      return false;
+    } else {
+    }
+  }
+  return true;
+}
 
 } // namespace
 
@@ -102,6 +126,22 @@ std::string StripUnicodeWhitespace(const std::string &text) {
   return text.substr(begin_byte, end_byte - begin_byte);
 }
 
+std::string JoinTranscriptParts(const std::vector<std::string> &parts) {
+  std::string joined;
+  for (const std::string &raw_part : parts) {
+    const std::string part = StripUnicodeWhitespace(raw_part);
+    if (part.empty()) {
+      continue;
+    } else if (!joined.empty() && IsSpacedScript(CodePoints(joined).back()) &&
+               IsSpacedScript(CodePoints(part).front())) {
+      joined += " " + part;
+    } else {
+      joined += part;
+    }
+  }
+  return joined;
+}
+
 bool IsTokenLoop(const std::vector<int> &output_ids) {
   if (output_ids.size() < kTokenLoopWindow) {
     return false;
@@ -178,6 +218,32 @@ std::optional<std::vector<uint8_t>> DecodeBase64(const std::string &text) {
     }
   }
   return bytes;
+}
+
+std::string AsciiLowercase(std::string text) {
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return text;
+}
+
+bool Contains(const std::string &text, const char *needle) {
+  return text.find(needle) != std::string::npos;
+}
+
+bool ContainsStandaloneSpace(const std::string &text) {
+  const std::vector<uint32_t> code_points = CodePoints(text);
+  const CFCharacterSetRef combining =
+      CFCharacterSetGetPredefined(kCFCharacterSetNonBase);
+  for (size_t index = 0; index < code_points.size(); ++index) {
+    if (code_points[index] == ' ' && (index + 1 == code_points.size() ||
+                                      !CFCharacterSetIsLongCharacterMember(
+                                          combining, code_points[index + 1]))) {
+      return true;
+    } else {
+    }
+  }
+  return false;
 }
 
 } // namespace omni_common

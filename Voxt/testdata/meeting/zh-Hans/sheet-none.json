@@ -1,0 +1,69 @@
+{
+  "name": "sheet-none",
+  "kind": "shell-sheet",
+  "shell_ui": {
+    "sheet_open": true
+  },
+  "shell_sheet": {
+    "groups": [
+      {
+        "title": "全局",
+        "rows": [
+          {
+            "keys": "—",
+            "title": "转录"
+          },
+          {
+            "keys": "—",
+            "title": "翻译"
+          },
+          {
+            "keys": "—",
+            "title": "改写"
+          },
+          {
+            "keys": "⌃⌥V",
+            "title": "粘贴最近结果"
+          }
+        ]
+      },
+      {
+        "title": "导航",
+        "rows": [
+          {
+            "keys": "⌘K",
+            "title": "命令面板"
+          },
+          {
+            "keys": "⌘1  ⌘2",
+            "title": "首页、历史"
+          },
+          {
+            "keys": "⌘3 … ⌘6",
+            "title": "转录、翻译、改写、应用增强"
+          },
+          {
+            "keys": "⌘,",
+            "title": "设置"
+          },
+          {
+            "keys": "⌘[  ⌘]",
+            "title": "后退、前进"
+          },
+          {
+            "keys": "⇧⌘L",
+            "title": "显示或隐藏日志面板"
+          },
+          {
+            "keys": "?",
+            "title": "键盘快捷键"
+          },
+          {
+            "keys": "Esc",
+            "title": "关闭对话框或弹出面板"
+          }
+        ]
+      }
+    ]
+  }
+}

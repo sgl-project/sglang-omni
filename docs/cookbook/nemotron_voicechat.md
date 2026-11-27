@@ -44,7 +44,7 @@ Two input conventions matter:
 
 The reply text is the thinker's spoken tokens only; frames where the model is listening carry a marker token and are dropped from the text.
 
-For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../get_started/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
+For Intel GPUs, follow the [Nemotron VoiceChat XPU recipe](../other_platforms/installation_xpu.md#nemotron-voicechat-speech-to-speech-two-xpus).
 
 ### Streaming codec chunk sizes
 

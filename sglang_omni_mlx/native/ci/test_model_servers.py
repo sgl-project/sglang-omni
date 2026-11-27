@@ -20,6 +20,7 @@ import uuid
 import wave
 import zipfile
 from collections.abc import Iterator
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,7 @@ pytestmark = pytest.mark.skipif(
 )
 WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 WHISPER_LARGE_V3_REPO = "mlx-community/whisper-large-v3-mlx"
+WHISPER_DRAFT_REPO = "wilsonzheng0327/Whisper-large-v3-distil-draft"
 WHISPER_SMALL_REPO = "mlx-community/whisper-small-mlx"
 COHERE_REPO = "beshkenadze/cohere-transcribe-03-2026-mlx-fp16"
 VAD_REPO = "mlx-community/silero-vad-v6"
@@ -53,9 +55,10 @@ VAD_FIELDS = {
     "vad_max_chunk_seconds": "24.0",
 }
 MOSS_REPO = "OpenMOSS-Team/MOSS-Transcribe-Diarize"
+MOSS_DRAFT_REPO = "wilsonzheng0327/MOSS-Transcribe-Diarize-dflash"
 NEMOTRON_REPO = "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit"
-PARAKEET_REPO = "mlx-community/parakeet-tdt-0.6b-v3"
 SENSEVOICE_REPO = "mlx-community/SenseVoiceSmall"
+FUNASR_REPO = "FunAudioLLM/Fun-ASR-Nano-2512-hf"
 # Voxt's SenseVoice settings for long audio: speech runs cut into overlapping chunks.
 SENSEVOICE_VAD_FIELDS = {
     "vad_threshold": "0.5",
@@ -147,6 +150,32 @@ def test_whisper_fp16_variant_server_transcribes(repo: str) -> None:
         )
         assert status == 200
         assert json.loads(body)["text"].strip()
+    finally:
+        server.stop()
+
+
+def test_whisper_uses_the_published_distil_draft() -> None:
+    draft = Path(DATA_ROOT) / "models" / WHISPER_DRAFT_REPO.replace("/", "_")
+    server = ModelServer(
+        "whisper_server",
+        "whisper",
+        WHISPER_LARGE_V3_REPO,
+        ("--draft-model-path", str(draft)),
+    )
+    try:
+        status, body = server.post_form(
+            {
+                "stream": "true",
+                "language": "en",
+                "include_generation_metadata": "true",
+            },
+            clip("0006_en_short"),
+        )
+        assert status == 200
+        result, end = sse_events(body)
+        assert end == "[DONE]"
+        assert result["text"].strip()
+        assert result["generation_metadata"]["accepted_draft_token_count"] > 0
     finally:
         server.stop()
 
@@ -366,10 +395,24 @@ def test_cohere_rejects_a_bad_temperature(
     assert "temperature" in json.loads(body)["detail"]
 
 
-@pytest.fixture(scope="module")
-def moss_server() -> Iterator[ModelServer]:
+MOSS_SERVER_MODES = [
+    pytest.param(False, id="plain"),
+    pytest.param(True, id="dflash"),
+]
+
+
+@pytest.fixture(scope="module", params=[False], ids=["plain"])
+def moss_server(request: pytest.FixtureRequest) -> Iterator[ModelServer]:
+    flags = (
+        (
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+        )
+        if request.param
+        else ()
+    )
     running = ModelServer(
-        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO
+        "moss_transcribe_diarize_server", "moss_transcribe_diarize", MOSS_REPO, flags
     )
     yield running
     running.stop()
@@ -388,6 +431,7 @@ def two_speaker_wav() -> bytes:
     return out.getvalue()
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None:
     assert moss_server.ready["model_name"].startswith("voxt-moss_transcribe_diarize-")
     status, body = moss_server.post_form({}, two_speaker_wav())
@@ -406,6 +450,32 @@ def test_moss_request_returns_speaker_segments(moss_server: ModelServer) -> None
     assert "[S01]" in result["text"] and "[S02]" in result["text"]
 
 
+@pytest.mark.parametrize("max_new_tokens", [1, 2, 8, 9])
+def test_moss_draft_stops_at_the_token_budget(max_new_tokens: int) -> None:
+    """A budget ending inside a draft block must not commit extra tokens."""
+    result = subprocess.run(
+        [
+            str(Path(RUNTIME_BIN) / "moss_transcribe"),
+            "--model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_REPO.replace("/", "_")),
+            "--draft-model-path",
+            str(Path(DATA_ROOT) / "models" / MOSS_DRAFT_REPO.replace("/", "_")),
+            "--max-new-tokens",
+            str(max_new_tokens),
+            str(Path(DATA_ROOT) / "corpus" / "v1" / "clips" / "0006_en_short.wav"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    output = json.loads(result.stdout)
+    assert output["generated_token_count"] == max_new_tokens
+    assert output["finish_reason"] == "length"
+    assert (output["verify_rounds"] > 0) == (max_new_tokens > 1)
+
+
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_streamed_request_ends_with_segments(moss_server: ModelServer) -> None:
     status, body = moss_server.post_form(
         {"stream": "true", "include_generation_metadata": "true"},
@@ -459,6 +529,7 @@ def test_moss_realtime_rejects_a_prompt_it_cannot_render(
         assert json.loads(socket.recv())["type"] == "transcription_session.updated"
 
 
+@pytest.mark.parametrize("moss_server", MOSS_SERVER_MODES, indirect=True)
 def test_moss_realtime_finalizes_windows_with_segments(
     moss_server: ModelServer,
 ) -> None:
@@ -503,13 +574,6 @@ def test_moss_realtime_finalizes_windows_with_segments(
 @pytest.fixture(scope="module")
 def nemotron_server() -> Iterator[ModelServer]:
     running = ModelServer("nemotron_asr_server", "nemotron_asr", NEMOTRON_REPO)
-    yield running
-    running.stop()
-
-
-@pytest.fixture(scope="module")
-def parakeet_server() -> Iterator[ModelServer]:
-    running = ModelServer("parakeet_server", "parakeet", PARAKEET_REPO)
     yield running
     running.stop()
 
@@ -580,12 +644,19 @@ def test_nemotron_realtime_at_the_native_chunk_equals_the_final_pass(
     assert status == 200
     pcm = pcm16("0344_en_long")
     # Note (Jiaxin Deng): None sends the whole clip in one append, which the
-    # stream still decodes one chunk of audio at a time.
+    # stream still decodes one block of audio at a time.
     events = realtime_events(nemotron_server, pcm, {}, append_bytes or len(pcm))
     # Note (Dayuxiaoshui): the stream only encodes mel frames later audio can no
-    # longer change, so however the audio is split, the native chunk decodes
-    # exactly what one pass over all of it does.
-    assert events[-1]["text"] == json.loads(body)["text"]
+    # longer change, so however the audio is split, every chunk sees the context
+    # one pass over all of it gives.
+    # Note (XXXXRT666): one append encodes the same blocks of chunks as the
+    # Final pass; 0.1 s appends encode one chunk at a time, whose kernels round
+    # differently, so their text only nearly matches.
+    final_text = json.loads(body)["text"]
+    if append_bytes is None:
+        assert events[-1]["text"] == final_text
+    else:
+        assert SequenceMatcher(None, events[-1]["text"], final_text).ratio() > 0.98
     finals = [
         event
         for event in events
@@ -715,60 +786,6 @@ def test_nemotron_realtime_disconnect_stops_its_decode(
         time.sleep(0.05)
 
 
-def test_parakeet_final_request_returns_text_and_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    assert parakeet_server.ready["model_name"].startswith("voxt-parakeet-")
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": "1200"}, clip("0006_en_short")
-    )
-    assert status == 200
-    result = json.loads(body)
-    assert result["text"] == "Surely you are not thinking of going off there."
-    [segment] = result["segments"]
-    assert segment["text"].strip() == result["text"]
-    assert 0 <= segment["start"] < segment["end"] <= 3.1
-
-
-def test_parakeet_merges_overlapping_chunks_into_sentences(
-    parakeet_server: ModelServer,
-) -> None:
-    # Note (Dayuxiaoshui): a whole-recording request decodes 5 s chunks that
-    # overlap by 1 s, as Voxt's Swift path does.
-    status, body = parakeet_server.post_form(
-        {
-            "chunk_duration": "1200",
-            "stream": "true",
-            "include_generation_metadata": "true",
-        },
-        clip("0344_en_long"),
-    )
-    assert status == 200
-    done = sse_events(body)[0]
-    assert done["text"].startswith(
-        "In every way they sought to undermine the authority"
-    )
-    assert done["generation_metadata"]["finish_reason"] == "stop"
-    status, body = parakeet_server.post_form({}, clip("0344_en_long"))
-    assert status == 200
-    segments = json.loads(body)["segments"]
-    assert len(segments) > 1
-    assert [segment["start"] for segment in segments] == sorted(
-        segment["start"] for segment in segments
-    )
-
-
-@pytest.mark.parametrize("chunk_duration", ["nan", "1", "-5", "600"])
-def test_parakeet_rejects_a_bad_chunk_duration(
-    parakeet_server: ModelServer, chunk_duration: str
-) -> None:
-    status, body = parakeet_server.post_form(
-        {"chunk_duration": chunk_duration}, clip("0006_en_short")
-    )
-    assert status == 400
-    assert "chunk_duration" in json.loads(body)["detail"]
-
-
 @pytest.fixture(scope="module")
 def sensevoice_server() -> Iterator[ModelServer]:
     running = ModelServer("sensevoice_server", "sensevoice", SENSEVOICE_REPO)
@@ -889,6 +906,154 @@ def test_sensevoice_voice_activity_needs_an_overlap_shorter_than_a_chunk(
     status, body = sensevoice_server.post_form(fields, clip("0006_en_short"))
     assert status == 400
     assert "overlap" in json.loads(body)["detail"]
+
+
+@pytest.fixture(scope="module")
+def funasr_server() -> Iterator[ModelServer]:
+    running = ModelServer("funasr_server", "funasr", FUNASR_REPO)
+    yield running
+    running.stop()
+
+
+def test_funasr_final_request_streams_text_and_generation_metadata(
+    funasr_server: ModelServer,
+) -> None:
+    assert funasr_server.ready["model_name"].startswith("voxt-funasr-")
+    status, body = funasr_server.post_form(
+        {"stream": "true", "language": "zh", "include_generation_metadata": "true"},
+        clip("0152_zh_short"),
+    )
+    assert status == 200
+    [done, end] = sse_events(body)
+    assert end == "[DONE]"
+    assert done["type"] == "transcript.text.done"
+    assert done["text"]
+    metadata = done["generation_metadata"]
+    assert metadata["language"] == "zh"
+    assert metadata["finish_reason"] == "stop"
+    assert metadata["generated_token_count"] > 0
+
+
+@pytest.mark.parametrize(
+    "fields", [{}, {"language": "en", "prompt": "Socrates, Timaeus"}]
+)
+def test_funasr_plain_request_returns_json_text(
+    funasr_server: ModelServer, fields: dict[str, str]
+) -> None:
+    status, body = funasr_server.post_form(fields, clip("0000_en_short"))
+    assert status == 200
+    assert "Socrates" in json.loads(body)["text"]
+
+
+def test_funasr_decodes_long_audio_one_window_at_a_time(
+    funasr_server: ModelServer,
+) -> None:
+    # The reference stops at 30 s, so the text past it comes only from the
+    # later windows.
+    fields = {"stream": "true", "include_generation_metadata": "true"}
+    status, body = funasr_server.post_form(fields, long_wav(30))
+    assert status == 200
+    one_window = sse_events(body)[0]["generation_metadata"]
+    status, body = funasr_server.post_form(fields, long_wav(75))
+    assert status == 200
+    three_windows = sse_events(body)[0]["generation_metadata"]
+    assert three_windows["finish_reason"] == "stop"
+    assert (
+        three_windows["generated_token_count"] > 2 * one_window["generated_token_count"]
+    )
+    assert len(three_windows["window_texts"]) == 3
+
+
+def test_funasr_leaves_the_silence_marker_out_of_the_text(
+    funasr_server: ModelServer,
+) -> None:
+    """The checkpoint writes the /sil marker at this clip's pauses between sentences, and the transcript kept it."""
+    status, body = funasr_server.post_form(
+        {"stream": "true", "language": "zh"}, clip("0360_zh_long")
+    )
+    assert status == 200
+    done = sse_events(body)[0]
+    assert "/sil" not in done["text"]
+
+
+def test_funasr_token_budget_covers_the_whole_request(
+    funasr_server: ModelServer,
+) -> None:
+    status, body = funasr_server.post_form(
+        {
+            "stream": "true",
+            "include_generation_metadata": "true",
+            "max_new_tokens": "2",
+        },
+        long_wav(75),
+    )
+    assert status == 200
+    metadata = sse_events(body)[0]["generation_metadata"]
+    assert metadata["finish_reason"] == "length"
+    assert metadata["generated_token_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("fields", "wav"),
+    [
+        ({}, None),
+        ({}, b"not audio"),
+        ({"include_generation_metadata": "true"}, "wav"),
+        ({"max_new_tokens": "many"}, "wav"),
+        ({"max_new_tokens": "-1"}, "wav"),
+        ({"repetition_penalty": "0"}, "wav"),
+    ],
+)
+def test_funasr_invalid_requests_are_rejected(
+    funasr_server: ModelServer, fields: dict[str, str], wav: bytes | str | None
+) -> None:
+    status, body = funasr_server.post_form(
+        fields, clip("0006_en_short") if wav == "wav" else wav
+    )
+    assert status == 400
+    assert "detail" in json.loads(body)
+
+
+def test_funasr_disconnected_stream_stops_its_decode(
+    funasr_server: ModelServer,
+) -> None:
+    boundary = uuid.uuid4().hex
+    body = (
+        (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="stream"\r\n\r\ntrue\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.wav"\r\n\r\n'
+        ).encode()
+        + long_wav(600)
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    connection = http.client.HTTPConnection("127.0.0.1", funasr_server.port, timeout=30)
+    connection.request(
+        "POST",
+        "/v1/audio/transcriptions",
+        body,
+        {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    response = connection.getresponse()
+    assert response.status == 200
+    time.sleep(2.0)
+    assert json.loads(funasr_server.request("GET", "/health")[1])["request_states"] == {
+        "running": 1
+    }
+    closed_at = time.monotonic()
+    response.close()
+    connection.close()
+    while (
+        json.loads(funasr_server.request("GET", "/health")[1])["request_states"] != {}
+    ):
+        assert (
+            time.monotonic() - closed_at < 2.0
+        ), "the decode kept running after its client left"
+        time.sleep(0.05)
+
+
+def test_funasr_serves_no_realtime_api(funasr_server: ModelServer) -> None:
+    with pytest.raises(InvalidHandshake):
+        connect(f"ws://127.0.0.1:{funasr_server.port}/v1/realtime")
 
 
 # Note (Jiaxin Deng): a cold short request takes over a minute on a Mac that

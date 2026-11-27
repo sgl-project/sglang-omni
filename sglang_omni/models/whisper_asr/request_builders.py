@@ -175,6 +175,7 @@ def make_whisper_scheduler_adapters(
     max_new_tokens: int,
     decoder_context_len: int | None = None,
     audio_encoder_service: WhisperPreLMEncoderService | None = None,
+    speculative_num_steps: int = 0,
 ) -> tuple[
     Callable[[StagePayload], WhisperASRRequestData],
     Callable[[WhisperASRRequestData], StagePayload],
@@ -211,9 +212,14 @@ def make_whisper_scheduler_adapters(
         or generation_config.max_length
         or _DEFAULT_DECODER_CONTEXT_LEN
     )
+    # note (wilsonzheng0327): a speculative verify reads speculative_num_steps
+    # positions past a request's newest token, so the request leaves them free.
+    decoder_context_len -= speculative_num_steps
 
     def request_builder(payload: StagePayload) -> WhisperASRRequestData:
         params = payload.request.params or {}
+        temperature = float(params.get("temperature") or 0.0)
+        segment_timestamps = bool(params.get("segment_timestamps"))
         prepared = prepare_audio(
             payload,
             source_name="Whisper ASR",
@@ -228,7 +234,6 @@ def make_whisper_scheduler_adapters(
         language = resolve_language(params.get("language"))
         task = str(params.get("task") or "transcribe")
         detect_language = bool(params.get("detect_language"))
-        segment_timestamps = bool(params.get("segment_timestamps"))
         if detect_language:
             prompt_token_ids = [sot_token_id]
             request_max_new_tokens = 1
@@ -301,7 +306,6 @@ def make_whisper_scheduler_adapters(
         else:
             pass
 
-        temperature = float(params.get("temperature") or 0.0)
         sampling_params = SamplingParams(
             max_new_tokens=request_max_new_tokens,
             temperature=temperature,
@@ -374,6 +378,7 @@ def make_whisper_scheduler_adapters(
                 "asr_latency_s": engine_time_s,
                 "finish_reason": data.finish_reason,
                 "usage": {"engine_time_s": engine_time_s},
+                "spec_tokens_details": data.spec_tokens_details,
                 "modality": "text",
             },
         )

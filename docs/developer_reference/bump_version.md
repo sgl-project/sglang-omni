@@ -38,7 +38,7 @@ The other places a version lives:
 | `docker/cpu.Dockerfile` | `SGLANG_IMAGE` (digest of the new tag's `-xeon` manifest) |
 | `docker/xpu.Dockerfile` | `SGLANG_XPU_BRANCH` (the tag); SGLang's XPU manifest pins the `sglang-kernel-xpu` wheel |
 | `pyproject_cpu.toml`, `pyproject_xpu.toml`, `scripts/cpu/install_cpu.sh`, `scripts/xpu/install_xpu.sh` | The verified SGLang tag; the provider pyprojects cannot pin `sglang` because every wheel pulls CUDA torch |
-| `docs/get_started/installation.md`, `docs/get_started/installation_cpu.md`, `docs/get_started/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
+| `docs/get_started/installation.md`, `docs/other_platforms/installation_cpu.md`, `docs/other_platforms/installation_xpu.md`, `docs/basic_usage/tts.md`, `docs/cookbook/*.md`, model READMEs | Version names in install instructions |
 | Comments in `sglang_omni/` | Never name a version; state the invariant the code relies on so the text survives the next bump |
 
 Search the tree for the old versions and the old image digest; the table is
@@ -389,9 +389,11 @@ commits and image digests, sample counts and the profiler attribution for
 any delta outside noise. Measurements and inferences are labeled as what
 they are.
 
-Run CI with `run-all-ci`. A stage without a model label draws its model at
-random, so give each preset its own run on the new image before merge: keep
-`run-all-ci` and add one model label per stage, for example
+Run CI on every H100 model stage with
+`/tag-and-rerun-ci asr tts mps omni full-duplex cascaded`. A stage without a
+model label draws its model at random, so give each preset its own run on the
+new image before merge: keep those stage labels and add one model label per
+stage, for example
 `run-moss-tts-local-transformer-v1.5`, `run-fun-asr-nano-2512` and
 `run-minicpm-o-4.5`. The model labels within a stage are exclusive. The
 CI section of the pull request template lists every label.

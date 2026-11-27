@@ -72,6 +72,18 @@ class WhisperDecoderLayerNorm(nn.LayerNorm):
         return super().forward(hidden_states)
 
 
+def admits_audio(forward_batch: ForwardBatch) -> bool:
+    """Whether this forward brings encoder states to cache for cross-attention.
+
+    Decode and speculative verify read the K/V their request's prefill cached.
+    """
+    return not (
+        forward_batch.forward_mode.is_decode()
+        or forward_batch.forward_mode.is_target_verify()
+        or all(forward_batch.encoder_cached)
+    )
+
+
 def load_projection_shard(
     param: torch.Tensor,
     loaded_weight: torch.Tensor,
@@ -404,14 +416,15 @@ class WhisperDecoder(nn.Module):
         return hidden_states + self.embed_positions(positions).to(hidden_states.device)
 
 
-class WhisperModel(nn.Module):
+class WhisperDecoderModel(nn.Module):
+    """The decoder side of WhisperModel, for a draft that reads another model's encoder."""
+
     def __init__(
         self,
         config: WhisperConfig,
         quant_config: QuantizationConfig | None = None,
     ) -> None:
         super().__init__()
-        self.encoder = WhisperEncoder(config)
         self.decoder = WhisperDecoder(config, quant_config=quant_config)
 
     @property
@@ -439,6 +452,16 @@ class WhisperModel(nn.Module):
             forward_batch,
             input_embeds=input_embeds,
         )
+
+
+class WhisperModel(WhisperDecoderModel):
+    def __init__(
+        self,
+        config: WhisperConfig,
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
+        super().__init__(config, quant_config=quant_config)
+        self.encoder = WhisperEncoder(config)
 
 
 class WhisperForConditionalGeneration(nn.Module):
@@ -518,7 +541,7 @@ class WhisperForConditionalGeneration(nn.Module):
         self,
         forward_batch: ForwardBatch,
     ) -> tuple[torch.Tensor | None, list[int] | None]:
-        if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
+        if not admits_audio(forward_batch):
             return None, None
         else:
             pass
@@ -538,7 +561,7 @@ class WhisperForConditionalGeneration(nn.Module):
             else:
                 pass
             features.append(torch.cat(item_features, dim=0))
-            encoder_lens.append(int(forward_batch.encoder_lens[index].item()))
+            encoder_lens.append(int(forward_batch.encoder_lens_cpu[index]))
 
         if not features:
             return None, None
@@ -551,7 +574,7 @@ class WhisperForConditionalGeneration(nn.Module):
         forward_batch: ForwardBatch,
     ) -> torch.Tensor | None:
         """Collect pre-LM encoder hiddens into a flat cross-attn tensor."""
-        if forward_batch.forward_mode.is_decode() or all(forward_batch.encoder_cached):
+        if not admits_audio(forward_batch):
             return None
         else:
             pass
@@ -562,7 +585,7 @@ class WhisperForConditionalGeneration(nn.Module):
                 continue
             else:
                 pass
-            encoder_len = int(forward_batch.encoder_lens[index].item())
+            encoder_len = int(forward_batch.encoder_lens_cpu[index])
             for item in mm_input.mm_items:
                 embedding = item.precomputed_embeddings
                 if embedding is None:

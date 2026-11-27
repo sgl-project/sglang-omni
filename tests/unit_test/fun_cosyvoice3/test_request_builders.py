@@ -933,6 +933,14 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
         engine_start_s=10.0,
         finish_reason="length",
     )
+    data.spec_tokens_details = {
+        "spec_accept_rate": 0.5,
+        "spec_accept_length": 2.0,
+        "spec_num_correct_drafts": 1,
+        "spec_num_proposed_drafts": 2,
+        "spec_verify_ct": 1,
+        "spec_correct_drafts_histogram": [0, 1],
+    }
     monkeypatch.setattr(request_builders.time, "perf_counter", lambda: 10.5)
 
     result = apply_sglang_cosyvoice3_result(payload, data)
@@ -953,6 +961,7 @@ def test_result_adapter_preserves_reference_conditioning_for_vocoder(
     assert restored.sample_rate == 24000
     assert restored.engine_time_s == pytest.approx(0.5)
     assert restored.finish_reason == "length"
+    assert restored.spec_tokens_details == data.spec_tokens_details
 
 
 def test_result_adapter_filters_silent_runs_without_mutating_ar_history() -> None:

@@ -95,6 +95,7 @@ import os
 import statistics
 import time
 
+import aiohttp
 import requests
 
 from benchmarks.benchmarker.fingerprint import (
@@ -103,11 +104,16 @@ from benchmarks.benchmarker.fingerprint import (
 )
 from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
-from benchmarks.eval.asr_profiling import UtilizationSampler, run_profiled_pass
+from benchmarks.eval.asr_profiling import (
+    UtilizationSampler,
+    event_buffer_capacity_for_samples,
+    run_profiled_pass,
+)
 from benchmarks.runtime_metrics import ResourceMonitor, collect_benchmark_provenance
 from benchmarks.tasks.asr import (
     FUN_ASR_MODEL_PATH,
     QWEN3_ASR_MODEL_PATH,
+    QWEN3_ASR_REQUEST_TIMEOUT_S,
     build_asr_eval_results,
     run_asr_transcription,
 )
@@ -219,6 +225,8 @@ async def run_asr_seedtts_once(
     warmup: int = 0,
     disable_tqdm: bool = True,
     stream: bool = False,
+    fallback_percentage: int = 0,
+    session: aiohttp.ClientSession | None = None,
 ) -> dict:
     """Run one SeedTTS ASR benchmark pass and return WER/speed/worker metrics."""
     before = _fetch_worker_snapshot(host, port)
@@ -232,6 +240,8 @@ async def run_asr_seedtts_once(
         warmup=warmup,
         disable_tqdm=disable_tqdm,
         stream=stream,
+        fallback_percentage=fallback_percentage,
+        session=session,
     )
     after = _fetch_worker_snapshot(host, port)
     benchmark_result = build_asr_eval_results(
@@ -257,7 +267,14 @@ def _save_raw_per_sample(
             handle.write(json.dumps(record) + "\n")
 
 
-async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
+async def _run_repeat(
+    args,
+    samples,
+    concurrency: int,
+    repeat: int,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> dict:
     monitor = (
         None
         if args.disable_resource_monitor
@@ -281,6 +298,8 @@ async def _run_repeat(args, samples, concurrency: int, repeat: int) -> dict:
             lang=args.lang,
             concurrency=concurrency,
             stream=args.stream,
+            fallback_percentage=getattr(args, "fallback_percentage", 0),
+            session=session,
         )
     finally:
         resources = (
@@ -651,6 +670,12 @@ def add_common_args(
         help="Server-side base directory for profiler event JSONL.",
     )
     parser.add_argument(
+        "--profile-event-buffer-capacity",
+        type=_positive_int,
+        default=None,
+        help="Events buffered per producer during profiling. Defaults to sizing from sample count.",
+    )
+    parser.add_argument(
         "--sample-util",
         action="store_true",
         help=(
@@ -702,11 +727,36 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
     )
+    parser.add_argument(
+        "--fallback-percentage",
+        type=int,
+        default=0,
+        help="Percentage of clips sent with repetition_penalty=1.2. Whether they decode plainly depends on the server: a draft that applies the penalty keeps them.",
+    )
+    parser.add_argument(
+        "--unique-audio",
+        action="store_true",
+        help=(
+            "Send each reference clip once, as its first row; --max-samples then "
+            "counts clips. SeedTTS lists a prompt clip once per target text, back "
+            "to back (EN 1088 rows, 666 clips; ZH 2020 rows, 1010 clips), so "
+            "without this flag concurrency 2 sends both copies together."
+        ),
+    )
     add_common_args(parser, default_output="asr_seedtts_results.json")
-    return finalize_args(parser.parse_args())
+    args = parser.parse_args()
+    if not 0 <= args.fallback_percentage <= 100:
+        parser.error("--fallback-percentage must be between 0 and 100")
+    return finalize_args(args)
 
 
-async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
+async def _run_profiled_pass(
+    args,
+    samples,
+    concurrency: int,
+    *,
+    session: aiohttp.ClientSession | None = None,
+) -> dict | None:
     """One extra profiled pass, excluded from measured aggregates.
 
     Request-event profiling adds server-side JSONL writes, so the measured
@@ -721,7 +771,14 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
         run_id=run_id,
         event_dir=event_dir,
         profile_urls=profile_urls,
-        run_pass=lambda: _run_repeat(args, samples, concurrency, repeat=0),
+        event_buffer_capacity=(
+            args.profile_event_buffer_capacity
+            if args.profile_event_buffer_capacity is not None
+            else event_buffer_capacity_for_samples(len(samples))
+        ),
+        run_pass=lambda: _run_repeat(
+            args, samples, concurrency, repeat=0, session=session
+        ),
         log_prefix=f"[conc={concurrency}]",
     )
 
@@ -729,46 +786,68 @@ async def _run_profiled_pass(args, samples, concurrency: int) -> dict | None:
 async def _sweep(args, samples, concurrencies: list[int]) -> list[dict]:
     aggregates: list[dict] = []
     for concurrency in concurrencies:
-        if args.warmup:
-            print(f"[conc={concurrency}] warmup pass ...")
-            await run_asr_transcription(
-                samples,
-                host=args.host,
-                port=args.port,
-                model_path=args.model_path,
-                lang=args.lang,
-                concurrency=concurrency,
-                stream=args.stream,
-            )
-        repeats: list[dict] = []
-        for repeat in range(1, args.repeats + 1):
-            result = await _run_repeat(args, samples, concurrency, repeat)
-            repeats.append(result)
-            line = (
-                f"[conc={concurrency} rep={repeat}] "
-                f"wall={result['wall_clock_s']:.3f}s "
-                f"thrpt={result['throughput_samples_per_s']:.3f}/s "
-                f"rtfx={result['rtfx']:.3f} "
-                f"lat_mean={_format_metric(result['latency_mean_s'], 3, 's')} "
-                f"lat_p95={_format_metric(result['latency_p95_s'], 3, 's')} "
-                f"rtf_mean={_format_metric(result['rtf_mean'], 4)} "
-            )
-            if "text_ttft_mean_s" in result:
-                line += (
-                    f"ttft_mean="
-                    f"{_format_metric(result['text_ttft_mean_s'], 4, 's')} "
+        # note (evanderfff123-boop): keep one HTTP session across warmup, measured repeats, and the profiled pass so each reuses warm keep-alive connections instead of handshaking all slots at t0.
+        timeout = aiohttp.ClientTimeout(total=QWEN3_ASR_REQUEST_TIMEOUT_S)
+        connector = aiohttp.TCPConnector(limit=0)
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector, trust_env=False
+        ) as session:
+            if args.warmup:
+                print(f"[conc={concurrency}] warmup pass ...")
+                await run_asr_transcription(
+                    samples,
+                    host=args.host,
+                    port=args.port,
+                    model_path=args.model_path,
+                    lang=args.lang,
+                    concurrency=concurrency,
+                    stream=args.stream,
+                    fallback_percentage=getattr(args, "fallback_percentage", 0),
+                    session=session,
                 )
-            line += (
-                f"corpus_wer={_format_metric(result['corpus_wer'], 4)} "
-                f"evaluated={result['evaluated']}/{result['total']}"
-            )
-            print(line)
-            if result["worker"].get("per_worker_routed"):
-                print(f"    routed per worker: {result['worker']['per_worker_routed']}")
-        aggregate = _aggregate(repeats)
-        if args.profile_events:
-            print(f"[conc={concurrency}] profiled pass ...")
-            aggregate["profile"] = await _run_profiled_pass(args, samples, concurrency)
+            else:
+                pass
+            repeats: list[dict] = []
+            for repeat in range(1, args.repeats + 1):
+                result = await _run_repeat(
+                    args, samples, concurrency, repeat, session=session
+                )
+                repeats.append(result)
+                line = (
+                    f"[conc={concurrency} rep={repeat}] "
+                    f"wall={result['wall_clock_s']:.3f}s "
+                    f"thrpt={result['throughput_samples_per_s']:.3f}/s "
+                    f"rtfx={result['rtfx']:.3f} "
+                    f"lat_mean={_format_metric(result['latency_mean_s'], 3, 's')} "
+                    f"lat_p95={_format_metric(result['latency_p95_s'], 3, 's')} "
+                    f"rtf_mean={_format_metric(result['rtf_mean'], 4)} "
+                )
+                if "text_ttft_mean_s" in result:
+                    line += (
+                        f"ttft_mean="
+                        f"{_format_metric(result['text_ttft_mean_s'], 4, 's')} "
+                    )
+                else:
+                    pass
+                line += (
+                    f"corpus_wer={_format_metric(result['corpus_wer'], 4)} "
+                    f"evaluated={result['evaluated']}/{result['total']}"
+                )
+                print(line)
+                if result["worker"].get("per_worker_routed"):
+                    print(
+                        f"    routed per worker: {result['worker']['per_worker_routed']}"
+                    )
+                else:
+                    pass
+            aggregate = _aggregate(repeats)
+            if args.profile_events:
+                print(f"[conc={concurrency}] profiled pass ...")
+                aggregate["profile"] = await _run_profiled_pass(
+                    args, samples, concurrency, session=session
+                )
+            else:
+                pass
         aggregates.append(aggregate)
     return aggregates
 
@@ -798,6 +877,7 @@ def main() -> None:
         max_samples=max_samples,
         split=args.lang,
         revision=dataset_revision,
+        unique_audio=args.unique_audio,
     )
     if not samples:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
@@ -841,10 +921,12 @@ def main() -> None:
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),
+            "unique_audio": args.unique_audio,
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,
             "stream": args.stream,
+            "fallback_percentage": args.fallback_percentage,
             "declared_server": server_config,
             "resource_monitor": {
                 "enabled": not args.disable_resource_monitor,
@@ -865,6 +947,7 @@ def main() -> None:
             "server": collect_server_identity(f"http://{args.host}:{args.port}"),
         }
     output_path = os.path.abspath(args.output)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w") as handle:
         json.dump(payload, handle, indent=2)
     print(f"\nWrote results to {output_path}")

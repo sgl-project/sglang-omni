@@ -1,0 +1,43 @@
+
+diff --git a/ui/widgets.go b/ui/widgets.go
+index d7fd927..8e9c64f 100644
+--- a/ui/widgets.go
++++ b/ui/widgets.go
+@@ -639,16 +639,27 @@ func coreSelect(c *context, selected *string, options []string) *node {
+ 	})
+ 	sel.Popup(func(panel *node) {
+ 		stylePanel(c, panel)
+-		for _, opt := range options {
+-			item := sel.Item(opt).Padding(t.Space(1.5), t.Space(2.5)).Radius(t.Radius)
+-			switch {
+-			case item.Highlighted():
+-				item.Background(t.Accent).TextColor(t.AccentText)
+-			case opt == *selected:
+-				item.Background(t.Surface)
+-			}
+-			item.Children(func() { coreText(c, opt).SingleLine() })
+-		}
++		// A long list scrolls in the room the window has below the
++		// trigger (at most 20 rows' worth), instead of running off the
++		// window; the highlighted option scrolls into view (Item).
++		r := b.Bounds()
++		room := c.h - (r.Y + r.H) - t.Space(4)
++		maxH := max(t.Space(30), min(t.Space(80), room))
++		list := coreScroll(c).MaxHeight(maxH)
++		list.Children(func() {
++			coreColumn(c).Children(func() {
++				for _, opt := range options {
++					item := sel.Item(opt).Padding(t.Space(1.5), t.Space(2.5)).Radius(t.Radius)
++					switch {
++					case item.Highlighted():
++						item.Background(t.Accent).TextColor(t.AccentText)
++					case opt == *selected:
++						item.Background(t.Surface)
++					}
++					item.Children(func() { coreText(c, opt).SingleLine() })
++				}
++			})
++		})
+ 	})
+ 	return b
+ }

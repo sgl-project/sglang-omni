@@ -11,6 +11,7 @@ from numpy.typing import ArrayLike
 
 from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, WireSpec, wire
 from sglang_omni.scheduling.typed_tensor import encode_typed_tensor
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
 
 
 @dataclass
@@ -37,6 +38,7 @@ class FunCosyVoice3State(DeclarativeStateBase):
     )
     audio_codes: ArrayLike | torch.Tensor | None = wire(None, codec="tensor_list")
     audio_samples: object = wire(None, codec="tensor_list")
+    spec_tokens_details: SpecTokensDetailsDict | None = None
 
     def encode_field(
         self,

@@ -1,0 +1,62 @@
+MyGo patch 0018: accept local files offered only as public.url.
+
+A native drag can offer a file URL without the file-list type Finder also
+provides. The legacy OnFileDrop fallback rejected that drag during negotiation,
+so native panels never received the file. Accept URI-list drags as file
+candidates and read both representations on drop; Data.Files still rejects
+remote URLs. TestContentWindowFileURLDrop covers the native hook before and after.
+diff --git a/content.go b/content.go
+index 7c4847f546..2d4c57e620 100644
+--- a/content.go
++++ b/content.go
+@@ -234,2 +234,2 @@
+-			if d.HasFiles || slices.Contains(d.Offer.Formats, transfer.FileList) {
++			if d.HasFiles || slices.Contains(d.Offer.Formats, transfer.FileList) || slices.Contains(d.Offer.Formats, transfer.URIList) {
+ 				d.Operation = transfer.Negotiate(d.Offer.Operations, transfer.Copy, d.Offer.Suggested)
+@@ -252,2 +252,2 @@
+-				d.Formats = []transfer.Format{transfer.FileList}
++				d.Formats = []transfer.Format{transfer.FileList, transfer.URIList}
+ 				if h.SurfaceEvent(fileEvent) {
+diff --git a/internal/e2e/file_url_drop_test.go b/internal/e2e/file_url_drop_test.go
+new file mode 100644
+index 0000000000..b9e3db35da
+--- /dev/null
++++ b/internal/e2e/file_url_drop_test.go
+@@ -0,0 +1,37 @@
++package e2e
++
++import (
++	"path/filepath"
++	"slices"
++	"sync/atomic"
++	"testing"
++
++	"github.com/egoist/mygo"
++	"github.com/egoist/mygo/transfer"
++	"github.com/egoist/mygo/ui"
++)
++
++// TestContentWindowFileURLDrop drops a local file offered only as public.url,
++// without the file-list type Finder also provides, onto a native panel.
++func TestContentWindowFileURLDrop(t *testing.T) {
++	w := newWindow(t, mygo.WindowOptions{
++		Title: "Rewrite", Width: 480, Height: 340, UseContentSize: true, Hidden: true,
++		Frameless: true, Transparent: true, Vibrancy: mygo.VibrancyHUD,
++		Panel: true, DisableResize: true, DisableClose: true,
++		Content: ui.View(func(c *ui.Context) { ui.Text(c, "Rewrite") }),
++	})
++	var event atomic.Pointer[mygo.FileDropEvent]
++	w.OnFileDrop(func(e *mygo.FileDropEvent) { event.Store(e) })
++	data := transfer.New(transfer.NewItem(transfer.Bytes(transfer.URIList, []byte("file:///tmp/picture.png"))))
++	operation, dropped, supported := dropNativeData(w, 50, 50, data, transfer.Copy)
++	if !supported {
++		t.Skip("native data-drop automation not available on this platform")
++	}
++	if operation != transfer.Copy || !dropped {
++		t.Fatalf("the panel refused a file URL: operation %v, dropped %v", operation, dropped)
++	}
++	want := []string{filepath.FromSlash("/tmp/picture.png")}
++	if e := event.Load(); e == nil || !slices.Equal(e.Paths, want) {
++		t.Fatalf("OnFileDrop got %+v, want paths %v", e, want)
++	}
++}

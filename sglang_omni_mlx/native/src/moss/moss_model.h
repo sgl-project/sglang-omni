@@ -8,10 +8,15 @@
 #include <vector>
 
 #include "common/layers.h"
+#include "common/qwen3_decoder.h"
 #include "mlx/mlx.h"
-#include "qwen3_asr/qwen3_decoder.h"
 
 namespace moss {
+
+// The checkpoint's weights as the model reads them: Conv1d weights in MLX's
+// layout, and the tied embedding as the output projection unless the
+// checkpoint carries a prequantized one.
+omni_common::WeightMap LoadedWeights(omni_common::WeightMap weights);
 
 struct WhisperEncoderConfig {
   int num_mel_bins = 0;
@@ -30,7 +35,7 @@ public:
   mlx::core::array
   EncodeAudio(const mlx::core::array &window_features,
               const std::vector<int> &window_token_counts) const;
-  const qwen3_asr::Qwen3Decoder &decoder() const { return decoder_; }
+  const omni_common::Qwen3Decoder &decoder() const { return decoder_; }
 
   int mel_bin_count() const { return whisper_.num_mel_bins; }
   int audio_token_id() const { return audio_token_id_; }
@@ -41,15 +46,13 @@ private:
                         const std::filesystem::path &model_directory);
   mlx::core::array Conv1d(const mlx::core::array &x, const std::string &prefix,
                           int stride) const;
-  mlx::core::array WhisperEncoderLayer(const mlx::core::array &x,
-                                       int layer) const;
 
   WhisperEncoderConfig whisper_;
   float adaptor_norm_eps_ = 0.0f;
   int audio_token_id_ = 0;
   int audio_merge_size_ = 0;
   omni_common::Checkpoint checkpoint_;
-  qwen3_asr::Qwen3Decoder decoder_;
+  omni_common::Qwen3Decoder decoder_;
 };
 
 } // namespace moss

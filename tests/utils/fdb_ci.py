@@ -93,7 +93,10 @@ METRIC_SPECS: dict[str, MetricSpec] = {
     ),
     "v10_candor_pause_intrusion_rate": MetricSpec(kind="rate", is_higher_better=False),
     "v10_turn_response_rate_2s": MetricSpec(kind="rate", is_higher_better=True),
-    "listening_omission_rate": MetricSpec(kind="omission_rate", is_higher_better=False),
+    # note (db-ol): reported, not gated, it swings between runs (about 0.005 to 0.032).
+    "listening_omission_rate": MetricSpec(
+        kind="omission_rate", is_higher_better=False, is_gated=False
+    ),
     "listening_utmos_mean": MetricSpec(kind="utmos", is_higher_better=True),
     "listening_voice_similarity_mean": MetricSpec(
         kind="voice_similarity", is_higher_better=True
@@ -248,6 +251,26 @@ def variant_outcomes(recording: Path) -> Counter[str]:
                 else:
                     outcomes["protocol_failure"] += 1
     return outcomes
+
+
+def count_speech_failures(run_root: Path) -> int:
+    """Replies of the run's first repeat, v1.5 and v1.0, that ended failed/speech_error, which the oracle accepts and counts apart from protocol failures."""
+    repeat = run_root / "repeat-1"
+    failures = 0
+    runs = [
+        *(repeat / "recording").glob("shard-*/run.json"),
+        *(repeat / "v10" / "recording").glob("shard-*/run.json"),
+    ]
+    for run in runs:
+        for sample in read_json(run)["samples"]:
+            for variant in sample["variants"].values():
+                report = run.parent / variant["directory"] / "report.json"
+                if report.is_file():
+                    (case,) = read_json(report)["cases"]
+                    failures += case["metrics"].get("responses_speech_failed", 0)
+                else:
+                    pass
+    return failures
 
 
 def is_speaking_at(segments: JsonValue, time_s: float) -> bool:

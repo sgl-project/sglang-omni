@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+from collections import deque
 from itertools import accumulate
 from typing import TYPE_CHECKING
 
 import torch
 from sglang.srt.managers.scheduler import GenerationBatchResult
+from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
@@ -39,9 +41,16 @@ else:
     pass
 
 
+def thinker_length_penalty(sched_req: SchedulerRequest) -> float:
+    params = sched_req.data.stage_payload.request.params or {}
+    thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
+    return thinker_params.get("length_penalty", 1.0)
+
+
 class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
     """Run the thinker and accumulate hidden states for speech conditioning."""
 
+    supports_speculative_async_decode = True
     speculative_verify_takes_logits_hooks = True
     speculative_ignores_request_seed = True
 
@@ -80,7 +89,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         )
         self.pending_hidden: dict[str, list[torch.Tensor]] = {}
         self.hands_hidden_to_talker = output_processor.capture_hidden
-        self.speculative_hidden_queue: dict[str, torch.Tensor] = {}
+        self.speculative_hidden_queue: dict[str, deque[torch.Tensor]] = {}
 
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: ScheduleBatch, requests: list[SchedulerRequest]
@@ -102,9 +111,7 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         """Scale end-of-sequence logits by each request's length_penalty."""
         logits = logits_output.next_token_logits
         for row_idx, sched_req in enumerate(requests):
-            params = sched_req.data.stage_payload.request.params or {}
-            thinker_params = (params.get("stage_params") or {}).get(THINKER_STAGE) or {}
-            length_penalty = thinker_params.get("length_penalty", 1.0)
+            length_penalty = thinker_length_penalty(sched_req)
             if length_penalty == 1.0:
                 continue
             else:
@@ -115,6 +122,12 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     eos_logits / length_penalty,
                     eos_logits * length_penalty,
                 )
+
+    def verify_rows_take_logits_hooks(self, requests: list[SchedulerRequest]) -> bool:
+        """Only a length_penalty or a codec suppress set changes a thinker verify row."""
+        return super().verify_rows_take_logits_hooks(requests) or any(
+            thinker_length_penalty(sched_req) != 1.0 for sched_req in requests
+        )
 
     def eos_token_id_tensor(self, device: torch.device) -> torch.Tensor:
         """Keep the EOS ids on the logits device so indexing needs no H2D copy."""
@@ -171,13 +184,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                 seq.append(hidden_rows[-1].detach().clone())
 
     def after_speculative_step(
-        self, batch: ScheduleBatch, *, is_prefill: bool, num_draft_tokens: int
+        self,
+        batch: ScheduleBatch,
+        *,
+        is_prefill: bool,
+        num_draft_tokens: int,
+        verify_layout: RaggedVerifyLayout | None = None,
     ) -> None:
         """Queue each request's hidden rows for the tokens this step commits.
 
         A prefill commits one token, generated from the last prompt row. A chain
         verify commits the leading rows of a request's block, the rows plain decode
-        would have produced; emission trims the block to its committed tokens.
+        would have produced; emission trims the block to its committed tokens. A
+        compact verify packs each request's block at its own start row.
         """
         model = self.outer_model
         if not self.hands_hidden_to_talker:
@@ -200,40 +219,69 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
                     self.pending_hidden.setdefault(request.rid, []).extend(
                         hidden.unbind(0)
                     )
+                elif request.inflight_middle_chunks > 0:
+                    pass
                 else:
-                    self.speculative_hidden_queue[request.rid] = rows[index : index + 1]
+                    self.speculative_hidden_queue.setdefault(
+                        request.rid, deque()
+                    ).append(rows[index : index + 1])
                 start = end
         else:
             speaking = [
                 index
-                for index, req in enumerate(batch.reqs)
-                if should_generate_audio_output(req.omni_data.stage_payload.request)
+                for index, request in enumerate(batch.reqs)
+                if should_generate_audio_output(request.omni_data.stage_payload.request)
             ]
             if not speaking:
                 return
             else:
                 pass
-            block = model.speculative_hidden_rows[
-                : len(batch.reqs) * num_draft_tokens
-            ].clone()
+            hidden_rows = model.speculative_hidden_rows
+            if verify_layout is None:
+                starts = (
+                    torch.arange(len(batch.reqs), device=hidden_rows.device)
+                    * num_draft_tokens
+                )
+            else:
+                # note (0xtoward): the starts stay on the device; rows gathered past a request's
+                # own block are never emitted, since it commits at most the rows it verified.
+                starts = verify_layout.extend_start_loc[: len(batch.reqs)].to(
+                    torch.long
+                )
+            offsets = torch.arange(num_draft_tokens, device=hidden_rows.device)
+            rows_index = (starts[:, None] + offsets[None, :]).clamp_(
+                max=hidden_rows.shape[0] - 1
+            )
+            blocks = hidden_rows.index_select(0, rows_index.reshape(-1)).view(
+                len(batch.reqs), num_draft_tokens, -1
+            )
             for index in speaking:
-                start = index * num_draft_tokens
-                self.speculative_hidden_queue[batch.reqs[index].rid] = block[
-                    start : start + num_draft_tokens
-                ]
+                request = batch.reqs[index]
+                self.speculative_hidden_queue.setdefault(request.rid, deque()).append(
+                    blocks[index]
+                )
 
     def on_speculative_tokens(
         self, scheduler_request: SchedulerRequest, token_ids: list[int]
     ) -> None:
         """Append the queued rows of the committed tokens, which end at the stop."""
-        hidden = self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
-        if hidden is None:
+        queue = self.speculative_hidden_queue.get(scheduler_request.request_id)
+        rows = queue.popleft() if queue else None
+        if queue is not None and not queue:
+            self.speculative_hidden_queue.pop(scheduler_request.request_id, None)
+        else:
+            pass
+        if rows is None or not token_ids:
             return
         else:
             pass
-        seq = self.pending_hidden.setdefault(scheduler_request.request_id, [])
+        sequence = self.pending_hidden.setdefault(scheduler_request.request_id, [])
         # Row views would keep this step's whole block alive until the request ends.
-        seq.extend(hidden[: len(token_ids)].clone().unbind(0))
+        sequence.extend(rows[: len(token_ids)].clone().unbind(0))
+
+    def on_request_retracted(self, request_id: str) -> None:
+        """Drop queued speculative hidden rows when a request is retracted."""
+        self.speculative_hidden_queue.pop(request_id, None)
 
     def finalize_skip_rids(self, scheduler_output: SchedulerOutput) -> set[str]:
         """Do not advance generation state for non-final prefill chunks."""

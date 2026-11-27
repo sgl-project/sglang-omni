@@ -6,18 +6,32 @@ from __future__ import annotations
 import base64
 import binascii
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
+from sglang_omni.client.audio import (
+    MAX_AUDIO_OUTPUT_SAMPLE_RATE,
+    MIN_AUDIO_OUTPUT_SAMPLE_RATE,
+)
 from sglang_omni.client.types import UsageInfo
+from sglang_omni.scheduling.types import SpecTokensDetailsDict
+
+SpeechOutputSampleRate = Annotated[
+    int,
+    Field(
+        ge=MIN_AUDIO_OUTPUT_SAMPLE_RATE, le=MAX_AUDIO_OUTPUT_SAMPLE_RATE, strict=True
+    ),
+]
 
 
 class UsageResponse(BaseModel):
@@ -26,6 +40,45 @@ class UsageResponse(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+
+
+class SpecTokensDetails(BaseModel):
+    """Per-request speculative decoding statistics."""
+
+    spec_accept_rate: float | None = None
+    spec_accept_length: float
+    spec_num_correct_drafts: int
+    spec_num_proposed_drafts: int | None = None
+    spec_verify_ct: int
+    spec_correct_drafts_histogram: list[int]
+
+    @model_serializer(mode="wrap")
+    def drop_unknown_rate(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.spec_accept_rate is None:
+            data.pop("spec_accept_rate", None)
+            data.pop("spec_num_proposed_drafts", None)
+        else:
+            pass
+        return data
+
+
+class SglExt(BaseModel):
+    """Response-level extension fields outside the OpenAI schema."""
+
+    spec_tokens_details: SpecTokensDetails
+
+
+def build_sglext(
+    return_spec_tokens_details: bool,
+    spec_tokens_details: SpecTokensDetailsDict | None,
+) -> SglExt | None:
+    if return_spec_tokens_details and spec_tokens_details is not None:
+        return SglExt(spec_tokens_details=SpecTokensDetails(**spec_tokens_details))
+    else:
+        return None
 
 
 class ChatMessage(BaseModel):
@@ -137,6 +190,7 @@ class ChatCompletionRequest(BaseModel):
     talker_max_new_tokens: int | None = None
 
     # Misc
+    return_spec_tokens_details: bool = False
     request_id: str | None = None
     user: str | None = None
 
@@ -172,6 +226,18 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class ChatCompletionStreamDelta(BaseModel):
@@ -199,6 +265,7 @@ class ChatCompletionStreamResponse(BaseModel):
     model: str
     choices: list[ChatCompletionStreamChoice]
     usage: UsageResponse | None = None
+    sglext: SglExt | None = None
 
 
 class RolloutSamplingParams(BaseModel):
@@ -416,6 +483,7 @@ class CreateSpeechRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream: bool = False
     stream_format: Literal["audio", "sse"] = "audio"
@@ -444,9 +512,14 @@ class CreateSpeechRequest(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
 
     # Per-stage overrides (sglang-omni specific)
     stage_params: dict[str, dict[str, object]] | None = None
+
+    return_spec_tokens_details: bool = False
 
 
 class SpeechBatchItem(BaseModel):
@@ -461,6 +534,7 @@ class SpeechBatchItem(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: object = None
+    sample_rate: object = None
     speed: object = None
     stream: object = None
     task_type: object = None
@@ -482,6 +556,9 @@ class SpeechBatchItem(BaseModel):
     epsilon_cutoff: object = None
     repetition_penalty: object = None
     seed: object = None
+    prepend_silence: object = None
+    condition_buckets: object = None
+    condition_values: object = None
     stage_params: object = None
 
 
@@ -497,6 +574,7 @@ class CreateSpeechBatchRequest(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "wav"
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream: bool = False
     task_type: str | None = None
@@ -518,6 +596,9 @@ class CreateSpeechBatchRequest(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 
@@ -529,16 +610,30 @@ class SpeechBatchResult(BaseModel):
     audio_data: str | None = None
     format: str | None = None
     media_type: str | None = None
+    sample_rate: int | None = None
     finish_reason: str | None = None
+    text: str | None = None
     error: dict[str, object] | None = None
 
 
 class SpeechStreamOutcome(BaseModel):
-    """Terminal state of a finished raw PCM speech stream."""
+    """Terminal state of a finished speech audio stream."""
 
     request_id: str
     finish_reason: str
     usage: UsageInfo | None = None
+    sglext: SglExt | None = None
+
+    @model_serializer(mode="wrap")
+    def drop_unset_sglext(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        else:
+            pass
+        return data
 
 
 class SpeechBatchResponse(BaseModel):
@@ -562,6 +657,7 @@ class SpeechStreamSessionConfig(BaseModel):
         validation_alias=AliasChoices("voice", "speaker"),
     )
     response_format: str = "pcm"
+    sample_rate: SpeechOutputSampleRate | None = None
     speed: float = 1.0
     stream_audio: bool = False
     split_granularity: str = "sentence"
@@ -584,6 +680,9 @@ class SpeechStreamSessionConfig(BaseModel):
     epsilon_cutoff: float | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    prepend_silence: bool | None = None
+    condition_buckets: dict[str, int | None] | None = None
+    condition_values: dict[str, float | None] | None = None
     stage_params: dict[str, dict[str, object]] | None = None
 
 
@@ -622,6 +721,7 @@ class TranscriptionResponse(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionSegment(BaseModel):
@@ -643,6 +743,7 @@ class TranscriptionVerboseResponse(BaseModel):
     segments: list[TranscriptionSegment] = Field(default_factory=list)
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class TranscriptionTextDeltaEvent(BaseModel):
@@ -659,6 +760,7 @@ class TranscriptionTextDoneEvent(BaseModel):
     text: str
     usage: TranscriptionUsage | None = None
     finish_reason: str | None = None
+    sglext: SglExt | None = None
 
 
 class ModelPermission(BaseModel):

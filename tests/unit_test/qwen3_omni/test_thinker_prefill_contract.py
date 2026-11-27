@@ -14,9 +14,17 @@ pytest.importorskip("sglang")
 from sglang_omni.model_runner.model_worker import ModelWorker, PrefillCudaGraphUsage
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
 from sglang_omni.model_runner.thinker_model_runner import ThinkerModelRunner
+from sglang_omni.models.qwen3_omni.payload_types import Qwen3OmniPipelineState
+from sglang_omni.models.qwen3_omni.request_builders import (
+    QwenThinkerRequest,
+    build_sglang_thinker_request,
+)
 from sglang_omni.models.qwen3_omni.thinker_model_runner import (
     Qwen3OmniThinkerModelRunner,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.sglang_backend.prompt_hidden import PromptHiddenRequest
+from tests.unit_test.fixtures.qwen_fakes import make_thinker_config
 
 VOCAB = 64
 HIDDEN = 4
@@ -97,6 +105,45 @@ def make_batch(
         is_prefill_only=True,
     )
     return forward_batch, schedule_batch
+
+
+def admit_thinker_request(
+    state: Qwen3OmniPipelineState, *, capture_prompt_hidden_states: bool
+) -> QwenThinkerRequest:
+    """Build a thinker request and attach its data the way the scheduler admits one."""
+    request_data = build_sglang_thinker_request(
+        state,
+        params={"max_new_tokens": 8},
+        tokenizer=None,
+        vocab_size=VOCAB,
+        thinker_config=make_thinker_config(
+            image_token_id=IMAGE_ID,
+            video_token_id=VIDEO_ID,
+            audio_token_id=AUDIO_ID,
+            vision_start_token_id=54,
+            audio_start_token_id=55,
+        ),
+        capture_prompt_hidden_states=capture_prompt_hidden_states,
+        speaks=False,
+    )
+    request = request_data.req
+    assert isinstance(request, QwenThinkerRequest)
+    request.omni_data = request_data
+    OmniScheduler.normalize_req_token_arrays(request)
+    return request
+
+
+def prefill_input_embeds(
+    runner: Qwen3OmniThinkerModelRunner,
+    request: QwenThinkerRequest,
+    token_ids: array[int],
+) -> torch.Tensor:
+    """The embeddings the runner composes for one extend of the request over token_ids."""
+    forward_batch, schedule_batch = make_batch([request], [list(token_ids)])
+    runner.before_prefill(forward_batch, schedule_batch, [request])
+    prefill_inputs = get_omni_prefill_inputs(forward_batch)
+    assert prefill_inputs is not None, "the runner fell back from composing the prefill"
+    return prefill_inputs.input_embeds
 
 
 def test_custom_prefill_forward_records_eager_fallback(
@@ -813,3 +860,66 @@ def test_existing_official_embedding_fields_never_get_overwritten(
         runner.custom_prefill_forward(forward_batch, schedule_batch, [request])
         == "eager"
     )
+
+
+@pytest.mark.parametrize("capture_prompt_hidden_states", [False, True])
+def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows(
+    capture_prompt_hidden_states: bool,
+) -> None:
+    """A thinker request retracted between prefill chunks or during decode could not re-prefill its prompt with the audio rows it was built with."""
+    runner = make_runner()
+    audio_state = Qwen3OmniPipelineState(
+        prompt={"input_ids": torch.tensor([7, AUDIO_ID, AUDIO_ID, 8])},
+        thinker_inputs={
+            "model_inputs": {
+                "audio_embeds": torch.full((2, HIDDEN), 99.0),
+                "audio_feature_lengths": torch.tensor([13]),
+            },
+            "media_cache_keys": {"audio": "clip-0"},
+        },
+    )
+    fresh_request = admit_thinker_request(
+        audio_state, capture_prompt_hidden_states=capture_prompt_hidden_states
+    )
+    fresh_prompt_embeds = prefill_input_embeds(
+        runner, fresh_request, fresh_request.origin_input_ids
+    )
+    request = admit_thinker_request(
+        audio_state, capture_prompt_hidden_states=capture_prompt_hidden_states
+    )
+    assert isinstance(request, PromptHiddenRequest) is capture_prompt_hidden_states
+
+    request.inflight_middle_chunks = 1
+    prefill_input_embeds(runner, request, request.origin_input_ids[:2])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    assert torch.equal(
+        prefill_input_embeds(runner, request, request.full_untruncated_fill_ids),
+        fresh_prompt_embeds,
+    )
+
+    request.output_ids.extend([11, 12])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    reprefill_embeds = prefill_input_embeds(
+        runner, request, request.full_untruncated_fill_ids
+    )
+    assert torch.equal(
+        reprefill_embeds[: len(request.origin_input_ids)], fresh_prompt_embeds
+    )
+
+
+def test_a_retracted_text_request_keeps_no_multimodal_inputs() -> None:
+    """Retraction must leave a text-only thinker request without multimodal inputs, as its builder made it."""
+    request = admit_thinker_request(
+        Qwen3OmniPipelineState(
+            prompt={"input_ids": torch.tensor([7, 8, 9])},
+            thinker_inputs={"model_inputs": {}},
+        ),
+        capture_prompt_hidden_states=False,
+    )
+    request.output_ids.extend([11, 12])
+    request.reset_for_retract()
+    request.init_next_round_input()
+
+    assert request.omni_model_inputs is None

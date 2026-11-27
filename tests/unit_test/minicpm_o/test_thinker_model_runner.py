@@ -34,6 +34,8 @@ from sglang_omni.models.minicpm_o.native_config import (
 from sglang_omni.models.minicpm_o.native_thinker_model_runner import (
     MiniCPMOThinkerModelRunner as DuplexThinkerModelRunner,
 )
+from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
+from sglang_omni.models.minicpm_o.request_builders import build_sglang_thinker_request
 from sglang_omni.models.minicpm_o.session_adapters import ThinkerAdapter
 from sglang_omni.models.minicpm_o.special_tokens import (
     REQUIRED_SPECIAL_TOKENS,
@@ -54,10 +56,12 @@ from sglang_omni.proto.streams import (
     SESSION_CONTROL,
     TRUNCATE,
 )
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionPreparation
 from sglang_omni.scheduling.sglang_backend.request_data import (
     EmbeddingSpan,
     SGLangARRequestData,
+    ThinkerRequest,
 )
 
 EOS_TOKEN_IDS = [1, 3]
@@ -272,9 +276,15 @@ def committed_rows(runner: MiniCPMOThinkerModelRunner, request_id: str) -> torch
     return torch.stack(runner.pending_hidden[request_id])
 
 
-def speculative_request(request_id: str, *, speaks: bool = True) -> SimpleNamespace:
+def speculative_request(
+    request_id: str,
+    *,
+    speaks: bool = True,
+    inflight_middle_chunks: int = 0,
+) -> SimpleNamespace:
     return SimpleNamespace(
         rid=request_id,
+        inflight_middle_chunks=inflight_middle_chunks,
         omni_data=SimpleNamespace(
             stage_payload=SimpleNamespace(
                 data={},
@@ -313,10 +323,94 @@ def test_committed_verify_tokens_take_the_leading_rows_of_their_request_block() 
     ), "a request with no committed tokens gets no rows"
 
 
+def test_a_compact_verify_hands_each_request_its_packed_rows() -> None:
+    num_draft_tokens = 4
+    # Requests a and b verified 2 and 3 rows, packed back to back and padded to a tier of 8.
+    packed = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
+    hidden_rows = torch.zeros(16, 2)
+    hidden_rows[:8] = packed
+    runner = speculative_runner(hidden_rows, None)
+    layout = SimpleNamespace(
+        extend_start_loc=torch.tensor([0, 2], dtype=torch.int32),
+        verify_lens=torch.tensor([2, 3], dtype=torch.int32),
+    )
+    batch = SimpleNamespace(reqs=[speculative_request(rid) for rid in "ab"])
+
+    runner.after_speculative_step(
+        batch,
+        is_prefill=False,
+        num_draft_tokens=num_draft_tokens,
+        verify_layout=layout,
+    )
+    hidden_rows.zero_()
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID])
+
+    torch.testing.assert_close(committed_rows(runner, "b"), packed[2:4])
+    torch.testing.assert_close(committed_rows(runner, "a"), packed[0:1])
+
+
+@pytest.mark.parametrize(
+    ("length_penalty", "suppress_tokens", "takes_logits_hooks"),
+    [(1.0, None, False), (2.0, None, True), (1.0, [2], True)],
+)
+def test_only_a_length_penalty_or_a_suppress_set_takes_the_verify_hooks(
+    length_penalty: float, suppress_tokens: list[int] | None, takes_logits_hooks: bool
+) -> None:
+    request = verify_request(length_penalty, suppress_tokens)
+
+    assert bare_runner().verify_rows_take_logits_hooks([request]) is takes_logits_hooks
+
+
+def test_overlapped_steps_and_retraction_keep_speculative_hidden_fifo_aligned() -> None:
+    """Overlapped speculative steps queue per-request blocks in FIFO order and drop unconsumed blocks on retraction."""
+    assert MiniCPMOThinkerModelRunner.supports_speculative_async_decode is True
+    num_draft_tokens = 3
+    first_step_rows = torch.arange(
+        2 * num_draft_tokens * 2, dtype=torch.float32
+    ).reshape(-1, 2)
+    second_step_rows = first_step_rows + 100.0
+    hidden_rows = torch.zeros(16, 2)
+    runner = speculative_runner(hidden_rows, None)
+    batch = SimpleNamespace(reqs=[speculative_request("a"), speculative_request("b")])
+
+    for step_rows in (first_step_rows, second_step_rows):
+        hidden_rows[: len(step_rows)] = step_rows
+        runner.after_speculative_step(
+            batch, is_prefill=False, num_draft_tokens=num_draft_tokens
+        )
+    hidden_rows.zero_()
+
+    runner.on_speculative_tokens(
+        SimpleNamespace(request_id="a"), [PLAIN_TOKEN_ID, OTHER_TOKEN_ID]
+    )
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [PLAIN_TOKEN_ID])
+    runner.on_request_retracted("b")
+    runner.on_speculative_tokens(SimpleNamespace(request_id="a"), [THIRD_TOKEN_ID])
+    runner.on_speculative_tokens(SimpleNamespace(request_id="b"), [OTHER_TOKEN_ID])
+
+    torch.testing.assert_close(
+        committed_rows(runner, "a"),
+        torch.cat([first_step_rows[0:2], second_step_rows[0:1]], dim=0),
+    )
+    torch.testing.assert_close(committed_rows(runner, "b"), first_step_rows[3:4])
+    assert not runner.speculative_hidden_queue
+
+
 def test_prefill_commits_the_last_prompt_row_of_each_request() -> None:
     extend_lens = [2, 3]
     prefill_hidden_rows = torch.arange(16 * 2, dtype=torch.float32).reshape(16, 2)
     runner = speculative_runner(torch.zeros(16, 2), prefill_hidden_rows)
+    runner.after_speculative_step(
+        SimpleNamespace(
+            reqs=[speculative_request("a", inflight_middle_chunks=1)], extend_lens=[2]
+        ),
+        is_prefill=True,
+        num_draft_tokens=4,
+    )
+    assert not runner.speculative_hidden_queue
     batch = SimpleNamespace(
         reqs=[speculative_request(request_id) for request_id in ("a", "b")],
         extend_lens=extend_lens,
@@ -389,9 +483,79 @@ def test_speculative_known_text_keeps_prefill_rows_across_chunks(
     assert request.rid not in runner.speculative_hidden_queue
 
 
-@pytest.mark.parametrize("mode", ["compact", "cap-accept"])
-def test_thinker_rejects_nonstatic_verify_before_model_loading(
-    monkeypatch: pytest.MonkeyPatch, mode: str
+def admitted_thinker_request(state: MiniCPMOPipelineState) -> ThinkerRequest:
+    """Build a thinker request and attach its data the way the scheduler admits one."""
+    request_data = build_sglang_thinker_request(
+        state, params={"max_new_tokens": 8}, tokenizer=None, vocab_size=VOCAB_SIZE
+    )
+    request = request_data.req
+    request.omni_data = request_data
+    OmniScheduler.normalize_req_token_arrays(request)
+    return request
+
+
+def prefill_input_embeds(
+    runner: MiniCPMOThinkerModelRunner, request: ThinkerRequest, token_ids: list[int]
+) -> torch.Tensor:
+    """The embeddings the runner composes for one extend of the request over token_ids."""
+    forward_batch = SimpleNamespace(
+        input_ids=torch.tensor(token_ids, dtype=torch.long),
+        extend_seq_lens_cpu=[len(token_ids)],
+        extend_prefix_lens_cpu=[0],
+    )
+    composed = runner.inject_multimodal_embeds(
+        forward_batch, SimpleNamespace(reqs=[request])
+    )
+    assert composed is not None, "the extend composed no multimodal rows"
+    return composed[0]
+
+
+def test_a_retracted_request_reprefills_its_prompt_with_its_audio_rows() -> None:
+    """A thinker request retracted after its prompt prefill re-prefilled its audio placeholders as token ids, which stopped the thinker on an out-of-range embedding index."""
+    runner = object.__new__(MiniCPMOThinkerModelRunner)
+    torch.manual_seed(0)
+    runner.embed_tokens = torch.nn.Embedding(VOCAB_SIZE, 4)
+    runner.image_token_id, runner.video_token_id, runner.audio_token_id = 90, 91, 92
+    audio_state = MiniCPMOPipelineState(
+        prompt={"input_ids": torch.tensor([10, 92, 92, 11])},
+        mm_inputs={"audio": {"bounds": torch.tensor([[1, 3]]), "cache_key": "clip-0"}},
+        thinker_inputs={"model_inputs": {"audio_embeds": torch.full((2, 4), 99.0)}},
+    )
+    fresh_request = admitted_thinker_request(audio_state)
+    fresh_prompt_embeds = prefill_input_embeds(
+        runner, fresh_request, list(fresh_request.origin_input_ids)
+    )
+    request = admitted_thinker_request(audio_state)
+
+    request.inflight_middle_chunks = 1
+    prefill_input_embeds(runner, request, list(request.origin_input_ids[:2]))
+    request.reset_for_retract()
+    request.init_next_round_input()
+    assert torch.equal(
+        prefill_input_embeds(runner, request, list(request.full_untruncated_fill_ids)),
+        fresh_prompt_embeds,
+    )
+
+    request.output_ids.extend([PLAIN_TOKEN_ID, OTHER_TOKEN_ID])
+    request.reset_for_retract()
+    request.init_next_round_input()
+    reprefill_embeds = prefill_input_embeds(
+        runner, request, list(request.full_untruncated_fill_ids)
+    )
+    assert torch.equal(
+        reprefill_embeds[: len(request.origin_input_ids)], fresh_prompt_embeds
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "error", "message"),
+    [
+        ("compact", AssertionError, "reached model loading"),
+        ("cap-accept", ValueError, "requires static or compact verify"),
+    ],
+)
+def test_thinker_admits_only_static_and_compact_verify_before_model_loading(
+    monkeypatch: pytest.MonkeyPatch, mode: str, error: type[Exception], message: str
 ) -> None:
     server_args = SimpleNamespace(
         disable_cuda_graph=False, speculative_algorithm="DSPARK"
@@ -401,12 +565,68 @@ def test_thinker_rejects_nonstatic_verify_before_model_loading(
     )
     monkeypatch.setattr(
         "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
-        Mock(side_effect=AssertionError("unsupported verify reached model loading")),
+        Mock(side_effect=AssertionError("verify reached model loading")),
     )
 
     with envs.SGLANG_RAGGED_VERIFY_MODE.override(mode):
-        with pytest.raises(ValueError, match="requires static verify"):
+        with pytest.raises(error, match=message):
             bootstrap_module.create_thinker_scheduler(server_args)
+
+
+@pytest.mark.parametrize(
+    ("algorithm", "is_cuda", "penalty_owner"),
+    [
+        ("DSPARK", True, "verify_logits"),
+        ("DFLASH", True, "verify_logits"),
+        ("EAGLE3", True, None),
+        ("DSPARK", False, None),
+        (None, True, None),
+    ],
+)
+def test_linear_drafts_apply_repetition_penalty_in_verify_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str | None,
+    is_cuda: bool,
+    penalty_owner: str | None,
+) -> None:
+    server_args = SimpleNamespace(
+        disable_cuda_graph=True,
+        speculative_algorithm=algorithm,
+        speculative_eagle_topk=1,
+    )
+    model_config = SimpleNamespace(model_path="model", vocab_size=8)
+    monkeypatch.setattr(
+        "sglang.srt.arg_groups.model_override_base.resolved_view", lambda value: value
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.bootstrap.create_sglang_infrastructure",
+        Mock(return_value=(Mock(), None, None, None, model_config)),
+    )
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.get_tokenizer",
+        Mock(return_value=Mock(convert_tokens_to_ids=Mock(return_value=1))),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.thinker_model_runner.MiniCPMOThinkerModelRunner",
+        lambda *args: SimpleNamespace(
+            speculative_repetition_penalty_owner=None, reset_request=None
+        ),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.models.minicpm_o.request_builders.make_thinker_scheduler_adapters",
+        Mock(return_value=(None, None)),
+    )
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler.OmniScheduler",
+        lambda **kwargs: kwargs["model_runner"],
+    )
+    monkeypatch.setattr(
+        bootstrap_module, "current_platform", SimpleNamespace(is_cuda=lambda: is_cuda)
+    )
+
+    with envs.SGLANG_RAGGED_VERIFY_MODE.override("static"):
+        model_runner = bootstrap_module.create_thinker_scheduler(server_args)
+    assert model_runner.speculative_repetition_penalty_owner == penalty_owner
 
 
 @pytest.mark.parametrize(

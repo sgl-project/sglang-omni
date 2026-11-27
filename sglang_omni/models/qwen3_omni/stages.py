@@ -1283,8 +1283,6 @@ def create_sglang_thinker_executor_from_config(
         chunked_prefill_size=8192,
         sampling_backend="flashinfer" if current_platform.is_cuda() else "pytorch",
         cuda_graph_backend_prefill=prefill_graph_backend,
-        # note (Yuhao): a full prefix-cache hit leaves one prompt token, which bucket 4 pads past the replay limit.
-        prefill_extra_token_buckets=(1,),
     )
     overrides["tp_size"] = tp_size
     if execution_mode == "session":
@@ -1317,13 +1315,14 @@ def create_sglang_thinker_executor_from_config(
             raise ValueError(
                 "speculative thinker decoding needs enable_mixed_chunk off"
             )
-        elif speech_enabled:
+        elif speech_enabled and execution_mode == "request":
             # note (wilsonzheng0327): with speech output the thinker captures the
             # talker's accept layer through the same layers_to_capture a draft sets,
             # and sets it after the draft is built, so the draft would read the wrong
             # hidden states. The speculative prefill also skips post_prefill, which
             # stores the talker's multimodal prompt rows. Lifting this needs both
             # captures side by side and the rows stored on the speculative prefill.
+            # note (evanderfan): a session thinker neither captures the talker's layer nor stores prompt rows; it streams only token ids to the talker.
             raise ValueError(
                 "speculative thinker decoding does not support speech output yet; "
                 "serve the thinker with --text-only"
@@ -1485,7 +1484,6 @@ def create_talker_ar_executor_from_config(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
-    enable_talker_start_topology: bool = False,
     code2wav_in_process: bool = False,
     codec_coalesce_frames: int = 0,
     codec_coalesce_first_frames: int = 0,
@@ -1580,7 +1578,6 @@ def create_talker_ar_executor_from_config(
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
-        enable_talker_start_topology=enable_talker_start_topology,
         code2wav_in_process=code2wav_in_process,
         operator_selected_prefill_backend=operator_selected_prefill_backend(
             server_args_overrides

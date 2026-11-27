@@ -26,13 +26,18 @@ env:
         && inputs.omni_ci_home
         || format('/data/omni-ci/run-{0}', github.run_id) }}
 
-# Invoked by omni-ci.yaml after every other selected suite, because this job
-# checks out the PR head and may rebuild the shared PR home (see the DAG note in
-# omni-ci.yaml). Restores omni only.
+# Invoked by omni-ci.yaml when MPS is selected. omni-setup may rebuild the
+# shared OMNI_CI_HOME if environment validation fails. Restores omni only.
+# These tests do not consume one another's results. A shared per-run concurrency
+# group serializes MPS use; the queued execution order is unspecified.
 
 jobs:
   stage-1-mps-nonstream:
     name: stage 1 - MPS non-streaming
+    concurrency: &mps_serial
+      group: omni-mps-${{ github.run_id }}
+      cancel-in-progress: false
+      queue: max
     runs-on: [self-hosted, h100]
     timeout-minutes: 25
     container:
@@ -133,7 +138,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tts-stage-mps-nonstream-evidence
+          name: tts-stage-mps-nonstream-evidence-attempt-${{ github.run_attempt }}
           # Evidence only: the canonical directory also holds 1088 generated
           # wavs, which the TTS stages likewise never upload.
           path: |
@@ -144,7 +149,6 @@ jobs:
             ${{ env.TTS_MPS_OUTPUT_ROOT }}/raw/**
           if-no-files-found: error
           retention-days: 7
-          overwrite: true
 
       - name: Remove TTS MPS run outputs
         if: always()
@@ -156,8 +160,7 @@ jobs:
 
   stage-2-native-mps:
     name: stage 2 - native MPS lifecycle
-    needs: stage-1-mps-nonstream
-    if: always() && !cancelled()
+    concurrency: *mps_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 120
     container:
@@ -214,7 +217,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-mps-lifecycle-evidence
+          name: native-mps-lifecycle-evidence-attempt-${{ github.run_attempt }}
           path: test-results/native-mps/**
           if-no-files-found: warn
           retention-days: 7
@@ -227,8 +230,7 @@ jobs:
 
   stage-3-native-weight-share:
     name: stage 3 - native weight-sharing lifecycle
-    needs: stage-2-native-mps
-    if: always() && !cancelled()
+    concurrency: *mps_serial
     runs-on: [self-hosted, h100]
     timeout-minutes: 120
     container:
@@ -287,7 +289,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-weight-share-lifecycle-evidence
+          name: native-weight-share-lifecycle-evidence-attempt-${{ github.run_attempt }}
           path: test-results/native-weight-share/**
           if-no-files-found: warn
           retention-days: 7

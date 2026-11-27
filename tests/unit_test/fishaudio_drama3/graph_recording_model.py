@@ -21,7 +21,10 @@ from sglang_omni.models.fishaudio_drama3.first_frame_graphs import (
     FirstFrameInputs,
 )
 from sglang_omni.models.fishaudio_drama3.hf_config import FishOmniConfig
-from sglang_omni.models.fishaudio_drama3.sampling import RAS_WINDOW_FRAMES
+from sglang_omni.models.fishaudio_drama3.sampling import (
+    EMPTY_RAS_SLOT,
+    RAS_WINDOW_FRAMES,
+)
 from sglang_omni.models.fishaudio_drama3.sampling_kernels import CodebookSampler
 from sglang_omni.models.fishaudio_drama3.sglang_model import (
     Drama3ForCausalLM,
@@ -39,9 +42,11 @@ from tests.unit_test.fishaudio_drama3.graph_fixtures import LeanChoice
 @dataclass(frozen=True, kw_only=True)
 class RecordingBuffers:
     """One row per request: the eos logit the runner stages, then copies of what
-    the forward read and sampled."""
+    the forward read and sampled; and whether the runner empties the RAS windows
+    a decode reads."""
 
     end_of_speech_logits: torch.Tensor
+    empties_ras_windows: torch.Tensor
     frames: torch.Tensor
     ras_windows: torch.Tensor
     temperature: torch.Tensor
@@ -248,6 +253,7 @@ class GraphRecordingModel(Drama3ForCausalLM):
         decoder_config = self.config.audio_decoder_config
         recording_buffers = RecordingBuffers(
             end_of_speech_logits=torch.zeros(row_count, device=device),
+            empties_ras_windows=torch.zeros((), dtype=torch.bool, device=device),
             frames=torch.zeros(
                 (row_count, 1 + decoder_config.num_codebooks),
                 dtype=torch.int64,
@@ -287,6 +293,16 @@ class GraphRecordingModel(Drama3ForCausalLM):
         recording_buffers = self.recording_buffers
         assert recording_buffers is not None
         recording_buffers.head_logits[: logits.shape[0], head_index].copy_(logits)
+
+    def stage_decode_rows(self, request_slots: torch.Tensor) -> None:
+        """Empty the gathered RAS windows when the runner asks, inside any graph."""
+        super().stage_decode_rows(request_slots)
+        recording_buffers = self.recording_buffers
+        decode_buffers = self.decode_buffers
+        assert recording_buffers is not None and decode_buffers is not None
+        decode_buffers.ras_windows[: request_slots.shape[0]].masked_fill_(
+            recording_buffers.empties_ras_windows, EMPTY_RAS_SLOT
+        )
 
     @torch.no_grad()
     def forward(

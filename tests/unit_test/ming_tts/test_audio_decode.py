@@ -206,7 +206,9 @@ def make_scripted_runner(
     runner.terminal_mask = torch.empty(2, dtype=torch.bool)
     runner.host_waveform = torch.empty((2, 4), dtype=torch.float32)
     runner.host_sample_lengths = torch.empty(2, dtype=torch.long)
+    transition.stream = stream
     monkeypatch.setattr(torch.cuda, "device", lambda _device: nullcontext())
+    monkeypatch.setattr(torch.cuda, "stream", lambda _stream: nullcontext())
     monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: stream)
     return runner, transition, graph, stream
 
@@ -809,6 +811,40 @@ def test_eager_streaming_runner_decodes_on_the_platform_accelerator() -> None:
 
     assert waveform.numel() > 0
     assert torch.isfinite(waveform).all()
+
+
+@pytest.mark.accelerator
+def test_private_stream_is_ordered_after_the_state_written_at_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An eager decode on the private stream must not read the state bank before
+    the caller's stream has finished zeroing it."""
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    else:
+        pass
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        decoder = make_tiny_audio_vae().decoder.to(device="cuda", dtype=torch.bfloat16)
+    torch.cuda.synchronize()
+    real_cache = audio_decode_module.Cache
+
+    def cache_behind_busy_caller_stream(*args: Any, **kwargs: Any) -> Any:
+        # Runs after the private stream exists, whose creation blocks the host.
+        torch.cuda._sleep(2_000_000_000)  # noqa: leading-underscore  # torch API
+        return real_cache(*args, **kwargs)
+
+    monkeypatch.setattr(audio_decode_module, "Cache", cache_behind_busy_caller_stream)
+    transition = AudioVAEFixedStreamingTransition(
+        decoder, capacity=1, max_step_latents=4
+    )
+    caller_done = torch.cuda.current_stream().record_event()
+    private_done = transition.stream.record_event()
+    try:
+        assert not caller_done.query()
+        assert not private_done.query()
+    finally:
+        torch.cuda.synchronize()
 
 
 def test_eager_streaming_runner_decodes_a_cpu_decoder() -> None:

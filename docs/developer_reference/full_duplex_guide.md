@@ -1,20 +1,42 @@
 # Full-Duplex Guide
 
-This page consolidates three parts of the SGLang-Omni developer reference on real-time voice conversation, covering three layers: how the system works (the Full Duplex Interactive Model), how to benchmark it (the Full-Duplex-Bench runbook), and how to interpret the benchmark numbers (the v1.0 unified metrics). Together they form the complete chain: **Service → Measurement → Interpretation**.
+SGLang-Omni serves live voice conversations on `/v1/realtime` with three interaction strategies. This page takes each one end to end: how to install it, how to launch it, how to talk to it, and how to benchmark it on dyadic (Full-Duplex-Bench) and multi-party (Duplex-MPE) conversations. The reference sections at the end hold the metric definitions, the cascade configuration and the Session graph that all three run on.
 
-This page covers full-duplex serving and benchmarking in SGLang-Omni in three parts: the [Full Duplex Interactive Model](#full-duplex-interactive-model), the [Full-Duplex-Bench runbook](#full-duplex-bench-runbook), and the [v1.0 unified metrics](#full-duplex-bench-v10-unified-metrics) specification.
+## Choose a Strategy
 
-## Full Duplex Interactive Model
+| Strategy | How the conversation works | Reference system | GPUs | Launch | Benchmark `ENGINE` | CI label |
+| --- | --- | --- | --- | --- | --- | --- |
+| Native full duplex | One model listens and speaks at the same time and decides itself when to talk | MiniCPM-o 4.5; also PersonaPlex and Nemotron VoiceChat | 1 | [MiniCPM-o](#native-full-duplex-minicpm-o) | `minicpmo` (default) | `run-native-duplex` |
+| Turn-based | One omni model answers each user turn; the server's VAD ends the turn, and speaking over a reply interrupts it | Qwen3-Omni-30B-A3B-Instruct | 2 H100 or 1 H200 | [Qwen3-Omni](#turn-based-qwen3-omni) | `qwen3-omni` | `run-turn-based-duplex` |
+| Cascaded | Separate ASR, LLM and TTS services, composed by the server with VAD, conversation history, turn taking and interruption | Qwen3-ASR-1.7B, Inkling-2-Mini and Qwen3-TTS-12Hz-1.7B-Base | 1 or 2, by profile | [Streaming cascade](#streaming-cascade) | `cascade` | `run-cascaded-duplex` |
 
+All three run as a [Session](#session-graph) on the server and speak the same realtime protocol, so one browser demo, one client and one benchmark cover them all. `GET /v1/realtime/capabilities` says which strategy a server runs: a native server answers `"native_full_duplex":true`, a turn-based server or cascade `"interaction":"turn_based"`.
 
-SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A native full-duplex model such as MiniCPM-o 4.5 listens and speaks at the same time and decides itself when to talk. The streaming cascade composes independent speech recognition, language model and speech synthesis services into a turn-based conversation, and the server adds voice activity detection, the conversation history, turn taking and interruption. Both run as a Session on the server, a stateful conversation described under [Session Graph](#session-graph).
+## Install
 
-| Model | Interaction | Launch |
+Install SGLang-Omni [from source](../get_started/installation.md#from-source), or use the Docker image with a clone of the repository: the browser demos (`playground/`), the cascade profiles and session configs (`examples/`) and the benchmark (`benchmarks/`) are in the repository, not in the wheel. Run every command on this page from the repository root.
+
+Then add what the strategy needs:
+
+| Strategy | Extra packages | Checkpoints |
 | --- | --- | --- |
-| MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
-| PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
-| Nemotron VoiceChat | Native full duplex, audio input | [Native Full Duplex: Nemotron VoiceChat](#native-full-duplex-nemotron-voicechat) |
-| Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
+| Native: MiniCPM-o | `uv pip install onnx einops` (the `minicpm-o` extra) | `hf download openbmb/MiniCPM-o-4_5` |
+| Native: PersonaPlex | `pyloudnorm`, only for recorded voice prompts | `hf download nvidia/personaplex-7b-v1` (gated: accept the license and `hf auth login` first) |
+| Native: Nemotron VoiceChat | None | `hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B` (the tokenizer comes from `nvidia/NVIDIA-Nemotron-Nano-9B-v2`; see [Nemotron VoiceChat](../cookbook/nemotron_voicechat.md)) |
+| Turn-based: Qwen3-Omni | None | `hf download Qwen/Qwen3-Omni-30B-A3B-Instruct` |
+| Cascaded | `uv pip install websockets httpx`, the dependencies of [Qwen3-ASR](../cookbook/qwen3_asr.md) and [Qwen3-TTS](../cookbook/qwen3_tts.md), and a separate venv for the {ref}`forced-alignment worker <the-forced-alignment-worker>` | The profile's models; see [Streaming Cascade](#streaming-cascade) |
+
+The benchmark installs its own models, datasets and scoring venv with `python -m benchmarks.duplex.fdb setup`; see [Setup](#setup). Its serving venv gets only the `minicpm-o` extra, so the Cascaded row above is still required before benchmarking the cascade.
+
+## Launch
+
+Each strategy is one `serve` command with `--enable-realtime`, which mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`. A server is ready when the capabilities endpoint answers:
+
+```bash
+curl --fail http://localhost:8000/v1/realtime/capabilities
+```
+
+A session server accepts only realtime sessions; serve the model's default pipeline for chat completions, `/generate` or offline recordings.
 
 ### Native Full Duplex: MiniCPM-o
 
@@ -71,76 +93,8 @@ curl --fail http://localhost:8000/v1/realtime/capabilities
 The results should be as follows:
 
 ```json
-{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":true,"supports_cancel":true,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60,"idle_timeout_s":300}}#
+{"model":"openbmb/MiniCPM-o-4_5","interaction":"native","native_full_duplex":true,"proactive_output":false,"turn_control":[null],"client_commit":false,"input_modalities":["audio","image"],"output_modalities":["audio","text"],"input_audio_format":{"type":"audio/pcm","rate":16000},"output_audio_format":{"type":"audio/pcm","rate":24000},"native_unit_ms":1000,"first_unit_ms":1000,"microturn_ms":"variable","tail_policy":"pad","supports_server_interrupt":false,"supports_truncate":true,"supports_cancel":true,"supports_resume":false,"partial_style":"append_only","pressure_policy":"reject","strict_order":true,"sampling_parameters":["greedy","temperature","top_k","top_p","repetition_penalty","listen_prob_scale","force_listen_count","max_new_tokens_per_unit","repetition_window_size","talker_temperature","talker_repetition_penalty"],"supports_reference_audio":true,"supports_instruction_updates":false,"supports_sampling_updates":false,"skips_screen_blocks":false,"input_image_format":{"types":["image/jpeg","image/png"],"max_bytes":524288,"max_frames_per_unit":4,"max_slice_nums":9},"limits":{"max_input_bytes":1920000,"max_output_bytes":33554432,"max_history_chars":65536,"cleanup_timeout_s":30,"session_update_timeout_s":60,"idle_timeout_s":300}}#
 ```
-
-The duplex server only accepts `/v1/realtime` requests; other chat completions or voice cloning against it fail.
-
-(browser-demo)=
-
-**Browser demo**
-
-
-With the full-duplex server running, start the demo page in another terminal:
-
-```bash
-python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080
-```
-
-Thanks to the OpenMoss team for the demo page.
-
-Once the terminal prints `Running on`, open <http://localhost:8080> and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine. Open the page through `localhost`, or the browser will not grant microphone access.
-
-The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
-
-The stop button in the call dock follows `supports_cancel` from `session.updated`. Where it is granted, as on MiniCPM-o, the Qwen3-Omni session graph and the cascade, the button sends `response.cancel`, shows Stopping until the server's `response.done` for the reply arrives, and Stopped when that status is `cancelled`. A reply that ended on its own in the meantime shows no stop. This page sends no `conversation.item.truncate`, so a turn-based history keeps what the server delivered. Where it is not granted, as on PersonaPlex and Nemotron VoiceChat, the button is labelled as a local mute: it sends nothing and the reply is not cancelled on the server. In both cases the page then plays no model audio, under any response id, until you speak again: on a turn-based deployment the server's `input_audio_buffer.speech_started` lifts the mute, on a native one the microphone's own level does, since a stopped model may continue its answer under a new response and a new response id alone is no proof of a new answer. Speaking over the model is left to the model on a native deployment.
-
-An empty field falls back to the deployment's default, which lives here:
-
-| Backend | Sampling | Turn detection and voice |
-| --- | --- | --- |
-| MiniCPM-o | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py`; `--sampling.<field>` changes one | No turn detection. The voice is the deployment's `reference_audio` |
-| PersonaPlex | `PersonaPlexSessionSampling` in `sglang_omni/models/personaplex/config.py` (`--sampling.<field>`); a field left unset there keeps the offline value in `sglang_omni/models/personaplex/architecture.py` and `request_builders.py` | No turn detection. Voice `NATF2` unless the deployment sets `voice` |
-| Qwen3-Omni | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; the deployment has no override, only a session changes them | `silence_duration_ms` 800 from the `vad` stage in `sglang_omni/models/vad/node.py`; `--vad.factory.silence_duration_ms` changes it |
-| Streaming cascade | The profile's node options; `--session_nodes.llm.<option>` changes one. `max_tokens` is 512 in the bundled profiles, and a `temperature` the profile leaves unset is not sent, so the chat service applies its own | The `vad` stage as above unless the profile sets it: `qwen3-asr-qwen3-tts-base-clone` runs it at 160 ms as Smart Turn's candidate pause, so picking server VAD in the panel prefills 800 ms. `eagerness` `medium` from `sglang_omni/models/turn_detection/node.py`; `--turn_detection.factory.eagerness` changes it |
-
-
-(full-duplex-protocol)=
-
-**Full-duplex protocol**
-
-
-Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 audio in `input_audio_buffer.append`; the server returns 24 kHz audio in `response.output_audio.delta` and text in `response.output_audio_transcript.delta`. The model decides once per second of audio whether to keep listening or to speak.
-
-1. After `session.created`, send `session.update` and wait for `session.updated`.
-2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
-3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
-
-When the session ends, the server closes the WebSocket with one of these codes:
-
-| Close code | Meaning | Close reason |
-|---|---|---|
-| `1000` | Normal close | `client_closed`, `disconnect` |
-| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
-| `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
-
-If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
-
-For a Python client, see `warmup` in `playground/realtime/app.py`.
-
-Session settings go in the `sglang` field of `session.update`, before the first audio packet, and stay fixed for the session:
-
-| Setting | Field | Notes |
-|---|---|---|
-| Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
-| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
-| Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
-
-Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
-
-`response.cancel` ends the reply in progress: the turn ends, the server drops the audio of that reply it has not sent yet, and `response.done` arrives with status `cancelled` and reason `interrupted` about one second later, once the unit that was running completes. The unit the client did not receive is dropped from the session history, and the thinker then listens on every unit until the user speaks again, so the model does not resume the stopped answer. A cancel with no reply in progress, or a second cancel of the same reply, does nothing. `conversation.item.truncate` with `audio_end_ms` cuts a reply the client stopped, or one the model ended, at the last unit whose audio fully played, never past what the client received.
-
-[Full-Duplex-Bench](#what-is-measured) measures a native full-duplex deployment.
 
 ### Native Full Duplex: PersonaPlex
 
@@ -170,7 +124,7 @@ The full-duplex server is ready when this returns JSON containing `"native_full_
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
-The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+The protocol follows the {ref}`MiniCPM-o steps <full-duplex-protocol>`, with these differences:
 
 | Setting | Field | Notes |
 |---|---|---|
@@ -205,7 +159,7 @@ The full-duplex server is ready when this returns JSON containing `"native_full_
 curl --fail http://localhost:8000/v1/realtime/capabilities
 ```
 
-The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+The protocol follows the {ref}`MiniCPM-o steps <full-duplex-protocol>`, with these differences:
 
 | Setting | Field | Notes |
 |---|---|---|
@@ -214,22 +168,74 @@ The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these di
 
 The whole session is one response, and every unit brings 80 ms of agent audio, silent while the model listens. The session variant only accepts `/v1/realtime` requests; use the default pipeline for offline recordings.
 
-### Streaming Cascade
+### Turn-Based: Qwen3-Omni
 
-A profile names the services the cascade calls; one command starts them and the cascade, and the conversation is served on `/v1/realtime` and `/v1/session`.
+[Qwen3-Omni-30B-A3B-Instruct](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct) is served as a turn-based voice assistant by its Session graph: a VAD node ends the user's turn, a `dialog` node turns the audio of that turn into one user message, and the model answers it with the conversation so far. It does not listen while it speaks; speech that starts during a reply, or a `response.cancel`, stops the reply. [Qwen3-Omni](../cookbook/qwen3_omni.md) covers its installation and offline usage.
 
-(prerequisites)=
-
-**Prerequisites**
-
-
-Install `sglang-omni` by following [Installation](../get_started/installation.md), then install the network clients the nodes use:
+On two H100s:
 
 ```bash
-python -m pip install websockets httpx
+sgl-omni serve --config examples/qwen3_omni/session_h100.yaml --enable-realtime --port 8000
 ```
 
-The profile `qwen3-asr-qwen3-tts-base-clone` runs three Qwen models on one GPU: [Qwen3-ASR](../cookbook/qwen3_asr.md) for recognition, Qwen3-4B for the answers and [Qwen3-TTS](../cookbook/qwen3_tts.md) Base speaking in a voice cloned from `reference_zh.wav` in the profile's directory, with Qwen3-ForcedAligner finding where each word of the reply ends in its audio and [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) deciding when the user has finished speaking. Install the two speech models' dependencies as their cookbooks say, then download the checkpoints (all public, no token):
+On one H200, use `examples/qwen3_omni/session_h200.yaml`. The config file sets what depends on the device: the GPU and memory fraction of each stage, and `max_sessions`. A session keeps up to the thinker's `max_seq_len` (32768) tokens of KV, so `max_sessions` is the thinker's KV pool, which the thinker logs at startup as `KV Cache is allocated. ... #tokens`, divided by 32768: 16 on one H200. The H100 file holds only 83,502 tokens and sets 4 for short conversations such as Full-Duplex-Bench's; pass `--max_sessions 2` for full-length conversations. On another device, write a config with both for that device; colocated stages require explicit memory fractions.
+
+The server is ready when the capabilities contain `"interaction":"turn_based"`.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `--vad.factory.silence_duration_ms` | 800 | Silence that ends a user turn |
+| `max_utterance_seconds` | 60 | Audio of one utterance; a client past it ends its session |
+| `max_queued_turns` | 8 | Finished utterances waiting behind the turn being answered; a client past it ends its session |
+| `max_utterance_frames` | 4 | The newest camera frames that go to the model with a turn; each costs thinker context for the rest of the session |
+| Sampling | Greedy thinker, `max_new_tokens` 2048 per turn; the talker from the checkpoint's `generation_config.json` (`talker_temperature` 0.9, `talker_top_k` 50, `talker_top_p` 1.0, `talker_repetition_penalty` 1.05, `talker_max_new_tokens` 4096) | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; only a session changes it |
+
+The thinker and talker keep each session's KV, and its request row, between units, so a prefill batch admits the next unit of every waiting session, not only as many as there are free rows. `--thinker.factory.continuation_aware_admission false` and `--talker_ar.factory.continuation_aware_admission false` leave that count to SGLang; the KV is still kept and the rows still reused.
+
+A client sends 16 kHz PCM16 audio and, optionally, camera frames with `sglang.input_image.append` as on {ref}`MiniCPM-o <full-duplex-protocol>`, and selects `server_vad` under `session.audio.input.turn_detection`. The reply streams as `response.output_audio.delta` at 24 kHz with its text. `sglang.sampling` in a later `session.update` applies from the next unit; `instructions` is accepted only in the first `session.update`. After an interruption, send `conversation.item.truncate` with the milliseconds of reply audio the listener heard, so the history keeps only that much of the reply; without it the whole reply generated so far stays in the history. No user transcript is published.
+
+To end turns on meaning rather than silence, add the {ref}`turn detection node <turn-detection-node>` to the config: declare `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`. The stage loads Smart Turn v3.2 from `pipecat-ai/smart-turn-v3` unless `factory.model_path` names a local copy, and clients then select `semantic_vad`.
+
+(realtime-on-the-speech-pipeline)=
+
+**Realtime on the speech pipeline**
+
+The standard Qwen3-Omni speech pipeline also takes `--enable-realtime` and serves an older turn-based protocol, without the Session graph:
+
+```bash
+sgl-omni serve --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct --enable-realtime --port 8008
+```
+
+Its `session.update` takes `modalities: ["text", "audio"]`, `input_audio_format` and `output_audio_format` `pcm16`, and `turn_detection` at the top of the session: `server_vad` (the default) ends a turn after `silence_duration_ms` of silence, and `semantic_vad` with `eagerness` `low`, `medium` (default) or `high` adds Smart Turn v3.2. For `semantic_vad`, set `SGLANG_OMNI_SMART_TURN_MODEL_PATH` to a local `smart-turn-v3.2-gpu.onnx` (the server never downloads it and checks its SHA-256); without it, semantic requests fall back to `server_vad`. Text arrives in `response.text.delta` and 24 kHz PCM16 audio in `response.audio.delta`, followed by `response.audio.done` and `response.done`. Audio output is opt-in, and a `--text-only` server rejects it.
+
+With audio output, speech that the detector hears during a reply cancels it with reason `turn_detected`; `turn_detection.interrupt_response: false` turns that off, and `response.cancel` cancels with `client_cancelled`. The client must stop its playback on `input_audio_buffer.speech_started` and drop every later `response.audio.delta` of that response; if playback had begun, it sends `conversation.item.truncate` with the assistant `item_id` from `response.audio.delta`, `content_index: 0` and the played `audio_end_ms`, and the server removes the whole assistant item from the history. Both fields are required, and `content_index` must be 0 although the audio delta carries 1. The browser example is `playground/qwen-omni/realtime`; [its README](https://github.com/sgl-project/sglang-omni/blob/main/playground/qwen-omni/realtime/README.md) gives the rest of the client contract, such as checking `turn_detection` in the capabilities before asking for `semantic_vad` and dropping a response that an interruption already ended. The benchmark records this protocol with the profile `qwen3-omni-half-duplex` (see {ref}`Turn-based recordings <turn-based-recordings>`).
+
+### Streaming Cascade
+
+The cascade composes independent speech recognition, language model and speech synthesis services into a turn-based conversation; the server adds voice activity detection, the conversation history, turn taking and interruption. A profile, a `launch.yaml` under `examples/streaming_cascade/profiles/`, names the services and the nodes that call them, and one command starts both.
+
+| Profile | Recognizer | Language model | Speech | GPUs | Start beforehand |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory, with Smart Turn v3.2 turn detection | 1 | Alignment worker on 8010 |
+| `qwen3-asr-inkling-2-mini-vivian-tts-tool` (benchmark and CI) | Qwen3-ASR-1.7B on 8002 | Inkling-2-Mini with DSpark on 8003, from {ref}`a venv of its own <inkling-2-mini-the-default-chat-model>`, its reasoning kept out of the speech, speaking through `tts_start` ([speaking through a tool](#speaking-through-a-tool)) | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1 | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian-tts-tool` (rollback) | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, speaking through `tts_start` ([speaking through a tool](#speaking-through-a-tool)) | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2: the language model on GPU 0, both speech models on GPU 1; one H200 with {ref}`other memory fractions <a-live-demo-of-the-reference-profile>` | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian-screen` | As above | Qwen3.8-27B on 8003, thinking off, writing what the user should read between `<screen>` and `</screen>` | As above | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-qwen3.8-27b-vivian-styles` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8003, thinking off, starting every reply with a style tag such as `[calm]`, held to the styles by a `regex` | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav`, or the Vivian recording of the reply's style, with its transcript ([speaking styles](#speaking-styles)) | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` with its transcript | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-qwen3-tts-vivian-dflash` | Qwen3-ASR-1.7B on 8002 | Qwen3.8-27B with DFlash on 8000, thinking off | As above | 2, as above | Alignment worker on 8010 |
+| `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B on 8002 with `--enable-realtime`, a partial transcript every 1000 ms of speech | Qwen3.8-27B on 8000, thinking off | As above | 2, as above | Alignment worker on 8010 |
+| `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR on 8001 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
+| `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the in-server `asr` stage on GPU 0 | Qwen3-4B-Instruct-2507 on 8000 | As above | 1 | As above |
+
+On one CUDA GPU, every Qwen3-ASR recognizer above serves with its DFlash draft by default (see the [Qwen3-ASR cookbook](../cookbook/qwen3_asr.md)), which shrinks its KV pool at the 0.08 memory fraction. `qwen3-asr-qwen3-tts-vivian-dflash` is `qwen3-asr-qwen3-tts-vivian` with DFlash speculative decoding for chat as well. The DFlash profile uses the `incoai/Qwen3.8-27B-DFlash2` chat draft pinned to revision `015e795645c74b1a0eeef3b570031fb62e769bc5` and the ASR draft configured in `examples/configs/qwen3_asr_1_7b_dflash.yaml`. Both verify blocks of eight tokens. Qwen3-TTS has no speculative decoding adapter. The profile keeps the default profile's GPU placement, memory fractions, ports and voice; the draft weights and caches also occupy GPU memory. Both profiles need the forced-alignment worker described above.
+
+Compared with the default profile, DFlash lowers the chat server's effective maximum concurrent requests. Without FlashInfer AOT kernels, the first start can spend about nine minutes JIT-compiling FlashInfer's `topk` module on H100; combined with model loading, this can exceed the 600 s service readiness timeout. Use AOT kernels or start the chat service separately and wait for readiness before launching the cascade.
+
+For a baseline comparison, select the default profile. For a chat-only comparison, copy the DFlash launch file and remove the ASR service's `--config` argument and its value. Stop the services between configurations: an existing service on the same port is reused, so changing a launch file alone does not change its decoding settings. Use the repository's `benchmarks.eval.benchmark_duplex_serving` with `--dataset v1.5 --profile turn-based` as shown in {ref}`v1.5 scoring <v15-scoring>`, and set `--model` to the selected profile's `model_path`. Its first-audio latency starts at `response.created`, after the ASR transcript opens the reply; evaluating ASR's contribution also requires the speech-stop and transcription events in the recording's `continuous.jsonl`.
+
+`qwen3-asr-qwen3.8-27b-vivian-screen` has Qwen3-TTS Base read the reply Qwen3.8-27B writes, cloning `voices/vivian.wav` with its transcript, and gives the cascade a screen. Its system prompt has the model never say code, commands, file paths, links, IP addresses or other text the user would type or copy, but say what such text is for and that it is on the screen, and write it, or a list, table, recipe or itinerary, after its spoken sentences between `<screen>` and `</screen>`. The `llm` node's `extra_body` passes SGLang a `regex` that holds a reply to a start that is neither `<` nor whitespace, since asked for code the model otherwise sometimes wrote the block alone and the turn was silent, and a `logit_bias` that bans the `</think>` token, which the model otherwise wrote in 10 of 648 replies over three runs before repeating its reply or writing its block. Over 24 three-turn conversations, 12 English and 12 Chinese, each answered three times, so 216 replies, the model wrote a block in 57 of the 66 replies to turns that need one and in 33 of the 108 to turns that do not, the other 42 being turns that may use one. Qwen3.8-27B, judging its own replies, found that the user gets 78 percent of the key points of the turns that need a block by ear and screen, against 65 percent by ear from the same cascade without the screen prompt, `regex` and `logit_bias`, and live the first audio came a median 475 ms after the user stopped, against 437 ms. Its `tts` and `aligner` nodes set `skip_screen_blocks`, so the speech service never gets such a block and the aligner aligns each sentence without it; the other profiles speak a screen tag like any other text. The {ref}`browser playground <browser-playground>` shows the block under the caption.
+
+The steps below run `qwen3-asr-qwen3-tts-base-clone` on one GPU; every checkpoint is public. Download the models:
 
 ```bash
 hf download Qwen/Qwen3-ASR-1.7B
@@ -239,783 +245,187 @@ hf download Qwen/Qwen3-ForcedAligner-0.6B
 hf download pipecat-ai/smart-turn-v3 smart-turn-v3.2-gpu.onnx
 ```
 
-(launching)=
-
-**Launching**
-
-
-The profile's `aligner` node asks a forced-alignment worker where each word of the reply ends in its audio, so an interrupted reply can be cut at the last word heard. Start the worker first, from a separate virtual environment set up as [The forced-alignment worker](#the-forced-alignment-worker) describes:
+The profile's `aligner` node asks a forced-alignment worker where each word of the reply ends in its audio, so an interrupted reply is cut at the last word the listener heard. The worker needs `qwen-asr`, which pins its own `transformers`, so it runs from a venv of its own:
 
 ```bash
-PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
+uv venv aligner-venv -p 3.12
+uv pip install --python aligner-venv/bin/python qwen-asr fastapi uvicorn regex httpx msgpack msgspec numpy pydantic websockets
+PYTHONPATH=. aligner-venv/bin/python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
 ```
 
-Then start the cascade:
+`curl http://127.0.0.1:8010/health` answers `{"status":"ready"}` once the aligner is loaded. Then start the cascade in another terminal:
 
 ```bash
 sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-base-clone/launch.yaml --enable-realtime --port 8765
 ```
 
-Then open the browser page and talk, as [Voice Conversation](#voice-conversation) describes:
+The server starts the profile's `services` in order and waits for each, reuses a service already answering on its port, and starts the cascade once every service and the worker answer; stopping the server stops the services it started. The cascade listens on 8765 because the profile's language model takes 8000. The server is ready when the capabilities on port 8765 contain `"interaction":"turn_based"`.
+
+To run without the worker, switch the aligner on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""` for a Qwen3-ASR profile, `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""` for a Nemotron profile. Any other profile field is overridden the same way. To use a language model you already run, remove the `chat` entry from the profile's `services` and set both `--session_nodes.llm.base_url` (such as `http://127.0.0.1:9000/v1`) and `--session_nodes.llm.model`; with only `base_url`, the server still starts the profile's chat service and the node still asks for the profile's model. {ref}`Services you run elsewhere <services-you-run-elsewhere>` has the details; [Streaming Cascade Reference](#streaming-cascade-reference) lists every setting, the cascade protocol and the settings that cannot be combined.
+
+(a-live-demo-of-the-reference-profile)=
+
+**A live demo of the reference profile**
+
+These steps run `qwen3-asr-qwen3.8-27b-vivian-tts-tool`, the Qwen3.8-27B cascade that {ref}`Inkling-2-Mini <inkling-2-mini-the-default-chat-model>` replaced as the default, as a browser demo that people talk to. Install the cascade and build the aligner venv as above, then download the profile's models. Also download the ASR DFlash draft at the revision that `sglang_omni/speculative/draft_registry.py` pins, because a server started with `HF_HUB_OFFLINE=1` cannot fetch it:
 
 ```bash
+hf download Qwen/Qwen3-ASR-1.7B
+hf download wilsonzheng0327/Qwen3-ASR-1.7B-dflash --revision d62bd4051e68282e02f93de774036a35f22f1373
+hf download Qwen/Qwen3.8-27B
+hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
+hf download Qwen/Qwen3-ForcedAligner-0.6B
+```
+
+The profile runs on two GPUs. To run it on one H200, write a copy that puts every service on GPU 0 with these memory fractions:
+
+| Service | Two GPUs, as shipped | One H200 |
+| --- | --- | --- |
+| `chat`, Qwen3.8-27B | GPU 0, `--mem-fraction-static 0.85` | GPU 0, 0.60 |
+| `asr`, Qwen3-ASR-1.7B | GPU 1, 0.08 | GPU 0, 0.22 |
+| `tts`, Qwen3-TTS-12Hz-1.7B-Base | GPU 1, 0.12 | GPU 0, 0.40 |
+
+```bash
+sed -e 's/"0.85"/"0.60"/' -e 's/"0.08"/"0.22"/' -e 's/"0.12"/"0.40"/' \
+  -e 's/CUDA_VISIBLE_DEVICES: "1"/CUDA_VISIBLE_DEVICES: "0"/' \
+  examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml > /tmp/tts-tool-one-gpu.yaml
+```
+
+Each fraction is a share of the GPU memory that is still free when its service starts, and the server starts the services in the order of the table. On one GPU, the later services therefore need larger shares than on a GPU of their own. With the shipped 0.08, the recognizer ran out of KV cache on one H200.
+
+Start the alignment worker beside the speech models, with `--device cuda:1` on two GPUs or `--device cuda:0` on one H200, and wait until its `/health` answers `{"status":"ready"}`:
+
+```bash
+PYTHONPATH=. aligner-venv/bin/python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:1 --language English --port 8010
+```
+
+Start the cascade with the profile, or with `/tmp/tts-tool-one-gpu.yaml` on one H200. Once its capabilities report `"interaction":"turn_based"`, start the [browser demo](#browser-demo) against it:
+
+```bash
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-tts-tool/launch.yaml --enable-realtime --port 8765
 python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
 ```
 
-One command starts everything: the profile's `services` are started in order and waited for, a service already answering on its port is reused, and the cascade starts once every service and the worker answer; stopping the server stops the services it started. The profile's `turn_detection` node ends a turn only when Smart Turn takes a pause for its end, so a pause in the middle of a sentence does not cut it, as [Turn Detection](#turn-detection) describes. When an interrupted reply is cut, the profile's aligner keeps the words the listener heard: the forced aligner's word ends for the sentences whose audio was complete, and its own recognizer's transcript of the delivered audio for the sentence it was cut in. The page sends the position it played with `conversation.item.truncate` and marks the heard part of the reply. [Profiles](#profiles) lists the other bundled profiles, such as `qwen3-asr-qwen3.8-27b-vivian` with Qwen3.8-27B on two GPUs.
+Have one conversation yourself before others use the demo. Ask a question, then speak over a long answer. The reply stops, and the page shows the part of it that the history kept.
 
-To use services you already run, drop their `services` entries and point the nodes' `base_url` at them; a command-line override such as `--session_nodes.llm.base_url http://127.0.0.1:9000/v1` changes one field without editing the file. The rest of this section lists every launch mode and what each profile needs started beforehand; [Configuration](#configuration), [Node Reference](#node-reference) and [Compatibility and Constraints](#compatibility-and-constraints) list every setting and the settings that cannot be combined.
+(inkling-2-mini-the-default-chat-model)=
 
-(one-command-with-a-profile)=
+**Inkling-2-Mini, the default chat model**
 
-**One command with a profile**
-
-
-The default Vivian cascade profile uses Qwen3.8-27B with thinking off on GPU 0 and Qwen3-ASR/Qwen3-TTS Base on GPU 1. The audio-file example in `examples/streaming_cascade/run.py` uses this profile when `--config` is omitted.
+`qwen3-asr-inkling-2-mini-vivian-tts-tool`, the cascade that the benchmark and CI run, is `qwen3-asr-qwen3.8-27b-vivian-tts-tool` with Inkling-2-Mini as its `chat` service. SGLang serves Inkling-2-Mini with DSpark speculative decoding only from commit `9c64454bba553e475ce7b7b790015d2f941e2807`, the head of [sgl-project/sglang#51926](https://github.com/sgl-project/sglang/pull/51926), which needs torch 2.14.1, FlashInfer 0.7.4 and sglang-kernel 0.4.11. That commit runs from a venv of its own, so the release that sglang-omni pins keeps serving every other model. Build the venv once on the GPU host; it is `INKLING_VENV`, by default `.venv-inkling` in the repository. The install builds SGLang without its Rust extensions, which need a Rust toolchain and which Inkling's chat service does not use, checks the versions, the Inkling-2-Mini model and the parser methods that `chat_service` overrides, and compiles FlashInfer's sampling kernels, which FlashInfer would otherwise compile at DSpark's first draft verification, making the first request wait about 60 s on one H100:
 
 ```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765
+examples/streaming_cascade/inkling_chat_service.sh install
+hf download thinkingmachines/Inkling-2-Mini --revision b85c3cfa615fc413cc9af3379f491b963f3b586a
 ```
 
-`--enable-realtime` mounts `/v1/realtime`, `/v1/realtime/capabilities` and `/v1/session`; without it the server starts the cascade but serves none of them.
-
-The server starts the profile's `services` one after another, in the order they are listed, before it starts the cascade. For each entry it first requests `http://127.0.0.1:<port>/v1/models`: a service that answers 200 is reused and left running when the server stops, and the log shows `service 'tts' already serving on :8005`. Otherwise it runs `command` with its own environment plus the entry's `env`, in the directory `sgl-omni serve` was started from, and polls the port every second for up to 600 s. A service that exits first fails the start with `service '<name>' exited with code <n> before :<port> answered`; one that does not answer in time fails it with `service '<name>' did not answer on :<port> within 600 s`. The cascade itself must then start within `SGLANG_OMNI_STARTUP_TIMEOUT` seconds (default 600).
-
-While the server runs, a service it started that exits stops the server with `service '<name>' exited with code <n>`. Stopping the server sends SIGTERM to every service it started and SIGKILL to any still running 15 s later.
-
-Relative paths in a service `command` and in a node's `reference_audio_path` resolve against the directory `sgl-omni serve` was started from; the bundled profiles assume the repository root.
-
-A service's port appears in three places that must agree: the `--port` inside its `command`, its `port`, and the `base_url` of the node that calls it. To move a service, change all three in the profile. If the server's own `--port` is taken, the server logs `Port <n> is already in use` and serves on a free port it names in `Using port <m> instead`; set `SGLANG_OMNI_STRICT_PORT=1` to fail instead.
-
-(services-you-run-elsewhere)=
-
-**Services you run elsewhere**
-
-
-Remove the service's entry from `services` and set the node's `base_url` and `model` to the running service. `openai_transcription`, `openai_chat` and `openai_speech` work with any OpenAI-compatible transcription, chat completions and speech endpoint; `api_key_env` names the environment variable holding its bearer token. A `services` entry is only for a service on this machine, since its readiness check requests `127.0.0.1`. The node still probes the service at startup, so a wrong `base_url` fails the start (see [Verifying a Deployment](#verifying-a-deployment)).
-
-(a-model-inside-the-server-as-a-stage)=
-
-**A model inside the server as a stage**
-
-
-A node written `stages: [...]` runs a model inside this server instead of calling a service. Two stage routes exist: `vad`, the voice activity detector, and `asr`, Nemotron 3.5 streaming ASR. Any other stage name fails the load with `no stage group serves the stages [...]`.
-
-`nemotron-stage-qwen3-tts` runs Nemotron 3.5 ASR as the `asr` stage node reading `input:pcm16`, and a `running_transcript` node turns its running text into utterances:
-
-```yaml
-stages:
-  asr:
-    gpu: 0
-
-session_nodes:
-  asr:
-    stages: [asr]
-    inputs: ["input:pcm16"]
-  transcript:
-    kind: running_transcript
-    inputs: [input, "asr:text", "vad:session"]
-    tail_ms: 400
-```
-
-`stages.asr.gpu` (or `--asr.gpu 1` on the command line) picks the GPU. Install the Nemotron dependencies as [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) describes.
-
-(several-gpus)=
-
-**Several GPUs**
-
-
-Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
-
-(the-forced-alignment-worker)=
-
-**The forced-alignment worker**
-
-
-Word boundaries use Unicode character offsets into the original reply, not into the aligner's normalized text. The worker maps removed punctuation and Japanese compatibility normalization back to the source and rejects missing or changed tokens instead of searching ahead. An expanded number or compatibility character becomes heard only after its last aligned token finishes. The worker's tests use the actual language-specific tokenizer with simulated timestamps; real-model playback remains a separate validation step.
-
-The heard-ASR matcher accepts joined spellings such as `long-term` / `long term`, `one-time` / `onetime`, and `U.S.` / `US`, but commits only at complete units on both sides. Thus `can` does not match `cannot`, and `now here` does not match `nowhere`. English and Chinese requests also compare the existing spoken number readings, preserving original offsets: `350` matches `three hundred fifty`, but `21` does not commit after only `twenty`. Both the original-spelling and expanded-reading comparisons must match a strict prefix; the former preserves counting sequences that the TTS reader treats as grouped digits. This change does not extend the TTS reading rules for contractions, percentages, versions or decades.
-
-An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi`, `regex` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+The FDB runbook's `setup` builds the same venv into `$FDB_WORK/inkling-venv` for the `cascade` engine. The profile's `chat` service runs `inkling_chat_service.sh serve`, which serves `chat_service` from the venv with `--reasoning-parser inkling --tool-call-parser inkling2 --speculative-algorithm DSPARK`; SGLang takes the DSpark draft from the checkpoint at the same `--revision`. Start the cascade as above, with the aligner worker:
 
 ```bash
-PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-inkling-2-mini-vivian-tts-tool/launch.yaml --enable-realtime --port 8765
 ```
 
-| Flag | Default | Effect |
-| --- | --- | --- |
-| `--model` | required | The forced-aligner checkpoint. |
-| `--device` | `cpu` | The device the aligner runs on. |
-| `--language` | `Chinese` | The language of a sentence sent without one; a sentence carries the language tag `openai_speech` spoke it with, and without a tag the language of its reply once the recognizer has named the user's language. |
-| `--host` | `127.0.0.1` | The bind address. |
-| `--port` | required | The port; the node's `alignment_url` must point at it. |
+The `tts_start` call streams. With `--reasoning-parser inkling`, SGLang reads Inkling's output token by token in `InklingOutputParser`, which sends a tool call only at the call's closing `end_message` token, so the first sentence would wait for the whole reply. `chat_service` replaces that parser with one that sends the call's name as soon as the model has written it, then each piece of the arguments while the model writes them, holding back only the brace that may close the call. The first sentence is therefore spoken while the model writes the rest of the reply, as with Qwen3.8-27B. On one H100 with DSpark, over 12 questions asked twice per server start and five server starts, the first piece of the text arrived a median 153 ms before the end of the call, where SGLang's parser sends it, and at most 0.77 s before. Through `/v1/realtime` on one H100 that served all three models, over 8 recorded questions asked twice each with a fresh session per turn, the median time from the end of the user's speech to the first audio was 1.85 s against 1.93 s with SGLang's parser, with 9 of 15 paired turns faster. The gain was small because most replies are one sentence, which ends where the call does, and because most of the 210 to 260 tokens Inkling then wrote per reply were reasoning before the call, which the opening below removes.
 
-`curl http://127.0.0.1:8010/health` answers `{"status":"ready"}` once the model is loaded. To run a Qwen3-ASR profile without the worker, switch its aligner to the asr method on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""`. The Nemotron profiles have no transcription endpoint and switch to the sentence method: `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""`.
+Inkling cannot turn its reasoning off, and it wrote about 200 tokens of reasoning before every call. The `llm` node therefore writes the start of the reply for it. Its `required_call_opening` is a one-sentence thought, `The user asked something; I answer it rather than repeat it.`, and the 26 tokens with which Inkling opens a `tts_start` call up to its text, both as Inkling writes them, with each control token written as `<|name|>`. Every prompt requires a call, so every request ends inside the opened call, and the model writes the text at once. The thought is there because the opened call alone made Inkling answer some short requests by repeating them: at 16 requests at once, over 18 questions asked five times each, 6 of 90 replies were the user's own words, more at lower temperatures, and a sentence in the system prompt against it left 5 of 90. With the thought, none of 90 were, and the replies kept their length. SGLang continues an assistant message only as a text block, whose prefix it encodes as ordinary text, so `chat_service` reads a continued message that starts with `<|message_model|>` itself:
 
-(browser-playground)=
+- It puts the opening's tokens after the rendered turns.
+- It replays them into the output parser, so the sampled tokens stream as that call's arguments.
+- It stops the request at the call's `end_message` token. Without that stop, Inkling went on after the call to reason and answer again in 21 of 120 replies.
 
-**Browser playground**
+The node keeps `reasoning_effort` 0.1, which now only sets the reasoning instruction in the prompt, and `max_tokens` 512, as in the other profiles.
 
+On one H100 serving the chat service alone, at 1, 4, 8 and 16 requests at once, the first piece of the text arrived a median 38, 58, 90 and 183 ms after the request, against 690 ms, 1.5 s, 1.9 s and 2.2 s when Inkling reasoned before the call, with decode graphs up to 16 in both. In the FDB v1.5 overlap selection, 20 pairs over 16 sessions on one server, the model was speaking when the overlap began in 16 to 19 of 20 pairs over four runs, against 13 when it reasoned first and 5 with decode graphs only up to 4, and the mean response latency was 0.89 to 0.99 s. The pairs it missed are short answers that ended before the overlap began, about 6 s into the pair, so the CI's floor of 3 pairs per category has little margin in the categories that ask short factual questions.
+
+The profile runs DSpark with SGLang's defaults, 7 draft tokens per step; the [Inkling-2-Mini cookbook](https://docs.sglang.io/cookbook/autoregressive/ThinkingMachines/Inkling-2-Mini) lists DSpark flags only for RTX GPUs. On one H100, with the profile's tool, prompt and `reasoning_effort`, DSpark decoded at a median 4.5 ms per token against 6.5 ms without it, with a mean accept length of 2.5 to 2.6, and the first piece of the spoken text arrived a median 873 ms after the request against 1,344 ms, over 60 requests from five server starts with DSpark and 12 from one without. For an A/B run without DSpark, write a copy of the profile without it and start the cascade with `--config /tmp/tts-tool-inkling-no-dspark.yaml`:
 
 ```bash
-python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
+sed -e 's/--speculative-algorithm, DSPARK, //' \
+  examples/streaming_cascade/profiles/qwen3-asr-inkling-2-mini-vivian-tts-tool/launch.yaml > /tmp/tts-tool-inkling-no-dspark.yaml
 ```
 
-It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as [Session settings](#session-settings) describes. Its stop button sends `response.cancel`. When a reply is interrupted, by the button or by speaking over it, the page sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply from `sglang.response.progress` and the audio it has played, word by word through the stretch being played, at an even pace between two progress points; a cut reply then shows the part the history kept, from `sglang.response.heard`. A long reply's caption grows up to the room under the orb and then scrolls to keep the line being heard in view; the transcript holds the whole reply. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+To roll back to Qwen3.8-27B, start `qwen3-asr-qwen3.8-27b-vivian-tts-tool` instead, and run the FDB `cascade` engine with `--config` pointing at it. Its CI references are the Qwen3.8-27B measurements in `tests/test_model/fdb_ci_config.py`.
 
-(an-openai-realtime-client-or-the-session-api)=
+The command captures prefill CUDA graphs only for 16 to 512 new tokens. That covers a cascade turn: the prefix cache holds the system prompt and the earlier turns, so a turn adds about 30 tokens. Without prefill CUDA graphs, the server compiles Triton kernels the first time a request brings a new number of prompt tokens, and its log reports each compile, such as `Triton kernel '_marlin_route' took 6.26 s to compile after serving started`. On one H100, without DSpark and with no warm-up requests:
 
-**An OpenAI Realtime client or the Session API**
+| Inkling server | Ready after | Cascade-sized requests that stalled over 3 s | Median time to the first streamed token |
+| --- | --- | --- | --- |
+| `--disable-prefill-cuda-graph` | 6 min 54 s | 6 of 20, for 7 to 24 s | 124 ms |
+| `--cuda-graph-bs-prefill 16 32 64 128 256 512` | 7 min 32 s | 0 of 19 | 43 ms |
 
+Most of the startup is a one-time compile on the first captured size, 255 s, after which the other five sizes took 27 s together. With DSpark, as the profile runs it, the server was ready after 6 min 50 s with empty caches, 4 min 37 s of it capturing the prefill graphs and 1 min 10 s the verification graphs, and after 49 s on a restart with the same caches, including with a venv built afresh. The server reports ready with `The server is fired up and ready to roll!` about 10 s after `/v1/models` first answers, so wait for that line before the first conversation. A request that adds more than 512 tokens runs without a graph and stalled for about 4 s the first time. To keep those kernels across restarts, mount a directory for Triton's cache and set `TRITON_CACHE_DIR` to it and `TRITON_CACHE_AUTOTUNING=1`. On a restart with that cache, none of 36 requests stalled, including four with 1,000 to 3,200 prompt tokens. The FDB CI starts every run with empty caches, so its first turns, 16 sessions at once, wait while `_marlin_route` compiles once or twice, for 2 to 3.6 s each. SGLang's warmups did not prevent it: with `--warmups voice_chat,prefill_shapes`, which send prompts of 4 to 2,044 and 64 to 32,768 tokens, one compile remained and every start took about 2.5 min longer, and with `prefill_shapes` alone three remained.
 
-Any OpenAI Realtime client connects to `/v1/realtime` with the session flow in [Voice Conversation](#voice-conversation). `/v1/session` serves the same Session without the realtime protocol. `examples/streaming_cascade/run.py` runs a profile in its own process instead of connecting to a server; it does not start the profile's `services`, so start them first.
+The command also captures decode CUDA graphs for 1, 2, 4, 8, 12 and 16 requests in flight, since the FDB CI runs 16 sessions on one server. On one H100, with graphs only for 1, 2 and 4, 8 to 16 replies at once decoded without a graph at about 25 to 35 tokens per second each, and at 16 requests at once the first piece of the text arrived a median 5.5 to 6.3 s after the request, against 2.2 s with graphs up to 16, both while Inkling still reasoned before the call.
 
-(profiles)=
+To run both cascades side by side, for example on two H200s with the one-H200 copy on the first and Inkling-2-Mini on the second, give the second cascade another `--port`. It reuses the ASR and TTS services that the other cascade started.
 
-**Profiles**
+## Connect a Client
 
+### Browser Demo
 
-Every profile is a `launch.yaml` under `examples/streaming_cascade/profiles/`.
-
-| Profile | Recognizer | Language model | Speech | GPUs | Nodes | Start beforehand |
-| --- | --- | --- | --- | --- | --- | --- |
-| `qwen3-asr-qwen3.8-27b-vivian` | Qwen3-ASR-1.7B service on 8002 (`openai_transcription`) | Qwen3.8-27B on 8003, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-vivian` (default) | Qwen3-ASR-1.7B service on 8002 | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `qwen3-asr-streaming-qwen3-tts-vivian` | Qwen3-ASR-1.7B service on 8002 started with `--enable-realtime` (`streaming_transcription`, a partial transcript every 1000 ms of speech) | Qwen3.8-27B on 8000, thinking off | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `voices/vivian.wav` | 2: the language model on GPU 0, both speech models on GPU 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `qwen3-asr-qwen3-tts-base-clone` | Qwen3-ASR-1.7B service on 8002 | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-1.7B-Base on 8005, cloning `reference_zh.wav` in the profile directory | 1 | `vad`, `turn_detection` (published), `asr`, `dialog`, `llm`, `tts`, `aligner` (forced, recognizing the sentence at the cut, published) | Alignment worker on 8010 |
-| `nemotron-qwen3-tts` | Nemotron 3.5 streaming ASR service on 8001 (`realtime_transcription`) | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
-| `nemotron-stage-qwen3-tts` | Nemotron 3.5 ASR as the `asr` stage on GPU 0, with `running_transcript` | Qwen3-4B-Instruct-2507 on 8000 | Qwen3-TTS-12Hz-0.6B-Base on 8004, cloning `reference.wav` | 1 | `vad`, `asr` (stage), `transcript`, `dialog`, `llm`, `tts`, `aligner` (forced) | Alignment worker on 8010; a recording at `reference.wav`, with `reference_text` set to its transcript |
-
-`qwen3-asr-qwen3-tts-vivian` and `qwen3-asr-qwen3-tts-base-clone` publish their aligner's `session`, so their clients receive `sglang.response.progress`. Every profile cuts an interrupted reply at the word ends of the sentences whose audio was complete; the Qwen3-ASR profiles also send the delivered audio of the sentence at the cut to their own recognizer, so a sentence cut before its audio was complete keeps the part the listener heard.
-
-(voice-conversation)=
-
-**Voice Conversation**
-
-
-With the page from [Launching](#launching) running, open `http://127.0.0.1:8090`, speak, and the reply plays as it is produced. Speaking while the reply plays interrupts it.
-
-Any OpenAI Realtime client works the same way. Open a WebSocket to `/v1/realtime`, wait for `session.created`, and send the session settings:
-
-```json
-{"type": "session.update", "event_id": "cfg-1", "session": {"instructions": "Answer in one short English sentence.", "output_modalities": ["text", "audio"], "audio": {"input": {"turn_detection": {"type": "server_vad", "silence_duration_ms": 800}}}}}
-```
-
-Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.append", "event_id": "...", "audio": "<base64>", "sglang": {"seq": 0}}`, with `seq` counting up from 0 for the whole session. The server answers with these events:
-
-| Event | Meaning |
+| Server | Page |
 | --- | --- |
-| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
-| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
-| `response.created` | A reply begins. |
-| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. |
-| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
-| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
-| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
-| `error` | The request or the session failed. |
+| Native models and the Qwen3-Omni Session graph | `python playground/realtime/app.py --api-base http://127.0.0.1:8000 --port 8080` |
+| Streaming cascade | `python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090` |
+| Qwen3-Omni speech pipeline | `playground/qwen-omni/realtime` |
 
-`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
+Thanks to the OpenMoss team for the demo page.
 
-To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
+Once the terminal prints `Running on`, open <http://localhost:8080> (<http://localhost:8090> for the cascade page) and click **Start talking** to talk through your microphone; the camera can be turned on during the call. If the server is remote, first run `ssh -N -L 8080:127.0.0.1:8080 USER@SERVER` on your own machine (`8090:127.0.0.1:8090` for the cascade page). Open the page through `localhost`, or the browser will not grant microphone access.
 
-Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. [Session settings](#session-settings) lists every field.
+The settings panel shows only the controls the deployment declares in `/v1/realtime/capabilities`: the system prompt, the presets and a reference voice when `supports_reference_audio` is true (a preset pairs a MiniCPM-o duplex prompt with a voice, so no other backend gets them), a named voice when `voices` is listed, turn detection when `turn_control` lists `server_vad` or `semantic_vad`, camera detail when `input_image_format` allows more than one slice, and one numeric field per key in `sampling_parameters`, labelled for that backend (`max_new_tokens_per_unit` is tokens per 1 s unit on a native model and the reply token limit on a turn-based one). An empty field is not sent, so the deployment's default applies. The page sends every setting in its first `session.update`, so a change applies to the next conversation. Everything under `sglang` (sampling, voice, reference audio, image detail) is fixed once the session is open. Turn detection and `output_modalities` may change in a later `session.update`, and `instructions` only on a deployment that supports instruction updates, which is the cascade with a `system_prompt` node; MiniCPM-o, PersonaPlex and Qwen3-Omni freeze them with the first `session.update`. Settings are kept in the browser per deployment model. The download button in the top bar saves the conversation trace; attach it when reporting a problem.
 
-(turn-detection)=
+The stop button in the call dock follows `supports_cancel` from `session.updated`. Where it is granted, as on MiniCPM-o, the Qwen3-Omni session graph and the cascade, the button sends `response.cancel`, shows Stopping until the server's `response.done` for the reply arrives, and Stopped when that status is `cancelled`. A reply that ended on its own in the meantime shows no stop. This page sends no `conversation.item.truncate`, so a turn-based history keeps what the server delivered. Where it is not granted, as on PersonaPlex and Nemotron VoiceChat, the button is labelled as a local mute: it sends nothing and the reply is not cancelled on the server. In both cases the page then plays no model audio, under any response id, until you speak again: on a turn-based deployment the server's `input_audio_buffer.speech_started` lifts the mute, on a native one the microphone's own level does, since a stopped model may continue its answer under a new response and a new response id alone is no proof of a new answer. Speaking over the model is left to the model on a native deployment.
 
-**Turn Detection**
+An empty field falls back to the deployment's default, which lives here:
 
-
-Without it an utterance ends when the `vad` node hears `silence_duration_ms` of silence, so a pause to think in the middle of a sentence ends the turn and the reply answers half a sentence. A profile with a `turn_detection` node, such as `qwen3-asr-qwen3-tts-base-clone`, ends the turn only when the [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) end-of-turn model, scoring the utterance so far at each pause the `vad` node reports, finds it complete, or when the pause outlasts the longest pause the eagerness allows. The node reads the Session input and `vad:session` and publishes `session`: its `speech.started` opens the turn and its `speech.stopped` ends it, so the recognizer, the dialog and the client read `turn_detection:session` where they read `vad:session` before, and speech that resumes inside a held pause continues the utterance instead of interrupting a reply.
-
-The stage loads the BSD-2 licensed `smart-turn-v3.2-gpu.onnx` from the Hugging Face repository `pipecat-ai/smart-turn-v3` through the Hugging Face cache, or from the file or directory `stages.turn_detection.factory.model_path` names, and verifies its SHA-256 at startup. The stage's `factory.eagerness` (`low`, `medium` or `high`, default `medium`) sets how readily a pause ends the turn: `high` takes a shorter silence on a confident score and gives up a held pause sooner, `low` waits longer. The profile sets the `vad` node's `silence_duration_ms` to 160, the pause the detector scores as a candidate end; a client that selects `{"type": "server_vad"}` on this profile gets the VAD's boundaries unchanged, with that pause.
-
-A client selects the behaviour per session with the standard field, `{"turn_detection": {"type": "semantic_vad", "eagerness": "high"}}`; `session.created` lists `semantic_vad` under `turn_control` when the profile has the node. The Qwen3-Omni Session graph takes the node the same way: declare it in `examples/qwen3_omni/session_h200.yaml` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`.
-
-(scripted-conversation)=
-
-**Scripted Conversation**
-
-
-The same conversation runs without the realtime protocol through the Session API:
-
-```bash
-PYTHONPATH=. python examples/streaming_cascade/run.py question.wav followup.wav --output response.wav
-```
-
-Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `nemotron-qwen3-tts`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in [Session API](#session-api).
-
-(benchmarking)=
-
-**Benchmarking**
-
-
-The turn latency benchmark streams one WAV for several turns and prints, per turn, the time from speech end to first text, first audio, final transcript and completion:
-
-```bash
-python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
-```
-
-(configuration)=
-
-**Configuration**
-
-
-A setting comes from one of three places: the profile file, read at launch; command-line overrides of the profile, also read at launch; and the settings a client sends for its own session.
-
-(profile-file)=
-
-**Profile file**
-
-
-| Field | Default | Effect |
+| Backend | Sampling | Turn detection and voice |
 | --- | --- | --- |
-| `config_cls` | required | `StreamingCascadePipelineConfig` selects the cascade. |
-| `model_path` | required | The deployment's name: the id `/v1/models` reports and the realtime model name, unless `sgl-omni serve --model-name` sets another. |
-| `services` | `[]` | The services to start, in order (see below). |
-| `session_nodes` | required | The nodes of the conversation, by name. |
-| `session_publish` | required | Per node, the formats that reach the client. |
-| `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
-| `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
-| `unit_ms` | `200` | The length of the input audio units the server acknowledges with `sglang.unit.done`; reported as `native_unit_ms`. Audio reaches the session as each append arrives, so the VAD node ends a turn without waiting for a unit to fill. |
-| `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
-| `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
-| `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
-| `max_pending_output_bytes` | `33554432` | The same bound in bytes. |
+| MiniCPM-o | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py`; `--sampling.<field>` changes one | No turn detection. The voice is the deployment's `reference_audio` |
+| PersonaPlex | `PersonaPlexSessionSampling` in `sglang_omni/models/personaplex/config.py` (`--sampling.<field>`); a field left unset there keeps the offline value in `sglang_omni/models/personaplex/architecture.py` and `request_builders.py` | No turn detection. Voice `NATF2` unless the deployment sets `voice` |
+| Qwen3-Omni | `QwenSessionSampling` in `sglang_omni/models/qwen3_omni/session_preprocessing.py`; the deployment has no override, only a session changes them | `silence_duration_ms` 800 from the `vad` stage in `sglang_omni/models/vad/node.py`; `--vad.factory.silence_duration_ms` changes it |
+| Streaming cascade | The profile's node options; `--session_nodes.llm.<option>` changes one. `max_tokens` is 512 in the bundled profiles, and a `temperature` the profile leaves unset is not sent, so the chat service applies its own | The `vad` stage as above unless the profile sets it: `qwen3-asr-qwen3-tts-base-clone` runs it at 160 ms as Smart Turn's candidate pause, so picking server VAD in the panel prefills 800 ms. `eagerness` `medium` from `sglang_omni/models/turn_detection/node.py`; `--turn_detection.factory.eagerness` changes it |
 
-A `services` entry has `name` (required, unique), `command` (required, a list), `port` (required, 1 to 65535, unique) and `env` (a map, default empty).
+(full-duplex-protocol)=
 
-A `session_nodes` entry is either a node of a `kind`, with that kind's options beside `kind`, or a stage route written `stages: [...]`, which takes no options. Both take `inputs`, a non-empty list of:
+### Native Full-Duplex Protocol
 
-| Input | Takes |
-| --- | --- |
-| `input` | Every format of the client input: its 16 kHz `pcm16` audio and its `session` controls (`commit`, `configure`, `truncate`). |
-| `input:pcm16`, `input:session` | Only the client audio, or only its controls. |
-| `<node>` | Every format `<node>` produces that this node's kind consumes. |
-| `<node>:<format>` | Only that format. |
-| `{source: <input>, capacity: <n>, overflow: block \| drop_oldest, feedback: true \| false}` | The same, with a bound on the edge: at most `capacity` chunks wait (default 64); when full, `block` (default) holds the producer and `drop_oldest` drops the oldest chunk. `feedback: true` marks the edge that closes a cycle and must not block. |
-| `{kind: control, source: <node or input>, event: <control type>, preempt: false}` | The source's control event, delivered to this node as a control instead of as data; `preempt: true` cancels the node's operations in flight first. |
+Clients connect to `/v1/realtime` over WebSocket. They send 16 kHz mono PCM16 audio in `input_audio_buffer.append`; the server returns 24 kHz audio in `response.output_audio.delta` and text in `response.output_audio_transcript.delta`. The model decides once per second of audio whether to keep listening or to speak.
 
-The formats each kind consumes and produces:
+1. After `session.created`, send `session.update` and wait for `session.updated`.
+2. Send audio with `input_audio_buffer.append` at the pace it is captured; replies arrive while you send.
+3. When the audio ends, send `sglang.input_audio.end`, wait for `sglang.input_audio.drained`, then send `session.close`.
 
-| Kind | Consumes | Produces |
-| --- | --- | --- |
-| `realtime_transcription`, `openai_transcription` | `pcm16`, `session` | `transcript` |
-| `running_transcript` | `pcm16`, `session`, `text` | `transcript` |
-| `dialog` | `transcript`, `text_delta`, `session` | `messages`, `session` |
-| `openai_chat` | `messages` | `text_delta`, `session` |
-| `openai_speech` | `text_delta`, `session` | `pcm_f32le` at 24 kHz, `session` |
-| `alignment` | `text_delta`, `pcm_f32le`, `session` | `session` |
-| stage `vad` | `input` | `session` |
-| stage `asr` | `input:pcm16` | `text` |
+When the session ends, the server closes the WebSocket with one of these codes:
 
-`session_publish` maps a node to the formats the client receives: `transcript` becomes `conversation.item.input_audio_transcription.*`, `text_delta` becomes `response.output_text.delta`, `pcm_f32le` becomes `response.output_audio.delta` (PCM16), and `session` carries speech boundaries, the response lifecycle and `sglang.response.progress`.
+| Close code | Meaning | Close reason |
+|---|---|---|
+| `1000` | Normal close | `client_closed`, `disconnect` |
+| `1008` | A server limit was reached | `session_update_timeout`, `idle_timeout`, `session_idle_timeout`, `context_exhausted`, `context_limit`, `output_budget_exhausted` |
+| `1011` | Server error | For example `internal`, `session_open_timeout` or `cleanup_timeout` |
+| `1013` | The server is full; try again later | `session_capacity_exhausted` |
 
-(command-line-overrides)=
+The server closes a session with `session_capacity_exhausted` when its next unit does not fit: the KV cache shared by all sessions, after what the sessions in flight have reserved, or the request slots have no room for it. This depends on the load, not on the session, so a new session may succeed once other sessions finish.
 
-**Command-line overrides**
+If a session has no input and no output for `realtime_idle_timeout_s`, the server closes it with `idle_timeout`. The pipeline configuration defaults to 300 seconds for native sessions and 6 hours for audio Session graphs, including the streaming cascade. WebSocket pings do not count as activity. Set `realtime_idle_timeout_s` in the pipeline YAML or override it with `--realtime-idle-timeout-s`. The server also waits for the first `session.update` up to `realtime_session_update_timeout_s` (default 60 seconds), which can be overridden with `--realtime-session-update-timeout-s`.
 
+For a Python client, see `warmup` in `playground/realtime/app.py`.
 
-Any field of the profile can be overridden after `--config`, as `--<path> <value>` or `<path>=<value>`, one leaf value per flag. Paths start at the top of the profile, except stage settings, which start at the stage name:
+Session settings go in the `sglang` field of `session.update`, before the first audio packet, and stay fixed for the session:
 
-```bash
-sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765 \
-  --session_nodes.llm.base_url http://127.0.0.1:9000/v1 \
-  --session_nodes.llm.temperature 0.3 \
-  --session_nodes.tts.language English \
-  --services.tts.env.CUDA_VISIBLE_DEVICES 1 \
-  --vad.factory.silence_duration_ms 800 \
-  --timeout_s 60
-```
+| Setting | Field | Notes |
+|---|---|---|
+| Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
+| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
+| Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
-Services are addressed by `name` (`--services.tts.port`), not by position. An override may add an option the file leaves out, and is validated like the file: an option the node's kind does not have fails with `Extra inputs are not permitted`, and a whole group such as `--session_nodes.aligner x` fails with `addresses a settings group, not a single value`. Lists such as a service `command` or a node's `inputs`, and removing a node or a service, need an edit of the file.
+Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
 
-(session-settings)=
-
-**Session settings**
-
-
-A realtime client sends its settings in `session.update`. The first `session.update` opens the session; later ones may change only the fields marked hot below, and any other change is refused with `session field is frozen`.
-
-| Field | Reaches | When it can change |
-| --- | --- | --- |
-| `instructions` | `system_prompt` of every node that has it (the `dialog`) | Any time; applies to the next prompt. At most 65536 characters, else `instructions exceed context or have invalid type`. |
-| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | Any time; applies to the next reply, a reply in progress keeps its value. |
-| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | Any time; applies to the next reply, a reply in progress keeps its value. |
-| `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see [Allowed, with consequences](#allowed-with-consequences)). `interrupt_response` is accepted and has no effect. |
-| `output_modalities` | `["text", "audio"]` or `["text"]` | Any time. |
-
-The realtime endpoint takes no per-node options. A `/v1/session` client sets them, together with the standard fields, as the `params` of its open frame and later as the fields of a `configure` control:
-
-```json
-{"instructions": "Answer in one short sentence.", "sampling": {"temperature": 0.2, "max_new_tokens_per_unit": 128}, "turn_detection": {"silence_duration_ms": 800}, "nodes": {"tts": {"language": "English"}, "llm": {"max_tokens": 256}}}
-```
-
-`nodes` maps a node name to options. An entry without `kind`, or with the node's current kind, changes only the listed options; an entry with another kind replaces the node with a new one built from that entry alone, so it must list that kind's required options. The new node takes over the conversation state of the old one. A `configure` reaches only the nodes that read `input` or `input:session`; a node that reads neither, such as `aligner` in the profiles, takes options only from the open frame. A node in the middle of a reply is replaced once the reply ends, and every node the `configure` reaches answers with a `configured` control naming its kind.
-
-What needs a restart and what does not:
-
-| Setting | Changes |
-| --- | --- |
-| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_sessions`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
-| Default node options and VAD defaults | Restart, or per session as above. |
-| Node options through `nodes` | When a `/v1/session` session opens, and later through `configure` for nodes that read `input`. |
-| `sglang.sampling` | When a realtime session opens. |
-| `instructions`, `turn_detection`, `output_modalities` | Any time in a realtime session. |
-
-(node-reference)=
-
-**Node Reference**
-
-
-Every node of a kind has `kind` (required) and `timeout_s`. Options marked required have no default.
-
-(realtime_transcription)=
-
-**`realtime_transcription`**
-
-
-Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?model=<model>` of an SGLang-Omni transcription server started with `--enable-realtime`, and reports partial and final transcripts. Its transcripts carry no language.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `base_url` | string, `ws://` or `wss://` | required | The transcription server. |
-| `model` | string | required | Sent as the `model` query parameter. |
-| `api_key_env` | string | `OPENAI_API_KEY` | Environment variable whose value is sent as a bearer token; nothing is sent when it is unset. |
-| `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
-
-(streaming_transcription)=
-
-**`streaming_transcription`**
-
-
-Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?intent=transcription&model=<model>` of an SGLang-Omni ASR server that declares realtime transcription, such as Qwen3-ASR started with `--enable-realtime`. The node cuts the utterances, so each session runs without server VAD: the node sends the utterance's audio, then `transcription.done`. Every `transcription.segment` that is not final becomes a partial transcript, and `transcription.completed` becomes the final transcript with the language the service heard. A segment the service cuts at its maximum length (30 s for Qwen3-ASR) starts the partial text again; the final transcript joins every segment.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `base_url` | string, `ws://` or `wss://` | required | The ASR server. |
-| `model` | string | required | Sent as the `model` query parameter. |
-| `language` | string | `""` | Sent as the session's `language` hint when set. |
-| `decode_interval_ms` | integer > 0, or null | null | Audio between partial transcripts, sent in the session's `session.update`; null keeps the server's default (2000 ms for Qwen3-ASR), and the server refuses less than 200 ms. |
-| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
-| `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
-
-(openai_transcription)=
-
-**`openai_transcription`**
-
-
-Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcriptions` and reports one final transcript.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
-| `model` | string | required | The `model` form field. |
-| `language` | string | `""` | Sent as the `language` hint when set. |
-| `response_format` | `verbose_json` or `json` | `verbose_json` | `verbose_json` reports the language heard in each utterance; `json` suits a service without it and reports none. |
-| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
-| `timeout_s` | number > 0 | `120` | The request timeout. |
-
-(running_transcript)=
-
-**`running_transcript`**
-
-
-Turns the running text of the `asr` stage into utterances: partial transcripts while it grows, and a final one once `tail_ms` of further audio has arrived after `speech.stopped` or a `commit`. Its transcripts carry no language.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `tail_ms` | number ≥ 0 | `400` | Audio after the end of speech that still belongs to the utterance. |
-
-(dialog)=
-
-**`dialog`**
-
-
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. The language the recognizer heard in the last utterance of at least 3 words or 3 Chinese, Japanese or Korean characters is the session language; a shorter utterance, often a noise such as "嗯。", leaves it unchanged, and when the recognizer heard another language in it, that turn's latest user message asks for a reply in the session language.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `system_prompt` | string | `You are a helpful voice assistant. Answer concisely.` | The system message; realtime `instructions` set it. |
-| `max_history_chars` | integer > 0 | `65536` | The bound on the history: a turn whose history plus utterance plus `max_text_chars` would exceed it fails the session. |
-| `max_text_chars` | integer > 0 | `16000` | The longest utterance transcript and the longest reply. |
-
-(openai_chat)=
-
-**`openai_chat`**
-
-
-Streams one chat completion from `<base_url>/chat/completions` per turn.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
-| `model` | string | required | The `model` field. |
-| `max_tokens` | integer > 0 | `512` | The `max_tokens` field; realtime `max_new_tokens_per_unit` sets it. |
-| `temperature` | number 0 to 2, or null | null | The `temperature` field, left out when null; realtime `sampling.temperature` sets it. |
-| `extra_body` | object | `{}` | Further request fields, such as `chat_template_kwargs`. |
-| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
-| `timeout_s` | number > 0 | `120` | The request timeout. |
-
-(openai_speech)=
-
-**`openai_speech`**
-
-
-Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after Chinese end punctuation followed by more text, or at a line end; a sentence longer than `max_sentence_words` is cut as that setting describes.
-
-Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian. They leave `reference_text` empty, so Base clones from the recording's speaker embedding alone: with the transcript it continues the recording itself and opens each sentence with a pause of about half a second, which a listener hears as a later reply.
-
-**TTS quality.** In a controlled, single-reviewer comparison, the 1.7B Base profile with `voices/vivian.wav` and no reference transcript reduced unacceptable timing-related anomalies from 5/60 CustomVoice/Vivian outputs to 0/60 Base outputs. This supports the tested configuration as a mitigation for slowdowns and abnormal pauses.
-
-`openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
-| `model` | string | required | The `model` field. |
-| `voice` | string | `default` | The `voice` field; for Qwen3-TTS CustomVoice a built-in speaker, `default` meaning `Vivian`. |
-| `reference_audio_path` | string | `""` | A WAV the speech service reads, for voice cloning. |
-| `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
-| `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the dialog's session language, except a sentence whose script contradicts it, as in a reply the user asked for in another language, which is tagged by its script: `Japanese` for kana, `Korean` for hangul, `Chinese` for Chinese characters in a session that is not Chinese, Cantonese, Japanese or Korean, and `English` for Latin letters without those in one that is; a sentence whose Chinese, Japanese or Korean characters, each about one syllable, are no more than the syllables of its Latin words, such as "In Japanese, hello is こんにちは.", keeps the session language; any other name tags every sentence with that name. With a fixed name, and with `auto` before the session language is known, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English` until then. |
-| `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
-| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
-| `timeout_s` | number > 0 | `120` | The request timeout. |
-
-(alignment)=
-
-**`alignment`**
-
-
-Reports how far into the reply text the reply audio has reached, as `reply.progress`, so the dialog can cut an interrupted reply where the listener stopped hearing it. It reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session"]` in the profiles, and `input:session` too in the Qwen3-ASR profiles.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `method` | `sentence`, `forced` or `asr` | `sentence` | `sentence` reports the end of each spoken sentence; `forced` also reports the word ends the worker finds in each finished sentence; `asr` reports the sentence ends and, on a cut, the part of the sentence at the cut its transcript says. |
-| `alignment_url` | string, `http://` or `https://`, or empty | `""` | The worker, for `forced`. |
-| `heard_asr_url` | string, `http://` or `https://`, or empty | `""` | An OpenAI-compatible transcription service, including `/v1`, that recognizes the sentence at the cut; required for `asr`, optional for `forced`. |
-| `heard_asr_model` | string | `""` | The `model` form field of those requests; set together with `heard_asr_url`. |
-| `timeout_s` | number > 0 | `2` | The limit for one worker or transcription request; a sentence whose request fails or times out keeps only its sentence end. |
-
-The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Before the audio of each sentence the `tts` node reports the language tag it sends with it as `reply.sentence`, which reaches the readers of its `session` and never the client, so the aligner aligns and recognizes every sentence, including one cut off partway, in the language it was spoken in, and a sentence sent without a tag in the reply's language. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-vivian`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`. Once the client's `conversation.item.truncate` arrives, the dialog reports every cut of that reply as `reply.heard` with `text_end`, the characters the history keeps, which reaches the client as `sglang.response.heard`.
-
-`method: sentence` keeps the sentence ends, so a truncated reply keeps the sentences whose audio was played to the end and drops the sentence the listener was hearing. `method: forced` also sends each finished sentence and its audio to the worker at `alignment_url`, in the language it was spoken in, and reports the word ends it returns, so the cut can fall inside a sentence that finished; when the worker fails or exceeds `timeout_s`, that sentence keeps its sentence end. A sentence that an interruption cuts off before its audio is complete gets no word ends and counts as unheard in both methods.
-
-`method: asr` keeps the sentence ends and, when a reply is cut, sends the audio of the sentence at the cut, from the sentence's start to the cut, as a WAV file in the language that sentence was spoken in to the `/audio/transcriptions` endpoint of the OpenAI-compatible service at `heard_asr_url` with `heard_asr_model`; the reply keeps the sentences before it and the longest prefix of that sentence's text the transcript says, with the punctuation that follows it. The cut is the client's `truncate` position and never past `reply.delivered`, the same cut the dialog makes, so the aligner reads `input:session` for the client's `truncate`. The match ignores case and punctuation, reads digits, English numbers up to twenty and ordinary Chinese numbers as the same number, and stops at the first word the transcript leaves out, repeats or says differently. When the request fails, exceeds `timeout_s` or the first words differ, the sentence counts as unheard. It needs no model beyond the profile's own recognizer. `method: forced` takes `heard_asr_url` and `heard_asr_model` too, and then recognizes the sentence at the cut only when no word end at or after the cut covers it, such as a sentence cut off before its audio was complete; `method: sentence` takes neither.
-
-(stage-vad)=
-
-**Stage `vad`**
-
-
-Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` and `speech.stopped`. Its defaults apply to every session and a session's `turn_detection` overrides them; set them under `stages.vad.factory` or as `--vad.factory.<option>`.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
-| `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
-| `silence_duration_ms` | integer ≥ 0 | `500` | Silence that ends an utterance. |
-| `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
-| `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
-| `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
-
-(stage-turn_detection)=
-
-**Stage `turn_detection`**
-
-
-Declared as `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}`; reports the turn's `speech.started` and `speech.stopped`, which the recognizer and the dialog read in place of the VAD's. A session's `turn_detection` overrides `eagerness`; set the options under `stages.turn_detection.factory` or as `--turn_detection.factory.<option>`.
-
-| Option | Type | Default | Effect |
-| --- | --- | --- | --- |
-| `model_path` | string | `pipecat-ai/smart-turn-v3` | The Smart Turn ONNX file, its directory, or the Hugging Face repository holding `smart-turn-v3.2-gpu.onnx`. |
-| `eagerness` | `low`, `medium` or `high` | `medium` | How readily a pause ends the turn: the silence a confident, a likely and an unlikely end of turn needs. |
-| `max_open_sessions` | integer ≥ 1 | `16` | Sessions the node holds at once. |
-| `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
-
-(stage-asr)=
-
-**Stage `asr`**
-
-
-Declared as `asr: {stages: [asr], inputs: ["input:pcm16"]}`; runs Nemotron 3.5 streaming ASR on the GPU set by `stages.asr.gpu` (default 0) and produces the running `text` a `running_transcript` node reads.
-
-(compatibility-and-constraints)=
-
-**Compatibility and Constraints**
-
-
-(rejected-when-the-profile-loads)=
-
-**Rejected when the profile loads**
-
-
-Each rule is followed by the error it raises.
-
-- A node names both `stages` and a `kind`, or neither — `a session node names either stages or a kind`.
-- A stage route with options beside `stages` — `options [...] belong to a node of a kind`.
-- An unknown `kind` — `unknown component kind '<kind>'`.
-- An option the kind does not have — `Extra inputs are not permitted`.
-- A missing required option (`base_url`, `model`) — `Field required`.
-- A node name of a kind that is not lowercase letters, digits and `_` starting with a letter — `String should match pattern '^[a-z][a-z0-9_]*$'`.
-- A node named `input` — `'input' names the session input, not a node`.
-- No node reads `input` — `no node reads 'input'`.
-- A node reads itself — `node '<name>' reads itself`.
-- An input names a node that does not exist — `node '<name>' reads unknown inputs [...]`.
-- A `<node>:<format>` input that the source does not produce or the reader does not consume — `node '<name>' cannot take [...]`.
-- A required format no input produces (every consumed format except `session`, such as `messages` for `openai_chat`) — `no input of node '<name>' produces [...]`.
-- A cycle of data edges without a `feedback: true` input — `nodes [...] form a cycle of data edges; declare the input that closes it with feedback: true`.
-- A `feedback` edge with `overflow: block` — `the feedback edge from '<source>' into '<name>' must not block`.
-- Two different bounds on inputs from one source — `node '<name>' bounds its edge from '<source>' twice`.
-- A node takes `reply.progress` on control edges from two sources — `node '<name>' takes reply.progress from [...]; one source reports it`.
-- A node reads `reply.progress` of a source as data (the `alignment` kind does) while a control edge takes the same event from that source — `node '<name>' reads ['<source>:reply.progress'] as data, but a control edge takes them`.
-- A `dialog` whose `interrupt` no node that publishes audio takes on a control edge with its `session` read by the dialog, in a profile that publishes audio or where some node takes that `interrupt` — `node '<name>' waits for reply.delivered after it interrupts a reply: ...`.
-- `session_publish` names an unknown node — `publish names unknown nodes [...]`.
-- `session_publish` lists a format the node does not produce — `node '<name>' does not produce [...]`.
-- No published `session` of `openai_chat` or `openai_speech` while a `dialog` exists — `no published node ends turns`.
-- Both `openai_chat` and `openai_speech` publish `session` — `turns end twice: [...] all publish turn.done`.
-- A `dialog` whose `session` is not published — `nodes [...] open turns and must publish 'session'`.
-- A stage name other than `vad` or `asr` — `no stage group serves the stages [...]`.
-- `base_url` of `realtime_transcription` not `ws://` or `wss://`, or of the other service kinds not `http://` or `https://` — `String should match pattern ...`.
-- `method: forced` without `alignment_url` — `the forced method needs alignment_url`.
-- `alignment_url` with a method other than `forced` — `alignment_url belongs to the forced method`.
-- Only one of `heard_asr_url` and `heard_asr_model` — `heard_asr_url and heard_asr_model go together`.
-- `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
-- `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
-- `extra_body` sets `model`, `messages`, `stream`, `max_tokens` or `temperature` — `extra_body cannot set [...]`.
-- `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` — a pydantic range error naming the field.
-- Two `services` with one name or one port — `services must have distinct names and ports`.
-- An empty `model_path` — `Model path is required`.
-
-(rejected-on-the-command-line-or-at-startup)=
-
-**Rejected on the command line or at startup**
-
-
-- `--stages.<...>` — `the stages. prefix is implied on the command line; write --<...>`.
-- `--services.0.<...>` — `services is addressed by name, not by index`.
-- A flag naming a group instead of a value — `addresses a settings group, not a single value`.
-- `--mem-fraction-static` — `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
-- A service that exits or does not answer `/v1/models` on its port — the service errors under [One command with a profile](#one-command-with-a-profile).
-- A node whose service does not answer its probe: `openai_transcription`, `openai_chat` and `openai_speech` request `<base_url>/models`, `openai_chat` then streams one token sampled with the node's settings, `realtime_transcription` requests `/v1/models` on the `http` form of its `base_url`, a forced `alignment` requests `<alignment_url>/health` and then aligns one second of silence, and an `alignment` with `heard_asr_url` requests `<heard_asr_url>/models` — `cannot reach <url>: ...` or `<url> answered <status>`, or the error of the chat token's completion, and the server stops.
-
-(rejected-in-a-realtime-session)=
-
-**Rejected in a realtime session**
-
-During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
-
-- A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
-- A field other than the hot ones in [Session settings](#session-settings) changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
-- `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
-- A `model` other than the deployment's — `model differs from deployment`.
-- An audio format other than 16 kHz input or 24 kHz output PCM — `unsupported PCM format or sample rate`.
-- A `turn_detection` with a `type` other than `server_vad`, or other than `server_vad` and `semantic_vad` in a profile with a `turn_detection` node — `turn detection type is unavailable`; any non-null `turn_detection` in a profile without a `vad` node — `VAD is only available for turn-based sessions`.
-- `nodes` in `session.update` — `invalid session configuration`.
-- `response.create` — `manual turn commands are not granted`.
-- `response.cancel` in a profile where no node takes `interrupt` from `input` on a control edge — `no node takes the control 'interrupt' from 'input'`.
-- A new session beyond the `max_sessions` (16 unless the profile or `--max_sessions` sets another) that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
-- A `session.update` that changes `instructions`, or a `configure` that changes a node, while the user is speaking, between `speech_started` and `speech_stopped` — the session fails with `cannot replace '<node>' while speech is in progress`.
-
-(rejected-by-the-speech-service)=
-
-**Rejected by the speech service**
-
-
-The speech service validates each sentence request, and a rejected request fails the session.
-
-- Qwen3-TTS CustomVoice with `reference_audio_path` — `references are not supported by this model`.
-- Qwen3-TTS CustomVoice with a `voice` that is not one of its speakers — `Unknown voice '<voice>'. Supported voices: default, ...`.
-- Qwen3-TTS Base without `reference_audio_path` — `Qwen3-TTS Base requires reference audio via ref_audio or references[0].audio_path`. With a reference but no `reference_text`, Base clones from the speaker embedding of the recording alone.
-- A `language` tag the service does not speak, including a language name the recognizer reported under `language: auto` — `language must be one of: ...`. Qwen3-TTS speaks Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish and Italian.
-- A speech service that does not stream 24 kHz PCM with an `X-Sample-Rate` header — `speech service sent no X-Sample-Rate header, so its PCM rate is unknown` or `speech service streams <rate> Hz, expected 24000`.
-
-(runtime-limits)=
-
-**Runtime limits**
-
-
-- A conversation whose history, next utterance and `max_text_chars` together exceed `max_history_chars` — `conversation exceeds max_history_chars; open a new session`, and the session fails. With the defaults this happens once the history passes about 49500 characters.
-- An utterance transcript or a reply longer than `max_text_chars` — `transcript exceeds max_text_chars` or `reply exceeds max_text_chars`.
-- A language model stream that stops for a reason other than `stop` or `length` — `LLM stopped with <reason>`; one that ends without a finish reason — `LLM stream ended before completion`.
-- A client that stops reading while `max_pending_output_chunks` or `max_pending_output_bytes` of output wait — the session fails naming the limit.
-
-Every failure ends the realtime session with an `error` event.
-
-(allowed-with-consequences)=
-
-**Allowed, with consequences**
-
-
-- Without an `alignment` node, the dialog's `reply.progress` control edge comes from `tts`, which reports sentence ends, so an interrupted reply is cut at the end of the last sentence heard in full.
-- `method: sentence`: the same sentence-level cut. With `forced`, the cut can fall between words of a finished sentence; a sentence cut off before its audio is complete counts as unheard in both methods unless `heard_asr_url` is set.
-- With `heard_asr_url`, a transcript that leaves out, repeats or changes the first words of the sentence at the cut keeps none of it.
-- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves no assistant entry in the history, so the next utterance joins the user message the reply answered.
-- An aligner that does not read `tts:session` loads but receives no sentence ends and reports nothing.
-- `sglang.response.progress` reaches the client only from a node that publishes `session` and whose `session` no other node reads: the aligner when it is published, never `tts` while the dialog or an aligner reads it.
-- A client that sends no `conversation.item.truncate`: the history keeps an interrupted reply up to the audio the server had delivered, which is ahead of what was played by up to `max_output_lead_ms`. With `truncate`, the cut moves back to the client's `audio_end_ms`, never past the delivered audio.
-- `language: auto` with `realtime_transcription`, `running_transcript` or `response_format: json`: no language is ever reported, so every sentence is tagged by its script, `Chinese` with Chinese characters and `English` otherwise. A fixed `language` tags every sentence without Chinese characters with that name whatever the user speaks.
-- `turn_detection: null` sent after the VAD has already reported speech in the session: the recognizer keeps waiting for speech boundaries, and each `input_audio_buffer.commit` then ends an empty turn (`empty_turn`). Turn detection off from the first `session.update` works as intended; `running_transcript` ends utterances at a commit either way.
-- `input_audio_buffer.commit` is granted in every profile (`client_commit: true`); with the VAD on, it also ends an open utterance.
-- `max_text_chars` at or above `max_history_chars` loads, and then every turn fails with `conversation exceeds max_history_chars`.
-- A reasoning language model can still open a think block of its own with `chat_template_kwargs: {enable_thinking: false}`. With `--reasoning-parser` on its server the block goes to `reasoning_content`, which the cascade never reads; without it the block is spoken and kept in the history.
-- A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is.
-- Speech always interrupts a running reply; `interrupt_response` does not change that.
-
-(verifying-a-deployment)=
-
-**Verifying a Deployment**
-
-
-A healthy start logs each service as `starting service '<name>': ...` and `service '<name>' serving on :<port>` (or `already serving`), then `Pipeline '<model_path>' started (<n> GPU(s))`, then the HTTP server listening on its port. A failed node probe logs `Scheduler thread for stage <node> crashed` with the probe error, and the server stops.
-
-`curl http://127.0.0.1:8765/health` answers 200 with `"status": "healthy"` while the cascade runs, and 503 when it does not.
-
-`curl http://127.0.0.1:8765/v1/models` lists one model whose `id` is the profile's `model_path`, the name a realtime client must use if it sends `model`.
-
-`curl http://127.0.0.1:8765/v1/realtime/capabilities` answers 503 `instance is not ready` when the cascade is not running, and 404 without `--enable-realtime`. For the bundled profiles it reports:
-
-```json
-{
-  "model": "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian",
-  "interaction": "turn_based",
-  "turn_control": ["server_vad", null],
-  "client_commit": true,
-  "input_audio_format": {"type": "audio/pcm", "rate": 16000},
-  "output_audio_format": {"type": "audio/pcm", "rate": 24000},
-  "output_modalities": ["text", "audio"],
-  "native_unit_ms": 200,
-  "supports_truncate": true,
-  "supports_cancel": true,
-  "sampling_parameters": ["temperature", "max_new_tokens_per_unit"],
-  "supports_instruction_updates": true,
-  "supports_sampling_updates": true,
-  "limits": {"max_input_bytes": 1920000, "max_output_bytes": 33554432, "max_history_chars": 65536, "cleanup_timeout_s": 30}
-}
-```
-
-with further fields omitted here. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the [turn latency benchmark](#benchmarking) confirms the whole chain.
-
-(known-limitations)=
-
-**Known Limitations**
-
-
-- **Reasoning models must have thinking off.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian`), or its reasoning is synthesized.
-- **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
-- **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
-
-### Session Graph
-
-A Session is one stateful conversation on the server: the client opens it, appends input for its whole lifetime, reads what it publishes and closes it. A pipeline declares the shape of its Session in its config, and the coordinator opens it; the serving layer appends input and reads the published formats without knowing the nodes behind them. A Session is either the one stage route from the pipeline's entry stage or a graph of nodes declared in `session_nodes`.
-
-(nodes)=
-
-**Nodes**
-
-
-Every node of the Session is an entry of `session_nodes`, and `session_publish` lists, per node, the formats that reach the client. A node with `stages` is a route through those stages of the server.
-
-`inputs` lists the nodes a node reads; `input` is the Session's own input, its audio, its `commit` and other controls, and camera frames when a node of the Session takes them. `node:format` takes only that format from that node; two nodes never send the same format to one reader, and the audio format of `input` is the Session input's alone. A node that reads every format of `input` while the Session takes camera frames must take them too, or name the formats it reads, such as `input:pcm16` and `input:session`.
-
-An input written `{kind: control, source, event, preempt}` is a control edge. Its `event` is a control type of the source's `session` chunks or the format of its other chunks, such as `tool_response`; the event is handed to the node as a `control` operation, outside its input queue, to every stage of its route in route order, and travels on no other edge and to no client. With `preempt` the stages cancel the node's in-flight appends first. The client's `interrupt` reaches a node through a control edge from `input`.
-
-An input of a stage node written `{source, capacity, overflow}` bounds its edge. The inputs naming one source are one edge into the node; it holds at most `capacity` chunks the node's own session has not accepted yet, by default the Session's `max_pending_chunks`. When the edge is full, `overflow: block`, the default, holds the producing node until the node takes a chunk, and rejects the client's append as a full queue; `overflow: drop_oldest` drops the edge's oldest chunk and lets the producer go on; on the client's edge the dropped input is confirmed to the client like a taken one, so a real-time node such as a full-duplex model hears the newest audio instead of a backlog. Two inputs of one source that declare different bounds fail the declaration.
-
-A chunk one node sends another may be larger than the Session's `max_chunk_bytes`, as the unit of a Qwen3-Omni turn longer than about 32 s is. It enters the reader in fragments within that bound: the first stage of the reader's route holds them and restores the chunk for a single append, so every stage of the route sees the chunk whole and once. The fragments of a turn interrupted on the way are dropped.
-
-The Session opens its nodes upstream first and closes them downstream first. A cycle of data edges between nodes must name the input that closes it with `feedback: true`, and that input must not block: two nodes each held on the other's full edge never wake. An undeclared cycle fails with `form a cycle of data edges`. A control edge holds no queue, so a cycle it closes needs no mark.
-
-(stream-vocabulary)=
-
-**Stream vocabulary**
-
-
-| Format | Modality | Payload |
-| --- | --- | --- |
-| `pcm16` | `audio` | 16 kHz mono signed 16-bit PCM |
-| `pcm_f32le` | `audio` | 24 kHz mono float32 PCM |
-| `image_frame` | `image` | One JPEG or PNG camera frame, at the time of the audio unit it came with |
-| `transcript` | `transcript` | `{"text", "is_final"}`; one final transcript per utterance |
-| `messages` | `text` | `{"messages": [{"role", "content"}, ...]}` |
-| `text_delta` | `text` | `{"text"}`, one increment of the reply |
-| `tool_call` | `tool` | `{"calls": [{"id", "name", "arguments"}, ...]}`; the generator asks for these tools |
-| `tool_response` | `tool` | `{"responses": [{"id", "name", "response"}, ...]}`; one response per call, in call order |
-| `session` | `control` | `{"type", ...}` |
-
-Control types sent into a Session are `commit` (the utterance ends here), `configure` (settings change) and `truncate` (the listener heard the reply of the chunk's turn up to `t_ms`; without a turn, the latest reply). Control types a Session emits are `speech.started` and `speech.stopped` with `t_ms` on the input timeline, `turn.queued` when an utterance waits for its reply, `turn.started` when the reply begins, `turn.done` after the reply's audio, `turn.empty` for an utterance without words, `reply.heard` with `text_end` when a truncate cuts the reply the history keeps, and `configured` with `{"nodes": {name: kind}}`. Every chunk of a reply carries its turn number in the chunk's `turn` field, numbered from 1 per Session in utterance order: the turn controls, the `messages`, `text_delta`, `tool_call` and `tool_response` chunks and the reply audio; every turn opens with `turn.queued` and closes with `turn.done` or `turn.empty`.
-
-(vad-node)=
-
-**VAD node**
-
-
-Voice activity detection is a stage node: `sglang_omni.models.vad` hosts one Silero detector per Session in a CPU stage of its own, `vad`, declared with `stages: [vad]`, reading the Session input's audio and controls and publishing `session`. It emits `speech.started` and `speech.stopped` controls whose `t_ms` is the boundary on the input audio timeline, `speech.started` reaching `prefix_padding_ms` before the first speech frame; `commit` resets the detector. Nodes that place utterances read it through a `vad:session` edge. Its detector defaults are the stage's `factory` options `threshold`, `prefix_padding_ms` and `silence_duration_ms`; a Session's `turn_detection` overrides them for that Session alone, at open and through `configure`.
-
-(turn-detection-node)=
-
-**Turn detection node**
-
-
-End-of-turn detection is a stage node beside the VAD: `sglang_omni.models.turn_detection` runs the Smart Turn v3.2 model in a CPU stage of its own, `turn_detection`, declared with `stages: [turn_detection]`, reading the Session input's audio and controls and `vad:session`, and publishing `session`. It emits the same `speech.started` and `speech.stopped` controls as the VAD, at the turn's boundaries: the VAD's `speech.started` opens a turn, and at each `speech.stopped` of the VAD the node scores the turn's audio, ending the turn after the silence that score requires, up to the longest pause of the eagerness preset; speech that resumes before then continues the turn, and `commit` forgets it. Nodes that place utterances or interrupt replies on speech read `turn_detection:session` in place of `vad:session`. The stage's `factory` options are `model_path` (`SGLANG_OMNI_SMART_TURN_MODEL_PATH` when unset) and `eagerness`; a Session's `turn_detection` selects `semantic_vad` with an `eagerness`, or `server_vad`, which passes the VAD's boundaries through, at open and through `configure`. `SessionPorts.turn_detection_types` names the `turn_detection.type` values a Session's nodes implement, and the realtime bridge offers them as `turn_control`.
-
-(interruption)=
-
-**Interruption**
-
-
-An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client. The controls about the interruption pass both ways: the node's `interrupt` and `turn.interrupted` of that turn, and the `reply.delivered` that reports its audio, so a node the client interrupts by turn still stops the nodes it controls and hears what was delivered. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
-
-(delivery-pacing)=
-
-**Delivery pacing**
-
-
-A Session delivers reply audio in real time. For every node of the Session that publishes audio, an audio chunk leaves at most `max_output_lead_ms` ahead of the wall clock since the reply's first audio left, cut at that horizon, so the client never holds more than `max_output_lead_ms` of a reply however long its first audio took; the node's later audio and its `turn.done` wait behind it, and its other chunks, such as transcripts, reply text, speech boundaries and the confirmation of each input append, pass, so the client keeps appending while the reply plays. Once the input has ended everything leaves at once. Audio leaving together, at the input's end or when delivery catches up, is joined per turn into contiguous chunks of at most `max_output_lead_ms`, so a held 40 s reply reaches the client as about 40 chunks rather than one per generated chunk. A Session that is one stage route paces its output the same way. `max_output_lead_ms` is a field of the pipeline config (default 1000); an interruption cannot take back audio the client already holds, so it bounds how long the client may keep speaking after the user started.
-
-A node's `turn.done` leaves once the wall clock reaches the end of the turn's audio, when the client has played it, and not when its last audio left. When the Session releases a node's `turn.done`, it delivers it to the nodes reading it and returns it to the node itself as a `control`, so a node can keep its reply open, and interruptible, until the client has played the reply's audio: a user who starts speaking during its last `max_output_lead_ms` still interrupts it. A `turn.interrupted` the node publishes, or an `interrupt` control naming a turn, drops what the Session still holds of that turn, its `turn.done` included. Held audio counts against the Session's `max_output_bytes`. A `reply.progress` reaches the client only from a node that publishes `session` and whose `session` no node reads, the end of the route that builds the progress: with an aligner reading the speech node's `session`, the client hears the aligner's progress and not the speech node's, and without one it hears none.
-
-(session-api)=
-
-**Session API**
-
-
-A Session takes four operations: `open`, `append`, `control` and `close`. `Client.control_session(identity, event, stages=None, should_preempt=False)` delivers a `session` control chunk such as `interrupt` to every stage of the Session's route, or to the named stages, in the Session's arrival order with its appends; `should_preempt` cancels the stages' in-flight appends first. On a Session graph the event follows the control edges declared from `input`. A Session delivers its outputs as the nodes produce them, between appends as well as during one, so a client that has spoken may wait for the replies without appending.
-
-A `/v1/session` client opens the Session the pipeline declares; the open frame carries `params`, and the Session's limits are the deployment's. An `append` frame carries a `chunk` and is answered with `accepted`; a `control` frame carries the event as its `chunk`, with optional `stages` and `should_preempt`, and is answered with `controlled`. Both answers carry the chunk's seq, and a full queue answers either with `rejected` and leaves the Session open.
-
-A chunk's `turn` identifies a cancellable reply within the Session, not a tool
-call or an input audio frame. All work belonging to that reply preserves the
-same ID, including tool responses. Interrupted reply IDs remain fenced for the
-lifetime of the graph, including tool results carried by control edges. Session
-control commands such as interrupt and truncate remain deliverable. Nodes must discard any matching
-work they have already buffered when they receive the interrupt.
-
-A producer without reply boundaries leaves `turn` unset. VoiceChat's continuous
-duplex stream does not currently allocate reply turns; tool call IDs identify its
-individual calls. Passing through a supplied `turn` does not add native speech
-interruption or reply-boundary detection to VoiceChat.
-
-
-(cascade-components)=
-
-**Cascade components**
-
-
-The cascade config's `kind` shorthand expands each component into its own CPU stage and Session node, with the stages sharing the `cascade` process. Data and control edges use the same coordinator runtime as native model stages. Feedback edges must be declared explicitly; a native stage may read a component's output directly.
-
-A node declares either a component `kind`, with its options beside it, or a `stages` route for a native model or the VAD. `inputs` lists the sources it reads: `input` is the client's audio and controls, `node` a node's every format, `node:format` one format, `input:session` the client's controls, and `{kind: control, source, event}` a control edge. A component accepts the formats its kind consumes; the declaration is validated when the config loads: names are unique, every input exists, every format a component requires other than `session` controls is produced by one of its inputs, exactly one reply-ending kind publishes `session`, and the kinds that open turns (`dialog`) and end them (`openai_chat` or `openai_speech`) are present once. At startup every service kind is probed once: `openai_transcription`, `openai_chat` and `openai_speech` request `{base_url}/models`, `openai_chat` also streams one token sampled with the node's settings so a kernel the service compiles on its first sampled request is built before the server is ready, `realtime_transcription` requests `/v1/models` on the HTTP form of its `base_url`, and a forced `alignment` requests `{alignment_url}/health` and aligns one second of silence; a failed probe fails the start with the node's name.
-
-A kind is a config class with a default `kind`, a constructor and the formats it consumes and produces, registered through `COMPONENTS.register` in `sglang_omni.models.streaming_cascade.components`; `opens_turns` marks the kind that numbers turns, `ends_turns` the one whose `turn.done` ends a reply, and `optional` the consumed formats a configuration may leave unconnected. `running_transcript` is the kind that turns the one running text of a Nemotron 3.5 ASR stage served as a node of the same Session into utterance transcripts, cut at `speech.stopped` or at a commit plus `tail_ms`.
-
-A `configure` control reaches every node reading `input`. Its standard fields reach every node with the matching option, `instructions` as `system_prompt` and `sampling` as `temperature`, `max_tokens`; `nodes: {name: {...}}` changes one node's options, and a different `kind` replaces its component, which adopts the previous one's state. Names and inputs cannot change; a node is not replaced while it is speaking, the change waits for the reply to end. Each node answers with `configured {"nodes": {name: kind}}` on its `session` output.
-
-An EOS append ends the input readers in graph order, after their upstream input readers finish. Its confirmation waits for pending routed input and published reply turns to drain. Background component failures fail the output read without waiting for another append.
-
-The cascade graph enables `shared_timeline`: its published reply chunks use one coordinator-owned media clock. A reply starts no earlier than the latest client audio or the previous reply's audio end; audio advances that clock, and interruption resets it to the client audio clock. Speech boundaries retain their original input timestamps. Other graphs preserve their nodes' timestamps by default.
+`response.cancel` ends the reply in progress: the turn ends, the server drops the audio of that reply it has not sent yet, and `response.done` arrives with status `cancelled` and reason `interrupted` about one second later, once the unit that was running completes. The unit the client did not receive is dropped from the session history, and the thinker then listens on every unit until the user speaks again, so the model does not resume the stopped answer. A cancel with no reply in progress, or a second cancel of the same reply, does nothing. `conversation.item.truncate` with `audio_end_ms` cuts a reply the client stopped, or one the model ended, at the last unit whose audio fully played, never past what the client received.
 
 ## Full-Duplex-Bench runbook
 
-This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex-Bench) (FDB) v1.0 and v1.5 against a full-duplex model served by SGLang-Omni (MiniCPM-o 4.5 by default). Every step is a subcommand of `python -m benchmarks.duplex.fdb`; the code is in `benchmarks/duplex/fdb/`.
+This page runs [Full-Duplex-Bench](https://github.com/DanielLin94144/Full-Duplex-Bench) (FDB) v1.0 and v1.5 against any of the three strategies served by SGLang-Omni: MiniCPM-o 4.5 by default, or Qwen3-Omni or the cascade with `ENGINE` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`). Every step is a subcommand of `python -m benchmarks.duplex.fdb`; the code is in `benchmarks/duplex/fdb/`.
 
 ### What is measured
 
@@ -1045,7 +455,7 @@ The following official reference numbers come from the evaluator at the pinned r
 
 - **Takeover rate**: the share of samples in which the model took the turn, meaning its transcript spans at least 1 s or has more than 3 words.
 - **Latency**: the time from the annotated end of the user's turn to the model's first word, averaged over the samples in which the model took the turn. A start before the end of the turn counts as 0.
-- **Relevance**: a 0-5 rating of the model's reply to the interruption, given by the judge (see [Judges](#judges)).
+- **Relevance**: a 0-5 rating of the model's reply to the interruption, given by the judge (see {ref}`Judges <judges>`).
 - **Backchannel frequency** and **JSD**: how often the model backchannels, and how far its backchannel timing is from the human one.
 
 The capture, VAD and judge can differ from the paper's, so compare these numbers between runs of this runbook, not with the published tables.
@@ -1079,13 +489,14 @@ The 3 s comes from MiniCPM-o replies. Middle crops of replies of 6 s or more sco
 
 The metrics move for their own defects. On 24 MiniCPM-o replies, removing the middle 40% of the audio raises the omission rate from 4.4% to 43.4%; adding 10 clicks per second drops UTMOS from 4.26 to 2.08; shifting up 4 semitones drops voice similarity from 72.5 to 52.5. The omission rate moves at most 0.6 points under the clicks and the pitch shift, and voice similarity at most 0.5 under the cut and the clicks. UTMOS also drops 0.22 for the cut, which leaves a splice, and to 1.41 for the pitch shift, whose phase vocoder adds artifacts.
 
-These are reported only, with no pass mark yet. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
+`RESULTS.md` gives them no pass mark; [Duplex CI](#duplex-ci) gates the UTMOS and voice similarity means. `listening/scores.json` keeps each reply's duration, transcript, Parakeet text and scores.
 
 ### Setup
 
-You need one GPU with at least 80 GB (H100 or H200), and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter).
+You need one GPU with at least 80 GB (H100 or H200) for MiniCPM-o and two for Qwen3-Omni or the cascade, and `git`, `uv` and the FFmpeg shared libraries (version 4 to 8) on the host. The two CANDOR subsets of v1.0 come only from the gated [`betterup/candor-full-duplex-bench`](https://huggingface.co/datasets/betterup/candor-full-duplex-bench): accept its license on that page and export `HF_TOKEN` for the same account before `setup`. Run every command in this page from the repository root, with the sglang-omni virtualenv active (`which python` should print its interpreter). `ENGINE` picks the strategy and defaults to `minicpmo` (see {ref}`Choosing the system under test <choosing-the-system-under-test>`); for Qwen3-Omni or the cascade, export it first, so that setup, the preflight and the runs below all use it:
 
 ```bash
+export ENGINE=minicpmo   # or qwen3-omni, cascade; these two also need CUDA_VISIBLE_DEVICES with two GPUs
 python -m benchmarks.duplex.fdb setup
 ```
 
@@ -1094,10 +505,10 @@ python -m benchmarks.duplex.fdb setup
 | Path | Content |
 |---|---|
 | `Full-Duplex-Bench/` | Official scoring code at the pinned revision `3e799c4`; file hashes are checked |
-| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets from the official Google Drive; `dataset/v1.0.revision` and `dataset/v1.5.revision` hold the archive hashes |
+| `dataset/v1.0/`, `dataset/v1.5/` | The two datasets: the CANDOR subsets from `betterup/candor-full-duplex-bench`, every other subset from [`zhaochenyang20/full-duplex-bench`](https://huggingface.co/datasets/zhaochenyang20/full-duplex-bench), which holds byte-identical copies of the official Google Drive archives. `dataset/v1.0.revision` and `dataset/v1.5.revision` hash the archives and the CANDOR revision |
 | `scoring-venv/` | Python 3.12 with NeMo, torch, Silero VAD and torchcodec for ASR, timing and the official evaluators. torchcodec loads FFmpeg, and `setup` checks that it can |
 | `models/parakeet-tdt-0.6b-v2/` | ASR checkpoint, SHA-256 checked |
-| `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`. To reuse an existing copy, symlink it here or set `MODEL_PATH` |
+| `models/MiniCPM-o-4_5/` | Model under test at revision `503e754`, with `ENGINE=minicpmo`. To reuse an existing copy, symlink it here or set `MODEL_PATH`. The other engines' models go to the Hugging Face cache |
 | `models/Qwen3.8-27B/` | Judge checkpoint; its commit is saved in `models/Qwen3.8-27B.revision` |
 
 (judges)=
@@ -1118,6 +529,30 @@ python -m benchmarks.duplex.fdb setup
 
 A judge starts only when the step has a request for it: the v1.5 pairs and the v1.0 interruption subset need one, while the other v1.0 subsets are scored without an LLM. A run with only those subsets starts no judge server and needs no API key.
 
+(choosing-the-system-under-test)=
+
+**Choosing the system under test**
+
+`ENGINE` picks the strategy. `setup` downloads that engine's models, and `generate` launches its server with the same command as [Launch](#launch). The recorder asks every `qwen3-omni` and `cascade` session for `server_vad` with `silence_duration_ms` 500, so their results and CI baselines end a turn after 500 ms of silence, while the launched profiles default to 800 ms (the base-clone demo uses Smart Turn instead):
+
+| `ENGINE` | System | Server | GPUs for the server |
+| --- | --- | --- | --- |
+| `minicpmo` (default) | MiniCPM-o 4.5 at revision `503e754`, native | `--model-path $MODEL_PATH --variant session --max_sessions 8` | 1 per server; `--gpus` starts one per listed GPU |
+| `qwen3-omni` | Qwen3-Omni-30B-A3B-Instruct, turn-based | `--config examples/qwen3_omni/session_h100.yaml` | 2 |
+| `cascade` | Qwen3-ASR-1.7B, Inkling-2-Mini with DSpark speaking through a `tts_start` tool and Qwen3-TTS Base cloning Vivian | `--config examples/streaming_cascade/profiles/qwen3-asr-inkling-2-mini-vivian-tts-tool/launch.yaml`, plus the forced-alignment worker and the Inkling chat service's venv, which `setup` installs into `$FDB_WORK/aligner-venv` and `$FDB_WORK/inkling-venv` | 2 |
+
+A two-GPU engine needs `CUDA_VISIBLE_DEVICES` to list exactly two GPUs; ASR and the judge run on the first. A run remembers its engine, and a later step with a different `ENGINE` stops with an error.
+
+```bash
+export CUDA_VISIBLE_DEVICES=0,1
+ENGINE=qwen3-omni python -m benchmarks.duplex.fdb setup
+ENGINE=qwen3-omni python -m benchmarks.duplex.fdb generate --run-name qwen3-omni-10 --v15-per-subset 10 --v10-per-subset 10 --num-shards 4 --all-stages
+ENGINE=cascade python -m benchmarks.duplex.fdb setup
+ENGINE=cascade python -m benchmarks.duplex.fdb generate --run-name cascade-10 --v15-per-subset 10 --v10-per-subset 10 --num-shards 4 --all-stages
+```
+
+The three strategies behave differently by design, so compare a run with earlier runs of the same engine; side by side, the v1.0 {ref}`unified metrics <unified-v10-metrics>` are the ones scored by the same rules for all three.
+
 ### Run the benchmark
 
 A run has three steps, then an aggregation. Each step starts the server it needs and stops it when it exits. `generate --all-stages` runs the other three after recording, so one command goes from recording to `RESULTS.md`:
@@ -1131,7 +566,7 @@ Without `--all-stages`, `generate` only records, and each later step is its own 
 | Step | Subcommand | What it does |
 |---|---|---|
 | 1 | `generate` | Starts the model server, streams the selected inputs to `/v1/realtime` (two sessions per v1.5 pair, one per v1.0 sample), records the model's audio, stops the server, then cuts a fixed observation window from each session |
-| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, writes v1.0 unified metrics from the saved transcript and annotations on CPU, then cuts every reply and scores its [listening quality](#listening-quality) |
+| 2 | `asr` | Transcribes the windows with word timestamps (Parakeet), computes v1.5 official speech intervals, writes v1.0 unified metrics from the saved transcript and annotations on CPU, then cuts every reply and scores its {ref}`listening quality <listening-quality>` |
 | 3 | `judge` | Runs the official v1.0 evaluator on the v1.0 subsets that need no LLM, then judges the v1.5 pairs and the v1.0 interruption subset (with `JUDGE=qwen` it starts the judge server for them and stops it after), and writes the per-repeat summaries |
 | | `aggregate` | Combines the repeats of a run into `RESULTS.md` |
 
@@ -1234,9 +669,9 @@ With `JUDGE=qwen` the v1.5 section adds the semantic table. From the same valida
 
 The v1.0 unified section first shows per-repeat coverage and metric tables for pause handling, turn taking and user interruption. Coverage lists declared, selected, eligible and ineligible samples, exclusion reasons and the minimum observable horizon after the reference point. A sample rate uses eligible samples as its denominator; its Wilson 95% interval describes sampling uncertainty, while the all-selected bounds allow each ineligible outcome to be either false or true. Per-pause and seconds-per-second ratios pool their respective denominators over eligible samples. Other intervals bootstrap whole samples. `n/a` with zero eligible samples means no data. `not reached` with a positive eligible count means the requested response-latency quantile was not observed, including nonresponses; a window shorter than a response threshold limits the corresponding rate. The report labels any missing, stale, unsupported or incomplete unified artifacts unavailable and gives a CPU-only backfill command. It does not display stale numeric scores. Backchannel remains official-reference-only.
 
-The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see [v1.0 scoring](#v10-scoring)).
+The following v1.0 official reference table has one row per selected subset. `Selected` counts the recorded samples, `Eligible` the ones the official evaluator can score, and `Evaluated` the ones it scored; then come `Takeover rate`, `Latency (s)`, `Relevance (0-5)`, `Judge retries`, `Backchannel frequency` and `Backchannel JSD`, with `n/a` where the subset's task does not report a number. A subset whose sessions all failed still has a row, with `Eligible 0`. A subset that a repeat has not evaluated is listed under the table as not evaluated yet (`judge` has not reached it) or failed (with its evaluator log); its cells average the repeats that did evaluate it, and show `n/a` when none did. A nonzero `Judge retries` means the interruption takeover rate is inflated (see {ref}`v1.0 scoring <v10-scoring>`).
 
-The listening-quality section comes last, with one table per dataset and the same mean ± deviation cells; see [Listening quality](#listening-quality) for what each column measures. Its v1.5 table from a validation run (MiniCPM-o 4.5, 4 pairs per category, one repeat):
+The listening-quality section comes last, with one table per dataset and the same mean ± deviation cells; see {ref}`Listening quality <listening-quality>` for what each column measures. Its v1.5 table from a validation run (MiniCPM-o 4.5, 4 pairs per category, one repeat):
 
 | Category | Replies | Short replies | Compared replies | Omission rate | WER | UTMOS mean | UTMOS p10 | Voice similarity mean | Voice similarity p10 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -1275,7 +710,8 @@ Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--
 | `CUDA_VISIBLE_DEVICES` | unset | The GPU indices this job may use. The first is the job GPU: it runs the one model server of `generate`, `asr` and `judge`; `generate --gpus` may list any of the others. See [Running jobs in parallel](#running-jobs-in-parallel) |
 | `GPU` | `0` | The GPU index when `CUDA_VISIBLE_DEVICES` is unset |
 | `SERVER_PORT`, `JUDGE_PORT` | `8097 + 10×GPU`, `30000 + 10×GPU` | Local ports. The judge also uses the next port for NCCL. Avoid 29500-29899, which the model server uses for NCCL |
-| `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test |
+| `ENGINE` | `minicpmo` | System under test: `minicpmo`, `qwen3-omni` or `cascade`; see {ref}`Choosing the system under test <choosing-the-system-under-test>` |
+| `MODEL_PATH` | `$FDB_WORK/models/MiniCPM-o-4_5` | Checkpoint of the model under test with `ENGINE=minicpmo` |
 | `MODEL_REVISION` | `503e754…` | Recorded in the run manifest; must match `MODEL_PATH` |
 | `JUDGE_MODEL_PATH` | `$FDB_WORK/models/Qwen3.8-27B` | Checkpoint of the Qwen judge |
 | `SESSION_TIMEOUT_S`, `V10_SESSION_TIMEOUT_S` | `90`, `230` | Per-session client deadline for v1.5 and v1.0. v1.5 inputs run up to about 18 s; v1.0 inputs average about 18 s and some run past 90 s. Neither deadline may exceed the recorder's 230 s |
@@ -1283,7 +719,7 @@ Per-run choices (`--run-name`, `--repeat`, sample selection, `--num-shards`, `--
 
 ### Running jobs in parallel
 
-One job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
+With `ENGINE=minicpmo` one job uses one GPU. To run several at once, open one terminal per GPU and give each its own GPU index and run name:
 
 ```bash
 export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
@@ -1298,18 +734,21 @@ python -m benchmarks.duplex.fdb aggregate --run-name "$RUN"
 
 The ports, the judge config and the compile caches follow the GPU index: the model port is `8097 + 10×GPU`, the judge port `30000 + 10×GPU`, the judge config is in `$FDB_WORK/judge/port-<judge port>/` and the caches in `$FDB_WORK/cache/gpu-<index>/`. The first line `generate` prints confirms them, for example `Job GPU 1: model port 8107, judge port 30010 (nccl 30011), ...`. The `unset` line matters when a shell profile sets `GPU` or a port. Never point two terminals at the same run name.
 
+`ENGINE=qwen3-omni` and `ENGINE=cascade` run one server on two GPUs, so each job needs its own pair in `CUDA_VISIBLE_DEVICES`, and `generate` refuses `--gpus` with more than one GPU; raise `--num-shards` for parallel sessions instead. `qwen3-omni` takes any pair. The bundled cascade profile pins its services with `env: {CUDA_VISIBLE_DEVICES: ...}`, the language model on GPU 0 and the speech models on GPU 1, and a service's `env` overrides the job's, so a cascade job runs on GPUs 0 and 1 whatever pair it is given unless that `env` is edited; only the forced-alignment worker, ASR and the judge follow the pair. Only the model and judge ports follow the GPU: the cascade's services (8002, 8003, 8005) and the forced-alignment worker (8010) keep fixed ports, so run one cascade job per host.
+
 ### Serving metrics
 
 Serving metrics answer how well a server keeps up when several sessions share it. They are computed only from what the client records, which means any server that speaks the same realtime session protocol or the legacy turn-based protocol can be put in the same table.
 
-Start the server yourself, with `max_sessions` at least the largest level, then sweep:
+Start the server with `max_sessions` at least the largest level, then sweep. The command below targets `python -m benchmarks.duplex.fdb serve-model` on GPU 0, which serves MiniCPM-o with `max_sessions` 8 on port 8097; for a server started as in [Launch](#launch), point `--url` at port 8000 (8765 for the cascade). A turn-based server records with `--profile turn-based` and a `--turn-detection` object instead of the native profile, as in {ref}`Turn-based recordings <turn-based-recordings>`:
 
 ```bash
+eval "$(python -m benchmarks.duplex.fdb env)"
 python -m benchmarks.eval.benchmark_duplex_serving sweep \
   --dataset v1.5 --concurrency 1,2,4,8 --output "$FDB_WORK/serving/minicpmo" -- \
   --url ws://127.0.0.1:8097/v1/realtime --profile minicpmo-native-pr2377 \
   --dataset-root "$FDB_WORK/dataset/v1.5" --dataset-revision "$(cat $FDB_WORK/dataset/v1.5.revision)" \
-  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754 \
+  --server-revision "$(git rev-parse HEAD)" --model openbmb/MiniCPM-o-4_5 --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
   --max-per-subset 4
 ```
 
@@ -1320,9 +759,12 @@ Each level is one row:
 | Column | Meaning |
 |---|---|
 | `mean open` | Sessions open at once, averaged over the level's recording; the first and last sessions of a level have fewer neighbours |
-| `sessions failed` | Sessions whose protocol replay failed or that broke off |
-| `503`, `pacing violations` | Sessions denied admission, and sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
-| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every unit of a failed session |
+| `sessions failed` | Runtime, protocol or cleanup failures, excluding clean final admission rejection |
+| `503 / in-session` | Sessions affected by HTTP 503 and by in-session `admission_rejected`, respectively; a session can appear in both counts |
+| `rejected` | Sessions whose complete trace shows final admission rejection without another failure |
+| `affected`, `denial events` | Unique sessions encountering either rejection type, including recovered sessions; and total rejection events, including the final exhausted attempt |
+| `pacing violations` | Sessions whose input drifted more than one 80 ms packet from its schedule. A pacing violation means the load generator fell behind, so the level does not measure the server |
+| `unit miss` | Native profiles only. Units whose lag exceeds one nominal unit (1000 ms for MiniCPM-o), plus every expected unit of a runtime or protocol failure. Final admission rejections are excluded from both missed and expected units; the rate is `-` when no expected units remain |
 | `unit lag` | Native profiles only. Receipt of `sglang.unit.done` minus the time the client finished sending the packet holding the unit's last audio; the short last unit, which the server fills with silence, starts at the input end instead. On MiniCPM-o it matches the server-side `ready_to_finished_ms` of the request event recorder within a few milliseconds |
 | `first audio` | Native: from the unit carrying a reply's first audio being ready to that audio's receipt. Turn-based: from `response.created`, which arrives when the server ends the user's turn, to the first audio |
 | `buffer needed` | The smallest startup buffer with which a reply plays without a gap. It does not depend on `--playback-reserve-ms` |
@@ -1330,76 +772,36 @@ Each level is one row:
 | `RTF p90` | Turn-based only. The time from a reply's first to its last audio arrival over the audio before the last chunk. Native profiles show `-`, because a native reply comes out one unit per input unit and its factor stays near 1 whatever the load |
 | `meets targets` | `yes`, or the targets the level misses |
 
-A level meets the targets when no session failed, no session was denied admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+A level meets the targets when no session failed, no session was denied or rejected admission, no input pacing was violated, and, for native profiles, the unit miss rate is at most 1%, or, for turn-based profiles, the reply RTF p90 is below 1. A turn-based server's unit receipts track input intake, so it is judged by how fast its replies stream. The capacity is the highest level below the first one that misses; when every recorded level meets the targets, the capacity is at least the highest one and a higher level has to be recorded.
+
+HTTP 503 and in-session rejection share `ADMISSION_RETRIES` retries after the initial attempt, with an `ADMISSION_BACKOFF_S` backoff (currently 3 retries and 0.25 seconds). These constants are defined in `benchmarks/duplex/client.py`. The manifest records the policy as `config.transport.admission_retries` and `admission_backoff_s`. In-session backoff can end early on abort. The recorder keeps the original rejection events; clean exhaustion is classified by replay rather than emitting an artificial runtime error. Interrupted or incomplete traces do not establish clean exhaustion. Older recordings used separate budgets for the two transports despite the same manifest field name, so replaying a mixed-retry recording under the shared-budget rule can change its verdict.
+
+Serving JSON retains `admission_denials` for HTTP-affected sessions and adds `sessions_with_admission_rejections` for in-session-affected sessions, `sessions_with_admission_events` for their union, and `sessions_rejected` for final rejections. `admission_denial_events` is the event total, split into `http_admission_denial_events` and `session_admission_rejection_events`. `sessions_failed` excludes variants classified with `failure_kind: admission_rejected`. Older run records without this classification retain their existing failure counts; older clients also omitted the final exhausted HTTP 503, which cannot be recovered from their traces.
 
 These are client-side times on the client's host: they include the network to the server and leave out the player's device and the acoustics. Where the time goes inside SGLang-Omni comes from the request event recorder instead; see [Full Duplex session Unit metrics](profiler.md#full-duplex-session-unit-metrics).
+
+The benchmark client keeps its 80 ms input pacing up to about 128 sessions in one process ([#3288](https://github.com/sgl-project/sglang-omni/pull/3288)); at higher levels, check `pacing violations` before reading a level as a server measurement.
 
 (minicpm-o-45-on-one-h100)=
 
 **MiniCPM-o 4.5 on one H100**
 
+On one H100 80 GB, a short v1.5 cohort (128 sessions of at most 16 s) met a strict gate, under 1% late units with no failed session, at 4 concurrent sessions in five runs, with a unit-lag p95 of about 420 ms. 8 sessions passed once and failed once, 16 failed, and 32 or more ran out of memory. The server ran `--max_sessions 64` with explicit memory budgets at commit `3ae4c24`; [#2869](https://github.com/sgl-project/sglang-omni/pull/2869) has the commands and the full record.
 
-One H100 80 GB ran a short v1.5 audio cohort with the native session protocol. Each recording selected the first 16 naturally sorted pairs from each of the four v1.5 subsets, including both clean and overlap variants: 128 sessions and 1,744 nominal input units per recording. The server allowed 64 session slots, but its memory pools were sized for this short cohort. A warmup pair was excluded. Each recording used a fresh client process against the same continuously running server.
+(turn-latency)=
 
-For this campaign, a recording passed only with **fewer than 1%** late or missing units, all 128 sessions successful, no admission failures, no input pacing violations, and the requested overlap of complete input streams. A unit missed when `sglang.unit.done` arrived more than 1,000 ms after the client had its input ready. This strict campaign gate differs from the general serving target above, which permits exactly 1% misses. `session.created` alone does not establish model admission.
+**Turn latency**
 
-| Concurrent sessions | Recorded result | Qualification |
-| ---: | --- | --- |
-| 1, 2 | One screening run each, with no unit misses | Both passed; neither was repeated. |
-| 4 | Five passing runs, 640 successful sessions, 0 of 8,720 unit misses | Highest tested level confirmed by five runs. The median of the five per-run unit-lag p95 values was 421.4 ms, with a range of 406.5 to 433.1 ms. |
-| 8 | Two valid runs: 3 of 1,744 misses (0.172%) and 25 of 1,744 (1.433%) | The first passed; the second failed the unit gate. |
-| 16 | Two valid runs: 103 of 1,744 misses (5.906%) and 90 of 1,744 (5.161%) | Both failed the unit gate. |
-| 32, 48, 64 | CUDA out-of-memory failures with failed sessions and invalid aggregate input pacing | Observed failures. Their latency and unit-miss aggregates are not qualified paced-load results. |
-
-The C4 runs reached four overlapping complete input streams with no session, admission, or pacing failures. At the separate 80 ms playback reserve, simulated playback still underruns in 438 of 731 C4 replies. Each C4 run recorded audio in 126 or 127 of its 128 sessions. Protocol success does not establish response quality. Concurrencies 5 through 7 were not measured, so the result does not identify an exact maximum concurrency of four. The cohort also does not qualify long calls, video input, semantic quality, or an H100 versus H200 comparison.
-
-The 128 inputs totaled 1,676.565 seconds; the longest was 15.763 seconds. The run used Python 3.12.3, torch 2.13.0+cu130, sglang 0.5.21, transformers 5.12.1, websockets 17.1, and soundfile 0.13.1, with 64 assigned CPU threads. The screen order was C8, C16, C32, C48, C64, C4, C2, then C1. After a valid C8 repeat failed the unit gate, repeats 3 through 5 at C8 and C16 were cancelled and four more C4 runs were recorded. The lower-concurrency cells therefore include the same server's earlier high-load history.
-
-To reproduce the configuration, use server and serving-tool commit [`3ae4c2464eb0b44e0850a9f17da46461a688bc32`](https://github.com/sgl-project/sglang-omni/commit/3ae4c2464eb0b44e0850a9f17da46461a688bc32), the [client changes with the measured file bytes](https://github.com/edwingao28/sglang-omni/commit/0b2ca15afa211cd5c2212a8803a20b7c5db6d880), and model snapshot `503e754207c94da6bb26850b4469f367c9ea3582`. The client changes move per-variant report writes off the event loop and import only the selected recorder. The separate empty-EOS scoring fix in [PR #2868](https://github.com/sgl-project/sglang-omni/pull/2868) was not applied to these measurements; the selected inputs had no integer-second durations. Keep the 80 ms input pacing tolerance unchanged.
-
-The `--dataset-revision` value below is the retained historical label, not a content pin for the upstream Drive archives. The campaign verified all 448 selected file hashes against its retained inputs. Those hashes remain with the private recording artifacts; a fresh dataset download alone does not establish identical inputs.
-
-After [setup](#setup), point `MODEL_PATH` at that exact model snapshot and use the v1.5 dataset described above. Start the server in one terminal:
+`benchmarks/realtime_turn_latency.py` measures one conversation from the moment the user stops speaking: for each turn it prints when turn detection ended the turn, when the user transcript, the first text and the first audio arrived, and when the reply finished. Unlike the serving sweep, whose turn-based `first audio` starts at `response.created`, this includes the turn-detection wait, so it is the latency the listener hears. It streams one WAV, needs no dataset, and waits for each turn's user transcript, so it runs against servers that publish one, such as the streaming cascade; the Qwen3-Omni Session graph publishes none:
 
 ```bash
-export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
-export MODEL_PATH="$FDB_WORK/models/MiniCPM-o-4_5"
-export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
-python -m sglang_omni.cli serve \
-  --model-path "$MODEL_PATH" --variant session --max_sessions 64 \
-  --thinker.engine.kv_cache_bytes 17179869184 \
-  --perception.gpu_memory_fraction null \
-  --perception.total_reserve_bytes 17179869184 \
-  --talker.engine.max_total_tokens 65536 \
-  --talker.gpu_memory_fraction 0.08 \
-  --enable-realtime --host 127.0.0.1 --port 8099
+python benchmarks/realtime_turn_latency.py --url ws://127.0.0.1:8765/v1/realtime --audio question.wav --turns 5
 ```
-
-Run each concurrency and repeat in a new client process and output directory. For example, set `CONCURRENCY=4` and vary `REPEAT` from 1 through 5:
-
-```bash
-export FDB_WORK="${FDB_WORK:-$HOME/fdb}"
-CONCURRENCY=4
-REPEAT=1
-python -m benchmarks.eval.benchmark_duplex_serving sweep \
-  --dataset v1.5 --concurrency "$CONCURRENCY" \
-  --output "$FDB_WORK/serving/h100-short/c${CONCURRENCY}-r${REPEAT}" -- \
-  --url ws://127.0.0.1:8099/v1/realtime \
-  --profile minicpmo-native-pr2377 \
-  --dataset-root "$FDB_WORK/dataset/v1.5" \
-  --dataset-revision 3e799c45a045256f47d5f1c9cda90157e2d2ec9e \
-  --server-revision 3ae4c2464eb0b44e0850a9f17da46461a688bc32 \
-  --model openbmb/MiniCPM-o-4_5 \
-  --model-revision 503e754207c94da6bb26850b4469f367c9ea3582 \
-  --timeout 90 --max-per-subset 16
-```
-
-The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, and two C16 runs. C32, C48, and C64 were attempted once each; their failed recordings remain part of the observation. The complete raw traces remain in the original experiment storage, and the selected local audit copy cannot rescore every session. Neither raw tree is hosted with this runbook.
 
 ### Notes
 
 - **Keep the settings fixed across the repeats of a run.** Mixing repeats with different selections, `--num-shards` or judges makes their mean meaningless; use a new run name instead.
-- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. The model server keeps `max_sessions` at 2, so `generate` refuses more than 2 shards per server up front.
+- **`--num-shards` changes what you measure.** With `--num-shards 2`, two sessions share the GPU, so the latencies are measured under load and do not compare with one shard. `generate` refuses more shards per server than the engine's `max_sessions` up front: 8 for `minicpmo`, 4 for `qwen3-omni` and 16 for `cascade`.
 - **`--gpus` spreads the shards over GPUs.** `--gpus 0,1` starts one model server on each listed GPU, each with its own port (`8097 + 10×GPU`) and caches, and sends shard i to the i-th server modulo their count. With as many shards as GPUs every session has a GPU to itself, so the timing compares with one shard. `asr` and `judge` still run on the job GPU, the first index of `CUDA_VISIBLE_DEVICES`, so `CUDA_VISIBLE_DEVICES=0,1` with `--gpus 0,1` records on both GPUs and transcribes on GPU 0.
 - **`generate` warms the model servers up first.** Once the servers are ready, every shard records the first selected sample, the first v1.5 pair or, with v1.5 left out, the first v1.0 sample, before any scored session starts. A fresh server pays its first-use costs in its first sessions, and with every shard starting at once those sessions answered seconds late, after the overlap they were meant to test had ended. These sessions go to `warmup/` and are never scored, and a failed one only logs a warning. `--skip-warmup` leaves them out, for example to compare a cold start with a warm one; keep that choice the same across the repeats of a run.
 - **The first N samples are not a random sample.** They give fast numbers that compare between runs, not estimates for the full dataset.
@@ -1421,9 +823,11 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 | `ERROR: .../reference-manifest.json is missing` or `.../v10/reference/manifest.json is missing` | `generate` recorded that dataset but did not finish its export; delete the repeat and generate it again |
 | A shard log reports `fail` or `error` sessions | They stay in the denominators. Read `repeat-N/logs/record-shard-*.log` or `repeat-N/v10/logs/record-shard-*.log`; if most sessions fail, fix the server and redo the repeat |
 | `ERROR: --num-shards N over G GPU(s) exceeds the model server's max_sessions` | Lower `--num-shards` or add GPUs with `--gpus`; `generate` refuses more shards than the servers admit before recording |
+| `ERROR: ENGINE=... runs one server on every visible GPU` | `qwen3-omni` and `cascade` take two GPUs per server; leave out `--gpus` and raise `--num-shards` for parallel sessions |
 | `ERROR: --num-shards N leaves model servers idle` | Use at least as many shards as GPUs in `--gpus` |
 | `ERROR: SERVER_PORT gives every model server the same port` | Unset `SERVER_PORT` when `--gpus` lists several GPUs; each server then derives its port from its GPU |
 | HTTP 503 in a record log | Another client may hold the server's sessions; check for competing recordings |
+| `failure_kind: admission_rejected` | The shared retry budget was exhausted without admission. Inspect the HTTP and `admission_rejected` records for the cause; in-session `admission_rejected` is emitted only for `QueueFullError`. In a serving sweep this is part of the level's result. Outside a serving sweep, lower `--concurrency` when the records indicate capacity pressure |
 | `ERROR: CUDA_VISIBLE_DEVICES must list distinct numeric GPU indices` | Export indices such as `0` or `0,1`, not GPU UUIDs |
 | `ERROR: --gpus ... reaches outside CUDA_VISIBLE_DEVICES` | List only GPUs that `CUDA_VISIBLE_DEVICES` names, or widen it |
 | `--device cuda needs exactly one visible GPU` (manual ASR command) | Export a single index for that command |
@@ -1441,10 +845,11 @@ The reported results came from one C1 and C2 screen, five C4 runs, two C8 runs, 
 | `model_mismatch` with `JUDGE=gpt` | The endpoint answered with a model other than `gpt-4o-2024-08-06`; use an endpoint that serves exactly that model |
 | `No module named 'onnx'` (or `einops`) in `model-server-gpu<N>.log`, or `ModuleNotFoundError` in `asr` | Rerun `setup` |
 | `setup` stops with `torchcodec cannot load its FFmpeg libraries` | Install the FFmpeg shared libraries (version 4 to 8) and rerun `setup` |
+| `ERROR: betterup/candor-full-duplex-bench is gated` | Accept the CANDOR license on that dataset's Hugging Face page, export `HF_TOKEN` for the same account and rerun `setup` |
 
 ### Scoring CLI reference
 
-The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C.
+The runbook wraps three CLIs, which also score a recording by hand: `benchmarks.eval.benchmark_duplex_v15` records v1.5 sessions, `benchmarks.eval.benchmark_duplex_reference` scores them with the official v1.5 ASR, timing and behavior code, and `benchmarks.eval.benchmark_duplex_v10` records and scores v1.0 sessions. Run `eval "$(python -m benchmarks.duplex.fdb env)"` first to set the variables the commands below use. Recording and export run in the sglang-omni venv (`python`); ASR, timing, judging and evaluation need the packages `setup` installs in the scoring venv, so those commands run with `"$SCORING_PYTHON"`. `record` needs the model server and `custom-judge` the judge server; `python -m benchmarks.duplex.fdb serve-model` and `serve-judge` start them in the foreground until Ctrl-C. `env` sets `MODEL_REVISION` only for `minicpmo`, so the commands pass `--model-revision` only when it is set. With `ENGINE=cascade`, `serve-model` starts only the cascade server, so start the forced-alignment worker first: `PYTHONPATH=. "$FDB_WORK/aligner-venv/bin/python" examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010`.
 
 (dependencies-and-source)=
 
@@ -1467,7 +872,7 @@ OUT=results/fdb-manual
 python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile minicpmo-native-pr2377 \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -1478,6 +883,10 @@ python -m benchmarks.eval.benchmark_duplex_reference export \
 
 `record` takes the full dataset unless `--max-per-subset N` or repeated `--sample-id category/id` narrows it, and exits 0 only when every selected session passes. `export` cuts the observation windows into a new directory without touching the recording. With `--dataset-root`, every dataset pair that was not recorded counts as missing, so a partial run also passes `--only category/id` for each recorded pair. Repeated `--run` takes disjoint shards; `--engine` is a free label for the scored cohort.
 
+(turn-based-recordings)=
+
+**Turn-based recordings**
+
 A turn-based (half-duplex) endpoint speaks the conversation protocol instead of the native session protocol: it takes a `turn_detection` object in `session.update`, sends none of the `sglang.input_audio.*` receipts or `sglang.unit.done`, and streams `response.audio.delta` at 24 kHz. The profile `qwen3-omni-half-duplex` switches the recorder, the protocol oracle and the export to that protocol:
 
 ```bash
@@ -1485,7 +894,7 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile qwen3-omni-half-duplex \
     --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -1506,7 +915,7 @@ python -m benchmarks.eval.benchmark_duplex_v15 record \
     --profile turn-based \
     --turn-detection '{"type": "server_vad", "silence_duration_ms": 500}' \
     --dataset-root "$FDB_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.5.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 
@@ -1588,7 +997,7 @@ OUT=results/fdb10
 python -m benchmarks.eval.benchmark_duplex_v10 record \
     --profile minicpmo-native-pr2377 \
     --dataset-root "$FDB10_DATASET" --dataset-revision "$(cat "$FDB_WORK/dataset/v1.0.revision")" \
-    --url "$REALTIME_URL" --model "$MODEL_ID" --model-revision "$MODEL_REVISION" \
+    --url "$REALTIME_URL" --model "$MODEL_ID" ${MODEL_REVISION:+--model-revision "$MODEL_REVISION"} \
     --server-revision "$(git rev-parse HEAD)" --timeout "$V10_SESSION_TIMEOUT_S" \
     --output "$OUT/recording"
 python -m benchmarks.eval.benchmark_duplex_v10 reference-export \
@@ -1602,7 +1011,7 @@ CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v1
     --tree "$OUT/reference" --reference-source "$FDB_SOURCE"
 ```
 
-- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with a turn-based profile needs `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
+- `reference-export` writes each sample's window as `<subset>/<id>/output.wav` with its annotation into a new directory, plus `manifest.json`. Repeated `--run` takes shards. An ineligible session gets no folder and keeps its reasons in the manifest. A recording made with the `turn-based` profile needs `--trace-format realtime-turn-based-pcm16-v1`, and one made with the legacy `qwen3-omni-half-duplex` profile `--trace-format realtime-legacy-pcm16-v1`; as in the v1.5 export, the audio is resampled from the profile's output rate and a session is eligible only when its protocol verdict is `pass`.
 - `reference-asr` transcribes every sample with the local Parakeet checkpoint. For user interruption it cuts the audio at the end of the interruption and shifts the word times back, so the transcript holds only the reply. It writes `output.json` per sample and the receipt `asr.json`, and runs once per export.
 - `unified-score` reads the saved manifest, ASR transcript and annotations on CPU, then writes `unified.json` and `unified-samples.jsonl`. It is independent of the official evaluator and can be rerun for an existing export without repeating ASR. To backfill a runbook repeat, use `eval "$(python -m benchmarks.duplex.fdb env)"`, then `CUDA_VISIBLE_DEVICES="" "$SCORING_PYTHON" -m benchmarks.eval.benchmark_duplex_v10 unified-score --tree "$FDB_WORK/runs/RUN_NAME/repeat-N/v10/reference"`, replacing `RUN_NAME` and `N` with the recorded run and repeat; rerun `aggregate` afterward.
 - `reference-evaluate` runs the evaluator per subset and stores the printed `[Result]` numbers, the counts and the log path in `summary.json`. `--subset` evaluates only the named subsets; the rest can follow later.
@@ -1636,6 +1045,18 @@ FDB_REFERENCE_SOURCE="$FDB_SOURCE" python -m pytest -q \
 ```
 
 Export is deterministic: exporting a recording again reproduces every eligible WAV byte for byte, and summarizing saved transcripts and intervals again reproduces the same summaries.
+
+### Duplex CI
+
+The `run-native-duplex`, `run-turn-based-duplex` and `run-cascaded-duplex` labels each run this runbook on one strategy, with the first 5 samples of every v1.5 category and v1.0 subset except `icc_backchannel`, and gate the scores against that strategy's own baseline; [CI Labels](ci_labels.md#duplex) describes the gates. The same job runs locally, with `FDB_CI_STRATEGY` set to `full-duplex`, `turn-based` or `cascaded`, two GPUs visible, and `OMNI_CI_HOME` set to a work directory. The job uses `$OMNI_CI_HOME/fdb` as its `FDB_WORK` and deletes its run `ci-<engine>` there before recording:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 OMNI_CI_HOME=$HOME/omni-ci FDB_CI_STRATEGY=turn-based pytest tests/test_model/test_fdb_ci.py -v -s -x
+```
+
+The job gates the four v1.5 behavior rates, the two v1.5 latency means, the three v1.0 rates and the UTMOS and voice similarity means; the omission rate and the semantic judge's two rates are reported only. It records MiniCPM-o with `--gpus 0,1 --num-shards 16`, so that job needs GPUs 0 and 1 visible, Qwen3-Omni with `--num-shards 4` and the cascade with `--num-shards 16`, and pins the judge to revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, where a fresh `setup` resolves the judge's current Hub revision and reuses it afterwards. The sample counts and the gates are in `tests/utils/fdb_ci.py`, the presets and baselines in `tests/test_model/fdb_ci_config.py`.
+
+(unified-v10-metrics)=
 
 ## Full-Duplex-Bench v1.0 unified metrics
 
@@ -1711,7 +1132,7 @@ Let F(t) be the share of samples with a `response` latency of at most t. Then `r
 **User interruption**
 
 
-Subset `synthetic_user_interruption`. `interrupt.json[0].timestamp` gives the onset S and the end R of the user's interruption. `reference-asr` cuts the audio at R before transcribing, so the transcript holds only words from R on and cannot show whether the model stopped. Silero VAD on the full `output.wav` supplies that (see [Speech detection](#speech-detection)). Each sample records whether detected speech covers S (`speech_at_onset`, a segment with start <= S < end) and whether speech that began before R carries over it (`speech_at_end`, start < R < end; a reply that begins exactly at R does not). The outcome is decided in this order:
+Subset `synthetic_user_interruption`. `interrupt.json[0].timestamp` gives the onset S and the end R of the user's interruption. `reference-asr` cuts the audio at R before transcribing, so the transcript holds only words from R on and cannot show whether the model stopped. Silero VAD on the full `output.wav` supplies that (see {ref}`Speech detection <speech-detection>`). Each sample records whether detected speech covers S (`speech_at_onset`, a segment with start <= S < end) and whether speech that began before R carries over it (`speech_at_end`, start < R < end; a reply that begins exactly at R does not). The outcome is decided in this order:
 
 - `not_exercised`: no detected speech at S, so the interruption did not cut into detected speech. The sample keeps `speech_at_end`, so a model that starts talking during the interruption and talks past R stays visible.
 - `speaking_at_end`: speech at S and at R. The words after R may continue the interrupted answer, so the sample has no latency. A model that stopped and then started a reply before R lands here too, the interruption counterpart of an early start.
@@ -1789,3 +1210,795 @@ It prints each subset's metrics as value, interval and count, with the bounds ov
 - **Relevance of a reply.** Neither these metrics nor the official turn-taking score check that a reply answers the user. Only the official interruption judge rating covers it, and that rating depends on the judge model the run configured.
 - **ASR errors.** A missed or invented word changes the metrics it falls in. All systems share the pinned Parakeet checkpoint, which does not mean they share the same recognition error.
 - **Acoustic latency.** The output is a simulated playout of the received audio.
+
+## Multi-Party Benchmark: Duplex-MPE
+
+[Duplex-MPE](https://arxiv.org/abs/2609.31948) ([Project Page](https://step-out.github.io/Duplex-MPE-Page/), [GitHub](https://github.com/step-out/Duplex-MPE), [Hugging Face](https://huggingface.co/datasets/ChengqianMa/Duplex-MPE)) evaluates selective participation when an assistant (`Aria`) shares a continuous `/v1/realtime` audio stream with three to four human speakers. Each conversation pairs an `explicit` stream (naming Aria on the direct request) with an `implicit` stream (addressing Aria through conversational context alone) across 2,000 paired scenarios (4,000 streams in total).
+
+### Dataset and Setup
+
+`benchmarks.dataset.prepare` pins Hugging Face revision `6d5f59fab1237c14ee8229ea36f111b7423b0fe6` and verifies the manifest and duty-preamble SHA-256 digests after download:
+
+```bash
+# Deterministic 20-pair (40-stream) smoke subset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe-mini --local-dir benchmarks/cache/duplex_mpe_mini
+
+# Full 2,000-pair (4,000-stream) dataset
+python -m benchmarks.dataset.prepare --dataset duplex-mpe --local-dir benchmarks/cache/duplex_mpe
+```
+
+### Run
+
+`benchmarks.eval.benchmark_duplex_mpe` queries `GET /v1/realtime/capabilities` (with a WebSocket `session.created` fallback on HTTP 404) to negotiate input and output PCM16 sample rates and session mode across native full-duplex (`MiniCPM-o 4.5`, `PersonaPlex`, `Nemotron VoiceChat`), turn-based (`Qwen3-Omni` Session graph and `Streaming Cascade`), and legacy speech-pipeline servers. Following Section 3.4 of the Duplex-MPE paper, scored full-duplex evaluation applies only to native full-duplex endpoints (`evaluation_mode="scored_full_duplex"`); turn-based and legacy runs execute as separate unscored probes (`evaluation_mode="unscored_turn_based_probe"`), recording `interaction` and `turn_detection` in `duplex_mpe_results.json` and `RESULTS.md` while omitting `TR`, `AY`, and `RP` (on interruption, the client cuts local playback and sends `conversation.item.truncate` with `audio_end_ms` for identified assistant items when truncation is supported and the session permits sending it — `turn_based` truncation requires affirmative `supports_truncate` and is suppressed after input EOS, and truncation is suppressed once closing begins, in which case server history receives no playback-boundary update). Because every session begins with the spoken duty preamble `audio/aria_duty_preamble.wav`, endpoints that refuse text `instructions` in `session.update` (such as Nemotron VoiceChat) receive the same spoken task instruction; relative to offline in-process adapters, `/v1/realtime` evaluation records wall-clock WebSocket playout, verifies `sglang.input_audio.accepted`, `sglang.input_audio.ended`, and `sglang.input_audio.drained` consumption receipts on non-legacy protocols before persisting audio, stores per-scenario reference seeds as provenance metadata (`seed_policy="reference_seed_metadata_only"`), resamples `22.05 kHz` output via exact `441 -> 320` GCD blocks, sends PCM16 clips to `/v1/audio/transcriptions`, and provides `--strict-reference-vad-version` when pinning `silero-vad==6.2.1`.
+
+```bash
+# Run all phases in one command, or split --phase into generate, asr, judge, and score
+python -m benchmarks.eval.benchmark_duplex_mpe \
+  --dataset-root benchmarks/cache/duplex_mpe_mini \
+  --output-dir benchmarks/results/duplex_mpe_minicpmo \
+  --mini \
+  --model openbmb/MiniCPM-o-4_5 \
+  --base-url http://127.0.0.1:8000 \
+  --asr-base-url http://127.0.0.1:8001 \
+  --judge-config benchmarks/configs/duplex_mpe_judge.example.json
+```
+
+To run recording, transcription (`Qwen/Qwen3-ASR-1.7B` on `/v1/audio/transcriptions`), and semantic judging sequentially on a single GPU, invoke `--phase generate`, `--phase asr`, `--phase judge`, and `--phase score` against the same `--output-dir`. Judge configs declare `model`, optional `model_revision`, optional `enable_thinking`, and per-task decoding (`answer_decoding` and `silence_decoding`), which are persisted in `labels.json` and validated on resume; credentials are read from the environment variable named by `api_key_env` and are never persisted in output artifacts. `RESULTS.md` displays selected/completed/missing scenario coverage above the score table and marks partial runs explicitly, and the CLI exits non-zero whenever any scenario or semantic task fails or remains incomplete.
+
+### Metrics
+
+| Metric | Turn window | Definition |
+| --- | --- | --- |
+| `TR` (`fresh_onset_response_rate`) | `T` (1 direct request per stream) | Share of scenarios with a fresh assistant speech onset within `5.0 s` after `T` ends (excluding speech already active at `T` end; once active, the reactive scheduler waits for `2.0 s` of raw-voicing silence up to `60.0 s`) |
+| `AA` (`conditional_answer_accuracy` / `unconditional_answer_accuracy`) | `T` | Semantic accuracy of the transcribed `T` response against the reference answer, reported both over responded `T` turns and over all scenarios |
+| `SP` (`silence_preservation`) | `N1`, `N2`, `N3` (unaddressed turns) | Share of bystander turns (`N1` mentions Aria without a request, `N2` addresses another human or device, `N3` is self-talk) with either no speech or brief phatic `BACKCHANNEL` rather than `SUBSTANTIVE_INTRUSION` |
+| `AY` (`answering_window_yield`) | `N4_Q` + `3.0 s` + `N4_R` | When a human asks Aria (`N4_Q`) and another participant resolves or cancels the request `3.0 s` later (`N4_R`), share of eligible responses (whose earliest qualifying onset falls inside the `3.0 s` answering pause and remains active across `N4_R` start) that stop within `2.0 s` of `N4_R` onset and stay silent through `N4_R` + `0.5 s` |
+| `RP`, `WR` | `T`, `N4` | Coverage diagnostics: `response_presence` (`T` turns classified as responded via `T_HIT_5S`, `T_HIT_CONTINUATION`, or `T_OVERLONG_60S`) and `window_response` (`N4_Q` windows containing at least `0.12 s` of qualifying speech) |
+
+```bibtex
+@article{ma2026duplexmpe,
+  title   = {Duplex-MPE: Benchmarking Multi-Party Interaction in Full-Duplex Dialogue},
+  author  = {Ma, Chengqian and Feng, Wenhao and Jin, Weixuan and Dai, Gaole and Xie, Tianyu and Ma, Yuexiao and Kang, Zhaolu and Zhao, Xiangyu and Zheng, Xiawu and Chao, Fei},
+  journal = {arXiv preprint arXiv:2609.31948},
+  year    = {2026}
+}
+```
+
+## Streaming Cascade Reference
+
+### Cascade Protocol
+
+Open the cascade's [browser page](#browser-demo), speak, and the reply plays as it is produced; speaking while it plays interrupts it. Any OpenAI Realtime client works the same way. Open a WebSocket to `/v1/realtime`, wait for `session.created`, and send the session settings:
+
+```json
+{"type": "session.update", "event_id": "cfg-1", "session": {"instructions": "Answer in one short English sentence.", "output_modalities": ["text", "audio"], "audio": {"input": {"turn_detection": {"type": "server_vad", "silence_duration_ms": 800}}}}}
+```
+
+Send 16 kHz mono PCM16 audio at real-time pace as `{"type": "input_audio_buffer.append", "event_id": "...", "audio": "<base64>", "sglang": {"seq": 0}}`, with `seq` counting up from 0 for the whole session. The server answers with these events:
+
+| Event | Meaning |
+| --- | --- |
+| `input_audio_buffer.speech_started`, `input_audio_buffer.speech_stopped` | The start and the end of your utterance. |
+| `conversation.item.input_audio_transcription.delta`, `.completed` | Partial and final transcript of what you said. |
+| `response.created` | A reply begins. |
+| `response.output_text.delta`, `response.output_audio.delta` | Reply text and reply audio, base64 PCM16 at 24 kHz mono. In a profile whose `openai_speech` nodes that publish audio set `skip_screen_blocks`, which `/v1/realtime/capabilities` and `session.updated` report as `skips_screen_blocks`, text between `<screen>` and `</screen>` is for the screen: the reply audio never says it, also when the text arrives as `response.output_audio_transcript.delta` for a session with audio output only. |
+| `sglang.response.progress` | In a profile that publishes its aligner's `session`: `text_end`, the length of the reply text whose audio has been produced, and `audio_ms`, where that audio ends in the reply's audio, so a client can mark the text as it plays. |
+| `sglang.response.heard` | After a `conversation.item.truncate`, in a profile that publishes its dialog's `session`: `text_end`, the length of the cut reply's text the history keeps, sent again whenever the cut moves, so a client can show what the history kept. |
+| `response.done` | The reply is complete; `response.status_details.reason` is `stop`, `empty_turn` when the utterance had no words, or `interrupted` when you spoke over it. |
+| `error` | The request or the session failed. |
+
+`response.cancel` interrupts the reply from the client side. The capabilities grant `supports_cancel` when a node takes `interrupt` from `input` on a control edge, as every bundled profile's dialog does, and `supports_truncate` always. An interrupted reply stays in the history only up to the last boundary whose audio the server had sent before the interruption: the last word with a forced aligner, the part of the sentence at the cut that its transcript says with `heard_asr_url`, the last sentence otherwise. `conversation.item.truncate` with `audio_end_ms` tells the server how much of the reply was heard; the history then keeps the reply up to the last boundary whose audio ended by then, never past what the server sent. A reply the history keeps nothing of, such as one interrupted before its first boundary, leaves no answer: your next utterance joins the one before it in a single user message, as if you had kept talking. An utterance you finished before the interruption is answered once the server knows how much of the interrupted reply it delivered, so its prompt keeps that part. The truncate cuts only the reply its `item_id` names, also after the next reply began, so the prompts after that keep what you heard; one for a reply the backend can no longer cut, such as an earlier reply after a later one ended, changes nothing, and an `item_id` the session never sent gets an `item_not_found` error. The language model sees a cut reply ending with …, and while the history holds one, the system message, including instructions a client sets, ends with a sentence saying such a reply was cut off by the user. A reply the model finished is shown without a trailing …, so that it does not read as cut.
+
+To end turns yourself instead of by silence, set `"turn_detection": null` in the first `session.update`; `input_audio_buffer.commit` then ends the utterance after the audio sent before it.
+
+Instructions and sampling (`sglang.sampling.temperature`, `max_new_tokens_per_unit`) can change with a later `session.update` and apply from the next reply; a reply in progress keeps the settings it started with. Turn detection can change the same way and applies from the next audio unit. `session.updated` reports `supports_instruction_updates` and `supports_sampling_updates`, false in a profile whose nodes have no `system_prompt` or no `temperature` and `max_tokens`, respectively. {ref}`Session settings <session-settings>` lists every field.
+
+(turn-detection)=
+
+**Turn Detection**
+
+
+Without it an utterance ends when the `vad` node hears `silence_duration_ms` of silence, so a pause to think in the middle of a sentence ends the turn and the reply answers half a sentence. A profile with a `turn_detection` node, such as `qwen3-asr-qwen3-tts-base-clone`, ends the turn only when the [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) end-of-turn model, scoring the utterance so far at each pause the `vad` node reports, finds it complete, or when the pause outlasts the longest pause the eagerness allows. The node reads the Session input and `vad:session` and publishes `session`: its `speech.started` opens the turn and its `speech.stopped` ends it, so the recognizer, the dialog and the client read `turn_detection:session` where they read `vad:session` before, and speech that resumes inside a held pause continues the utterance instead of interrupting a reply.
+
+The stage loads the BSD-2 licensed `smart-turn-v3.2-gpu.onnx` from the Hugging Face repository `pipecat-ai/smart-turn-v3` through the Hugging Face cache, or from the file or directory `stages.turn_detection.factory.model_path` names, and verifies its SHA-256 at startup. The stage's `factory.eagerness` (`low`, `medium` or `high`, default `medium`) sets how readily a pause ends the turn: `high` takes a shorter silence on a confident score and gives up a held pause sooner, `low` waits longer. The profile sets the `vad` node's `silence_duration_ms` to 160, the pause the detector scores as a candidate end; a client that selects `{"type": "server_vad"}` on this profile gets the VAD's boundaries unchanged, with that pause.
+
+A client selects the behaviour per session with the standard field, `{"turn_detection": {"type": "semantic_vad", "eagerness": "high"}}`; `session.created` lists `semantic_vad` under `turn_control` when the profile has the node. The Qwen3-Omni Session graph takes the node the same way: declare it in `examples/qwen3_omni/session_h200.yaml` beside `vad`, let `dialog` read `turn_detection:session` in place of `vad:session`, and publish `turn_detection: [session]` in place of `vad: [session]`.
+
+(speaking-styles)=
+
+**Speaking Styles**
+
+
+The `qwen3-asr-qwen3.8-27b-vivian-styles` profile lets the language model choose how a reply sounds while the voice stays Vivian. Its system prompt asks Qwen3.8-27B to start every reply with `[neutral]`, `[cheerful]`, `[excited]`, `[sympathetic]` or `[calm]`, and the `llm` node's `constrain_style_tags` passes SGLang a `regex` that holds the reply to one of the `tts` node's styles followed by text without brackets that does not start with whitespace: without it the model dropped the brackets or named another style in 6 to 8 percent of replies under earlier prompts and 1 of 248 under this one, and the speech service read the word out. The `llm` node leaves the tag out of the reply text, and the `tts` node clones the Vivian recording of that style, with its transcript, for the sentences after it ([`openai_chat`](#openai_chat), [`openai_speech`](#openai_speech)); `[neutral]` clones `voices/vivian.wav`. The `dialog` node puts each reply's tag back into the prompts after it ([`dialog`](#dialog)): without a regex, under an earlier prompt that asked for a tag only when a feeling fit, and shown its earlier replies untagged, the model tagged 7 of 16 emotional turns in six-turn English conversations, against 16 of 16 with the tags, so they matter for a chat server that cannot hold decoding to a tag. Over 50 English and 50 Chinese messages, each answered twice, 91 of the 100 English replies and 84 of the 100 Chinese ones got the tag a listener would expect. Sympathetic was the weakest style: over this run and a second one, 33 of 40 English and 24 of 40 Chinese sad messages got it, and most of the rest calm or neutral. Each style recording is the CustomVoice speaker Vivian reading a sentence of that style with a matching instruction; [`voices/README.md`](../../examples/streaming_cascade/voices/README.md) gives the requests that regenerate them.
+
+Qwen3-TTS Base ignores instructions and copies the timbre, pitch and pace of the recording it continues, so a style is only as strong as its recording. Over 60 English and 60 Chinese sentences per style, against the same sentences cloned from `vivian.wav`: excited speaks about 2.4 semitones higher, cheerful 1 to 2 higher, calm at 0.85 to 0.9 times the pace, and sympathetic barely slower and 1 to 2.5 semitones higher, closer to warm than to sad. Excited moves the timbre furthest from `vivian.wav`.
+
+- Only the styles in `styles` exist, with no strength between them; a new style needs its own recording and transcript.
+- The tags are explained only in the system prompt. Instructions a client sets in `session.update` replace it, so they must explain the tags too; the regex still makes every reply start with one, which the model then picks without guidance. A configure that changes the `tts` node's styles changes the regex with them, but not the system prompt.
+- `regex` is an SGLang request field. Without such a constraint, a tag in another form, such as `(calm)`, or a bracketed word that names no style, such as `[casual]`, is spoken as text.
+
+(speaking-through-a-tool)=
+
+**Speaking Through a Tool**
+
+In `qwen3-asr-inkling-2-mini-vivian-tts-tool` and `qwen3-asr-qwen3.8-27b-vivian-tts-tool` speech is a tool the language model calls instead of a fixed step after its text. The dialog's `speech_tool` names the tool and the generator's `tools` offers it; the synthesizer reads `dialog:tool_call` rather than the generator's text, and publishes each speech's text as `text_delta`, so captions and the aligner (`tts:text_delta`) follow what is spoken. A graph that would speak twice or not at all fails at load. The tool takes one argument, the complete `text`, and the dialog is the only node that starts or stops it: the model only calls it, and an interrupt stops it as it stops any reply. Once a speech was cut, a system note tells the model what `heard_prefix` means, whatever `instructions` the client set. The dialog adds no other rules to the prompt, because a longer note on every prompt made Qwen3.8-27B follow a client's new `instructions` half as often. New `instructions` are also repeated beside the next utterance, in that prompt only: with a long past speech in the history and a call required, the model followed them in 3 of 12 samples, and in 10 of 12 with the repeat.
+
+Every prompt asks for a call with `tool_choice: required`, so the model speaks once for each utterance and cannot choose silence. The dialog speaks the first valid call and answers every other one at once with `{"status": "failed", "error": ...}`, the error `BUSY` for a second call in the same message. Each speech is a turn of its own, so the turn fence, the paced `turn.done`, the reply's audio timeline and the client's `truncate` apply to it as to any reply. Its one tool response is `{"status": "completed"}` once the paced `turn.done` arrives, with `"truncated": true` when `max_tokens` cut the call, `{"status": "interrupted", "heard_prefix": ...}` when the listener cut it, or `{"status": "failed", "error": ...}` when the speech service failed or the text held no words to speak, such as `...` or an emoji, which does not fail the Session; a speech that failed after some of its sentences had audio adds their text as `heard_prefix`, with a system note that tells the model to say only the rest. A failed speech reaches the client as `response.done` with the status `failed` and the reason `speech_error`. The synthesizer puts the end of its last spoken sentence on the failed speech's `turn.done`, since `reply.progress` reaches the dialog through the aligner, after that `turn.done` and with a sentence's word ends after the sentence's end. The profile gives its synthesizer a `timeout_s` of 10, so a speech service that sends nothing for that long counts as failed. Reports of what was heard that arrive later rewrite `heard_prefix`, so the next prompt holds the latest position. The tool call keeps the whole text in the history.
+
+A completed speech prompts nothing: the model reads the call's answer in the prompt for the next utterance. Given a `silent` tool or a `silent` action to end with instead, Qwen3.8-27B repeated its answer after a completed speech in 10 of 49 and 22 of 50 samples, and with the `silent` tool offered on a Session's first utterance it chose silence for 34 of 50 plain questions. The model is prompted again only when its call was refused or the speech service failed, up to `max_inferences_per_utterance` prompts for one utterance, unless the user is speaking or an utterance waits. That prompt announces no turn: `turn.queued` and `turn.started` go out only if the model speaks, and speech over it stops the model without a `turn.interrupted`. Text the model writes without a call, as a service that ignores `tool_choice` lets it, is recorded and spoken as a `tts_start` call, so its speech is answered, cut and followed up as any call's is.
+
+A speech starts with the first words of its text: the generator passes the call's arguments on as they arrive, the dialog reads the `text` value out of them, and the synthesizer speaks each sentence once it is complete while the model writes the rest. This needs a service that streams a call's arguments, and SGLang 0.5.23's `qwen3_coder` parser releases a parameter only at its closing tag, so the profile starts its language model with `python -m sglang_omni.models.streaming_cascade.chat_service`, which is `sglang.launch_server` with a `qwen3_coder` parser that releases a string argument as the model writes it and gives the same calls. On two H200s and from the end of the user's speech, the first audio of a reply of several sentences took a median of 1.47 s against 2.48 s with SGLang's parser and 1.29 s with the synthesizer reading the model's text directly, as the profile did before it spoke through a tool, and of a one-sentence reply 1.39 s against 1.38 s and 1.14 s, over 15 turns each with the aligner's `asr` method. A one-sentence reply gains nothing, since its first sentence ends where the call does. With thinking on the model calls the tool without `tool_choice`, but the whole text took a median of 3.1 s, so the profile runs with thinking off.
+
+Every call starts with the same 14 tokens of `qwen3_coder` syntax, `<tool_call>\n<function=tts_start>\n<parameter=text>\n`, so the Qwen3.8-27B profile's `llm` node sends them as its `required_call_opening`: when a prompt requires a call, the opening goes as an assistant message the model continues, with `continue_final_message: true`, and the model starts decoding at the text. The request asks for `tool_choice: auto`, because the opening already commits to the call and the grammar of a required choice would make the model open a second one. The chat service reads the continued opening in front of the first streamed delta, so the reply still arrives as a streamed `tts_start` call. SGLang's own server returns the rest of the call as content, closing tags included, and the dialog would speak them, so the option needs the chat service; the chat service reads the opening only in streamed completions, the only kind the node requests. On one H200 that served the chat, ASR and TTS models together, Qwen3.8-27B with the opening, at temperature 0 over 12 questions asked twice each, wrote the first character of its text a median 77 ms after the request against 293 ms without it, and its first sentence matched the reply without the opening in 21 of 24 pairs. Over 9 recorded questions asked twice each through `/v1/realtime` with a fresh session per turn, the median time from the end of the user's speech to the first audio went from 1.47 s to 1.26 s, with 15 of 18 paired turns faster. The Inkling-2-Mini profile sends Inkling's own opening, which `chat_service` reads as {ref}`its section <inkling-2-mini-the-default-chat-model>` describes.
+
+(scripted-conversation)=
+
+**Scripted Conversation**
+
+
+The same conversation runs without the realtime protocol through the Session API:
+
+```bash
+PYTHONPATH=. python examples/streaming_cascade/run.py question.wav followup.wav --output response.wav
+```
+
+Each input is a 16 kHz mono signed 16-bit PCM WAV. The command runs the cascade in its own process without starting the profile's `services`, so start them first. It streams the files back to back through one Session of the profile named by `--config` and writes the reply audio to `response.wav`; the second file is answered with the first turn in the history. `--config` defaults to `qwen3-asr-qwen3-tts-vivian`. Pass `--commit` for a profile without the VAD node. The `/v1/session` protocol is described in {ref}`Session API <session-api>`.
+
+(services-and-launch-modes)=
+
+### Services and Launch Modes
+
+The server starts the profile's `services` one after another, in the order they are listed, before it starts the cascade. For each entry it first requests `http://127.0.0.1:<port>/v1/models`: a service that answers 200 is reused and left running when the server stops, and the log shows `service 'tts' already serving on :8005`. Otherwise it runs `command` with its own environment plus the entry's `env`, in the directory `sgl-omni serve` was started from, and polls the port every second for up to 600 s. A service that exits first fails the start with `service '<name>' exited with code <n> before :<port> answered`; one that does not answer in time fails it with `service '<name>' did not answer on :<port> within 600 s`. The cascade itself must then start within `SGLANG_OMNI_STARTUP_TIMEOUT` seconds (default 600).
+
+While the server runs, a service it started that exits stops the server with `service '<name>' exited with code <n>`. Stopping the server sends SIGTERM to every service it started and SIGKILL to any still running 15 s later.
+
+Relative paths in a service `command` and in a node's `reference_audio_path` resolve against the directory `sgl-omni serve` was started from; the bundled profiles assume the repository root.
+
+A service's port appears in three places that must agree: the `--port` inside its `command`, its `port`, and the `base_url` of the node that calls it. To move a service, change all three in the profile. If the server's own `--port` is taken, the server logs `Port <n> is already in use` and serves on a free port it names in `Using port <m> instead`; set `SGLANG_OMNI_STRICT_PORT=1` to fail instead.
+
+(services-you-run-elsewhere)=
+
+**Services you run elsewhere**
+
+
+Remove the service's entry from `services` and set the node's `base_url` and `model` to the running service. `openai_transcription`, `openai_chat` and `openai_speech` work with any OpenAI-compatible transcription, chat completions and speech endpoint; `api_key_env` names the environment variable holding its bearer token. A `services` entry is only for a service on this machine, since its readiness check requests `127.0.0.1`. The node still probes the service at startup, so a wrong `base_url` fails the start (see {ref}`Verifying a Deployment <verifying-a-deployment>`).
+
+(a-model-inside-the-server-as-a-stage)=
+
+**A model inside the server as a stage**
+
+
+A node written `stages: [...]` runs a model inside this server instead of calling a service. Two stage routes exist: `vad`, the voice activity detector, and `asr`, Nemotron 3.5 streaming ASR. Any other stage name fails the load with `no stage group serves the stages [...]`.
+
+`nemotron-stage-qwen3-tts` runs Nemotron 3.5 ASR as the `asr` stage node reading `input:pcm16`, and a `running_transcript` node turns its running text into utterances:
+
+```yaml
+stages:
+  asr:
+    gpu: 0
+
+session_nodes:
+  asr:
+    stages: [asr]
+    inputs: ["input:pcm16"]
+  transcript:
+    kind: running_transcript
+    inputs: [input, "asr:text", "vad:session"]
+    tail_ms: 400
+```
+
+`stages.asr.gpu` (or `--asr.gpu 1` on the command line) picks the GPU. Install the Nemotron dependencies as [Nemotron 3.5 ASR](../cookbook/nemotron3_5_asr.md) describes.
+
+(several-gpus)=
+
+**Several GPUs**
+
+
+Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-vivian-tts-tool` does with `env: {CUDA_VISIBLE_DEVICES: "0"}` for the language model and `"1"` for the two speech models; a stage picks its GPU with `gpu`. A service's memory share is the `--mem-fraction-static` inside its own `command`. The cascade server has no SGLang engine stage, so `sgl-omni serve --mem-fraction-static` on a cascade profile fails with `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
+
+(the-forced-alignment-worker)=
+
+**The forced-alignment worker**
+
+An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi`, `regex` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `--model` | required | The forced-aligner checkpoint. |
+| `--device` | `cpu` | The device the aligner runs on. |
+| `--language` | `Chinese` | The language of a sentence sent without one; a sentence carries the language tag `openai_speech` spoke it with, and without a tag the language of its reply once the recognizer has named the user's language. |
+| `--host` | `127.0.0.1` | The bind address. |
+| `--port` | required | The port; the node's `alignment_url` must point at it. |
+
+`curl http://127.0.0.1:8010/health` answers `{"status":"ready"}` once the model is loaded. To run a Qwen3-ASR profile without the worker, switch its aligner to the asr method on the command line: `--session_nodes.aligner.method asr --session_nodes.aligner.alignment_url ""`. The Nemotron profiles have no transcription endpoint and switch to the sentence method: `--session_nodes.aligner.method sentence --session_nodes.aligner.alignment_url ""`.
+
+(browser-playground)=
+
+**Browser playground**
+
+
+```bash
+python playground/cascade/app.py --api-base http://127.0.0.1:8765 --port 8090
+```
+
+It needs `aiohttp`, serves the page on `--host` (default `127.0.0.1`) and `--port` (default `8080`), and forwards `/v1/realtime` and `/v1/realtime/capabilities` to `--api-base` (default `http://127.0.0.1:8000`). Its settings panel is the [browser demo's](#browser-demo): the system prompt, turn detection (`server_vad` with its silence, `semantic_vad` with its eagerness, as `turn_control` lists them) and one field per key in `sampling_parameters`, labelled for the cascade (`max_new_tokens_per_unit` is the reply token limit). It offers no text-only replies, because its captions and `conversation.item.truncate` follow audio playback. The fields are empty until you fill them, kept per deployment model in this browser, and cleared by Reset to defaults. While they are empty the page sends only `output_modalities` in its `session.update`, so the profile's prompt and turn detection apply; a filled field is sent in the first `session.update` and applies to the next conversation, with sampling fixed for the session as {ref}`Session settings <session-settings>` describes. Its stop button sends `response.cancel`. When a reply is interrupted, by the button or by speaking over it, the page sends `conversation.item.truncate` with the audio it played, and it marks the heard part of the reply from `sglang.response.progress` and the audio it has played, word by word through the stretch being played, at an even pace between two progress points; a cut reply then shows the part the history kept, from `sglang.response.heard`. A long reply's caption grows up to the room under the orb and then scrolls to keep the line being heard in view; the transcript holds the whole reply. When the server grants `skips_screen_blocks`, the caption leaves out a reply's `<screen>` blocks, and a card under it shows the blocks of the latest reply that has played any: a block shows once a `sglang.response.progress` point past its closing tag has played, which is when the history keeps it whole, and after a cut only if its closing tag lies in the prefix the history kept, so a reply cut before or inside its block never shows it. A block the reply leaves open shows once the completed reply's end has played. Otherwise the caption and the transcript show a screen tag as the audio says it, and no card appears. Browsers grant the microphone only to `localhost` or HTTPS pages, so open the page on the same machine or forward its port.
+
+(an-openai-realtime-client-or-the-session-api)=
+
+**An OpenAI Realtime client or the Session API**
+
+
+Any OpenAI Realtime client connects to `/v1/realtime` with the session flow in [Cascade Protocol](#cascade-protocol). `/v1/session` serves the same Session without the realtime protocol. `examples/streaming_cascade/run.py` runs a profile in its own process instead of connecting to a server; it does not start the profile's `services`, so start them first.
+
+(configuration)=
+
+### Configuration
+
+
+A setting comes from one of three places: the profile file, read at launch; command-line overrides of the profile, also read at launch; and the settings a client sends for its own session.
+
+(profile-file)=
+
+**Profile file**
+
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `config_cls` | required | `StreamingCascadePipelineConfig` selects the cascade. |
+| `model_path` | required | The deployment's name: the id `/v1/models` reports and the realtime model name, unless `sgl-omni serve --model-name` sets another. |
+| `services` | `[]` | The services to start, in order (see below). |
+| `session_nodes` | required | The nodes of the conversation, by name. |
+| `session_publish` | required | Per node, the formats that reach the client. |
+| `stages` | none | Settings of stage routes by stage name, such as `asr: {gpu: 0}` or `vad: {factory: {silence_duration_ms: 800}}`. |
+| `timeout_s` | `120` | How long one input or control operation on a cascade node may take, including the wait for the last replies once the input has ended; past it the session fails with `component '<name>' append timed out`. |
+| `unit_ms` | `200` | The length of the input audio units the server acknowledges with `sglang.unit.done`; reported as `native_unit_ms`. Audio reaches the session as each append arrives, so the VAD node ends a turn without waiting for a unit to fill. |
+| `max_sessions` | `16` | Sessions that every component node, the VAD node and the turn detection node hold at once. A session beyond them is refused when it opens; raise it, for example with `--max_sessions 32`, when the services have room for more. |
+| `max_output_lead_ms` | `1000` | How far ahead of real time reply audio is delivered; audio already delivered cannot be taken back by an interruption. |
+| `max_pending_output_chunks` | `1024` | Reply chunks held for a client that has stopped reading before the session fails. |
+| `max_pending_output_bytes` | `33554432` | The same bound in bytes. |
+
+A `services` entry has `name` (required, unique), `command` (required, a list), `port` (required, 1 to 65535, unique) and `env` (a map, default empty).
+
+A `session_nodes` entry is either a node of a `kind`, with that kind's options beside `kind`, or a stage route written `stages: [...]`, which takes no options. Both take `inputs`, a non-empty list of:
+
+| Input | Takes |
+| --- | --- |
+| `input` | Every format of the client input: its 16 kHz `pcm16` audio and its `session` controls (`commit`, `configure`, `truncate`). |
+| `input:pcm16`, `input:session` | Only the client audio, or only its controls. |
+| `<node>` | Every format `<node>` produces that this node's kind consumes. |
+| `<node>:<format>` | Only that format. |
+| `{source: <input>, capacity: <n>, overflow: block \| drop_oldest, feedback: true \| false}` | The same, with a bound on the edge: at most `capacity` chunks wait (default 64); when full, `block` (default) holds the producer and `drop_oldest` drops the oldest chunk. `feedback: true` marks the edge that closes a cycle and must not block. |
+| `{kind: control, source: <node or input>, event: <control type>, preempt: false}` | The source's control event, delivered to this node as a control instead of as data; `preempt: true` cancels the node's operations in flight first. |
+
+The formats each kind consumes and produces:
+
+| Kind | Consumes | Produces |
+| --- | --- | --- |
+| `realtime_transcription`, `openai_transcription` | `pcm16`, `session` | `transcript` |
+| `running_transcript` | `pcm16`, `session`, `text` | `transcript` |
+| `dialog` | `transcript`, `text_delta`, `session` | `messages`, `session` |
+| `openai_chat` | `messages` | `text_delta`, `session` |
+| `openai_speech` | `text_delta`, `session` | `pcm_f32le` at 24 kHz, `session` |
+| `alignment` | `text_delta`, `pcm_f32le`, `session` | `session` |
+| stage `vad` | `input` | `session` |
+| stage `asr` | `input:pcm16` | `text` |
+
+`session_publish` maps a node to the formats the client receives: `transcript` becomes `conversation.item.input_audio_transcription.*`, `text_delta` becomes `response.output_text.delta`, `pcm_f32le` becomes `response.output_audio.delta` (PCM16), and `session` carries speech boundaries, the response lifecycle and `sglang.response.progress`.
+
+(command-line-overrides)=
+
+**Command-line overrides**
+
+
+Any field of the profile can be overridden after `--config`, as `--<path> <value>` or `<path>=<value>`, one leaf value per flag. Paths start at the top of the profile, except stage settings, which start at the stage name:
+
+```bash
+sgl-omni serve --config examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian/launch.yaml --enable-realtime --port 8765 \
+  --session_nodes.llm.base_url http://127.0.0.1:9000/v1 \
+  --session_nodes.llm.temperature 0.3 \
+  --session_nodes.tts.language English \
+  --services.tts.env.CUDA_VISIBLE_DEVICES 1 \
+  --vad.factory.silence_duration_ms 800 \
+  --timeout_s 60
+```
+
+Services are addressed by `name` (`--services.tts.port`), not by position. An override may add an option the file leaves out, and is validated like the file: an option the node's kind does not have fails with `Extra inputs are not permitted`, and a whole group such as `--session_nodes.aligner x` fails with `addresses a settings group, not a single value`. Lists such as a service `command` or a node's `inputs`, and removing a node or a service, need an edit of the file.
+
+(session-settings)=
+
+**Session settings**
+
+
+A realtime client sends its settings in `session.update`. The first `session.update` opens the session; later ones may change only the fields marked hot below, and any other change is refused with `session field is frozen`.
+
+| Field | Reaches | When it can change |
+| --- | --- | --- |
+| `instructions` | `system_prompt` of every node that has it (the `dialog`) | Any time; applies to the next prompt. At most 65536 characters, else `instructions exceed context or have invalid type`. |
+| `sglang.sampling.temperature` | `temperature` of every node that has it (`openai_chat`), 0 to 2 | Any time; applies to the next reply, a reply in progress keeps its value. |
+| `sglang.sampling.max_new_tokens_per_unit` | `max_tokens` of `openai_chat`, at least 1 | Any time; applies to the next reply, a reply in progress keeps its value. |
+| `audio.input.turn_detection` | `type: server_vad` reaches the session's `vad` stage: `threshold`, `prefix_padding_ms`, `silence_duration_ms`; with a `turn_detection` node, `type: semantic_vad` and its `eagerness` reach that node, and `server_vad` makes it pass the VAD's boundaries through | Any time. `null` turns detection off and utterances end only at `input_audio_buffer.commit`; send it in the first `session.update` (see {ref}`Allowed, with consequences <allowed-with-consequences>`). `interrupt_response` is accepted and has no effect. |
+| `output_modalities` | `["text", "audio"]` or `["text"]` | Any time. |
+
+The realtime endpoint takes no per-node options. A `/v1/session` client sets them, together with the standard fields, as the `params` of its open frame and later as the fields of a `configure` control:
+
+```json
+{"instructions": "Answer in one short sentence.", "sampling": {"temperature": 0.2, "max_new_tokens_per_unit": 128}, "turn_detection": {"silence_duration_ms": 800}, "nodes": {"tts": {"language": "English"}, "llm": {"max_tokens": 256}}}
+```
+
+`nodes` maps a node name to options. An entry without `kind`, or with the node's current kind, changes only the listed options; an entry with another kind replaces the node with a new one built from that entry alone, so it must list that kind's required options. The new node takes over the conversation state of the old one. A `configure` reaches only the nodes that read `input` or `input:session`; a node that reads neither, such as `aligner` in the profiles, takes options only from the open frame. A node in the middle of a reply is replaced once the reply ends, and every node the `configure` reaches answers with a `configured` control naming its kind.
+
+What needs a restart and what does not:
+
+| Setting | Changes |
+| --- | --- |
+| `services`, the node set, `inputs`, `session_publish`, `stages`, `timeout_s`, `unit_ms`, `max_sessions`, `max_output_lead_ms`, `max_pending_output_*` | Restart the server. |
+| Default node options and VAD defaults | Restart, or per session as above. |
+| Node options through `nodes` | When a `/v1/session` session opens, and later through `configure` for nodes that read `input`. |
+| `sglang.sampling` | When a realtime session opens. |
+| `instructions`, `turn_detection`, `output_modalities` | Any time in a realtime session. |
+
+(node-reference)=
+
+### Node Reference
+
+
+Every node of a kind has `kind` (required) and `timeout_s`. Options marked required have no default.
+
+(realtime_transcription)=
+
+**`realtime_transcription`**
+
+
+Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?model=<model>` of an SGLang-Omni transcription server started with `--enable-realtime`, and reports partial and final transcripts. Its transcripts carry no language.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `ws://` or `wss://` | required | The transcription server. |
+| `model` | string | required | Sent as the `model` query parameter. |
+| `api_key_env` | string | `OPENAI_API_KEY` | Environment variable whose value is sent as a bearer token; nothing is sent when it is unset. |
+| `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
+
+(streaming_transcription)=
+
+**`streaming_transcription`**
+
+
+Streams each utterance over its own WebSocket to `<base_url>/v1/realtime?intent=transcription&model=<model>` of an SGLang-Omni ASR server that declares realtime transcription, such as Qwen3-ASR started with `--enable-realtime`. The node cuts the utterances, so each session runs without server VAD: the node sends the utterance's audio, then `transcription.done`. Every `transcription.segment` that is not final becomes a partial transcript, and `transcription.completed` becomes the final transcript with the language the service heard. A segment the service cuts at its maximum length (30 s for Qwen3-ASR) starts the partial text again; the final transcript joins every segment.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `ws://` or `wss://` | required | The ASR server. |
+| `model` | string | required | Sent as the `model` query parameter. |
+| `language` | string | `""` | Sent as the session's `language` hint when set. |
+| `decode_interval_ms` | integer > 0, or null | null | Audio between partial transcripts, sent in the session's `session.update`; null keeps the server's default (2000 ms for Qwen3-ASR), and the server refuses less than 200 ms. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
+| `timeout_s` | number > 0 | `120` | The limit for connecting and for one utterance's whole exchange. |
+
+(openai_transcription)=
+
+**`openai_transcription`**
+
+
+Sends each finished utterance as a 16 kHz WAV to `<base_url>/audio/transcriptions` and reports one final transcript.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
+| `model` | string | required | The `model` form field. |
+| `language` | string | `""` | Sent as the `language` hint when set. |
+| `response_format` | `verbose_json` or `json` | `verbose_json` | `verbose_json` reports the language heard in each utterance; `json` suits a service without it and reports none. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
+| `timeout_s` | number > 0 | `120` | The request timeout. |
+
+(running_transcript)=
+
+**`running_transcript`**
+
+
+Turns the running text of the `asr` stage into utterances: partial transcripts while it grows, and a final one once `tail_ms` of further audio has arrived after `speech.stopped` or a `commit`. Its transcripts carry no language.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `tail_ms` | number ≥ 0 | `400` | Audio after the end of speech that still belongs to the utterance. |
+
+(dialog)=
+
+**`dialog`**
+
+
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. A clear utterance carries the language the recognizer heard. A shorter utterance leaves that remembered language unchanged and carries `language` when set, otherwise the remembered language; when the recognizer heard another language in it, or named none while `language` is set, that turn's latest user message asks for a reply in the language it carries. A reply whose deltas carry a style ([speaking styles](#speaking-styles)) shows the language model, in later prompts, the tag `[style]` before the first text of each style the history keeps of it; the client and the cut offsets see only the reply text.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `system_prompt` | string | `You are a helpful voice assistant. Answer concisely.` | The system message; realtime `instructions` set it. |
+| `language` | string | `""` | The reply language preferred for a short utterance, written as the recognizer reports it. It must be one of the `supported_languages` of every `openai_speech` node with `language: auto`, which by default are the languages of Qwen3-TTS, the speech model of the bundled profiles. Empty follows the language remembered from the last utterance of at least 3 words; a clear utterance carries the language the recognizer heard instead. |
+| `max_history_chars` | integer > 0 | `65536` | The bound on the history: a turn whose history plus utterance plus `max_text_chars` would exceed it fails the session. |
+| `max_text_chars` | integer > 0 | `16000` | The longest utterance transcript and the longest reply. |
+
+(openai_chat)=
+
+**`openai_chat`**
+
+
+Streams one chat completion from `<base_url>/chat/completions` per turn.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
+| `model` | string | required | The `model` field. |
+| `max_tokens` | integer > 0 | `512` | The `max_tokens` field; realtime `max_new_tokens_per_unit` sets it. |
+| `temperature` | number 0 to 2, or null | null | The `temperature` field, left out when null; realtime `sampling.temperature` sets it. |
+| `extra_body` | object | `{}` | Further request fields, such as `chat_template_kwargs`. |
+| `constrain_style_tags` | boolean | `false` | Sends a `regex`, an SGLang request field, that holds the reply to one tag naming a style of the `openai_speech` nodes that read it, followed by text without brackets that does not start with whitespace. `extra_body` cannot also set `regex`. |
+| `required_call_opening` | string | `""` | The text the model writes to open a call. When the prompt requires a call, it goes as an assistant message the model continues, with `continue_final_message: true` and `tool_choice: auto`. The service must read the continued opening as the start of the call, as the chat service of [speaking through a tool](#speaking-through-a-tool) does. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
+| `timeout_s` | number > 0 | `120` | The request timeout. |
+
+A tag `[name]` naming one of the `styles` of an `openai_speech` node that reads the deltas, in any letter case, is left out of the reply text, together with the spacing after it, so the client and the aligner never see it, and the deltas after it carry that style until the next tag; the [`dialog`](#dialog) puts the tag back only in the prompts it sends the model. A tag split across deltas is held until it is complete, and text that only began like a tag is sent once it is not one or the reply ends. A bracketed word that names no style stays in the text.
+
+(openai_speech)=
+
+**`openai_speech`**
+
+
+Cuts the reply text into sentences and sends one streaming request per sentence to `<base_url>/audio/speech` with `model`, `voice`, `input`, `response_format: pcm`, `stream: true`, `language` when `language` is set, and `references: [{audio_path, text}]` when `reference_audio_path` is set, or the recording of the sentence's style from `styles` when the reply named one. A sentence ends after a word ending in `.`, `!`, `?`, `;` or `…` (closing quotes and brackets included), after Chinese end punctuation followed by more text, or at a line end; a sentence longer than `max_sentence_words` is cut as that setting describes.
+
+Every sentence is its own request, and Qwen3-TTS samples each request with a fresh seed. A CustomVoice speaker given by `voice` is held only by its speaker token, so its timbre moves from sentence to sentence and from turn to turn; a Base model cloning one `reference_audio_path` for every request keeps one voice, which is why the English profiles clone `examples/streaming_cascade/voices/vivian.wav`, a recording of the CustomVoice speaker Vivian, with its transcript as `reference_text`. With the transcript Base continues the recording, so the voice stays closer to `vivian.wav` than with the speaker embedding alone, but each sentence opens with about 0.4 s of room tone, and the profiles' `drop_quiet_start` keeps all but 50 ms of it out of the reply. `qwen3-asr-qwen3.8-27b-vivian-styles` sends the transcript of each style's recording and drops the quiet start the same way ([speaking styles](#speaking-styles)).
+
+**TTS quality.** In a controlled, single-reviewer comparison, the 1.7B Base profile with `voices/vivian.wav` and no reference transcript reduced unacceptable timing-related anomalies from 5/60 CustomVoice/Vivian outputs to 0/60 Base outputs. This supports the tested configuration as a mitigation for slowdowns and abnormal pauses. The profiles now send the transcript, which this comparison did not cover.
+
+Each request ends at its last word, so the sentences of a reply play with about 0.12 s between them, where Base reading the whole reply in one request leaves about 0.35 s (both measured with Base cloning `vivian.wav` with its transcript and each sentence's quiet start dropped). `sentence_pause_ms` adds silence before the audio of each sentence after the reply's first audio, but not between the parts of a sentence cut by `max_sentence_words`, after a title such as "Dr.", or after a sentence end inside a `<screen>` block that `skip_screen_blocks` leaves out, and the vivian profiles set it to 200, which brings the pause between sentences closer to the whole-reply one than anything else measured. Sending each sentence with the first words of the next one, and cutting its audio where the forced aligner put the sentence's end, also lengthens the pause but changes nothing else measured (sentence-final pitch and lengthening, error rate, UTMOS), costs 13 to 37% more synthesis for the audio it drops, and makes the sentence's end wait for the aligner. A lookahead inside the model would need the speech service to take more text for a running request, which `/v1/audio/speech` and the speech WebSocket do not.
+
+`openai_speech` sends each sentence without its emoji, asterisks and backticks, a markdown link as its text alone, a bare URL as its host alone, and a markdown line without its heading, list or quote marker and with its table cells separated by commas, because a speech service reads them as stray sounds or a spelled-out URL, and can run on for 40 s or more after a marker or a table row. A sentence with no word left, such as one of only emoji or punctuation or a table's separator row, is not sent because the speech service answers it with an error, and its end still counts in `reply.progress`. A sentence tagged `English` is sent with its numbers written out as words, the way the forced-alignment worker reads them: a year as two pairs, spaced digit groups such as a phone number digit by digit, a decimal with `point`, and an ordinal such as `21st` as `twenty first`. With `skip_screen_blocks` it never sends what the reply puts between `<screen>` and `</screen>`, a block the reply leaves open included, nor a stray `</screen>`; their characters still count in `reply.progress`, and an aligner with the same option aligns each sentence without them. The reply text and the `reply.progress` offsets keep everything the model wrote. The profiles' system prompts also tell the language model to use neither markdown nor emoji.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `base_url` | string, `http://` or `https://` | required | The service, including `/v1`. |
+| `model` | string | required | The `model` field. |
+| `voice` | string | `default` | The `voice` field; for Qwen3-TTS CustomVoice a built-in speaker, `default` meaning `Vivian`. |
+| `reference_audio_path` | string | `""` | A WAV the speech service reads, for voice cloning. |
+| `reference_text` | string | `""` | The transcript of the reference, sent with it when set. |
+| `styles` | object | `{}` | Maps a style name to `{audio_path, text}`, a recording and its transcript. A sentence the reply tagged with that style clones the recording instead of `reference_audio_path`, and a sentence of a style missing here clones `reference_audio_path`; a sentence takes the style of the last tag before its first word. |
+| `language` | string | `""` | The language tag: empty sends none; `auto` tags every sentence with the dialog's session language, except a sentence whose script contradicts it, as in a reply the user asked for in another language, which is tagged by its script: `Japanese` for kana, `Korean` for hangul, `Chinese` for Chinese characters in a session that is not Chinese, Cantonese, Japanese or Korean, and `English` for Latin letters without those in one that is; a sentence whose Chinese, Japanese or Korean characters, each about one syllable, are no more than the syllables of its Latin words, such as "In Japanese, hello is こんにちは.", keeps the session language; any other name tags every sentence with that name. With a fixed name, and with `auto` in a reply the dialog names no language for, as before the session language is known or after a `configure` clears `dialog.language` before it is known, a sentence containing Chinese characters is tagged `Chinese`; `auto` tags the others `English`. |
+| `supported_languages` | list of strings | the languages of Qwen3-TTS | The language tags the speech service takes, by default `Chinese`, `English`, `French`, `German`, `Italian`, `Japanese`, `Korean`, `Portuguese`, `Russian` and `Spanish`. With `language: auto`, a `dialog`'s `language` must be one of them, so set this for a service that speaks other languages. |
+| `max_sentence_words` | integer > 0 | `24` | The most words sent in one request. A longer sentence is cut into requests of at most this many words and at least half as many, at a comma, colon or dash when one falls in that range; the first request of such a sentence waits for up to half as many words more, so its rest is never a word or two on its own. |
+| `drop_quiet_start` | boolean | `false` | Start each request's audio 50 ms before its first sample above 0.01 of full scale and drop the quiet audio before that. A request whose audio never rises above that plays nothing, and its sentence end still counts in `reply.progress`. Off, every sample plays as the service sends it. |
+| `sentence_pause_ms` | number ≥ 0 | `0` | Silence sent before the audio of each sentence after the reply's first audio, not between the parts of a sentence cut by `max_sentence_words`, after a title such as "Dr.", or after a sentence end inside a skipped `<screen>` block, and counted in `reply.progress`. A sentence that plays nothing, such as one `drop_quiet_start` drops whole, sends no pause. |
+| `skip_screen_blocks` | boolean | `false` | Never send what the reply writes between `<screen>` and `</screen>`, a block the reply leaves open included, nor a stray `</screen>`; their characters still count in `reply.progress`. Give the `alignment` node the same value. Off, a screen tag is spoken like any other text. |
+| `api_key_env` | string | `OPENAI_API_KEY` | As above. |
+| `timeout_s` | number > 0 | `120` | The request timeout. |
+
+(alignment)=
+
+**`alignment`**
+
+
+Reports how far into the reply text the reply audio has reached, as `reply.progress`, so the dialog can cut an interrupted reply where the listener stopped hearing it. It reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session"]` in the profiles, and `input:session` too in the Qwen3-ASR profiles.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `method` | `sentence`, `forced` or `asr` | `sentence` | `sentence` reports the end of each spoken sentence; `forced` also reports the word ends the worker finds in each finished sentence; `asr` reports the sentence ends and, on a cut, the part of the sentence at the cut its transcript says. |
+| `alignment_url` | string, `http://` or `https://`, or empty | `""` | The worker, for `forced`. |
+| `heard_asr_url` | string, `http://` or `https://`, or empty | `""` | An OpenAI-compatible transcription service, including `/v1`, that recognizes the sentence at the cut; required for `asr`, optional for `forced`. |
+| `heard_asr_model` | string | `""` | The `model` form field of those requests; set together with `heard_asr_url`. |
+| `timeout_s` | number > 0 | `2` | The limit for one worker or transcription request; a sentence whose request fails or times out keeps only its sentence end. |
+| `skip_screen_blocks` | boolean | `false` | Align and recognize each sentence without its screen blocks, for an `openai_speech` node that sets `skip_screen_blocks`. |
+
+The dialog cuts an interrupted reply at the points `reply.progress` reports, up to the audio the graph sent to the client before the interruption, which the graph reports to the readers of the `tts` node's `session` output as `reply.delivered`. Before the audio of each sentence the `tts` node reports the language tag it sends with it as `reply.sentence`, which reaches the readers of its `session` and never the client, so the aligner aligns and recognizes every sentence, including one cut off partway, in the language it was spoken in, and a sentence sent without a tag in the reply's language. Without an `alignment` node the dialog takes `reply.progress` from the `tts` node, which reports the end of each sentence. With one, as in `qwen3-asr-qwen3-tts-vivian`, the `aligner` node reads `["llm:text_delta", "tts:pcm_f32le", "tts:session", "dialog:session", "input:session"]` and the dialog's `{kind: control, source: aligner, event: reply.progress}` input replaces the one from `tts`; a profile names exactly one source of `reply.progress`. Once the client's `conversation.item.truncate` arrives, the dialog reports every cut of that reply as `reply.heard` with `text_end`, the characters the history keeps, which reaches the client as `sglang.response.heard`.
+
+`method: sentence` keeps the sentence ends, so a truncated reply keeps the sentences whose audio was played to the end and drops the sentence the listener was hearing. `method: forced` also sends each finished sentence and its audio to the worker at `alignment_url`, in the language it was spoken in, and reports the word ends it returns, so the cut can fall inside a sentence that finished; when the worker fails or exceeds `timeout_s`, that sentence keeps its sentence end. A sentence that an interruption cuts off before its audio is complete gets no word ends and counts as unheard in both methods.
+
+`method: asr` keeps the sentence ends and, when a reply is cut, sends the audio of the sentence at the cut, from the sentence's start to the cut, as a WAV file in the language that sentence was spoken in to the `/audio/transcriptions` endpoint of the OpenAI-compatible service at `heard_asr_url` with `heard_asr_model`; the reply keeps the sentences before it and the longest prefix of that sentence's text the transcript says, with the punctuation that follows it. The cut is the client's `truncate` position and never past `reply.delivered`, the same cut the dialog makes, so the aligner reads `input:session` for the client's `truncate`. The match ignores case and punctuation, reads digits, English numbers up to twenty and ordinary Chinese numbers as the same number, and stops at the first word the transcript leaves out, repeats or says differently. When the request fails, exceeds `timeout_s` or the first words differ, the sentence counts as unheard. It needs no model beyond the profile's own recognizer. `method: forced` takes `heard_asr_url` and `heard_asr_model` too, and then recognizes the sentence at the cut only when no word end at or after the cut covers it, such as a sentence cut off before its audio was complete; `method: sentence` takes neither.
+
+(stage-vad)=
+
+**Stage `vad`**
+
+
+Declared as `vad: {stages: [vad], inputs: [input]}`; reports `speech.started` and `speech.stopped`. Its defaults apply to every session and a session's `turn_detection` overrides them; set them under `stages.vad.factory` or as `--vad.factory.<option>`.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `threshold` | number 0 to 1 | `0.5` | Speech probability above which a frame is speech. |
+| `prefix_padding_ms` | integer ≥ 0 | `300` | Audio before the first speech frame that belongs to the utterance. |
+| `silence_duration_ms` | integer ≥ 0 | `800` | Silence that ends an utterance. |
+| `background_margin_db` | number ≥ 0 or `null` | `6` | A voice this many dB quieter than the last utterance starts no speech, so it neither opens a turn nor interrupts the reply. `null` hears every voice. A session's `turn_detection` does not change it. |
+| `max_open_sessions` | integer ≥ 1 | `16` | Sessions the detector holds at once. |
+| `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
+
+(stage-turn_detection)=
+
+**Stage `turn_detection`**
+
+
+Declared as `turn_detection: {stages: [turn_detection], inputs: ["input:pcm16", "input:session", "vad:session"]}`; reports the turn's `speech.started` and `speech.stopped`, which the recognizer and the dialog read in place of the VAD's. A session's `turn_detection` overrides `eagerness`; set the options under `stages.turn_detection.factory` or as `--turn_detection.factory.<option>`.
+
+| Option | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `model_path` | string | `pipecat-ai/smart-turn-v3` | The Smart Turn ONNX file, its directory, or the Hugging Face repository holding `smart-turn-v3.2-gpu.onnx`. |
+| `eagerness` | `low`, `medium` or `high` | `medium` | How readily a pause ends the turn: the silence a confident, a likely and an unlikely end of turn needs. |
+| `max_open_sessions` | integer ≥ 1 | `16` | Sessions the node holds at once. |
+| `max_concurrency` | integer ≥ 1 | `4` | Sessions it processes at once. |
+
+(stage-asr)=
+
+**Stage `asr`**
+
+
+Declared as `asr: {stages: [asr], inputs: ["input:pcm16"]}`; runs Nemotron 3.5 streaming ASR on the GPU set by `stages.asr.gpu` (default 0) and produces the running `text` a `running_transcript` node reads.
+
+(compatibility-and-constraints)=
+
+### Compatibility and Constraints
+
+
+(rejected-when-the-profile-loads)=
+
+**Rejected when the profile loads**
+
+
+Each rule is followed by the error it raises.
+
+- A node names both `stages` and a `kind`, or neither — `a session node names either stages or a kind`.
+- A stage route with options beside `stages` — `options [...] belong to a node of a kind`.
+- An unknown `kind` — `unknown component kind '<kind>'`.
+- An option the kind does not have — `Extra inputs are not permitted`.
+- A missing required option (`base_url`, `model`) — `Field required`.
+- A node name of a kind that is not lowercase letters, digits and `_` starting with a letter — `String should match pattern '^[a-z][a-z0-9_]*$'`.
+- A node named `input` — `'input' names the session input, not a node`.
+- No node reads `input` — `no node reads 'input'`.
+- A node reads itself — `node '<name>' reads itself`.
+- An input names a node that does not exist — `node '<name>' reads unknown inputs [...]`.
+- A `<node>:<format>` input that the source does not produce or the reader does not consume — `node '<name>' cannot take [...]`.
+- A required format no input produces (every consumed format except `session`, such as `messages` for `openai_chat`) — `no input of node '<name>' produces [...]`.
+- A cycle of data edges without a `feedback: true` input — `nodes [...] form a cycle of data edges; declare the input that closes it with feedback: true`.
+- A `feedback` edge with `overflow: block` — `the feedback edge from '<source>' into '<name>' must not block`.
+- Two different bounds on inputs from one source — `node '<name>' bounds its edge from '<source>' twice`.
+- A node takes `reply.progress` on control edges from two sources — `node '<name>' takes reply.progress from [...]; one source reports it`.
+- A node reads `reply.progress` of a source as data (the `alignment` kind does) while a control edge takes the same event from that source — `node '<name>' reads ['<source>:reply.progress'] as data, but a control edge takes them`.
+- A `dialog` whose `interrupt` no node that publishes audio takes on a control edge with its `session` read by the dialog, in a profile that publishes audio or where some node takes that `interrupt` — `node '<name>' waits for reply.delivered after it interrupts a reply: ...`.
+- `session_publish` names an unknown node — `publish names unknown nodes [...]`.
+- `session_publish` lists a format the node does not produce — `node '<name>' does not produce [...]`.
+- No published `session` of `openai_chat` or `openai_speech` while a `dialog` exists — `no published node ends turns`.
+- Both `openai_chat` and `openai_speech` publish `session` — `turns end twice: [...] all publish turn.done`.
+- A `dialog` whose `session` is not published — `nodes [...] open turns and must publish 'session'`.
+- A stage name other than `vad` or `asr` — `no stage group serves the stages [...]`.
+- `base_url` of `realtime_transcription` not `ws://` or `wss://`, or of the other service kinds not `http://` or `https://` — `String should match pattern ...`.
+- `method: forced` without `alignment_url` — `the forced method needs alignment_url`.
+- `alignment_url` with a method other than `forced` — `alignment_url belongs to the forced method`.
+- Only one of `heard_asr_url` and `heard_asr_model` — `heard_asr_url and heard_asr_model go together`.
+- `method: asr` without them — `the asr method needs heard_asr_url and heard_asr_model`.
+- `heard_asr_url` with `method: sentence` — `heard_asr_url belongs to the asr and forced methods`.
+- `extra_body` sets `model`, `messages`, `stream`, `max_tokens`, `temperature`, `tools`, `tool_choice` or `continue_final_message` — `extra_body cannot set [...]`.
+- A `dialog` `language` that is not one of the `supported_languages` of an `openai_speech` node with `language: auto`, also when an open frame or a `configure` sets either — `language '<language>' of node '<name>' is not one of the supported_languages of node '<name>': [...]`.
+- `temperature` outside 0 to 2, a non-positive `max_tokens`, `max_sentence_words`, `max_history_chars`, `max_text_chars` or `timeout_s`, or a negative `tail_ms` or `sentence_pause_ms` — a pydantic range error naming the field.
+- Two `services` with one name or one port — `services must have distinct names and ports`.
+- An empty `model_path` — `Model path is required`.
+
+(rejected-on-the-command-line-or-at-startup)=
+
+**Rejected on the command line or at startup**
+
+
+- `--stages.<...>` — `the stages. prefix is implied on the command line; write --<...>`.
+- `--services.0.<...>` — `services is addressed by name, not by index`.
+- A flag naming a group instead of a value — `addresses a settings group, not a single value`.
+- `--mem-fraction-static` — `--mem-fraction-static requires a pipeline with at least one SGLang engine stage`.
+- A service that exits or does not answer `/v1/models` on its port — the service errors under {ref}`Services and Launch Modes <services-and-launch-modes>`.
+- A node whose service does not answer its probe: `openai_transcription`, `openai_chat` and `openai_speech` request `<base_url>/models`, `openai_chat` then streams one token sampled with the node's settings, `realtime_transcription` requests `/v1/models` on the `http` form of its `base_url`, a forced `alignment` requests `<alignment_url>/health` and then aligns one second of silence, and an `alignment` with `heard_asr_url` requests `<heard_asr_url>/models` — `cannot reach <url>: ...` or `<url> answered <status>`, or the error of the chat token's completion, and the server stops.
+
+(rejected-in-a-realtime-session)=
+
+**Rejected in a realtime session**
+
+During initial session opening, only a capacity rejection is reported as `admission_rejected` with `sglang.fatal: false`; the client may retry `session.update` on the same WebSocket before sending audio, within the admission deadline. If opening exceeds its own deadline, the server sends fatal `session_open_timeout` and closes the session. This differs from `session_update_timeout`, which limits the wait for an initial update or retryable admission; an admission already in progress may finish after that deadline. The separate pipeline idle fallback reports `session_idle_timeout`. Other initialization failures close the session with their known error code, or `internal` when no specific code is available. Configuration negotiation errors below retain their existing request-error behavior.
+
+- A sampling parameter other than `temperature` and `max_new_tokens_per_unit` — `unsupported sampling parameters: ...`.
+- A field other than the hot ones in {ref}`Session settings <session-settings>` changed after the first `session.update`, or `instructions` or `sglang.sampling` in a profile whose capabilities report `supports_instruction_updates` or `supports_sampling_updates` as false — `session field is frozen`.
+- `instructions` longer than 65536 characters — `instructions exceed context or have invalid type`.
+- A `model` other than the deployment's — `model differs from deployment`.
+- An audio format other than 16 kHz input or 24 kHz output PCM — `unsupported PCM format or sample rate`.
+- A `turn_detection` with a `type` other than `server_vad`, or other than `server_vad` and `semantic_vad` in a profile with a `turn_detection` node — `turn detection type is unavailable`; any non-null `turn_detection` in a profile without a `vad` node — `VAD is only available for turn-based sessions`.
+- `nodes` in `session.update` — `invalid session configuration`.
+- `response.create` — `manual turn commands are not granted`.
+- `response.cancel` in a profile where no node takes `interrupt` from `input` on a control edge — `no node takes the control 'interrupt' from 'input'`.
+- A new session beyond the `max_sessions` (16 unless the profile or `--max_sessions` sets another) that every cascade node holds at once — the first `session.update` is refused with `admission_rejected`.
+- A `session.update` that changes `instructions`, or a `configure` that changes a node, while the user is speaking, between `speech_started` and `speech_stopped` — the session fails with `cannot replace '<node>' while speech is in progress`.
+
+(rejected-by-the-speech-service)=
+
+**Rejected by the speech service**
+
+
+The speech service validates each sentence request, and a rejected request fails the session.
+
+- Qwen3-TTS CustomVoice with `reference_audio_path` — `references are not supported by this model`.
+- Qwen3-TTS CustomVoice with a `voice` that is not one of its speakers — `Unknown voice '<voice>'. Supported voices: default, ...`.
+- Qwen3-TTS Base without `reference_audio_path` — `Qwen3-TTS Base requires reference audio via ref_audio or references[0].audio_path`. With a reference but no `reference_text`, Base clones from the speaker embedding of the recording alone.
+- A `language` tag the service does not speak, including a language name the recognizer reported under `language: auto` — `language must be one of: ...`. Qwen3-TTS speaks Chinese, English, Japanese, Korean, German, French, Russian, Portuguese, Spanish and Italian.
+- A speech service that does not stream 24 kHz PCM with an `X-Sample-Rate` header — `speech service sent no X-Sample-Rate header, so its PCM rate is unknown` or `speech service streams <rate> Hz, expected 24000`.
+
+(runtime-limits)=
+
+**Runtime limits**
+
+
+- A conversation whose history, next utterance and `max_text_chars` together exceed `max_history_chars` — `conversation exceeds max_history_chars; open a new session`, and the session fails. With the defaults this happens once the history passes about 49500 characters.
+- An utterance transcript or a reply longer than `max_text_chars` — `transcript exceeds max_text_chars` or `reply exceeds max_text_chars`.
+- A language model stream that stops for a reason other than `stop` or `length` — `LLM stopped with <reason>`; one that ends without a finish reason — `LLM stream ended before completion`.
+- A client that stops reading while `max_pending_output_chunks` or `max_pending_output_bytes` of output wait — the session fails naming the limit.
+
+Every failure ends the realtime session with an `error` event.
+
+(allowed-with-consequences)=
+
+**Allowed, with consequences**
+
+
+- Without an `alignment` node, the dialog's `reply.progress` control edge comes from `tts`, which reports sentence ends, so an interrupted reply is cut at the end of the last sentence heard in full.
+- `method: sentence`: the same sentence-level cut. With `forced`, the cut can fall between words of a finished sentence; a sentence cut off before its audio is complete counts as unheard in both methods unless `heard_asr_url` is set.
+- With `heard_asr_url`, a transcript that leaves out, repeats or changes the first words of the sentence at the cut keeps none of it.
+- No `reply.progress` input on the dialog at all: the profile loads, and an interrupted reply leaves no assistant entry in the history, so the next utterance joins the user message the reply answered.
+- An aligner that does not read `tts:session` loads but receives no sentence ends and reports nothing.
+- `sglang.response.progress` reaches the client only from a node that publishes `session` and whose `session` no other node reads: the aligner when it is published, never `tts` while the dialog or an aligner reads it.
+- A client that sends no `conversation.item.truncate`: the history keeps an interrupted reply up to the audio the server had delivered, which is ahead of what was played by up to `max_output_lead_ms`. With `truncate`, the cut moves back to the client's `audio_end_ms`, never past the delivered audio.
+- `language: auto` with `realtime_transcription`, `running_transcript` or `response_format: json`: no language is ever reported, so every sentence is tagged by its script, `Chinese` with Chinese characters and `English` otherwise. A fixed `language` tags every sentence without Chinese characters with that name whatever the user speaks.
+- `turn_detection: null` sent after the VAD has already reported speech in the session: the recognizer keeps waiting for speech boundaries, and each `input_audio_buffer.commit` then ends an empty turn (`empty_turn`). Turn detection off from the first `session.update` works as intended; `running_transcript` ends utterances at a commit either way.
+- `input_audio_buffer.commit` is granted in every profile (`client_commit: true`); with the VAD on, it also ends an open utterance.
+- `max_text_chars` at or above `max_history_chars` loads, and then every turn fails with `conversation exceeds max_history_chars`.
+- A reasoning language model can still open a think block of its own with `chat_template_kwargs: {enable_thinking: false}`. With `--reasoning-parser` on its server the block goes to `reasoning_content`, which the cascade never reads; without it the block is spoken and kept in the history.
+- A reply cut by `max_tokens` (finish reason `length`) is spoken and kept as it is. Its `turn.done` carries `reply_truncated`, so `response.done` reports `incomplete` with the reason `max_output_tokens`.
+- Speech always interrupts a running reply; `interrupt_response` does not change that.
+
+(verifying-a-deployment)=
+
+### Verifying a Deployment
+
+
+A healthy start logs each service as `starting service '<name>': ...` and `service '<name>' serving on :<port>` (or `already serving`), then `Pipeline '<model_path>' started (<n> GPU(s))`, then the HTTP server listening on its port. A failed node probe logs `Scheduler thread for stage <node> crashed` with the probe error, and the server stops.
+
+`curl http://127.0.0.1:8765/health` answers 200 with `"status": "healthy"` while the cascade runs, and 503 when it does not.
+
+`curl http://127.0.0.1:8765/v1/models` lists one model whose `id` is the profile's `model_path`, the name a realtime client must use if it sends `model`.
+
+`curl http://127.0.0.1:8765/v1/realtime/capabilities` answers 503 `instance is not ready` when the cascade is not running, and 404 without `--enable-realtime`. For the bundled profiles it reports:
+
+```json
+{
+  "model": "examples/streaming_cascade/profiles/qwen3-asr-qwen3-tts-vivian",
+  "interaction": "turn_based",
+  "turn_control": ["server_vad", null],
+  "client_commit": true,
+  "input_audio_format": {"type": "audio/pcm", "rate": 16000},
+  "output_audio_format": {"type": "audio/pcm", "rate": 24000},
+  "output_modalities": ["text", "audio"],
+  "native_unit_ms": 200,
+  "supports_truncate": true,
+  "supports_cancel": true,
+  "sampling_parameters": ["temperature", "max_new_tokens_per_unit"],
+  "supports_instruction_updates": true,
+  "supports_sampling_updates": true,
+  "skips_screen_blocks": false,
+  "limits": {"max_input_bytes": 1920000, "max_output_bytes": 33554432, "max_history_chars": 65536, "cleanup_timeout_s": 30}
+}
+```
+
+with further fields omitted here. `skips_screen_blocks` is true for a profile whose `openai_speech` nodes that publish audio all set `skip_screen_blocks`, as `qwen3-asr-qwen3.8-27b-vivian-screen` does. `turn_control` is `[null]` for a profile without a `vad` node, `output_modalities` is `["text"]` for one that publishes no audio, `sampling_parameters` is empty and `supports_sampling_updates` false when no node takes `temperature` or `max_tokens`, and `supports_instruction_updates` is false when no node has a `system_prompt`. A first conversation turn through the playground or the {ref}`turn latency benchmark <turn-latency>` confirms the whole chain.
+
+(known-limitations)=
+
+### Known Limitations
+
+
+- **Reasoning must stay out of the speech.** The cascade speaks everything the language model returns as content. A model that thinks by default needs `enable_thinking: false` in the node's `extra_body` and a reasoning parser on its server (`--reasoning-parser qwen3` for Qwen3.8, as in `qwen3-asr-qwen3.8-27b-vivian-tts-tool`), or its reasoning is synthesized. A model that cannot turn its reasoning off, as Inkling-2-Mini, needs its reasoning parser (`--reasoning-parser inkling`) and a `max_tokens` that leaves room for the reasoning.
+- **History is bounded.** A conversation whose history exceeds `max_history_chars` fails its next turn; open a new session.
+- **Audio only.** The cascade takes audio input and produces text and audio; image input is not supported.
+
+## Session Graph
+
+A Session is one stateful conversation on the server: the client opens it, appends input for its whole lifetime, reads what it publishes and closes it. A pipeline declares the shape of its Session in its config, and the coordinator opens it; the serving layer appends input and reads the published formats without knowing the nodes behind them. A Session is either the one stage route from the pipeline's entry stage or a graph of nodes declared in `session_nodes`.
+
+(nodes)=
+
+**Nodes**
+
+
+Every node of the Session is an entry of `session_nodes`, and `session_publish` lists, per node, the formats that reach the client. A node with `stages` is a route through those stages of the server.
+
+`inputs` lists the nodes a node reads; `input` is the Session's own input, its audio, its `commit` and other controls, and camera frames when a node of the Session takes them. `node:format` takes only that format from that node; two nodes never send the same format to one reader, and the audio format of `input` is the Session input's alone. A node that reads every format of `input` while the Session takes camera frames must take them too, or name the formats it reads, such as `input:pcm16` and `input:session`.
+
+An input written `{kind: control, source, event, preempt}` is a control edge. Its `event` is a control type of the source's `session` chunks or the format of its other chunks, such as `tool_response`; the event is handed to the node as a `control` operation, outside its input queue, to every stage of its route in route order, and travels on no other edge and to no client. With `preempt` the stages cancel the node's in-flight appends first. The client's `interrupt` reaches a node through a control edge from `input`.
+
+An input of a stage node written `{source, capacity, overflow}` bounds its edge. The inputs naming one source are one edge into the node; it holds at most `capacity` chunks the node's own session has not accepted yet, by default the Session's `max_pending_chunks`. When the edge is full, `overflow: block`, the default, holds the producing node until the node takes a chunk, and rejects the client's append as a full queue; `overflow: drop_oldest` drops the edge's oldest chunk and lets the producer go on; on the client's edge the dropped input is confirmed to the client like a taken one, so a real-time node such as a full-duplex model hears the newest audio instead of a backlog. Two inputs of one source that declare different bounds fail the declaration.
+
+A chunk one node sends another may be larger than the Session's `max_chunk_bytes`, as the unit of a Qwen3-Omni turn longer than about 32 s is. It enters the reader in fragments within that bound: the first stage of the reader's route holds them and restores the chunk for a single append, so every stage of the route sees the chunk whole and once. The fragments of a turn interrupted on the way are dropped.
+
+The Session opens its nodes upstream first and closes them downstream first. A cycle of data edges between nodes must name the input that closes it with `feedback: true`, and that input must not block: two nodes each held on the other's full edge never wake. An undeclared cycle fails with `form a cycle of data edges`. A control edge holds no queue, so a cycle it closes needs no mark.
+
+(stream-vocabulary)=
+
+**Stream vocabulary**
+
+
+| Format | Modality | Payload |
+| --- | --- | --- |
+| `pcm16` | `audio` | 16 kHz mono signed 16-bit PCM |
+| `pcm_f32le` | `audio` | 24 kHz mono float32 PCM |
+| `image_frame` | `image` | One JPEG or PNG camera frame, at the time of the audio unit it came with |
+| `transcript` | `transcript` | `{"text", "is_final"}`; one final transcript per utterance |
+| `messages` | `text` | `{"messages": [{"role", "content"}, ...]}` |
+| `text_delta` | `text` | `{"text"}`, one increment of the reply |
+| `tool_call` | `tool` | `{"calls": [{"id", "name", "arguments"}, ...]}`; the generator asks for these tools |
+| `tool_response` | `tool` | `{"responses": [{"id", "name", "response"}, ...]}`; one response per call, in call order |
+| `session` | `control` | `{"type", ...}` |
+
+Control types sent into a Session are `commit` (the utterance ends here), `configure` (settings change) and `truncate` (the listener heard the reply of the chunk's turn up to `t_ms`; without a turn, the latest reply). Control types a Session emits are `speech.started` and `speech.stopped` with `t_ms` on the input timeline, `turn.queued` when an utterance waits for its reply, `turn.started` when the reply begins, `turn.done` after the reply's audio, `turn.empty` for an utterance without words or a prompt that led to no speech, `reply.heard` with `text_end` when a truncate cuts the reply the history keeps, and `configured` with `{"nodes": {name: kind}}`. Every chunk of a reply carries its turn number in the chunk's `turn` field, numbered from 1 per Session in utterance order, with [a prompt after a speech](#speaking-through-a-tool) taking a number of its own that the client only hears of if the model speaks: the turn controls, the `messages`, `text_delta`, `tool_call` and `tool_response` chunks and the reply audio; every turn opens with `turn.queued` and closes with `turn.done` or `turn.empty`.
+
+(vad-node)=
+
+**VAD node**
+
+
+Voice activity detection is a stage node: `sglang_omni.models.vad` hosts one Silero detector per Session in a CPU stage of its own, `vad`, declared with `stages: [vad]`, reading the Session input's audio and controls and publishing `session`. It emits `speech.started` and `speech.stopped` controls whose `t_ms` is the boundary on the input audio timeline, `speech.started` reaching `prefix_padding_ms` before the first speech frame; `commit` resets the detector. Nodes that place utterances read it through a `vad:session` edge. Its detector defaults are the stage's `factory` options `threshold`, `prefix_padding_ms` and `silence_duration_ms`; a Session's `turn_detection` overrides them for that Session alone, at open and through `configure`.
+
+(turn-detection-node)=
+
+**Turn detection node**
+
+
+End-of-turn detection is a stage node beside the VAD: `sglang_omni.models.turn_detection` runs the Smart Turn v3.2 model in a CPU stage of its own, `turn_detection`, declared with `stages: [turn_detection]`, reading the Session input's audio and controls and `vad:session`, and publishing `session`. It emits the same `speech.started` and `speech.stopped` controls as the VAD, at the turn's boundaries: the VAD's `speech.started` opens a turn, and at each `speech.stopped` of the VAD the node scores the turn's audio, ending the turn after the silence that score requires, up to the longest pause of the eagerness preset; speech that resumes before then continues the turn, and `commit` forgets it. Nodes that place utterances or interrupt replies on speech read `turn_detection:session` in place of `vad:session`. The stage's `factory` options are `model_path` (`SGLANG_OMNI_SMART_TURN_MODEL_PATH` when unset) and `eagerness`; a Session's `turn_detection` selects `semantic_vad` with an `eagerness`, or `server_vad`, which passes the VAD's boundaries through, at open and through `configure`. `SessionPorts.turn_detection_types` names the `turn_detection.type` values a Session's nodes implement, and the realtime bridge offers them as `turn_control`.
+
+(interruption)=
+
+**Interruption**
+
+
+An `interrupt` naming a turn that reaches a node on a control edge first drops that turn's chunks from other nodes still queued for the node, on its edges and among its unsent appends, and a chunk of that turn that a node emits later no longer reaches it; the client's own input is never dropped. The node's own output of that turn, whether already buffered or emitted later, reaches neither its readers nor the client. The controls about the interruption pass both ways: the node's `interrupt` and `turn.interrupted` of that turn, and the `reply.delivered` that reports its audio, so a node the client interrupts by turn still stops the nodes it controls and hears what was delivered. Control edges are delivered upstream first, so a node's stale output is fenced before its readers hear the event. An `interrupt` without a turn, such as the client's `response.cancel`, means the open reply, which only the node knows; the Session leaves its queues to the node.
+
+(delivery-pacing)=
+
+**Delivery pacing**
+
+
+A Session delivers reply audio in real time. For every node of the Session that publishes audio, an audio chunk leaves at most `max_output_lead_ms` ahead of the wall clock since the reply's first audio left, cut at that horizon, so the client never holds more than `max_output_lead_ms` of a reply however long its first audio took; the node's later audio and its `turn.done` wait behind it, and its other chunks, such as transcripts, reply text, speech boundaries and the confirmation of each input append, pass, so the client keeps appending while the reply plays. Once the input has ended everything leaves at once. Audio leaving together, at the input's end or when delivery catches up, is joined per turn into contiguous chunks of at most `max_output_lead_ms`, so a held 40 s reply reaches the client as about 40 chunks rather than one per generated chunk. A Session that is one stage route paces its output the same way. `max_output_lead_ms` is a field of the pipeline config (default 1000); an interruption cannot take back audio the client already holds, so it bounds how long the client may keep speaking after the user started.
+
+A node's `turn.done` leaves once the wall clock reaches the end of the turn's audio, when the client has played it, and not when its last audio left. When the Session releases a node's `turn.done`, it delivers it to the nodes reading it and returns it to the node itself as a `control`, so a node can keep its reply open, and interruptible, until the client has played the reply's audio: a user who starts speaking during its last `max_output_lead_ms` still interrupts it. A `turn.interrupted` the node publishes, or an `interrupt` control naming a turn, drops what the Session still holds of that turn, its `turn.done` included. Held audio counts against the Session's `max_output_bytes`. A `reply.progress` reaches the client only from a node that publishes `session` and whose `session` no node reads, the end of the route that builds the progress: with an aligner reading the speech node's `session`, the client hears the aligner's progress and not the speech node's, and without one it hears none.
+
+(session-api)=
+
+**Session API**
+
+
+A Session takes four operations: `open`, `append`, `control` and `close`. `Client.control_session(identity, event, stages=None, should_preempt=False)` delivers a `session` control chunk such as `interrupt` to every stage of the Session's route, or to the named stages, in the Session's arrival order with its appends; `should_preempt` cancels the stages' in-flight appends first. On a Session graph the event follows the control edges declared from `input`. A Session delivers its outputs as the nodes produce them, between appends as well as during one, so a client that has spoken may wait for the replies without appending.
+
+A `/v1/session` client opens the Session the pipeline declares; the open frame carries `params`, and the Session's limits are the deployment's. An `append` frame carries a `chunk` and is answered with `accepted`; a `control` frame carries the event as its `chunk`, with optional `stages` and `should_preempt`, and is answered with `controlled`. Both answers carry the chunk's seq, and a full queue answers either with `rejected` and leaves the Session open.
+
+A chunk's `turn` identifies a cancellable reply within the Session, not a tool
+call or an input audio frame. All work belonging to that reply preserves the
+same ID, including tool responses. Interrupted reply IDs remain fenced for the
+lifetime of the graph, including tool results carried by control edges. Session
+control commands such as interrupt and truncate remain deliverable. Nodes must discard any matching
+work they have already buffered when they receive the interrupt.
+
+A producer without reply boundaries leaves `turn` unset. VoiceChat's continuous
+duplex stream does not currently allocate reply turns; tool call IDs identify its
+individual calls. Passing through a supplied `turn` does not add native speech
+interruption or reply-boundary detection to VoiceChat.
+
+
+(cascade-components)=
+
+**Cascade components**
+
+
+The cascade config's `kind` shorthand expands each component into its own CPU stage and Session node, with the stages sharing the `cascade` process. Data and control edges use the same coordinator runtime as native model stages. Feedback edges must be declared explicitly; a native stage may read a component's output directly.
+
+A node declares either a component `kind`, with its options beside it, or a `stages` route for a native model or the VAD. `inputs` lists the sources it reads: `input` is the client's audio and controls, `node` a node's every format, `node:format` one format, `input:session` the client's controls, and `{kind: control, source, event}` a control edge. A component accepts the formats its kind consumes; the declaration is validated when the config loads: names are unique, every input exists, every format a component requires other than `session` controls is produced by one of its inputs, exactly one reply-ending kind publishes `session`, and the kinds that open turns (`dialog`) and end them (`openai_chat` or `openai_speech`) are present once. At startup every service kind is probed once: `openai_transcription`, `openai_chat` and `openai_speech` request `{base_url}/models`, `openai_chat` also streams one token sampled with the node's settings so a kernel the service compiles on its first sampled request is built before the server is ready, `realtime_transcription` requests `/v1/models` on the HTTP form of its `base_url`, and a forced `alignment` requests `{alignment_url}/health` and aligns one second of silence; a failed probe fails the start with the node's name.
+
+A kind is a config class with a default `kind`, a constructor and the formats it consumes and produces, registered through `COMPONENTS.register` in `sglang_omni.models.streaming_cascade.components`; `opens_turns` marks the kind that numbers turns, `ends_turns` the one whose `turn.done` ends a reply, and `optional` the consumed formats a configuration may leave unconnected. `running_transcript` is the kind that turns the one running text of a Nemotron 3.5 ASR stage served as a node of the same Session into utterance transcripts, cut at `speech.stopped` or at a commit plus `tail_ms`.
+
+A `configure` control reaches every node reading `input`. Its standard fields reach every node with the matching option, `instructions` as `system_prompt` and `sampling` as `temperature`, `max_tokens`; `nodes: {name: {...}}` changes one node's options, and a different `kind` replaces its component, which adopts the previous one's state. Names and inputs cannot change; a node is not replaced while it is speaking, the change waits for the reply to end. Each node answers with `configured {"nodes": {name: kind}}` on its `session` output.
+
+An EOS append ends the input readers in graph order, after their upstream input readers finish. Its confirmation waits for pending routed input and published reply turns to drain. Background component failures fail the output read without waiting for another append.
+
+The cascade graph enables `shared_timeline`: its published reply chunks use one coordinator-owned media clock. A reply starts no earlier than the latest client audio or the previous reply's audio end; audio advances that clock, and interruption resets it to the client audio clock. Speech boundaries retain their original input timestamps. Other graphs preserve their nodes' timestamps by default.

@@ -29,6 +29,7 @@ from sglang_omni.modules.ming_audio.vae.configuration_audio_vae import AudioVAEc
 from sglang_omni.modules.ming_audio.vae.modeling_audio_vae import AudioVAE
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
 from sglang_omni.proto.request import OmniRequest, StagePayload
+from sglang_omni.scheduling.generation_batch_policy import CudaGraphBackend
 from sglang_omni.scheduling.message import IncomingMessage
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 
@@ -486,7 +487,12 @@ def test_gpu_generation_retains_full_latents_for_cpu_vocoder(
         engine_patches.setattr(
             engine_module,
             "build_sglang_server_args",
-            lambda *args, **kwargs: SimpleNamespace(max_running_requests=32),
+            lambda *args, **kwargs: SimpleNamespace(
+                max_running_requests=32,
+                cuda_graph_config=SimpleNamespace(
+                    prefill=SimpleNamespace(backend=CudaGraphBackend.DISABLED)
+                ),
+            ),
         )
         engine_patches.setattr(
             engine_module,

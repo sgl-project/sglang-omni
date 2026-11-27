@@ -1,0 +1,197 @@
+name: Voxt CI
+
+# Voxt (Voxt/: Go + MyGo, no cgo; VoxtNew inside) on Linux: gofmt, every Go test (the
+# views in MyGo's ui.Tester, the store, the session against fake models, the
+# helper and model runtime protocols against their fixtures and fakes, i18n
+# key parity, archtest), MyGo's vet, and the vendored MyGo checked against
+# its patches. The Swift helper, the Omni runtime and the real
+# models are checked on a Mac by hand: Voxt/scripts/mac-regress.sh and
+# Voxt/docs/manual-test.md. Voxt Nightly runs it before its build.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
+    paths:
+      - "Voxt/**"
+      - "README.md"
+      - "docs/get_started/voxt.md"
+      - "docs/get_started/voxt-tutorials/**"
+      - ".github/workflows/voxtnew-ci.yaml"
+      - ".github/workflows/mac-ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "Voxt/**"
+      - ".github/workflows/voxtnew-ci.yaml"
+      - ".github/workflows/mac-ci.yaml"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: Voxt
+
+jobs:
+  go:
+    if: >-
+      github.event_name != 'pull_request' || github.workflow == 'Voxt Nightly' ||
+      (!github.event.pull_request.draft &&
+       contains(github.event.pull_request.labels.*.name, 'run-mac-ci') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-mac-ci'))
+    # Only a selected job may replace another run for this PR or nightly.
+    concurrency:
+      group: voxtnew-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.shard }}
+      cancel-in-progress: true
+    # The CJK fonts below are this release's packages.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The app's package holds most of the test time and runs its tests one
+    # at a time, so it runs as numbered shards beside each other
+    # (scripts/test-shard.sh). "rest" runs every other package and check.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [rest, 0, 1, 2, 3]
+    env:
+      # Pango draws Chinese with what fontconfig finds, and the runner has
+      # no CJK font: the overlay's ink checks of Chinese text would see
+      # nothing. It gets the fonts a dev machine (Ubuntu 24.04) has, so that
+      # the views measure the same: fonts-noto-cjk, and fonts-droid-fallback,
+      # which fontconfig puts first for text without a language. Pool paths
+      # and sha256 pinned, the files cached.
+      FONT_DEBS: |
+        f/fonts-noto-cjk/fonts-noto-cjk_20230817+repack1-3_all.deb 7d64b985f6fe128c99eae5610d5c047338e572bdcfb2bb09736be01b824a7f6c
+        f/fonts-android/fonts-droid-fallback_6.0.1r16-1.1build1_all.deb 353e093dd32677e48edbdc9c94c4e92db0e80763fc326ddec1ba8281d8553a5e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Voxt/go.mod
+          cache-dependency-path: Voxt/go.sum
+
+      # The MyGo SQLite plugin loads a prebuilt library. Tests would download
+      # it on first use; CI fetches it once, checks its sha256 against the
+      # plugin's manifest and points the plugin at it.
+      - name: SQLite library for the MyGo plugin
+        id: sqlite
+        run: |
+          dir="$(go list -m -f '{{.Dir}}' github.com/egoist/mygo)/plugins/sqlite"
+          read -r url sum < <(jq -r '.libraries[0].files["linux-amd64"] | "\(.url) \(.sha256)"' "$dir/mygo-plugin.json")
+          echo "sha=$sum" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/voxtnew-ci/sqlite
+          key: mygo-sqlite-${{ steps.sqlite.outputs.sha }}
+
+      - name: Fetch and verify the SQLite library
+        run: |
+          mkdir -p ~/.cache/voxtnew-ci/sqlite
+          lib=~/.cache/voxtnew-ci/sqlite/libmygo-sqlite3.so
+          if [ ! -f "$lib" ]; then
+            curl -fsSL --retry 3 -o "$lib" "${{ steps.sqlite.outputs.url }}"
+          else
+            echo "cached: $lib"
+          fi
+          echo "${{ steps.sqlite.outputs.sha }}  $lib" | sha256sum -c -
+          echo "MYGO_SQLITE_LIBRARY=$lib" >> "$GITHUB_ENV"
+
+      - name: Font packages' cache key
+        id: fonts
+        run: echo "key=fonts-$(printf '%s' "$FONT_DEBS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/voxtnew-ci/fonts
+          key: ${{ steps.fonts.outputs.key }}
+
+      - name: CJK fonts
+        run: |
+          mkdir -p ~/.cache/voxtnew-ci/fonts
+          debs=()
+          while read -r path sum; do
+            if [ -z "$path" ]; then
+              continue
+            else
+              :
+            fi
+            deb=~/.cache/voxtnew-ci/fonts/"$(basename "$path")"
+            if [ ! -f "$deb" ]; then
+              curl -fsSL --retry 3 -o "$deb" "http://archive.ubuntu.com/ubuntu/pool/main/$path"
+            else
+              :
+            fi
+            echo "$sum  $deb" | sha256sum -c -
+            debs+=("$deb")
+          done <<< "$FONT_DEBS"
+          sudo dpkg -i "${debs[@]}"
+          fc-cache -f
+          fc-list :lang=zh family | sort
+
+      # gofmt, MyGo's vet and internal/archtest: what developers run locally.
+      - name: Fast checks
+        if: matrix.shard == 'rest'
+        run: scripts/check.sh
+
+      # -count=1: setup-go's cache keeps the last run's test results too,
+      # and a result does not change with what a test does not see (the
+      # fonts, a flake): without it a run after a green one says "(cached)".
+      # -cover: each package's share of statements the tests run goes to
+      # the job summary. A report only, with no threshold, and without the
+      # app's package: a shard runs a part of its tests.
+      - name: Go tests
+        if: matrix.shard == 'rest'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -cover $(go list ./... | grep -vx "$(go list .)") | tee "$RUNNER_TEMP/go-test.txt"
+          {
+            echo "### Coverage by package"
+            echo '```'
+            grep -E '^ok .*coverage: ' "$RUNNER_TEMP/go-test.txt" | awk '{print $(NF-2), $2}' | sort -n
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Go tests of the app's package, one shard
+        if: matrix.shard != 'rest'
+        run: |
+          set -o pipefail
+          run="$(CGO_ENABLED=0 go test -list . . | scripts/test-shard.sh ${{ matrix.shard }} $(( ${{ strategy.job-total }} - 1 )))"
+          CGO_ENABLED=0 go test -timeout=15m -count=1 -run "$run" .
+
+      # Two --smoke folders stand for two Macs: one exports the library, the
+      # other imports it and restarts (scripts/library-e2e.sh).
+      - name: Library export and import end to end
+        if: matrix.shard == 'rest'
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/voxt/Voxt" .
+          scripts/library-e2e.sh "$RUNNER_TEMP/voxt/Voxt"
+
+      # The test skips on a machine without Chrome. The runner has it, so a
+      # skip here means the rendered preview went unchecked.
+      - name: The transcript preview in a browser
+        if: matrix.shard == 'rest'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -count=1 -v -run '^TestPageSanitizesTranscriptInBrowser$' ./internal/transcriptpreview | tee "$RUNNER_TEMP/browser.txt"
+          grep -q -- '--- PASS: TestPageSanitizesTranscriptInBrowser' "$RUNNER_TEMP/browser.txt"
+
+      - name: Vet the update-check build
+        if: matrix.shard == 'rest'
+        run: go vet -tags updatecheck .
+
+      # The fixture demo (Voxt/AGENTS.md) is this package with the tag.
+      - name: Build and vet the fixture demo
+        if: matrix.shard == 'rest'
+        run: |
+          CGO_ENABLED=0 go build -tags meetingdemo -o /dev/null .
+          CGO_ENABLED=0 go vet -tags meetingdemo .
+          GOFLAGS=-tags=meetingdemo go tool mygo vet .
+
+      - name: Vendored MyGo is MyGo with the patches
+        if: matrix.shard == 'rest'
+        run: scripts/vendor-mygo.sh --check

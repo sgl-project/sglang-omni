@@ -11,6 +11,7 @@ from sglang_omni.config import build_stage_placement_plan, resolve_stage_factory
 from sglang_omni.config.manager import ConfigManager
 from sglang_omni.config.schema import EndpointsConfig, ProcessConfig
 from sglang_omni.models.qwen3_omni.config import (
+    TALKER_START_MIN_CHUNKS,
     Qwen3OmniSpeechColocatedPipelineConfig,
     Qwen3OmniSpeechPipelineConfig,
     Variants,
@@ -137,7 +138,9 @@ def test_colocated_topology_is_opt_in_and_uses_one_gpu() -> None:
     config = Qwen3OmniSpeechColocatedPipelineConfig(model_path="dummy")
 
     assert Variants["speech-colocated"] is Qwen3OmniSpeechColocatedPipelineConfig
-    assert make_stage(config, "talker_ar").factory.enable_partial_start is False
+    talker_factory = make_stage(config, "talker_ar").factory
+    assert talker_factory.enable_partial_start is True
+    assert talker_factory.partial_start_min_chunks == TALKER_START_MIN_CHUNKS
     for stage_name in (
         "image_encoder",
         "audio_encoder",

@@ -1,0 +1,4 @@
+Structure:
+- Only when the speaker clearly lists steps or items, write them as a list: numbered for an order, "-" bullets otherwise, indented bullets for sub-items.
+- Break long text into paragraphs where the topic changes.
+- Do not add headings, summaries or anything that was not said; a single sentence stays a sentence.
