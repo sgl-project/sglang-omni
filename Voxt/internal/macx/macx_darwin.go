@@ -81,6 +81,15 @@ func goString(s objc.ID) string {
 
 func class(name string) objc.ID { return objc.ID(objc.GetClass(name)) }
 
+var selPressedButtons = objc.RegisterName("pressedMouseButtons")
+
+func mouseButtonDown() bool {
+	if load() != nil {
+		return false
+	}
+	return objc.Send[uint](objc.ID(class("NSEvent")), selPressedButtons) != 0
+}
+
 func frontmost() App {
 	if load() != nil {
 		return App{}

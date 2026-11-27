@@ -8,9 +8,13 @@ func activate(int, time.Duration, func(func())) (bool, time.Duration) { return f
 
 func frontmost() App { return App{} }
 
+func mouseButtonDown() bool { return false }
+
 func systemProxies() Proxies { return Proxies{} }
 
 func windowNumber(uintptr) int { return 0 }
+
+func windowServerFrame(uintptr) (WindowFrame, bool) { return WindowFrame{}, false }
 
 func accessibilityFocusedWindowFrame(int) (WindowFrame, bool) { return WindowFrame{}, false }
 

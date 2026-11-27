@@ -28,6 +28,7 @@ from sglang_omni.serve.realtime.events import (
     make_event,
     parse_conversation_client_event,
 )
+from sglang_omni.serve.realtime.task_cleanup import close_websocket
 from sglang_omni.serve.realtime.turn_detector import TurnDetector, build_turn_detector
 
 DEFAULT_INSTRUCTIONS = (
@@ -1235,7 +1236,4 @@ class RealtimeSession:
         else:
             pass
         await self.cancel_and_abort(self.queue_drainer, None)
-        if self.websocket.client_state == WebSocketState.CONNECTED:
-            await self.websocket.close()
-        else:
-            pass
+        await close_websocket(self.websocket)

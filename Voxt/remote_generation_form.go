@@ -33,7 +33,8 @@ type genForm struct {
 	advanced                        bool // the folding section, open
 	// api is the API format's title (it is saved in settings.Provider, not
 	// in Generation).
-	api string
+	api         string
+	promptCache bool // the Messages API's
 }
 
 // The menus' choices: values and their titles.
@@ -88,12 +89,15 @@ func formatTitleFor(translator *i18n.Translator, v string) string {
 var (
 	responseFormats = []string{"", llm.ResponseJSON, llm.ResponseJSONSchema}
 	verbosities     = []string{"", "low", "medium", "high"}
-	apiFormats      = []string{"", llm.APIResponses}
+	apiFormats      = []string{"", llm.APIResponses, llm.APIMessages}
 )
 
 func apiFormatTitle(v string) string {
-	if v == llm.APIResponses {
+	switch v {
+	case llm.APIResponses:
 		return "Responses"
+	case llm.APIMessages:
+		return "Messages"
 	}
 	return "Chat Completions"
 }
@@ -143,7 +147,7 @@ func genFormOf(g settings.Generation) genForm {
 		logprobs: g.Logprobs, topLogprobs: numText(g.TopLogprobs),
 		format: formatTitle(g.ResponseFormat), schema: g.JSONSchema, stop: strings.Join(g.Stop, "\n"),
 		verbosity: verbosityTitle(g.Verbosity), keepAlive: g.KeepAlive, usage: g.IncludeUsage == nil || *g.IncludeUsage,
-		extraBody: g.ExtraBodyJSON,
+		extraBody: g.ExtraBodyJSON, promptCache: g.PromptCache,
 	}
 	if g.ThinkingBudget > 0 {
 		f.budget = strconv.Itoa(g.ThinkingBudget)
@@ -242,6 +246,7 @@ func (f *genForm) settings() (g settings.Generation, bad string) {
 		g.IncludeUsage = &off
 	}
 	g.ExtraBodyJSON = strings.TrimSpace(f.extraBody)
+	g.PromptCache = f.promptCache && f.api == apiFormatTitle(llm.APIMessages)
 	return g, bad
 }
 
