@@ -19,6 +19,7 @@ from sglang_omni.models.nemotron_voicechat.duplex_ar import (
     ThinkerAdapter,
 )
 from sglang_omni.models.nemotron_voicechat.duplex_hooks import (
+    BatchedPerceptionHooks,
     CodecHooks,
     PerceptionHooks,
 )
@@ -181,6 +182,7 @@ def create_perception(
     model_path: str,
     *,
     max_open_sessions: int,
+    batch_sessions: bool = False,
     dtype: str = "float32",
     device: str | None = None,
     gpu_id: int | None = None,
@@ -195,7 +197,12 @@ def create_perception(
         device=concrete_device,
         strict=True,
     )
-    hooks = PerceptionHooks(model.eval(), max_open_sessions=max_open_sessions)
+    hooks_class = (
+        BatchedPerceptionHooks
+        if batch_sessions and max_open_sessions > 1
+        else PerceptionHooks
+    )
+    hooks = hooks_class(model.eval(), max_open_sessions=max_open_sessions)
     hooks.warm_up()
     return SessionScheduler(
         hooks, max_open_sessions=max_open_sessions, max_concurrency=1

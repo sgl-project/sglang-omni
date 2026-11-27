@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+from torch import _foreach_copy_ as copy_state_buffers
 
 from sglang_omni.models.nemotron_voicechat.code2wav_stream import (
     DECODE_WINDOW_FRAMES,
@@ -34,7 +35,12 @@ from sglang_omni.proto.streams import (
     TOOL_RESPONSE,
     control_type,
 )
-from sglang_omni.scheduling.session import SessionContext, SessionHooks
+from sglang_omni.scheduling.session import (
+    BatchedSessionHooks,
+    SessionAppend,
+    SessionContext,
+    SessionHooks,
+)
 
 PCM16_SAMPLE_BYTES = 2
 PCM16_INPUT_SCALE = 32768.0
@@ -66,11 +72,9 @@ class PerceptionHooks(SessionHooks):
             stream.push(torch.zeros(1, SAMPLES_PER_FRAME, device=stream.device))
             stream.reset()
 
-    @torch.inference_mode()
-    def append(
-        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
-    ) -> StagePayload:
-        state = self.states[context.session_identity]
+    def frame_samples(
+        self, state: PerceptionState, chunk: TimedChunk
+    ) -> torch.Tensor | None:
         if state.is_ended:
             raise ValueError("VoiceChat input already ended")
         else:
@@ -92,16 +96,21 @@ class PerceptionHooks(SessionHooks):
             raise ValueError("empty VoiceChat input requires EOS")
         else:
             pass
-        acoustic_features = None
         if raw:
             waveform = torch.from_numpy(
                 np.frombuffer(raw, dtype="<i2").astype(np.float32)
             )
-            acoustic_features = state.stream.push(
-                waveform[None] / PCM16_INPUT_SCALE
-            ).cpu()
+            return waveform[None] / PCM16_INPUT_SCALE
         else:
-            pass
+            return None
+
+    def finish_frame(
+        self,
+        state: PerceptionState,
+        chunk: TimedChunk,
+        payload: StagePayload,
+        acoustic_features: torch.Tensor | None,
+    ) -> StagePayload:
         state.is_ended = chunk.eos
         # The encoder's flush row is not a model frame; EOS must not add one.
         payload.data = {"acoustic": acoustic_features, "eos": chunk.eos}
@@ -117,6 +126,15 @@ class PerceptionHooks(SessionHooks):
         else:
             pass
         return payload
+
+    @torch.inference_mode()
+    def append(
+        self, chunk: TimedChunk, payload: StagePayload, context: SessionContext
+    ) -> StagePayload:
+        state = self.states[context.session_identity]
+        samples = self.frame_samples(state, chunk)
+        features = state.stream.push(samples).cpu() if samples is not None else None
+        return self.finish_frame(state, chunk, payload, features)
 
     def control(self, session_identity: SessionIdentity, event: TimedChunk) -> None:
         """Hold a tool response for the next frame; one that arrives after the input ended is never consumed."""
@@ -157,6 +175,53 @@ class PerceptionHooks(SessionHooks):
             *stream.conv_caches,
         ]
         return ResourceUsage(bytes=sum(t.numel() * t.element_size() for t in tensors))
+
+
+class BatchedPerceptionHooks(PerceptionHooks, BatchedSessionHooks):
+    def __init__(self, model: AudioPerception, *, max_open_sessions: int) -> None:
+        super().__init__(model, max_open_sessions=max_open_sessions)
+        self.pair_stream = GraphPerception(model, batch_size=2)
+        self.pair_rows = [
+            [buffer[row : row + 1] for buffer in self.pair_stream.state_buffers()]
+            for row in range(2)
+        ]
+
+    def warm_up(self) -> None:
+        super().warm_up()
+        self.pair_stream.push(
+            torch.zeros(2, SAMPLES_PER_FRAME, device=self.pair_stream.device)
+        )
+
+    @torch.inference_mode()
+    def append_batch(self, appends: list[SessionAppend]) -> list[StagePayload]:
+        ready_frames: list[tuple[SessionAppend, PerceptionState, torch.Tensor]] = []
+        for append in appends:
+            state = self.states[append.context.session_identity]
+            samples = self.frame_samples(state, append.chunk)
+            if samples is None:
+                self.finish_frame(state, append.chunk, append.payload, None)
+            else:
+                ready_frames.append((append, state, samples))
+
+        for start in range(0, len(ready_frames), 2):
+            frames = ready_frames[start : start + 2]
+            if len(frames) == 1:
+                append, state, samples = frames[0]
+                features = state.stream.push(samples).cpu()
+                self.finish_frame(state, append.chunk, append.payload, features)
+            else:
+                histories = [state.stream.state_buffers() for _, state, _ in frames]
+                for row, history in zip(self.pair_rows, histories, strict=True):
+                    copy_state_buffers(row, history)
+                features = self.pair_stream.push(
+                    torch.cat([samples for _, _, samples in frames])
+                ).cpu()
+                for index, (append, state, _) in enumerate(frames):
+                    copy_state_buffers(histories[index], self.pair_rows[index])
+                    self.finish_frame(
+                        state, append.chunk, append.payload, features[index : index + 1]
+                    )
+        return [append.payload for append in appends]
 
 
 @dataclass(kw_only=True)
