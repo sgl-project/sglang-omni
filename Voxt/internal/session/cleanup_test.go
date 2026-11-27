@@ -415,7 +415,7 @@ func TestCleanupProtocolFallback(t *testing.T) {
 	}
 }
 
-// note (luojiaxuan): TestFallbackCleansInSmallerPieces: when the live
+// TestFallbackCleansInSmallerPieces: when the live
 // clean-up's request fails, the whole-text clean-up at Stop asks in
 // pieces of at most fallbackPieceLimit words (reverted: the default
 // PieceWords pieces, the first of them longer than fallbackPieceLimit).
