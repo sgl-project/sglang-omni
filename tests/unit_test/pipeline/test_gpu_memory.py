@@ -370,6 +370,34 @@ def test_gpu_startup_lock_releases_after_exception(
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def test_gpu_startup_lock_reports_every_poll_until_the_holder_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A process queued on the startup lock used to block without a sign of life, so the launcher read a long queue as a stalled start."""
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setattr(gpu_memory.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(gpu_memory, "STARTUP_LOCK_POLL_INTERVAL_SECONDS", 0.0)
+    lock_path = gpu_memory.get_gpu_startup_lock_path(0, base_dir=tmp_path)
+    poll_count = 0
+
+    with open(lock_path, "a+") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+
+        def release_on_third_poll() -> None:
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count == 3:
+                fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+            else:
+                pass
+
+        with gpu_memory.gpu_startup_lock(0, release_on_third_poll):
+            assert poll_count == 3
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def test_get_gpu_device_info_reports_name_and_total_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -117,6 +117,20 @@ def apply_timestamp_rules_on_device(
     )
 
 
+def timestamp_state_after(
+    timestamp_state: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    token: torch.Tensor,
+    params: WhisperTimestampParams,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The last token, the one before it and the last timestamp of every row once it has emitted token, which apply_timestamp_rules_on_device reads for the row's next token."""
+    last_token, _, last_timestamp = timestamp_state
+    return (
+        token,
+        last_token,
+        torch.where(token >= int(params["timestamp_begin_id"]), token, last_timestamp),
+    )
+
+
 class WhisperTimestampLogitProcessor(CustomLogitProcessor):
     """Apply Transformers-compatible Whisper timestamp constraints."""
 
@@ -147,4 +161,5 @@ __all__ = [
     "WhisperTimestampLogitProcessor",
     "apply_timestamp_rules",
     "apply_timestamp_rules_on_device",
+    "timestamp_state_after",
 ]
