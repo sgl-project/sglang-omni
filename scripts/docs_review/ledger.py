@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Local SQLite ledger for review reports and spend.
 
-One review runs at a time. Concurrent budget reservation is a later phase.
+Costs are estimates reserved before each model call.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class ReviewLedger:
 
     def fetch(self, review_input_sha256: str) -> Report | None:
         row = self.connection.execute(
-            "SELECT report_json FROM runs WHERE review_input_sha256 = ?",
+            "SELECT report_json FROM runs WHERE review_input_sha256 = ? AND report_json != ''",
             (review_input_sha256,),
         ).fetchone()
         if row is None:
@@ -45,28 +45,57 @@ class ReviewLedger:
         else:
             return Report.model_validate_json(row[0])
 
-    def store(
-        self, pull_request_number: int, report: Report, reviewed_at: datetime
-    ) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO runs (
-                review_input_sha256,
+    def reserve_attempt(
+        self,
+        reservation_id: str,
+        first_attempt: bool,
+        pull_request_number: int,
+        budget: BudgetConfig,
+        follow_up_authorized: bool,
+        remaining_retries: int,
+        reviewed_at: datetime,
+    ) -> SpendAuthorization:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            authorization = self.authorize(
                 pull_request_number,
-                report_json,
-                cost_cents,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                report.review_input_sha256,
-                pull_request_number,
-                report.model_dump_json(),
-                report.usage_cost_cents,
-                reviewed_at.isoformat(),
-            ),
-        )
-        self.connection.commit()
+                budget,
+                follow_up_authorized,
+                remaining_retries,
+                reviewed_at,
+                first_attempt,
+            )
+            if not authorization.allowed:
+                return authorization
+            elif first_attempt:
+                self.connection.execute(
+                    "INSERT INTO runs (review_input_sha256, pull_request_number, report_json, cost_cents, created_at) VALUES (?, ?, '', ?, ?)",
+                    (
+                        reservation_id,
+                        pull_request_number,
+                        budget.call_cost_cents,
+                        reviewed_at.isoformat(),
+                    ),
+                )
+            else:
+                self.connection.execute(
+                    "UPDATE runs SET cost_cents = cost_cents + ? WHERE review_input_sha256 = ?",
+                    (budget.call_cost_cents, reservation_id),
+                )
+        return authorization
+
+    def store(self, reservation_id: str, report: Report) -> None:
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            cache_key = report.review_input_sha256
+            if self.fetch(cache_key) is not None:
+                cache_key = reservation_id
+            else:
+                pass
+            self.connection.execute(
+                "UPDATE runs SET review_input_sha256 = ?, report_json = ? WHERE review_input_sha256 = ?",
+                (cache_key, report.model_dump_json(), reservation_id),
+            )
 
     def pull_request_spend_cents(self, pull_request_number: int) -> int:
         row = self.connection.execute(
@@ -97,14 +126,15 @@ class ReviewLedger:
         follow_up_authorized: bool,
         retry_count: int,
         reviewed_at: datetime,
+        first_attempt: bool = True,
     ) -> SpendAuthorization:
         rounds = self.round_count(pull_request_number)
         worst_case_cents = (retry_count + 1) * budget.call_cost_cents
-        if rounds >= 2:
+        if first_attempt and rounds >= 2:
             return SpendAuthorization(
                 allowed=False, reason="pull request round limit reached"
             )
-        elif rounds == 1 and not follow_up_authorized:
+        elif first_attempt and rounds == 1 and not follow_up_authorized:
             return SpendAuthorization(
                 allowed=False, reason="follow-up review is not authorized"
             )

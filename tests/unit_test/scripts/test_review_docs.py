@@ -13,6 +13,7 @@ from urllib.request import Request
 
 import pytest
 
+from scripts.docs_review.collect import collect_review_bundle
 from scripts.docs_review.evaluate import (
     EvaluationDefect,
     EvaluationMaterial,
@@ -36,6 +37,7 @@ from scripts.docs_review.models import (
 from scripts.docs_review.policy import (
     API_CONTRACT,
     ARCHITECTURE_CONSISTENCY,
+    CLAIMS_HAVE_EVIDENCE,
     CONTRIBUTOR_CHECKLIST,
     COOKBOOK_RECIPE,
     DOCS_MATCH_CODE,
@@ -51,6 +53,13 @@ from scripts.docs_review.transport import (
     ReviewerError,
     build_chat_request,
     parse_chat_content,
+)
+from tests.unit_test.fixtures.docs_review import (
+    commit_all,
+    git_command,
+    sample_budget,
+    start_repository,
+    write_file,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,44 +87,6 @@ class FixedClock:
 
     def now(self) -> datetime:
         return self.moment
-
-
-def git_command(repository: Path, *arguments: str) -> str:
-    completed = subprocess.run(
-        ["git", "-C", str(repository), *arguments],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(completed.stderr)
-    else:
-        return completed.stdout
-
-
-def start_repository(root: Path) -> str:
-    root.mkdir()
-    hooks = root.parent / f"{root.name}-hooks"
-    hooks.mkdir()
-    git_command(root, "init")
-    git_command(root, "config", "user.email", "docs-review@example.com")
-    git_command(root, "config", "user.name", "Docs Review Test")
-    git_command(root, "config", "commit.gpgsign", "false")
-    git_command(root, "config", "core.hooksPath", str(hooks))
-    (root / "README.md").write_text("Repository.\n", encoding="utf-8")
-    return commit_all(root, "base")
-
-
-def commit_all(repository: Path, message: str) -> str:
-    git_command(repository, "add", ".")
-    git_command(repository, "commit", "-m", message)
-    return git_command(repository, "rev-parse", "HEAD").strip()
-
-
-def write_file(repository: Path, relative: str, content: str) -> None:
-    path = repository / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
 
 
 def checklist(purpose: str, extra: str = "- Performance: not applicable") -> str:
@@ -151,21 +122,12 @@ def measured_lines(dataset: str, comparable: str) -> str:
     )
 
 
-def sample_budget() -> BudgetConfig:
-    return BudgetConfig(
-        max_cost_cents_per_call=10,
-        max_cost_cents_per_pull_request=50,
-        max_cost_cents_per_day=50,
-        call_cost_cents=10,
-    )
-
-
 def review_change(
     repository: Path,
     base_commit_sha: str,
     head_commit_sha: str,
     ledger_path: Path,
-    pull_request_text: str,
+    pull_request_text: str | None,
     reviewer: ScriptedReviewer,
     pull_request_number: int = 7,
     evidence_text: str = "",
@@ -336,6 +298,35 @@ def test_missing_checklist_is_a_follow_up(tmp_path: Path) -> None:
     assert "not a rejection" in result.report.findings[0].suggested_fix
     assert result.report.author_confirmation == "not provided"
     assert result.report.advisory is True
+
+
+def test_omitted_and_empty_pr_descriptions_do_not_share_a_cached_review(
+    tmp_path: Path,
+) -> None:
+    """An omitted description must not reuse an empty description's audit."""
+    repository = tmp_path / "repo"
+    base_commit_sha = start_repository(repository)
+    write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
+    head_commit_sha = commit_all(repository, "docs")
+    ledger_path = tmp_path / "ledger.sqlite"
+    reviewer = ScriptedReviewer(["[]", "[]"])
+    omitted = review_change(
+        repository, base_commit_sha, head_commit_sha, ledger_path, None, reviewer
+    )
+    empty = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        ledger_path,
+        "",
+        reviewer,
+        follow_up_authorized=True,
+    )
+    assert omitted.report.review_input_sha256 != empty.report.review_input_sha256
+    assert "skipped" in omitted.report.author_confirmation
+    assert empty.report.author_confirmation == "not provided"
+    assert empty.report.findings[0].rule_id == CONTRIBUTOR_CHECKLIST
+    assert reviewer.call_count == 2
 
 
 def test_pure_documentation_fix_does_not_require_a_benchmark(tmp_path: Path) -> None:
@@ -657,7 +648,7 @@ def test_head_only_style_guide_is_not_trusted(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
     base_commit_sha = start_repository(repository)
     write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
-    write_file(repository, "docs/STYLE_GUIDE.md", "# Style\n\nUse H1 only.\n")
+    write_file(repository, "docs/README.md", "# Style\n\nUse H1 only.\n")
     head_commit_sha = commit_all(repository, "add style guide")
     result = review_change(
         repository,
@@ -744,6 +735,9 @@ def test_cli_writes_a_reproducible_bundle(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     bundle = json.loads((output / "input_bundle.json").read_text(encoding="utf-8"))
     report = json.loads((output / "report.json").read_text(encoding="utf-8"))
+    assert bundle["pull_request_text"] is None
+    assert "skipped" in report["author_confirmation"]
+    assert report["findings"] == []
     assert "docs/guide.md" in bundle["reviewed_paths"]
     assert bundle["review_input_sha256"] == report["review_input_sha256"]
     assert report["execution"] == "incomplete"
@@ -764,6 +758,8 @@ def test_model_request_treats_the_bundle_as_data() -> None:
     assert request.messages[1].content == bundle_text
     assert "DOCS_REVIEW_TEST_KEY" not in request.to_json()
     payload = json.loads(request.to_json())
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
     assert payload["max_tokens"] == 200
     assert payload["temperature"] == 0
     assert "max_completion_tokens" not in payload
@@ -895,7 +891,7 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
     monkeypatch.setattr(
         "scripts.docs_review.transport.urllib.request.urlopen", fake_urlopen
     )
-    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
+    monkeypatch.delenv("DOCS_REVIEW_TEST_KEY", raising=False)
     request = ReviewRequest(
         repository=repository,
         base_commit_sha=base_commit_sha,
@@ -912,6 +908,16 @@ def test_real_reviewer_request_includes_rules_schema_and_produces_a_finding(
         ),
         ledger_path=tmp_path / "ledger.sqlite",
     )
+    request.retry_count = 1
+    missing_key = run_review(request, None, FixedClock())
+    assert "Missing API key" in missing_key.report.incomplete_reason
+    assert missing_key.report.usage_cost_cents == 0
+    assert captured_requests == []
+    ledger = ReviewLedger(request.ledger_path)
+    assert ledger.round_count(7) == 0
+    assert ledger.fetch(missing_key.report.review_input_sha256) is None
+    ledger.close()
+    monkeypatch.setenv("DOCS_REVIEW_TEST_KEY", "local-test-secret")
     result = run_review(request, None, FixedClock())
     assert result.report.execution == "complete"
     assert result.report.findings == [finding]
@@ -1012,9 +1018,7 @@ def test_collector_disables_textconv_scripts(tmp_path: Path) -> None:
     write_file(repository, "docs/guide.md", "# Guide\n\nInstall the package.\n")
     git_command(
         repository,
-        "config",
-        "diff.review_probe.textconv",
-        f"{sys.executable} convert.py",
+        ["config", "diff.review_probe.textconv", f"{sys.executable} convert.py"],
     )
     head_commit_sha = commit_all(repository, "textconv probe")
     result = review_change(
@@ -1134,7 +1138,7 @@ def test_model_configuration_change_invalidates_cached_report(
     head_commit_sha = commit_all(repository, "guide")
     settings = ModelSettings(
         model_name="reviewer",
-        endpoint_url="https://example.invalid/one",
+        endpoint_url="https://user:redaction-probe@example.invalid/one?token=redaction-probe#redaction-probe",
         max_output_tokens=512,
         api_key_environment_variable="TEST_KEY",
     )
@@ -1150,6 +1154,16 @@ def test_model_configuration_change_invalidates_cached_report(
     )
     reviewer = ScriptedReviewer(["[]", "[]"])
     first = run_review(request, reviewer, FixedClock())
+    for artifact in (first.payload, first.report):
+        assert artifact.model_dump()["model_configuration"] == {
+            "model_name": "reviewer",
+            "endpoint_url": "https://example.invalid/one",
+            "temperature": 0,
+            "max_output_tokens": 512,
+            "max_tool_rounds": 0,
+            "reasoning_effort": None,
+        }
+        assert "redaction-probe" not in artifact.model_dump_json()
     cached = run_review(request, reviewer, FixedClock())
     assert cached.report.review_input_sha256 == first.report.review_input_sha256
     assert reviewer.call_count == 1
@@ -1187,3 +1201,302 @@ def test_evaluation_counts_distinct_defects_in_the_same_file() -> None:
     assert report.labeled_defect_count == 2
     assert report.recall == 0.5
     assert not report.meets_recall_threshold
+
+
+@pytest.mark.parametrize(
+    ("claim", "requires_benchmark"),
+    [
+        ("Use 50% overlap on a 2x2 grid.", False),
+        ("Latency dropped by 20%.", True),
+    ],
+)
+def test_performance_claim_overrides_na_only_for_comparisons(
+    tmp_path: Path, claim: str, requires_benchmark: bool
+) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    write_file(repository, "docs/README.md", "# Style\n")
+    base = commit_all(repository, "base style guide")
+    write_file(repository, "docs/benchmark.md", f"# Benchmark\n\n{claim}\n")
+    template = (REPO_ROOT / ".github/pull_request_template.md").read_text()
+    for field, value in [
+        ("Purpose", "Update documentation"),
+        ("Reviewed the final diff", "yes"),
+        ("Checks", "docs build"),
+        ("Untested", "none"),
+        ("Performance", "not applicable"),
+    ]:
+        template = template.replace(f"- {field}:\n", f"- {field}: {value}\n")
+    result = review_change(
+        repository,
+        base,
+        commit_all(repository, "docs"),
+        tmp_path / "ledger.sqlite",
+        template,
+        ScriptedReviewer(["[]"]),
+    )
+    assert result.report.style_guide_limitation == ""
+    assert [finding.rule_id for finding in result.report.findings] == (
+        [PERFORMANCE_EVIDENCE] if requires_benchmark else []
+    )
+
+
+def test_interrupted_dispatch_retains_estimated_cost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repo"
+    base = start_repository(repository)
+    write_file(repository, "docs/guide.md", "# Guide\n")
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base,
+        head_commit_sha=commit_all(repository, "docs"),
+        pull_request_number=7,
+        pull_request_text=None,
+        budget=sample_budget(),
+        ledger_path=tmp_path / "ledger.sqlite",
+        model_settings=ModelSettings(
+            model_name="reviewer",
+            endpoint_url="https://example.invalid/chat",
+            max_output_tokens=64,
+            api_key_environment_variable="TEST_REVIEW_KEY",
+        ),
+    )
+
+    def interrupt(request: Request, timeout: int) -> BytesIO:
+        raise KeyboardInterrupt
+
+    monkeypatch.setenv("TEST_REVIEW_KEY", "fake")
+    monkeypatch.setattr(
+        "scripts.docs_review.transport.urllib.request.urlopen", interrupt
+    )
+    with pytest.raises(KeyboardInterrupt):
+        run_review(request, None, FixedClock())
+    ledger = ReviewLedger(request.ledger_path)
+    assert ledger.pull_request_spend_cents(7) == 10
+    assert ledger.round_count(7) == 1
+    ledger.close()
+
+
+def test_docs_only_pr_discovers_referenced_config_and_code_files(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    write_file(
+        repository,
+        "examples/configs/qwen3_tts.yaml",
+        "config_cls: Qwen3TTSPipelineConfig\nsample_rate: 24000\n",
+    )
+    write_file(
+        repository,
+        "sglang_omni/models/qwen3_tts/config.py",
+        "class Qwen3TTSPipelineConfig:\n    sample_rate = 24000\n",
+    )
+    write_file(repository, "tests/qwen3_tts.py", "sample_rate = 0\n")
+    write_file(repository, "benchmarks/qwen3_tts.py", "sample_rate = 0\n")
+    base_commit_sha = commit_all(repository, "add code and config")
+    write_file(
+        repository,
+        "docs/cookbook/qwen3_tts.md",
+        "# Qwen3-TTS\n\nUse `examples/configs/qwen3_tts.yaml` for 48 kHz speech.\n",
+    )
+    head_commit_sha = commit_all(repository, "docs-only cookbook update")
+    finding = Finding(
+        rule_id=DOCS_MATCH_CODE,
+        file_path="docs/cookbook/qwen3_tts.md",
+        line_start=3,
+        line_end=3,
+        quote="48 kHz speech",
+        claim="Cookbook claims 48 kHz speech, but config sets 24000 Hz.",
+        evidence_file_path="sglang_omni/models/qwen3_tts/config.py",
+        evidence_line_start=2,
+        evidence_line_end=2,
+        evidence_quote="sample_rate = 24000",
+        impact="Clients configure the wrong sample rate.",
+        suggested_fix="Document 24 kHz speech.",
+        change_relation="introduced",
+        certainty="supported",
+    )
+    reviewer = ScriptedReviewer([json.dumps([finding.model_dump()])])
+    result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger.sqlite",
+        checklist("Rewrite Qwen3-TTS cookbook."),
+        reviewer,
+    )
+    collected_paths = {collected.file_path for collected in result.bundle.files}
+    assert {"tests/qwen3_tts.py", "benchmarks/qwen3_tts.py"}.isdisjoint(collected_paths)
+    assert "examples/configs/qwen3_tts.yaml" in collected_paths
+    assert "sglang_omni/models/qwen3_tts/config.py" in collected_paths
+    assert result.report.execution == "complete"
+    assert len(result.report.findings) == 1
+    assert (
+        result.report.findings[0].evidence_file_path
+        == "sglang_omni/models/qwen3_tts/config.py"
+    )
+
+
+def test_doc_simplification_includes_deleted_lines_in_citable_diff(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    write_file(
+        repository,
+        "docs/guide.md",
+        "# Guide\n\nRequires CUDA 12.4 and 24 GB VRAM.\nRun `sgl-omni serve`.\n",
+    )
+    base_commit_sha = commit_all(repository, "add guide with hardware constraint")
+    write_file(
+        repository,
+        "docs/guide.md",
+        "# Guide\n\nRun `sgl-omni serve`.\n",
+    )
+    head_commit_sha = commit_all(repository, "simplify guide and drop requirement")
+    reviewer = ScriptedReviewer(["[]"])
+    result = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger.sqlite",
+        checklist("Simplify guide."),
+        reviewer,
+    )
+    diff_files = [
+        collected
+        for collected in result.bundle.files
+        if collected.file_path == "documentation.diff"
+    ]
+    assert len(diff_files) == 1
+    diff_lines = diff_files[0].content.splitlines()
+    deleted_line_number = next(
+        index
+        for index, line in enumerate(diff_lines, start=1)
+        if line == "-Requires CUDA 12.4 and 24 GB VRAM."
+    )
+    assert "-Requires CUDA 12.4 and 24 GB VRAM." in reviewer.bundle_texts[0]
+
+    finding = Finding(
+        rule_id=CLAIMS_HAVE_EVIDENCE,
+        file_path="docs/guide.md",
+        line_start=3,
+        line_end=3,
+        quote="Run `sgl-omni serve`.",
+        claim="Simplification dropped the 24 GB VRAM requirement without justification.",
+        evidence_file_path="documentation.diff",
+        evidence_line_start=deleted_line_number,
+        evidence_line_end=deleted_line_number,
+        evidence_quote="-Requires CUDA 12.4 and 24 GB VRAM.",
+        impact="Users on smaller GPUs hit OOM.",
+        suggested_fix="Restore the VRAM requirement or document the new minimum.",
+        change_relation="introduced",
+        certainty="supported",
+    )
+    checked = review_change(
+        repository,
+        base_commit_sha,
+        head_commit_sha,
+        tmp_path / "ledger-two.sqlite",
+        checklist("Simplify guide."),
+        ScriptedReviewer([json.dumps([finding.model_dump()])]),
+    )
+    assert checked.report.execution == "complete"
+    assert len(checked.report.findings) == 1
+    assert checked.report.findings[0].evidence_file_path == "documentation.diff"
+
+
+def test_many_hunks_and_document_diff_share_the_rendered_byte_limit(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    for index in range(20):
+        write_file(repository, f"code{index}.py", "before = 1\n" * 80)
+    write_file(repository, "docs/model.md", "old instructions\n" * 200)
+    base = commit_all(repository, "base")
+    for index in range(20):
+        write_file(
+            repository, f"code{index}.py", ("設定 = 2\n" + "before = 1\n" * 9) * 8
+        )
+    write_file(repository, "docs/model.md", "更新しました\n" * 200)
+    head = commit_all(repository, "docs and code")
+    for limit in (5000, 17000):
+        request = ReviewRequest(
+            repository=repository,
+            base_commit_sha=base,
+            head_commit_sha=head,
+            ledger_path=tmp_path / "ledger",
+            pull_request_number=1,
+            pull_request_text="",
+            max_bundle_bytes=limit,
+        )
+        bundle = collect_review_bundle(request)
+        assert len(render_bundle(bundle).encode()) <= limit
+        assert "更新しました" in render_bundle(bundle)
+
+
+def test_deleted_relative_references_resolve_from_each_document(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    for directory in ("first", "second"):
+        write_file(
+            repository, f"docs/{directory}/guide.md", "Run [helper](./helper.py).\n"
+        )
+        write_file(repository, f"docs/{directory}/helper.py", "enabled = True\n")
+    base = commit_all(repository, "guides")
+    for directory in ("first", "second"):
+        write_file(
+            repository, f"docs/{directory}/guide.md", "Follow the instructions.\n"
+        )
+    head = commit_all(repository, "remove both references")
+    request = ReviewRequest(
+        repository=repository,
+        base_commit_sha=base,
+        head_commit_sha=head,
+        ledger_path=tmp_path / "ledger",
+        pull_request_number=1,
+        pull_request_text="",
+    )
+    files = collect_review_bundle(request).files
+    assert {file.file_path for file in files if file.change == "included"} == {
+        "docs/first/helper.py",
+        "docs/second/helper.py",
+    }
+
+
+def test_deleted_doc_and_tight_budget_keep_changed_code_clean(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    start_repository(repository)
+    write_file(repository, "docs/old.md", "# Old\n\nLegacy guide.\n")
+    for index in range(8):
+        write_file(repository, f"pkg/ref_{index}.py", f"VALUE_{index} = {index}\n")
+    write_file(repository, "engine.py", "line = 0\n" * 60)
+    base = commit_all(repository, "base")
+    (repository / "docs" / "old.md").unlink()
+    refs = " ".join(f"`pkg/ref_{index}.py`" for index in range(8))
+    write_file(repository, "docs/guide.md", f"# Guide\n\nUses {refs}.\n")
+    write_file(
+        repository,
+        "engine.py",
+        "line = 0\n" * 30 + "AUDIO_MODE = 'pcm'\n" + "line = 0\n" * 29,
+    )
+    head = commit_all(repository, "delete old doc and edit engine")
+    bundle = collect_review_bundle(
+        ReviewRequest(
+            repository=repository,
+            base_commit_sha=base,
+            head_commit_sha=head,
+            ledger_path=tmp_path / "ledger.sqlite",
+            pull_request_number=1,
+            pull_request_text="",
+            max_bundle_bytes=2500,
+        )
+    )
+    assert "/dev/null" not in bundle.added_documentation_text
+    engine_files = [file for file in bundle.files if file.file_path == "engine.py"]
+    assert len(engine_files) == 1
+    assert "AUDIO_MODE = 'pcm'" in engine_files[0].content
+    assert len(render_bundle(bundle).encode()) <= 2500
