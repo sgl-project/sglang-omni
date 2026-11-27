@@ -10,10 +10,11 @@ import pytest
 from sglang_omni.admission import AdminDroppedRequestError, QueueFullError
 from sglang_omni.config.schema import replica_instance_name
 from sglang_omni.pipeline.coordinator import Coordinator
+from sglang_omni.pipeline.sessions import Session
 from sglang_omni.pipeline.types import SessionIdleTimeoutError, SessionOutputBudgetError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.messages import CompleteMessage
-from sglang_omni.proto.session import SessionLimits, TimedChunk
+from sglang_omni.proto.session import SessionIdentity, SessionLimits, TimedChunk
 from tests.unit_test.fixtures.session_pipeline import (
     PipelineResources,
     block_request_abort,
@@ -440,3 +441,71 @@ async def test_healthy_replica_accepts_a_new_session_after_unconfirmed_close(
         await outputs.aclose()
         with pytest.raises(ValueError, match="unavailable owner"):
             await coordinator.open_session(OmniRequest(None), stages=["source", "sink"])
+
+
+def session_operation_coordinator() -> tuple[Coordinator, Session]:
+    """A coordinator holding one unattached session: these operation paths reach no stage."""
+    coordinator = Coordinator(
+        completion_endpoint="inproc://test-completion",
+        abort_endpoint="inproc://test-abort",
+        entry_stage="source",
+    )
+    session = Session(
+        session_identity=SessionIdentity("late-operation", 1),
+        request=OmniRequest(None),
+        stages=("source", "sink"),
+        bindings={},
+        limits=SessionLimits(),
+    )
+    coordinator.sessions[session.session_identity.id] = session
+    return coordinator, session
+
+
+def reject_operation(
+    coordinator: Coordinator, request_id: str, error: BaseException
+) -> None:
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    future.set_exception(error)
+    coordinator.completion_futures[request_id] = future
+
+
+@pytest.mark.asyncio
+async def test_in_flight_append_error_does_not_fail_a_closing_session() -> None:
+    """An input still in flight when the session closes was already dropped, so its owner's error must not fail the session."""
+    coordinator, session = session_operation_coordinator()
+    coordinator.begin_session_close(session)
+    request_id = "session-late-append"
+    reject_operation(coordinator, request_id, ValueError("unknown session open index"))
+
+    await coordinator.finish_session_operation(session, "append", request_id)
+
+    assert session.error is None
+    assert request_id not in coordinator.completion_futures
+
+
+@pytest.mark.asyncio
+async def test_append_error_still_fails_a_session_that_is_not_closing() -> None:
+    coordinator, session = session_operation_coordinator()
+    request_id = "session-live-append"
+    reject_operation(coordinator, request_id, ValueError("unknown session open index"))
+
+    with pytest.raises(ValueError, match="unknown session open index"):
+        await coordinator.finish_session_operation(session, "append", request_id)
+
+    assert session.error is not None
+    await asyncio.gather(*coordinator.session_cleanup_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_error_still_fails_a_session_that_is_closing() -> None:
+    """A close that fails decides whether the session's capacity is released, so closing must not swallow it."""
+    coordinator, session = session_operation_coordinator()
+    coordinator.begin_session_close(session)
+    request_id = "session-close"
+    reject_operation(coordinator, request_id, RuntimeError("stage is stopping"))
+
+    with pytest.raises(RuntimeError, match="stage is stopping"):
+        await coordinator.finish_session_operation(session, "close", request_id)
+
+    assert session.error is not None
+    await asyncio.gather(*coordinator.session_cleanup_tasks, return_exceptions=True)
