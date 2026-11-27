@@ -204,6 +204,7 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           OMNI_CI_MODEL: ${{ needs.preflight.outputs.omni_ci_model }}
           ASR_CI_MODEL: ${{ needs.preflight.outputs.asr_seedtts_ci_model }}
+          RUN_OMNI: ${{ needs.preflight.outputs.run_omni }}
           RUN_FULL_DUPLEX: ${{ needs.preflight.outputs.run_full_duplex }}
           RUN_TURN_BASED: ${{ needs.preflight.outputs.run_turn_based }}
           RUN_CASCADED: ${{ needs.preflight.outputs.run_cascaded }}
@@ -234,6 +235,9 @@ jobs:
 
           if [[ "${OMNI_CI_MODEL}" == "minicpmo" || "${RUN_FULL_DUPLEX}" == "true" ]]; then
             bash .github/scripts/ensure_hf_models.sh omni openbmb/MiniCPM-o-4_5
+          fi
+          if [[ "${RUN_OMNI}" == "true" && "${OMNI_CI_MODEL}" == "minicpmo" ]]; then
+            bash .github/scripts/ensure_hf_models.sh omni Qun1023/MiniCPM-o-4_5-thinker-DSpark-mm
           fi
           # Every duplex strategy is judged by Qwen3.8-27B, which the cascade also serves.
           if [[ "${RUN_FULL_DUPLEX}" == "true" || "${RUN_TURN_BASED}" == "true" || "${RUN_CASCADED}" == "true" ]]; then
