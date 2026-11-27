@@ -161,10 +161,12 @@ class StageResidency:
             assert torch_memory_saver is not None
             torch_memory_saver.resume(tag=tag)
         self.weights.restore(self.staging_ring)
-        if self.device.type == "cuda":
-            torch.cuda.synchronize(self.device)
-        else:
-            pass
+        # note (jvzibro): StagingRing.restore ends with its own
+        # stream.synchronize(), so the refilled weights are resident once it
+        # returns, and torch_memory_saver.resume only remaps virtual storage
+        # without queuing device work. A device-wide synchronize here would
+        # additionally drain every unrelated stream while the caller waits on
+        # the wake critical path.
         self.is_resident = True
         logger.info(
             f"Stage residency {self.label} -> gpu "
