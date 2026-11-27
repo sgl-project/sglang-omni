@@ -1,11 +1,15 @@
 package session
 
 import (
+	"context"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/sgl-project/sglang-omni/Voxt/internal/compose"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
 )
 
 func TestLateRemoteLLMReadinessUsesCurrentPauseAndReusesRequest(t *testing.T) {
@@ -48,24 +52,39 @@ func TestLateRemoteLLMReadinessUsesCurrentPauseAndReusesRequest(t *testing.T) {
 	}
 }
 
+// TestHeadStartRequestsEarlyPiecesAtOpenWhenEligibilityIsKnown: also with a
+// dictionary over compose.GlossaryAllUpTo terms, which the live session
+// prefills once for every stretch.
 func TestHeadStartRequestsEarlyPiecesAtOpenWhenEligibilityIsKnown(t *testing.T) {
-	provider := &fakeStreamer{partials: []string{"we ship"}, final: "we ship"}
-	model := &fakeLLM{text: "We ship."}
-	h := newHarness(t, provider, model, func(_ *Config, s *settings.Settings) { s.Features.Transcribe.Enhance = true })
-	h.remote = true
-	signals := observeSessionSignals(h)
-	id := h.start()
-	waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
-	provider.mu.Lock()
-	requested := provider.earlyPieces
-	provider.mu.Unlock()
-	if !requested {
-		t.Fatal("eligible remote cleanup did not request EarlyPieces at Open")
-	}
-	h.speak(id, 4)
-	end := h.rec.wait(t)
-	if end.State != Done || len(h.text.pastes()) != 1 {
-		t.Fatalf("end=%+v deliveries=%q", end, h.text.pastes())
+	for _, count := range []int{1, compose.GlossaryAllUpTo + 10} {
+		t.Run(fmt.Sprintf("%d terms", count), func(t *testing.T) {
+			terms := make([]store.Term, count)
+			for i := range terms {
+				terms[i] = store.Term{Term: fmt.Sprintf("Term%02d", i), Enabled: true}
+			}
+			provider := &fakeStreamer{partials: []string{"we ship"}, final: "we ship"}
+			model := &fakeLLM{text: "We ship."}
+			h := newHarness(t, provider, model, func(c *Config, s *settings.Settings) {
+				s.Features.Transcribe.Enhance = true
+				s.Dictionary.Glossary, s.Dictionary.ASRHints = true, true
+				c.Glossary = func(context.Context) ([]store.Term, error) { return terms, nil }
+			})
+			h.remote = true
+			signals := observeSessionSignals(h)
+			id := h.start()
+			waitInitializationSignal(t, signals.asrOpenDone, "ASR Open")
+			provider.mu.Lock()
+			requested, hints := provider.earlyPieces, len(provider.hints)
+			provider.mu.Unlock()
+			if !requested || hints != count {
+				t.Fatalf("eligible remote cleanup with %d speech hints: EarlyPieces requested at Open %v", hints, requested)
+			}
+			h.speak(id, 4)
+			end := h.rec.wait(t)
+			if end.State != Done || len(h.text.pastes()) != 1 {
+				t.Fatalf("end=%+v deliveries=%q", end, h.text.pastes())
+			}
+		})
 	}
 }
 

@@ -11,10 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
-from sglang.srt.arg_groups.model_override_base import (
-    attention_backends_of,
-    resolved_view,
-)
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.model_executor.cuda_graph_config import Phase, with_phase
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -41,10 +38,8 @@ from sglang_omni.scheduling.engine_factory import (
     TtsEngineBuilder,
 )
 from sglang_omni.scheduling.generation_batch_policy import (
-    FULL_PREFILL_ATTENTION_BACKENDS,
     CudaGraphBackend,
     nested_prefill_overrides,
-    operator_selected_prefill_backend,
 )
 from sglang_omni.scheduling.sglang_backend.output_processor import SGLangOutputProcessor
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
@@ -160,21 +155,6 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder[CosyVoice3SGLangRequestData]):
         graph_config = resolved.cuda_graph_config
         prefill = graph_config.prefill
         if (
-            prefill.backend == CudaGraphBackend.FULL
-            and attention_backends_of(resolved)[0]
-            not in FULL_PREFILL_ATTENTION_BACKENDS
-            and not operator_selected_prefill_backend(self.server_args_overrides)
-        ):
-            # note (ratish): the full prefill graph is this model's default only where
-            # the attention backend captures it; elsewhere the prefill stays eager.
-            override_server_args(
-                server_args,
-                "fun_cosyvoice3.prefill_cuda_graph_backend",
-                cuda_graph_config=with_phase(
-                    graph_config, Phase.PREFILL, backend=CudaGraphBackend.DISABLED
-                ),
-            )
-        elif (
             prefill.backend == CudaGraphBackend.FULL
             and prefill.bs
             and prefill.bs[0] != 1

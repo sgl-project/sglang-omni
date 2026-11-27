@@ -144,11 +144,11 @@ const earlyCleanAfter = 60 * time.Second
 
 // earlyPieces says whether stretches sooner are worth it: the head start
 // puts them before the live text, and a Final has less left to recognise.
-// Each stretch costs the speech model its dictionary, so only a short
-// one.
+// The live session decodes every stretch with the dictionary it prefilled
+// once, so a dictionary of any size; a larger glossary only leaves their
+// clean-up to Stop (earlyClean.work).
 func (r *run) earlyPieces() bool {
-	return r.head.enabled.Load() && r.head.under == 0 && !r.settings.Audio.LiveResult &&
-		len(r.glossary()) <= compose.GlossaryAllUpTo && len(r.hints()) <= compose.GlossaryAllUpTo
+	return r.head.enabled.Load() && r.head.under == 0 && !r.settings.Audio.LiveResult
 }
 
 // enableEarlyPieces applies the finalized eligibility decision to an
@@ -385,9 +385,12 @@ func (e *earlyClean) drain(text string) (parts []compose.Part, answers []string,
 	e.mu.Unlock()
 	e.cond.Broadcast()
 	if cancelWorker {
+		// Finalized workers cannot publish further results. Cancellation
+		// must not delay cleanup of the remaining authoritative text.
 		e.cancel()
+	} else {
+		<-e.workerDone
 	}
-	<-e.workerDone
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalized = true

@@ -31,8 +31,11 @@ func bareBody(b map[string]any) map[string]any {
 func (o *OpenAI) responsesAPI() bool { return o.preset.API == APIResponses }
 
 func (o *OpenAI) path() string {
-	if o.responsesAPI() {
+	switch {
+	case o.responsesAPI():
 		return "/responses"
+	case o.messagesAPI():
+		return "/messages"
 	}
 	return "/chat/completions"
 }

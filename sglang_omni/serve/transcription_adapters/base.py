@@ -31,6 +31,11 @@ class TranscriptionAdapter(ABC):
         return False
 
     @property
+    def supports_beam_search(self) -> bool:
+        """Whether the model decodes beam_width > 1 and returns an N-best."""
+        return False
+
+    @property
     def requires_ordered_chunk_decoding(self) -> bool:
         return False
 
