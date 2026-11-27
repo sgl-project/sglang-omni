@@ -200,6 +200,15 @@ func TestModelAssignmentAutomaticSpeechLabelUsesLanguageGate(t *testing.T) {
 	if got := state.Rows[0].Current; got != want {
 		t.Errorf("Transcribe's current model = %q; want %q", got, want)
 	}
+
+	prefs.Features.Meeting.Lang = "zh"
+	state = buildModelAssignmentViewState(i18n.CurrentTranslator(), modelAssignmentStateInput{
+		Kind: local.ASR, ID: models.ASRMoss, Installed: installed, Settings: prefs,
+	})
+	want = "Current: Automatic (now: MOSS-Transcribe-Diarize)"
+	if got := state.Rows[3].Current; got != want {
+		t.Errorf("Meetings' own language choice = %q; want %q", got, want)
+	}
 }
 
 func TestModelAssignmentBehaviorDoc(t *testing.T) {
