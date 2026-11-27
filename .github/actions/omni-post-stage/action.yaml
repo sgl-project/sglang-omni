@@ -121,4 +121,16 @@ runs:
         # note (Yue Yin): post-stage runs after the test in an isolated --rm
         # container, so reap nvidia-invisible orphans (spawn workers) that would
         # otherwise hold VRAM and time out the cleanup wait. setup must NOT.
+        # Teardown must not override a completed stage's result when the runner
+        # reports residual memory but no killable process. Setup and retry
+        # cleanup stay strict; this post-stage hook records diagnostics and
+        # lets the next stage decide whether the runner is usable.
+        set +e
         bash .github/scripts/delete_gpu_process.sh --kill-orphans
+        cleanup_status=$?
+        set -e
+        if [ "${cleanup_status}" -eq 1 ]; then
+          echo "::warning::Post-stage GPU cleanup did not reach the memory threshold; diagnostics were printed above."
+        elif [ "${cleanup_status}" -ne 0 ]; then
+          exit "${cleanup_status}"
+        fi
