@@ -240,3 +240,62 @@ class TestObjectShapedConfig:
         assert model_config.hf_config.quantization_config["extra_config"] == {
             r"model\.layers\.0": {"bits": 8}
         }
+
+
+class TestStageModuleExclusions:
+    """Tests for rewriting `modules_to_not_convert` against runtime names."""
+
+    def test_minicpmo_talker_tts_exclusion_becomes_llama(self) -> None:
+        from sglang_omni.quantization import rewrite_stage_module_exclusions
+
+        quant_config = {
+            "quant_method": "awq",
+            "modules_to_not_convert": ["vpm", "apm", "tts", "lm_head"],
+        }
+        model_config = make_model_config("MiniCPMOTalkerForCausalLM", quant_config)
+
+        assert rewrite_stage_module_exclusions(model_config) is True
+        assert quant_config["modules_to_not_convert"] == [
+            "vpm",
+            "apm",
+            "llama",
+            "lm_head",
+        ]
+
+    def test_stage_without_runtime_root_is_unchanged(self) -> None:
+        from sglang_omni.quantization import rewrite_stage_module_exclusions
+
+        quant_config = {
+            "quant_method": "awq",
+            "modules_to_not_convert": ["tts", "lm_head"],
+        }
+        model_config = make_model_config("Qwen3OmniTalker", quant_config)
+
+        assert rewrite_stage_module_exclusions(model_config) is False
+        assert quant_config["modules_to_not_convert"] == ["tts", "lm_head"]
+
+    def test_dotted_prefix_entry_is_rewritten_too(self) -> None:
+        from sglang_omni.quantization import (
+            normalize_stage_module_exclusions,
+        )
+
+        quant_config = {
+            "quant_method": "awq",
+            "modules_to_not_convert": ["tts.", "lm_head"],
+        }
+
+        assert normalize_stage_module_exclusions(quant_config, "tts.", "llama") is True
+        assert quant_config["modules_to_not_convert"] == ["llama", "lm_head"]
+
+    def test_list_without_stage_entry_is_unchanged(self) -> None:
+        from sglang_omni.quantization import (
+            normalize_stage_module_exclusions,
+        )
+
+        quant_config = {
+            "quant_method": "awq",
+            "modules_to_not_convert": ["vpm", "lm_head"],
+        }
+
+        assert normalize_stage_module_exclusions(quant_config, "tts.", "llama") is False
+        assert quant_config["modules_to_not_convert"] == ["vpm", "lm_head"]

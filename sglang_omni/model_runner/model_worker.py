@@ -15,6 +15,7 @@ from sglang_omni.quantization import (
     needs_quant_config_normalization,
     normalize_quant_config,
     resolve_quant_config,
+    rewrite_stage_module_exclusions,
 )
 from sglang_omni.utils.misc import model_config_has_moe
 from sglang_omni.vendor.sglang.server_args import override_server_args
@@ -668,6 +669,13 @@ def apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     name normalization for methods whose per-block quant names are matched
     against runtime module names, currently AutoRound.
     """
+    # A stage that loads its checkpoint weights under another runtime root
+    # must rewrite module exclusions naming its checkpoint prefix, whatever
+    # the quant method: the MiniCPM-o AWQ checkpoint leaves the talker in
+    # bf16 (modules_to_not_convert names it "tts") while the stage serves
+    # those weights from a llama tree (#4665).
+    rewrite_stage_module_exclusions(model_config)
+
     quant_dict = resolve_quant_config(model_config.hf_config)
     if quant_dict is None:
         return

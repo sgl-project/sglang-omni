@@ -32,6 +32,15 @@ _STAGE_PREFIX_BY_ARCH: dict[str, str] = {
     "Qwen3OmniThinkerForCausalLM": "thinker.",
     "Qwen3ASRForConditionalGeneration": "thinker.",
     "Qwen3OmniTalker": "talker.",
+    "MiniCPMOTalkerForCausalLM": "tts.",
+}
+
+# A stage whose checkpoint prefix names modules it loads under a different
+# runtime root maps that root here, so quant configs written against
+# checkpoint names keep excluding them. The MiniCPM-o talker loads its
+# checkpoint's tts.* weights into a llama tree.
+_STAGE_RUNTIME_ROOT_BY_ARCH: dict[str, str] = {
+    "MiniCPMOTalkerForCausalLM": "llama",
 }
 
 __all__ = [
@@ -42,6 +51,8 @@ __all__ = [
     "get_weight_preprocessor",
     "needs_quant_config_normalization",
     "normalize_quant_config",
+    "normalize_stage_module_exclusions",
+    "rewrite_stage_module_exclusions",
 ]
 
 
@@ -322,6 +333,71 @@ def resolve_stage_prefix(hf_config: PretrainedConfig) -> str | None:
     else:
         pass
     return _STAGE_PREFIX_BY_ARCH.get(architectures[0])
+
+
+def normalize_stage_module_exclusions(
+    quant_config: dict[str, object],
+    stage_prefix: str,
+    runtime_root: str,
+) -> bool:
+    """Rewrite `modules_to_not_convert` entries naming the stage's checkpoint
+    prefix as the runtime root the stage loads them under.
+
+    An exclusion lists checkpoint module names, but SGLang matches the
+    exclusion list against runtime module names, so a stage that loads
+    prefix-prefixed weights under another root silently quantizes them. Returns
+    whether the list changed.
+    """
+    entries = quant_config.get("modules_to_not_convert")
+    if not isinstance(entries, list):
+        return False
+    else:
+        pass
+    bare_prefix = stage_prefix.rstrip(".")
+    normalized = [
+        runtime_root if entry in (bare_prefix, stage_prefix) else entry
+        for entry in entries
+    ]
+    if normalized == entries:
+        return False
+    else:
+        pass
+    quant_config["modules_to_not_convert"] = normalized
+    return True
+
+
+def rewrite_stage_module_exclusions(model_config: ModelConfig) -> bool:
+    """Apply the stage's module-exclusion rewrite to its writable quant config."""
+    hf_config = getattr(model_config, "hf_config", None)
+    if hf_config is None:
+        return False
+    else:
+        pass
+
+    stage_prefix = resolve_stage_prefix(hf_config)
+    runtime_root = _STAGE_RUNTIME_ROOT_BY_ARCH.get(
+        (getattr(hf_config, "architectures", None) or [""])[0]
+    )
+    if not stage_prefix or not runtime_root:
+        return False
+    else:
+        pass
+
+    loaded = load_writable_quant_config(hf_config)
+    if loaded is None:
+        return False
+    else:
+        pass
+    owner, metadata_key, quant_config, needs_writeback = loaded
+    if not normalize_stage_module_exclusions(quant_config, stage_prefix, runtime_root):
+        return False
+    else:
+        pass
+    if needs_writeback:
+        setattr(owner, metadata_key, quant_config)
+    else:
+        pass
+    return True
 
 
 def normalize_quant_config(model_config: ModelConfig) -> None:
