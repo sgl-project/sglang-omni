@@ -749,40 +749,43 @@ def test_server_switch_records_whether_the_request_asked_for_cache_dit(
 
 
 @pytest.mark.parametrize(
-    ("enabled_by_request", "expected"),
-    [(False, False), (True, "rejected")],
+    ("request_switch", "is_rejected"),
+    [(None, False), (True, True), (False, False)],
 )
 def test_spanned_model_rejects_only_an_explicit_cache_dit_request(
-    enabled_by_request: bool, expected: bool | str
+    monkeypatch: pytest.MonkeyPatch, request_switch: bool | None, is_rejected: bool
 ) -> None:
+    monkeypatch.setenv("SGLANG_CACHE_DIT_ENABLED", "true")
+    monkeypatch.setattr(
+        sampling_module,
+        "checkpoint_decoder_layer_count",
+        lambda model_path, revision: 2,
+    )
+    sampling = SenseNovaU1SamplingParams(
+        prompt="a red apple",
+        width=64,
+        height=64,
+        num_inference_steps=2,
+        guidance_scale=4.0,
+        enable_cache_dit=request_switch,
+    )
+    sampling.resolve_cache_dit("checkpoint", None)
+    request = Req(sampling_params=sampling)
+    sampling.apply_request_extra(request)
     decoder = SimpleNamespace(
         layers=[
             SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="cpu")])),
             SimpleNamespace(parameters=lambda: iter([torch.zeros(1, device="meta")])),
         ]
     )
-    assert sensenova_cache_dit.spans_multiple_devices(decoder)
+    cache_dit = sensenova_cache_dit.SenseNovaCacheDit()
 
-    if expected == "rejected":
+    if is_rejected:
         with pytest.raises(ValueError, match="spanned across devices"):
-            sensenova_cache_dit.resolve_cache_dit_switch(
-                True,
-                branch_count=2,
-                cfg_interval=(0.0, 1.0),
-                decoder=decoder,
-                enabled_by_request=enabled_by_request,
-            )
+            cache_dit.prepare(decoder, request, branch_count=2, cfg_interval=(0.0, 1.0))
     else:
-        assert (
-            sensenova_cache_dit.resolve_cache_dit_switch(
-                True,
-                branch_count=2,
-                cfg_interval=(0.0, 1.0),
-                decoder=decoder,
-                enabled_by_request=enabled_by_request,
-            )
-            is expected
-        )
+        cache_dit.prepare(decoder, request, branch_count=2, cfg_interval=(0.0, 1.0))
+    assert cache_dit.active_key is None
 
 
 def test_devices_drawing_on_host_memory_keep_single_device_loading(
