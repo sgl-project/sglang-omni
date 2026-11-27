@@ -196,6 +196,14 @@ class ModelWorker:
     def apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
         model_config.hf_config.architectures = [arch]
+        if arch == "MossSpeechForCausalLM":
+            config = model_config.hf_config
+            model_config.num_attention_layers = int(config.num_shared_layers) + 2 * int(
+                config.num_modality_layers
+            )
+            return
+        else:
+            pass
         if arch == "WhisperForConditionalGeneration":
             cfg = model_config.hf_config
             model_config.hf_text_config = cfg

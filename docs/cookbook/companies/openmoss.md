@@ -11,4 +11,5 @@ titlesonly: true
 ../moss_tts.md
 ../moss_tts_local.md
 ../moss_transcribe_diarize.md
+../moss_speech.md
 ```

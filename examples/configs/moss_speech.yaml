@@ -1,0 +1,13 @@
+config_cls: MossSpeechPipelineConfig
+model_path: ./weights/MOSS-Speech
+stages:
+  preprocessing:
+    factory:
+      codec_path: ./weights/MOSS-Speech-Codec
+  ar_engine:
+    engine:
+      max_running_requests: 16
+      disable_cuda_graph: false
+  audio_vocoder:
+    factory:
+      codec_path: ./weights/MOSS-Speech-Codec
