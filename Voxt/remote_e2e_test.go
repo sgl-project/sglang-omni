@@ -5,6 +5,7 @@ package main
 // models page's dialog saving a setup and its key.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/hotkey"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/llm"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/providers"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/session"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 )
@@ -327,4 +329,80 @@ func TestRemoteProviderPriorityDrag(t *testing.T) {
 	}
 	drag(llm.Custom, "ollama", []string{llm.Custom, "ollama"})
 	drag(llm.Custom, "ollama", []string{"ollama", llm.Custom})
+}
+
+type invertedRemoteSettings struct {
+	settings.Service
+	pending []func() error
+}
+
+func (s *invertedRemoteSettings) Update(ctx context.Context, fn func(*settings.Settings)) error {
+	s.pending = append(s.pending, func() error { return s.Service.Update(ctx, fn) })
+	return nil
+}
+
+// Reversed background completion must not undo a later priority drag.
+func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	store := &invertedRemoteSettings{Service: a.settings}
+	a.settings = store
+	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
+	if err := store.Service.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = slices.Clone(initial)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.prefs.Providers.LLM = slices.Clone(initial)
+	a.moveRemoteProvider("llm", "ollama", "openai")
+	a.moveRemoteProvider("llm", "deepseek", "ollama")
+	if len(store.pending) != 2 {
+		t.Fatalf("saved updates = %d, want 2", len(store.pending))
+	}
+	if err := store.pending[1](); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pending[0](); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"openai", "ollama", "deepseek"}
+	for name, got := range map[string][]settings.Provider{
+		"live":  a.prefs.Providers.LLM,
+		"saved": store.Service.Get().Providers.LLM,
+	} {
+		ids := make([]string, len(got))
+		for i, provider := range got {
+			ids[i] = provider.ID
+		}
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s provider order = %q, want %q", name, ids, want)
+		}
+	}
+}
+
+// Duplicate saved IDs must not become duplicate failover entries or UI keys.
+func TestRemoteProviderDuplicateIDsKeepFirst(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = []settings.Provider{
+			{ID: "ollama", Model: "first"},
+			{ID: "ollama", Model: "second"},
+			{ID: "deepseek"},
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a.prefs = a.settings.Get()
+	ready := providers.Ready(a.prefs, func(string) bool { return true })
+	if len(ready) != 2 || ready[0].Model != "first" {
+		t.Fatalf("ready providers = %+v, want the first ollama then deepseek", ready)
+	}
+	var configured []remoteServiceStateInput
+	for _, service := range a.remoteCardsStateInput(local.LLM).Services {
+		if service.Configured {
+			configured = append(configured, service)
+		}
+	}
+	if len(configured) != 2 || configured[0].Setup.Model != "first" {
+		t.Fatalf("configured cards = %+v, want the first ollama then deepseek", configured)
+	}
 }

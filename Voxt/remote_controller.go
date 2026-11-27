@@ -4,6 +4,7 @@ package main
 // builders and views. Shared Speech models callers keep these app facades.
 
 import (
+	"context"
 	"slices"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/i18n"
@@ -100,24 +101,49 @@ func (a *app) testRemoteProvider(kind, id string) {
 	a.testProvider(modelKind, setup, func() (string, error) { return keys.Get(account) })
 }
 
+type remoteProviderMove struct {
+	id, targetID string
+}
+
+func applyRemoteProviderMove(s *settings.Settings, move remoteProviderMove) {
+	list := slices.Clone(s.Providers.LLM)
+	from := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.id })
+	target := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.targetID })
+	if from < 0 || target < 0 {
+		return
+	}
+	moving, movingDown := list[from], from < target
+	list = slices.Delete(list, from, from+1)
+	target = slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == move.targetID })
+	if movingDown {
+		target++
+	}
+	s.Providers.LLM = slices.Insert(list, target, moving)
+}
+
 func (a *app) moveRemoteProvider(kind, id, targetID string) {
 	if remoteKind(kind) != local.LLM || id == targetID {
 		return
 	}
-	a.updateSettings(func(s *settings.Settings) {
-		list := slices.Clone(s.Providers.LLM)
-		from := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == id })
-		target := slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == targetID })
-		if from < 0 || target < 0 {
-			return
+	move := remoteProviderMove{id: id, targetID: targetID}
+	a.providerOrderSaveMu.Lock()
+	a.providerOrderPending = append(a.providerOrderPending, move)
+	a.providerOrderSaveMu.Unlock()
+	a.settingsRevision++
+	a.featureRevision++
+	applyRemoteProviderMove(&a.prefs, move)
+	st := a.settings
+	a.async(func() {
+		if err := st.Update(context.Background(), func(s *settings.Settings) {
+			a.providerOrderSaveMu.Lock()
+			defer a.providerOrderSaveMu.Unlock()
+			for _, pending := range a.providerOrderPending {
+				applyRemoteProviderMove(s, pending)
+			}
+			a.providerOrderPending = nil
+		}); err != nil {
+			a.post(func() { a.toast(i18n.T("Could not save the settings: %v", err)) })
 		}
-		moving, movingDown := list[from], from < target
-		list = slices.Delete(list, from, from+1)
-		target = slices.IndexFunc(list, func(provider settings.Provider) bool { return provider.ID == targetID })
-		if movingDown {
-			target++
-		}
-		s.Providers.LLM = slices.Insert(list, target, moving)
 	})
 }
 

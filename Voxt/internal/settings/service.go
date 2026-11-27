@@ -239,6 +239,19 @@ func normalize(s Settings) Settings {
 	for _, f := range []*Feature{&f.Transcribe.Feature, &f.Translate.Feature, &f.Rewrite.Feature} {
 		f.ASR, f.LLM = strings.TrimSpace(f.ASR), strings.TrimSpace(f.LLM)
 	}
+	var uniqueLLMProviders []Provider
+	if s.Providers.LLM != nil {
+		uniqueLLMProviders = make([]Provider, 0, len(s.Providers.LLM))
+	}
+	seenLLMProviders := make(map[string]bool, len(s.Providers.LLM))
+	for _, provider := range s.Providers.LLM {
+		if seenLLMProviders[provider.ID] {
+			continue
+		}
+		seenLLMProviders[provider.ID] = true
+		uniqueLLMProviders = append(uniqueLLMProviders, provider)
+	}
+	s.Providers.LLM = uniqueLLMProviders
 	return s
 }
 

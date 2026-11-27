@@ -5,12 +5,12 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 ## [Unreleased]
 
 ### Changed
-- **Remote backup language models follow your priority** (#4690): drag configured services on Language models to set their backup order. With Switch models when one fails on, Voxt now tries every backup in that order until one answers instead of stopping after the first backup.
+- **Remote backup language models follow your priority** (#4690): drag configured services on Language models to set their backup order. With Switch models when one fails on, Voxt now tries every backup in that order until one answers instead of stopping after the first backup. Rapid drags keep their drop order, and a duplicated saved service appears only once at its first priority.
 
 ### 中文
 
 #### 变更
-- **远程备用语言模型按你的优先级切换**（#4690）：在“语言模型”页拖动已设置的服务即可调整备用顺序。打开“模型出错时换一个”后，Voxt 会按这个顺序逐个尝试，直到有一个回答，不再只尝试第一个备用模型。
+- **远程备用语言模型按你的优先级切换**（#4690）：在“语言模型”页拖动已设置的服务即可调整备用顺序。打开“模型出错时换一个”后，Voxt 会按这个顺序逐个尝试，直到有一个回答，不再只尝试第一个备用模型。快速连续拖动会按放下顺序保存；设置里重复的服务只保留第一次出现时的优先级。
 
 ## [2.1.4] - 2026-11-26
 
