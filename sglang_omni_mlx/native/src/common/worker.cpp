@@ -3,10 +3,12 @@
 
 #include <algorithm>
 
+#include "common/generation.h"
 #include "common/transcription.h"
 
 namespace omni_server {
 
+using omni_common::GenerationCancelled;
 using omni_common::TranscriptionResult;
 
 TranscriptionWorker::TranscriptionWorker(
@@ -121,6 +123,11 @@ void TranscriptionWorker::Run(std::promise<void> loaded,
       std::optional<TranscriptionResult> result;
       std::exception_ptr error;
       try {
+        if (jobs[0].cancel->load() &&
+            (!batch_runner_.has_value() || !batch_runner_->runs_cancelled)) {
+          throw GenerationCancelled();
+        } else {
+        }
         result = jobs[0].transcription(*jobs[0].cancel);
       } catch (...) {
         error = std::current_exception();

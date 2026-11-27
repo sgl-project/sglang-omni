@@ -53,6 +53,9 @@ struct BatchRunner {
   std::function<bool(const Transcription &)> accepts;
   std::function<void(const std::vector<BatchItem> &, const BatchCompletion &)>
       run;
+  // Whether a single transcription runs when already cancelled, so its own
+  // wrapper can report that outcome.
+  bool runs_cancelled = false;
 };
 
 // Runs requests in queue order on one model and one MLX stream. Each runs

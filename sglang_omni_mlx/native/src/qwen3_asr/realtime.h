@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/gpu_clock.h"
 #include "common/realtime_connection.h"
 #include "common/transcription.h"
 #include "common/worker.h"
@@ -42,11 +43,38 @@ struct FinalPreviewGuess {
 
 // What a session holds of a Final's audio: taken, and no longer extended by
 // the session, or shared with its refreshes.
+class RealtimeSession;
+
+// A piece of a live session's recording, from the Final's start to end_sample:
+// the session's reuse is taken when its decode starts on the worker, after the
+// background jobs queued before it.
+struct RecordingPiece {
+  std::weak_ptr<RealtimeSession> session;
+  std::optional<std::string> context;
+  long end_sample = 0;
+};
+
 struct FinalReuse {
   std::shared_ptr<RefreshReuse> reuse;
   bool is_taken = false;
   std::optional<FinalPreviewGuess> auto_language_guess = std::nullopt;
+  // The shadow Final's language and text (MaybeStartShadowFinal), when one
+  // ran.
+  std::optional<FinalPreviewGuess> shadow_guess = std::nullopt;
+  // Set for a piece of the recording, whose reuse is taken later.
+  std::optional<RecordingPiece> piece = std::nullopt;
 };
+
+// The guesses of a Final from a shadow Final's tokens and a preview's: the
+// shadow's but its last few, which the audio after it may change, then the
+// preview's after where those end; the shadow's alone when the preview has
+// no such place.
+std::vector<int> MergedGuesses(const std::vector<int> &shadow_ids,
+                               const std::vector<int> &preview_ids);
+
+// A request came: shadow Finals neither start nor queue for a while, so none
+// runs ahead of it on the worker.
+void NoteForegroundRequest();
 
 // Qwen3-ASR manual-turn session: audio becomes one segment, cut every max
 // segment length, with preview decodes on a cadence. A Final's prompt, sent as
@@ -64,11 +92,22 @@ public:
   bool Handle(const nlohmann::json &message) override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null.
+  // null. With piece_end_sample, the guesses of a piece of the recording from
+  // the Final's start to that sample, and the piece to take the reuse of when
+  // it is decoded (TakePieceReuse).
   //
   // note (chenye): only snapshot a preview guess when the caller opts in.
-  FinalReuse TakeFinalReuse(const std::optional<std::string> &context,
-                            bool guess_auto_language);
+  FinalReuse
+  TakeFinalReuse(const std::optional<std::string> &context,
+                 bool guess_auto_language,
+                 std::optional<long> piece_end_sample = std::nullopt);
+  // On the worker, as a piece's decode starts: a snapshot of what the session
+  // holds for the piece, which the prefill moves on from, as the Final's start
+  // moves to the piece's end.
+  RefreshReuse TakePieceReuse(const std::optional<std::string> &context,
+                              long end_sample);
+  // Stops a running shadow Final (MaybeStartShadowFinal).
+  void CancelShadowFinal();
 
 private:
   struct Segment {
@@ -92,6 +131,8 @@ private:
   // The Final starts at this sample of the session's audio, not at the first:
   // the windows prefilled for it are dropped, its prompt's head kept.
   void StartFinalAt(const nlohmann::json &start_sample);
+  // Moves the Final's start to sample (mutex_ held).
+  void MoveFinalStart(long sample);
   void StartSegment(long start_sample);
   long EndSample() const {
     return buffer_start_sample_ + static_cast<long>(samples_.size());
@@ -116,6 +157,14 @@ private:
                    long end_sample);
   void MaybeStartRefresh();
   void MaybeStartFinalPrefill();
+  // Note (XXXXRT666): a preview keeps its early text as a prefix decided on
+  // less audio, so on recordings over 24 s the Final differs from it after a
+  // sixth of the text and pays a round for every stretch that differs. Each 8
+  // s of a recording whose Final is prefilled, the recording so far is
+  // decoded as its Final would, in the background, over the reuse the Final
+  // will take; its text, merged with the latest preview, is the Final's
+  // guesses.
+  void MaybeStartShadowFinal();
   void FinalizeThrough(long end_sample);
 
   omni_server::TranscriptionWorker &worker_;
@@ -142,6 +191,9 @@ private:
   // samples_ drops what is committed.
   std::vector<float> recording_samples_;
   long final_start_sample_ = 0;
+  // Where the Final starts once the audio reaches it: a piece taken before
+  // the session had all of its audio.
+  std::optional<long> pending_final_start_sample_;
   // The audio was longer than is kept, so none is prefilled from here on.
   bool is_recording_cut_off_ = false;
   std::optional<Segment> segment_;
@@ -151,6 +203,14 @@ private:
   std::vector<std::pair<int, std::string>> committed_;
   bool refreshing_ = false;
   bool finalizing_ = false;
+  // The last shadow Final's language and text, and the recording sample the
+  // next one waits for.
+  std::optional<FinalPreviewGuess> shadow_guess_;
+  long next_shadow_sample_ = 0;
+  bool is_shadowing_ = false;
+  // Cancels a running shadow Final once the Final is taken.
+  omni_server::CancelFlag shadow_cancel_ = omni_server::NewCancelFlag();
+  omni_common::GpuClockHold gpu_clock_;
 };
 
 } // namespace qwen3_asr

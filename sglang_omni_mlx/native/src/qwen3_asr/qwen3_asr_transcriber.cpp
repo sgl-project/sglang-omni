@@ -286,6 +286,21 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                                   prompt_ids.begin() + audio_start);
   int held_frames = held.mel.has_value() ? held.mel->shape(1) : 0;
   int held_rows = held.audio_rows.has_value() ? held.audio_rows->shape(0) : 0;
+  // A piece of a recording can end inside the windows held: the whole ones
+  // before its end are kept.
+  const int window_frame_count = model_.WindowFrameCount();
+  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
+                              window_frame_count * window_frame_count;
+  if (held_frames > complete_frames && complete_frames > 0) {
+    const int complete_held_rows = TokenCount(complete_frames, options.layout);
+    held.mel = mx::slice(*held.mel, {0, 0}, {mel_bins, complete_frames});
+    held.audio_rows =
+        mx::slice(*held.audio_rows, {0, 0},
+                  {complete_held_rows, held.audio_rows->shape(1)});
+    held_frames = complete_frames;
+    held_rows = complete_held_rows;
+  } else {
+  }
   const bool has_held_audio =
       held_frames > 0 && held_frames + kReflectedTailFrames <= frame_count &&
       mx::array_equal(mx::slice(mel, {0, 0}, {mel_bins, held_frames}),
@@ -350,9 +365,6 @@ Qwen3ASRTranscriber::RefreshPrompt Qwen3ASRTranscriber::BuildRefreshPrompt(
                       0),
       {0, rows_start, 0}, {1, rows_start + pass_filled, hidden});
 
-  const int window_frame_count = model_.WindowFrameCount();
-  const int complete_frames = std::max(0, frame_count - kReflectedTailFrames) /
-                              window_frame_count * window_frame_count;
   const int complete_rows =
       complete_frames > 0 ? TokenCount(complete_frames, options.layout) : 0;
   if (complete_frames > held_frames && complete_rows <= held_rows + filled) {
@@ -617,11 +629,10 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
   if (reuse == nullptr && uses_draft) {
     std::vector<KVCache> caches = model_.NewCaches();
     std::vector<KVCache> draft_caches = draft_->NewCaches();
-    verified_guess_token_count = static_cast<int>(guessed_ids.size());
     draft_statistics = draft_->Decode(
         model_.decoder(), BuildPrompt(samples, options).embeddings, guessed_ids,
         max_new_tokens, 0, commit, cancel, draft_policy_, caches, draft_caches,
-        &accepted_guess_token_count);
+        &accepted_guess_token_count, &verified_guess_token_count);
   } else {
     // A failed refresh leaves reuse empty, so the next one starts over.
     RefreshReuse held;
@@ -639,11 +650,10 @@ TranscriptionResult Qwen3ASRTranscriber::TranscribeChunk(
                                      ? refresh->embeddings
                                      : BuildPrompt(samples, options).embeddings;
     if (uses_draft) {
-      verified_guess_token_count = static_cast<int>(guessed_ids.size());
       draft_statistics = draft_->Decode(
           model_.decoder(), embeddings, guessed_ids, max_new_tokens, 0, commit,
           cancel, draft_policy_, caches, held.draft_caches,
-          &accepted_guess_token_count);
+          &accepted_guess_token_count, &verified_guess_token_count);
     } else {
       // A penalty would have to apply to the guesses' logits too.
       const int guessed_count = options.repetition_penalty == 1.0f

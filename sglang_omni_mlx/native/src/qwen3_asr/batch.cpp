@@ -50,7 +50,8 @@ omni_server::BatchRunner BatchableTranscriptionRunner() {
               }
               throw;
             }
-          }};
+          },
+          true};
 }
 
 } // namespace qwen3_asr

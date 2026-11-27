@@ -306,7 +306,8 @@ int main() {
     }
   }
 
-  omni_server::TranscriptionWorker cancel_worker([] {}, [] {}, 1);
+  omni_server::TranscriptionWorker cancel_worker(
+      [] {}, [] {}, 1, qwen3_asr::BatchableTranscriptionRunner());
   std::atomic<int> blocker_started{0};
   std::atomic<int> release_blocker{0};
   const auto ignore_completion =
@@ -375,6 +376,7 @@ int main() {
       !Check(Timings(unprofiled.log).empty(), "profiling is off by default")) {
     return 1;
   }
-  std::puts("ok: preview, realtime, direct and batch HTTP Final timings");
+  std::puts("ok: preview, Final-retry, direct, batch and cancelled HTTP Final "
+            "timings");
   return 0;
 }

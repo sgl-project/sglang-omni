@@ -25,6 +25,7 @@ inline constexpr float kSilentPeak = 1e-3f;
 struct TranscriptionOptions {
   std::optional<std::string> language;
   std::optional<std::string> context;
+  bool stop_at_end_of_text = false;
   bool stop_on_token_loop = false;
   std::vector<int> prefix_token_ids;
   std::string prefix_text;
@@ -141,6 +142,11 @@ public:
 
   RetainedText RetainedPrefix(const std::string &, int) const {
     return {{1}, "ok", {2}};
+  }
+
+  std::vector<int> AutoLanguageGuesses(const std::string &,
+                                       const std::string &) const {
+    return {1};
   }
 
   omni_common::TranscriptionResult
