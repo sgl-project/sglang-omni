@@ -120,6 +120,9 @@ final class CaptureRun: @unchecked Sendable {
     private var deviceID: AudioObjectID = 0
     private var deviceUID = ""
     private var usingDefault = true
+    /// The engine is bound to deviceID (CurrentDevice); an unbound one
+    /// follows the default input.
+    private var bound = false
     private var fellBack = false
     private var fallbackReason: String?
     private var resampler: MonoResampler?
@@ -216,7 +219,8 @@ final class CaptureRun: @unchecked Sendable {
         }
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        if uid != nil, let unit = input.audioUnit {
+        let bind = uid != nil && bindsChosenInput(device, defaultInput: def)
+        if bind, let unit = input.audioUnit {
             var id = device
             let status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
                                               &id, UInt32(MemoryLayout<AudioObjectID>.size))
@@ -236,6 +240,7 @@ final class CaptureRun: @unchecked Sendable {
             deviceID = device
             deviceUID = stringProperty(device, kAudioDevicePropertyDeviceUID) ?? ""
             usingDefault = uid == nil
+            bound = bind
             resampler = res
             inputFormat = format
             return generation
@@ -408,12 +413,13 @@ final class CaptureRun: @unchecked Sendable {
             }
             guard let notifiedGeneration else { return }
             self.queue.async {
-                let (engine, usingDefault, deviceID) = self.lock.withLock {
-                    (self.generation == notifiedGeneration && !self.ended ? self.engine : nil, self.usingDefault, self.deviceID)
+                let (engine, bound, deviceID) = self.lock.withLock {
+                    (self.generation == notifiedGeneration && !self.ended ? self.engine : nil, self.bound, self.deviceID)
                 }
                 guard let engine else { return }
                 // Setting CurrentDevice can report a configuration change after the engine is already running on that device.
-                if engine.isRunning && (!usingDefault || inputDeviceIDs().defaultID == deviceID) { return }
+                // An unbound engine on a chosen input that stopped being the default is rebuilt, and then bound to it.
+                if engine.isRunning && (bound || inputDeviceIDs().defaultID == deviceID) { return }
                 self.restart(reason: CaptureReason.configurationChange)
             }
         }

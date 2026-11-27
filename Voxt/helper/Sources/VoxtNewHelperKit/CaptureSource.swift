@@ -98,6 +98,16 @@ public func restartOrder(devices: [String], current: String?, gone: Bool, toDefa
     return order + [nil]
 }
 
+/// Whether an engine on the chosen input (Core Audio device id) is bound
+/// to it with CurrentDevice. Not when it is the default input: an unbound
+/// engine records from it already, and binding it made a USB input report
+/// a configuration change and give no audio, so every start waited for
+/// two watchdog rebuilds and the default input (3.1–3.6 s to the first
+/// audio instead of about 0.35 s).
+public func bindsChosenInput(_ device: UInt32, defaultInput: UInt32) -> Bool {
+    device != defaultInput
+}
+
 /// Counts the engines of one recording that delivered no audio: the
 /// watchdog's silent engine and any engine rebuilt (a configuration
 /// change, a lost input) before its first buffer count the same, so an
