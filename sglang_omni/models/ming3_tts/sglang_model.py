@@ -36,6 +36,7 @@ from sglang_omni.modules.ming_audio.flow.cfm import get_epss_timesteps
 from sglang_omni.modules.ming_audio.flow.flow_loss import FlowLoss
 from sglang_omni.platforms import current_platform
 from sglang_omni.platforms.device_graph import ReplayableGraph
+from sglang_omni.vendor.sglang import ascend_kda  # noqa: F401  Patch Ascend KDA.
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +288,14 @@ class SpeechHeadModel:
             pass
         device_module = torch.get_device_module(device)
         latent_dim = int(self.config.tts_config["latent_dim"])
+        native_fp32_sampling = (
+            str(self.config.tts_config.get("sampling_contract", "")) == "native_fp32"
+        )
+        # A captured graph fixes its input dtypes, so the fp32 Flow contract
+        # must allocate fp32 history/noise rows or the copy would downcast them.
+        flow_dtype = (
+            torch.float32 if native_fp32_sampling else torch.get_default_dtype()
+        )
         memory_pool = graph_backend.graph_pool_handle()
         # note (rsi): a replay pays for every padded row of its bucket, so
         # small batches, where decode spends most steps, get exact buckets.
@@ -302,10 +311,16 @@ class SpeechHeadModel:
                     device=device,
                     dtype=self.stop_head.weight.dtype,
                 ),
-                latent_history=torch.zeros((batch_size, 1, latent_dim), device=device),
-                initial_noise=torch.zeros((batch_size, latent_dim, 1), device=device),
+                latent_history=torch.zeros(
+                    (batch_size, 1, latent_dim), device=device, dtype=flow_dtype
+                ),
+                initial_noise=torch.zeros(
+                    (batch_size, latent_dim, 1), device=device, dtype=flow_dtype
+                ),
                 solver_noise=torch.zeros(
-                    (FLOW_STEPS - 1, batch_size, 1, latent_dim), device=device
+                    (FLOW_STEPS - 1, batch_size, 1, latent_dim),
+                    device=device,
+                    dtype=flow_dtype,
                 ),
                 temperatures=torch.zeros(batch_size, device=device),
             )
@@ -403,14 +418,22 @@ def enable_ascend_moe_routing_scale(model: nn.Module) -> None:
     the MoE output stays too small. Scaling the top-k weights is numerically
     equivalent (the factor distributes over the weighted expert sum) and only
     touches this model instance.
+
+    A2A paths keep the upstream behaviour: the model layer already applies the
+    factor there, so folding it into top-k as well would scale twice.
     """
     if not current_platform.is_npu():
         return
     else:
         pass
 
+    scaled = 0
     for moe in model.modules():
         if not isinstance(moe, BailingMoE):
+            continue
+        else:
+            pass
+        if moe._enable_a2a_moe:  # noqa: leading-underscore
             continue
         else:
             pass
@@ -421,6 +444,8 @@ def enable_ascend_moe_routing_scale(model: nn.Module) -> None:
         moe.topk.topk_config.apply_routed_scaling_factor_on_output = True
         # Top-k already carries the factor; the epilogue must not repeat it.
         moe._apply_routed_scaling_factor_on_output = False  # noqa: leading-underscore
+        scaled += 1
+    logger.info("Ascend MoE routing scale applied to %d layers", scaled)
 
 
 class Ming3TTSModel(SpeechHeadModel, BailingMoeV3ForCausalLM):
