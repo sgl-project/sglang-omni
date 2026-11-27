@@ -65,7 +65,7 @@ func FinalizePass(ctx context.Context, cfg Config, mt store.Meeting, onProgress 
 	}
 	done := map[Source][]Segment{}
 	base := 0.0
-	for _, src := range sources {
+	for i, src := range sources {
 		ts, ok := found[src]
 		if !ok {
 			continue // its error is first's

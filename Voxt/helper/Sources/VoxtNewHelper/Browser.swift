@@ -15,7 +15,7 @@ import Foundation
 //  3. the AXURL of the window's first AXWebArea, breadth first (Arc).
 //
 // Chromium builds a page's tree only when a client asks for it
-// (AXManualAccessibility, set by FrontApps as a Chromium browser comes to
+// (AXManualAccessibility, falling back to AXEnhancedUserInterface, set as a browser comes to
 // the front). When none of the three finds a web area in one of those
 // browsers, the attribute is set (once per process), and after a short
 // wait the address is read once more (retried in the result): Arc, in

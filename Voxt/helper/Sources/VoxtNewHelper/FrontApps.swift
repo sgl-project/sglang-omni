@@ -9,7 +9,7 @@ import Foundation
 ///
 /// As an app comes to the front, an Electron app or one of the bundle ids
 /// app.configure names (the app's Chromium browsers) gets
-/// AXManualAccessibility, once per process (Chromium builds a page's
+/// AXManualAccessibility (AXEnhancedUserInterface when rejected), once per process (Chromium builds a page's
 /// accessibility tree only when asked, and only a moment later: set at
 /// activation, the tree is there when a shortcut reads the selection or
 /// the tab's address). browser.url sets it too when it finds no web area.
@@ -48,7 +48,7 @@ final class FrontApps: @unchecked Sendable {
         }
     }
 
-    /// app.configure: the bundle ids that get AXManualAccessibility besides
+    /// app.configure: the bundle ids that get accessibility activation besides
     /// Electron apps. The app in front gets it now when it is one of them
     /// (it came to the front before the list did).
     func configure(_ p: AppConfigureParams) {
@@ -61,12 +61,21 @@ final class FrontApps: @unchecked Sendable {
         }
     }
 
-    /// Sets AXManualAccessibility on a process, logging the outcome (debug).
+    /// Electron accepts the manual attribute; Chrome needs the enhanced one.
     @discardableResult
-    func setManualAccessibility(pid: pid_t, bundleId: String?, why: String) -> Bool {
-        let r = AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        let what = "AXManualAccessibility on \(bundleId ?? "?") (pid \(pid), \(why))"
-        out.logLine("debug", r == .success ? what + ": set" : what + ": failed \(r.rawValue)")
+    func setManualAccessibility(pid: pid_t, bundleId: String?, why: String,
+                                set: (AXUIElement, CFString, CFTypeRef) -> AXError = AXUIElementSetAttributeValue) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)
+        var name = "AXManualAccessibility"
+        var r = set(app, name as CFString, kCFBooleanTrue)
+        if r != .success {
+            name = "AXEnhancedUserInterface"
+            r = set(app, name as CFString, kCFBooleanTrue)
+        }
+        let what = "\(name) on \(bundleId ?? "?") (pid \(pid), \(why))"
+        // Chrome forwards to NSApplication after enabling AX, which may still return an error.
+        out.logLine("debug", what + ": requested (\(r.rawValue))")
         return r == .success
     }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/local"
+	"github.com/sgl-project/sglang-omni/Voxt/internal/meetdetect"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/meeting"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/settings"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/store"
@@ -128,5 +130,56 @@ func TestMacE2EMeetingDetect(t *testing.T) {
 		} else {
 			t.Logf("%s: %d bytes", name, info.Size())
 		}
+	}
+}
+
+// The person running this test prepares the real app's microphone and
+// front tab (docs/manual-test.md, 15.3a). No mic.changed is fabricated.
+func TestMacE2EMeetingDetectLive(t *testing.T) {
+	scenario := os.Getenv("VOXTNEW_MEETING_CASE")
+	if scenario == "" {
+		t.Skip("prepare a real meeting or microphone test; see docs/manual-test.md, 15.3a")
+	}
+	var bundle, want string
+	switch scenario {
+	case "zoom-test":
+		bundle = "us.zoom.xos"
+	case "zoom-meeting":
+		bundle, want = "us.zoom.xos", "Zoom"
+	case "chrome-other":
+		bundle = "com.google.Chrome"
+	case "chrome-meet":
+		bundle, want = "com.google.Chrome", "Google Meet"
+	default:
+		t.Fatalf("unknown meeting case %q", scenario)
+	}
+	s := newMacDetectApp(t, macE2E(t))
+	s.detect.Hold = meetdetect.Hold
+	s.pump("Core Audio's answer", func() bool { return s.micWatch && s.micUsers != nil })
+	recording := false
+	for _, user := range s.micUsers {
+		if user.BundleID == bundle || strings.HasPrefix(user.BundleID, bundle+".") {
+			recording = true
+			t.Logf("real input: %s, meeting processes %v", user.BundleID, user.Hosts)
+		}
+	}
+	if !recording {
+		t.Fatalf("%s is not using the microphone: prepare %s first", bundle, scenario)
+	}
+	if want == "" {
+		s.drain(2*meetdetect.Hold + 5*time.Second)
+		if s.ask.view.Visible {
+			t.Fatalf("%s brought a card: %+v", scenario, s.ask.view)
+		}
+	} else {
+		started := time.Now()
+		s.pump("the real meeting's card", func() bool { return s.ask.view.Visible })
+		if s.ask.view.App != want {
+			t.Fatalf("%s: card for %q, want %q", scenario, s.ask.view.App, want)
+		}
+		t.Logf("%s detected in %s after the initial mic snapshot", scenario, time.Since(started).Round(time.Millisecond))
+	}
+	if s.meetingActive() {
+		t.Fatal("detecting the meeting started recording without a click")
 	}
 }

@@ -578,7 +578,7 @@ public struct BrowserURLResult: Codable, Sendable {
 // MARK: app.configure
 
 public struct AppConfigureParams: Codable, Sendable {
-    /// Bundle ids that get AXManualAccessibility as they come to the front
+    /// Bundle ids that get accessibility activation as they come to the front
     /// (the app's Chromium browsers), besides Electron apps; replaces the
     /// last list.
     public var manualAccessibility: [String]?

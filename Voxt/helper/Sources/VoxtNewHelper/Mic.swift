@@ -112,7 +112,7 @@ final class Mic: @unchecked Sendable {
         var found: [MicHost] = []
         for pid in pids.prefix(max(n, 0)) where pid > 0 {
             guard proc_name(pid, &name, UInt32(name.count)) > 0 else { continue }
-            let s = String(cString: name)
+            let s = String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             guard names.contains(s) else { continue }
             found.append(MicHost(pid: Int(pid), name: s, app: servedPID(args(pid)) ?? parent(pid)))
         }
