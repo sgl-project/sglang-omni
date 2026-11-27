@@ -173,6 +173,15 @@ class Report(BaseModel):
     coverage_limitations: list[str] = Field(default_factory=list)
 
 
+class ReviewArtifact(BaseModel):
+    pull_request_number: int = Field(gt=0)
+    run_id: str = Field(pattern=r"^[1-9][0-9]*$")
+    run_attempt: int = Field(gt=0)
+    stale: bool
+    publishable: bool
+    report: Report
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReviewRule:
     rule_id: str

@@ -65,7 +65,7 @@ def render_collected_file(file: CollectedFile) -> str:
     return header + "\n" + body
 
 
-def render_markdown(report: Report) -> str:
+def render_markdown(report: Report, *, number_findings: bool = False) -> str:
     lines = [
         "# Documentation review",
         "",
@@ -116,7 +116,7 @@ def render_markdown(report: Report) -> str:
         lines.append("")
     else:
         pass
-    lines.extend(format_finding_section(report.findings))
+    lines.extend(format_finding_section(report.findings, numbered=number_findings))
     lines.extend(["", "## Pre-existing", ""])
     lines.extend(format_finding_section(report.pre_existing_findings))
     if (
@@ -150,19 +150,33 @@ def format_check(check: CheckView) -> str:
     )
 
 
-def format_finding_section(findings: list[Finding]) -> list[str]:
+def format_finding_section(
+    findings: list[Finding], *, numbered: bool = False
+) -> list[str]:
     if not findings:
         return ["None."]
     else:
         lines: list[str] = []
-        for finding in findings:
+        for index, finding in enumerate(findings, 1):
+            marker = f"{index}." if numbered else "-"
+            indent = " " * (len(marker) + 1)
+            if numbered:
+                claim = " ".join(finding.claim.split())
+                evidence_quote = " ".join(finding.evidence_quote.split())
+                impact = " ".join(finding.impact.split())
+                suggested_fix = " ".join(finding.suggested_fix.split())
+            else:
+                claim = finding.claim
+                evidence_quote = finding.evidence_quote
+                impact = finding.impact
+                suggested_fix = finding.suggested_fix
             lines.append(
-                f"- `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
-                f"`{finding.file_path}`:{finding.line_start}: {finding.claim}"
+                f"{marker} `{finding.rule_id}` ({finding.certainty}, {finding.change_relation}) "
+                f"`{finding.file_path}`:{finding.line_start}: {claim}"
             )
             lines.append(
-                f"  Evidence: `{finding.evidence_file_path}` `{finding.evidence_quote}`"
+                f"{indent}Evidence: `{finding.evidence_file_path}` `{evidence_quote}`"
             )
-            lines.append(f"  Impact: {finding.impact}")
-            lines.append(f"  Fix: {finding.suggested_fix}")
+            lines.append(f"{indent}Impact: {impact}")
+            lines.append(f"{indent}Fix: {suggested_fix}")
         return lines
