@@ -156,11 +156,12 @@ type remoteState struct {
 	// provTests are the last connection tests, by account.
 	provTests map[string]providerTest
 	provDlg   providerDialog
-	// Background saves may arrive out of order, so each save drains every queued drag in drop order.
-	providerOrderSaveMu  sync.Mutex
-	providerOrderPending []remoteProviderMove
-	chatgpt              *codexauth.Session // remote_chatgpt.go
-	chatLogin            chatgptLogin
+	// One worker drains drags in drop order and waits for each publish before starting the next save.
+	providerOrderSaveMu      sync.Mutex
+	providerOrderPending     []remoteProviderMove
+	providerOrderSaveRunning bool
+	chatgpt                  *codexauth.Session // remote_chatgpt.go
+	chatLogin                chatgptLogin
 	// Input-keyed display caches keep repeated build passes from cloning
 	// provider catalogs and reconstructing every DTO.
 	pageCache  remoteViewCacheEntry

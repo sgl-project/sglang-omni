@@ -13,7 +13,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/helpertest"
 	"github.com/sgl-project/sglang-omni/Voxt/internal/helper/proto"
@@ -331,23 +333,11 @@ func TestRemoteProviderPriorityDrag(t *testing.T) {
 	drag(llm.Custom, "ollama", []string{"ollama", llm.Custom})
 }
 
-type invertedRemoteSettings struct {
-	settings.Service
-	pending []func() error
-}
-
-func (s *invertedRemoteSettings) Update(ctx context.Context, fn func(*settings.Settings)) error {
-	s.pending = append(s.pending, func() error { return s.Service.Update(ctx, fn) })
-	return nil
-}
-
-// Reversed background completion must not undo a later priority drag.
+// Rapid successive drags preserve their final priority in live and saved settings.
 func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
 	a, _, _ := newTestApp(t)
-	store := &invertedRemoteSettings{Service: a.settings}
-	a.settings = store
 	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
-	if err := store.Service.Update(context.Background(), func(s *settings.Settings) {
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
 		s.Providers.LLM = slices.Clone(initial)
 	}); err != nil {
 		t.Fatal(err)
@@ -355,19 +345,79 @@ func TestRemoteProviderRapidDragsSaveInDropOrder(t *testing.T) {
 	a.prefs.Providers.LLM = slices.Clone(initial)
 	a.moveRemoteProvider("llm", "ollama", "openai")
 	a.moveRemoteProvider("llm", "deepseek", "ollama")
-	if len(store.pending) != 2 {
-		t.Fatalf("saved updates = %d, want 2", len(store.pending))
+	want := []string{"openai", "ollama", "deepseek"}
+	for name, got := range map[string][]settings.Provider{
+		"live":  a.prefs.Providers.LLM,
+		"saved": a.settings.Get().Providers.LLM,
+	} {
+		ids := make([]string, len(got))
+		for i, provider := range got {
+			ids[i] = provider.ID
+		}
+		if !slices.Equal(ids, want) {
+			t.Errorf("%s provider order = %q, want %q", name, ids, want)
+		}
 	}
-	if err := store.pending[1](); err != nil {
+}
+
+// An older save's notification must not restore priority after a later drag.
+func TestRemoteProviderRapidDragNotificationsStayInDropOrder(t *testing.T) {
+	a, _, _ := newTestApp(t)
+	initial := []settings.Provider{{ID: "ollama"}, {ID: "deepseek"}, {ID: "openai"}}
+	if err := a.settings.Update(context.Background(), func(s *settings.Settings) {
+		s.Providers.LLM = slices.Clone(initial)
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.pending[0](); err != nil {
+	firstPublishStarted := make(chan struct{})
+	releaseFirstPublish := make(chan struct{})
+	secondPublished := make(chan struct{})
+	var publishCount atomic.Int32
+	store, err := settings.Open(context.Background(), a.lib.store.Documents(), func(ev settings.Changed) {
+		switch publishCount.Add(1) {
+		case 1:
+			close(firstPublishStarted)
+			<-releaseFirstPublish
+		case 2:
+			close(secondPublished)
+		}
+		a.settingsChanged(ev.Old, ev.New)
+	})
+	if err != nil {
 		t.Fatal(err)
+	}
+	a.settings = store
+	a.prefs = store.Get()
+	firstSaveDone := make(chan struct{})
+	go func() {
+		a.moveRemoteProvider("llm", "ollama", "openai")
+		close(firstSaveDone)
+	}()
+	select {
+	case <-firstPublishStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first drag save did not publish")
+	}
+	a.moveRemoteProvider("llm", "deepseek", "ollama")
+	secondPublishedBeforeRelease := false
+	select {
+	case <-secondPublished:
+		secondPublishedBeforeRelease = true
+	default:
+	}
+	close(releaseFirstPublish)
+	select {
+	case <-firstSaveDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the drag saves did not finish")
+	}
+	if secondPublishedBeforeRelease {
+		t.Error("the second drag save started before the first publish returned")
 	}
 	want := []string{"openai", "ollama", "deepseek"}
 	for name, got := range map[string][]settings.Provider{
 		"live":  a.prefs.Providers.LLM,
-		"saved": store.Service.Get().Providers.LLM,
+		"saved": store.Get().Providers.LLM,
 	} {
 		ids := make([]string, len(got))
 		for i, provider := range got {

@@ -81,5 +81,6 @@ report	fix	symptom	level	check
 #4493	#4514	The preview-drain regression waits on real Final and drain delays instead of a controlled deadline	L	TestLiveFinalFailsWhenTheDrainTimesOut
 #4690	#4691	Configured language-model services cannot be dragged into backup priority order	L	TestRemoteProviderPriorityDrag
 #4690	#4691	Rapid priority drags can be saved in reverse order	L	TestRemoteProviderRapidDragsSaveInDropOrder
+#4690	#4691	An earlier drag save notification restores an older live backup priority	L	TestRemoteProviderRapidDragNotificationsStayInDropOrder
 #4690	#4691	A duplicated saved provider appears twice in failover and configured cards	L	TestRemoteProviderDuplicateIDsKeepFirst
 #4690	#4691	Failover stops after the first backup instead of trying the remaining services	L	TestRetry

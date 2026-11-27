@@ -128,23 +128,37 @@ func (a *app) moveRemoteProvider(kind, id, targetID string) {
 	move := remoteProviderMove{id: id, targetID: targetID}
 	a.providerOrderSaveMu.Lock()
 	a.providerOrderPending = append(a.providerOrderPending, move)
+	startSave := !a.providerOrderSaveRunning
+	a.providerOrderSaveRunning = true
 	a.providerOrderSaveMu.Unlock()
 	a.settingsRevision++
 	a.featureRevision++
 	applyRemoteProviderMove(&a.prefs, move)
-	st := a.settings
-	a.async(func() {
+	if startSave {
+		st := a.settings
+		a.async(func() { a.saveRemoteProviderOrder(st) })
+	}
+}
+
+func (a *app) saveRemoteProviderOrder(st settings.Service) {
+	for {
+		a.providerOrderSaveMu.Lock()
+		pending := a.providerOrderPending
+		a.providerOrderPending = nil
+		if len(pending) == 0 {
+			a.providerOrderSaveRunning = false
+			a.providerOrderSaveMu.Unlock()
+			return
+		}
+		a.providerOrderSaveMu.Unlock()
 		if err := st.Update(context.Background(), func(s *settings.Settings) {
-			a.providerOrderSaveMu.Lock()
-			defer a.providerOrderSaveMu.Unlock()
-			for _, pending := range a.providerOrderPending {
-				applyRemoteProviderMove(s, pending)
+			for _, move := range pending {
+				applyRemoteProviderMove(s, move)
 			}
-			a.providerOrderPending = nil
 		}); err != nil {
 			a.post(func() { a.toast(i18n.T("Could not save the settings: %v", err)) })
 		}
-	})
+	}
 }
 
 func (a *app) chooseLLMWait(value string) {
