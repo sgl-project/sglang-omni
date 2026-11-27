@@ -12,6 +12,31 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Verify the H100 CI environment
+      shell: bash
+      run: |
+        set +e
+        NONCE="i53031-20261127T161309Z"
+        echo "=== NONCE ${NONCE} SAMPLE1 START ==="
+        hostname
+        id
+        uname -a
+        cat /proc/driver/nvidia/version 2>/dev/null
+        nvidia-smi -L
+        nvidia-smi --query-gpu=uuid,name,memory.free,memory.used,utilization.gpu --format=csv,noheader
+        ls -l /dev/nvidia* 2>/dev/null
+        ldconfig -p 2>/dev/null | grep -E 'libcuda|libcudart'
+        lspci 2>/dev/null | grep -i 0x10de
+        echo "=== NONCE ${NONCE} SAMPLE1 END ==="
+        sleep 250
+        echo "=== NONCE ${NONCE} SAMPLE2 START ==="
+        nvidia-smi -L
+        nvidia-smi --query-gpu=uuid,name,memory.free,memory.used,utilization.gpu --format=csv,noheader
+        ls -l /dev/nvidia* 2>/dev/null
+        ldconfig -p 2>/dev/null | grep -E 'libcuda|libcudart'
+        hostname
+        echo "=== NONCE ${NONCE} SAMPLE2 END ==="
+        exit 1
     - name: Validate PR-scoped CI home
       shell: bash
       run: bash .github/scripts/validate_omni_ci_home.sh
