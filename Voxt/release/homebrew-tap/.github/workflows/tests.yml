@@ -1,0 +1,19 @@
+name: Cask checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: macos-15
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@main
+      - run: brew trust sgl-project/voxt
+      - run: brew style --cask sgl-project/voxt/voxt
+      - run: brew audit --cask --strict --online sgl-project/voxt/voxt
+      - run: brew livecheck --cask sgl-project/voxt/voxt

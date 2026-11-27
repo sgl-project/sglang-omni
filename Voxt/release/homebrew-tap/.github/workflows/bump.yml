@@ -1,0 +1,95 @@
+name: Bump Voxt
+
+# Every hour, looks for a stable Voxt release on sgl-project/sglang-omni that is newer than
+# Casks/voxt.rb, writes its cask with that release's Voxt/scripts/homebrew-cask.sh (main's when the
+# release predates the script), checks it with brew style and brew audit, and opens a pull request
+# here. It needs no secret: the releases are public and GITHUB_TOKEN opens the pull request in this
+# repository (Settings → Actions → General → "Allow GitHub Actions to create and approve pull
+# requests" must be on). A pull request it opens starts no other workflow, so the checks run here.
+# The source of this file is Voxt/release/homebrew-tap in sgl-project/sglang-omni.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: bump-voxt
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      SOURCE: sgl-project/sglang-omni
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Find a newer stable Voxt
+        id: find
+        run: |
+          set -euo pipefail
+          tag="$(gh api "repos/$SOURCE/releases?per_page=100" --jq '
+            [.[] | select(.draft == false and .prerelease == false
+                          and (.tag_name | test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+$")))]
+            | sort_by(.tag_name | ltrimstr("voxt-v") | split(".") | map(tonumber))
+            | last | .tag_name // ""')"
+          if [[ -z "$tag" ]]; then
+            echo "::error::$SOURCE has no stable voxt-v release"
+            exit 1
+          else
+            :
+          fi
+          version="${tag#voxt-v}"
+          current="$(sed -n 's/^  version "\(.*\)"$/\1/p' Casks/voxt.rb)"
+          if [[ "$version" == "$current" ]]; then
+            echo "Casks/voxt.rb already offers Voxt $version"
+          elif [[ -n "$(gh pr list --head "voxt-$version" --state open --json number --jq '.[].number')" ]]; then
+            echo "A pull request for Voxt $version is already open"
+          else
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Write and check the cask
+        if: steps.find.outputs.tag != ''
+        env:
+          TAG: ${{ steps.find.outputs.tag }}
+          VERSION: ${{ steps.find.outputs.version }}
+        run: |
+          set -euo pipefail
+          dmg="Voxt-$VERSION-arm64.dmg"
+          digest="$(gh api "repos/$SOURCE/releases/tags/$TAG" --jq ".assets[] | select(.name == \"$dmg\") | .digest")"
+          gh release download "$TAG" --repo "$SOURCE" --pattern "$dmg.sha256" --dir "$RUNNER_TEMP"
+          script="$RUNNER_TEMP/homebrew-cask.sh"
+          if ! gh api "repos/$SOURCE/contents/Voxt/scripts/homebrew-cask.sh?ref=$TAG" --jq .content > "$script.b64"; then
+            gh api "repos/$SOURCE/contents/Voxt/scripts/homebrew-cask.sh" --jq .content > "$script.b64"
+          else
+            :
+          fi
+          base64 --decode < "$script.b64" > "$script"
+          bash "$script" "$VERSION" "$RUNNER_TEMP/$dmg.sha256" "$digest" > Casks/voxt.rb
+          git diff -- Casks/voxt.rb
+          brew trust sgl-project/voxt
+          brew style --cask sgl-project/voxt/voxt
+          brew audit --cask --strict --online sgl-project/voxt/voxt
+
+      - name: Open a pull request
+        if: steps.find.outputs.tag != ''
+        env:
+          TAG: ${{ steps.find.outputs.tag }}
+          VERSION: ${{ steps.find.outputs.version }}
+        run: |
+          set -euo pipefail
+          git switch -c "voxt-$VERSION"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "voxt $VERSION" -- Casks/voxt.rb
+          git push origin "voxt-$VERSION"
+          gh pr create --head "voxt-$VERSION" --title "voxt $VERSION" \
+            --body "Voxt $VERSION from https://github.com/$SOURCE/releases/tag/$TAG. brew style and brew audit --strict --online passed in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
