@@ -35,12 +35,13 @@ DEFAULT_LM_MAX_RUNNING_REQUESTS = 1
 
 
 class PersonaPlexDepformerFactoryArgs(FactoryArgs):
-    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
-        default_factory=lambda: [1, 2, 4, 8, 16, 32]
-    )
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] | None = None
 
 
 class PersonaPlexLMFactoryArgs(PersonaPlexDepformerFactoryArgs):
+    depformer_cuda_graph_batch_sizes: list[PositiveInt] = Field(
+        default_factory=lambda: [1, 2, 4, 8, 16, 32]
+    )
     enable_async_decode: bool = False
 
 
@@ -283,6 +284,9 @@ class PersonaPlexSessionPipelineConfig(PersonaPlexPipelineConfig):
     def stage_factory_kwargs(self, stage_name: str) -> Mapping[str, object]:
         if stage_name == LM_STAGE:
             return {
+                "depformer_cuda_graph_batch_sizes": list(
+                    range(1, self.lm_request_slots() + 1)
+                ),
                 "audio_temperature": (
                     self.sampling.audio_temperature
                     if self.sampling.audio_temperature is not None

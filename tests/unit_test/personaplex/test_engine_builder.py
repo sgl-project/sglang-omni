@@ -13,14 +13,20 @@ from sglang.srt.configs.model_config import get_hybrid_layer_ids, is_hybrid_swa_
 from transformers import PretrainedConfig
 
 from sglang_omni.config.manager import ConfigManager
-from sglang_omni.config.runtime import resolve_stage_typed_kwargs
+from sglang_omni.config.runtime import (
+    resolve_stage_factory_args,
+    resolve_stage_typed_kwargs,
+)
 from sglang_omni.models.personaplex.architecture import (
     DEFAULT_AUDIO_TEMPERATURE,
     DEFAULT_AUDIO_TOP_K,
     TEMPORAL_TRANSFORMER,
     TEXT_CARD,
 )
-from sglang_omni.models.personaplex.config import PersonaPlexPipelineConfig
+from sglang_omni.models.personaplex.config import (
+    PersonaPlexPipelineConfig,
+    PersonaPlexSessionPipelineConfig,
+)
 from sglang_omni.models.personaplex.engine_builder import (
     PersonaPlexEngineBuilder,
     PersonaPlexSessionEngineBuilder,
@@ -264,3 +270,29 @@ def test_radix_caching_is_refused_at_startup() -> None:
             SimpleNamespace(disable_radix_cache=False)
         )
     builder.validate_before_infrastructure(SimpleNamespace(disable_radix_cache=True))
+
+
+@pytest.mark.parametrize("batch_sizes", [None, [], [1, 4]])
+def test_session_graph_sizes_follow_concurrency_and_cli(
+    batch_sizes: list[int] | None,
+) -> None:
+    """Resolved session factories follow concurrency changes and explicit buckets."""
+    config = PersonaPlexSessionPipelineConfig(model_path="personaplex")
+    if batch_sizes is not None:
+        config = ConfigManager(config).merge_config(
+            {"lm.factory.depformer_cuda_graph_batch_sizes": json.dumps(batch_sizes)}
+        )
+    else:
+        pass
+    for max_sessions in (4, 32, 1):
+        config = ConfigManager(config).merge_config({"max_sessions": max_sessions})
+        factory_kwargs = resolve_stage_factory_args(config.stage_named("lm"), config)
+        expected_batch_sizes = (
+            list(range(1, max_sessions + 2)) if batch_sizes is None else batch_sizes
+        )
+        assert (
+            factory_kwargs["depformer_cuda_graph_batch_sizes"] == expected_batch_sizes
+        )
+        assert factory_kwargs["server_args_overrides"]["max_running_requests"] == (
+            max_sessions + 1
+        )

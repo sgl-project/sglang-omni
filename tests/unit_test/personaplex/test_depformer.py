@@ -23,6 +23,10 @@ from sglang_omni.models.personaplex.components.depformer import (
 from sglang_omni.models.personaplex.components.depformer_cuda_graph import (
     DepformerCudaGraphRunner,
 )
+from sglang_omni.models.personaplex.config import (
+    PersonaPlexSessionPipelineConfig,
+    PersonaPlexSessionSampling,
+)
 from sglang_omni.models.personaplex.sampling import (
     AudioSampling,
     SamplingRun,
@@ -440,6 +444,78 @@ def test_graph_batch_codes_and_rng_match_eager(
     assert runner.graphs and all(graph is not None for graph in runner.graphs.values())
     for output, snapshot in old_outputs:
         torch.testing.assert_close(output, snapshot, atol=0, rtol=0)
+
+
+@pytest.mark.accelerator
+@CUDA_ONLY
+@pytest.mark.parametrize("audio_temperature", [0.0, 0.8])
+@torch.inference_mode()
+def test_session_exact_graphs_preserve_codes_and_rng(audio_temperature: float) -> None:
+    """Session startup captures exact graphs whose changing batches match eager."""
+    config = PersonaPlexSessionPipelineConfig(
+        model_path="personaplex",
+        max_sessions=4,
+        sampling=PersonaPlexSessionSampling(
+            audio_temperature=audio_temperature, audio_top_k=25
+        ),
+    )
+    factory_kwargs = config.stage_factory_kwargs("lm")
+    model = Depformer(SPEC).to(device="cuda", dtype=torch.bfloat16)
+    model.load_reference_weights(reference_weights(8))
+    runner = DepformerCudaGraphRunner(
+        model, tuple(factory_kwargs["depformer_cuda_graph_batch_sizes"])
+    )
+    sampling = AudioSampling(
+        factory_kwargs["audio_temperature"], factory_kwargs["audio_top_k"]
+    )
+    random_state = torch.cuda.get_rng_state()
+    with patch.object(runner, "capture", wraps=runner.capture) as capture:
+        runner.capture_graphs(sampling, max_batch_size=config.lm_request_slots())
+        assert capture.call_count == 5
+        assert torch.equal(torch.cuda.get_rng_state(), random_state)
+        retained_outputs: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for batch_size in (5, 3, 1, 4, 2):
+            assert runner.graphs[((batch_size, sampling),)].hidden_states.shape[0] == (
+                batch_size
+            )
+            hidden_states = torch.randn(
+                batch_size, SPEC.input_dim, device="cuda", dtype=torch.bfloat16
+            )
+            text_tokens = torch.arange(batch_size, device="cuda")
+            forced_codes = torch.full(
+                (batch_size, SPEC.steps), -1, dtype=torch.long, device="cuda"
+            )
+            forced_codes[:, 0] = 13
+            generators = [
+                torch.Generator(device="cuda").manual_seed(7 + row)
+                for row in range(batch_size)
+            ]
+            runs = [
+                SamplingRun(
+                    row_slice=slice(0, batch_size),
+                    sampling=sampling,
+                    generators=generators,
+                )
+            ]
+            initial_states = [generator.get_state() for generator in generators]
+            expected = model.generate(
+                text_tokens,
+                hidden_states,
+                forced_codes,
+                lambda logits: sample_runs(logits, runs),
+            )
+            expected_states = [generator.get_state() for generator in generators]
+            for generator, state in zip(generators, initial_states, strict=True):
+                generator.set_state(state)
+            with patch.object(model, "generate", side_effect=AssertionError):
+                actual = runner.generate(text_tokens, hidden_states, forced_codes, runs)
+            torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+            for generator, state in zip(generators, expected_states, strict=True):
+                assert torch.equal(generator.get_state(), state)
+            retained_outputs.append((actual, actual.clone()))
+        assert capture.call_count == 5
+        for output, snapshot in retained_outputs:
+            torch.testing.assert_close(output, snapshot, atol=0, rtol=0)
 
 
 @pytest.mark.accelerator
