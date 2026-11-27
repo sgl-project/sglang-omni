@@ -491,6 +491,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  max-height: 70dvh;
+  overflow-y: auto;
 }
 
 .empty-state {
