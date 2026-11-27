@@ -323,7 +323,8 @@ def test_edit_memory_budget_uses_npu_device_module(
         memory_reserved=Mock(return_value=3072),
         memory_allocated=Mock(return_value=1024),
     )
-    monkeypatch.setattr(torch, "get_device_module", lambda device: npu_module)
+    get_device_module = Mock(return_value=npu_module)
+    monkeypatch.setattr(torch, "get_device_module", get_device_module)
     monkeypatch.setattr(
         torch.cuda,
         "mem_get_info",
@@ -334,6 +335,7 @@ def test_edit_memory_budget_uses_npu_device_module(
     )
     server_args = SimpleNamespace(pipeline_config=SenseNovaU1PipelineConfig())
     output = SenseNovaU1GenerationStage(model, Mock()).forward(request, server_args)
+    get_device_module.assert_called_once_with(npu_device)
     npu_module.mem_get_info.assert_called_once_with(npu_device)
     npu_module.memory_reserved.assert_called_once_with(npu_device)
     npu_module.memory_allocated.assert_called_once_with(npu_device)
