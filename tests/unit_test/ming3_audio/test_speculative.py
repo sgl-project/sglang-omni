@@ -248,6 +248,67 @@ def test_dflash_admission_refuses_a_seed_the_verify_would_ignore(
         assert error is None
 
 
+@pytest.mark.parametrize(
+    ("algorithm", "is_cuda", "penalty_owner"),
+    [("NEXTN", True, "verify_logits"), ("NEXTN", False, None), ("DFLASH", True, None)],
+)
+def test_mtp_applies_repetition_penalty_in_verify_on_cuda(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    algorithm: str,
+    is_cuda: bool,
+    penalty_owner: str | None,
+) -> None:
+    """MTP verifies one topk-1 chain per request, so the shared verify rows apply the penalty exactly."""
+    if algorithm == "DFLASH":
+        write_dflash_checkpoint(tmp_path)
+        overrides = {
+            "speculative_algorithm": "DFLASH",
+            "speculative_draft_model_path": str(tmp_path),
+        }
+    else:
+        monkeypatch.setattr(
+            stages.Ming3AudioConfig,
+            "from_pretrained",
+            lambda model_path, revision: SimpleNamespace(
+                use_kda=True, num_nextn_predict_layers=1, mtp_use_kda=False
+            ),
+        )
+        overrides = {"speculative_algorithm": "NEXTN"}
+    monkeypatch.setattr(
+        platforms.current_platform, "get_device", lambda index: "cpu", raising=False
+    )
+    monkeypatch.setattr(stages.current_platform, "is_cuda", lambda: is_cuda)
+    monkeypatch.setattr(stages, "build_sglang_server_args", Mock())
+    monkeypatch.setattr(
+        stages,
+        "create_sglang_infrastructure",
+        Mock(
+            return_value=(
+                Mock(gpu_id=0),
+                None,
+                None,
+                None,
+                SimpleNamespace(vocab_size=157184),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        stages, "get_tokenizer", Mock(return_value=SimpleNamespace(eos_token_id=1))
+    )
+    scheduler_factory = Mock()
+    monkeypatch.setattr(stages, "OmniScheduler", scheduler_factory)
+    stages.create_thinker_executor(
+        "unused",
+        max_seq_len=8192,
+        enable_async_decode=False,
+        device="cpu",
+        server_args_overrides=overrides,
+    )
+    model_runner = scheduler_factory.call_args.kwargs["model_runner"]
+    assert model_runner.speculative_repetition_penalty_owner == penalty_owner
+
+
 def test_overlapped_draft_reaches_the_scheduler_with_its_synchronous_threshold(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
