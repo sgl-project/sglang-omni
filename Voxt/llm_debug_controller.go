@@ -199,6 +199,12 @@ func (a *app) prepareLLMDebug() {
 	}
 	if !slices.Contains(titles, u.preset) {
 		u.preset = titles[0]
+		for i, p := range presets {
+			if llmDebugPresetKey(p) == u.filled {
+				u.preset = titles[i]
+				break
+			}
+		}
 	}
 	p := presets[slices.Index(titles, u.preset)]
 	saved := a.savedPrompt(p)

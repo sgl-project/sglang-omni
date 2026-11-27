@@ -47,7 +47,8 @@ func TestLLMDebugRuns(t *testing.T) {
 }
 
 // TestLLMDebugDraftSurvivesLocaleSwitch: changing the display language
-// must not replace an edited prompt with the saved one or send that saved one.
+// must not change the request, replace an edited prompt with the saved one,
+// or send that saved one.
 func TestLLMDebugDraftSurvivesLocaleSwitch(t *testing.T) {
 	srv, requests := mockOpenAI(t, "Hello there.")
 	useKeys(t, &memKeys{m: map[string]string{"llm." + llm.Custom: "sk-mock-123"}})
@@ -84,6 +85,16 @@ func TestLLMDebugDraftSurvivesLocaleSwitch(t *testing.T) {
 	got := requests()
 	if len(got) != 1 || !strings.Contains(got[0], "EDITED-LOCALE-DRAFT") || strings.Contains(got[0], "SAVED-LOCALE-PROMPT") {
 		t.Fatalf("Run did not send the edited draft: requests %q, result %+v", got, a.llmDbg.res)
+	}
+
+	a.llmDbg.preset = "Rewrite"
+	frames(tt)
+	a.llmDbg.prompt = "EDITED-REWRITE-LOCALE-DRAFT"
+	frames(tt)
+	a.updateSettings(func(s *settings.Settings) { s.General.Language = "zh-Hans" })
+	frames(tt)
+	if model := a.llmDebugModel(); a.llmDbg.preset != "改写" || model.Form.Prompt != "EDITED-REWRITE-LOCALE-DRAFT" || !model.Edited {
+		t.Fatalf("Chinese changed the selected request or replaced its draft: preset %q, state %+v", a.llmDbg.preset, model)
 	}
 }
 
