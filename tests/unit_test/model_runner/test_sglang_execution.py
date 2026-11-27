@@ -101,6 +101,7 @@ def test_publish_next_tokens_uses_future_map_and_retires_input_ids() -> None:
         req_pool_indices=torch.tensor([4, 7]),
         seq_lens=torch.tensor([12, 19]),
         input_ids=torch.tensor([1, 2]),
+        beam_tail=None,
     )
     next_token_ids = torch.tensor([31, 32])
 

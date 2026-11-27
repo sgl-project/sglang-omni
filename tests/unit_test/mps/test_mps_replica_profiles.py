@@ -25,6 +25,7 @@ from sglang_omni.mps.devices import MpsPhysicalDevice
 from sglang_omni.mps.manager import MpsClientRef
 from sglang_omni.mps.replica_profiles import (
     B200,
+    H100,
     H200,
     REPLICA_PROFILES,
     RTX_4090_D,
@@ -34,7 +35,7 @@ from sglang_omni.mps.replica_profiles import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-EXAMPLE_GPUS = {"b200": B200, "h200": H200, "rtx4090d": RTX_4090_D}
+EXAMPLE_GPUS = {"b200": B200, "h100": H100, "h200": H200, "rtx4090d": RTX_4090_D}
 EXAMPLES = sorted(
     (example, gpu)
     for directory, gpu in EXAMPLE_GPUS.items()
@@ -226,9 +227,23 @@ def idle_h200() -> MpsPhysicalDevice:
     )
 
 
+def idle_h100() -> MpsPhysicalDevice:
+    return MpsPhysicalDevice(
+        "GPU-100",
+        name=H100.name,
+        total_memory_bytes=H100.total_memory_mib * MIB,
+        free_memory_bytes=(H100.total_memory_mib - 600) * MIB,
+    )
+
+
 @pytest.mark.parametrize(
     "device, gpu",
-    [(idle_b200(), B200), (idle_h200(), H200), (idle_4090_d(), RTX_4090_D)],
+    [
+        (idle_b200(), B200),
+        (idle_h100(), H100),
+        (idle_h200(), H200),
+        (idle_4090_d(), RTX_4090_D),
+    ],
 )
 def test_each_gpu_serves_its_own_measured_count(mps_host, device, gpu) -> None:
     profile = profile_for(MOSS_TD, gpu)
@@ -264,13 +279,13 @@ def test_model_measured_on_another_gpu_keeps_its_config_on_a_4090_d(mps_host) ->
         (
             [],
             MpsPhysicalDevice(
-                "GPU-h100",
-                name="NVIDIA H100 80GB HBM3",
-                total_memory_bytes=81559 * MIB,
+                "GPU-a100",
+                name="NVIDIA A100-SXM4-80GB",
+                total_memory_bytes=81920 * MIB,
                 free_memory_bytes=81000 * MIB,
             ),
             {},
-            "GPU 0 is NVIDIA H100 80GB HBM3 (81559 MiB); replica counts were measured on NVIDIA B200 (183359 MiB)",
+            "GPU 0 is NVIDIA A100-SXM4-80GB (81920 MiB); replica counts were measured on NVIDIA B200 (183359 MiB)",
         ),
         (
             [],

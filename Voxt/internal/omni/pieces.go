@@ -2,7 +2,6 @@ package omni
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"time"
 
@@ -83,13 +82,32 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 			pc.claimed = true
 			pc.activePieceDone = activePieceDone
 		}
+		// Qwen3-ASR's live session decodes the piece with what it holds of
+		// the audio, as it does the Final, and its Final then starts after it.
+		var known prior
+		sessionPiece := s.a.spec.Kind == kindQwen3ASR && s.session != "" && s.preview
+		if sessionPiece {
+			known.session = s.session
+			if start == 0 && language != "" {
+				known.text = s.asm.text()
+			} else if start == 0 && !s.req.LiveResult {
+				known.guessAutoLanguage = true
+			}
+		}
 		s.mu.Unlock()
 		piece := audio[start : start+cut*2]
-		s.startFinalAt((start + cut*2) / 2)
+		end := (start + cut*2) / 2
 		begin := time.Now()
 		var r finalResult
 		var err error
-		if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
+		if sessionPiece {
+			req := finalRequest{pcm: piece, language: language, context: b.context,
+				maxTokens: t.tokenBudget(asr.Duration(piece, sampleRate)), layout: t.AudioLayout, known: known, pieceEnd: end}
+			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
+			if err == nil {
+				r.text = s.a.trimEcho(s.ctx, s.l, req, s.a.plainText(r.text), r.length, b.terms)
+			}
+		} else if sent, ok := s.a.speechOnly(s.ctx, piece); ok {
 			req := finalRequest{pcm: padPiece(sent, &t), language: language, context: b.context,
 				maxTokens: t.tokenBudget(asr.Duration(sent, sampleRate)), layout: t.AudioLayout}
 			r, err = transcribe(s.ctx, s.l, req, s.a.rt.cfg.StallTimeout)
@@ -136,22 +154,6 @@ func (s *live) recognisePieces(planningContext context.Context, language string,
 // earlyPieces is Qwen3-ASR's policy when the session works on the pieces
 // while it records (asr.StreamRequest.EarlyPieces): the first at 20 s.
 var earlyPieces = Pieces{After: 20 * time.Second, Min: 10 * time.Second, Target: 15 * time.Second, Max: 25 * time.Second}
-
-// startFinalAt tells the server the sample the Final starts from once the
-// piece before it is recognised: it prefills the audio from there on while
-// the recording goes on.
-func (s *live) startFinalAt(sample int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.a.spec.Kind != kindQwen3ASR || s.session == "" || !s.preview || s.finished || s.ended {
-		return
-	}
-	msg, _ := json.Marshal(map[string]any{"type": "input_audio_buffer.final_start", "start_sample": sample})
-	select {
-	case s.out <- msg:
-	default:
-	}
-}
 
 // padPiece pads a piece shorter than the policy's shortest chunk with
 // silence.
