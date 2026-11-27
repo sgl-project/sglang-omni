@@ -561,7 +561,9 @@ func TestSessionSlotContinueWaitsForStreamingAnswer(t *testing.T) {
 	if a.answer.msg != retryWait {
 		t.Fatalf("the current card does not have the English retry wait: %q", a.answer.msg)
 	}
+	previousLocale := i18n.Locale()
 	i18n.SetLocale("zh-Hans")
+	t.Cleanup(func() { i18n.SetLocale(previousLocale) })
 	a.mgr.StopLLM(streaming)
 	a.pump("Session 1's answer end", func() bool { return a.bgID == "" })
 	if a.answer.msg != "" {
