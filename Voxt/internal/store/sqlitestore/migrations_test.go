@@ -67,6 +67,59 @@ func TestCombinedUpgradeLegacyImportVersion9(t *testing.T) {
 	}
 }
 
+func TestCombinedUpgradeLegacyImportAfterMainAndRestart(t *testing.T) {
+	for _, version := range []int{10, 11, 12, 13} {
+		t.Run(strconv.Itoa(version), func(t *testing.T) {
+			saved := migrations
+			t.Cleanup(func() { migrations = saved })
+
+			dir := t.TempDir()
+			migrations = slices.Clone(saved[:8])
+			migrations = append(migrations, migration{version: 9, statements: saved[13].statements})
+			s := openTest(t, dir)
+			if _, err := s.db.Execute(ctx, `INSERT INTO notes (id, text, created_at) VALUES ('n1', 'keep me', 1)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.db.Execute(ctx, `INSERT INTO meetings (id, created_at, status, mode) VALUES ('m1', 1, 'done', 'import')`); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range saved[9:version] {
+				for _, statement := range step.statements {
+					if _, err := s.db.Execute(ctx, statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := s.db.Execute(ctx, `PRAGMA user_version = `+strconv.Itoa(version)); err != nil {
+				t.Fatal(err)
+			}
+			s.Close()
+
+			migrations = saved
+			s = openTest(t, dir)
+			notes, err := s.Notes().List(ctx)
+			if err != nil || len(notes) != 1 || notes[0].Text != "keep me" {
+				t.Fatalf("notes after upgrade through main %d: %+v, %v", version, notes, err)
+			}
+			_, segments, err := s.Meetings().Meeting(ctx, "m1")
+			if err != nil || len(segments) != 0 {
+				t.Fatalf("meeting after upgrade through main %d: %+v, %v", version, segments, err)
+			}
+			s.Close()
+
+			s = openTest(t, dir)
+			notes, err = s.Notes().List(ctx)
+			if err != nil || len(notes) != 1 || notes[0].Text != "keep me" {
+				t.Fatalf("notes after restart from main %d: %+v, %v", version, notes, err)
+			}
+			_, segments, err = s.Meetings().Meeting(ctx, "m1")
+			if err != nil || len(segments) != 0 {
+				t.Fatalf("meeting after restart from main %d: %+v, %v", version, segments, err)
+			}
+		})
+	}
+}
+
 func TestCombinedUpgradeLegacyDictionaryVersion9(t *testing.T) {
 	saved := migrations
 	t.Cleanup(func() { migrations = saved })

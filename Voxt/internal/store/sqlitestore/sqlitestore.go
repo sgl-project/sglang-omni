@@ -146,6 +146,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 	}
 	start := v
 	legacyDictionary := false
+	backfillNotesAppName := false
 	if v == 9 || v == 10 {
 		rows, err := db.Query(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dictionary_profiles'`)
 		if err != nil {
@@ -155,7 +156,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		// Dictionary previews could also carry the later notes and history versions.
 		legacyDictionary = len(rows.Values) != 0
 	}
-	if v == 9 {
+	if v >= 9 {
 		rows, err := db.Query(ctx, "PRAGMA table_info(notes)")
 		if err != nil {
 			db.Close()
@@ -166,8 +167,12 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 			hasAppName = hasAppName || asString(row[1]) == "app_name"
 		}
 		if !hasAppName {
-			// Import and dictionary previews both used version 9 before notes did.
-			start = 8
+			// Previews used version 9 before notes did; main could then advance them without the column.
+			if v == 9 {
+				start = 8
+			} else {
+				backfillNotesAppName = true
+			}
 		}
 	}
 	latest := Version()
@@ -175,7 +180,7 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("sqlitestore: %s has schema version %d, newer than this app's %d: %w", path, v, latest, core.ErrUnsupported)
 	}
-	if v < latest && v > 0 {
+	if (v < latest || backfillNotesAppName) && v > 0 {
 		// Close first, so the WAL is checkpointed into the file we copy.
 		if err := db.Close(); err != nil {
 			return nil, err
@@ -185,6 +190,16 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 		}
 		if db, err = openDB(ctx, path); err != nil {
 			return nil, err
+		}
+	}
+	if backfillNotesAppName {
+		stmts := make([]sqlite.Statement, 0, len(migrations[8].statements))
+		for _, statement := range migrations[8].statements {
+			stmts = append(stmts, sqlite.Statement{SQL: statement})
+		}
+		if _, err := db.Transaction(ctx, stmts); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("sqlitestore: backfill notes app_name: %w", err)
 		}
 	}
 	for _, m := range migrations[start:] {
