@@ -1,0 +1,3 @@
+/* The permission prompts (project.yml's INFOPLIST_KEY_* values). */
+"NSMicrophoneUsageDescription" = "Voxt records your voice to transcribe, translate or rewrite it.";
+"NSSpeechRecognitionUsageDescription" = "Voxt recognises your speech with Apple's speech recognition, on this iPhone when you choose so.";

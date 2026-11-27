@@ -1,0 +1,6 @@
+# The Go core's libraries (scripts/build-core.sh)
+/build/
+# SwiftPM's and Xcode's output, and the generated project (App/project.yml)
+/VoxtKit/.build/
+/VoxtKit/.swiftpm/
+/App/*.xcodeproj/
