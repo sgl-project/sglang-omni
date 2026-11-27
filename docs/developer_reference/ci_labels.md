@@ -6,6 +6,14 @@ SGLang-Omni CI has two parts. A few fast checks run on GitHub-hosted runners for
 
 Two kinds of labels combine: a stage label runs a part of the self-hosted CI, and a model label picks the model it runs on. An ASR, TTS or Omni model label alone also runs the jobs that test its model. `.github/scripts/resolve_ci_labels.py` implements the [label rules](#label-rules), and every self-hosted workflow resolves its labels through that script.
 
+## Automatic CI labels
+
+The PR labeler adds `run-lint-only` to a non-draft, documentation-only pull request from a trusted contributor when it has no other CI label. For a rename, both the old and new paths must qualify as documentation. When a push includes code, the labeler removes a stale `run-lint-only` for any author.
+
+The interim policy trusts authors whose GitHub association is `OWNER`, `MEMBER` or `COLLABORATOR`, and individual accounts listed in `.github/CODEOWNERS` on the repository default branch. Account matching is case-insensitive and excludes team entries. If the file cannot be read, only the three GitHub associations qualify. Every automatic `run-*` label uses this policy. Triage labels such as `bug`, `enhancement` and `documentation` remain available to all authors and drafts.
+
+For other external contributors, including first-time authors and people with previously merged contributions, a maintainer reviews the changes, approves the fork workflow when GitHub requests it, and adds the relevant CI label manually or uses `/tag-and-rerun-ci` with a target such as `unit-test`.
+
 ## Choosing labels
 
 Add the labels that match the change. They combine, and no label runs all of CI.
