@@ -2,6 +2,7 @@ package meeting
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/sgl-project/sglang-omni/Voxt/internal/asr"
@@ -20,7 +21,9 @@ func TestInScript(t *testing.T) {
 		{"會議", "ja", "zh-Hans", "會議"},
 		{"Thank you", "en", "zh-Hans", "Thank you"},
 	} {
-		if got := inScript(c.text, c.said, c.script); got != c.want {
+		// Core Foundation writes 為; the non-Mac dictionary writes 爲.
+		// Both are Traditional, so accept either without allowing 为.
+		if got := inScript(c.text, c.said, c.script); strings.ReplaceAll(got, "爲", "為") != c.want {
 			t.Errorf("inScript(%q, said %q, %q) = %q, want %q", c.text, c.said, c.script, got, c.want)
 		}
 	}
