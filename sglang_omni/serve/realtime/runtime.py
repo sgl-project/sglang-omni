@@ -467,6 +467,14 @@ class SessionRuntime:
             await self.adapter.truncate(item_id, audio_end_ms)
             self.mark_activity()
 
+    async def answer_call(self, call_id: str, output: str) -> None:
+        """Hand the session the result of a function call it asked the client to run."""
+        async with self.command_lock:
+            self.require_open()
+            assert self.adapter is not None
+            await self.adapter.answer_call(call_id, output)
+            self.mark_activity()
+
     async def commit(self) -> None:
         """End the user's turn where the client says it ends, after the audio appended before it."""
         async with self.command_lock:

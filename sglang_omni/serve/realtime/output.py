@@ -57,6 +57,17 @@ class AudioFinished(ResponseEvent):
 
 
 @dataclass(frozen=True)
+class FunctionCallFinished(ResponseEvent):
+    """The response asks the client to run the function name with the JSON arguments and to answer under call_id; the response goes on while the call runs."""
+
+    item_id: str
+    output_index: int
+    call_id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True)
 class ResponseFinished(ResponseEvent):
     item_id: str
     text: str
@@ -104,6 +115,7 @@ OutputEvent = (
     | ResponseProgress
     | ResponseHeard
     | AudioFinished
+    | FunctionCallFinished
     | ResponseFinished
     | TurnFailure
     | SpeechStarted

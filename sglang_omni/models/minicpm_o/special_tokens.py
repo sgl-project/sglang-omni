@@ -25,6 +25,17 @@ REQUIRED_SPECIAL_TOKENS = (
     "<|audio_start|>",
     "<|audio_end|>",
 )
+DELEGATE_SPECIAL_TOKENS = ("<delegate>", "</delegate>", "<backend>", "</backend>")
+
+
+@dataclass(frozen=True)
+class DelegateTokenIds:
+    """The spans of a checkpoint that hands tasks to the client: it writes a task inside a delegate span and reads the task's result inside a backend span."""
+
+    delegate_start: int
+    delegate_end: int
+    backend_start: int
+    backend_end: int
 
 
 @dataclass(frozen=True)
@@ -48,6 +59,17 @@ class MiniCPMOSpecialTokenIds:
     chunk_terminators: frozenset[int]
     turn_terminators: frozenset[int]
     forbidden: frozenset[int]
+    # None for a tokenizer without the delegate tokens.
+    delegate_tokens: DelegateTokenIds | None
+
+
+def token_id_of(tokenizer: PreTrainedTokenizerBase, token: str) -> int | None:
+    """The id of token; None when the tokenizer does not have it."""
+    token_id = tokenizer.convert_tokens_to_ids(token)
+    if token_id is None or token_id == tokenizer.unk_token_id:
+        return None
+    else:
+        return int(token_id)
 
 
 def resolve_special_token_ids(
@@ -55,15 +77,26 @@ def resolve_special_token_ids(
 ) -> MiniCPMOSpecialTokenIds:
     """Resolve the duplex vocabulary and reject incomplete tokenizers."""
 
-    unk_token_id = tokenizer.unk_token_id
     resolved: list[int] = []
     for token in REQUIRED_SPECIAL_TOKENS:
-        token_id = tokenizer.convert_tokens_to_ids(token)
-        if token_id is None or token_id == unk_token_id:
+        token_id = token_id_of(tokenizer, token)
+        if token_id is None:
             raise ValueError(f"MiniCPM-o tokenizer is missing required token {token!r}")
         else:
-            pass
-        resolved.append(int(token_id))
+            resolved.append(token_id)
+    delegate_token_ids = [
+        token_id_of(tokenizer, token) for token in DELEGATE_SPECIAL_TOKENS
+    ]
+    if None in delegate_token_ids:
+        delegate_tokens = None
+    else:
+        delegate_start, delegate_end, backend_start, backend_end = delegate_token_ids
+        delegate_tokens = DelegateTokenIds(
+            delegate_start=delegate_start,
+            delegate_end=delegate_end,
+            backend_start=backend_start,
+            backend_end=backend_end,
+        )
 
     (
         unit,
@@ -108,11 +141,14 @@ def resolve_special_token_ids(
                 *(int(token_id) for token_id in bad_token_ids),
             }
         ),
+        delegate_tokens=delegate_tokens,
     )
 
 
 __all__ = [
+    "DELEGATE_SPECIAL_TOKENS",
     "REQUIRED_SPECIAL_TOKENS",
+    "DelegateTokenIds",
     "MiniCPMOSpecialTokenIds",
     "resolve_special_token_ids",
 ]

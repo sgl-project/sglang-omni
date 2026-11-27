@@ -51,7 +51,8 @@ def tool_call_chunk(
     )
 
 
-def tool_response_chunk(responses: list[ToolResponse], turn: int) -> TimedChunk:
+def tool_response_chunk(responses: list[ToolResponse], turn: int | None) -> TimedChunk:
+    """The results of calls, in the turn of the reply that waits for them; None for results no reply waits for, which no stop cancels."""
     return TimedChunk(
         TOOL,
         0,

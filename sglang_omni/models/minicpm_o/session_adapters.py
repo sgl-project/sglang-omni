@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """MiniCPM-o unit conversion for the shared session runtime."""
 
+import json
+import logging
 from array import array
 from dataclasses import dataclass, field
 
@@ -24,7 +26,10 @@ from sglang_omni.models.minicpm_o.native_config import (
     MiniCPMODuplexSampling,
     MiniCPMODuplexWindow,
 )
+from sglang_omni.models.minicpm_o.routing import THINKER_STAGE
 from sglang_omni.models.minicpm_o.special_tokens import (
+    DELEGATE_SPECIAL_TOKENS,
+    REQUIRED_SPECIAL_TOKENS,
     MiniCPMOSpecialTokenIds,
     resolve_special_token_ids,
 )
@@ -40,9 +45,11 @@ from sglang_omni.proto.streams import (
     INTERRUPT,
     PCM16_BYTES_PER_SAMPLE,
     SESSION_CONTROL,
+    TOOL_RESPONSE,
     TRUNCATE,
     control_type,
 )
+from sglang_omni.proto.tools import ToolResponse, tool_response_chunk, tool_responses_of
 from sglang_omni.scheduling.sglang_backend.ar_session import (
     ARSessionAdapter,
     ARSessionPreparation,
@@ -57,6 +64,7 @@ from sglang_omni.serve.realtime.manager import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    FunctionCallFinished,
     OutputEvent,
     ResponseFinished,
     ResponseStarted,
@@ -64,10 +72,16 @@ from sglang_omni.serve.realtime.output import (
     TextDelta,
     TextFinished,
 )
-from sglang_omni.serve.realtime.types import Capabilities, samples_to_ms
+from sglang_omni.serve.realtime.types import Capabilities, ProtocolError, samples_to_ms
+
+logger = logging.getLogger(__name__)
 
 # note (ruoyu): A client's truncate follows its stop within a unit or two; this many listen units after a reply's last spoken unit, a cut would re-feed more audio than any stop needs, so the reply is no longer cut.
 TRUNCATE_WINDOW_UNITS = 10
+DELEGATE_FUNCTION_NAME = "delegate"
+# note (cuzmi): The official Venus harness bounds every result it hands the model to this many characters.
+MAX_CALL_OUTPUT_CHARS = 3000
+PROTOCOL_TOKENS = (*REQUIRED_SPECIAL_TOKENS, *DELEGATE_SPECIAL_TOKENS)
 
 
 def keep_through_unit_of(event: TimedChunk) -> int | None:
@@ -124,6 +138,9 @@ class ThinkerAdapter(ARSessionAdapter):
             state.speech_detector.reset()
             state.drain_units_left = 0
             state.is_latest_reply_ended = True
+            # note (cuzmi): A stop ends the turn, and a task the model had not finished writing is no task.
+            state.delegate_task_ids = None
+            state.is_delegate_malformed = False
             self.cut_reply(state, keep_through_unit_of(event))
         elif control_type(event) == TRUNCATE:
             state = self.states[session_identity]
@@ -132,8 +149,32 @@ class ThinkerAdapter(ARSessionAdapter):
             else:
                 # note (ruoyu): The truncate names a reply that ended, but the model may already have begun the next one, whose units the client will hear.
                 pass
+        elif event.format == TOOL_RESPONSE:
+            state = self.states[session_identity]
+            for response in tool_responses_of(event):
+                assert isinstance(response.response, str)
+                state.backend_token_ids.extend(
+                    self.backend_token_ids_of(response.response)
+                )
         else:
             pass
+
+    def backend_token_ids_of(self, text: str) -> list[int]:
+        """The backend span a call's result enters the history as: no text inside it reads as a special token, so a result can neither open a span nor switch the model between speaking and listening."""
+        delegate_tokens = self.special.delegate_tokens
+        assert delegate_tokens is not None
+        sanitized = text
+        # note (cuzmi): The official harness strips the protocol tokens until none is left, so that one spelled across another is gone too.
+        while any(token in sanitized for token in PROTOCOL_TOKENS):
+            for token in PROTOCOL_TOKENS:
+                sanitized = sanitized.replace(token, "")
+        return [
+            delegate_tokens.backend_start,
+            *self.tokenizer.encode(
+                sanitized.strip(), add_special_tokens=False, split_special_tokens=True
+            ),
+            delegate_tokens.backend_end,
+        ]
 
     def cut_reply(
         self, state: MiniCPMOThinkerSessionState, keep_through_unit: int | None
@@ -205,6 +246,7 @@ class ThinkerAdapter(ARSessionAdapter):
             end_of_turn=True,
             is_interrupted=self.states[session_identity].is_interrupt_pending,
             hears_user=False,
+            delegates=[],
         )
         return payload
 
@@ -218,7 +260,8 @@ class ThinkerAdapter(ARSessionAdapter):
         plan: PerceptionStepPlan = payload.data
         is_interrupted = state.is_interrupt_pending
         state.is_interrupt_pending = False
-        if state.is_listen_held or state.drain_units_left > 0:
+        is_reply_draining = state.drain_units_left > 0
+        if state.is_listen_held or is_reply_draining:
             pcm = (
                 chunk.payload["pcm"]
                 if isinstance(chunk.payload, dict)
@@ -247,7 +290,20 @@ class ThinkerAdapter(ARSessionAdapter):
             suffix = [self.special.turn_eos]
         else:
             suffix = []
-        token_ids = [*prefix, *plan["token_ids"], *suffix]
+        sampling = state.sampling
+        is_listen_forced = (
+            is_interrupted
+            or state.is_listen_held
+            or state.force_listen_counter < sampling.force_listen_count
+        )
+        if state.is_turn_ended and not is_reply_draining and not is_listen_forced:
+            # note (cuzmi): As in the official harness, a result waits until no speech is in flight and the model is free to answer it; otherwise it breaks into speech the user is hearing, or a forced listen right after it reads as the model passing it over.
+            backend_token_ids = state.backend_token_ids
+            state.backend_token_ids = []
+        else:
+            backend_token_ids = []
+        own_token_ids = [*plan["token_ids"], *backend_token_ids]
+        token_ids = [*prefix, *own_token_ids, *suffix]
         perception_embedding_spans = [
             EmbeddingSpan(
                 start=span["token_start"],
@@ -269,7 +325,6 @@ class ThinkerAdapter(ARSessionAdapter):
                 for span in perception_embedding_spans
             ),
         ]
-        sampling = state.sampling
         sampling_params = SamplingParams(
             max_new_tokens=sampling.max_new_tokens_per_unit,
             temperature=1.0,
@@ -303,13 +358,12 @@ class ThinkerAdapter(ARSessionAdapter):
                 if token_id == self.special.unit
             ),
             unit_embedding_spans=spans,
-            is_listen_forced=is_interrupted
-            or state.is_listen_held
-            or state.force_listen_counter < sampling.force_listen_count,
+            is_listen_forced=is_listen_forced,
             is_interrupted=is_interrupted,
             hears_user=hears_user,
             unit_index=chunk.seq,
-            perception_token_ids=plan["token_ids"],
+            # note (cuzmi): A cut re-feeds a unit from these ids, so the result it read stays read.
+            perception_token_ids=own_token_ids,
             perception_embedding_spans=perception_embedding_spans,
             is_turn_ended_at_start=state.is_turn_ended,
             generated_history_at_start=list(state.generated_history),
@@ -373,6 +427,11 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             pass
         output_token_ids = [int(token_id) for token_id in data.output_ids]
+        is_spoken, tasks = self.split_delegates(state, data.generated_unit_ids)
+        for task in tasks:
+            logger.info(
+                f"Session {session_identity.id} unit {data.unit_index} delegates {task!r}"
+            )
         ends_own_turn = not data.is_interrupted and (
             self.special.turn_eos in output_token_ids
             or any(ends_turn for _, _, ends_turn in data.talker_conditions)
@@ -417,9 +476,23 @@ class ThinkerAdapter(ARSessionAdapter):
         else:
             pass
         data.stage_payload.data = dict(
-            talker_conditions=data.talker_conditions,
+            # note (cuzmi): The talker conditions pair one to one, in order, with the generated ids.
+            talker_conditions=[
+                condition
+                for condition, is_condition_spoken in zip(
+                    data.talker_conditions, is_spoken
+                )
+                if is_condition_spoken
+            ],
             text=self.tokenizer.decode(
-                data.generated_unit_ids, skip_special_tokens=True
+                [
+                    token_id
+                    for token_id, is_token_spoken in zip(
+                        data.generated_unit_ids, is_spoken
+                    )
+                    if is_token_spoken
+                ],
+                skip_special_tokens=True,
             ),
             is_listen=bool(
                 output_token_ids and output_token_ids[0] == self.special.listen
@@ -427,8 +500,48 @@ class ThinkerAdapter(ARSessionAdapter):
             end_of_turn=is_turn_ending,
             is_interrupted=data.is_interrupted,
             hears_user=data.hears_user,
+            delegates=tasks,
         )
         return data.stage_payload
+
+    def split_delegates(
+        self, state: MiniCPMOThinkerSessionState, generated_unit_ids: list[int]
+    ) -> tuple[list[bool], list[str]]:
+        """Whether each of a unit's generated ids is speech, and the task of each delegate span the unit closes; a span is never spoken, and it may open and close in different units."""
+        delegate_tokens = self.special.delegate_tokens
+        if delegate_tokens is None:
+            return [True] * len(generated_unit_ids), []
+        else:
+            is_spoken: list[bool] = []
+            tasks: list[str] = []
+            for token_id in generated_unit_ids:
+                if token_id == delegate_tokens.delegate_start:
+                    if state.delegate_task_ids is None:
+                        state.delegate_task_ids = []
+                    else:
+                        state.is_delegate_malformed = True
+                    is_spoken.append(False)
+                elif state.delegate_task_ids is not None and token_id in (
+                    delegate_tokens.delegate_end,
+                    self.special.turn_eos,
+                ):
+                    task = self.tokenizer.decode(
+                        state.delegate_task_ids, skip_special_tokens=True
+                    ).strip()
+                    if task and not state.is_delegate_malformed:
+                        tasks.append(task)
+                    else:
+                        pass
+                    state.delegate_task_ids = None
+                    state.is_delegate_malformed = False
+                    # note (cuzmi): The checkpoint may close a task with turn_eos instead of its end token, and the turn still ends there.
+                    is_spoken.append(token_id == self.special.turn_eos)
+                elif state.delegate_task_ids is not None:
+                    state.delegate_task_ids.append(token_id)
+                    is_spoken.append(False)
+                else:
+                    is_spoken.append(token_id != delegate_tokens.delegate_end)
+            return is_spoken, tasks
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -459,6 +572,7 @@ class Reply:
     audio_samples: int = 0
     is_open: bool = True
     is_cancelled: bool = False
+    call_count: int = 0
     delivered_units: list[DeliveredUnit] = field(default_factory=list)
     keep_through_unit: int | None = None
 
@@ -483,6 +597,8 @@ class OutputConverter:
     def __init__(self) -> None:
         self.reply: Reply | None = None
         self.serial: int = 0
+        self.call_serial: int = 0
+        self.unanswered_call_ids: set[str] = set()
 
     def cancel(self) -> KeptReply | None:
         """Mark the open reply cancelled and keep it through the last unit the client received; None when no reply is open or it is already cancelled."""
@@ -493,6 +609,17 @@ class OutputConverter:
             reply.is_cancelled = True
             reply.keep_through_unit = reply.last_delivered_unit
             return KeptReply(turn=reply.turn, keep_through_unit=reply.keep_through_unit)
+
+    def answer(self, call_id: str) -> None:
+        """Take call_id off the calls waiting for their result; a call the session never made, or one already answered, is the client's error."""
+        if call_id in self.unanswered_call_ids:
+            self.unanswered_call_ids.remove(call_id)
+        else:
+            raise ProtocolError(
+                "invalid_request",
+                "call_id names no function call awaiting output",
+                "item.call_id",
+            )
 
     def truncate(self, item_id: str, audio_end_ms: float) -> KeptReply | None:
         """Keep the latest reply, when item_id names it and the client stopped it or the model ended it, through the last unit the client had played at audio_end_ms, never past a unit it received or a unit already kept; None when the position does not move back."""
@@ -562,7 +689,8 @@ class OutputConverter:
         ):
             # note (ruoyu): The client stopped this reply, so what the pipeline still produces for its turn is not played.
             pass
-        elif value["text"] or value["pcm"]:
+        elif value["text"] or value["pcm"] or value["delegates"]:
+            # note (cuzmi): A unit that only hands off a task still reached the client, so a stop keeps it in the history the task's result answers.
             if reply is None or not reply.is_open:
                 response_id = f"{output.session_identity.id}-response-{self.serial}"
                 reply = Reply(
@@ -602,6 +730,22 @@ class OutputConverter:
                 )
             else:
                 pass
+            for task in value["delegates"]:
+                reply.call_count += 1
+                call_id = f"{output.session_identity.id}-call-{self.call_serial}"
+                self.call_serial += 1
+                self.unanswered_call_ids.add(call_id)
+                events.append(
+                    FunctionCallFinished(
+                        reply.response_id,
+                        item_id=f"{reply.response_id}-function-call-{reply.call_count}",
+                        # note (cuzmi): The message is the response's first output item and its calls follow it.
+                        output_index=reply.call_count,
+                        call_id=call_id,
+                        name=DELEGATE_FUNCTION_NAME,
+                        arguments=json.dumps({"task": task}),
+                    )
+                )
         else:
             pass
         if value["end_of_turn"] or output.eos:
@@ -662,6 +806,34 @@ class RealtimeAdapter(CoordinatorAdapter):
                     turn=kept_reply.turn,
                 ),
             )
+
+    async def answer_call(self, call_id: str, output: str) -> None:
+        """Hand the thinker the result of a call the model made; the model reads it at its next idle unit, so a reply it is speaking goes on."""
+        assert self.session_identity is not None
+        if not output.strip():
+            raise ProtocolError(
+                "invalid_request", "function call output is blank", "item.output"
+            )
+        elif len(output) > MAX_CALL_OUTPUT_CHARS:
+            raise ProtocolError(
+                "invalid_request",
+                f"function call output exceeds {MAX_CALL_OUTPUT_CHARS} characters",
+                "item.output",
+            )
+        else:
+            self.output_converter.answer(call_id)
+        await self.client.control_session(
+            self.session_identity,
+            tool_response_chunk(
+                [
+                    ToolResponse(
+                        id=call_id, name=DELEGATE_FUNCTION_NAME, response=output
+                    )
+                ],
+                None,
+            ),
+            stages=[THINKER_STAGE],
+        )
 
 
 def build_realtime_deployment(

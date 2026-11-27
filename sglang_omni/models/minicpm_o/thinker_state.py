@@ -52,6 +52,12 @@ class MiniCPMOThinkerSessionState:
     refill_embedding_spans: list[EmbeddingSpan] = field(default_factory=list)
     # note (0xtoward): Session position of each retained finished unit's <unit>; the first ends the system prompt and reference audio, which always stay.
     unit_starts: list[int] = field(default_factory=list)
+    # note (cuzmi): A delegate span can close units after it opens, so its task ids collect here; None outside a span.
+    delegate_task_ids: list[int] | None = None
+    # A delegate opened inside an open delegate leaves the span without a task.
+    is_delegate_malformed: bool = False
+    # note (cuzmi): The client ran the task whatever became of the reply, so its result waits for the model's next idle unit through any stop.
+    backend_token_ids: list[int] = field(default_factory=list)
 
     def drop_units(
         self, drop_order: Iterable[int], next_unit_start: int, target_start: int

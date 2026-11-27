@@ -21,6 +21,7 @@ from sglang_omni.serve.realtime.control import (
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    FunctionCallFinished,
     InputTranscription,
     OutputEvent,
     ResponseFinished,
@@ -133,6 +134,9 @@ class ServerEvent(TypedDict, total=False):
     tail_policy: TailPolicy
     text_end: int
     audio_ms: float
+    call_id: str
+    name: str
+    arguments: str
 
 
 def project_output(
@@ -207,6 +211,16 @@ def project_output(
         else:
             pass
         return server_event
+    elif isinstance(event, FunctionCallFinished):
+        return dict(
+            type="response.function_call_arguments.done",
+            response_id=event.response_id,
+            item_id=event.item_id,
+            output_index=event.output_index,
+            call_id=event.call_id,
+            name=event.name,
+            arguments=event.arguments,
+        )
     elif isinstance(event, ResponseProgress):
         return dict(
             type="sglang.response.progress",

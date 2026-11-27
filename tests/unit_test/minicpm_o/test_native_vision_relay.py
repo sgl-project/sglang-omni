@@ -35,9 +35,10 @@ IDENTITY = SessionIdentity("vision")
 @pytest.fixture
 def perception() -> MiniCPMOPerceptionState:
     tokenizer = Mock(unk_token_id=0, bad_token_ids=[])
-    tokenizer.convert_tokens_to_ids.side_effect = dict(
-        zip(REQUIRED_SPECIAL_TOKENS, range(1, 17))
-    ).__getitem__
+    special_token_ids = dict(zip(REQUIRED_SPECIAL_TOKENS, range(1, 17)))
+    tokenizer.convert_tokens_to_ids.side_effect = lambda token: special_token_ids.get(
+        token, tokenizer.unk_token_id
+    )
     audio_encoder = Mock()
     audio_encoder.forward_streaming_batch.side_effect = lambda chunks: [
         (torch.full((10, 4), 9.0), None) for _ in chunks

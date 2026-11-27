@@ -240,6 +240,21 @@ class ConversationItemTruncateEvent(ClientEvent):
     audio_end_ms: float
 
 
+class FunctionCallOutputItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+    type: Literal["function_call_output"]
+    call_id: str = Field(min_length=1)
+    output: str
+
+
+class ConversationItemCreateEvent(ClientEvent):
+    """The result of a function call the session asked the client to run."""
+
+    type: Literal["conversation.item.create"]
+    item: FunctionCallOutputItem
+
+
 class SessionCommandEvent(ClientEvent):
     type: Literal[
         "input_audio_buffer.clear",
@@ -256,6 +271,7 @@ CLIENT_EVENT: TypeAdapter[
     | AudioAppendEvent
     | ImageAppendEvent
     | ConversationItemTruncateEvent
+    | ConversationItemCreateEvent
     | SessionCommandEvent
 ] = TypeAdapter(
     Annotated[
@@ -263,6 +279,7 @@ CLIENT_EVENT: TypeAdapter[
         | AudioAppendEvent
         | ImageAppendEvent
         | ConversationItemTruncateEvent
+        | ConversationItemCreateEvent
         | SessionCommandEvent,
         Field(discriminator="type"),
     ]

@@ -9,6 +9,7 @@ from sglang_omni.serve.realtime.control import Closed, Failure
 from sglang_omni.serve.realtime.output import (
     AudioDelta,
     AudioFinished,
+    FunctionCallFinished,
     InputTranscription,
     OutputEvent,
     ResponseEvent,
@@ -41,6 +42,8 @@ def envelope_size_bytes(envelope: Envelope) -> int:
         event, (TextDelta, TextFinished, ResponseFinished, InputTranscription)
     ):
         return len(event.text.encode()) + ENVELOPE_BYTES
+    elif isinstance(event, FunctionCallFinished):
+        return len(event.arguments.encode()) + ENVELOPE_BYTES
     else:
         return ENVELOPE_BYTES
 
@@ -171,6 +174,14 @@ class OutputBuffer:
                     )
                 else:
                     pass
+            else:
+                pass
+        elif isinstance(event, FunctionCallFinished):
+            response_state = self.responses.get(event.response_id)
+            if response_state is None:
+                raise RuntimeError("response output precedes creation")
+            elif response_state.is_terminal:
+                return
             else:
                 pass
         else:

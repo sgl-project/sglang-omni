@@ -45,9 +45,12 @@ ROPE_THETA = 1_000_000.0
 
 def make_adapter(window: MiniCPMODuplexWindow) -> ThinkerAdapter:
     tokenizer = Mock(unk_token_id=0, bad_token_ids=[])
-    tokenizer.convert_tokens_to_ids.side_effect = dict(
+    special_token_ids = dict(
         zip(REQUIRED_SPECIAL_TOKENS, range(1, len(REQUIRED_SPECIAL_TOKENS) + 1))
-    ).__getitem__
+    )
+    tokenizer.convert_tokens_to_ids.side_effect = lambda token: special_token_ids.get(
+        token, tokenizer.unk_token_id
+    )
     # note (0xtoward): SGLang's RotaryEmbedding imports a vLLM kernel when no GPU is visible, so the tests build its cos_sin_cache rows.
     angles = torch.outer(
         torch.arange(8192, dtype=torch.float32),
