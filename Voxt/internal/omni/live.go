@@ -46,13 +46,14 @@ type live struct {
 	language string
 	bias     bias
 
-	mu        sync.Mutex
-	audio     []byte        // everything sent, for the Final
-	queued    int           // bytes of audio in out
-	previewed int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
-	preview   bool          // the socket still takes audio
-	cut       *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
-	writeDone chan struct{} // closed when write returns (the queue is drained)
+	mu         sync.Mutex
+	audio      []byte        // PCM retained for the Final
+	audioStart int           // absolute byte offset of audio[0] after compaction
+	queued     int           // bytes of audio in out
+	previewed  int           // bytes of audio the preview covers: written to the socket, or dropped by the cut (the batch preview: in its last text)
+	preview    bool          // the socket still takes audio
+	cut        *pauseCut     // the socket's pauses (SpeechOnly with Silero on), else nil
+	writeDone  chan struct{} // closed when write returns (the queue is drained)
 	// idle, cap 1, gets a token whenever the writer empties the queue
 	// (a test waits on it and re-checks queued under s.mu).
 	idle chan struct{}
@@ -387,7 +388,6 @@ func (s *live) Finish() error {
 		return nil
 	}
 	s.finished = true
-	pcm := s.audio
 	if s.pc != nil && s.pc.cancelPlanning != nil {
 		s.pc.cancelPlanning()
 	}
@@ -395,15 +395,16 @@ func (s *live) Finish() error {
 		s.cancelBatchPreview()
 	}
 	if s.req.LiveResult && s.preview {
+		duration := asr.Duration(s.audio, sampleRate)
 		s.mu.Unlock()
-		go s.finishLive(pcm)
+		go s.finishLive(duration)
 		return nil
 	}
 	s.preview = false
 	s.finalOnly = true
 	s.lateCandidates = wantsLateCandidates(s.req, s.conn != nil, s.a.spec.Kind)
 	s.mu.Unlock()
-	go s.finalPass(pcm)
+	go s.finalPass()
 	return nil
 }
 

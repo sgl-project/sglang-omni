@@ -24,7 +24,7 @@ func (s *live) previewBatch(ctx context.Context) {
 			return
 		}
 		s.mu.Lock()
-		finished, audio, language, done := s.finished, s.audio, s.language, 0
+		finished, language, done := s.finished, s.language, 0
 		var texts []string
 		if pc := s.pc; pc != nil {
 			done, texts = pc.done, slices.Clone(pc.texts)
@@ -32,15 +32,16 @@ func (s *live) previewBatch(ctx context.Context) {
 				language = pc.language
 			}
 		}
+		tail := s.audio[done-s.audioStart:]
+		total := done + len(tail)
 		s.mu.Unlock()
 		if finished {
 			return
 		}
-		if len(audio)-shown < step || len(audio)-done < step {
+		if total-shown < step || len(tail) < step {
 			continue
 		}
-		shown = len(audio)
-		tail := audio[done:]
+		shown = total
 		req := finalRequest{pcm: padPiece(tail, t), language: language, context: s.bias.context,
 			maxTokens: t.tokenBudget(asr.Duration(tail, sampleRate)), layout: t.AudioLayout, preview: true}
 		r, err := transcribe(ctx, s.l, req, s.a.rt.cfg.StallTimeout)
