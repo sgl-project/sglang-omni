@@ -12,7 +12,19 @@ jobs:
   audit:
     runs-on: macos-15
     steps:
+      - uses: actions/checkout@v4
       - uses: Homebrew/actions/setup-homebrew@main
+      # The repository is zhaochenyang20/voxt, without the homebrew- prefix, so
+      # setup-homebrew does not load it as a tap: link it where brew looks.
+      - name: Use this repository as the zhaochenyang20/voxt tap
+        run: |
+          tap="$(brew --repo)/Library/Taps/zhaochenyang20/homebrew-voxt"
+          if [[ ! -e "$tap" ]]; then
+            mkdir -p "$(dirname "$tap")"
+            ln -s "$GITHUB_WORKSPACE" "$tap"
+          else
+            :
+          fi
       - run: brew trust zhaochenyang20/voxt
       - run: brew style --cask zhaochenyang20/voxt/voxt
       - run: brew audit --cask --strict --online zhaochenyang20/voxt/voxt

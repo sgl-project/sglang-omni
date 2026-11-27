@@ -29,7 +29,19 @@ jobs:
       SOURCE: sgl-project/sglang-omni
       GH_TOKEN: ${{ github.token }}
     steps:
+      - uses: actions/checkout@v4
       - uses: Homebrew/actions/setup-homebrew@main
+      # The repository is zhaochenyang20/voxt, without the homebrew- prefix, so
+      # setup-homebrew does not load it as a tap: link it where brew looks.
+      - name: Use this repository as the zhaochenyang20/voxt tap
+        run: |
+          tap="$(brew --repo)/Library/Taps/zhaochenyang20/homebrew-voxt"
+          if [[ ! -e "$tap" ]]; then
+            mkdir -p "$(dirname "$tap")"
+            ln -s "$GITHUB_WORKSPACE" "$tap"
+          else
+            :
+          fi
 
       - name: Find a newer stable Voxt
         id: find

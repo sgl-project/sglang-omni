@@ -1,7 +1,7 @@
 package main
 
 // scripts/homebrew-cask.sh writes the Homebrew cask of a stable release
-// (Casks/voxt.rb of the zhaochenyang20/homebrew-voxt tap), and
+// (Casks/voxt.rb of the zhaochenyang20/voxt tap), and
 // the tap's Bump Voxt workflow (release/homebrew-tap) runs it for each stable release.
 // The cask must offer the release's own disk image, follow only stable
 // voxt-v tags and leave updates to the app. Runs on Linux: the script is bash.
@@ -95,6 +95,7 @@ func TestHomebrewTapBumpsToStableReleases(t *testing.T) {
 	workflow := string(data)
 	for _, want := range []string{
 		"schedule:",
+		`ln -s "$GITHUB_WORKSPACE" "$tap"`,
 		"select(.draft == false and .prerelease == false",
 		`test("^voxt-v[0-9]+\\.[0-9]+\\.[0-9]+$")`,
 		"contents/Voxt/scripts/homebrew-cask.sh?ref=$TAG",
