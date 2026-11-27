@@ -36,6 +36,7 @@ from sglang.srt.speculative.dspark_components.dspark_worker_v2 import DSparkWork
 from sglang.srt.speculative.ragged_verify import RaggedVerifyLayout
 from sglang.srt.speculative.spec_tp_sync import SpecTpSyncSite
 
+from sglang_omni.platforms import current_platform
 from sglang_omni.sampling.speculative_noise import (
     ACCEPTANCE_NOISE_SEED_SALT,
     DRAFT_NOISE_SEED_SALT,
@@ -45,6 +46,8 @@ from sglang_omni.sampling.speculative_noise import (
     seeded_uniform_noise,
 )
 from sglang_omni.speculative.dspark_sampling import (
+    compiled_sample_draft_block,
+    compiled_verify_draft_block,
     prepare_seeded_batch,
     sample_draft_block,
     verify_draft_block,
@@ -63,6 +66,7 @@ class GrammarBarrier(Protocol):
 
 
 class SeededDraftProposer(DraftBlockProposer):
+    sample_block = staticmethod(sample_draft_block)
     step_state: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def propose(
@@ -111,7 +115,7 @@ class SeededDraftProposer(DraftBlockProposer):
             column_count=self.gamma * logits.shape[-1],
         ).view_as(logits)
         head = self.draft_model.markov_head
-        tokens, corrected = sample_draft_block(
+        tokens, corrected = self.sample_block(
             logits,
             forward.draft_block_ids[:, 0],
             head.markov_w1.weight,
@@ -148,6 +152,7 @@ class SeededDraftProposer(DraftBlockProposer):
 
 
 class SeededVerifyExecutor(TargetVerifyExecutor):
+    verify_block = staticmethod(verify_draft_block)
     step_state: tuple[torch.Tensor, torch.Tensor] | None = None
 
     def accept_and_finalize(
@@ -205,7 +210,7 @@ class SeededVerifyExecutor(TargetVerifyExecutor):
         temperatures = torch.where(
             draft_block.greedy_mask, 0.0, draft_block.temperatures
         )
-        accepted, bonus = verify_draft_block(
+        accepted, bonus = self.verify_block(
             probabilities,
             draft_block.corrected_logits,
             draft_tokens,
@@ -285,6 +290,11 @@ class SeededDSparkWorker(DSparkWorkerV2):
                 kv_injector=self._kv_injector,
                 tp_sync=self._tp_sync,
             )  # noqa: leading-underscore  # upstream spelling
+            if current_platform.is_cuda():
+                self.seeded_proposer.sample_block = compiled_sample_draft_block
+                self.seeded_verifier.verify_block = compiled_verify_draft_block
+            else:
+                pass
         else:
             pass
 

@@ -30,6 +30,29 @@ def prepare_seeded_batch(
     return seeds, positions
 
 
+def tiled_argmax(values: torch.Tensor) -> torch.Tensor:
+    # note (IcyDesert): one block per vocab row underuses the GPU at small batch sizes.
+    # MiniCPM-o's 151,748 tokens split evenly into 236 independent reductions.
+    tile_size = 643
+    vocab_size = values.shape[-1]
+    if not torch.compiler.is_compiling() or vocab_size <= tile_size:
+        return values.argmax(-1)
+    else:
+        pass
+    tile_count, tail_size = divmod(vocab_size, tile_size)
+    prefix_size = tile_count * tile_size
+    tiles = values[..., :prefix_size].unflatten(-1, (tile_count, tile_size))
+    maxima, offsets = tiles.max(-1)
+    if tail_size:
+        tail_max, tail_offset = values[..., prefix_size:].max(-1, keepdim=True)
+        maxima = torch.cat((maxima, tail_max), dim=-1)
+        offsets = torch.cat((offsets, tail_offset), dim=-1)
+    else:
+        pass
+    winning_tile = maxima.argmax(-1, keepdim=True)
+    return (winning_tile * tile_size + offsets.gather(-1, winning_tile)).squeeze(-1)
+
+
 def sample_draft_block(
     base_logits: torch.Tensor,
     previous_tokens: torch.Tensor,
@@ -57,10 +80,10 @@ def sample_draft_block(
         bias = functional.linear(markov_embedding[previous_tokens], markov_projection)
         logits = (base_logits[:, step].float() + bias.float()).to(step_dtype)
 
-        sampled = (
+        sampled = tiled_argmax(
             logits.float() / safe_temperatures - exponential_noise[:, step].log()
-        ).argmax(-1)
-        previous_tokens = torch.where(greedy, logits.argmax(-1), sampled)
+        )
+        previous_tokens = torch.where(greedy, tiled_argmax(logits), sampled)
         drafted_tokens.append(previous_tokens)
         corrected_logits.append(logits)
     return torch.stack(drafted_tokens, 1), torch.stack(corrected_logits, 1)
@@ -91,7 +114,7 @@ def verify_draft_block(
     ) < target_probabilities[:, :draft_count].gather(2, selected).squeeze(-1)
     accepts = torch.where(
         greedy.view(-1, 1),
-        draft_tokens == target_probabilities[:, :draft_count].argmax(-1),
+        draft_tokens == tiled_argmax(target_probabilities[:, :draft_count]),
         accepts,
     )
     accepted_count = accepts.long().cumprod(1).sum(1)
@@ -103,5 +126,15 @@ def verify_draft_block(
         target_row - padded_proposal.gather(1, row_indices).squeeze(1)
     ).clamp_min(0)
     residual = torch.where(residual.sum(-1, keepdim=True) > 0, residual, target_row)
-    bonus = (residual / exponential_noise).argmax(-1)
-    return accepted_count, torch.where(greedy, target_row.argmax(-1), bonus)
+    bonus = tiled_argmax(residual / exponential_noise)
+    return accepted_count, torch.where(greedy, tiled_argmax(target_row), bonus)
+
+
+# note (IcyDesert): the verifier consumes the rounded proposal logits. Sampling
+# before the BF16 round trip can select a different token for the same noise.
+compiled_sample_draft_block = torch.compile(
+    sample_draft_block, dynamic=True, options={"emulate_precision_casts": True}
+)
+compiled_verify_draft_block = torch.compile(
+    verify_draft_block, dynamic=True, options={"emulate_precision_casts": True}
+)

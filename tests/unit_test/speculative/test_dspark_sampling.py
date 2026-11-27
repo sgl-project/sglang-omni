@@ -17,8 +17,11 @@ from sglang_omni.sampling.speculative_noise import (
     seeded_uniform_noise,
 )
 from sglang_omni.speculative.dspark_sampling import (
+    compiled_sample_draft_block,
+    compiled_verify_draft_block,
     prepare_seeded_batch,
     sample_draft_block,
+    tiled_argmax,
     verify_draft_block,
 )
 
@@ -435,3 +438,52 @@ def test_graph_replay_reads_updated_request_seeds_and_positions() -> None:
         accepted_counts.append(captured[1].tolist())
     assert accepted_counts[0] != accepted_counts[1]
     assert any(count < 3 for counts in accepted_counts for count in counts)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_compiled_proposal_samples_rounded_bfloat16_logits(device: str) -> None:
+    # Before rounding, token 1 leads by 1/512. After rounding the logits tie
+    # and the slightly smaller noise selects token 0.
+    base = torch.ones((1, 1, 2), dtype=torch.bfloat16, device=device)
+    drafts, corrected = compiled_sample_draft_block(
+        base,
+        torch.zeros(1, dtype=torch.long, device=device),
+        torch.ones((2, 1), dtype=torch.bfloat16, device=device),
+        torch.tensor([[0.0], [1 / 512]], dtype=torch.bfloat16, device=device),
+        torch.ones(1, device=device),
+        torch.tensor([[[1.0, 1.001]]], device=device),
+    )
+    torch.testing.assert_close(corrected, base, atol=0, rtol=0)
+    assert drafts.item() == 0
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_tiled_argmax_preserves_ties_and_tail(device: str) -> None:
+    scores = torch.zeros(3, 2051, device=device)
+    scores[0, [300, 1500, 2050]] = 1
+    scores[1, [1440, 2049]] = 2
+    scores[2, 2050] = 3
+    torch.testing.assert_close(
+        torch.compile(tiled_argmax, dynamic=True)(scores), scores.argmax(-1)
+    )
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_compiled_verify_selects_residual_and_full_accept_bonus(device: str) -> None:
+    vocab_size = 2051
+    logits = torch.zeros(2, 1, vocab_size, dtype=torch.bfloat16, device=device)
+    drafts = torch.zeros(2, 1, dtype=torch.long, device=device)
+    target = torch.zeros(2, 2, vocab_size, device=device)
+    target[0, 0, [900, 2050]] = 0.5
+    target[1, 0, 0] = 1
+    target[:, 1, -1] = 1
+    accepted, bonus = compiled_verify_draft_block(
+        target,
+        logits,
+        drafts,
+        torch.ones(2, device=device),
+        torch.full((2, 1), 0.5, device=device),
+        torch.ones(2, vocab_size, device=device),
+    )
+    assert accepted.tolist() == [0, 1]
+    assert bonus.tolist() == [900, 2050]
