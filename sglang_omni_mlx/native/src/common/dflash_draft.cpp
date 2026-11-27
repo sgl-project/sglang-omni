@@ -32,13 +32,16 @@ constexpr int kQuantizationGroupSize = 64;
 // note (ZaneZhang-67): warm one useful plain token, then time four pipelined
 // steps.
 constexpr int kPlainProbeTokenCount = 5;
-// Note (XXXXRT666): the prompt's pass checks this many guesses at most, as
-// every row after a mismatch is wasted; later guesses are proposed this many
+// Note (XXXXRT666): the prompt's pass checks this many guesses and, as every
+// row after a mismatch is wasted, no more than fill its last tile of
+// kProductTileRows rows (MLX's matrix products take rows a tile at a time, so
+// the rest of the tile costs little); later guesses are proposed this many
 // at a time, which with the anchor fills the 16 rows MLX's few-row products
 // take (17 rows take about 1.7x as long on an M4). They are proposed once
 // the last two committed tokens occur within this many positions of where
 // the guesses were expected to continue; until then the draft proposes.
 constexpr int kPromptGuessTokens = 32;
+constexpr int kProductTileRows = 32;
 constexpr int kGuessRoundTokens = 15;
 constexpr int kGuessRealignTokens = 16;
 
@@ -323,12 +326,16 @@ DraftStatistics DFlashDraft::Decode(
   } else {
   }
   const int guessed_count = static_cast<int>(guessed_ids.size());
-  const int prompt_guess_count = std::min(guessed_count, kPromptGuessTokens);
+  const int prompt_count = embeddings.shape(1) - processed;
+  const int prompt_guess_count =
+      std::min(guessed_count,
+               (prompt_count + kPromptGuessTokens + kProductTileRows - 1) /
+                       kProductTileRows * kProductTileRows -
+                   prompt_count);
   if (verified_guess_count != nullptr) {
     *verified_guess_count = prompt_guess_count;
   } else {
   }
-  const int prompt_count = embeddings.shape(1) - processed;
   bool finished = false;
   int committed_token_count = 0;
   int anchor_id;
