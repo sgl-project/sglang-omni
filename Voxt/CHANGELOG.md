@@ -13,6 +13,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 ### Fixed
 - **Automatic speech labels name the model Voxt will open**: when the main language rules out the first installed speech model, the feature menus and Apply to dialog now name the language-compatible model that Automatic selects instead of that first model.
+- **The transcription preview stays where you drag it** (#4701): dragged while new words came in, the preview jumped back toward where the drag started, and the screen's edge pulled it back before you let go. It now grows where you have it; dragged past the screen's edge, it returns to the screen once you let go.
 
 ### 中文
 
@@ -25,6 +26,7 @@ All notable changes to Voxt. The format follows [Keep a Changelog](https://keepa
 
 #### 修复
 - **“自动”显示实际会使用的语音识别模型**：主语言不支持已安装列表中的第一个模型时，功能菜单和“应用到”对话框会显示“自动”实际选择的支持该语言的模型，不再显示第一个模型。
+- **拖动转录预览时不再跳回去**（#4701）：边说边拖时，每来一批新字，预览会朝拖动开始的位置跳一下；拖到屏幕边缘，还没松手就被拉回来。现在它在拖到的位置上变大；拖出屏幕边缘的，松手后才回到屏幕内。
 
 ## [2.1.4] - 2026-11-26
 

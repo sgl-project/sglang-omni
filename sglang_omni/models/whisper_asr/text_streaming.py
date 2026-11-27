@@ -41,6 +41,8 @@ class ExactWhisperStreamOutputBuilder:
             return []
         elif request_data.detect_language or request_data.segment_timestamps:
             return []
+        elif request_data.beam_search is not None:
+            return []
         else:
             pass
         if request_data.exact_text_stream_state is None:
