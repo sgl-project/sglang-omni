@@ -2274,9 +2274,9 @@ def test_higgs_audio_codec_encode_batch_input_normalisation() -> None:
     results = codec.encode_batch([wav_3d, wav_2d, wav_1d, wav_np])
 
     for i, r in enumerate(results):
-        assert torch.equal(
-            r, ref
-        ), f"input format {i} produced different codes than encode_reference"
+        assert torch.equal(r, ref), (
+            f"input format {i} produced different codes than encode_reference"
+        )
 
 
 def resolve_mem_fraction_flag(config, value):
@@ -2366,3 +2366,86 @@ def test_higgs_frontend_process_spawns_with_a_written_omp_setting(
             assert os.environ["OMP_NUM_THREADS"] == "12"
     finally:
         prepared_runtime.runtime_dir.close()
+
+
+def test_higgs_preprocessing_derives_dynamic_max_new_tokens_from_text(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: model_path)
+    monkeypatch.setattr(stages.Tokenizer, "from_file", lambda path: object())
+    monkeypatch.setattr(
+        stages,
+        "PreTrainedTokenizerFast",
+        lambda tokenizer_object: object(),
+    )
+
+    class MockAdapter:
+        def __init__(self, tokenizer) -> None:
+            self.tok = self
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            # Simple mock: return 1 token per word
+            return [1] * max(1, len(text.split()))
+
+        def build_prompt(
+            self, text: str, *, num_ref_tokens: int, reference_text: str | None
+        ) -> list[int]:
+            return [10, 20, 30]
+
+    monkeypatch.setattr(stages, "HiggsTokenizerAdapter", MockAdapter)
+    preprocess = stages.create_preprocessing_executor("ckpt", num_codebooks=2).fn
+
+    # 1. Unseeded request without max_new_tokens (Issue #1116)
+    # text with 5 words -> 5 tokens -> duration = 1.5 + 0.4 * 5 = 3.5s -> 2.0 * 3.5 * 25 = 175
+    payload_dynamic = StagePayload(
+        request_id="dynamic-1",
+        request=OmniRequest(
+            inputs={"text": "one two three four five"},
+            params={},
+        ),
+        data={},
+    )
+    result_dynamic = preprocess(payload_dynamic)
+    state_dynamic = HiggsTtsState.from_dict(result_dynamic.data)
+    assert state_dynamic.max_new_tokens == 175
+    assert state_dynamic.max_new_tokens < 2048
+
+    # 2. Explicit max_new_tokens is preserved
+    payload_explicit = StagePayload(
+        request_id="explicit-1",
+        request=OmniRequest(
+            inputs={"text": "one two three four five"},
+            params={"max_new_tokens": 120},
+        ),
+        data={},
+    )
+    result_explicit = preprocess(payload_explicit)
+    state_explicit = HiggsTtsState.from_dict(result_explicit.data)
+    assert state_explicit.max_new_tokens == 120
+
+    # 3. Custom safety factor
+    # 5 tokens with sf=3.0 -> 3.0 * 3.5 * 25 = 263 (ceil)
+    payload_sf = StagePayload(
+        request_id="sf-1",
+        request=OmniRequest(
+            inputs={"text": "one two three four five"},
+            params={"max_new_tokens_safety_factor": 3.0},
+        ),
+        data={},
+    )
+    result_sf = preprocess(payload_sf)
+    state_sf = HiggsTtsState.from_dict(result_sf.data)
+    assert state_sf.max_new_tokens == 263
+
+    # 4. auto_max_new_tokens clamps client-supplied default cap
+    payload_auto = StagePayload(
+        request_id="auto-1",
+        request=OmniRequest(
+            inputs={"text": "one two three four five"},
+            params={"max_new_tokens": 2048, "auto_max_new_tokens": True},
+        ),
+        data={},
+    )
+    result_auto = preprocess(payload_auto)
+    state_auto = HiggsTtsState.from_dict(result_auto.data)
+    assert state_auto.max_new_tokens == 175
