@@ -310,7 +310,7 @@ DraftStatistics DFlashDraft::Decode(
     const mx::array hidden = target.Forward(
         mx::slice(embeddings, {0, processed, 0},
                   {1, processed + token_count, embeddings.shape(2)}),
-        caches, aux_layers_, &aux_hidden_states);
+        caches, aux_layers_, &aux_hidden_states, &cancel);
     AppendContext(aux_hidden_states, token_count, draft_caches);
     std::vector<mx::array> evaluated = {hidden};
     for (const KVCache &cache : draft_caches) {
@@ -352,8 +352,8 @@ DraftStatistics DFlashDraft::Decode(
           1);
     } else {
     }
-    const mx::array prompt_hidden =
-        target.Forward(prompt, caches, aux_layers_, &aux_hidden_states);
+    const mx::array prompt_hidden = target.Forward(prompt, caches, aux_layers_,
+                                                   &aux_hidden_states, &cancel);
     // The prediction after the prompt, then after each guess.
     const mx::array predicted = mx::argmax(
         target.Logits(mx::slice(
