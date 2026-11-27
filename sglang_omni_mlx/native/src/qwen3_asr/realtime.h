@@ -41,6 +41,17 @@ struct FinalPreviewGuess {
 
 // What a session holds of a Final's audio: taken, and no longer extended by
 // the session, or shared with its refreshes.
+class RealtimeSession;
+
+// A piece of a live session's recording, from the Final's start to end_sample:
+// the session's reuse is taken when its decode starts on the worker, after the
+// background jobs queued before it.
+struct RecordingPiece {
+  std::weak_ptr<RealtimeSession> session;
+  std::optional<std::string> context;
+  long end_sample = 0;
+};
+
 struct FinalReuse {
   std::shared_ptr<RefreshReuse> reuse;
   bool is_taken = false;
@@ -48,6 +59,8 @@ struct FinalReuse {
   // The shadow Final's language and text (MaybeStartShadowFinal), when one
   // ran.
   std::optional<FinalPreviewGuess> shadow_guess = std::nullopt;
+  // Set for a piece of the recording, whose reuse is taken later.
+  std::optional<RecordingPiece> piece = std::nullopt;
 };
 
 // The guesses of a Final from a shadow Final's tokens and a preview's: the
@@ -77,14 +90,20 @@ public:
   bool Handle(const nlohmann::json &message) override;
   // What the session holds for a Final of its recording's start with this
   // prompt: the one prefilled for it, else what its refreshes keep; none is
-  // null. With piece_end_sample, for a piece of the recording from the Final's
-  // start to that sample: the prefill goes on, and the Final then starts there.
+  // null. With piece_end_sample, the guesses of a piece of the recording from
+  // the Final's start to that sample, and the piece to take the reuse of when
+  // it is decoded (TakePieceReuse).
   //
   // note (chenye): only snapshot a preview guess when the caller opts in.
   FinalReuse
   TakeFinalReuse(const std::optional<std::string> &context,
                  bool guess_auto_language,
                  std::optional<long> piece_end_sample = std::nullopt);
+  // On the worker, as a piece's decode starts: a snapshot of what the session
+  // holds for the piece, which the prefill moves on from, as the Final's start
+  // moves to the piece's end.
+  RefreshReuse TakePieceReuse(const std::optional<std::string> &context,
+                              long end_sample);
   // Stops a running shadow Final (MaybeStartShadowFinal).
   void CancelShadowFinal();
 

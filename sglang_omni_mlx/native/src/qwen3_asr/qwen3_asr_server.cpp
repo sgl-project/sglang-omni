@@ -107,7 +107,7 @@ public:
                       ? std::optional<long>(*piece_end_sample)
                       : std::nullopt)
             : qwen3_asr::FinalReuse();
-    if (final_reuse.reuse != nullptr) {
+    if (final_reuse.reuse != nullptr || final_reuse.piece.has_value()) {
       // note (chenye): auto-language decoding generates a language header
       // before the transcript. Propose both from the session's preview and
       // verify them through the existing guessed-token path. Leave
@@ -135,9 +135,15 @@ public:
         // note (XXXXRT666): a copy the refreshes keep using shares the
         // buffers, so the decode copies them; one taken for the Final does
         // not.
-        qwen3_asr::RefreshReuse reuse = final_reuse.is_taken
-                                            ? std::move(*final_reuse.reuse)
-                                            : *final_reuse.reuse;
+        qwen3_asr::RefreshReuse reuse;
+        if (!final_reuse.piece.has_value()) {
+          reuse = final_reuse.is_taken ? std::move(*final_reuse.reuse)
+                                       : *final_reuse.reuse;
+        } else if (const auto session = final_reuse.piece->session.lock()) {
+          reuse = session->TakePieceReuse(final_reuse.piece->context,
+                                          final_reuse.piece->end_sample);
+        } else {
+        }
         return transcriber_.Transcribe(samples, options, cancel, &reuse);
       };
     } else if (transcriber_.CanBatch(samples.size(), options)) {

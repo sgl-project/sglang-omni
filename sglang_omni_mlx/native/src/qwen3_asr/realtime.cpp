@@ -293,62 +293,79 @@ FinalReuse
 RealtimeSession::TakeFinalReuse(const std::optional<std::string> &context,
                                 bool guess_auto_language,
                                 std::optional<long> piece_end_sample) {
-  FinalReuse reuse;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    shadow_cancel_->store(true);
-    if (piece_end_sample.has_value() &&
-        *piece_end_sample <= final_start_sample_) {
-      return FinalReuse();
-    } else {
-    }
-    // A shadow that finished after the start moved decoded other audio.
-    const std::optional<FinalPreviewGuess> shadow_guess =
-        final_start_sample_ == 0 ? shadow_guess_ : std::nullopt;
-    if (!should_prefill_final_ || context.value_or("") != final_context_) {
-      reuse = {recording_reuse_, false, std::nullopt, shadow_guess};
-    } else {
-      std::shared_ptr<RefreshReuse> final_reuse;
-      if (piece_end_sample.has_value()) {
-        // note (XXXXRT666): a piece leaves the prefill to the session, which
-        // moves on from the piece's end, so it decodes a snapshot of it.
-        if (final_reuse_ != nullptr) {
-          final_reuse = std::make_shared<RefreshReuse>(*final_reuse_);
-        } else {
-        }
-      } else {
-        // note (XXXXRT666): the prefill starts after the first preview, and
-        // without a dictionary after the first segment, so a Final before it
-        // finds none and reuses what the refreshes keep.
-        should_prefill_final_ = false;
-        final_reuse = std::exchange(final_reuse_, nullptr);
-      }
-      reuse = final_reuse != nullptr ? FinalReuse{std::move(final_reuse), true}
-                                     : FinalReuse{recording_reuse_, false};
-      reuse.shadow_guess = shadow_guess;
-      // note (chenye): only use an auto-language preview of the same recording
-      // start. A committed segment or a moved start can leave a different tail.
-      if (guess_auto_language && !language_.has_value() &&
-          final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
-          segment_.has_value() && segment_->start_sample == 0 &&
-          !segment_->ran_out_of_tokens && segment_->language.has_value() &&
-          !segment_->transcript.empty()) {
-        reuse.auto_language_guess =
-            FinalPreviewGuess{*segment_->language, segment_->transcript};
-      } else {
-      }
-    }
-    if (piece_end_sample.has_value() && *piece_end_sample <= EndSample()) {
-      MoveFinalStart(*piece_end_sample);
-    } else if (piece_end_sample.has_value()) {
-      pending_final_start_sample_ = piece_end_sample;
-    } else {
-    }
-  }
-  if (piece_end_sample.has_value()) {
-    MaybeStartFinalPrefill();
+  std::lock_guard<std::mutex> lock(mutex_);
+  shadow_cancel_->store(true);
+  if (piece_end_sample.has_value() &&
+      *piece_end_sample <= final_start_sample_) {
+    return FinalReuse();
   } else {
   }
+  // A shadow that finished after the start moved decoded other audio.
+  const std::optional<FinalPreviewGuess> shadow_guess =
+      final_start_sample_ == 0 ? shadow_guess_ : std::nullopt;
+  const bool has_final_prompt =
+      should_prefill_final_ && context.value_or("") == final_context_;
+  FinalReuse reuse;
+  if (piece_end_sample.has_value()) {
+    reuse.piece = RecordingPiece{
+        std::static_pointer_cast<RealtimeSession>(shared_from_this()), context,
+        *piece_end_sample};
+  } else if (!has_final_prompt) {
+    reuse = {recording_reuse_, false};
+  } else {
+    // note (XXXXRT666): the prefill starts after the first preview, and without
+    // a dictionary after the first segment, so a Final before it finds none
+    // and reuses what the refreshes keep.
+    should_prefill_final_ = false;
+    std::shared_ptr<RefreshReuse> final_reuse =
+        std::exchange(final_reuse_, nullptr);
+    reuse = final_reuse != nullptr ? FinalReuse{std::move(final_reuse), true}
+                                   : FinalReuse{recording_reuse_, false};
+  }
+  reuse.shadow_guess = shadow_guess;
+  // note (chenye): only use an auto-language preview of the same recording
+  // start. A committed segment or a moved start can leave a different tail.
+  if (has_final_prompt && guess_auto_language && !language_.has_value() &&
+      final_start_sample_ == 0 && committed_.empty() && !finalizing_ &&
+      segment_.has_value() && segment_->start_sample == 0 &&
+      !segment_->ran_out_of_tokens && segment_->language.has_value() &&
+      !segment_->transcript.empty()) {
+    reuse.auto_language_guess =
+        FinalPreviewGuess{*segment_->language, segment_->transcript};
+  } else {
+  }
+  return reuse;
+}
+
+RefreshReuse
+RealtimeSession::TakePieceReuse(const std::optional<std::string> &context,
+                                long end_sample) {
+  RefreshReuse reuse;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (end_sample <= final_start_sample_) {
+      return reuse;
+    } else {
+    }
+    // note (XXXXRT666): a piece leaves the prefill to the session, which moves
+    // on from the piece's end, so it decodes a snapshot; the worker runs the
+    // prefill's jobs too, so none changes it meanwhile.
+    const std::shared_ptr<RefreshReuse> &source =
+        should_prefill_final_ && context.value_or("") == final_context_ &&
+                final_reuse_ != nullptr
+            ? final_reuse_
+            : recording_reuse_;
+    if (source != nullptr) {
+      reuse = *source;
+    } else {
+    }
+    if (end_sample <= EndSample()) {
+      MoveFinalStart(end_sample);
+    } else {
+      pending_final_start_sample_ = end_sample;
+    }
+  }
+  MaybeStartFinalPrefill();
   return reuse;
 }
 
