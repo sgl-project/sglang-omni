@@ -21,6 +21,7 @@ from sglang_omni.serve.protocol import (
     TranscriptionUsage,
     build_sglext,
 )
+from sglang_omni.serve.subtitles import segments_to_srt, segments_to_vtt
 from sglang_omni.serve.transcription_adapters import TranscriptionAdapter
 from sglang_omni.serve.transcription_chunking import (
     ChunkPlan,
@@ -268,22 +269,6 @@ async def transcribe_planned_upload(
     default_model: str = app.state.model_name
     chunking: ResolvedAudioChunking = app.state.audio_chunking
 
-    if (
-        plan is not None
-        and form.response_format.strip().lower()
-        in speech_to_text.SEGMENT_RESPONSE_FORMATS
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"response_format {form.response_format.strip().lower()!r} "
-                "does not support chunked transcription because chunk "
-                "boundary timestamps are not model-derived"
-            ),
-        )
-    else:
-        pass
-
     if plan is None:
         gen_req = speech_to_text.build_speech_to_text_generate_request(
             audio_bytes=audio_bytes,
@@ -341,6 +326,7 @@ async def transcribe_planned_upload(
                 max_new_tokens=form.max_new_tokens,
                 max_concurrent=chunking.max_concurrent_chunks,
                 condition_on_previous_text=chunking.condition_on_previous_text,
+                segment_timestamps=segment_timestamps,
                 adapter=adapter,
             ),
         )
@@ -398,12 +384,36 @@ def assemble_chunked_response(
         response_format,
         stream=False,
         endpoint_path=TRANSCRIPTIONS_ENDPOINT,
+        response_formats=TRANSCRIPTION_RESPONSE_FORMATS,
     )
     adapter = speech_to_text.resolve_speech_to_text_adapter(architectures)
     raw_text = text
     headers = speech_to_text.truncation_headers(finish_reason)
     visible_finish_reason = speech_to_text.reported_truncation(finish_reason)
-    if normalized_response_format == "text":
+    if normalized_response_format in speech_to_text.SEGMENT_RESPONSE_FORMATS:
+        segments = []
+        for span, chunk_text in zip(plan.spans, chunk_texts):
+            if not span.has_speech:
+                continue
+            else:
+                pass
+            try:
+                chunk_response = adapter.build_timestamped_response(
+                    chunk_text, language, span.duration_s
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            for segment in chunk_response.segments:
+                segment.start = min(span.start_s + segment.start, span.end_s)
+                segment.end = min(span.start_s + segment.end, span.end_s)
+                segments.append(segment)
+        subtitles = (
+            segments_to_srt(segments)
+            if normalized_response_format == "srt"
+            else segments_to_vtt(segments)
+        )
+        return PlainTextResponse(subtitles, headers=headers)
+    elif normalized_response_format == "text":
         return PlainTextResponse(raw_text, headers=headers)
     else:
         pass
@@ -451,6 +461,7 @@ def build_chunk_generate_request(
     repetition_penalty: float | None,
     max_new_tokens: int | None,
     stream: bool = False,
+    segment_timestamps: bool = False,
 ) -> GenerateRequest:
     return build_transcription_generate_request(
         audio_bytes=chunk_bytes,
@@ -465,6 +476,7 @@ def build_chunk_generate_request(
         repetition_penalty=repetition_penalty,
         max_new_tokens=max_new_tokens,
         stream=stream,
+        segment_timestamps=segment_timestamps,
     )
 
 
@@ -483,6 +495,7 @@ async def transcribe_audio_chunks(
     max_concurrent: int,
     condition_on_previous_text: bool,
     adapter: TranscriptionAdapter,
+    segment_timestamps: bool = False,
 ) -> tuple[list[str], str | None]:
     """Transcribe the chunks of a plan, returning one text per chunk.
 
@@ -520,6 +533,7 @@ async def transcribe_audio_chunks(
                 filename=filename,
                 language=language,
                 prompt=chunk_prompt,
+                segment_timestamps=segment_timestamps,
                 temperature=temperature,
                 repetition_penalty=repetition_penalty,
                 max_new_tokens=max_new_tokens,
@@ -566,9 +580,11 @@ async def transcribe_audio_chunks(
                     is_first_decoded_chunk=is_first_decoded_chunk,
                 )
                 text, reason = await run_chunk(span, chunk_prompt=chunk_prompt)
+                previous_text = (
+                    adapter.postprocess_text(text) if segment_timestamps else text
+                )
                 should_retry = await asyncio.to_thread(
-                    adapter.should_retry_chunk_without_context,
-                    text,
+                    adapter.should_retry_chunk_without_context, previous_text
                 )
                 if should_retry:
                     text, reason = await run_chunk(
@@ -576,11 +592,13 @@ async def transcribe_audio_chunks(
                         chunk_prompt=None,
                         retry=True,
                     )
+                    previous_text = (
+                        adapter.postprocess_text(text) if segment_timestamps else text
+                    )
                 else:
                     pass
                 texts.append(text)
                 reasons.append(reason)
-                previous_text = text
                 is_first_decoded_chunk = False
             return texts, chunked_finish_reason(reasons)
         else:
