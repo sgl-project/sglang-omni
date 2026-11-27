@@ -518,6 +518,10 @@ bool Qwen3ASRTranscriber::ExtendFinalPrefill(
 TranscriptionResult Qwen3ASRTranscriber::Transcribe(
     const std::vector<float> &samples, const TranscriptionOptions &options,
     const std::atomic<bool> &cancel, RefreshReuse *reuse) const {
+  if (cancel.load()) {
+    throw GenerationCancelled();
+  } else {
+  }
   if (samples.size() <= kMaxChunkSamples || reuse != nullptr ||
       !options.prefix_token_ids.empty()) {
     return TranscribeChunk(samples, options, cancel, reuse);

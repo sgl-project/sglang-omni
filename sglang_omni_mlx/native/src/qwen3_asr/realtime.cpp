@@ -548,6 +548,7 @@ void RealtimeSession::FinalizeThrough(long end_sample) {
           options.prefix_text.clear();
           options.guessed_token_ids.clear();
           options.max_new_tokens.reset();
+          segment.decode_count += 1;
           timing = NewDecodeTiming(segment, "final_retry", cut_sample,
                                    static_cast<int>(samples.size()));
           result =

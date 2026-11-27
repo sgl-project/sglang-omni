@@ -93,6 +93,40 @@ SessionOutput RunSession(bool profile) {
           previews.load(std::memory_order_acquire) + (previewed ? 0 : 100)};
 }
 
+SessionOutput RunFinalRetrySession() {
+  omni_server::TranscriptionWorker worker([] {}, [] {}, 1);
+  qwen3_asr::Qwen3ASRTranscriber transcriber;
+  qwen3_asr::RealtimeSettings settings =
+      qwen3_asr::MakeRealtimeSettings(1000, 100, 30);
+  settings.profile = true;
+  std::atomic<int> previews{0};
+  std::ostringstream captured;
+  const auto old = std::cerr.rdbuf(captured.rdbuf());
+  const auto session = std::make_shared<qwen3_asr::RealtimeSession>(
+      worker, transcriber, settings, [&previews](const std::string &raw) {
+        const auto event = nlohmann::json::parse(raw);
+        if (event.value("type", "") == "transcription.segment" &&
+            !event.value("is_final", true)) {
+          previews.fetch_add(1, std::memory_order_release);
+        }
+        return true;
+      });
+  session->Handle(
+      {{"type", "session.update"}, {"session", {{"language", "en"}}}});
+  session->Handle(
+      {{"type", "input_audio_buffer.append"}, {"audio", AudioBase64(1600)}});
+  const bool first_decoded = WaitFor(transcriber.transcription_count, 1);
+  session->Handle(
+      {{"type", "input_audio_buffer.append"}, {"audio", AudioBase64(16000)}});
+  const bool second_decoded = WaitFor(transcriber.transcription_count, 2);
+  transcriber.length_on_prefix = true;
+  session->Handle({{"type", "transcription.done"}});
+  session->Close();
+  std::cerr.rdbuf(old);
+  return {captured.str(), previews.load(std::memory_order_acquire) +
+                              (first_decoded && second_decoded ? 0 : 100)};
+}
+
 std::vector<nlohmann::json> Timings(const std::string &log) {
   std::vector<nlohmann::json> timings;
   std::istringstream lines(log);
@@ -178,6 +212,24 @@ int main() {
     }
   }
 
+  const SessionOutput final_retry = RunFinalRetrySession();
+  const auto retry_events = Timings(final_retry.log);
+  const std::vector<std::string> retry_kinds = {"preview", "preview", "final",
+                                                "final_retry"};
+  if (!Check(final_retry.previews == 1, "Final-retry previews completed") ||
+      !Check(retry_events.size() == retry_kinds.size(),
+             "preview, Final and Final-retry timings")) {
+    return 1;
+  }
+  for (size_t i = 0; i < retry_events.size(); ++i) {
+    if (!Check(retry_events[i]["kind"] == retry_kinds[i], "Final-retry kind") ||
+        !Check(retry_events[i]["decode_index"] == static_cast<int>(i + 1),
+               "Final-retry decode index") ||
+        !Check(retry_events[i]["succeeded"], "Final-retry decode succeeded")) {
+      return 1;
+    }
+  }
+
   const auto http_timing = std::make_shared<qwen3_asr::RealtimeDecodeTiming>();
   http_timing->session_id = qwen3_asr::NextRealtimeProfileSessionId();
   http_timing->decode_index = 1;
@@ -252,6 +304,70 @@ int main() {
                "batch Final decode order")) {
       return 1;
     }
+  }
+
+  omni_server::TranscriptionWorker cancel_worker([] {}, [] {}, 1);
+  std::atomic<int> blocker_started{0};
+  std::atomic<int> release_blocker{0};
+  const auto ignore_completion =
+      [](std::optional<omni_common::TranscriptionResult>, std::exception_ptr) {
+      };
+  cancel_worker.Submit(
+      [&](const std::atomic<bool> &) {
+        blocker_started.store(1, std::memory_order_release);
+        while (!release_blocker.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        return omni_common::TranscriptionResult{};
+      },
+      omni_server::NewCancelFlag(), ignore_completion);
+  const bool blocker_running = WaitFor(blocker_started, 1);
+  qwen3_asr::BatchableTranscription cancelled_job{
+      &http_transcriber,
+      std::vector<float>(1600, 0.1f),
+      {},
+      make_http_timing()};
+  const auto cancelled_cancel = omni_server::NewCancelFlag();
+  std::atomic<int> cancelled_completed{0};
+  std::atomic<bool> cancelled_generation{false};
+  std::ostringstream cancel_captured;
+  const auto cancel_old = std::cerr.rdbuf(cancel_captured.rdbuf());
+  cancel_worker.Submit(
+      cancelled_job, cancelled_cancel,
+      [&](std::optional<omni_common::TranscriptionResult>,
+          std::exception_ptr error) {
+        if (error) {
+          try {
+            std::rethrow_exception(error);
+          } catch (const omni_common::GenerationCancelled &) {
+            cancelled_generation.store(true, std::memory_order_release);
+          } catch (...) {
+          }
+        }
+        cancelled_completed.fetch_add(1, std::memory_order_release);
+      });
+  cancelled_cancel->store(true);
+  release_blocker.store(1, std::memory_order_release);
+  const bool cancelled_done = WaitFor(cancelled_completed, 1);
+  std::cerr.rdbuf(cancel_old);
+  const auto cancel_events = Timings(cancel_captured.str());
+  if (!Check(blocker_running, "queued-cancellation blocker started") ||
+      !Check(cancelled_done, "queued cancellation completed") ||
+      !Check(cancelled_generation.load(std::memory_order_acquire),
+             "queued cancellation error") ||
+      !Check(cancel_events.size() == 1, "queued cancellation timing")) {
+    return 1;
+  }
+  if (!Check(cancel_events[0]["kind"] == "http_final",
+             "queued cancellation kind") ||
+      !Check(!cancel_events[0]["succeeded"], "queued cancellation failed") ||
+      !Check(cancel_events[0]["submitted_at_ms"] <=
+                 cancel_events[0]["started_at_ms"],
+             "queued cancellation queue order") ||
+      !Check(cancel_events[0]["started_at_ms"] <=
+                 cancel_events[0]["finished_at_ms"],
+             "queued cancellation decode order")) {
+    return 1;
   }
 
   const SessionOutput unprofiled = RunSession(false);

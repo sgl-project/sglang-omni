@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/audio.h"
+#include "common/generation.h"
 #include "common/transcription.h"
 #include "common/worker.h"
 
@@ -135,15 +136,26 @@ class Qwen3ASRTranscriber {
 public:
   using BatchFinished = std::function<void(size_t, BatchOutcome)>;
 
-  RetainedText RetainedPrefix(const std::string &, int) const { return {}; }
+  mutable std::atomic<int> transcription_count{0};
+  bool length_on_prefix = false;
 
-  omni_common::TranscriptionResult Transcribe(const std::vector<float> &,
-                                              const TranscriptionOptions &,
-                                              const std::atomic<bool> &,
-                                              RefreshReuse * = nullptr) const {
+  RetainedText RetainedPrefix(const std::string &, int) const {
+    return {{1}, "ok", {2}};
+  }
+
+  omni_common::TranscriptionResult
+  Transcribe(const std::vector<float> &, const TranscriptionOptions &options,
+             const std::atomic<bool> &cancel, RefreshReuse * = nullptr) const {
+    if (cancel.load()) {
+      throw omni_common::GenerationCancelled();
+    } else {
+    }
     omni_common::TranscriptionResult result;
     result.text = "ok";
-    result.finish_reason = omni_common::FinishReason::kStop;
+    result.finish_reason = length_on_prefix && !options.prefix_token_ids.empty()
+                               ? omni_common::FinishReason::kLength
+                               : omni_common::FinishReason::kStop;
+    transcription_count.fetch_add(1, std::memory_order_release);
     return result;
   }
 
