@@ -120,6 +120,15 @@ def attention_backend_label(resolution: AttentionBackendResolution) -> str:
     return f"{resolution.backend} (fallback: {resolution.fallback_reason})"
 
 
+def codec_autocast_enabled(device: torch.device, dtype: torch.dtype | None) -> bool:
+    """Whether the codec runs under compute-dtype autocast on ``device``."""
+
+    if device.type in ("cuda", "xpu"):
+        return dtype in (torch.float16, torch.bfloat16)
+    else:
+        return device.type == "cpu" and dtype is torch.bfloat16
+
+
 class MossAudioTokenizerV1FeedForward(nn.Module):
     """Expose MOSS-Audio-Tokenizer v1 Linear-GELU-Linear weights."""
 
@@ -1340,7 +1349,7 @@ class ResidualLFQ(nn.Module):
         input_lengths: torch.Tensor,
         num_quantizers: int | None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        with torch.autocast(device_type="cuda", enabled=False):
+        with torch.autocast(device_type=z.device.type, enabled=False):
             z = self.input_proj(z.float()).float()
             batch_size, _, max_time = z.shape
             mask = torch.arange(max_time, device=z.device).expand(
@@ -2343,10 +2352,7 @@ class MossAudioTokenizerVocoder(MossAudioTokenizerStreamingModule):
         # note (Zhang Yiyang): Match the source codec's autocast boundary,
         # including FP32 LayerNorm. Casting decoder weights/inputs to BF16
         # alone changes streaming PCM.
-        autocast_enabled = (
-            codes.device.type == "cuda"
-            and self.compute_dtype in (torch.float16, torch.bfloat16)
-        ) or (codes.device.type == "cpu" and self.compute_dtype is torch.bfloat16)
+        autocast_enabled = codec_autocast_enabled(codes.device, self.compute_dtype)
         hidden = self.quantizer.decode_codes(codes).to(
             dtype=torch.float32 if autocast_enabled else self.decoder_dtype
         )

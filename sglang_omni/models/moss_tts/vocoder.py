@@ -17,6 +17,7 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerVocoder,
     MossAudioTokenizerVocoderDecoder,
     MossAudioVocoder,
+    codec_autocast_enabled,
 )
 from sglang_omni.models.moss_tts.delay_pattern import split_moss_audio_segments
 from sglang_omni.models.moss_tts.payload_types import (
@@ -64,10 +65,7 @@ def autocast_if_supported(
     device: torch.device,
     dtype: torch.dtype | None,
 ) -> Iterator[None]:
-    enabled = (device.type == "cuda" and dtype in (torch.float16, torch.bfloat16)) or (
-        device.type == "cpu" and dtype is torch.bfloat16
-    )
-    if enabled:
+    if codec_autocast_enabled(device, dtype):
         with torch.autocast(
             device_type=device.type,
             dtype=cast(torch.dtype, dtype),
