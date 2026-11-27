@@ -510,10 +510,12 @@ async def test_wait_for_profile_flush_waits_for_late_stage_writer(
     (tmp_path / "run_status_101.json").write_text(
         json.dumps({"stages": ["coordinator"]})
     )
+
     async def publish_late_stage() -> None:
         await asyncio.sleep(0.03)
         (tmp_path / "events_asr_102.jsonl").write_text("")
         (tmp_path / "run_status_102.json").write_text(json.dumps({"stages": ["asr"]}))
+
     publisher = asyncio.create_task(publish_late_stage())
     flushed = await asr_profiling.wait_for_profile_flush(
         str(tmp_path),
@@ -523,6 +525,8 @@ async def test_wait_for_profile_flush_waits_for_late_stage_writer(
     await publisher
     assert flushed is True
     assert (tmp_path / "run_status_102.json").is_file()
+
+
 @pytest.mark.asyncio
 async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
     tmp_path: Path,
@@ -530,6 +534,7 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
 ) -> None:
     """run_profiled_pass aggregates stages returned by /start_request_profile across replicas."""
     observed_expected_stages: list[list[str] | None] = []
+
     def fake_start(
         url: str,
         run_id: str,
@@ -542,6 +547,7 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
             "event_dir": event_dir,
             "stages": ["coordinator", "asr"],
         }
+
     async def fake_wait(
         event_dir: str,
         *,
@@ -552,8 +558,10 @@ async def test_run_profiled_pass_forwards_started_stages_to_flush_wait(
             list(expected_stages) if expected_stages is not None else None
         )
         return True
+
     async def fake_run_pass() -> dict[str, object]:
         return {"wall_clock_s": 1.0}
+
     monkeypatch.setattr(asr_profiling, "start_request_profile", fake_start)
     monkeypatch.setattr(asr_profiling, "stop_request_profile", lambda url, run_id: {})
     monkeypatch.setattr(asr_profiling, "wait_for_profile_flush", fake_wait)
